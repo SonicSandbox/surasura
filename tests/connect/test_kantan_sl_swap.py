@@ -737,3 +737,102 @@ def test_no_anki_to_read_an_old_cards_line_from_waits_too(ledger, monkeypatch):
     monkeypatch.setattr(swap, "choose_line", lambda *a, **k: pytest.fail("no line without the old one"))
     swap.look(Steps(), ledger, lang, anki=None, files=5)
     assert swap._rows(ledger, "1 = 1")[0]["state"] == swap.ASKED and not ledger.jobs(lang)
+
+
+# --------------------------------------------------------------------------- #
+# One record: the swap queue's entry; the ledger's row never says another outcome
+# --------------------------------------------------------------------------- #
+_OUTCOME = {swap.MADE: "made", swap.DROPPED: "dropped", swap.UNDONE: "undone"}
+
+
+def _agree(ledger, lang):
+    """Every swap with a queue entry: an outcome in the ledger is the queue's (and its why); a phase (asked, queued,
+    waits) is the queue's *waiting*. -> {ref: the queue's state} for the test to read."""
+    entries = {e["id"]: e for e in swap_queue.load(lang)}
+    seen = {}
+    for row in swap._rows(ledger, "language = ? AND ref IS NOT NULL", (lang,)):
+        e = entries[row["ref"]]
+        assert e["state"] == _OUTCOME.get(row["state"], "waiting"), (row["state"], e["state"])
+        if row["state"] == swap.DROPPED:
+            assert row["why"] == e["why"]
+        seen[row["ref"]] = e["state"]
+    return seen
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_after_an_undo_the_queue_and_the_ledger_both_say_undone_and_the_window_offers_no_undo(ledger, lang,
+                                                                                               monkeypatch):
+    # Why: the queue is the one record of a swap (the full Swap reads it); an Undo the queue never heard of left it
+    # saying *made* for a card that is gone.
+    anki, swap_id = _made_swap(ledger, monkeypatch, lang)
+    ref = _row(ledger, swap_id)["ref"]
+    assert _agree(ledger, lang) == {ref: "made"}
+    swap.undo(anki, ledger, lang, swap_id, open_store=lambda: None)
+    assert _agree(ledger, lang) == {ref: "undone"}
+    entry = [e for e in swap_queue.load(lang) if e["id"] == ref][0]
+    assert entry["made"]["note"] == 950 and entry["undone"]            # the record kept, never deleted
+    assert swap.status_of(ledger.conn, lang)["made"] == []
+    swap.look(Steps(), ledger, lang, anki=anki, files=5)                # a later look changes neither
+    assert _agree(ledger, lang) == {ref: "undone"} and swap.SWAP_TAG not in anki.notes_[900]["tags"]
+
+
+def test_an_undo_whose_queue_write_fails_changes_neither_record_and_a_retry_finishes_it(ledger, monkeypatch):
+    # Why: an Undo stopped half-way (the queue busy: the known-words lock held) must never leave the two records apart;
+    # the retry must not delete a second card nor lose the old one.
+    anki, swap_id = _made_swap(ledger, monkeypatch)
+    ref = _row(ledger, swap_id)["ref"]
+    real = swap_queue.undone
+
+    def busy(language, swap_id):
+        raise RuntimeError("Your known words are being updated by Anki known-words sync.")
+    monkeypatch.setattr(swap_queue, "undone", busy)
+    with pytest.raises(RuntimeError):
+        swap.undo(anki, ledger, "ja", swap_id, open_store=lambda: None)
+    assert _agree(ledger, "ja") == {ref: "made"}                        # both still say made
+    assert anki.deleted == [950] and anki.cards_[9000]["queue"] == 0    # the steps before it done, kept
+    monkeypatch.setattr(swap_queue, "undone", real)
+    assert swap.undo(anki, ledger, "ja", swap_id, open_store=lambda: None)["undone"]
+    assert _agree(ledger, "ja") == {ref: "undone"} and anki.deleted == [950]
+
+
+def test_an_undo_the_queue_took_but_the_ledger_lost_is_followed_and_never_tagged_again(ledger, monkeypatch):
+    # Why: the queue's word wins — a ledger left saying made after the queue said undone would tag the old card again
+    # and offer a second Undo.
+    anki, swap_id = _made_swap(ledger, monkeypatch)
+    row = _row(ledger, swap_id)
+    swap._old_back(anki, row)                                           # the Undo's Anki steps
+    swap_queue.undone("ja", row["ref"])                                 # the queue took it; the ledger's write lost
+    swap._set(ledger, swap_id, tagged=0)
+    swap.look(Steps(), ledger, "ja", anki=anki, files=5)
+    assert _agree(ledger, "ja") == {row["ref"]: "undone"} and swap.SWAP_TAG not in anki.notes_[900]["tags"]
+    with pytest.raises(swap.tidy.Refused) as again:
+        swap.undo(anki, ledger, "ja", swap_id, open_store=lambda: None)
+    assert again.value.say == swap.ALREADY
+
+
+def test_an_undo_with_the_ledger_ahead_of_the_queue_is_told_to_the_queue_at_the_next_look(ledger, monkeypatch):
+    # Why: a ledger row undone the queue never heard of (an Undo before the queue had *undone*) is put in step.
+    anki, swap_id = _made_swap(ledger, monkeypatch)
+    ref = _row(ledger, swap_id)["ref"]
+    swap._set(ledger, swap_id, state=swap.UNDONE)
+    swap.look(Steps(), ledger, "ja", anki=anki, files=5)
+    assert _agree(ledger, "ja") == {ref: "undone"}
+
+
+def test_a_swap_taken_back_before_its_job_is_dropped_with_the_queues_why_and_no_card_is_made(ledger, monkeypatch):
+    # Why: the learner took the green flag off (the reader drops the entry "taken back"): Swap must not go on and make a
+    # card from its own copy of the ask.
+    lang, (word, _old, other) = "ja", CASES["ja"]
+    _lists(lang)
+    entry = _queued(lang, word)
+    monkeypatch.setattr(swap, "choose_line", lambda *a, **k: None)     # no other line yet: the ask waits
+    anki = _old_card(Anki(), lang)
+    swap.look(Steps(), ledger, lang, anki=anki, files=5)
+    assert _row(ledger, 1)["state"] == swap.WAITS and _agree(ledger, lang) == {entry["id"]: "waiting"}
+    swap_queue.drop(lang, entry["id"], "taken back")
+    monkeypatch.setattr(swap, "choose_line", lambda *a, **k: (7, other))
+    swap.look(Steps(), ledger, lang, anki=anki, files=6)               # the library grew: it would have tried again
+    row = _row(ledger, 1)
+    assert (row["state"], row["why"], row["job_id"]) == (swap.DROPPED, "taken back", None)
+    assert _agree(ledger, lang) == {entry["id"]: "dropped"}
+    assert not ledger.jobs(lang)

@@ -7,10 +7,10 @@ waits as every one does (never while you review, the cap, Anki closed): there is
 - **The one maker** (`make_card`): "a new card for this word from another line" — the swap queue's entries and Kyou-DW's
   *Bad card* both call it. It records the ask (Connect's ledger, table `swaps`) and wakes Connect; Connect's next look
   (`look`) turns it into a job. Never for a word now Known or Ignored (`word_state`: the entry dropped, with why).
-- **The line** (`choose_line`, the one seam until Kantan-SD's picker lands): the line the learner picked (`line_id`), else
-  the word's best other line in the library (`sentence_corpus.best_for`: the easiest first, as 例文 picks them) whose
-  episode Connect can cut — **never a line the old card holds** (`same_line`, by its text: the old card's sentence from
-  Connect's record, else from Anki). No other line: the ask waits, said once on *Needs you* (`WAITS`), and is looked at
+- **The line** (`choose_line`): the line the learner picked (`line_id`), else **only the one picker's** (Kantan-SD's
+  `sentences.choose`, over Generate's list: Swap ranks and searches nothing itself) whose episode Connect can cut —
+  **never a line the old card holds** (`same_line`, by its text: the old card's sentence from Connect's record, else
+  from Anki). No picker yet, or no other line: the ask waits, said once on *Needs you* (`WAITS`), and is looked at
   again when the library has changed (`RETRY_S`).
 - **Made:** the swap queue's entry marked made with the new note (`swap_queue.made`: the pair old note → new note, the
   record the full Swap reads); the old card stays as the learner left it (suspended, green) and gains the tag
@@ -20,9 +20,17 @@ waits as every one does (never while you review, the cap, Anki closed): there is
   Tidy treats it as any Connect card.
 - **Undo** (`undo`): the new card removed with a backup, as Tidy removes one (`tidy.run`, why `swap`: notes, media and
   an Anki package kept; a card you studied or changed stays, and then nothing is undone), the old card unsuspended,
-  its green flag off and its tag gone. Twice: nothing more.
+  its green flag off and its tag gone, then the queue's entry `undone` (`swap_queue.undone`) with the ledger's row in
+  one step. Twice: nothing more.
 
-States: asked → queued (its job) → made | waits (no other line) | dropped (known · ignored) ; made → undone.
+**The one record of a swap is the swap queue's entry** (waiting · made · dropped · undone, with why). The ledger's
+`swaps` holds what Connect's job needs (the line, what to avoid, the episodes tried, the job, the new note, the tag
+written, the backup), keyed by the entry's id (`ref`); its `state` is the job's phase — asked → queued (its job) →
+waits (no other line) — and, once over, the queue's outcome copied (made · dropped · undone, with the queue's why),
+written with the queue's in one step (Undo: the queue's write inside the ledger's transaction) or followed from the
+queue at every look (`_follow`: an entry the reader dropped — taken back, its sync undone — or a write that failed
+half-way). An ask with no queue entry (`ref` None) has the ledger's record only.
+Qt-free; Anki only through the adapter handed in (tests hand a fake).
 Qt-free; Anki only through the adapter handed in (tests hand a fake).
 """
 import datetime
@@ -73,7 +81,6 @@ _SQL = """CREATE TABLE IF NOT EXISTS swaps (
   updated_at TEXT NOT NULL,
   tried_at REAL,
   tried_files INTEGER,
-  undone_at TEXT,
   tidy_id INTEGER)"""
 
 
@@ -358,17 +365,14 @@ def look(steps, ledger, language, store_id=None, anki=None, files=None):
     ask turned into a job (`_start`), the old cards' tags written where they wait. Never raises: a swap that can't go
     now is looked at again. -> {"queued", "made", "waits", "dropped"} counts."""
     out = {"queued": 0, "made": 0, "waits": 0, "dropped": 0}
-    try:
-        from app.connect import swap_queue
-        waiting = swap_queue.waiting(language)
-    except Exception:
-        log.info("Swap: the swap queue couldn't be read this look", exc_info=True)
-        waiting = []
+    entries = _entries(language)
+    waiting = [e for e in (entries or {}).values() if e.get("state") == _Q_WAITING]
     if not waiting and not ledger.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'swaps'"
                                                ).fetchone():
         return out                          # nothing ever asked: an idle look writes nothing (S19)
     ensure(ledger)
     anki = anki if anki is not None else _anki(steps)
+    _follow(ledger, language, entries)
     for row in _rows(ledger, "language = ? AND state = ?", (language, QUEUED)):
         try:
             _finish(ledger, language, row, out, anki=anki)
@@ -396,8 +400,47 @@ def look(steps, ledger, language, store_id=None, anki=None, files=None):
             _start(steps, ledger, language, row, store_id, anki, out, count, state_of)
         except Exception:
             log.warning("Swap: swap %s wasn't started this look", row["id"], exc_info=True)
+    if out["made"]:
+        _follow(ledger, language, _entries(language))  # a swap taken back while its job ran: never tagged
     _tag_waiting(ledger, language, anki)
     return out
+
+
+_Q_WAITING, _Q_MADE, _Q_DROPPED, _Q_UNDONE = "waiting", "made", "dropped", "undone"     # swap_queue's states
+
+
+def _entries(language):
+    """The swap queue's entries by id, or None when it can't be read (the look then follows nothing)."""
+    try:
+        from app.connect import swap_queue
+        return {str(e.get("id")): e for e in swap_queue.load(language)}
+    except Exception:
+        log.info("Swap: the swap queue couldn't be read this look", exc_info=True)
+        return None
+
+
+def _follow(ledger, language, entries):
+    """The ledger follows the queue, the one record: an entry dropped (the reader: taken back, its sync undone) drops an
+    ask not now a job's and a made one; an entry undone undoes a made one; a ledger outcome the queue didn't take (its
+    write failed) is written to it again (a waiting entry: `make_card`'s look; a made one: here, `undone`). A swap
+    whose job is running is followed when the job ends (Connect never stops a mining job)."""
+    if not entries:
+        return
+    for row in _rows(ledger, "language = ? AND ref IS NOT NULL AND state != ?", (language, QUEUED)):
+        e = entries.get(str(row["ref"]))
+        if e is None:
+            continue
+        q = e.get("state")
+        if q == _Q_DROPPED and row["state"] != DROPPED:
+            _set(ledger, row["id"], state=DROPPED, why=e.get("why"))
+        elif q == _Q_UNDONE and row["state"] != UNDONE:
+            _set(ledger, row["id"], state=UNDONE)
+        elif q == _Q_MADE and row["state"] == UNDONE:
+            try:
+                from app.connect import swap_queue
+                swap_queue.undone(language, str(row["ref"]))
+            except Exception:
+                log.warning("Swap: the swap queue's entry %s wasn't marked undone", row["ref"], exc_info=True)
 
 
 def _anki(steps):
@@ -563,17 +606,25 @@ class AnkiSwap(tidy.AnkiConnectTidy):
 def undo(anki, ledger, language, swap_id, open_store=None):
     """One swap undone -> {"undone": True, "word"}: the new card removed with a backup (`tidy.run`, why "swap": a card
     you studied or changed stays — `tidy.Refused`, and nothing here changes), then the old card back to study
-    (unsuspended, its green flag off, `SWAP_TAG` gone), the swap `undone`. Refused (`Refused`) when it isn't made or is
-    undone already; Anki's Reviewing / Busy / errors raise as Tidy's do."""
+    (unsuspended, its green flag off, `SWAP_TAG` gone), then the swap `undone` in the queue and the ledger together
+    (the queue's write fails: neither changes, and a retry finishes it — the new card isn't deleted twice). Refused
+    (`Refused`) when it isn't made or is undone already (the queue's word first); Anki's Reviewing / Busy / errors, and
+    a queue that can't be read or written, raise as Tidy's do."""
     ensure(ledger)
     rows = _rows(ledger, "id = ? AND language = ?", (int(swap_id), language))
     if not rows:
         raise tidy.Refused(GONE)
     row = rows[0]
+    entry = _entry(language, row)
+    if entry is not None and entry.get("state") == _Q_UNDONE and row["state"] != UNDONE:
+        _set(ledger, row["id"], state=UNDONE)               # the ledger follows the queue (its write failed after)
+        row["state"] = UNDONE
     if row["state"] == UNDONE:
         raise tidy.Refused(ALREADY)
-    if row["state"] != MADE or not row.get("new_note"):
+    if row["state"] != MADE or not row.get("new_note") or (entry is not None and entry.get("state") == _Q_DROPPED):
         raise tidy.Refused(NOT_MADE)
+    if entry is not None and entry.get("state") == _Q_WAITING:
+        _queue_made(language, row["ref"], row["new_note"])  # the queue's made write had failed: it takes it first
     others = _rows(ledger, "language = ? AND new_note = ? AND state = ? AND id != ?",
                    (language, row["new_note"], MADE, row["id"]))
     gone = not any(isinstance(n, dict) and n.get("noteId") for n in anki.notes([int(row["new_note"])]) or ())
@@ -588,8 +639,22 @@ def undo(anki, ledger, language, swap_id, open_store=None):
             raise tidy.Reviewing()
         _old_back(anki, row, keep_tag=bool(_rows(ledger, "language = ? AND old_note = ? AND state = ? AND id != ?",
                                                  (language, row["old_note"], MADE, row["id"]))))
-        _set(ledger, row["id"], state=UNDONE, undone_at=_now())    # under the lock: a look never tags it again
+        with ledger.transaction():      # under the lock (a look never tags it again), the queue's write inside the
+            _update(ledger.conn, row["id"], state=UNDONE)       # ledger's: either fails, neither changes
+            if entry is not None:
+                from app.connect import swap_queue
+                if swap_queue.undone(language, str(row["ref"])) is None:
+                    raise RuntimeError(f"the swap queue's entry {row['ref']} isn't made: nothing was undone there")
     return {"undone": True, "word": row["word"]}
+
+
+def _entry(language, row):
+    """The swap's queue entry, or None (an ask with no entry); raises when the queue can't be read (an Undo then
+    changes nothing: it can't keep the one record)."""
+    if row.get("ref") is None:
+        return None
+    from app.connect import swap_queue
+    return next((e for e in swap_queue.load(language) if str(e.get("id")) == str(row["ref"])), None)
 
 
 def _old_back(anki, row, keep_tag=False):

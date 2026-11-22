@@ -18,10 +18,10 @@ each of the six pages starts with, what it writes on *Next*, and the reads and j
 - **The reads** (`anki_look`, `library_rows`, `level_numbers`) are a worker's: Anki through the Anki window's own reads
   (`app/anki_window.py`), the library through a read-only handle of the store, the level through the Rarity slider's
   recipe (`token_index.preview_frequencies`, `word_selection.band_previews`, D13's `auto_band`).
-- **The jobs** (`first_sync`, `open_content_manager`) go through the registry: the first known-words sync is the Anki
-  window's `anki-sync` job (the user's own first sync — `anki_sync.may_sync`'s "never-synced" gate — the wizard's *Next*
-  is that act; append-only; refused while an update holds Surasura's children); the Content Manager is the 2.x window
-  as a child (`tools.run`), until W3.2's *+ Add*.
+- **The job** (`first_sync`) goes through the registry: the first known-words sync is the Anki window's `anki-sync`
+  job (the user's own first sync — `anki_sync.may_sync`'s "never-synced" gate — the wizard's *Next* is that act;
+  append-only; refused while an update holds Surasura's children). Content comes in through the window's own *+ Add*
+  (W3.2): setup never starts the 2.x Content Manager.
 - **The folders your shows and books are in** (SRC W1a; RUNBOOK §1b S1 + D1): page 3's picks are checked by the store's
   own rule (`folder_refused`), then on *Next* added and given setup's first look (`read_folders`: `Store.add_source`,
   `sources.scan(first=library_store.SORT)` — New arrivals, quietly, for setup's sort screen; Mado-O, Sonic 2026-10-30),
@@ -42,8 +42,6 @@ KNOWN_HOW = ("anki", "import", "fresh")
 
 # WZ-3: the three-way choice for cards of words not on your list -> (junban_later_tag, _flag, _suspend).
 LATER_FLAGS = {"leave": (False, False, False), "mark": (True, True, False), "aside": (True, False, True)}
-CONTENT_MANAGER_KIND = "child"          # the Tk dashboard's kind for its children: the automatic Generate waits for it
-CONTENT_MANAGER_LABEL = "Content Manager"
 LISTED_TIERS = ("now", "soon", "goal", "arrivals")    # page 3's rows: what is in the library (never the graduated)
 SEEN = "setup_seen"             # the version whose setup pages the learner has seen ("" never: a 2.x profile)
 SETUP_VERSION = "3.0"           # this version's pages (3.1 may show only the pages added since: the follow-up list)
@@ -843,15 +841,6 @@ def _first_sync(language, url, decks, chosen, suspended):
     finally:
         if held is not None:
             held.release()
-
-
-def open_content_manager(registry, language, on_end=None):
-    """*Add content…*: the 2.x Content Manager window for `language`, a child job (`tools.run`; its kind the Tk
-    dashboard's children's, which the automatic Generate waits for; one at a time). It goes on if the window quits (the
-    user may be in the middle of adding). `on_end(returncode)` when it closes. -> the Job."""
-    from app.services import tools
-    return tools.run(registry, CONTENT_MANAGER_KIND, CONTENT_MANAGER_LABEL,
-                     ["content_importer_gui.py", "--language", _language(language)], on_end=on_end, on_quit="detach")
 
 
 def generate(services):

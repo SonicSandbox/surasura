@@ -274,36 +274,13 @@ def _chosen(language, keys, avoid, files, bad, reachable):
         ranked = sentences.choose(language, sorted(keys), never={k: set(avoid) for k in keys}, files=files,
                                   reach=reach)
     except Exception:
-        log.info("Swap: the sentence picker didn't answer for a word; its own lines are used", exc_info=True)
+        log.info("Swap: the sentence picker didn't answer for a word; the swap waits", exc_info=True)
         return None
     for key in sorted(keys):
         for c in ranked.get(key) or ():
             if c.item_id is not None and c.item_id not in bad and not same_line(c.text, avoid):
                 return c.item_id, c.text
     return None
-
-
-def _items_of(language, paths):
-    """{path: the library item it is} for the files of `paths` the library holds (read-only)."""
-    from app import library_store
-    from app.path_utils import get_data_path, get_user_files_path
-    data = get_data_path(language)
-    store = library_store.open_store(language, data, get_user_files_path(language), role="reader")
-    if store is None:
-        return {}
-    out = {}
-    with store:
-        with store._reading():
-            for path in paths:
-                try:
-                    rel = os.path.relpath(path, data).replace("\\", "/")
-                except ValueError:
-                    continue
-                row = store.conn.execute("SELECT id FROM items WHERE REPLACE(rel_path, '\\', '/') = ?",
-                                         (rel,)).fetchone()
-                if row:
-                    out[path] = int(row[0])
-    return out
 
 
 def _resolve_line_id(steps, language, text):

@@ -21,6 +21,7 @@ from app import sources
 from app.connect import videos
 from app.services import library_reader, play, view_rows as vr
 from tests.fixtures import window_seed
+from tests.test_library_reader import _a_stop_waits_for_the_thread  # noqa: F401 (row 119: a stop's cache landed)
 from tests.test_services_play import SHOW, _copy, _elsewhere, _name, _read_in_place, _subtitle, _video
 from tests.test_sources_scan import _chapters, _epub
 from tests.test_view_rows import WORKS, eps, items_of, work

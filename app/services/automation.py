@@ -312,8 +312,10 @@ class AutoSync:
             problem = str(e)
             print(f"Anki sync skipped: {e}")
         failed = (result is None and not closed) or (result is not None and bool(result.error))
-        job.finish(ok=not failed, message=problem or (result.error if result is not None else None))
-        self.ended(result, language, closed, problem)
+        try:                                        # its end told first, the job live meanwhile (Flake-F4: a forced
+            self.ended(result, language, closed, problem)     # sync in between started a second beside it)
+        finally:
+            job.finish(ok=not failed, message=problem or (result.error if result is not None else None))
 
     def ended(self, result, language, closed=False, problem=None):
         """(The sync's own thread.) Every sync's end, automatic or by hand (`Automation.anki_synced`: the Anki window's

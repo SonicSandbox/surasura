@@ -621,3 +621,22 @@ def test_a_new_press_with_other_flags_gets_a_new_nonce(saved):
     assert send_report.build("zh").nonce == first.nonce                     # the same reports and flags: the same
     flags.add("zh", "每天都有很多人排隊。", "排隊", "journey", key="e2:11.0")
     assert send_report.build("zh").nonce != first.nonce
+
+
+def test_nothing_ticked_is_refused_before_the_zip_is_written(tmp_path, monkeypatch, receiver):
+    probe_person.make(tmp_path, monkeypatch)
+    flags, a, b = _flag_two()
+    ob = send_report.build("zh")
+    with pytest.raises(ValueError):
+        send_report.refit([], ob.nonce)
+    with open(ob.path, "rb") as f:
+        assert hashlib.sha256(f.read()).hexdigest() == ob.sha256         # the zip as it was
+    assert send_report.waiting().nonce == ob.nonce and receiver.got == []
+
+
+def test_a_failed_send_after_an_untick_says_the_nonce_of_the_zip_now_waiting(saved, receiver):
+    flags, a, b = _flag_two()
+    receiver.answer = (503, {"error": "paused"})
+    ob = send_report.build("zh")
+    got = send_report.send(nonce=ob.nonce, keep=[a["id"]])
+    assert got.nonce == send_report.waiting().nonce != ob.nonce          # (the window counts its tries by this one)

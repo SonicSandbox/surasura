@@ -720,7 +720,7 @@ def _flagged_entry(plan, language):
         plan.left_out.append(f"{FLAGGED}: couldn't be read ({type(e).__name__})")
         return
     plan.flags = {rid: changed for rid, changed, _ in got}
-    plan.flag_lines = [dict(line, id=rid, changed=changed) for rid, changed, line in got]
+    plan.flag_lines = [(rid, changed, line) for rid, changed, line in got]     # (scrubbed, then named, by `plan`)
 
 
 def _scrubbed(obj, ident):
@@ -787,7 +787,8 @@ def plan(language, include_results=True, library=None, root=None, extra=None, re
     for e in p.entries:
         e.name = scrubbing.name(e.name, ident)
     p.left_out = [ident.scrub(x) for x in p.left_out]
-    p.flag_lines = _scrubbed(p.flag_lines, ident)                  # (What goes shows them as the zip holds them)
+    p.flag_lines = [dict(_scrubbed(line, ident), id=rid, changed=changed)   # (What goes shows them as the zip
+                    for rid, changed, line in p.flag_lines]                     # ... holds them; their ids as kept)
     return p
 
 

@@ -1700,6 +1700,7 @@ class ReportWindow(SecondaryWindow):
         """A tick on What goes: *Send* needs a saved report in the zip or a ticked line."""
         ok = self.outbox is not None and (bool(self.outbox.zipped) or bool(self.goes_flags.keep()))
         self.goes_send.setEnabled(ok)
+        self.goes_open.setEnabled(ok)                               # (nothing ticked: no zip to look at either)
         self.goes_send.setToolTip(strings.REPORT_GOES_SEND_TIP if ok else strings.REPORT_FLAGS_NONE_TIP)
 
     def _keep(self, outbox):
@@ -1740,7 +1741,8 @@ class ReportWindow(SecondaryWindow):
         shell = self.shell
 
         def done(result):
-            words = self._tried(outbox.nonce, result.outcome not in (send_report.SENT, send_report.LIMIT),
+            words = self._tried(getattr(result, "nonce", None) or outbox.nonce,      # (the zip that went: What goes'
+                                result.outcome not in (send_report.SENT, send_report.LIMIT),   # ticks give a new one)
                                 _send_words(result))
             if self.gone:                                          # Esc while it went: the main window says it
                 windows.say_in_bar(shell, words)

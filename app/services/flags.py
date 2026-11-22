@@ -24,6 +24,7 @@ thread).
 """
 import datetime
 import json
+import math
 import ntpath
 import os
 import re
@@ -54,6 +55,10 @@ class Full(Exception):
     """The list holds `MAX_LINES`: a new line is refused (one already there may still change)."""
 
 
+class Stale(Exception):
+    """A waiting press older than its line's last change (the door's `stale` rule): nothing was changed."""
+
+
 def _path(language):
     return os.path.join(path_utils.get_user_files_path(language), FILE)
 
@@ -79,14 +84,29 @@ def _name(text):
 
 
 def _time(at):
-    if isinstance(at, bool) or not isinstance(at, (int, float)) or at != at or at < 0:
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
         return None
-    return round(float(at), 2)
+    try:
+        at = float(at)
+    except OverflowError:
+        return None
+    return round(at, 2) if math.isfinite(at) and at >= 0 else None
 
 
 def _reasons(reasons):
-    given = {str(r) for r in (reasons or ())}
+    if isinstance(reasons, str):
+        reasons = [reasons]
+    elif not isinstance(reasons, (list, tuple, set, frozenset)):
+        return []
+    given = {str(r) for r in reasons}
     return [r for r in REASONS if r in given]
+
+
+def _stamp(entry=None):
+    """A change's time (ns): later than the line's last change even when the clock didn't move (or stepped back)."""
+    now = time.time_ns()
+    last = (entry or {}).get("changed_ns")
+    return max(now, last + 1) if isinstance(last, int) else now
 
 
 def _same(entry, source, key, word):
@@ -94,23 +114,36 @@ def _same(entry, source, key, word):
 
 
 def _load(language):
-    """The list as written -> [entries]. Raises ValueError (not the list, or no encoding reads it whole)."""
+    """The list as written -> [entries] (every one a dict; one without an id is kept as written). Raises ValueError
+    (not the list, or no encoding reads it whole), OSError. A read that meets the moment of a writer's replace (Windows
+    refuses the open then) is tried again."""
     path = _path(language)
     if not os.path.exists(path):
         return []
+    for attempt in range(5):
+        try:
+            text = path_utils.read_text(path, language, errors="strict")
+            break
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.05)
+        except UnicodeDecodeError as e:
+            raise ValueError(f"unreadable ({e})")
     try:
-        data = json.loads(path_utils.read_text(path, language, errors="strict"))
-    except UnicodeDecodeError as e:
+        data = json.loads(text)
+    except ValueError as e:
         raise ValueError(f"unreadable ({e})")
     if not isinstance(data, dict) or not isinstance(data.get("lines"), list):
         raise ValueError("not the flagged sentences' list")
-    return [e for e in data["lines"] if isinstance(e, dict) and e.get("id")]
+    return [e for e in data["lines"] if isinstance(e, dict)]
 
 
 def read(language):
-    """Every flagged line, oldest first ([] when there is none, or the file can't be read: it is never written over)."""
+    """Every flagged line, oldest first ([] when there is none, or the file can't be read: it is never written over).
+    `for_report` reads it the strict way (a list it can't read is said in the zip)."""
     try:
-        return _load(language)
+        return [e for e in _load(language) if e.get("id")]
     except (OSError, ValueError):
         return []
 
@@ -136,6 +169,9 @@ def _change(language, change):
             kept = path_utils.backup_to_trash(_path(language), move=True)
             print(f"Flagged sentences: the list couldn't be read ({e}); set aside as {kept}, a new one started.")
             lines = []
+        for entry in lines:                                    # (an entry written without an id gets one now)
+            if not entry.get("id"):
+                entry["id"] = secrets.token_hex(6)
         before = json.dumps(lines, ensure_ascii=False, sort_keys=True)
         answer = change(lines)
         if json.dumps(lines, ensure_ascii=False, sort_keys=True) != before:
@@ -144,11 +180,12 @@ def _change(language, change):
 
 
 def add(language, line, word, source, key="", show="", episode="", at=None, reasons=(), note="", path=None,
-        now=None):
+        now=None, stale=None):
     """Flag `line` (for `word`) from `source` (`SOURCES`); `key`: the source's own key for the line (the page's
     line_id); `path`: the file it's from, when the caller has no names (kept as `place(path)`). The same source, key
-    and word flagged again takes the new reasons and note. Raises ValueError (no line, an unknown source), Full,
-    locks.Busy. -> the record."""
+    and word flagged again takes the new reasons and note. `stale(changed_ns) -> bool`: asked of the line already
+    there, under the lock (a waiting press older than its last change: Stale). Raises ValueError (no line, an unknown
+    source), Full, Stale, locks.Busy, OSError. -> the record."""
     if source not in SOURCES:
         raise ValueError(f"unknown source {source!r}")
     line, word, key = _cut(line, LINE_MAX), _cut(word, WORD_MAX), _cut(key, KEY_MAX)
@@ -162,36 +199,33 @@ def add(language, line, word, source, key="", show="", episode="", at=None, reas
     def change(lines):
         for entry in lines:
             if _same(entry, source, key, word):
+                if stale is not None and stale(entry.get("changed_ns")):
+                    raise Stale(key)
                 if any(entry.get(k) != v for k, v in record.items()):
-                    entry.update(record, changed_ns=time.time_ns())
+                    entry.update(record, changed_ns=_stamp(entry))
                 return dict(entry)
         if len(lines) >= MAX_LINES:
             raise Full(FULL)
         stamp = (now or datetime.datetime.now()).isoformat(timespec="seconds")
-        entry = dict(record, id=secrets.token_hex(6), added=stamp, changed_ns=time.time_ns())
+        entry = dict(record, id=secrets.token_hex(6), added=stamp, changed_ns=_stamp())
         lines.append(entry)
         return dict(entry)
     return _change(language, change)
 
 
-def unflag(language, source, key, word):
-    """The line `add` keeps for this source, key and word taken off -> True when it was there."""
+def unflag(language, source, key, word, stale=None):
+    """The line `add` keeps for this source, key and word taken off -> True when it was there. `stale`: as `add`'s."""
     key, word = _cut(key, KEY_MAX), _cut(word, WORD_MAX)
 
     def change(lines):
+        for entry in lines:
+            if _same(entry, source, key, word) and stale is not None and stale(entry.get("changed_ns")):
+                raise Stale(key)
         kept = [e for e in lines if not _same(e, source, key, word)]
         gone = len(kept) != len(lines)
         lines[:] = kept
         return gone
     return _change(language, change)
-
-
-def changed_ns(language, source, key, word):
-    """When that line last changed (ns), or None: not flagged."""
-    for entry in read(language):
-        if _same(entry, source, _cut(key, KEY_MAX), _cut(word, WORD_MAX)):
-            return entry.get("changed_ns")
-    return None
 
 
 def clear_sent(language, sent):
@@ -210,25 +244,33 @@ def clear_sent(language, sent):
 
 
 # --- Send report ----------------------------------------------------------------------------------------------------- #
-def _split(language, text):
-    """How Surasura reads the line: [[surface, word], …] by the list's own tokenizer; None when it can't be worked out
-    (no tagger)."""
-    from app import analyzer
-    if language == "zh":
-        tokens = analyzer.ChineseTokenizer().tokenize(text)
-    else:
-        analyzer.SANITIZE_JA = True                  # (as the token store read the library)
-        tokens = analyzer.JapaneseTokenizer().tokenize(text)
-    return [[t[2], t[0]] for t in tokens]
+def _splitter():
+    """-> split(language, text): how Surasura reads a line, [[surface, word], …] by the list's own tokenizer, made once
+    for a report (a tagger takes a moment to load)."""
+    made = {}
+
+    def split(language, text):
+        if language not in made:
+            from app import analyzer
+            if language == "zh":
+                made[language] = analyzer.ChineseTokenizer().tokenize
+            else:
+                analyzer.SANITIZE_JA = True          # (as the token store read the library)
+                made[language] = analyzer.JapaneseTokenizer().tokenize
+        return [[t[2], t[0]] for t in made[language](text)]
+    return split
 
 
 def for_report(language, split=None):
     """The list for Send report's zip -> [(id, changed_ns, line)], `line` exactly what `journey/flagged.json` holds for
     it: the line, its word, show, episode, time, reasons, note, when, which piece, and for a parsing line Surasura's
-    split of it (`split(language, text)`, the tokenizer by default; None when it fails). Never the list's id or key."""
-    split = split or _split
+    split of it (`split(language, text)`, the tokenizer by default; None when it fails). Never the list's id or key.
+    Raises OSError, ValueError: the list couldn't be read."""
+    split = split or _splitter()
     out = []
-    for entry in read(language):
+    for entry in _load(language):                            # (strict: a list it can't read is said, never "none")
+        if not entry.get("id"):
+            continue
         shown = {k: entry.get(k) for k in ("line", "word", "show", "episode", "at", "reasons", "note", "added",
                                             "source")}
         if PARSING in (entry.get("reasons") or ()):
@@ -258,21 +300,30 @@ def door_route(body, app):
     if lang not in ("ja", "zh"):
         raise door.RouteError("This page's language isn't one Surasura reads.", "refused")
     key, word = str(body.get("line_id") or ""), str(body.get("word") or "")
-    if journey_door.stale(body.get("at"), changed_ns(lang, "journey", key, word)):
-        raise door.RouteError("This flag changed in Surasura since: the page shows it as it is now.",
-                              journey_door.STALE)
+    if not key:
+        raise door.RouteError("Nothing was flagged (the page named no line).", "refused")
+    at = body.get("at")
+
+    def stale(changed):
+        return journey_door.stale(at, changed)
     try:
-        if not body.get("on", True):
-            unflag(lang, "journey", key, word)
+        if body.get("on", True) is False:
+            unflag(lang, "journey", key, word, stale=stale)
             return {"flagged": False}
         add(lang, body.get("line"), word, "journey", key=key, show=body.get("show"), episode=body.get("episode"),
-            at=body.get("time"), reasons=body.get("reasons") or (), note=body.get("note") or "")
+            at=body.get("time"), reasons=body.get("reasons") or (), note=body.get("note") or "", stale=stale)
+    except Stale:
+        raise door.RouteError("This flag changed in Surasura since: the page shows it as it is now.",
+                              journey_door.STALE)
     except Full as e:
         raise door.RouteError(str(e), "full")
     except locks.Busy:
         raise door.RouteError("Surasura is busy with your flagged sentences: try again in a moment.", "busy")
     except ValueError as e:
         raise door.RouteError(f"Nothing was flagged ({e}).", "refused")
+    except OSError as e:
+        raise door.RouteError(f"Nothing was flagged: your flagged sentences couldn't be saved ({e.strerror or e}).",
+                              "refused")
     return {"flagged": True}
 
 

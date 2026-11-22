@@ -236,3 +236,65 @@ def test_the_door_route_flags_unflags_refuses_full_and_skips_a_stale_press(monke
     assert full.value.kind == "full"
     with pytest.raises(door.RouteError):
         flags.door_route(dict(body, line=""), _App())
+
+
+# --- the review's cases (register rows 1-12) ----------------------------------------------------------------------- #
+@pytest.mark.parametrize("given, kept", [(float("inf"), None), (float("nan"), None), (10 ** 400, None), (-1, None),
+                                         (True, None), ("12", None), (4.567, 4.57)])
+def test_a_time_that_isnt_a_finite_number_is_none(given, kept):
+    flags.add("ja", JA[0], "文化祭", "journey", key="k", at=given)
+    assert flags.read("ja")[0]["at"] == kept
+    json.loads(open(os.path.join(path_utils.get_user_files_path("ja"), flags.FILE), encoding="utf-8").read(),
+               parse_constant=lambda c: pytest.fail(f"{c} written into the list"))
+
+
+@pytest.mark.parametrize("given, kept", [("parsing", ["parsing"]), (5, []), (None, []), ({"other": 1}, []),
+                                         (("bad_audio", 3), ["bad_audio"])])
+def test_reasons_given_as_one_word_or_not_a_list(given, kept):
+    flags.add("ja", JA[0], "文化祭", "journey", key="k", reasons=given)
+    assert flags.read("ja")[0]["reasons"] == kept
+
+
+def test_a_change_in_the_same_clock_tick_still_moves_its_time(monkeypatch):
+    """Windows' clock may not move between two presses: clear_sent must still tell the versions apart."""
+    monkeypatch.setattr(flags.time, "time_ns", lambda: 1_763_700_000_000_000_000)
+    first = flags.add("ja", JA[1], "授業", "journey", key="k")
+    again = flags.add("ja", JA[1], "授業", "journey", key="k", note="同じ瞬間のメモ")
+    assert again["changed_ns"] > first["changed_ns"]
+    assert flags.clear_sent("ja", {first["id"]: first["changed_ns"]}) == 0        # the newer note stays
+
+
+def test_an_entry_written_without_an_id_is_kept_on_the_next_write():
+    folder = path_utils.get_user_files_path("zh")
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, flags.FILE), "w", encoding="utf-8") as f:
+        json.dump({"format": 1, "lines": [{"line": ZH[0], "word": "大家", "source": "journey", "key": "k0"}]}, f,
+                  ensure_ascii=False)
+    flags.add("zh", ZH[1], "夜市", "journey", key="k1")
+    lines = _file("zh")["lines"]
+    assert [x["word"] for x in lines] == ["大家", "夜市"] and all(x.get("id") for x in lines)
+
+
+def test_a_list_that_cant_be_read_is_said_to_send_report_never_as_none():
+    folder = path_utils.get_user_files_path("ja")
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, flags.FILE), "w", encoding="utf-8") as f:
+        f.write('{"format": 1, "lines": [')
+    with pytest.raises(ValueError):
+        flags.for_report("ja")
+    assert flags.read("ja") == []
+
+
+def test_the_door_route_refuses_no_line_id_and_a_list_it_cant_write(monkeypatch):
+    door = pytest.importorskip("app.door")
+    body = {"line_id": "", "word": "看板", "line": JA[7], "on": True}
+    with pytest.raises(door.RouteError):
+        flags.door_route(body, _App())
+    assert flags.count("ja") == 0
+
+    def full_disk(language, lines):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(flags, "_write", full_disk)
+    with pytest.raises(door.RouteError) as got:
+        flags.door_route(dict(body, line_id="e3:21.0"), _App())
+    assert "couldn't be saved" in got.value.message

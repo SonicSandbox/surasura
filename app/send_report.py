@@ -91,10 +91,11 @@ class Outbox:
 
 class Result:
     """`outcome` (SENT · LIMIT · OFFLINE · BUSY · TOO_BIG · PAUSED · REFUSED), `id` (the report's #ID once sent),
-    `status` (the receiver's HTTP status, when it answered)."""
+    `status` (the receiver's HTTP status, when it answered), `nonce` (the zip's it was about: a zip written again for
+    What goes' ticks has a new one)."""
 
-    def __init__(self, outcome, rid=None, status=None):
-        self.outcome, self.id, self.status = outcome, rid, status
+    def __init__(self, outcome, rid=None, status=None, nonce=None):
+        self.outcome, self.id, self.status, self.nonce = outcome, rid, status, nonce
 
     def __repr__(self):
         return f"Result({self.outcome!r}, {self.id!r}, {self.status!r})"
@@ -254,6 +255,8 @@ def _refit(ob, keep):
     keep = {i for i in keep if any(line.get("id") == i for line in ob.flag_lines)}
     if keep == set(ob.flags):
         return ob
+    if not keep and not ob.zipped:                                   # (refused before anything is written)
+        raise ValueError("nothing is ticked to send")
     lines = [{k: v for k, v in line.items() if k not in ("id", "changed")} for line in ob.flag_lines
              if line.get("id") in keep]
     entries = report.rewrite_flagged(ob.path, ob.language, lines, ob.left_out)
@@ -347,11 +350,9 @@ def send(name="", url=None, root=None, now=None, nonce=None, keep=None):
         name = _clean_name(name)
         remember_name(name)
         if sent_today(now) >= PER_DAY:
-            return Result(LIMIT)
+            return Result(LIMIT, nonce=ob.nonce)
         if keep is not None:
             ob = _refit(ob, keep)
-            if not ob.zipped and not ob.flags:
-                raise ValueError("nothing is ticked to send")
         with open(ob.path, "rb") as f:
             body = f.read()
         if hashlib.sha256(body).hexdigest() != ob.sha256:
@@ -360,17 +361,17 @@ def send(name="", url=None, root=None, now=None, nonce=None, keep=None):
         try:
             got = requests.post(endpoint, data=body, headers=headers(ob, name), timeout=TIMEOUT, allow_redirects=False)
         except requests.RequestException:
-            return _logged(Result(OFFLINE), endpoint)
+            return _logged(Result(OFFLINE, nonce=ob.nonce), endpoint)
         if got.status_code not in (200, 201):
-            return _logged(Result(_outcome(got.status_code), status=got.status_code), endpoint)
+            return _logged(Result(_outcome(got.status_code), status=got.status_code, nonce=ob.nonce), endpoint)
         try:
             rid = got.json().get("id")
         except (ValueError, AttributeError):
             rid = None
         if not isinstance(rid, str) or not _ID.match(rid):
-            return _logged(Result(REFUSED, status=got.status_code), endpoint)
+            return _logged(Result(REFUSED, status=got.status_code, nonce=ob.nonce), endpoint)
         _sent(ob, rid, root, now)
-        return _logged(Result(SENT, rid, got.status_code), endpoint)
+        return _logged(Result(SENT, rid, got.status_code, nonce=ob.nonce), endpoint)
 
 
 def _logged(result, endpoint):

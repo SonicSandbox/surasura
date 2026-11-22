@@ -501,3 +501,154 @@ def test_a_swap_job_writes_its_cards_but_no_receipt_and_an_empty_one_none_either
     assert by_item[1][1] is False, "a swap job's cards are written with no receipt"
     assert by_item[2] == ({}, False), "a swap job with nothing to make writes no receipt either"
     assert by_item[3][1] is True, "an ordinary job beside them still writes its receipt"
+
+
+# --------------------------------------------------------------------------- #
+# The review's fixes (Kantan-SL 2)
+# --------------------------------------------------------------------------- #
+def _sentence_card(anki, note, word, line, card=None):
+    """An old card Connect didn't make: its line only in Anki's Sentence field."""
+    _old_card(anki, "ja", note, word)
+    anki.notes_[note]["fields"]["Sentence"] = {"value": line, "order": 2}
+    return anki
+
+
+def test_an_old_cards_line_anki_cant_read_now_waits_never_a_job_with_nothing_to_avoid(ledger, monkeypatch):
+    # Why: a card Connect didn't make has its line only in Anki; with Anki closed at the first look, an empty `avoid`
+    # kept for good would let the new card be cut from the very line the learner wanted gone.
+    lang, (word, old, other) = "ja", CASES["ja"]
+    _lists(lang)
+    _queued(lang, word)
+    asked = []
+    monkeypatch.setattr(swap, "choose_line", lambda l, w, avoid, *a, **k: asked.append(list(avoid)) or (7, other))
+    anki = _sentence_card(Anki(), 900, word, old)
+
+    def closed(_ids):
+        raise OSError("Anki closed")
+    anki.notes, opened = closed, anki.notes
+    swap.look(Steps(), ledger, lang, anki=anki, files=5)
+    assert swap._rows(ledger, "1 = 1")[0]["state"] == swap.ASKED and asked == [] and not ledger.jobs(lang)
+    anki.notes = opened
+    swap.look(Steps(), ledger, lang, anki=anki, files=5)
+    row = swap._rows(ledger, "1 = 1")[0]
+    assert row["state"] == swap.QUEUED and asked == [[old]] and json.loads(row["avoid"]) == [old]
+
+
+def test_two_greens_from_two_old_cards_avoid_both_lines_and_a_later_one_on_its_own_line_gets_its_own(ledger,
+                                                                                                    monkeypatch):
+    # Why: one new card serves every green of a word, so it must avoid every one of their old lines, not the first's.
+    lang = "ja"
+    read = cues.read(JA, lang)
+    word = CASES[lang][0]
+    lines = [c.text for c in read if "借り" in (c.text or "")][:2]
+    lines.append(next(c.text for c in read if c.text and "借り" not in c.text and len(c.text) > 6))   # the job's line
+    _lists(lang)
+    anki = _sentence_card(_sentence_card(Anki(), 900, word, lines[0]), 910, word, lines[1])
+    first, second = _queued(lang, word, card=9000, note=900), _queued(lang, word, card=9100, note=910)
+    asked = []
+    monkeypatch.setattr(swap, "choose_line", lambda l, w, avoid, *a, **k: asked.append(list(avoid)) or (7, lines[2]))
+    swap.look(Steps(), ledger, lang, anki=anki, files=5)
+    assert asked == [[lines[0], lines[1]]]
+    row = swap._rows(ledger, "state = ?", (swap.QUEUED,))[0]
+    assert json.loads(row["avoid"]) == [lines[0], lines[1]]
+    # a third green, asked while the job ran, whose old card holds the very line the job cut: not that card's swap
+    _sentence_card(anki, 920, word, lines[2])
+    third = _queued(lang, word, card=9200, note=920)
+    swap.make_card(lang, word, old_note=920, old_card=9200, ref=third["id"], ledger=ledger, wake=False,
+                   state_of=lambda w, r="": None)
+    _make_the_job(ledger, row)
+    swap.look(Steps(), ledger, lang, anki=anki, files=5)
+    by_ref = {r["ref"]: r for r in swap._rows(ledger, "1 = 1")}
+    assert by_ref[first["id"]]["state"] == by_ref[second["id"]]["state"] == swap.MADE
+    assert by_ref[third["id"]]["state"] != swap.MADE and by_ref[third["id"]]["new_note"] is None
+
+
+def test_greens_on_one_spelling_with_two_readings_are_two_swaps(ledger, monkeypatch):
+    # Why: 生 read なま and 生 read せい are two words; one's new card must never be called the other's.
+    a = {"word": "生", "reading": "ナマ"}
+    assert swap._same_word(a, {"word": "生", "reading": "ナマ"}) and swap._same_word(a, {"word": "生", "reading": ""})
+    assert not swap._same_word(a, {"word": "生", "reading": "セイ"})
+
+
+def test_a_swap_job_with_no_swap_record_sends_nothing(ledger, monkeypatch):
+    # Why: a job of kind swap read as an ordinary pick would mine the episode's whole list, with no receipt.
+    from app.connect import ledger as ledger_mod
+    with ledger.transaction():
+        job = ledger.queue_swap("ja", 7, "借りる", "", "2026-11-22T01:00:00Z")
+    swap.ensure(ledger)
+    assert ledger_mod.path() and swap.spec_of(job, "ja") == {"word": "", "reading": "", "avoid": [], "line": None}
+    read, tokens = _read("ja")
+    spec = swap.spec_of(job, "ja")
+    assert pick.pick(read, tokens, "ja", lambda key: False, mode="unknown", listed={}, carded=set(), swap=spec)["words"] == []
+
+
+def test_a_queue_entry_whose_write_failed_is_put_in_step_at_the_next_look(ledger, monkeypatch):
+    # Why: the swap queue file busy at the moment a card is made must not leave the learner's entry waiting for good.
+    lang, (word, _old, other) = "ja", CASES["ja"]
+    _lists(lang)
+    entry = _queued(lang, word)
+    monkeypatch.setattr(swap, "choose_line", lambda *a, **k: (7, other))
+    anki = _old_card(Anki(), lang)
+    swap.look(Steps(), ledger, lang, anki=anki, files=5)
+    _make_the_job(ledger, swap._rows(ledger, "1 = 1")[0])
+    real = swap_queue.made
+
+    def busy(*a, **k):
+        raise OSError("the swap queue is busy")
+    monkeypatch.setattr(swap_queue, "made", busy)
+    swap.look(Steps(), ledger, lang, anki=anki, files=5)
+    assert [e["state"] for e in swap_queue.load(lang) if e["id"] == entry["id"]] == ["waiting"]
+    monkeypatch.setattr(swap_queue, "made", real)
+    swap.look(Steps(), ledger, lang, anki=anki, files=5)
+    got = [e for e in swap_queue.load(lang) if e["id"] == entry["id"]][0]
+    assert got["state"] == "made" and got["made"]["note"] == 950
+
+
+def test_undo_after_you_deleted_the_new_card_puts_the_old_one_back_and_deletes_nothing(ledger, monkeypatch):
+    # Why: a new card already gone is nothing to delete; Undo must still give the learner their old card back.
+    anki, swap_id = _made_swap(ledger, monkeypatch)
+    del anki.notes_[950]
+    got = swap.undo(anki, ledger, "ja", swap_id, open_store=lambda: None)
+    assert got["undone"] and anki.deleted == []
+    assert (anki.cards_[9000]["queue"], anki.cards_[9000]["flags"]) == (0, 0)
+    assert swap.SWAP_TAG not in anki.notes_[900]["tags"] and _row(ledger, swap_id)["state"] == swap.UNDONE
+
+
+def test_undo_of_one_card_of_a_note_keeps_the_tag_its_other_swapped_card_still_needs(ledger, monkeypatch):
+    # Why: the tag is the note's; the note's other card is still swapped (suspended, its new card made).
+    anki, swap_id = _made_swap(ledger, monkeypatch)
+    with ledger.transaction():
+        ledger.conn.execute("INSERT INTO swaps (language, word, reading, old_note, old_card, by, state, new_note, "
+                            "tagged, at, updated_at) SELECT language, word, reading, old_note, 9001, by, state, 951, "
+                            "1, at, updated_at FROM swaps WHERE id = ?", (swap_id,))
+    swap.undo(anki, ledger, "ja", swap_id, open_store=lambda: None)
+    assert swap.SWAP_TAG in anki.notes_[900]["tags"] and anki.cards_[9000]["queue"] == 0
+
+
+def test_a_swap_undone_while_the_look_waited_for_anki_is_never_tagged_again(ledger, monkeypatch):
+    # Why: the look reads the swaps to tag, then waits for Anki's write lock that Undo holds; it must read them again.
+    lang, (word, _old, other) = "ja", CASES["ja"]
+    _lists(lang)
+    _queued(lang, word)
+    monkeypatch.setattr(swap, "choose_line", lambda *a, **k: (7, other))
+    anki = _old_card(Anki(), lang)
+    swap.look(Steps(), ledger, lang, anki=anki, files=5)
+    row = swap._rows(ledger, "1 = 1")[0]
+    _make_the_job(ledger, row)
+    anki.busy = True                                    # you review: the tag waits
+    swap.look(Steps(), ledger, lang, anki=anki, files=5)
+    anki.busy = False
+    import contextlib
+
+    @contextlib.contextmanager
+    def held(verb):                                     # Undo finished while this look waited on the lock
+        swap._set(ledger, row["id"], state=swap.UNDONE)
+        yield
+    anki.writer = held
+    swap._tag_waiting(ledger, lang, anki)
+    assert swap.SWAP_TAG not in anki.notes_[900]["tags"]
+
+
+def test_same_line_reads_past_colons_dashes_and_slashes():
+    assert swap.same_line("先生：借りてもいいですか", ["先生:借りてもいいですか"])
+    assert swap.same_line("A-借りたい/です", ["A借りたいです"])

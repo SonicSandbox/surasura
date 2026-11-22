@@ -92,10 +92,20 @@ def _rows(ledger, where, params=()):
 
 
 def _set(ledger, swap_id, **values):
-    values["updated_at"] = _now()
     with ledger.transaction():
-        ledger.conn.execute(f"UPDATE swaps SET {', '.join(f'{k} = ?' for k in values)} WHERE id = ?",
-                            list(values.values()) + [swap_id])
+        _update(ledger.conn, swap_id, **values)
+
+
+def _update(conn, swap_id, **values):
+    """`_set` inside a transaction the caller holds."""
+    values["updated_at"] = _now()
+    conn.execute(f"UPDATE swaps SET {', '.join(f'{k} = ?' for k in values)} WHERE id = ?",
+                 list(values.values()) + [swap_id])
+
+
+def _same_word(a, b):
+    """Two swaps of one word: the same lemma, and the same reading where both say one (生 なま is not 生 せい)."""
+    return a["word"] == b["word"] and (not a.get("reading") or not b.get("reading") or a["reading"] == b["reading"])
 
 
 # --------------------------------------------------------------------------- #
@@ -104,7 +114,7 @@ def _set(ledger, swap_id, **values):
 _TAGS = re.compile(r"<[^>]*>")
 _FURIGANA = re.compile(r"\[[^\]]*\]")          # Anki's kana in brackets: 漢字[かんじ]
 _SOUND = re.compile(r"\[sound:[^\]]*\]")
-_DROP = re.compile(r"[\s　「」『』（）()【】〈〉《》“”\"'‘’…‥・、，,。．.！!？?～〜ー―—♪]+")
+_DROP = re.compile(r"[\s　「」『』（）()【】〈〉《》“”\"'‘’…‥・、，,。．.！!？?～〜ー―—–\-:;/♪]+")
 
 
 def norm_line(text):
@@ -149,12 +159,12 @@ def states(language):
     tokenizer, script = verbs._reading(loaded, language)
     ignored = verbs._ignored(language, script)
     known = verbs._known_test(language, tokenizer, script)
-    return lambda word: "ignored" if word in ignored else ("known" if known((word, "")) else None)
+    return lambda word, reading="": "ignored" if word in ignored else ("known" if known((word, reading or "")) else None)
 
 
-def word_state(language, word):
+def word_state(language, word, reading=None):
     """`states` for one word."""
-    return states(language)(word)
+    return states(language)(word, reading or "")
 
 
 # --------------------------------------------------------------------------- #
@@ -176,8 +186,13 @@ def make_card(language, word, reading=None, old_note=None, old_card=None, line_i
         if ref is not None:
             had = _rows(ledger, "language = ? AND ref = ?", (language, str(ref)))
             if had:
-                return {"id": had[-1]["id"], "state": had[-1]["state"], "why": had[-1]["why"], "new": False}
-        why = state_of(word) if state_of is not None else word_state(language, word)
+                last = had[-1]
+                if last["state"] == DROPPED:            # the queue's entry still waits: its earlier write failed
+                    _queue_drop(language, ref, last["why"])     # (only a waiting entry moves: idempotent)
+                elif last["state"] in (MADE, UNDONE) and last.get("new_note"):
+                    _queue_made(language, ref, last["new_note"])
+                return {"id": last["id"], "state": last["state"], "why": last["why"], "new": False}
+        why = state_of(word, reading or "") if state_of is not None else word_state(language, word, reading)
         now = _now()
         with ledger.transaction():
             cur = ledger.conn.execute(
@@ -332,13 +347,16 @@ def _resolve_line_id(steps, language, text):
 # --------------------------------------------------------------------------- #
 def _old_lines(ledger, row, anki=None):
     """The old card's sentence(s): Connect's record of the note (`outcomes`), else the note's Sentence field in Anki (a
-    card Connect didn't make)."""
+    card Connect didn't make); [] when neither has one (a deleted card Connect didn't make), None when Anki can't be read
+    now: the swap then waits for a look that can (never a new card with nothing to avoid)."""
     out = []
     note = row.get("old_note")
     if note is not None:
         out = [r[0] for r in ledger.conn.execute("SELECT sentence FROM outcomes WHERE note_id = ? AND outcome = 'made' "
                                                  "AND sentence IS NOT NULL", (int(note),)) if r[0]]
-        if not out and anki is not None:
+        if not out and anki is None:
+            return None
+        if not out:
             try:
                 for info in anki.notes([int(note)]) or ():
                     fields = info.get("fields") or {}
@@ -352,6 +370,21 @@ def _old_lines(ledger, row, anki=None):
                                 break
             except Exception:
                 log.info("Swap: the old card's sentence couldn't be read from Anki", exc_info=True)
+                return None
+    return out
+
+
+def _avoid(ledger, row, anki=None):
+    """Every line the swap's new card must not be cut from: its old card's, and those of the other asks of the same word
+    still open (one new card serves them all) -> a list, or None while one of them can't be read."""
+    out = []
+    rows = [row] + [r for r in _rows(ledger, "language = ? AND word = ? AND state IN (?, ?) AND id != ?",
+                                     (row["language"], row["word"], ASKED, WAITS, row["id"])) if _same_word(r, row)]
+    for r in rows:
+        lines = json.loads(r["avoid"]) if r.get("avoid") else _old_lines(ledger, r, anki)
+        if lines is None:
+            return None
+        out += [x for x in lines if x not in out]
     return out
 
 
@@ -376,7 +409,7 @@ def look(steps, ledger, language, store_id=None, anki=None, files=None):
     anki = anki if anki is not None else _anki(steps)
     for row in _rows(ledger, "language = ? AND state = ?", (language, QUEUED)):
         try:
-            _finish(ledger, language, row, out)
+            _finish(ledger, language, row, out, anki=anki)
         except Exception:
             log.warning("Swap: swap %s wasn't finished this look", row["id"], exc_info=True)
     state_of = None
@@ -431,15 +464,18 @@ def _due(row, count):
 
 def _start(steps, ledger, language, row, store_id, anki, out, count=None, state_of=None):
     from app.connect import ledger as ledger_mod
-    why = (state_of or states(language))(row["word"])
+    why = (state_of or states(language))(row["word"], row.get("reading") or "")
     if why:
         _set(ledger, row["id"], state=DROPPED, why=why)
         _queue_drop(language, row["ref"], why)
         out["dropped"] += 1
         return
-    if _rows(ledger, "language = ? AND word = ? AND state = ? AND id != ?", (language, row["word"], QUEUED, row["id"])):
+    if any(_same_word(r, row) for r in _rows(ledger, "language = ? AND word = ? AND state = ? AND id != ?",
+                                             (language, row["word"], QUEUED, row["id"]))):
         return                              # two greens for one word: the first's card serves both (`_finish`)
-    avoid = json.loads(row["avoid"]) if row.get("avoid") else _old_lines(ledger, row, anki)
+    avoid = _avoid(ledger, row, anki)
+    if avoid is None:
+        return                              # an old card's sentence can't be read now: the next look
     tried = json.loads(row["tried"]) if row.get("tried") else []
     picked = _resolve_line_id(steps, language, row["line_id"]) if row.get("line_id") else None
     if picked is not None and (same_line(picked[1], avoid) or picked[0] in tried):
@@ -458,17 +494,18 @@ def _start(steps, ledger, language, row, store_id, anki, out, count=None, state_
         out["waits"] += 1
         return
     item_id, text = picked
-    with ledger.transaction():
+    with ledger.transaction():              # the job and its swap together: a job of kind swap never without its record
         job_id = ledger.queue_swap(language, item_id, row["word"], row.get("reading") or "", row["at"],
                                    store_id=store_id)
+        if job_id is not None:
+            _update(ledger.conn, row["id"], state=QUEUED, why=None, item_id=item_id, line=text, job_id=job_id,
+                    avoid=json.dumps(avoid, ensure_ascii=False))
     if job_id is None:
         return                              # the episode has an open job: tried again after it
-    _set(ledger, row["id"], state=QUEUED, why=None, item_id=item_id, line=text, job_id=job_id,
-         avoid=json.dumps(avoid, ensure_ascii=False))
     out["queued"] += 1
 
 
-def _finish(ledger, language, row, out, state_of=None):
+def _finish(ledger, language, row, out, state_of=None, anki=None):
     from app.connect.ledger import OPEN
     job = ledger.job_by_id(row["job_id"]) if row.get("job_id") else None
     if job is not None and job.get("state") in OPEN:
@@ -479,15 +516,21 @@ def _finish(ledger, language, row, out, state_of=None):
             if o.get("outcome") == "made" and o.get("note_id") and o.get("word") == row["word"]:
                 note = int(o["note_id"])
     if note is not None:
-        twins = [row] + _rows(ledger, "language = ? AND word = ? AND state IN (?, ?) AND id != ?",
-                              (language, row["word"], ASKED, WAITS, row["id"]))
+        # another ask of the same word shares its card, unless the card's line is that ask's own old card's, or can't be
+        # read now (it then gets its own job: never the same line)
+        twins = [row]
+        for r in _rows(ledger, "language = ? AND word = ? AND state IN (?, ?) AND id != ?",
+                       (language, row["word"], ASKED, WAITS, row["id"])):
+            lines = json.loads(r["avoid"]) if r.get("avoid") else _old_lines(ledger, r, anki)
+            if _same_word(r, row) and lines is not None and not same_line(row.get("line") or "", lines):
+                twins.append(r)
         for r in twins:
             _set(ledger, r["id"], state=MADE, why=None, new_note=note, job_id=row["job_id"], item_id=row["item_id"],
                  line=row["line"])
             _queue_made(language, r["ref"], note)
             out["made"] += 1
         return
-    why = (state_of or states(language))(row["word"])
+    why = (state_of or states(language))(row["word"], row.get("reading") or "")
     if why:
         _set(ledger, row["id"], state=DROPPED, why=why)
         _queue_drop(language, row["ref"], why)
@@ -505,14 +548,15 @@ def _finish(ledger, language, row, out, state_of=None):
 def _tag_waiting(ledger, language, anki):
     """The old cards of made swaps tagged `SWAP_TAG` (Swap's only write to them), under Anki's write lock and never while
     you review; Anki closed or busy: looked at again. A deleted old card: nothing to tag."""
-    rows = [r for r in _rows(ledger, "language = ? AND state = ? AND tagged = 0", (language, MADE))]
-    notes = sorted({int(r["old_note"]) for r in rows if r.get("old_note")})
-    if anki is None or not rows:
+    where = ("language = ? AND state = ? AND tagged = 0", (language, MADE))
+    if anki is None or not _rows(ledger, *where):
         return
     try:
         with anki.writer(VERB):
             if anki.reviewing():
                 return
+            rows = _rows(ledger, *where)    # again under the lock: an Undo that held it may have undone one
+            notes = sorted({int(r["old_note"]) for r in rows if r.get("old_note")})
             have = {int(n["noteId"]) for n in anki.notes(notes) if isinstance(n, dict) and n.get("noteId")} \
                 if notes else set()
             if have:
@@ -570,8 +614,9 @@ def undo(anki, ledger, language, swap_id, open_store=None):
         raise tidy.Refused(NOT_MADE)
     others = _rows(ledger, "language = ? AND new_note = ? AND state = ? AND id != ?",
                    (language, row["new_note"], MADE, row["id"]))
-    if not others and not row.get("tidy_id"):       # a card two greens share goes with the last of them
-        try:
+    gone = not any(isinstance(n, dict) and n.get("noteId") for n in anki.notes([int(row["new_note"])]) or ())
+    if not others and not row.get("tidy_id") and not gone:     # a card two greens share goes with the last of them;
+        try:                                                    # one you deleted yourself: nothing to delete
             tidied = tidy.run(anki, ledger, language, [int(row["new_note"])], why=BY_SWAP, open_store=open_store)
         except tidy.Refused as e:
             raise tidy.Refused(KEPT if e.say == tidy.ALL_KEPT else e.say) from None
@@ -579,12 +624,13 @@ def undo(anki, ledger, language, swap_id, open_store=None):
     with anki.writer(VERB):
         if anki.reviewing():
             raise tidy.Reviewing()
-        _old_back(anki, row)
-    _set(ledger, row["id"], state=UNDONE, undone_at=_now())
+        _old_back(anki, row, keep_tag=bool(_rows(ledger, "language = ? AND old_note = ? AND state = ? AND id != ?",
+                                                 (language, row["old_note"], MADE, row["id"]))))
+        _set(ledger, row["id"], state=UNDONE, undone_at=_now())    # under the lock: a look never tags it again
     return {"undone": True, "word": row["word"]}
 
 
-def _old_back(anki, row):
+def _old_back(anki, row, keep_tag=False):
     cards = [int(row["old_card"])] if row.get("old_card") else []
     if row.get("old_note") and not cards:
         for info in anki.notes([int(row["old_note"])]) or ():
@@ -596,12 +642,13 @@ def _old_back(anki, row):
         anki.unsuspend(back)
     if green:
         anki.set_flag(green, 0)
-    if row.get("old_note") and infos:
+    if row.get("old_note") and infos and not keep_tag:      # the note's other card still swapped: its tag stays
         anki.remove_tags([int(row["old_note"])], SWAP_TAG)
 
 
 def act_undo(settings, language, swap_id):
-    """*Undo* on a swap (Needs you) -> {"undone": True} or {"why": plain words}. Never raises."""
+    """*Undo* on a swap (Needs you) -> {"undone": True} or {"why": plain words}; anything else (a disk or ledger error)
+    raises to the window's press, which says it failed."""
     from app import anki_connect, locks
     from app.connect import library
     from app.connect.ledger import Ledger, TooNew, path
@@ -648,7 +695,7 @@ def spec_of(job_id, language):
     finally:
         conn.close()
     if row is None:
-        return None
+        return {"word": "", "reading": "", "avoid": [], "line": None}     # a swap job with no record: nothing to send
     word, reading, avoid, line = row
     return {"word": word, "reading": reading or "", "avoid": json.loads(avoid) if avoid else [], "line": line}
 

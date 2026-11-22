@@ -1050,6 +1050,28 @@ ADDED_TABLES_SQL = (
       made_at  TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS made_lines_item ON made_lines (item_id)",
 )
+# Kura-GS (3.0.18; Sonic 2026-11-21, the journey's round 8: how much of an item the learner understood when it was
+# added vs now): what the learner understood of each item, then — a Generate's own figures for the file (its
+# progressive pass, the window's *% known*: `known` tokens known before any file over `counted`; `unknown`, the words
+# in it not known, each once) under one of three kinds: 'added' — the first Generate that counted it (`prior` 1: it
+# was in the library before the snapshots began, meta GROWTH_SINCE, so it is when they began, never a made-up *when
+# you added it*); 'done' — at its ✓ Done or its move to Finished, whichever came first (`_snap_done`: the newest
+# Generate's figures, then); 'last' — the newest Generate's (what a mark takes; never in the copy). 'added' and 'done'
+# are written once, never by an Undo, and outlive Remove (Put back keeps the id; an item added again is a new id, so
+# it starts fresh). A table added without a schema change (above): an older Surasura never reads it. The store only
+# records them (`record_growth`, `growth_of`); the Generate computes them, the window and the journey show them.
+GROWTH = "growth"
+GROWTH_SINCE = "growth_since"     # meta: when this store began keeping the snapshots (an item added before: `prior`)
+GROWTH_SQL = """CREATE TABLE IF NOT EXISTS growth (
+      item_id INTEGER NOT NULL,
+      kind    TEXT NOT NULL,
+      known   INTEGER NOT NULL,
+      counted INTEGER NOT NULL,
+      unknown INTEGER NOT NULL,
+      at      TEXT NOT NULL,
+      prior   INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (item_id, kind))"""
+ADDED_TABLES_SQL += (GROWTH_SQL,)
 
 # Indexes added without a schema change (SRC perf): an index changes no row and an older Surasura reads the store as it
 # was; a new store makes them in SCHEMA_SQL, an existing one at its first open by a writer (`_added_indexes`)
@@ -1239,13 +1261,14 @@ GROUP_REFUSED = "A group lives in Current, Soon or Goal: move these there first.
 # Every table but meta and items goes out in the copy generically (fields + rows, §6.7); `works` without its derived
 # columns (WORK_NOT_COPIED: a rebuild re-derives them)
 COPY_TABLES = ("roots", "pieces", "trash", "exclusions", "anki_links", "anki_changes", "pairings",
-               "placement_log", "made_words", "made_lines", "works")
+               "placement_log", "made_words", "made_lines", "works", GROWTH)     # growth: its 'last' rows stay out
 WORK_NOT_COPIED = ("search_key", "feed_in")
 # Meta keys the copy carries when the store holds them (beside epoch, log_seq, mine_line, arrivals_on and the readers)
 COPY_META_KEYS = ("soon_line", "auto_band", "rename_asks", "kept_apart", "show_groups",   # LM2
                   "keep_watched",                                                          # W-1
                   "audiobook_answers",                                                     # Hon, H-8
-                  "side_by_side")                                                          # Kyou-A
+                  "side_by_side",                                                          # Kyou-A
+                  GROWTH_SINCE)                                                            # Kura-GS
 ITEM_FIELDS = ("id", "root_id", "rel_path", "tier", "availability", "size", "mtime_ns", "added_at",
                "graduated_at", "piece_id", "watched", "mined_at", "pinned", "in_learning_order", "work_id",
                "mine_asked", "watched_at")     # watched_at: Kura-WD (None where the store has no column yet)
@@ -2385,8 +2408,9 @@ class Store:
         process inside a write already) is left as it is: a later open makes them. Never a version or data change.
         A4K-7: the copies' hash column and its trigger too (ADDED_HASH_SQL), the column only where it isn't yet.
         F13b: the origins' change log and its triggers (ORIGIN_LOG_SQL), with its reset mark. Kura-WD: the watched
-        date's column and its index (ADDED_DATES_SQL), as the hash's."""
-        names = ("pairings",) + ADDED_INDEXES + (ADDED_HASH, ADDED_DATES) + ORIGIN_LOG
+        date's column and its index (ADDED_DATES_SQL), as the hash's. Kura-GS: the growth snapshots' table, and when
+        this store began them (GROWTH_SINCE: every item already in it is `prior`)."""
+        names = ("pairings",) + ADDED_INDEXES + (ADDED_HASH, ADDED_DATES, GROWTH) + ORIGIN_LOG
         try:
             have = {r[0] for r in self.conn.execute(f"SELECT name FROM sqlite_master WHERE name IN "
                                                     f"({','.join('?' * (len(names) + len(REPLACED)))})",
@@ -2407,6 +2431,10 @@ class Store:
                     if sql.startswith("ALTER") and self._dates_column():   # another open made it meanwhile
                         continue
                     self.conn.execute(sql)
+                if GROWTH not in have:
+                    self.conn.execute(GROWTH_SQL)
+                    if GROWTH_SINCE not in self._meta():
+                        self._set_meta({GROWTH_SINCE: _now()})
                 if not have.issuperset(ORIGIN_LOG) or stale:     # (its reset mark only with a trigger made)
                     for sql in ORIGIN_LOG_SQL:
                         self.conn.execute(sql)
@@ -4038,6 +4066,7 @@ class Store:
             if tier == "graduated":
                 self.conn.executemany("UPDATE items SET graduated_at = ? WHERE id = ?",
                                       [(_now(), i) for i in moving])
+                self._snap_done(moving, _now())                  # Kura-GS: what it understood as it finished
                 # --- W3.2 (IK-L2-3, A2 #28): an arrival to Finished is recorded as already watched (undone with it)
                 came = [i for i in moving if rows[i][1] == "arrivals"]
                 if came:
@@ -6022,7 +6051,25 @@ class Store:
         dated = [(i, "watched_at", held[i], stamp if on else None) for i, on in marks.items()
                  if i in held and held[i] != (stamp if on else None)]
         self.conn.executemany("UPDATE items SET watched_at = ? WHERE id = ?", [(new, i) for i, _c, _o, new in dated])
+        self._snap_done([i for i, _c, _o, new in dated if new is not None], stamp)      # Kura-GS
         return dated
+
+    def _snap_done(self, ids, at):
+        """Kura-GS: each of `ids` just marked watched or moved to Finished keeps what the newest Generate counted of it
+        then (its 'last') as its 'done' snapshot, at `at` — once: a later mark (a re-watch, a Finished after a Done)
+        keeps the first, and an Undo leaves it (written once, never by an Undo). An item no Generate counted yet
+        has none. Inside the caller's write; a failure here is its own (SQLite takes back the one statement), never
+        the mark's or the move's."""
+        try:
+            if not ids or not self._has_table(GROWTH):
+                return
+            for part in _chunks(list(ids), 500):
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO growth (item_id, kind, known, counted, unknown, at, prior) SELECT item_id, "
+                    f"'done', known, counted, unknown, ?, 0 FROM growth WHERE kind = 'last' AND item_id IN "
+                    f"({','.join('?' * len(part))})", [at] + part)
+        except sqlite3.Error:
+            pass
 
     def _moves_counted(self, ids):
         """W-1: does a watched mark (set or taken back) on `ids` move what counts? Only while `keep_watched` is off,
@@ -7608,6 +7655,78 @@ class Store:
             if values:
                 self._set_meta(values)
 
+    def record_growth(self, figures):
+        """Kura-GS: a Generate's figures for the files it counted, {rel_path: (known, counted, unknown)} (its
+        progressive pass: the tokens known before any file, the tokens counted, the words not known, each once) —
+        each item's 'last'; an item with no 'added' yet takes them as its 'added' too, `prior` when the store held it
+        before it began the snapshots (GROWTH_SINCE; a store with no such date yet starts them now: every item
+        `prior`). A file the store no longer holds (moved or removed meanwhile) is passed by. Bookkeeping: no version
+        moves; a new 'added' sets `copy_dirty` (the copy carries it). Only what changed is written; the files read to
+        items in a read transaction first, so the write lock is held for the writes alone. -> the 'added' written."""
+        if not figures:
+            return 0
+        with self._reading():
+            have = self._has_table(GROWTH)
+            since = self._meta().get(GROWTH_SINCE)
+            items = {key: (i, added) for key, i, added in self.conn.execute("SELECT rel_key, id, added_at FROM items")}
+            last = {r[0]: r[1:] for r in self.conn.execute(
+                "SELECT item_id, known, counted, unknown FROM growth WHERE kind = 'last'")} if have else {}
+            added = {r[0] for r in self.conn.execute(
+                "SELECT item_id FROM growth WHERE kind = 'added'")} if have else set()
+        at = _now()
+        put_last, put_added = [], []
+        for rel, fig in figures.items():
+            hit = items.get(path_key(rel))
+            if hit is None:
+                continue
+            item, added_at = hit
+            fig = (int(fig[0]), int(fig[1]), int(fig[2]))
+            if last.get(item) != fig:
+                put_last.append((item,) + fig + (at,))
+            if item not in added:
+                put_added.append((item,) + fig + (at, 0 if since is not None and (added_at or "") > since else 1))
+        if not put_last and not put_added:
+            return 0
+        with self._writing():
+            self.conn.execute(GROWTH_SQL)
+            meta = self._meta()
+            values = {}
+            if GROWTH_SINCE not in meta:
+                values[GROWTH_SINCE] = at
+            self.conn.executemany("INSERT OR REPLACE INTO growth (item_id, kind, known, counted, unknown, at) "
+                                  "VALUES (?, 'last', ?, ?, ?, ?)", put_last)
+            made = self.conn.executemany("INSERT OR IGNORE INTO growth (item_id, kind, known, counted, unknown, at, "
+                                         "prior) VALUES (?, 'added', ?, ?, ?, ?, ?)", put_added).rowcount
+            if made:
+                values["copy_dirty"] = int(meta.get("copy_dirty") or 0) + 1
+            if values:
+                self._set_meta(values)
+        return made
+
+    def growth_of(self, ids=None, kinds=("added", "done")):
+        """Kura-GS: {item id: {kind: {"known", "counted", "unknown", "at", "prior"}}} of every item with a snapshot of
+        `kinds` (of `ids` only, when given) — 'added' (`prior`: kept from when the snapshots began, not from its add),
+        'done' (its ✓ Done or its move to Finished), 'last' (the newest Generate's) on asking. A Remove's item keeps
+        its own (Put back brings them back). One read transaction; {} on a store without the table yet."""
+        with self._reading():
+            if not self._has_table(GROWTH):
+                return {}
+            kinds = tuple(kinds)
+            sql = (f"SELECT item_id, kind, known, counted, unknown, at, prior FROM growth "
+                   f"WHERE kind IN ({','.join('?' * len(kinds))})")
+            rows = []
+            if ids is None:
+                rows = self.conn.execute(sql, kinds).fetchall()
+            else:
+                for part in _chunks(list(dict.fromkeys(ids)), 500):
+                    rows += self.conn.execute(f"{sql} AND item_id IN ({','.join('?' * len(part))})",
+                                              kinds + tuple(part)).fetchall()
+        out = {}
+        for item, kind, known, counted, unknown, at, prior in rows:
+            out.setdefault(item, {})[kind] = {"known": known, "counted": counted, "unknown": unknown, "at": at,
+                                              "prior": bool(prior)}
+        return out
+
     def record_planned(self, order_version, pins_version):
         """At the end of a successful re-plan (2.6; Haya's E2.2). Keeps the larger values."""
         with self._writing():
@@ -7768,19 +7887,27 @@ class Store:
                         return self._skipped(cmd, max(1, len(change.trash_ids)))
                 rows = self.trash_rows(change.trash_ids)
                 waiting = [r["id"] for r in rows if not r["restored_at"]]
+                replaced = getattr(change, "replaced", None)            # Kura-AB5: a new version's Replace
                 if not waiting:
                     if folder is not None:
                         out = self._change(cmd, "undo")
                         out.folder_dropped = True
                         return out
-                    return self._skipped(cmd, len(change.trash_ids))
-                explicit = {it["id"]: it.get("explicit", 1) for it in change.items}
-                out = self.restore(waiting, rel_paths, by="undo", kind="undo",
-                                   explicit_of=lambda i: explicit.get(i, 1))
-                out.folder_dropped = folder is not None
+                    if replaced is None:
+                        return self._skipped(cmd, len(change.trash_ids))
+                    out = self._change(cmd, "undo")     # Kura-AB7 (R8): every old part put back first — its rest still
+                else:                                   # undone below (the new parts' title and place, the audiobook)
+                    explicit = {it["id"]: it.get("explicit", 1) for it in change.items}
+                    out = self.restore(waiting, rel_paths, by="undo", kind="undo",
+                                       explicit_of=lambda i: explicit.get(i, 1))
+                    out.folder_dropped = folder is not None
                 skipped = [t for t in change.trash_ids if t not in waiting]
-                if getattr(change, "replaced", None) is not None:      # Kura-AB5: a new version's Replace
-                    skipped += self._undo_replaced(cmd, change.replaced)
+                if replaced is not None:
+                    left = self._undo_replaced(cmd, replaced)            # (the ids it skipped: changed since)
+                    undone = [i for i, _w, _n in replaced.works["items"]] + (
+                        [replaced.audiobook["item"]] if replaced.audiobook else [])
+                    out.replaced_back = any(i not in left for i in undone)   # a new part or the pair back (`_refused`)
+                    skipped += left
             elif kind == "relink":
                 out, skipped = self._undo_relink(cmd, change)
             elif kind in ("finish", "put_back_finished"):
@@ -8005,7 +8132,8 @@ class Store:
             for name in COPY_TABLES:
                 if name not in present:                            # an added table this store hasn't made yet
                     continue
-                c = self.conn.execute(f"SELECT * FROM {name} ORDER BY rowid")
+                c = self.conn.execute(f"SELECT * FROM {name}" + (" WHERE kind != 'last'" if name == GROWTH else "")
+                                      + " ORDER BY rowid")
                 fields = [d[0] for d in c.description]
                 keep = [n for n, f in enumerate(fields) if not (name == "works" and f in WORK_NOT_COPIED)]
                 tables[name] = {"fields": [fields[n] for n in keep],
@@ -8784,7 +8912,7 @@ def _write_image(store, image, meta):
             col = t["fields"].index("item_id")
             kept = {"fields": t["fields"], "rows": [r for r in t["rows"] if r[col] in have]}
             _insert_rows(conn, name, kept)
-    for name in ("made_words", "made_lines"):                   # outlive Remove: an item or its trash row
+    for name in ("made_words", "made_lines", GROWTH):           # outlive Remove: an item or its trash row
         t = tables.get(name)
         if t and t["rows"]:
             col = t["fields"].index("item_id")
@@ -8802,6 +8930,8 @@ def _write_image(store, image, meta):
     log_high = conn.execute("SELECT COALESCE(MAX(id), 0) FROM placement_log").fetchone()[0]
     _set_seq(conn, "placement_log", max([log_high, int(meta.get("log_seq", 0))] + [int(m) for m in marks]))
     store._set_meta(meta)
+    if GROWTH_SINCE not in meta:            # Kura-GS: a copy from before the snapshots — its items are all `prior`
+        store._set_meta({GROWTH_SINCE: now})                    # (an item it carried without a date is `now`'s)
     _seed_schema2(store, int(meta["state_version"]))           # works, pieces, search keys, the feed (L2.2 02 §2.6)
 
 
@@ -9077,8 +9207,8 @@ def _rebuild(store, user_files_dir, doc, read_stat, keep_store_id=None):
         if keep_store_id:
             for sql in ADDED_TABLES_SQL:                         # an added table this store may not have made yet
                 store.conn.execute(sql)
-            for name in ("anki_links", "pairings", "made_words", "made_lines", "placement_log", "trash", "exclusions",
-                         "anki_changes", "gone", "items", "pieces", "works", "roots", "meta"):
+            for name in ("anki_links", "pairings", "made_words", "made_lines", GROWTH, "placement_log", "trash",
+                         "exclusions", "anki_changes", "gone", "items", "pieces", "works", "roots", "meta"):
                 store.conn.execute(f"DELETE FROM {name}")
         _write_image(store, image, meta)
         _line_after_build(store, meta.get("soon_line"))       # a 3.0 copy's line, else its tiers'
@@ -9332,6 +9462,7 @@ def _store_reimport(self, doc, read_stat, own=False, force=False):
         for it in items.values():
             if it.new_tier == "graduated":
                 self.conn.execute("UPDATE items SET graduated_at = ? WHERE id = ?", (now, it.id))
+        self._snap_done([it.id for it in items.values() if it.new_tier == "graduated"], now)   # Kura-GS
         cmd.touch(changed_tiers | {it.tier for it in items.values() if it.new_entry is not None or it.new_rel})
         self._set_meta({"last_export_stat": read_stat,
                         "reimport_note": _dumps({"count": count, "total": total, "at": now})})
@@ -15924,7 +16055,8 @@ RESET_WAIT = 2.0                  # s: another writer's commit is waited for thi
 # Emptied by the reset; `roots` stays (the folders he reads, their ids kept), and so does every exclusion but Remove's
 # — but never Connect's never-again sets (`made_words`, `made_lines`, G1.3-4: a word whose card he deleted is never made
 # again; item ids are never reused, so their stale ids meet no new item: I-R1 / LF-5)
-RESET_TABLES = ("anki_links", "pairings", "placement_log", "trash", "anki_changes", "gone", "items", "pieces", "works")
+RESET_TABLES = ("anki_links", "pairings", "placement_log", "trash", "anki_changes", "gone", "items", "pieces", "works",
+                GROWTH)          # Kura-GS: a fresh library's snapshots begin with it (`_reset_tables`' GROWTH_SINCE)
 # His library options (W-1's `keep_watched` too), and the log's numbering (+ readers)
 RESET_KEEP_META = ("mine_line", "arrivals_on", "keep_watched", "log_seq")
 # Why a reset is refused (nothing changed), in the window's words
@@ -16327,6 +16459,7 @@ def _reset_tables(store):
     for key in ("order_version", "availability_version", "pins_version"):
         meta[key] = int(old.get(key) or 0) + 1
     meta.update({k: v for k, v in old.items() if k in RESET_KEEP_META or k.startswith("reader")})
+    meta[GROWTH_SINCE] = _now()             # Kura-GS: what comes in from here is the fresh library's own
     store._set_meta(meta)
     _seed_schema2(store, meta["state_version"])         # the feed's floor and the search fold, as every build's
     _line_after_build(store)                            # nothing in Current: 25 (Q2-4)

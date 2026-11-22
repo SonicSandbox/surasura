@@ -283,7 +283,7 @@ def test_reset_journey_puts_every_row_back_to_its_default(old_ja, v3):
     out = catalog.reset_changes(catalog.rows("reading"), settings, "ja")
     assert out == {"journey_pitch": "shown", "journey_meanings": "en", "journey_word_size": "m",
                    "journey_sentence_size": "m", "journey_keys": "qwerty", "journey_first_meeting": True,
-                   "theme": "Dark Flow", "source_display": "icon", "open_app_mode": False,
+                   "theme": "Dark Flow", "source_display": "icon",
                    "word_search_enabled": True, "word_search_category": "all"}
     # Sentences per word lives in Cards › Sentences: its own section's reset
     assert "logic.context.max_contexts" not in out

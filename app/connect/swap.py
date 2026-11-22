@@ -114,7 +114,7 @@ def _same_word(a, b):
 _TAGS = re.compile(r"<[^>]*>")
 _FURIGANA = re.compile(r"\[[^\]]*\]")          # Anki's kana in brackets: 漢字[かんじ]
 _SOUND = re.compile(r"\[sound:[^\]]*\]")
-_DROP = re.compile(r"[\s　「」『』（）()【】〈〉《》“”\"'‘’…‥・、，,。．.！!？?～〜ー―—–\-:;/♪]+")
+_DROP = re.compile(r"[\s　「」『』（）()【】〈〉《》“”\"'‘’…‥・、，,。．.！!？?～〜ー―—–\-:;/]+")
 
 
 def norm_line(text):

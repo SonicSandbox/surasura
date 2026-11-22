@@ -251,6 +251,8 @@ LEFT_WHY = {"not_found": "Anki Miner couldn't find it in its line",
             "refused": "Anki refused its card",
             "skipped": "you skipped it"}
 LEFT_OTHER = "Anki Miner made no card for it"      # any other answer it gave
+# Kantan-SD (the sentence dial's Best, PROVISIONAL words): a word of this episode cut from another episode's line
+LEFT_ELSEWHERE = "its card comes from a better sentence elsewhere"
 
 
 def left_of(language, item_ids, db_path=None):

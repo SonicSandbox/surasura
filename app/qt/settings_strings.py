@@ -267,8 +267,9 @@ ROWS = {
     # Kantan-SD (PROVISIONAL words): the sentence dial — how a card's sentence is chosen, in plain words
     "connect_sentence_dial": ("Card sentences",
                               "Best looks through your whole library: first a sentence with no other new word, then "
-                              "one whose video is there, then one with words you're still learning and from a show "
-                              "you saw lately. Nearest keeps the episode's own line.",
+                              "one whose video is there (a book's too, with its audiobook or the AI voice on), then "
+                              "one with words you're still learning and from a show you saw lately. Nearest keeps the "
+                              "episode's own line.",
                               "Best: the clearest sentence in your library. Nearest: the episode's own line.",
                               "sentence dial best nearest which sentence card sentence line example context young "
                               "words recently learned i+1 better sentence"),

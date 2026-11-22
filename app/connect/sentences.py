@@ -7,8 +7,9 @@ Two choices (`connect_sentence_dial`, Connect's setting; `DIALS`):
 - **Nearest** — the episode's own sentence. A line with another new word in it becomes i+1 by the other word's card
   coming first (Junban's order: nothing here orders cards); a better sentence is the learner's Swap.
 - **Best** (the default, PROVISIONAL) — the best sentence anywhere in the library: understandable first (the fewest
-  other words you don't know: i+1 before i+2), then one whose media can be cut (`reach`: its video or audio is there;
-  a book's or a text's sentence has no audio and comes after), then the weight — the young words it also holds and the
+  other words you don't know: i+1 before i+2), then how it is heard (`heard`: its own clip first — a video's, an
+  audio file's, a book's paired audiobook —, then the AI voice's, then none: a book's or a text's line with neither
+  comes last, and is no choice for a caller that cuts media), then the weight — the young words it also holds and the
   context you remember (`context`) — then the episode being mined (a tie stays where it is), then the corpus's own
   order (a sentence of a good length first: `sentence_corpus.collect`).
 
@@ -42,9 +43,14 @@ SOON_WEIGHT = 0.15          # Soon past the episodes ahead; Goal, New arrivals: 
 EARLIER_WEIGHT = 0.1        # finished *Earlier* (no date)
 MOST_FILES = 200            # a word's first files only, in context order (a common word is in nearly every file)
 
+# How a sentence is heard (`heard`): its own clip, the AI voice's (Sonic 2026-11-22: a book with no audiobook counts
+# when the AI voice can make its audio), or not at all
+REAL, AI_VOICE, SILENT = "real", "ai", None
+
 # One sentence a word can be cut from: its file and item (None: no library item), the text, how many other words in it
-# you don't know, its weight (young words + context), whether it is the episode being mined, whether it has audio
-Choice = namedtuple("Choice", "file item_id text others weight here audio")
+# you don't know, its weight (young words + context), whether it is the episode being mined, whether it is heard at
+# all (`audio`) and whether that is the AI voice's (`ai`)
+Choice = namedtuple("Choice", "file item_id text others weight here audio ai", defaults=(False,))
 
 
 def dial_of(settings):
@@ -113,9 +119,31 @@ def context(seen, place=None, tier=None, now=None):
     return SOON_WEIGHT if tier == "soon" else 0.0
 
 
-def _library(language, store=None):
-    """{normalised path: (item id, context, audio)} for the library's items, read once: the store's items, their
-    show's dates (`seen_dates`), their own (`watched_dates`) and the order ahead (`library.ahead`). {} with no store."""
+def ai_voice(settings, language):
+    """Can the AI voice (the beta `modules.irodori`) make a sentence's audio — switched on, installed, this language?
+    The one place the picker knows of it (its public `on`, read lazily): the folder absent or failing -> False."""
+    try:
+        from modules import irodori
+        return bool(irodori.on(settings or {}, language))
+    except Exception:
+        return False
+
+
+def heard(text, paired, ai):
+    """How an item's sentence is heard -> REAL, AI_VOICE or SILENT: a video's or an audio file's (not `text`) and a
+    book's with an audiobook paired (`paired`: Connect lines it up and cuts the narrator's clip) its own clip; a
+    book's or a text's with none, the AI voice's while it can make it (`ai`: `ai_voice`; the card is mined without
+    audio and the voice fills its empty SentenceAudio), else none."""
+    if not text or paired:
+        return REAL
+    return AI_VOICE if ai else SILENT
+
+
+def _library(language, store=None, ai=False):
+    """{normalised path: (item id, context, how it is heard, a book or a text)} for the library's items, read once:
+    the store's items, their show's dates (`seen_dates`), their own (`watched_dates`), the order ahead
+    (`library.ahead`) and the books an audiobook is paired with (`library.paired_books`); `ai`: `heard`'s. {} with no
+    store."""
     from app.connect import library
     from app.path_utils import get_data_path
     from app import library_store
@@ -131,6 +159,7 @@ def _library(language, store=None):
         shows = store.seen_dates()
         dated = store.watched_dates()
         place = {item_id: n for n, item_id in enumerate(library.ahead(store))}
+        paired = {os.path.normcase(os.path.abspath(epub)) for epub, _ab, _sha in library.paired_books(store)}
         root = get_data_path(language)
         out = {}
         with store._reading():
@@ -145,22 +174,25 @@ def _library(language, store=None):
                 seen = "earlier"
             path = os.path.join(root, *str(rel).replace("\\", "/").split("/"))
             text = library.text_only({"rel_path": rel, "source_type": source_type})
-            out[os.path.normcase(os.path.abspath(path))] = (
-                item_id, context(seen, place.get(item_id), tier, now), not text)
+            key = os.path.normcase(os.path.abspath(path))
+            out[key] = (item_id, context(seen, place.get(item_id), tier, now), heard(text, key in paired, ai), text)
         return out
     finally:
         if own:
             store.close()
 
 
-def choose(language, keys, *, here=None, dial=None, never=None, young=None, files=None, reach=None, store=None):
+def choose(language, keys, *, here=None, dial=None, never=None, young=None, files=None, reach=None, store=None,
+           books=True):
     """The sentences each word's card can be cut from -> {(lemma, reading): [Choice, …]}, best first by the dial
     (the module's docstring); a word with no sentence: []. `keys`: [(lemma, reading)]; `here`: the episode's subtitle
     (Nearest: its lines first; Best: one candidate, kept on a tie); `dial`: NEAREST / BEST, None = the learner's
     setting; `never`: {key: {line text}} — never the same line (Swap passes the old card's sentence); `young`: {lemma:
     weight}, None = `young_weights`; `files`: the library's paths (None = `sentence_corpus.library_files`); `reach(item
     id) -> bool`: can its media be cut (Connect passes its video look-up; None = the file is there) — a sentence whose
-    media can't be cut is no choice. A sentence of the library outside the learner's length range is not a candidate
+    media can't be cut is no choice; a book's or a text's line isn't asked (`heard`: with a `reach`, one heard by
+    nothing is no choice); `books`: can a book's or a text's line be mined at all (Connect: while Anki Miner reads
+    books). A sentence of the library outside the learner's length range is not a candidate
     (the corpus's window), so a word met only in short lines gets [] here and keeps its own episode's line."""
     from app import settings_manager, sentence_corpus, analyzer, token_index
     keys = list(dict.fromkeys(tuple(k) for k in keys or ()))
@@ -173,13 +205,13 @@ def choose(language, keys, *, here=None, dial=None, never=None, young=None, file
     if files is None:
         files = sentence_corpus.library_files(language)
     here_key = os.path.normcase(os.path.abspath(here)) if here else None
-    info = _library(language, store)
+    info = _library(language, store, ai_voice(settings, language))
     norm = [os.path.normcase(os.path.abspath(f)) for f in files or ()]
     if here_key and here_key not in norm:
         norm.append(here_key)
     # The order the corpus ties on: the most remembered context first, the episode being mined first among equals —
     # so a word's eight kept sentences are the best-placed ones (`collect` keeps at most 8 a word, 2 a file)
-    order = sorted(range(len(norm)), key=lambda n: (-(info.get(norm[n], (None, 0.0, True))[1]), norm[n] != here_key, n))
+    order = sorted(range(len(norm)), key=lambda n: (-(info.get(norm[n], OUTSIDE)[1]), norm[n] != here_key, n))
     ordered = [norm[n] for n in order]
     if dial == NEAREST and here_key:
         holding = [here_key]
@@ -218,21 +250,26 @@ def choose(language, keys, *, here=None, dial=None, never=None, young=None, file
             path = holding[fidx]
             if same_line(text, never.get(key)):
                 continue
-            item_id, ctx, audio = info.get(path, (None, 0.0, True))
+            item_id, ctx, hear, text_only = info.get(path, OUTSIDE)
             is_here = path == here_key
-            if not is_here and not can_cut(path, item_id):
+            if not is_here and (not (books and (hear is not SILENT or reach is None)) if text_only
+                                else not can_cut(path, item_id)):
                 continue
-            found.append((Choice(path, item_id, text, rank[0], round(ctx + max(0.0, -rank[2]), 4), is_here, audio),
-                          position))
+            found.append((Choice(path, item_id, text, rank[0], round(ctx + max(0.0, -rank[2]), 4), is_here,
+                                 hear is not SILENT, hear == AI_VOICE), position))
         found.sort(key=lambda c: _rank(c[0], dial) + (c[1],))
         out[key] = [c for c, _p in found]
     return out
 
 
+OUTSIDE = (None, 0.0, REAL, False)     # a file the store doesn't hold: no context, its media as `reach` says
+
+
 def _rank(choice, dial):
     """A choice's sort key by the dial (lower first): Nearest — the episode's own first, then as Best; Best — the
-    fewest other unknown words, audio, the weight, the episode being mined on a tie."""
-    best = (choice.others, not choice.audio, -choice.weight, not choice.here)
+    fewest other unknown words, how it is heard (its own clip, the AI voice's, none), the weight, the episode being
+    mined on a tie."""
+    best = (choice.others, (not choice.audio, bool(choice.ai)), -choice.weight, not choice.here)
     return ((not choice.here),) + best if dial == NEAREST else best
 
 

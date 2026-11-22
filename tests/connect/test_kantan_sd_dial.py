@@ -72,12 +72,12 @@ def _texts(choices):
 def no_store(monkeypatch):
     """No library store's dates: every sentence's context is 0 unless a test hands one in."""
     info = {}
-    monkeypatch.setattr(sentences, "_library", lambda language, store=None: info)
+    monkeypatch.setattr(sentences, "_library", lambda language, store=None, ai=False: info)
     return info
 
 
-def _place(info, path, item_id, ctx=0.0, audio=True):
-    info[os.path.normcase(os.path.abspath(path))] = (item_id, ctx, audio)
+def _place(info, path, item_id, ctx=0.0, hear=sentences.REAL, text=False):
+    info[os.path.normcase(os.path.abspath(path))] = (item_id, ctx, hear, text)
 
 
 def test_best_takes_the_libraries_understandable_sentence_and_nearest_the_episodes_own(no_store):
@@ -340,3 +340,169 @@ def _srt(tmp_path, lines, name="episode.ja.srt"):
     path = tmp_path / name
     path.write_text(body, encoding="utf-8")
     return str(path)
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_an_episode_says_a_word_moved_by_best_has_its_card_from_a_better_sentence_elsewhere(tmp_path, monkeypatch,
+                                                                                           lang):
+    # why: Kantan-MA's *Not made from this episode* list named every word an episode made no card for, but a word Best
+    # cut from another episode's line vanished from it silently — the learner saw a word of the episode with no card
+    # and no reason
+    from app.connect import ledger as L
+    from app.connect import runner
+    from tests.connect.test_kantan_ma_left_out import WORDS, _run, _steps
+    away = WORDS[lang][1]
+
+    def best(steps, ledger, lang_, job, words, here):
+        kept = [w for w in words if (w["word"], w["reading"]) != away]
+        return kept, [{"word": away[0], "reading": away[1], "item_id": 2, "text": EASY}]
+    monkeypatch.setattr(runner, "_best", best)
+    path = str(tmp_path / "ledger.sqlite")
+    _run(_steps(tmp_path, lang), path, lang)
+    assert L.left_of(lang, [1], path) == {1: [{"word": away[0], "why": L.LEFT_ELSEWHERE}]}
+
+
+
+def test_left_out_names_a_best_word_after_the_pick_and_anki_miners_reasons():
+    from app.connect import ledger as L
+    from app.connect import runner
+    got = {"words": [{"word": "大衆", "reading": "タイシュウ"}], "not_offered": []}
+    moved = [{"word": "冒険", "reading": "ボウケン", "item_id": 2, "text": EASY}]
+    out = runner._left_out(got, {("大衆", "タイシュウ")}, {}, set(), moved)
+    assert out == [{"word": "大衆", "reading": "タイシュウ", "why": L.LEFT_WHY["no_definition"]},
+                   {"word": "冒険", "reading": "ボウケン", "why": L.LEFT_ELSEWHERE}]
+    assert runner._left_out(got, set(), {}, set()) == [], "no Best move: nothing new said"
+
+
+# --- a book's line, heard by the AI voice (Sonic 2026-11-22: books count for Best when the AI voice can voice them) --
+@pytest.fixture
+def irodori(monkeypatch):
+    """A stand-in for the beta `modules.irodori` (its public `on` only): `state["on"]` says what it answers; None as
+    the module = the folder absent."""
+    import sys
+    import types
+    state = {"on": True, "asked": []}
+    fake = types.ModuleType("modules.irodori")
+
+    def on(settings, language="ja"):
+        state["asked"].append(language)
+        if isinstance(state["on"], Exception):
+            raise state["on"]
+        return state["on"] and language == "ja"
+    fake.on = on
+    monkeypatch.setitem(sys.modules, "modules.irodori", fake)
+    import modules
+    monkeypatch.setattr(modules, "irodori", fake, raising=False)
+    return state
+
+
+def test_the_ai_voice_is_asked_through_its_one_function_and_any_failure_is_a_no(irodori, monkeypatch):
+    import sys
+    import modules
+    assert sentences.ai_voice({}, "ja") is True
+    assert sentences.ai_voice({}, "zh") is False, "Chinese: the voice speaks Japanese only"
+    irodori["on"] = False
+    assert sentences.ai_voice({}, "ja") is False
+    irodori["on"] = OSError("its install folder is half removed")
+    assert sentences.ai_voice({}, "ja") is False
+    monkeypatch.setitem(sys.modules, "modules.irodori", None)       # the folder absent: the import fails
+    monkeypatch.delattr(modules, "irodori", raising=False)
+    assert sentences.ai_voice({}, "ja") is False
+
+
+def test_how_a_line_is_heard_its_own_clip_then_the_ai_voice_then_none():
+    assert sentences.heard(False, False, False) == sentences.REAL, "a video's or an audio file's line"
+    assert sentences.heard(True, True, False) == sentences.REAL, "a book with its audiobook: the narrator, AI never"
+    assert sentences.heard(True, True, True) == sentences.REAL
+    assert sentences.heard(True, False, True) == sentences.AI_VOICE
+    assert sentences.heard(True, False, False) is sentences.SILENT, "the voice off: exactly as before"
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_books_line_is_a_choice_while_the_ai_voice_can_voice_it_and_real_audio_wins_a_tie(no_store, lang):
+    # why: a book with no audiobook was never a Best choice for Connect (nothing to cut a clip from); with the AI
+    # voice on its line is heard, ranked after an equally clear line with its own clip and before a harder one
+    easy, today, hard = (EASY, TODAY, HARD) if lang == "ja" else ("他接到电话了。", "我接到电话了。",
+                                                                  "那个陌生人打来的电话很奇怪。")
+    lemma = "冒険" if lang == "ja" else "电话"
+    here, book, other = _library(lang, {"第01話.txt": [hard], "本.txt": [easy], "第02話.txt": [today]},
+                                 known=(_lemmas(easy, lang) | _lemmas(today, lang)) - {lemma})
+    key = _key(easy, lemma, lang)
+    _place(no_store, here, 1)
+    _place(no_store, other, 3, ctx=0.0)
+
+    def best(hear, books=True, reach=lambda item_id: item_id != 1):
+        _place(no_store, book, 2, ctx=0.9, hear=hear, text=True)
+        return sentences.choose(lang, [key], here=here, dial=sentences.BEST, files=[here, book, other], young={},
+                                reach=reach, books=books)[key]
+    got = best(sentences.AI_VOICE)
+    assert [(c.item_id, c.audio, c.ai) for c in got][:2] == [(3, True, False), (2, True, True)], \
+        "a real clip first on a tie, though the book's context weighs more"
+    assert got[-1].here and sentences.better(got[1], got[-1]), "the AI-voiced clear line beats the harder own line"
+    assert 2 not in [c.item_id for c in best(sentences.SILENT)], "the voice off: no choice, as before"
+    assert 2 not in [c.item_id for c in best(sentences.AI_VOICE, books=False)], "Anki Miner doesn't read books"
+    paired = best(sentences.REAL)
+    assert paired[0].item_id == 2 and not any(c.ai for c in paired), "a paired audiobook: its own clip, AI never"
+    assert 2 in [c.item_id for c in best(sentences.SILENT, reach=None)], "a caller that cuts no media: as before"
+
+
+class _BookSteps:
+    def __init__(self, got, ai=True):
+        self.got, self.ai = got, ai
+
+    def _settings(self, lang):
+        return {"enable_irodori": self.ai}
+
+    def line_up(self, lang, job, epub):
+        return self.got
+
+
+def _ai_marked(ledger, job):
+    from app.connect import runner
+    return runner._meta(ledger, f"{runner.AI_JOB}{job['id']}") is not None
+
+
+def test_a_best_job_at_a_book_with_no_audiobook_is_never_asked_and_its_cards_get_the_ai_voice(tmp_path, irodori):
+    from app.connect import runner
+    epub = str(tmp_path / "本.epub")
+    ask = {"book_ask": "Do you have the audiobook?", "item_id": 7, "key": "k-7", "epub": epub}
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        best = {"id": 41, "item_id": 7, "kind": LEVEL, "source": level.BEST, "words": [("冒険", "ボウケン")]}
+        assert runner._line_up(_BookSteps(ask), ledger, "ja", best, ("本.txt", epub)) is None
+        assert _ai_marked(ledger, best), "mined without audio, the voice fills it"
+        ordinary = {"id": 42, "item_id": 7, "kind": "new"}
+        with pytest.raises(runner.Wait):
+            runner._line_up(_BookSteps(ask), ledger, "ja", ordinary, ("本.txt", epub))
+        assert not _ai_marked(ledger, ordinary), "the book's own mining still asks its question"
+        irodori["on"] = False
+        late = dict(best, id=43)
+        assert runner._line_up(_BookSteps(ask), ledger, "ja", late, ("本.txt", epub)) is None
+        assert not _ai_marked(ledger, late), "the voice switched off since: a card without audio, nothing queued"
+
+
+def test_a_best_job_at_a_book_with_its_audiobook_lined_up_takes_the_narrator_never_the_ai_voice(tmp_path, irodori):
+    from app.connect import runner
+    lined = {"status": "done", "key": "k-7", "grade": "good", "files": []}
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        best = {"id": 44, "item_id": 7, "kind": LEVEL, "source": level.BEST}
+        steps = _BookSteps({"lineup": lined, "line": None, "item_id": None})
+        assert runner._line_up(steps, ledger, "ja", best, ("本.txt", str(tmp_path / "本.epub"))) == lined
+        assert not _ai_marked(ledger, best)
+
+
+def test_a_watched_episode_gives_a_best_job_its_sentence_only_never_its_own_new_words(tmp_path):
+    # why (Sonic 2026-11-22, Best from places you've seen): the card is for the word the study order asked for now —
+    # the watched episode lends its line; its other new words (迷宮, 壮絶, 未知: listed ones too) get nothing from it
+    srt = _srt(tmp_path, [(10.0, 12.0, HARD), (40.0, 42.0, EASY)])
+    read = cues.read(srt, "ja")
+    tokens = cues.tokens(read, "ja")
+    new = {"冒険", "迷宮", "壮絶", "未知"}
+    adventure, maze = _key(EASY, "冒険"), _key(HARD, "迷宮")
+    listed = {maze: 0, adventure: 5}                 # 迷宮 ranks first on the list
+    job = {"kind": LEVEL, "source": level.BEST, "words": [adventure]}
+    chosen = pick.pick(read, tokens, "ja", lambda k: k[0] not in new, mode="list", listed=level.restrict(listed, job))
+    assert [(w["word"], w["line_start"]) for w in chosen["words"]] == [("冒険", 40.0)]
+    # the 3.0 rule for the episode's own minings is untouched (pinned by tests/connect/test_lf4_level_watched.py:
+    # its first mining and a level raise make no cards from a watched episode)
+    assert level.WATCHED_GIVES_NO_NEW_CARDS and level.watched_out({"watched": 1})
+    assert not level.wants({"watched": 1, "in_learning_order": 1})

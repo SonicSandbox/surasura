@@ -411,7 +411,7 @@ function wordNow(id) {                                // a word, when its chunk 
 }
 function epChunks(i) {
   const e = EPS[i];
-  if (!e[7] || !CH.length) return [];
+  if (!e || !e[7] || !CH.length) return [];           // no such episode (an empty library): no chunks, as seq()
   const a = chunkOfWord(e[8]), b = chunkOfWord(e[8] + e[7] - 1), out = [];
   for (let c = a; c <= b; c++) out.push(c);
   return out;

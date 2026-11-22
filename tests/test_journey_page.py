@@ -202,7 +202,9 @@ def test_an_empty_library_opens_on_its_empty_state(tmp_path, lang):
     with Edge() as e:
         opened = e.open("file:///" + path.replace("\\", "/"), until="window.__J", seconds=30)
         first = e.open_wait("window.__J.TIMES.firstWord", 10) if opened else False
-        assert opened and first, (opened, first, e.errors())
+        # the start runs on after the first word: hello answers (here: no door) and redraws the marks, so wait for it
+        heard = e.open_wait("window.__J.D.heard", 10) if first else False
+        assert opened and first and heard, (opened, first, heard, e.errors())
         stage = e.evaluate("document.getElementById('stage').textContent")
         rail = e.evaluate("document.getElementById('rail').textContent")
         errs = e.errors()

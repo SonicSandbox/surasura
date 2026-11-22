@@ -309,3 +309,88 @@ def _write_known(language, data, words, add_known, drop_known, result):
         anki_sync.follow_known_write(language, before_sig)   # next, so a word Anki studied meanwhile comes back)
     return True
 
+
+
+# --- J-DOOR: the journey's door (app/door.py; the registry, app/services/journey_door.py) ------------------------ #
+DOOR_MOST = 500                     # marks one door call may carry (the page's waiting marks, sent in batches)
+DOOR_UNREAD = "Surasura couldn't read those marks."
+
+
+def door_route(body, app):
+    """`words/mark`: {lang, marks: [{word, mark: "known" | "ignore" | "", at?, was?}]} -> {done, undo_id, stale},
+    written as the word card's are (`app.services.mark_words`: the window follows). `mark` "" clears what this module
+    marked. A mark sent from the page's queue carries `at` (its press time, ms since the epoch) and `was` (the mark the
+    page showed before the press): one whose word has changed since the page drew it, in a file written after the
+    press, is skipped and listed in `stale` (Charter G4: a waiting press never erases newer work; the page then draws
+    the app's mark). Marks it can't read are refused (the page lets them go); a write that couldn't be made is "busy"
+    (another program holds the known words) or "failed", in plain words: the page keeps those marks."""
+    from app import door
+    from app.services import journey_door
+    language, sent = body.get("lang"), body.get("marks")
+    if language not in journey_door.LANGS or not isinstance(sent, list) or len(sent) > DOOR_MOST:
+        raise door.RouteError(DOOR_UNREAD, "refused")
+    for m in sent:
+        if (not isinstance(m, dict) or not isinstance(m.get("word"), str)
+                or m.get("mark") not in ("known", "ignore", "", None)
+                or m.get("was") not in ("known", "ignore", "", None)):
+            raise door.RouteError(DOOR_UNREAD, "refused")
+    pairs, stale, now = [], [], None
+    for m in sent:
+        if m.get("at") is not None:
+            if now is None:
+                now = (marks(language), _door_times(language))
+            if _door_stale(m, *now):
+                stale.append(m["word"])
+                continue
+        pairs.append((m["word"], m.get("mark") or None))
+    if not pairs:
+        return {"done": 0, "undo_id": None, "stale": stale}
+    result = app.services.mark_words(language, pairs)
+    if result.error is not None:
+        raise door.RouteError(result.error, "busy" if result.busy else "failed")     # (the page keeps them)
+    return {"done": len(result.done), "undo_id": result.undo_id, "stale": stale}
+
+
+def door_undo(body, app):
+    """`words/undo`: {lang, undo_id} -> {done}: that write put back (`app.services.undo_marks`), never another one (a
+    call without its id is refused: the window's own last write is not the page's)."""
+    from app import door
+    from app.services import journey_door
+    language, undo_id = body.get("lang"), body.get("undo_id")
+    if language not in journey_door.LANGS or isinstance(undo_id, bool) or not isinstance(undo_id, int):
+        raise door.RouteError("Surasura couldn't read that Undo.", "refused")
+    result = app.services.undo_marks(language, undo_id)
+    if result.error is not None:
+        raise door.RouteError(result.error, "busy" if result.busy else "failed")
+    return {"done": len(result.done)}
+
+
+def door_state(language, since_ns, app):
+    """`state`'s marks: every mark this module holds now ({word: "known" | "ignore"}: a word the render drew marked
+    here that isn't in it was cleared), or None when neither file was written since the render (`since_ns`)."""
+    if since_ns is not None and all(t < since_ns for t in _door_times(language).values()):
+        return None
+    return marks(language)
+
+
+def _door_times(language):
+    """{"known": ns, "ignore": ns}: each file's last write (a missing file: never)."""
+    times = {}
+    for mark, path in (("known", anki_sync._known_path(language)), ("ignore", word_lists.list_path("ignore", language))):
+        try:
+            times[mark] = os.stat(path).st_mtime_ns
+        except OSError:
+            pass
+    return times
+
+
+def _door_stale(m, current, times):
+    """A waiting mark whose word changed after its press: the word's mark now isn't the one the page showed (`was`), and
+    the file that could have changed it was written after `at` (the word's file for a mark it has now; either file for
+    one it lost)."""
+    from app.services import journey_door
+    now = current.get(m["word"].strip(), "")
+    if now == (m.get("was") or ""):
+        return False
+    changed = times.get(now) if now else max(times.values(), default=None)
+    return journey_door.stale(m.get("at"), changed)

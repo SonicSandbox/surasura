@@ -52,7 +52,7 @@ def check(store, language, listed, signature, file_words, ledger=None):
             if recorded_signature == signature:
                 return out
             if recorded_signature is None:
-                ledger.take_new_files(language)  # a first look lists every word as it is: no episode lacks its own
+                ledger.take_new_files(language)  # a first look (Connect on again too) lists every word: none lacks its own
                 ledger.record_list(language, signature, now)
                 out["first"] = True
                 return out

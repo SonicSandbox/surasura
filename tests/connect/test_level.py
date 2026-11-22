@@ -342,8 +342,29 @@ def test_a_mark_left_by_an_older_ledger_is_dropped_never_read_as_every_episode_s
         ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('new_files:ja', '2000-01-01T00:00:00Z')")
     out = _check(RAISED, "run-2", files)
     assert out["new"] == 3 and out["queued"] == [] and _level_jobs() == []
-    with Ledger() as ledger:
+    with Ledger() as ledger, ledger.transaction():
         assert ledger.take_new_files("ja") is None, "taken"
+        for old in ("2000-01-01T00:00:00Z", "7", '{"7": 1}'):
+            ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('new_files:ja', ?)", (old,))
+            assert ledger.take_new_files("ja") is None, old
+            assert ledger.take_new_files("ja") is None, "dropped once read"
+
+
+def test_two_new_files_runs_before_a_new_list_give_both_runs_episodes_their_words():
+    # why: a mark not yet taken (its run's Generate wrote no new list) keeps its episodes when the next new-files run
+    # marks its own: both runs' episodes were mined from a list without their words
+    (a, fa), (b, fb), (d, fd) = _line()
+    files = {fa: ["眼鏡"], fb: ["老婆"], fd: ["眼鏡", "駐車場"]}
+    _check(BEFORE, "run-1", files)
+    _mined_this_run(d)
+    _check(BEFORE, "run-1", files)                       # the same list: the mark stays
+    with Ledger() as ledger, ledger.transaction():
+        ledger.conn.execute("UPDATE jobs SET updated_at = '1999-01-01T00:00:00Z'")   # run 1 ended long before
+    with Ledger() as ledger, ledger.transaction():
+        job = ledger.queue("ja", b, "user", None)
+        ledger.conn.execute("UPDATE jobs SET state = 'done' WHERE id = ?", (job,))
+        ledger.mark_new_files("ja", "2000-01-01T00:00:00Z")       # run 2's own mark
+    assert sorted(_check(RAISED, "run-2", files)["queued"]) == sorted([b, d])
 
 
 def test_a_new_files_mark_left_before_connects_first_look_is_taken_by_that_look():

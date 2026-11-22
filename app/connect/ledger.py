@@ -560,7 +560,6 @@ class Ledger:
         transaction)."""
         self.conn.execute("DELETE FROM listed WHERE language = ?", (language,))
         self.conn.execute("DELETE FROM meta WHERE key = ?", (f"listed:{language}",))
-        self.conn.execute("DELETE FROM meta WHERE key = ?", (f"new_files:{language}",))   # its list is gone too
 
     def mark_new_files(self, language, since):
         """Kantan-MO: Connect's own Generate after mining new files ran (`runner.Steps.generate_after`): the items

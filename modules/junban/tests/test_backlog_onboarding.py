@@ -311,8 +311,9 @@ def test_a_card_reviewed_on_the_phone_and_synced_in_before_the_write_is_never_gi
 
 def test_undo_of_a_try_leaves_a_card_moved_since_where_it_is(tmp_path):
     # A Try's snapshot holds only the cards it moved: one moved since (another run, you) isn't sent back blind.
+    # (*Leave*, Kyou-MO: your cards off the list by their sentence, the order this scene's Try was written for.)
     fake = _browsing(tmp_path)
-    s = _settings()
+    s = _settings(junban_off_list="leave")
     before = _dues(fake)
     report = _try(fake, s)
     moved = report["front"][1]
@@ -469,7 +470,7 @@ def _stats(fake, s):
 
 def test_the_picture_groups_the_previews_own_numbers_and_they_add_up(tmp_path):
     fake = _browsing(tmp_path)
-    s = _settings(junban_unlisted="journey")
+    s = _settings(junban_unlisted="journey", connect_every_word=True)
     stats = _stats(fake, s)
     picture = view.backlog_picture(stats, s)
     tiers = stats["tiers"]
@@ -480,22 +481,26 @@ def test_the_picture_groups_the_previews_own_numbers_and_they_add_up(tmp_path):
     assert picture.known == tuple(row.card_id for row in stats["order"] if row.tier == "known")
 
 
-def test_the_picture_says_where_the_rarer_cards_go_by_the_users_own_setting():
+def test_the_picture_says_where_the_rarer_cards_go_by_their_tiers():
+    """Kyou-MO: off the list a card goes by its own sentence (yours, *Leave*) or to the back with no tier (Surasura's,
+    and yours under *At the back* / *Set aside*) — the picture counts each from the preview's own tiers."""
     stats = {"considered": 10, "tiers": {"list": 4, "library": 2, "i+1": 1, "rest": 1, "known": 2}, "order": []}
-    journey = view.backlog_picture(dict(stats, unlisted="journey"), {})
-    assert any("too rare for your list: mixed in" in line for line in journey.lines)
-    assert any("2 aren't in your shows: after the ones that are, by their own sentence" == line
-               for line in journey.lines)
-    back = view.backlog_picture(dict(stats, unlisted="back", tiers=dict(stats["tiers"], library=0)), {})
-    assert any("at the back, in their order" in line for line in back.lines)
-    first = view.backlog_picture(dict(stats, unlisted="list_first"), {"junban_order": "priority"})
+    mixed = view.backlog_picture(dict(stats, unlisted="leave"), {})
+    assert any("too rare for your list: mixed in" in line for line in mixed.lines)
+    assert "2 aren't on your list: after it, by their own sentence" in mixed.lines
+    back = view.backlog_picture(dict(stats, unlisted="back", tiers=dict(stats["tiers"], library=0, **{"i+1": 0},
+                                                                         rest=0)), {})
+    assert "4 aren't on your list: at the back, in their order" in back.lines
+    both = view.backlog_picture(dict(stats, tiers=dict(stats["tiers"], library=0)), {})
+    assert "2 aren't on your list: after it, by their own sentence" in both.lines
+    assert "2 aren't on your list: at the back, in their order" in both.lines
+    first = view.backlog_picture(dict(stats, unlisted="leave"), {"junban_order": "priority"})
     assert any("placed first, by leverage" in line for line in first.lines)
-    assert journey.known_line.startswith("2 are words you already know")
-    mine = view.backlog_picture(dict(stats, considered=12, unlisted="journey",
-                                     tiers=dict(stats["tiers"], yours=2)), {})
+    assert mixed.known_line.startswith("2 are words you already know")
+    mine = view.backlog_picture(dict(stats, considered=12, tiers=dict(stats["tiers"], yours=2)), {})
     assert mine.lines[0] == "2 are cards you made yourself: they go first"
-    assert "2 aren't in your shows: after the ones that are, by their own sentence" in mine.lines
-    one = view.backlog_picture(dict(stats, considered=9, unlisted="list_first", tiers=dict(stats["tiers"], rest=0)), {})
+    assert "2 aren't on your list: after it, by their own sentence" in mine.lines
+    one = view.backlog_picture(dict(stats, considered=9, unlisted="leave", tiers=dict(stats["tiers"], rest=0)), {})
     assert "1 isn't on your list: after it, by its own sentence" in one.lines
     assert view.backlog_picture({"considered": 0}, {}) is None
 
@@ -510,7 +515,7 @@ def test_cards_you_clicked_off_are_said_apart_never_as_not_on_your_list():
 
 def test_the_picture_says_what_try_would_write_before_the_press(tmp_path):
     fake = _browsing(tmp_path)
-    s = _settings()
+    s = _settings(junban_off_list="leave")          # (Kyou-MO: the order this scene's Try was written for)
     picture = view.backlog_picture(_stats(fake, s), s)
     assert picture.try_moves > 0 and picture.try_line.startswith("Moves only the next 5 cards")
     for i, card_id in enumerate(sorted(fake.cards)):

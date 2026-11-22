@@ -140,6 +140,16 @@ def test_make_it_yours_comes_to_no_card_until_the_mining_model_lands_and_stays_i
     assert "Only" not in strings.PATH_STEPS["yours"][1] and "one new word" not in strings.PATH_STEPS["yours"][1]
 
 
+def test_make_it_yours_row_presses_only_while_it_opens_level_the_mining_models_one_knob(monkeypatch):
+    # the lead 2026-11-21: with *Words to make cards from* retired (Kantan-MO), ④'s press opens Level — its row in ✦
+    # has its press again; pointed anywhere else (the retired choice) it has none, its card still off (YOURS_CARD)
+    assert P.YOURS_PRESS == "settings:level" and P.has_press("yours") and P.has_press("hato")
+    monkeypatch.setattr(P, "YOURS_PRESS", "settings:connect_mine_words")
+    assert not P.has_press("yours") and P.has_press("hato")
+    monkeypatch.setattr(P, "YOURS_CARD", True)                                  # with its card on: a press as before
+    assert P.has_press("yours")
+
+
 def test_make_it_yours_comes_to_the_card_only_on_a_path_that_was_new_and_after_stage_three(monkeypatch):
     # the kept code path, for when the mining model re-points ④ (YOURS_CARD on again)
     monkeypatch.setattr(P, "YOURS_CARD", True)

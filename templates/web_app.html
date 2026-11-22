@@ -2066,6 +2066,11 @@
                 }
 
                 await fetchData();
+                // The study order (Settings › Level, Kantan-MO): *By leverage* opens on the Priority List — never
+                // over a link that names where to open (#file=, #search=)
+                if (typeof globalStudyOrder !== 'undefined' && globalStudyOrder === 'priority' && !location.hash) {
+                    await switchMainTab('priority');
+                }
                 rsFromHash();
             } catch (e) {
                 console.error("Initialization Error:", e);

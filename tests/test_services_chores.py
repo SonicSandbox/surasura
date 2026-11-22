@@ -383,7 +383,8 @@ def test_koe_absent_the_chores_still_run(monkeypatch, timers_on):
     chores.activated()
     chores.koe_changed()
     assert chores.worker.idle(5)
-    assert len(timers) == 5, "the indexer, the store's helper, Connect's notice, the warm-up, the helper's debounce"
+    assert len(timers) == 6, ("the indexer, the store's helper, Connect's notice, the warm-up, hato's daily update, the "
+                              "helper's debounce")
     chores.close()
 
 
@@ -401,13 +402,41 @@ def test_each_start_chore_runs_once_per_start(monkeypatch, timers_on):
     chores.started()
     assert chores.worker.idle(5)
     assert notes == [1] and warm == []                      # not at once: its timer
-    assert sorted(t.delay for t in timers) == [C.START_INDEX, C.START_MAINTAIN, C.ARRIVALS_AT, C.WARM_AT]
+    assert sorted(t.delay for t in timers) == [C.START_INDEX, C.START_MAINTAIN, C.ARRIVALS_AT, C.WARM_AT, C.HATO_AT]
     assert C.WARM_AT > max(C.START_INDEX, C.START_MAINTAIN, C.ARRIVALS_AT)
     [t for t in timers if t.delay == C.WARM_AT][0].call()
     assert chores.worker.idle(5)
     assert warm == ["ja"]
     chores.close()
     assert all(t.cancelled for t in timers)
+
+
+def test_hatos_daily_update_starts_once_on_its_own_thread_and_ends_at_the_quit(monkeypatch, timers_on):
+    """Hato-UP: 20 s on, hato's daily look (`hato_update.start`) on its own thread — once a window, never for a closing
+    one — given the settings now and a stop the quit sets (`halt`, then `close`)."""
+    from app.services import hato_update
+    started = []
+    monkeypatch.setattr(hato_update, "start", lambda settings, stop: started.append((settings(), stop)) or "thread")
+    monkeypatch.setitem(sys.modules, "modules.koe", None)
+    timers = _Timers()
+    chores, _r, _p = _make(settings=_Settings(target_language="ja", update_check_enabled=True), timers=timers)
+    chores.started()
+    assert chores.worker.idle(5)
+    ring = [t for t in timers if t.delay == C.HATO_AT][0]
+    assert C.HATO_AT > C.WARM_AT and started == []
+    ring.call()
+    ring.call()                                                     # a second ring: still one thread
+    assert len(started) == 1 and started[0][0]["update_check_enabled"] is True
+    stop = started[0][1]
+    assert not stop.is_set()
+    chores.halt()
+    assert stop.is_set()
+    chores.close()
+    late, _r2, _p2 = _make(timers=_Timers())
+    late.halt()
+    late._hato_update()                                             # a timer that rang as the quit began
+    assert len(started) == 1
+    late.close()
 
 
 def test_under_test_no_timer_and_no_warm_up(monkeypatch):

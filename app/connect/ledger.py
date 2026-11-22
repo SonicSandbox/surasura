@@ -561,6 +561,29 @@ class Ledger:
         self.conn.execute("DELETE FROM listed WHERE language = ?", (language,))
         self.conn.execute("DELETE FROM meta WHERE key = ?", (f"listed:{language}",))
 
+    def mark_new_files(self, language, since):
+        """Kantan-MO: Connect's own Generate after mining new files ran (`runner.Steps.generate_after`): the items
+        mined since `since` (this run's start) were mined from a list that didn't have their own new words yet — the
+        next list look gives them those (`level.check`). Inside the caller's transaction."""
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"new_files:{language}", since))
+
+    def take_new_files(self, language):
+        """The mark `mark_new_files` left (a ledger time), taken (cleared) — or None. Inside the caller's
+        transaction."""
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (f"new_files:{language}",)).fetchone()
+        if row is None:
+            return None
+        self.conn.execute("DELETE FROM meta WHERE key = ?", (f"new_files:{language}",))
+        return row[0]
+
+    def mined_since(self, language, since):
+        """[item ids] with a job other than a level job that ended `done` at or after `since`, in the order they
+        ended."""
+        rows = self.conn.execute("SELECT item_id, MAX(updated_at) FROM jobs WHERE language = ? AND kind != ? AND "
+                                 "state = 'done' AND updated_at >= ? GROUP BY item_id ORDER BY MAX(updated_at)",
+                                 (language, LEVEL, since)).fetchall()
+        return [r[0] for r in rows]
+
     def owe_resort(self, language):
         self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"resort_due:{language}", _now()))
 

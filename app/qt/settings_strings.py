@@ -7,7 +7,6 @@ voice. A tooltip is 2.4's own where 2.4 had one, else the help line. Help is one
 numbers (N5). `app/qt/settings_catalog.py` names each row's strings by its row id.
 """
 from app import ankiconnect_addon as _addon         # AnkiConnect missing: the one set of words (alpha 8)
-from app.connect.settings_values import WORDS as MINE_WORDS   # *Words to make cards from*: Connect's own words
 from app.practice import NAME as PRACTICE_NAME       # the practice chat's name (A6): one place, app/practice.py
 from app.anki_words import SOURCES as ANKI_SOURCES  # Piyo's sources from Anki (Piyo-AK): one table, app/anki_words.py
 
@@ -45,6 +44,21 @@ HATO_NOT_CONNECTED = {                       # `tools_found.open_hato` / `hato_s
     "another-hato": "Another copy of hato was open already, so Surasura uses that one",
 }
 HATO_FIND_FAILED = "Surasura couldn't connect hato: the log says why"
+# Hato-UP (3.0.18; Sonic 2026-11-21): hato's own daily update, started by Surasura (`services.hato_update.status`) —
+# the row's words, its version first, and each one's line behind the mark (its hover; ≤ 12 words). PROVISIONAL: the
+# words, and OUT (a newer hato this copy can't install itself)
+HATO_UPDATE_WORDS = {
+    "up-to-date": "{version} · up to date",
+    "updating": "{version} · updating…",
+    "couldnt-check": "{version} · couldn't check",
+    "out": "{version} · {latest} is out",
+}
+HATO_UPDATE_TIPS = {
+    "up-to-date": "Surasura has hato check for its updates once a day.",
+    "updating": "hato is getting {latest}. It installs itself while hato is closed.",
+    "couldnt-check": "hato couldn't reach its updates. Surasura tries again tomorrow.",
+    "out": "hato can't update this copy itself: download {latest} from hato's page.",
+}
 OPEN = "Open"
 LEVEL_AUTOMATIC = "Automatic"
 LEVEL_AUTOMATIC_TIP = "Picks your level: the commonest one holding at least {n} words."
@@ -244,12 +258,12 @@ ROWS = {
                             "Needs Anki Miner. This switch appears once it's installed.",
                             "connect make cards mine automatically anki miner needs "
                             + NEEDS_MINER),
-    "connect_mine_words": ("Words to make cards from",
-                           "Your list: i+1 first, then the rest. Only i+1: skip the rest.",
-                           "Which words of an episode become cards. Your list: every unknown word on your list, in "
-                           "the list's order, each on an i+1 line when it has one. Only i+1: only words with an i+1 "
-                           "line, on your list or not",
-                           "words to make cards from mine mode which words all unknown i+1 list"),
+    # Kantan-MO (PROVISIONAL words): *Words to make cards from* retired — Level decides, this adds the rest
+    "connect_every_word": ("Cards for every new word",
+                           "Words past your level get cards too; they count toward Keep up to.",
+                           "Also make cards for words rarer than your level.",
+                           "every new word all unknown words past my level rare words mine all words to make cards "
+                           "from which words i+1"),
     # Kyou-A (Sonic's answers 1–5, 2026-11-15): the library's own option (settings_store.py) — Mado-PZ2 (Sonic,
     # 2026-11-19): one switch, *Learn two shows at once*; found by "parallel" too, never with it in its name
     "new_cards_from": ("Learn two shows at once",
@@ -274,6 +288,11 @@ ROWS = {
     "connect_backlog_cap": ("Keep up to", "new cards waiting in Anki, for this language. 0: no limit",
                             "Stop making cards when this many new cards on your list wait. 0: no limit.",   # Kyou-SH (PROVISIONAL)
                             "cap backlog waiting keep up to limit"),
+    # Kyou-SH2 (PROVISIONAL): Tidy — by itself past 1.5 × the limit; this press past the limit
+    "connect_tidy": ("Tidy waiting cards", "Past 1.5 × your limit, Surasura deletes the cards it made that you never "
+                                           "studied, lowest first. A copy is kept: Undo in Needs you.",
+                     "Deletes now its never-studied cards past your limit; Undo brings them back.",
+                     "tidy clean clear delete cards waiting backlog clutter limit cap overflow"),
     # a7 (DIAGNOSIS 5): an extra, under More options — the library's folders are always searched
     "connect_video_folders": ("More video folders",
                               "Library folders are searched already. Add others only if needed.",
@@ -331,31 +350,19 @@ ROWS = {
     "junban_scope": ("Which cards", "This deck is chosen in Junban’s window", "This deck, or every deck with new cards",
                      "scope deck all decks choose the deck change the deck which deck mining deck new cards deck "
                      "preview order restore undo the last reorder"),
-    "junban_order": ("Order", "", "As you'll meet the words in your content, or by leverage first",
-                     "order leverage meet content priority"),
-    "junban_unlisted": ("Cards too rare for your list go",
-                        "After the list, mixed in, or at the back.",
-                        "After it: every word on your list comes first, the rarer cards after it by their own sentence. "
-                        "Mixed in: each where your journey meets it, among the list's words. At the back: in their "
-                        "own order, behind the list's", "list first rare unlisted mixed back"),
-    # Q31: switches that work together, never one pick-one row
+    # Q31
     "junban_phrases": ("Idioms and set phrases go with your list",
                        "Common phrase cards are ordered like list words.",
                        "On: common set phrases (気がつく) are ordered like list words.",
                        "phrases idioms set phrase list first"),
-    "junban_ready_first": ("i+1 first: bring the word a card's sentence needs right before it",
-                           "A card's new word in its sentence gets its card first",
-                           "On: when a card's own sentence holds a word of your list that comes after it, that word's "
-                           "card is brought right before it when it is i+1 there; otherwise the card waits with the "
-                           "cards of more new words. Off: your list's order alone", "first i+1 ready sentence needs"),
-    "junban_later_tag": ("Tag them Surasura::later", "Placed after your list, and marked. Restore takes it back",
-                         "Off-list cards get the ::later tag. Restore removes it.",
-                         "not on list later tag"),
-    "junban_later_flag": ("Flag them purple", "", "Off-list cards get a purple flag. Restore removes it.",
-                          "not on list later flag purple"),
-    "junban_later_suspend": ("Suspend them", "Tagged too, so you can always find them",
-                             "Off-list cards are suspended and tagged ::later. Restore undoes it.",
-                             "not on list later suspend"),
+    # Kyou-MO (the mining model; PROVISIONAL words): your own cards only — Surasura's are never set aside
+    "junban_off_list": ("Your own cards", "",
+                        "Leave: after your list. Set aside: at the back, tagged ::later.",
+                        "not on list rare unlisted leave back set aside later tag own cards"),
+    "junban_later_flag": ("…and flag them purple", "", "Set-aside cards get a purple flag. Restore removes it.",
+                          "not on list later flag purple set aside"),
+    "junban_later_suspend": ("…and suspend them", "", "Set-aside cards are suspended too. Restore undoes it.",
+                             "not on list later suspend set aside"),
     "junban_auto_reorder": ("Reorder by itself after Generate", "",
                             "Reorders the saved deck by itself after Generate and on return.",
                             "auto reorder automatic generate"),
@@ -410,6 +417,10 @@ ROWS = {
     # Level
     "level": ("Level", "", "Your level: your list holds the words at least as common as it",
               "level difficulty band rarity automatic"),
+    # Kantan-MO (PROVISIONAL words): the list's one study order — Connect, 順 and the journey read it
+    "study_order": ("Study order", "The order your cards are made in, 順 sorts them by, and your journey opens on.",
+                    "As you'll meet the words in your content, or by leverage first",
+                    "study order leverage meet content priority junban order reorder cards order"),
     "strategy": ("Or aim for a coverage %",
                  "Instead of a level: include words until your content reaches this share",
                  "Level, or a target coverage of your content", "coverage mode strategy"),
@@ -671,19 +682,18 @@ FILLS = {"patterns": "パターン", "sentence": "例文", "furigana": "ふり�
 OPTIONS = {
     "surasura": {name: label for name, (label, _tip, _url) in LINKS.items()},      # its buttons (searched as choices)
     "known_road": {"anki": "Anki", "import": "Import a list"},
-    "connect_mine_words": {value: label for value, label, _line in MINE_WORDS},
     "connect_open_anki": {False: "Wait for me", True: "Open Anki for me"},
     "junban_order_all": {False: "First, in the order you made them", True: "In your list’s order"},
     "known_from_anki": {"suspended": "Suspended", "marked": "Marked", "flag:1": "Flag 1 (Red)",
                         "flag:2": "Flag 2 (Orange)", "flag:3": "Flag 3 (Green)", "flag:4": "Flag 4 (Blue)",
                         "flag:5": "Flag 5 (Pink)", "flag:6": "Flag 6 (Turquoise)", "flag:7": "Flag 7 (Purple)"},
     "junban_scope": {"deck": "This deck", "all": "All decks"},
-    "junban_order": {"content": "As I’ll meet it", "priority": "By leverage"},
+    "study_order": {"content": "As I’ll meet it", "priority": "By leverage"},
     "split_books_by": {"chapters": "Chapters", "even": "Even parts"},
     "open_video": {"default": "Your default player", "program": PROGRAM_PICK},     # "program": its name once chosen
     "open_book": {"default": "Your EPUB reader", "program": PROGRAM_PICK},
     "finish_cards": {"ask": "Ask each time", "keep": "Keep its cards", "out": "Leave them out"},
-    "junban_unlisted": {"list_first": "After it", "journey": "Mixed in", "back": "At the back"},
+    "junban_off_list": {"leave": "Leave them", "back": "At the back", "aside": "Set aside"},
     "junban_only_markers": {"star": "✦", "lopsided": "⚖", "reading": "📖"},
     "backfill_patterns": {"patterns": FILLS["patterns"]}, "backfill_sentence": {"sentence": FILLS["sentence"]},
     "backfill_furigana": {"furigana": FILLS["furigana"]}, "backfill_pitch": {"pitch": FILLS["pitch"]},
@@ -704,9 +714,7 @@ OPTIONS = {
 }
 CLIP_CUTS_AUTO = "Automatic · {n} here"         # Michi-LP: the number Automatic picks on this PC now
 # The line under each choice card (Connect's own words, P3.1)
-OPTION_LINES = {
-    "connect_mine_words": {value: line for value, _label, line in MINE_WORDS},
-}
+OPTION_LINES = {}
 # An option's own tooltip (a choice's or a tablet's), where its label alone doesn't say it
 OPTION_TIPS = {
     "junban_only_markers": {"star": "High leverage: the words your journey stars",
@@ -730,6 +738,7 @@ SETUP_KNOWN = "{n:,} known"
 SETUP_FROM_ANKI = "from Anki ({decks})"
 SETUP_IMPORTED = "from an imported list"
 SETUP_CONNECT_OFF = "Off: you make your cards yourself"
+SETUP_MINE_WORDS = {False: "Your list", True: "Every new word"}     # Kantan-MO: *Cards for every new word* off / on
 SETUP_AUTOMATIC = "Automatic"
 SETUP_WORDS = "≈{words:,} words"
 SETUP_COVERAGE = "{coverage}% of your content"                                  # S4: never "% known"
@@ -786,6 +795,11 @@ TEXT_SIZE_RESTART_NO_TIP = "Keep working: the new size shows the next time Suras
 # Export: the format pop, the outcome in the bar
 EXPORT = "Export"
 COVERS_REMOVE = "Remove"                    # --- W3.2 L3: *Remove downloaded covers*' button
+TIDY_NOW = "Tidy now"                       # --- Kyou-SH2: *Tidy waiting cards*' button (PROVISIONAL)
+TIDY_DONE = "{n} cards tidied · Undo in Needs you"
+TIDY_DONE_ONE = "A card tidied · Undo in Needs you"
+TIDY_NONE = "Nothing to tidy: {why}"
+TIDY_CANT = "Not tidied: {why}"
 EXPORT_NEXT = "Save as…"
 EXPORT_NEXT_TIP = "Choose where the file goes"
 EXPORT_FORMAT_NAME = "Format"

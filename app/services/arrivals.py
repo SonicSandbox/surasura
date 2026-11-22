@@ -208,9 +208,13 @@ class ArrivalsWorker:
                 continue
             from app.services import gentle       # Haya-LD: the step between two estimates waits for its turn
             if rid not in self._pressed:            # (a press's never does)
-                gentle.wait_turn(kind_of(self.language), lambda: done.is_set() or job.cancelled or bool(self._pressed),
+                # it stops waiting only for a press still to send (sent first: this goes back behind it); a press
+                # already sent and waiting for its answer leaves it waiting its turn — never taken and put back again
+                # at once, which spun a core while you waited (train 53's intent keeper, F1)
+                unsent = lambda: any(r not in sent for r in tuple(self._pressed))   # noqa: E731
+                gentle.wait_turn(kind_of(self.language), lambda: done.is_set() or job.cancelled or unsent(),
                                  done.wait)
-                if done.is_set() or (self._pressed and rid not in self._pressed):
+                if done.is_set() or unsent():
                     self._outbox.put(rid)           # never sent: after the press that came (or for the next worker,
                     if done.is_set():               # `_ended`)
                         break

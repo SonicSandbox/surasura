@@ -272,6 +272,7 @@ def test_each_rows_change_writes_its_own_keys_and_nothing_else(language):
         # *Count as known in Anki*'s one rider here: Kantan-B3's marker, beside a pick (the sync's switch rides only
         # with Connect on, `_wanted`)
         riders = {catalog.CHOSEN} if row.id == "known_from_anki" else set()
+        riders |= {"junban_off_list"} if row.id in catalog.ASIDE_TICKS else set()     # Kyou-MO: the switch's pin
         assert set(changes) <= set(row.keys) | riders, f"{row.id} wrote {sorted(changes)}"
         assert (update is not None) == (row.keys[0] in catalog.PER_LANGUAGE), row.id
         for key in changes:
@@ -302,7 +303,8 @@ def test_toggles_choices_numbers_and_text_write_their_value():
     settings = {"target_language": "ja", "logic": {"names_kanji": True}}
     assert catalog.change(catalog.ROW["names_kanji"], settings, "ja", False) == ({"logic.names_kanji": False}, None)
     assert catalog.change(catalog.ROW["zh_script"], settings, "zh", "t") == ({"zh_script": "t"}, None)
-    assert catalog.change(catalog.ROW["connect_mine_words"], settings, "ja", "i1")[0] == {"connect_mine_words": "i1"}
+    assert catalog.change(catalog.ROW["connect_every_word"], settings, "ja", True)[0] == {"connect_every_word": True}
+    assert catalog.change(catalog.ROW["study_order"], settings, "ja", "priority")[0] == {"study_order": "priority"}
     assert catalog.change(catalog.ROW["connect_open_anki"], settings, "ja", True)[0] == {"connect_open_anki": True}
     assert catalog.change(catalog.ROW["theme"], settings, "ja", "Modern Light")[0] == {"theme": "Modern Light"}
     # a number past its bounds is held to them (2.4's spinbox: 1–10 sentences, a coverage of at most 100 %)
@@ -347,7 +349,9 @@ def test_tablets_write_a_list_in_the_settings_order_or_only_the_bool_keys_that_f
     # several bool keys: a switch each, only its own key written
     flag = catalog.ROW["junban_later_flag"]
     assert catalog.change(flag, {}, "ja", True) == ({"junban_later_flag": True}, None)
-    assert catalog.change(flag, {"junban_later_flag": True}, "ja", False)[0] == {"junban_later_flag": False}
+    # (Kyou-MO: the flag that made an unset switch read *Set aside*, unticked, pins it — never flips it to *Leave*)
+    assert catalog.change(flag, {"junban_later_flag": True}, "ja", False)[0] == {"junban_later_flag": False,
+                                                                                  "junban_off_list": "aside"}
 
 
 @WITH_MODULES
@@ -377,17 +381,18 @@ def test_your_own_cards_is_one_choice_and_their_tag_sits_under_it_never_greyed()
 
 
 @WITH_MODULES
-def test_phrases_and_i_plus_one_first_are_two_switches_for_japanese_not_at_the_back():
-    """Q31: one row of two pills under "First" read as pick one; they work together. Two plain switches, each its own
-    key, hidden for Chinese and with "At the back" (Junban's reorder uses neither there)."""
-    for row_id in ("junban_phrases", "junban_ready_first"):
+def test_phrases_is_a_switch_for_japanese_and_i_plus_one_first_is_no_switch_any_more():
+    """Q31: *Idioms and set phrases* is a plain switch, its own key, hidden for Chinese (Junban's reorder doesn't use
+    it there). Kyou-MO: the unlocking word always comes first — *i+1 first* has no row, and *At the back* (your own
+    cards only now) no longer hides the phrases."""
+    assert "junban_ready_first" not in catalog.ROW and "junban_ready_first" not in S.ROWS
+    for row_id in ("junban_phrases",):
         row = catalog.ROW[row_id]
         assert (row.kind, row.keys, row.group) == ("toggle", (row_id,), None)
         assert catalog.change(row, {row_id: False}, "ja", True) == ({row_id: True}, None)
         assert catalog.change(row, {row_id: True}, "ja", False) == ({row_id: False}, None)
-        for unlisted in ("list_first", "journey"):
+        for unlisted in ("list_first", "journey", "back"):
             assert row_id in _shown({"junban_unlisted": unlisted}, "ja"), (row_id, unlisted)
-        assert row_id not in _shown({"junban_unlisted": "back"}, "ja")
         assert row_id not in _shown({}, "zh")
         assert row_id not in _shown({"enable_junban": False}, "ja")
         # IK-3: Junban's own rule — a marker filter moves only the chosen words, so neither switch is asked then
@@ -395,7 +400,36 @@ def test_phrases_and_i_plus_one_first_are_two_switches_for_japanese_not_at_the_b
         assert row_id not in _shown({"junban_only_markers": ["Reading"]}, "ja")      # hand-edited, read as Junban does
         assert row_id in _shown({"junban_only_markers": ["sparkle"]}, "ja")         # no mark Junban knows: no filter
     assert "junban_first" not in catalog.ROW and "junban_first" not in S.ROWS
-    assert catalog.ROW["junban_ready_first"].label.startswith("i+1 first: ")
+
+
+@WITH_MODULES
+def test_your_own_cards_not_on_the_list_are_one_switch_with_set_asides_two_ticks_under_it():
+    """Kyou-MO (F24): *Cards too rare for your list go* and the three ticks are one row — *Leave them · At the back ·
+    Set aside* — shown as Junban reads the file (3.0.17's keys while it is unset); the flag and suspend ticks show only
+    under *Set aside*, and the tag tick is gone (set aside always tags)."""
+    row = catalog.ROW["junban_off_list"]
+    assert (row.kind, row.keys, row.options, row.group) == ("choice", ("junban_off_list",), ("leave", "back", "aside"),
+                                                            "not_on_list")
+    assert not {"junban_unlisted", "junban_later_tag"} & set(catalog.ROW)
+    assert catalog.value(row, {}, "ja") == "leave"
+    assert catalog.value(row, {"junban_unlisted": "back"}, "ja") == "back"
+    assert catalog.value(row, {"junban_later_suspend": True}, "ja") == "aside"
+    assert catalog.value(row, {"junban_off_list": "leave", "junban_later_suspend": True}, "ja") == "leave"
+    for tick in ("junban_later_flag", "junban_later_suspend"):
+        assert catalog.ROW[tick].sub is True
+        assert tick not in _shown({}, "ja")
+        assert tick in _shown({"junban_off_list": "aside"}, "ja")
+        assert tick in _shown({"junban_later_flag": True}, "ja"), "an old file's set aside shows its ticks"
+        assert tick not in _shown({"junban_off_list": "back", "junban_later_flag": True}, "ja")
+    assert catalog.change(row, {}, "ja", "aside") == ({"junban_off_list": "aside"}, None)
+    # Unset, the switch is read from the old ticks: unticking the flag that made it *Set aside* pins it, so it stays
+    # set aside (never flips to *Leave*); the value shown picked again writes nothing (S19)
+    old = {"junban_later_flag": True}
+    assert catalog.change(row, old, "ja", "aside") == ({}, None)
+    flag = catalog.ROW["junban_later_flag"]
+    assert catalog.change(flag, old, "ja", False) == ({"junban_later_flag": False, "junban_off_list": "aside"}, None)
+    assert catalog.change(flag, dict(old, junban_off_list="aside"), "ja", False) == ({"junban_later_flag": False},
+                                                                                     None)
 
 
 @WITH_MODULES
@@ -407,8 +441,8 @@ def test_the_first_switches_ask_junbans_own_rule_and_hide_when_it_cant_be_asked(
     monkeypatch.setattr(reposition, "first_applies", lambda settings, language: asked.append(language) or False)
     assert "junban_phrases" not in _shown({}, "ja") and asked
     monkeypatch.setitem(sys.modules, "modules.junban.reposition", None)          # an import that fails
-    assert not {"junban_phrases", "junban_ready_first"} & _shown({}, "ja")
-    assert "junban_order" in _shown({}, "ja")                                    # the rest of Junban's rows stay
+    assert "junban_phrases" not in _shown({}, "ja")
+    assert "junban_scope" in _shown({}, "ja")                                    # the rest of Junban's rows stay
 
 
 @WITH_MODULES
@@ -646,7 +680,7 @@ def test_junban_rows_follow_its_switch_but_put_anki_back_stays_and_backfill_leav
 
 
 def test_connects_rows_show_only_with_its_switch_on():
-    connect_rows = {"connect_mine_words", "mine_line", "connect_send_grammar", "connect_open_anki",
+    connect_rows = {"connect_every_word", "mine_line", "connect_send_grammar", "connect_open_anki",
                     "connect_backlog_cap", "connect_video_folders", "connect_trust_timing",
                     "junban_own_tag", "junban_order_all", "connect_anki_miner_profile"}
     assert not connect_rows & _shown({}, "ja")
@@ -918,7 +952,7 @@ def test_make_cards_for_me_waits_for_anki_miner_as_one_line_that_says_so():
     assert "connect_enabled" not in before_look and "connect_needs_miner" not in before_look
     on = _shown({"connect_enabled": True}, "ja", NO_MINER)
     assert "connect_enabled" in on and "connect_needs_miner" not in on
-    assert {"connect_mine_words", "mine_line"} <= on                       # Connect's own rows follow its switch
+    assert {"connect_every_word", "mine_line"} <= on                       # Connect's own rows follow its switch
     row = catalog.ROW["connect_needs_miner"]
     assert row.section == "anki" and row.keys == () and row.label == "Cards made for you"
     assert row.help == S.CARDS_WHY and row.tip                       # what you get: behind its ? (Kantan-S2)
@@ -1017,19 +1051,18 @@ def test_count_as_known_in_ankis_line_names_every_state_picked_so_an_and_is_neve
     assert catalog.help_line(catalog.ROW["connect_backlog_cap"], two, "ja") == catalog.ROW["connect_backlog_cap"].help
 
 
-def test_words_to_make_cards_from_says_your_list_is_i_plus_one_and_the_rest_and_only_i_plus_one_another_set():
-    """DIAGNOSIS 4 (Sonic: "worth mentioning that it is i+1 AND the other stuff so people don't see i+1 and jump on
-    it"): `pick.py`'s *Your list* takes every listed word, an i+1 line first; *Only i+1* any word with one, list or not.
-    Both Settings (3.0's and 2.x's Tk panel) read one copy of the words."""
-    row = catalog.ROW["connect_mine_words"]
-    lines = {v: line for v, _label, line in catalog.options(row, CONNECT_ON, "ja")}
-    assert lines["list"].startswith("i+1 and more") and "every unknown word on your list" in lines["list"]
-    assert "the list's order" in row.tip                  # A7S-2: i+1 picks each card's line, never the words' order
-    # Kyou-UL (words PROVISIONAL, 2026-11-19): it says some of its cards are for words not on your list
-    assert lines["i1"] == "Only words with an i+1 line, list or not: some won't be on your list."
-    assert "i+1 first, then the rest" in row.help and "Only i+1" in row.help    # (EZ-12's shorter line)
-    assert S.OPTION_LINES[row.id] == {v: line for v, _l, line in settings_values.WORDS}
-    assert S.OPTIONS[row.id] == {v: label for v, label, _line in settings_values.WORDS}
+def test_cards_for_every_new_word_is_one_switch_under_more_options_and_the_study_order_is_the_lists():
+    """Kantan-MO (the mining model): *Words to make cards from* (Your list / Every new word / Only i+1) is retired —
+    Level decides, *Cards for every new word* (a switch under Connect's More options, counted in the cap) adds the
+    rest; 順's *Order* is the list's *Study order*, in Settings › Level, shown with or without 順."""
+    row = catalog.ROW["connect_every_word"]
+    assert (row.section, row.kind, row.adv, row.keys) == ("anki", "toggle", True, ("connect_every_word",))
+    assert "connect_every_word" in _shown(CONNECT_ON, "ja") and "connect_every_word" not in _shown({}, "ja")
+    assert "Keep up to" in row.help and len(row.tip.split()) <= 12
+    order = catalog.ROW["study_order"]
+    assert (order.section, order.kind, order.options) == ("level", "choice", ("content", "priority"))
+    assert S.OPTIONS["study_order"] == {"content": "As I’ll meet it", "priority": "By leverage"}
+    assert "study_order" in _shown({}, "ja") and "connect_mine_words" not in catalog.ROW
 
 
 def test_more_video_folders_is_an_extra_under_more_options_that_says_the_library_is_always_searched():
@@ -1045,7 +1078,9 @@ def test_more_video_folders_is_an_extra_under_more_options_that_says_the_library
                                            ("more video", "connect_video_folders"),
                                            ("suspended", "known_from_anki"),
                                            ("count as known", "known_from_anki"),
-                                           ("i+1", "connect_mine_words")])
+                                           ("i+1", "connect_every_word"),
+                                           ("every new word", "connect_every_word"),
+                                           ("leverage", "study_order"), ("junban order", "study_order")])
 def test_the_moved_rows_are_found_by_search_under_their_old_and_new_words(query, row_id):
     assert row_id in catalog.find(query, CONNECT_ON, "ja", EVERYTHING)
 

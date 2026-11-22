@@ -545,8 +545,7 @@ def _level(store, lang, loaded):
         if read is None:
             return None
         signature, listed, file_words = read
-        return level.check(store, lang, listed, signature, file_words,
-                           mode=loaded.get("connect_mine_words") or "list")
+        return level.check(store, lang, listed, signature, file_words)
     except Exception as e:      # a busy ledger, a store that can't be read: this look is skipped, never the run
         return {"error": f"{type(e).__name__}: {e}"}
 

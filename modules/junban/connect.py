@@ -12,6 +12,10 @@ What Connect's runs add:
   card, in the order you mined it, and is never tagged, flagged or suspended as "not on your list". Your backlog from
   before Connect keeps Junban's order. `junban_order_all` puts every new card, yours too, in the list's order (still
   never suspended).
+* **Never a card Surasura made** (Kyou-MO, the mining model, 3.0.18; ROLES.md: Junban only orders): a card carrying
+  Connect's tag is never tagged, flagged or suspended as "not on your list" (`unlisted.plan`); past the list it goes to
+  the back untouched (or where you meet it, with *Cards for every new word* on), and one Junban parked before comes back
+  (`returning`'s `made`). Junban's set-aside is for your own cards alone (`unlisted.choice`).
 * **A returning word's card** (MR-R3, row 1.4.4): a card Junban parked (suspended, carrying its `::later` tag) whose
   word is back on your list is unsuspended and placed with the list. In 2.6 / 2.7 only in a run you start in 順;
   unattended (Connect's step, `junban --auto`) **only from 3.0** (`UNATTENDED_SUSPEND`, G1.3-8).
@@ -62,7 +66,13 @@ def preview_on(settings):
 def suspends_unattended(settings):
     """May an unattended run suspend (the cards not on the list) and unsuspend (a returning word's card)? From 3.0
     only, while the preview is on and Junban's own suspend setting is on (G1.3-8)."""
-    return UNATTENDED_SUSPEND and preview_on(settings) and (settings or {}).get("junban_later_suspend") is True
+    return UNATTENDED_SUSPEND and preview_on(settings) and _suspend_on(settings)
+
+
+def _suspend_on(settings):
+    """Junban's suspend setting, as the one switch reads it (Kyou-MO: *Set aside* with *Suspend them* ticked)."""
+    from modules.junban import unlisted
+    return unlisted.options(settings)["suspend"]
 
 
 def unsuspends(settings, unattended, acting=False):
@@ -74,7 +84,7 @@ def unsuspends(settings, unattended, acting=False):
     applies Junban's actions (`job.actions`: the window's re-order host, AutoJunban). On 3.0 (`UNATTENDED_SUSPEND`) it
     may suspend with Connect off (`auto.decide_actions` keeps Junban's suspend setting), so it brings back what it
     parked, Connect on or off. A run you start in 順 with Connect off stays 2.5's (`tests/test_preview_gate.py`)."""
-    if (settings or {}).get("junban_later_suspend") is not True:
+    if not _suspend_on(settings):
         return False
     if acting and UNATTENDED_SUSPEND:
         return True
@@ -156,7 +166,7 @@ def junbans(card, parked):
     return since is None or (isinstance(card_id, int) and card_id < since)
 
 
-def returning(cards, marks_of, language, pinned=(), parked=None, out=()):
+def returning(cards, marks_of, language, pinned=(), parked=None, out=(), made=()):
     """The parked cards (`parked` on the card dict) whose word is on the list again, in any form — the test
     `unlisted.plan` parked them by (`match.lookup` over every row of the list). Each one is made movable here
     (`queue` 0: the run unsuspends it before its position is written) and kept; the rest are dropped from the plan, so a
@@ -169,8 +179,11 @@ def returning(cards, marks_of, language, pinned=(), parked=None, out=()):
     parked comes back, by the list or a pin — never one you suspended after Junban only tagged it (`junbans`).
 
     `out` (P4.1 L2): the card ids of items taken out of the learning order (`pins.out_cards`) — one never comes back
-    while its item is out: it stays parked. (TF fix 3, P4.1-7: a card whose word is on the list is never `out`.)"""
-    pinned = set(pinned or ())
+    while its item is out: it stays parked. (TF fix 3, P4.1-7: a card whose word is on the list is never `out`.)
+
+    `made` (Kyou-MO, the mining model): the card ids Surasura made — one Junban parked comes back whatever the list says
+    (Junban never sets one aside now), to the back, untouched."""
+    pinned = set(pinned or ()) | set(made or ())
     gone = set(out or ())
     kept, back = [], []
     for card in cards:

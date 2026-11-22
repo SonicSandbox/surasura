@@ -40,8 +40,50 @@ def test_default_run_is_unchanged(monkeypatch):
 
     root = os.path.dirname(os.path.abspath(run_tests.__file__))
     assert seen["cmd"] == [sys.executable, "-m", "pytest", os.path.join(root, "tests"), "-v", "-ra"]
-    assert set(seen["kwargs"]) == {"env"}, "no cwd and no capture, as before"
+    quiet = {"creationflags", "stdin", "stdout", "stderr"}    # no console here: no window, this process's own streams
+    assert set(seen["kwargs"]) - quiet == {"env"}, "no cwd and no capture, as before"
+    for name in ("stdout", "stderr"):
+        assert seen["kwargs"].get(name) in (None, getattr(sys, name), subprocess.DEVNULL), "never captured"
     assert exit_info.value.code == 3, "pytest's exit code is passed on"
+
+
+# --- No console windows (2026-11-21: every shard opened one and took the focus) ----------------------------------------
+def test_from_a_terminal_a_child_starts_exactly_as_before(monkeypatch):
+    monkeypatch.setattr(run_tests, "_has_console", lambda: True)
+    assert run_tests._quiet({"env": {}}) == {"env": {}}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="a console window is Windows'")
+def test_without_a_console_a_child_gets_no_window_and_this_processs_own_streams(monkeypatch):
+    """Started from a program with no console (an AI app's shell), each child opened a console window of its own.
+    It gets CREATE_NO_WINDOW and, so its output isn't lost in that windowless console, this process's own streams —
+    never in place of streams the call names itself (a shard's own log, a captured run)."""
+    monkeypatch.setattr(run_tests, "_has_console", lambda: False)
+    got = run_tests._quiet({"env": {}})
+    assert got["creationflags"] == subprocess.CREATE_NO_WINDOW and got["env"] == {}
+    for name in ("stdin", "stdout", "stderr"):
+        assert got[name] in (getattr(sys, name), subprocess.DEVNULL)
+    named = run_tests._quiet({"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT})
+    assert named["stdout"] == subprocess.PIPE and named["stderr"] == subprocess.STDOUT
+
+
+@pytest.mark.skipif(os.name != "nt", reason="a console window is Windows'")
+def test_a_shard_and_what_it_starts_have_no_console_window(tmp_path):
+    """The real thing, from a process with no console: a child through `_popen` (as each --all shard), and a plain
+    child of that one (as a test's own subprocess) — neither has a console window, and both write to our stdout."""
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "import ctypes, subprocess, sys\n"
+        "print(sys.argv[1], ctypes.windll.kernel32.GetConsoleWindow(), flush=True)\n"
+        "if sys.argv[1] == 'shard':\n"
+        "    subprocess.run([sys.executable, __file__, 'child'])\n", encoding="utf-8")
+    parent = ("import subprocess, sys, run_tests\n"
+              "run_tests._has_console = lambda: False\n"
+              f"run_tests._popen([sys.executable, {str(probe)!r}, 'shard']).wait()\n")
+    root = os.path.dirname(os.path.abspath(run_tests.__file__))
+    out = subprocess.run([sys.executable, "-c", parent], cwd=root, capture_output=True, text=True, timeout=60,
+                         creationflags=subprocess.CREATE_NO_WINDOW)
+    assert out.stdout.split() == ["shard", "0", "child", "0"], out.stdout + out.stderr
 
 
 # --- --help, and a flag it doesn't know (2026-11-15) ------------------------------------------------------------------

@@ -33,9 +33,10 @@ answers may change it). Qt-free: the Next card on Current (`app/qt/next_card.py`
   sees ④'s card — for it, *Make it yours* sits in ✦ only (round 1's #7). **For now no path sees it** (`YOURS_CARD`
   off; Sonic 2026-11-20, train 51's keeper decision 1): ④ points at *Words to make cards from*, the choice the mining
   model retires (Kantan-MO, `tracks/logic/work/mining-ordering/MODEL.md`), and its *Only i+1* is the off-list cards'
-  trap. The step stays in ✦'s list (to do, its line behind its ?) and the string, but its row has no press either
-  (`has_press`: no *Do it*, no *Again*); `yours_card` is still decided and kept, so the switch back on (once ④ is
-  re-pointed) gives each path the card its rule says and the row its press.
+  trap. The step stays in ✦'s list (to do, its line behind its ?) and the string; `yours_card` is still decided and
+  kept, so the switch back on gives each path the card its rule says. **Its row's press is back** since the mining
+  model (Kantan-MO, the lead 2026-11-21): ④'s *Do it* / *Again* opens Settings' *Level*, the one knob for which words
+  get cards (`YOURS_PRESS`); `has_press` gives it a press only while it opens there, never the retired choice.
 - **The glow** (`newly_useful`): a chapter-2 step useful and not yet seen in the panel lights the ✦ (with unseen news);
   never the first chapter's (the card carries those), never on a first run.
 - **State** in the guide's `guide.json` (per PC, never settings.json, never sent): `done`, `not_now`, `own_cards`,
@@ -70,6 +71,7 @@ Step = namedtuple("Step", "id chapter when done where offered stage", defaults=(
 # None (a later step outside the four)
 PIYO_AFTER = 3                                  # episodes Done before Piyo is offered
 YOURS_CARD = False                              # ④'s Next card, off until the mining model re-points it (Sonic 11-20)
+YOURS_PRESS = "settings:level"                  # where ④'s press opens: Level, the one knob since the mining model
 
 # The table (EXPERIENCE.md §3; the stages, SPEC-r2 §0.2 / §0.9). `when` / `done`: Facts -> bool. Chapter 1's steps are
 # useful as soon as a library is. `where`: `hero:<part>` Up Next's part, `circle:<name>` a footer circle, `settings:`.
@@ -317,9 +319,10 @@ def listed(sts):
 
 
 def has_press(step_id):
-    """Whether a step's row in ✦ carries its own press (*Do it* / *Again*): ④'s waits with its card (`YOURS_CARD`),
-    so nothing leads to the choice being retired."""
-    return step_id != "yours" or YOURS_CARD
+    """Whether a step's row in ✦ carries its own press (*Do it* / *Again*): ④'s only while it opens Level
+    (`YOURS_PRESS`, the mining model's one knob) or with its card (`YOURS_CARD`), so nothing leads to the retired
+    *Words to make cards from*."""
+    return step_id != "yours" or YOURS_CARD or YOURS_PRESS == "settings:level"
 
 
 def newly_done(sts, state):

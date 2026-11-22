@@ -244,7 +244,7 @@ class _StepRow(QWidget):
         row.addWidget(self.about, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addStretch(1)
         self.press = None
-        if status.useful and path_service.has_press(step_id):     # (④: none until the mining model, Sonic 11-20)
+        if status.useful and path_service.has_press(step_id):     # (④: only while it opens Level)
             words = strings.PATH_AGAIN if done else strings.PATH_DO
             b = QPushButton(words, self)
             b.setObjectName("guideshow")

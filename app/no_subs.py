@@ -683,6 +683,11 @@ BESIDE_KEY = "write_beside_video"   # hato's SRC-7 setting as `config --show --j
 
 
 # --- found online (hato) ------------------------------------------------------------------------------------------- #
+def finding():
+    """Is a hato run of this process going now (`find`)? Hato-UP: hato's daily update waits for it."""
+    return _find_lock.locked()
+
+
 def hato_entry():
     """hato's tools entry (`tools_entry.read`), or None (no hato, or one Surasura can't speak to). Never raises."""
     try:

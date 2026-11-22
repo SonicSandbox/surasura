@@ -72,10 +72,10 @@ def controls(**over):
 
 # --- the I5 key ------------------------------------------------------------------------------------------------------ #
 @pytest.mark.parametrize("change", [
-    {"scope": "all"}, {"deck": "The Accelerator"}, {"order": "priority"}, {"list_first": False}, {"phrases": False},
-    {"ready_first": True}, {"only_markers": ("star",)}, {"tag_on": False}, {"tag_name": "mine"},
-    {"markers_on": True}, {"freq_on": True}, {"freq_field": "Freq"}, {"freqsort_on": True}, {"later_tag": True},
-    {"later_flag": True}, {"later_suspend": True},
+    {"scope": "all"}, {"deck": "The Accelerator"}, {"order": "priority"}, {"phrases": False},
+    {"only_markers": ("star",)}, {"tag_on": False}, {"tag_name": "mine"},
+    {"markers_on": True}, {"freq_on": True}, {"freq_field": "Freq"}, {"freqsort_on": True}, {"off_list": "back"},
+    {"off_list": "aside"}, {"later_flag": True}, {"later_suspend": True},
 ])
 def test_every_part_of_the_scope_key_changes_it(change):
     # Each control changes what Reorder writes, so a preview made without it is no confirmation of a run with it.
@@ -123,10 +123,20 @@ def test_an_unticked_box_sends_its_disabling_value():
     assert on["junban_tag"] == "mine" and on["junban_write_freqsort"] is True and on["junban_later_suspend"] is True
 
 
-def test_list_first_keeps_a_hand_set_back_and_unticked_is_journey():
-    assert view.unlisted_value({"list_first": True}, "back") == "back"
-    assert view.unlisted_value({"list_first": True}, "") == "list_first"
-    assert view.unlisted_value({"list_first": False}, "back") == "journey"
+def test_the_one_switch_opens_as_junban_reads_it_and_is_handed_on_as_shown():
+    """Kyou-MO: the window's *Your cards not on your list* opens as `unlisted.choice` reads the file (3.0.17's keys
+    while unset: a tick → *Set aside*, *At the back* → back) and hands the engine `junban_off_list` as shown — *List
+    first* and *i+1 first* are no controls any more."""
+    assert view.controls_from(saved(), connect_row=False)["off_list"] == "leave"
+    assert view.controls_from(saved(junban_unlisted="back"), connect_row=False)["off_list"] == "back"
+    assert view.controls_from(saved(junban_later_flag=True), connect_row=False)["off_list"] == "aside"
+    assert view.controls_from(saved(junban_off_list="back", junban_later_flag=True),
+                              connect_row=False)["off_list"] == "back"
+    assert not {"list_first", "ready_first", "later_tag"} & set(view.CONTROL_NAMES)
+    out = view.engine_settings(saved(junban_later_tag=True), controls(off_list="leave"), "ja")
+    assert out["junban_off_list"] == "leave" and view.unlisted.options(out)["tag"] is False
+    assert view.window_keys(controls(off_list="aside"))["junban_off_list"] == "aside"
+    assert view.off_list({"off_list": "garbled"}) == "leave"
 
 
 def test_the_connect_row_is_handed_on_only_when_shown():
@@ -368,8 +378,8 @@ def test_the_greyed_rows_tip_names_every_card_your_list_does_not_place():
     assert stats["later"]["cards"] == [], "a held list word is never 'not on your list'"
     assert not qs.JUNBAN_TABLE_TIP.startswith("Greyed rows are not on your list")
     assert qs.JUNBAN_TABLE_TIP.startswith(
-        "Greyed rows aren't in your list's order: words below its level, words you know and list words waiting for "
-        "an i+1 sentence go after it; cards you made yourself go first. Click a word on your list to take it off")
+        "Greyed rows aren't in your list's order: words below its level and words you know go after it; cards you "
+        "made yourself go first. Click a word on your list to take it off")
 
 
 def test_no_preview_says_so():

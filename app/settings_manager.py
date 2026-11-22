@@ -126,7 +126,17 @@ DEFAULT_SETTINGS = {
     # G1.3), where Anki Miner is ("" = found by its installer's key) and the Anki Miner profile Connect mines with.
     # Read only by
     # `surasura-cli pick` and Connect: never in a signature (analyzer._NON_ANALYSIS_SETTINGS).
+    # Retired by the mining model (Kantan-MO, 3.0.18): read only to carry a learner's pick over (`load_settings`) and
+    # by 2.x; Connect reads `connect_every_word`
     "connect_mine_words": "list",
+    # *Cards for every new word* (Kantan-MO, the mining model, MODEL.md Q1 (b)): off — Connect makes cards for your
+    # list (Level is what you learn); on — for every word of the episode you don't know, past your level too, counted
+    # toward the cap. `connect_every_word()` reads it; a file without it reads `connect_mine_words` == "unknown".
+    "connect_every_word": False,
+    # The study order (Kantan-MO; ROLES.md: the list's): "content" — as you'll meet the words in your library;
+    # "priority" — by leverage first. Read by Connect (the cap's window), 順 (its order) and the journey (its list)
+    # through `study_order()`; a file without it reads 順's old `junban_order`.
+    "study_order": "content",
     "connect_send_grammar": True,
     "connect_anki_miner_path": "",
     "connect_anki_miner_profile": "Surasura",
@@ -391,6 +401,13 @@ def load_settings(strict: bool = False) -> Dict[str, Any]:
                     and user_settings.get("known_from_anki", ["suspended"]) in (["suspended"], ["suspended", "marked"])):
                 settings["known_from_anki"] = ["suspended"]
                 settings["known_from_anki_chosen"] = True
+            # Kantan-MO (the mining model): a learner's picks carry over, read here and never written (settings
+            # criteria 11) — 順's *Order* is the study order; *Every new word* is *Cards for every new word* (*Your
+            # list* and *Only i+1* read as off: your list)
+            if "study_order" not in user_settings:
+                settings["study_order"] = study_order({"junban_order": user_settings.get("junban_order")})
+            if "connect_every_word" not in user_settings:
+                settings["connect_every_word"] = user_settings.get("connect_mine_words") == "unknown"
         except Exception as e:
             if strict:
                 raise SettingsError(f"settings.json can't be read: {e}") from e
@@ -763,6 +780,36 @@ def connect_on(settings) -> bool:
     (off)."""
     on = settings.get("connect_enabled") if hasattr(settings, "get") else False
     return bool(on) and automation(settings)
+
+
+STUDY_ORDERS = ("content", "priority")
+
+
+def study_order(settings) -> str:
+    """The study order (Kantan-MO; ROLES.md: the list's) as every reader takes it — "content" (as you'll meet it) or
+    "priority" (by leverage): `study_order`, else 順's old `junban_order` (a settings dict not read by `load_settings`),
+    else "content". Takes a settings dict, a window's frozen copy, or None."""
+    get = settings.get if hasattr(settings, "get") else (lambda _key: None)
+    for key in ("study_order", "junban_order"):
+        value = str(get(key) or "").strip().lower()
+        if value in STUDY_ORDERS:
+            return value
+    return "content"
+
+
+def connect_every_word(settings) -> bool:
+    """*Cards for every new word* (Kantan-MO): `connect_every_word` when it is a bool, else the retired *Words to make
+    cards from* on *Every new word* (`connect_mine_words` == "unknown"). Takes a settings dict, a frozen copy, or None
+    (off)."""
+    get = settings.get if hasattr(settings, "get") else (lambda _key: None)
+    value = get("connect_every_word")
+    return value if isinstance(value, bool) else get("connect_mine_words") == "unknown"
+
+
+def mine_mode(settings) -> str:
+    """Connect's pick mode (`app/connect/pick.py`'s MODES) from the settings: "unknown" with *Cards for every new
+    word* on, else "list" — the list (Level) decides (Kantan-MO; *Only i+1* retired)."""
+    return "unknown" if connect_every_word(settings) else "list"
 
 
 FINISH_CARDS = ("ask", "keep", "out")

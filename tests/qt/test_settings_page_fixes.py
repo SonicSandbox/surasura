@@ -436,23 +436,21 @@ def test_your_own_cards_choice_writes_order_all_and_their_tag_stays_open_under_i
     assert _written(store, tag.controls[0], "immersion 日本語") == [{"junban_own_tag": "immersion 日本語"}]
 
 
-def test_phrases_and_i_plus_one_first_are_switches_hidden_for_chinese_and_at_the_back(qapp):
-    """Q31: two plain switches, each writing its own key; no "First" heading; gone at the back and for Chinese."""
+def test_phrases_is_a_switch_hidden_for_chinese_and_i_plus_one_first_is_gone(qapp):
+    """Q31: a plain switch writing its own key; no "First" heading; gone for Chinese. Kyou-MO: *i+1 first* has no row
+    (always on), and *At the back* — your own cards only now — keeps the phrases."""
     pytest.importorskip("modules.junban.reposition")     # Junban's rows show only with Junban installed (private)
-    page, store = make_page(dict(ALL_ON, junban_phrases=True, junban_ready_first=False), "ja")
-    phrases, ready = page.rows["junban_phrases"], page.rows["junban_ready_first"]
-    assert isinstance(phrases.controls[0], sc.Toggle) and isinstance(ready.controls[0], sc.Toggle)
-    assert phrases.controls[0].value() is True and ready.controls[0].value() is False
-    assert _written(store, ready.controls[0], True) == [{"junban_ready_first": True}]     # both on: they work together
+    page, store = make_page(dict(ALL_ON, junban_phrases=True), "ja")
+    phrases = page.rows["junban_phrases"]
+    assert "junban_ready_first" not in page.rows
+    assert isinstance(phrases.controls[0], sc.Toggle) and phrases.controls[0].value() is True
     assert _written(store, phrases.controls[0], False) == [{"junban_phrases": False}]
     store.land()
-    assert phrases.isVisibleTo(page) and ready.isVisibleTo(page)
-    store.outside({"junban_unlisted": "back"})
-    assert not phrases.isVisibleTo(page) and not ready.isVisibleTo(page)
-    store.outside({"junban_unlisted": "journey"})
-    assert phrases.isVisibleTo(page) and ready.isVisibleTo(page)
+    assert phrases.isVisibleTo(page)
+    store.outside({"junban_off_list": "back"})
+    assert phrases.isVisibleTo(page)
     store.outside({"target_language": "zh"})
-    assert not phrases.isVisibleTo(page) and not ready.isVisibleTo(page)
+    assert not phrases.isVisibleTo(page)
 
 
 def test_only_words_marked_is_glyph_tablets_again_writing_one_list(qapp):

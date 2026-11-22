@@ -270,7 +270,7 @@ def _apply_held(language, wanted, result, unknow=False):
                 flip.add(key)
                 known_any.discard(key)
             unflip.discard(key)
-        elif mark in ("known", None) and key in turned:
+        elif mark in ("known", None) and key in turned and (mark == "known" or before == "learning" or unknow):
             unflip.add(key)                         # what Still learning turned is put back as it was
             flip.discard(key)
             known_any.add(key)

@@ -34,6 +34,8 @@ CALL_SITES = {
     "app/connect/kick.py": 3,
     "app/connect/known_signal.py": 1,
     "app/connect/ledger.py": 1,
+    "app/connect/review_loop.py": 1,              # Kyou-LR: the loop's record (local data "connect", PARTS)
+    "app/connect/swap_queue.py": 1,               # Kyou-LR: the swap queue (local data "connect", PARTS)
     "app/diagnose.py": 1,             # Piyo's diagnose: reads the saved reports' folder (persistent_root, never made)
     "app/import_2x.py": 2,
     "app/library_move.py": 2,         # 3.0.1: its record and library.json, both in the local root

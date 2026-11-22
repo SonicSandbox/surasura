@@ -24,11 +24,16 @@ import json
 import math
 import os
 import re
+import time
 import unicodedata
 
 SCHEMA = 1
 MAX_BYTES = 8 * 1024 * 1024
 RUN_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+# A job's run file is written twice, seconds apart (the pick's, then the batch's), so the second replace can land on a
+# file another program is still reading (a virus check: [WinError 32], once in every eleven jobs of a timed mine) —
+# waited out as the library store's replace is (`library_store.REPLACE_BACKOFF`), 1.55 s at most, then the error
+REPLACE_BACKOFF = (0.05, 0.1, 0.2, 0.4, 0.8)
 TAG_PREFIX = "surasura::connect::"
 # Michi-NS (Q5 ✅ Sonic 2026-10-31): on every card mined from a subtitle Anki Miner made from the episode's audio
 # (`no_subs`, the record's verdict "transcribed"): a misheard word can happen, so the learner can find and check them
@@ -324,7 +329,9 @@ def _strings(value, where="run file"):
 
 def write(path, data):
     """Check `data`, then write it to `path` as strict UTF-8 without a BOM (K61), atomically (a temp file, then
-    os.replace); the folders it names (`run_dir`, the file's own) are made. Returns the path."""
+    os.replace); the folders it names (`run_dir`, the file's own) are made. Returns the path. The replace is tried
+    again while another program holds the file open (`REPLACE_BACKOFF`); still held after the last wait: the
+    PermissionError, the file there before left as it was and no temp file behind."""
     check(data)
     raw = json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8")      # strict: a surrogate raises above
     if len(raw) > MAX_BYTES:
@@ -336,8 +343,18 @@ def write(path, data):
         f.write(raw)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, path)
-    return path
+    for wait in REPLACE_BACKOFF + (None,):
+        try:
+            os.replace(tmp, path)
+            return path
+        except PermissionError:
+            if wait is None:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                raise
+            time.sleep(wait)
 
 
 def without_sentence_keys(data):

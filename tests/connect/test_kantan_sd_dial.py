@@ -298,7 +298,9 @@ def test_best_moves_a_word_to_the_episode_with_the_better_sentence_through_a_kep
     monkeypatch.setattr(sentences, "choose", _choices(here, {adventure: [better, own], maze: [own]}))
     with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
         job = {"id": 9, "item_id": 1, "kind": "new", "store_id": "s-1"}
-        kept, moved = runner._best(_Steps(), ledger, "ja", job, _words(adventure, maze), here)
+        # (Kantan-SD 6: a line with no video — a book's — keeps this job of its own; a video's word stays in the mined
+        # episode's job, `tests/connect/test_kantan_sd6_best_mining.py`)
+        kept, moved = runner._best(_Steps(videos=()), ledger, "ja", job, _words(adventure, maze), here)
         assert [w["word"] for w in kept] == ["迷宮"]
         assert moved == [{"word": "冒険", "reading": "ボウケン", "item_id": 2, "text": EASY}]
         (made,) = [ledger.job_by_id(j["id"]) for j in ledger.jobs("ja") if j["kind"] == LEVEL]
@@ -330,7 +332,7 @@ def test_best_keeps_the_word_on_a_tie_an_ask_nearest_or_when_the_other_episode_i
                              (_Steps(), {"kind": runner.LEVEL})):
             assert runner._best(steps, ledger, "ja", dict(job, **asked), _words(adventure), here)[1] == []
         ledger.queue("ja", 2, "user", None)              # the other episode's first mining, not started
-        kept, moved = runner._best(_Steps(), ledger, "ja", job, _words(adventure), here)
+        kept, moved = runner._best(_Steps(videos=()), ledger, "ja", job, _words(adventure), here)
         assert moved == [] and len(kept) == 1, "its own pick takes the list's words as they are"
         assert [j for j in ledger.jobs("ja") if j["kind"] == LEVEL] == []
 

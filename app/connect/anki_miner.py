@@ -970,7 +970,7 @@ def tag_names(url, words, outcomes):
 def mine_batch(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, url, attempt=1,
                subtitle_offset=0.0, timeout=MINE_TIMEOUT, wait=0.0, expect_profile=None, on_progress=None,
                known=None, should_stop=None, show=None, reading=None, from_audio=False, names=None,
-               word_audio=True, workers=None):
+               word_audio=True, workers=None, more=None):
     """One batch of one episode, end to end (§ above), holding `anki-writer` (waiting up to `wait` s for another
     writer; still held -> AnkiMinerError `busy`). `words`: pick's; `mapping`: fields.Mapping (from this profile's
     export); `profile_name`: `connect_anki_miner_profile`; `url`: AnkiConnect's address, for the names' tag. Returns
@@ -994,7 +994,13 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
     (an online title's fetched video: its transcript's, `online.of`). `word_audio` False (Zh-C: a Chinese run with
     *Word audio from Google* off, `runfile.word_audio_on`): the run's word-audio field is sent unmapped
     (`runfile.config`), so no word goes to Google. `workers` (Michi-LP, `power.clip_cuts`): the clips Anki Miner cuts
-    at once in this run (None: the profile's own)."""
+    at once in this run (None: the profile's own). `more` (Kantan-SD 6): the other episodes this batch's words are cut
+    from — [{"video", "subtitle", "words", "subtitle_offset", "show"}], a Best sentence's — each an episode of the
+    same call (Anki Miner starts once and loads its dictionaries once: API.md, `episodes`), its run `<run id>-s<n>`,
+    its cards under the same job tag; `outcomes` then holds `words`' and each of `more`'s in turn, `on_progress` is
+    told which run works (`run`, of `runs`), a Stop cancels every run, and one whose file can't be read leaves its
+    words `not_attempted` with the code in `run_error` while the others are made (the episode's own refused that way
+    with cards made elsewhere: `refused`, the error, instead of raising it)."""
     from app import anki_connect, locks
     try:
         # #BS0A1K: a Stop pressed while another writer holds Anki (Junban's reorder) ends the wait for it at once
@@ -1010,16 +1016,17 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
         try:
             done = _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
                               subtitle_offset, timeout, expect_profile, on_progress, known, should_stop, show,
-                              reading, from_audio, names, word_audio, workers)
+                              reading, from_audio, names, word_audio, workers, more)
         except runfile.RunFileError as e:
             raise AnkiMinerError("refused", f"The run file for Anki Miner couldn't be written: {e}") from None
         done["tagged"], done["tag_pending"] = [], []
+        sent = list(words) + [w for extra in more or () for w in extra["words"]]    # in the outcomes' order
         try:
             if anki_connect.reviewing(url):
                 raise anki_connect.AnkiError(anki_connect.REVIEWING, "refused")
-            done["tagged"] = tag_names(url, words, done["outcomes"])
+            done["tagged"] = tag_names(url, sent, done["outcomes"])
         except anki_connect.AnkiError:
-            done["tag_pending"] = [o["note_id"] for w, o in zip(words, done["outcomes"])
+            done["tag_pending"] = [o["note_id"] for w, o in zip(sent, done["outcomes"])
                                    if w.get("name") and o["outcome"] == "made" and o.get("note_id") is not None]
         return done
 
@@ -1058,7 +1065,7 @@ ZH_UPDATE = ("Chinese cards need Anki Miner 3.12 or newer. Update Anki Miner fro
 
 def _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
                subtitle_offset, timeout, expect_profile=None, on_progress=None, known=None, should_stop=None,
-               show=None, reading=None, from_audio=False, names=None, word_audio=True, workers=None):
+               show=None, reading=None, from_audio=False, names=None, word_audio=True, workers=None, more=None):
     info, profile = preflight(path, language, profile_name, known)
     if expect_profile is not None and profile != expect_profile:
         raise AnkiMinerError("profile-changed", "Anki Miner's profile changed since the words were picked.")
@@ -1066,7 +1073,8 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
     if language == "zh" and (version_tuple(info.get("app")) or (0, 0, 0)) < ZH_FROM:
         raise AnkiMinerError("setup", ZH_UPDATE, verdict=info)     # nothing sent: the language waits for the update
     if "Z-1" not in asks:
-        write_whitelist(language, [name for word in words for name in runfile.entries(word, named)])
+        write_whitelist(language, [name for word in list(words) + [w for extra in more or () for w in extra["words"]]
+                                   for name in runfile.entries(word, named)])
     if reading is not None and READING not in (named or ()):
         # an Anki Miner that no longer names `reading` (another one installed since the pick): nothing sent; the job
         # waits as a book does (`runner.Steps.mine`)
@@ -1083,15 +1091,29 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
     else:
         episode = runfile.episode(run_id, video, subtitle, runfile.word_requests(words, named, app=info.get("app")), tags=tags,
                                   subtitle_offset=subtitle_offset, audio=audio, names=names)
-    data = runfile.build(run_dir, language, [episode], profile=profile,
+    episodes, others = [episode], []
+    for n, extra in enumerate(more or (), 1):
+        # Kantan-SD 6: a Best sentence's episode, cut in the same call (one start, one dictionary load) — its own run
+        # folder and result, the job's tag, its own show's
+        other = f"{run_id}-s{n}"
+        episodes.append(runfile.episode(
+            other, extra["video"], extra["subtitle"],
+            runfile.word_requests(extra["words"], named, app=info.get("app")),
+            tags=" ".join(t for t in (runfile.job_tag(job), runfile.from_tag(extra.get("show"))) if t),
+            subtitle_offset=float(extra.get("subtitle_offset") or 0.0)))
+        others.append((other, extra["words"]))
+    data = runfile.build(run_dir, language, episodes, profile=profile,
                          run_config=runfile.config(mapping, info.get("app"), named, word_audio=word_audio,
                                                    workers=workers))
     run_path = runfile.write(os.path.join(run_dir, f"run-{attempt}.json"), data)
     before = result_names(run_dir, run_id)
-    try:            # review A2: a cancel file left by a stopped call of this run id (a refused attempt is reused)
-        os.remove(os.path.join(run_dir, run_id, "cancel"))
-    except OSError:
-        pass
+    others = [(other, theirs, result_names(run_dir, other)) for other, theirs in others]
+    ids = [run_id] + [other for other, _theirs, _had in others]
+    for each in ids:
+        try:        # review A2: a cancel file left by a stopped call of this run id (a refused attempt is reused)
+            os.remove(os.path.join(run_dir, each, "cancel"))
+        except OSError:
+            pass
     done = {"run_file": run_path, "run": None, "result": None, "app": info.get("app"), "features": sorted(asks),
             "error": None, "_before": before}
 
@@ -1102,31 +1124,49 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
         # the cancel file stands while the Stop does: Anki Miner 3.10 deletes an unconsumed one once, before its
         # setup (a second or two in) — written once, a Stop pressed as the call began was lost
         if should_stop is not None and (cancelled or should_stop()):
-            cancel(run_dir, run_id)
+            for each in ids:        # every run of the call: one still waiting its turn is cancelled as it starts
+                cancel(run_dir, each)
             cancelled[:] = cancelled or [time.monotonic()]
         late = ends and cancelled and time.monotonic() - cancelled[0] >= STOP_GRACE_S
-        progress = read_progress(run_dir, run_id) if on_progress is not None or late else None
+        at = _working(run_dir, ids, [before] + [had for _other, _theirs, had in others]) if others else 0
+        progress = read_progress(run_dir, ids[at]) if on_progress is not None or late else None
         if on_progress is not None and progress is not None:
-            on_progress(progress)
-        if late and before_anki(run_dir, run_id, progress):
+            on_progress(dict(progress, run=at, runs=len(ids)) if others else progress)
+        if late and before_anki(run_dir, ids[at], progress):
             return stopping.END     # #BS0A1K: in a step that never reads the cancel file, nothing written yet
     poll = poll if (on_progress is not None or should_stop is not None) else None
     try:
-        return _mine_call(path, run_dir, run_id, run_path, data, done, words, named, timeout, poll, cancelled)
+        return _mine_call(path, run_dir, run_id, run_path, data, done, words, named, timeout, poll, cancelled,
+                          others)
     except AnkiMinerError as e:
         e.stopped = bool(cancelled)
         raise
     finally:
         if cancelled:               # the call over: the file it was held by goes too (none left for the next call)
-            try:
-                os.remove(os.path.join(run_dir, run_id, "cancel"))
-            except OSError:
-                pass
+            for each in ids:
+                try:
+                    os.remove(os.path.join(run_dir, each, "cancel"))
+                except OSError:
+                    pass
 
 
-def _mine_call(path, run_dir, run_id, run_path, data, done, words, named, timeout, poll, cancelled):
+def _working(run_dir, ids, had):
+    """Kantan-SD 6: which run of a call with several episodes works now (they run in turn, API.md) -> its place in
+    `ids`: the last one Anki Miner has begun — its progress file, its media folder or a result written since the call
+    (`had`: each run's results before it) — the first before any has."""
+    at = 0
+    for n, (run_id, before) in enumerate(zip(ids, had)):
+        folder = os.path.join(run_dir, run_id)
+        if (os.path.exists(os.path.join(folder, PROGRESS)) or os.path.exists(os.path.join(folder, "media"))
+                or result_names(run_dir, run_id) - set(before)):
+            at = n
+    return at
+
+
+def _mine_call(path, run_dir, run_id, run_path, data, done, words, named, timeout, poll, cancelled, others=()):
     """`_mine_held`'s call to Anki Miner and the reading of its answer -> `done` (with `stopped`: a *Stop* cancelled
-    the run)."""
+    the run). `others` (Kantan-SD 6): the call's other episodes, [(run id, its words, its results before the call)]
+    — their outcomes follow the episode's own (`_others`)."""
     before = done.pop("_before")
     done["stopped"] = False
     try:
@@ -1152,26 +1192,57 @@ def _mine_call(path, run_dir, run_id, run_path, data, done, words, named, timeou
         result = read_result(run_dir, run_id, before=before)
         if result is None:
             raise
-        done.update(result=result, error=e.kind, outcomes=outcomes(words, result.get("words"), True, named),
-                    stopped=bool(cancelled))
+        done.update(result=result, error=e.kind, outcomes=outcomes(words, result.get("words"), True, named)
+                    + _others(run_dir, others, None, named), stopped=bool(cancelled))
         return done
     run = next((r for r in verdict.get("runs") or [] if r.get("run_id") == run_id), None)
     if not verdict.get("ok") and run is None:
         result = read_result(run_dir, run_id, before=before) if verdict.get("error") == "INTERNAL" else None
         if result is None:
             _result(verdict)                # a refusal of the whole call: busy, anki-closed, refused, setup …
-        done.update(result=result, error="crashed", outcomes=outcomes(words, result.get("words"), True, named),
-                    stopped=bool(cancelled))
+        done.update(result=result, error="crashed", outcomes=outcomes(words, result.get("words"), True, named)
+                    + _others(run_dir, others, None, named), stopped=bool(cancelled))
         return done
     if run is not None and not run.get("ok") and not run.get("file") and run.get("error") in BEFORE_ANKI:
         # stopped before anything reached Anki (a video or subtitle it can't read, Anki gone at its own check,
         # cancelled before the run began): nothing is uncertain; the batch is refused with its reason
-        raise AnkiMinerError(KINDS.get(run["error"], "failed"), run.get("message") or run["error"], code=run["error"])
+        refused = AnkiMinerError(KINDS.get(run["error"], "failed"), run.get("message") or run["error"],
+                                 code=run["error"])
+        rest = _others(run_dir, others, verdict, named)
+        if not any(o["outcome"] in ("made", "uncertain") for o in rest):
+            raise refused
+        # Kantan-SD 6: Anki Miner went on to the call's other episodes, and one of them made a card (or may have) — their
+        # outcomes are kept, the episode's own words not attempted, and the caller raises the refusal after them
+        refused.stopped = bool(cancelled)
+        done.update(run=run, refused=refused, outcomes=outcomes(words, None, False, named) + rest,
+                    stopped=bool(cancelled))
+        return done
     result = read_result(run_dir, run_id, run["file"]) if run is not None and run.get("file") else None
     done.update(run=run, result=result,
-                outcomes=outcomes(words, (result or {}).get("words"), run is None or not run.get("ok"), named),
-                stopped=bool(cancelled))
+                outcomes=outcomes(words, (result or {}).get("words"), run is None or not run.get("ok"), named)
+                + _others(run_dir, others, verdict, named), stopped=bool(cancelled))
     return done
+
+
+def _others(run_dir, others, verdict, named):
+    """Kantan-SD 6: the outcomes of a call's other episodes (`_mine_call`'s `others`), in their order. A run refused
+    before anything reached Anki (its video or subtitle can't be read, cancelled before it began): its words
+    `not_attempted`, each naming the code (`run_error`) — nothing uncertain. Any other: its result's rows, the one its
+    verdict names or (no verdict: a crash, a timeout) the newest written since the call; none, or a run that failed:
+    in doubt, found by the job's tag as the episode's own are."""
+    out = []
+    for run_id, words, before in others:
+        run = next((r for r in (verdict or {}).get("runs") or [] if r.get("run_id") == run_id), None)
+        if run is not None and not run.get("ok") and not run.get("file") and run.get("error") in BEFORE_ANKI:
+            out.extend(dict(o, run_error=run["error"]) for o in outcomes(words, None, False, named))
+            continue
+        try:
+            result = (read_result(run_dir, run_id, run["file"]) if run is not None and run.get("file")
+                      else read_result(run_dir, run_id, before=before))
+        except AnkiMinerError:
+            result = None
+        out.extend(outcomes(words, (result or {}).get("words"), run is None or not run.get("ok"), named))
+    return out
 
 
 def tag_query(tag):

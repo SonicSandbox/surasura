@@ -40,8 +40,9 @@ Feed = namedtuple("Feed", Feed._fields + ("miner",), defaults=(None,))
 # `writing_cards` (#BS0A1K): True while a stopping job's Anki Miner is in its card-writing stage (never ended there:
 # it finishes adding the cards it has ready), else None
 # `since` (help cards): when its wait's reason was set (the ledger's `reason_at`, UTC "…Z"), else None
+# `source` (Kantan-SD 6): the other episode a mining item's sentence is being cut from just now (Best), else None
 Item = namedtuple("Item", "kind words tip job made total progress doing stoppable stopping moved title writing_cards "
-                          "since", defaults=(None, None, None, None, None, None, None, None))
+                          "since source", defaults=(None, None, None, None, None, None, None, None, None))
 
 # ANKI waits on Anki for you to act (closed, a prompt, another profile or none: `runner.anki_needs_you`, amber);
 # ANKI_WAIT waits on Anki for something that clears by itself (you reviewing, Anki busy, another writer, one slow
@@ -159,7 +160,8 @@ def build(record, language):
                               stoppable=stoppable, stopping=stopping,
                               moved=runner.moved_folder(reason) if kind == NO_VIDEO else None,
                               title=job.get("title") or None,
-                              writing_cards=writing_cards, since=job.get("since") if reason else None)
+                              writing_cards=writing_cards, since=job.get("since") if reason else None,
+                              source=(step.get("source") or None) if step else None)
     for failed in rec.get("failed") or ():     # Mattias #5: after the open jobs — a new try's stone is its own
         item_id = failed.get("item")
         if item_id is None or item_id in items:

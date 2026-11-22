@@ -1716,9 +1716,12 @@ def _pick(steps, ledger, lang, job, record=True):
         declined |= skipped
     words = [w for w in got.get("words") or [] if (w.get("word"), w.get("reading")) not in declined]
     words, best = _best(steps, ledger, lang, job, words, got.get("file")) if book is None else (words, [])
+    words, sources = _borrow(steps, lang, job, words)
     picked = {"words": words, "file": got.get("file"), "subtitle": got.get("subtitle"),
               "video": video, "pairing": fit_check.version(pairing), "profile": got.get("profile"),
               "anki_miner": got.get("anki_miner")}
+    if sources:
+        picked["sources"] = sources                 # Kantan-SD 6: the other episodes its words' lines are cut from
     left = _left_out(got, declined, outcomes, skipped, best)
     if left:
         picked["left"] = left                       # Kantan-MA: why a word of it gets no card (`ledger.left_of`)
@@ -1762,9 +1765,13 @@ def _pick(steps, ledger, lang, job, record=True):
 def _best(steps, ledger, lang, job, words, here):
     """Kantan-SD, the sentence dial's Best (`app/connect/sentences.py`): each picked word whose best sentence is in
     another episode — strictly better than this one's own line (`sentences.better`), its video there — is cut from
-    there instead: a level job of source `level.BEST` on that episode names it, and it leaves this job's words ->
-    (the words kept, [{word, reading, item_id, text}] moved). Nearest, an ask (*Mine this*, *Mine now*: that episode's
-    own lines), a level job, or any failure: the words as they are (a book or a text never calls it)."""
+    there instead. Kantan-SD 6: a video's line is cut inside this job — the word stays in its words, naming that
+    episode's item (`from`; `_borrow` then picks its line there), so one Anki Miner call makes the episode's cards
+    wherever their sentences are and every card is this job's. A line with no video (a book's, heard through its
+    audiobook or the AI voice) keeps its own job: a level job of source `level.BEST` on that item names the word,
+    and it leaves this job's words -> (the words kept, [{word, reading, item_id, text}] moved). Nearest, an ask
+    (*Mine this*, *Mine now*: that episode's own lines), a level job, or any failure: the words as they are (a book
+    or a text never calls it)."""
     if not words or not here or job.get("asked_at") or job.get("kind") in (ASKED, LEVEL):
         return words, []
     try:
@@ -1792,9 +1799,14 @@ def _best(steps, ledger, lang, job, words, here):
                         own_weight = sentences.context_of(lang, here)
                     mine = sentences.Choice(here, own, w.get("line_text"), int(w.get("other_new") or 0),
                                             round(own_weight + float(w.get("young") or 0), 4), True, True)
-                if (top is None or top.here or top.item_id is None or not sentences.better(top, mine)
-                        or ledger.queue_level(lang, top.item_id, [key], source=level.BEST,
-                                              store_id=job.get("store_id")) is None):
+                if top is None or top.here or top.item_id is None or not sentences.better(top, mine):
+                    kept.append(w)
+                    continue
+                if steps.video(lang, {"item_id": top.item_id}) is not None:
+                    kept.append(dict(w, **{"from": top.item_id}))       # Kantan-SD 6: cut there, made by this job
+                    continue
+                if ledger.queue_level(lang, top.item_id, [key], source=level.BEST,
+                                      store_id=job.get("store_id")) is None:
                     kept.append(w)      # an open job there already picks from the list as it is: it stays here
                     continue
                 moved.append({"word": key[0], "reading": key[1], "item_id": top.item_id, "text": top.text})
@@ -1802,6 +1814,103 @@ def _best(steps, ledger, lang, job, words, here):
         log.info("Connect: Best sentences not kept (%s): %s", lang, e)
         return words, []
     return kept, moved
+
+
+def _borrow(steps, lang, job, words):
+    """Kantan-SD 6: the words `_best` cuts from another episode's line (`from`: that episode's item) picked there as
+    that episode's own job would pick them (`Steps.pick` with `only`: the same rule, so the same line), each kept in
+    this job with its own line beside it (`own`: what Nearest would cut, where it goes back to when the other
+    episode gives no card — `_own_lines`) -> (the words, {item id: {"video", "file", "subtitle", "pairing",
+    "title"}}: the episodes they are cut from). An episode that can't be picked from now (its subtitle or video
+    gone, the library busy, the word not offered there): its words keep their own lines, as Nearest."""
+    wanted = {}
+    for w in words:
+        if w.get("from") is not None:
+            wanted.setdefault(w["from"], []).append((w["word"], w["reading"]))
+    if not wanted:
+        return words, {}
+    there, sources = {}, {}
+    for item_id, keys in wanted.items():
+        other = dict(job, item_id=item_id, only=keys)
+        try:
+            video = steps.video(lang, other)
+            got = steps.pick(lang, other, video) if video is not None else None
+            found = {(g["word"], g["reading"]): g for g in (got or {}).get("words") or ()}
+            if got is None or got.get("absent") or not got.get("subtitle") or not any(k in found for k in keys):
+                continue
+            sources[str(item_id)] = {"video": video, "file": got.get("file"), "subtitle": got["subtitle"],
+                                     "pairing": fit_check.version(steps.pairing(lang, other)),
+                                     "title": steps.title(lang, other)}
+            there.update({(item_id, key): g for key, g in found.items() if key in keys})
+        except (Wait, Needs) as e:
+            log.info("Connect: job %s: item %s gives no line now (%s): its words keep their own lines", job["id"],
+                     item_id, getattr(e, "reason", None) or getattr(e, "say", None))
+    out = []
+    for w in words:
+        own = {k: v for k, v in w.items() if k != "from"}
+        got = there.get((w.get("from"), (w["word"], w["reading"])))
+        # (`listed` is the word's own: the other episode's pick was asked for it by name)
+        out.append(own if got is None else dict(got, **{"from": w["from"], "own": own, "listed": own.get("listed")}))
+    return out, sources
+
+
+def _own_lines(picked, which):
+    """Kantan-SD 6: the words cut from another episode's line that `which(word)` names put back on their own lines
+    (`own`, kept by `_borrow`), in place; an episode no word is cut from any more leaves `sources` -> their keys."""
+    words, back = picked.get("words") or [], []
+    for n, w in enumerate(words):
+        if w.get("from") is not None and w.get("own") and which(w):
+            words[n] = w["own"]
+            back.append((w["word"], w["reading"]))
+    used = {str(w["from"]) for w in words if w.get("from") is not None}
+    sources = {item: src for item, src in (picked.get("sources") or {}).items() if item in used}
+    picked.pop("sources", None)
+    if sources:
+        picked["sources"] = sources
+    return back
+
+
+def _fit_sources(steps, lang, job, picked):
+    """Kantan-SD 6: each other episode a word's line is cut from (`picked["sources"]`) checked as its own job's
+    would be (`Steps.fit`): timed, its shift is kept (`offset`); anything else — not timed, no answer this time, a
+    question, a wait, a pairing changed since the pick — and its words go back to their own lines (`_own_lines`).
+    Another episode's timing is never this job's wait or *Needs you*."""
+    for item_id, src in list((picked.get("sources") or {}).items()):
+        other = dict(job, item_id=int(item_id))
+        try:
+            pairing = steps.pairing(lang, other)
+            verdict, who, why, offset = steps.fit(lang, other, pairing, src.get("video"), src.get("file"))
+            timed = (verdict == fit_check.TIMED and who != SPEECH_NEED
+                     and fit_check.version(pairing) == src.get("pairing"))
+        except (Wait, Needs) as e:
+            timed, why = False, getattr(e, "reason", None) or getattr(e, "say", None)
+        if timed:
+            src["offset"] = offset
+            continue
+        log.info("Connect: job %s: item %s isn't timed (%s): its words keep their own lines", job["id"], item_id, why)
+        _own_lines(picked, lambda w, item=int(item_id): w["from"] == item)
+
+
+# The outcomes that are the line's (or its file's), not the word's: Anki Miner didn't find the word on that line, or
+# couldn't cut its picture or clip there — on its own line the word may still get its card
+BACK_HOME = ("not_found", "media_failed")
+
+
+def _back_home(picked, outcomes):
+    """Kantan-SD 6 (PROVISIONAL): a word cut from another episode's line that got no card there for a reason of that
+    line or its file — `BACK_HOME`, or the episode's video or subtitle couldn't be read (`run_error`: its run never
+    began) — goes back to its own line (`_own_lines`), its outcome `not_attempted`: the job's next batch makes what
+    Nearest would have, and only what fails there too is named *Not made from this episode*. As they are: a word
+    merged into another's card (`filter`), a duplicate, no definition, Anki's own refusal, a word in doubt — its own
+    line would answer the same, or its card may be there -> the keys put back."""
+    lost = {(o["word"], o["reading"]) for o in outcomes
+            if (o["outcome"] in BACK_HOME and not o.get("filter"))
+            or (o["outcome"] == "not_attempted" and o.get("run_error"))}
+    back = set(_own_lines(picked, lambda w: (w["word"], w["reading"]) in lost)) if lost else set()
+    for o in outcomes:
+        if (o["word"], o["reading"]) in back:
+            o["outcome"], o["note_id"] = "not_attempted", None
+    return back
 
 
 # The pick's reasons that are no "not made": the word has its card (Kantan-MA)
@@ -2120,6 +2229,7 @@ def _fit(steps, ledger, lang, job):
         if not _on_disk(picked.get("video") or ""):
             raise Repick()
         picked["offset"] = 0.0
+        _fit_sources(steps, lang, job, picked)
         ledger.set_state(jid, "mining", picked=picked)
         return
     if picked.get("forced"):
@@ -2127,6 +2237,7 @@ def _fit(steps, ledger, lang, job):
         # lines are cut where the subtitle puts them (no shift)
         log.info("Connect: job %s mined anyway: not timed", jid)
         picked["offset"] = 0.0
+        _fit_sources(steps, lang, job, picked)
         ledger.set_state(jid, "mining", picked=picked)
         return
 
@@ -2186,6 +2297,7 @@ def _fit(steps, ledger, lang, job):
         title = steps.title(lang, job)
         raise Needs("not-timed", f"{title}: {why}" if title else why)
     picked["offset"] = offset               # the shift Anki Miner cuts the lines by (intent keeper P2.4-A #1)
+    _fit_sources(steps, lang, job, picked)
     ledger.set_state(jid, "mining", picked=picked)
 
 
@@ -2221,6 +2333,9 @@ def _mine(steps, ledger, lang, job, record=True):
             raise Repick()                  # E17 before every batch (intent keeper #7): hato re-timed it meanwhile
         if picked.get("beside") and _stamp(picked["beside"]) != picked.get("beside_at"):
             raise Repick()                  # Michi-NT: the subtitle beside its video changed or went since its check
+        if any(fit_check.version(steps.pairing(lang, dict(job, item_id=int(item)))) != src.get("pairing")
+               for item, src in (picked.get("sources") or {}).items()):
+            raise Repick()                  # Kantan-SD 6: E17 for each other episode a line is cut from
         wait = _blocked(steps, lang, "mining", asked=bool(job.get("asked_at")))
         if wait is not None:
             raise wait
@@ -2288,6 +2403,10 @@ def _mine(steps, ledger, lang, job, record=True):
             if got.get("doubt") and not stopped and got.get("then") is None:
                 _count_failure(ledger, jid)     # (never for a word-at-a-time batch a wait cut short)
             raise Wait(w.reason, w.look, "mining") from None
+        if not stopped and _back_home(picked, got["outcomes"]):
+            # Kantan-SD 6: a word another episode's line gave no card goes on its own line in the next batch
+            ledger.set_state(jid, "mining", picked=picked)
+            by_key = {(w["word"], w["reading"]): w for w in words}
         state = "uncertain" if any(o["outcome"] == "uncertain" for o in got["outcomes"]) else "done"
         ledger.end_batch(jid, attempt, state, _enriched(got["outcomes"], by_key), anki_miner=got.get("app"))
         if got.get("anki_said") and state == "uncertain":    # Mattias #5: Anki refused a card: next, a word at a time
@@ -2497,7 +2616,7 @@ class _Progress:
 
     def __call__(self, progress):
         from app.connect import anki_miner
-        key = (progress["stage"], anki_miner.percent(progress) // PROGRESS_STEP)
+        key = (progress.get("run"), progress["stage"], anki_miner.percent(progress) // PROGRESS_STEP)
         if key == self.last:
             return
         self.last = key
@@ -2510,10 +2629,22 @@ class _Progress:
 def _name_media(steps, ledger, lang, job, picked=None):
     """The job's made notes' clip and picture renamed by the line (every batch's: a rename a Wait put off is done
     by the next look)."""
-    lines = [(o["note_id"], o["line_start"], o["line_end"], o["sentence"]) for o in ledger.outcomes(job["id"])
-             if o["outcome"] == "made" and o["note_id"] is not None]
-    if lines:
-        steps.name_media(lang, job, picked if picked is not None else (ledger.picked(job["id"]) or {}), lines)
+    picked = picked if picked is not None else (ledger.picked(job["id"]) or {})
+    sources = picked.get("sources") or {}
+    # Kantan-SD 6: a card cut from another episode's line is named by that episode's key (the same line, the same
+    # file whichever job cut it)
+    where = {(w["word"], w["reading"]): str(w["from"]) for w in picked.get("words") or ()
+             if w.get("from") is not None and str(w["from"]) in sources}
+    groups = {}
+    for o in ledger.outcomes(job["id"]):
+        if o["outcome"] == "made" and o["note_id"] is not None:
+            groups.setdefault(where.get((o["word"], o["reading"])), []).append(
+                (o["note_id"], o["line_start"], o["line_end"], o["sentence"]))
+    for item, lines in groups.items():
+        if item is None:
+            steps.name_media(lang, job, picked, lines)
+        else:
+            steps.name_media(lang, dict(job, item_id=int(item)), dict(picked, video=sources[item].get("video")), lines)
 
 
 def _name_media_at_end(steps, ledger, lang, job):
@@ -4157,7 +4288,10 @@ class Steps:
         ns = SimpleNamespace(lang=lang, file=subtitle, video=video, reading=reading, words=None, job=str(job["id"]),
                              wait=WAIT_S, made=made, listed=got.listed if got is not None else None,
                              held=self._anki_miner_held(lang),
-                             unsure=self.unsure(job, subtitle) if reading is None else [])   # Tsu-U
+                             unsure=self.unsure(job, subtitle) if reading is None else [],   # Tsu-U
+                             # Kantan-SD 6 (`_borrow`): another episode's line for these words only, its cleaned
+                             # copy in a folder of its own inside the job's
+                             only=job.get("only"), aside=f"from-{job['item_id']}" if job.get("only") else None)
         try:
             out = verbs.pick(ns)
         except CliError as e:
@@ -4791,7 +4925,7 @@ class Steps:
         those, the rest not attempted: the next batch sends only them (and meets the failure again, as itself)."""
         lined = picked.get("lineup") if picked.get("reading") else None
         if not lined:
-            return self._mine_one(lang, job, picked, words, attempt)
+            return self._mine_spread(lang, job, picked, words, attempt)
         from app.connect import lineup
         groups, rest = lineup.split(words, lined)
         runs = [dict(picked, video=audio, subtitle=srt, reading=None, offset=0.0, _words=ws)
@@ -4821,7 +4955,38 @@ class Steps:
                            for w in words]
         return out
 
-    def _mine_one(self, lang, job, picked, words, attempt):
+    def _mine_spread(self, lang, job, picked, words, attempt):
+        """Kantan-SD 6: a batch whose words' lines are cut from several episodes (`picked["sources"]`, `_borrow`) goes
+        as ONE Anki Miner call — the episode's own words, then each other episode's as an episode of the same call
+        (`anki_miner.mine_batch`'s `more`) — outcomes in the words' order. No such word: the call as it always was."""
+        sources = picked.get("sources") or {}
+        groups = {}
+        for w in words:
+            if w.get("from") is not None and str(w["from"]) in sources:
+                groups.setdefault(str(w["from"]), []).append(w)
+        if not groups:
+            return self._mine_one(lang, job, picked, words, attempt)
+        own = [w for w in words if not (w.get("from") is not None and str(w["from"]) in sources)]
+        more = [{"video": sources[item]["video"], "subtitle": sources[item]["subtitle"], "words": ws,
+                 "subtitle_offset": float(sources[item].get("offset") or 0.0), "title": sources[item].get("title"),
+                 "show": self.show(lang, dict(job, item_id=int(item)))} for item, ws in groups.items()]
+        first, at, title = picked, job, None
+        if not own:
+            # every word left is cut elsewhere: the first of those episodes is the call's own (a call names no
+            # episode without a word)
+            head = more.pop(0)
+            own, title = head["words"], head["title"]
+            first = dict(picked, video=head["video"], subtitle=head["subtitle"], offset=head["subtitle_offset"],
+                         names=None, from_audio=False)
+            at = dict(job, item_id=int(next(iter(groups))))
+        done = self._mine_one(lang, at, first, own, attempt, more=more, titles=[title] + [m["title"] for m in more])
+        sent = own + [w for m in more for w in m["words"]]
+        got = {(w["word"], w["reading"]): o for w, o in zip(sent, done.get("outcomes") or ())}
+        done["outcomes"] = [got.get((w["word"], w["reading"])) or dict(_unsure(w), outcome="not_attempted")
+                            for w in words]
+        return done
+
+    def _mine_one(self, lang, job, picked, words, attempt, more=None, titles=None):
         from app.cli import verbs
         from app.cli.contract import CliError
         from app.connect import anki_miner, runfile
@@ -4845,17 +5010,22 @@ class Steps:
         anki_miner.LOW_PRIORITY = now.get("connect_low_priority") is True
         export = (held.get("set") or (None,) * 4)[3]
         workers = power.clip_cuts(now.get("connect_clip_cuts", power.AUTO), own=power.profile_cuts(export))
+        told = getattr(self, "on_progress", None)
+        if more and told is not None:
+            def told(progress, tell=told):          # Kantan-SD 6: the run that works names its episode (the line)
+                run = progress.get("run") or 0
+                tell(dict(progress, source=titles[run] if titles and run < len(titles) else None))
         try:
             done = anki_miner.mine_batch(miner, lang, _tag(job), picked["video"], picked["subtitle"], words,
                                          mapping, self.loaded.get("connect_anki_miner_profile") or "Surasura",
                                          run_dir, self.url, attempt=attempt, wait=WAIT_S,
                                          subtitle_offset=float(picked.get("offset") or 0.0),
                                          expect_profile=picked.get("profile"),
-                                         on_progress=getattr(self, "on_progress", None), known=setup[:2],
+                                         on_progress=told, known=setup[:2],
                                          should_stop=getattr(self, "should_stop", None),
                                          show=self.show(lang, job), reading=picked.get("reading"),
                                          from_audio=bool(picked.get("from_audio")), names=picked.get("names"),
-                                         word_audio=runfile.word_audio_on(now, lang), workers=workers)
+                                         word_audio=runfile.word_audio_on(now, lang), workers=workers, more=more)
         except anki_miner.AnkiMinerError as e:
             held.clear()                        # any Anki Miner failure (a profile changed too): read again next time
             if e.kind == "profile-changed":
@@ -4881,13 +5051,19 @@ class Steps:
         if picked.get("reading"):
             self._place(lang, job, picked, done.get("outcomes") or [])
         run = done.get("run") or {}
-        doubt = bool(done.get("error")) or (bool(run) and not run.get("ok"))
+        refused = done.get("refused")       # Kantan-SD 6: the episode's own run refused, cards made from the others'
+        doubt = refused is None and (bool(done.get("error")) or (bool(run) and not run.get("ok")))
+        then = None
+        if refused is not None and not (refused.kind == "cancelled" and done.get("stopped")):
+            held.clear()
+            then = _miner_wait_or_needs(refused, self.url)     # raised by `_mine` once the batch is recorded
         # Mattias #5: Anki refused a card (Anki Miner's MINING_FAILED, not transient — AnkiConnect's *cannot create
         # note …*): its words, in doubt, go a word at a time next (`runner._mine_batch`); a crash is no such answer
         said = (run.get("message") or run.get("error") if run.get("error") == "MINING_FAILED" and not
                 run.get("failure_is_transient") and not done.get("error") else None)
         return {"outcomes": done.get("outcomes") or [], "app": done.get("app"), "doubt": doubt,
-                "tag_pending": done.get("tag_pending") or [], "stopped": bool(done.get("stopped")), "anki_said": said}
+                "tag_pending": done.get("tag_pending") or [], "stopped": bool(done.get("stopped")), "anki_said": said,
+                "then": then}
 
     def _place(self, lang, job, picked, outcomes):
         """Z-9: each card Anki Miner made from a book put on its part (`connect.reading.place`, Hon's chapter record):

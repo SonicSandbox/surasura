@@ -1780,19 +1780,23 @@ def _best(steps, ledger, lang, job, words, here):
         log.info("Connect: Best sentences not read (%s): %s", lang, e)
         return words, []
     kept, moved = [], []
-    with ledger.transaction():
-        for w in words:
-            key = (w["word"], w["reading"])
-            choices = found.get(key) or []
-            top = choices[0] if choices else None
-            mine = next((c for c in choices if c.here), None) or sentences.Choice(
-                here, own, w.get("line_text"), int(w.get("other_new") or 0), 0.0, True, True)
-            if (top is None or top.here or top.item_id is None or not sentences.better(top, mine)
-                    or ledger.queue_level(lang, top.item_id, [key], source=level.BEST,
-                                          store_id=job.get("store_id")) is None):
-                kept.append(w)          # an open job there already picks from the list as it is: it stays here
-                continue
-            moved.append({"word": key[0], "reading": key[1], "item_id": top.item_id, "text": top.text})
+    try:
+        with ledger.transaction():
+            for w in words:
+                key = (w["word"], w["reading"])
+                choices = found.get(key) or []
+                top = choices[0] if choices else None
+                mine = next((c for c in choices if c.here), None) or sentences.Choice(
+                    here, own, w.get("line_text"), int(w.get("other_new") or 0), 0.0, True, True)
+                if (top is None or top.here or top.item_id is None or not sentences.better(top, mine)
+                        or ledger.queue_level(lang, top.item_id, [key], source=level.BEST,
+                                              store_id=job.get("store_id")) is None):
+                    kept.append(w)      # an open job there already picks from the list as it is: it stays here
+                    continue
+                moved.append({"word": key[0], "reading": key[1], "item_id": top.item_id, "text": top.text})
+    except Exception as e:              # the ledger busy: nothing moved (its transaction undone), as Nearest
+        log.info("Connect: Best sentences not kept (%s): %s", lang, e)
+        return words, []
     return kept, moved
 
 

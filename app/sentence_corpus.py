@@ -301,8 +301,14 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
         return ok
 
     total = len(files)
+    # Kantan-SD (speed): with only `wanted` words asked for (no phrase, no word found as written), a sentence holding
+    # none of them is no word's sentence — skipped before its words are weighed (the wanted words' counts, orths and
+    # ranks are the same: only sentences holding one of them ever touched them)
+    only = wanted is not None and not starts and not written
     for fidx, path in enumerate(files):
         for sidx, (text, tokens) in enumerate(file_tokens(path)):
+            if only and not any((t[0], t[1]) in wanted for t in tokens):
+                continue
             present = {}        # (lemma, reading) -> the surface it has in THIS sentence
             shown = {}          # a one-word target written here -> (its key, its surface)
             alone = {}          # a wanted word the list never offers, standing on its own here -> its surface

@@ -41,7 +41,9 @@ AHEAD_WEIGHT = 0.5          # ...the next episode ahead of you
 AHEAD_HALF = 20             # ...and the one this many places ahead half of that
 SOON_WEIGHT = 0.15          # Soon past the episodes ahead; Goal, New arrivals: 0
 EARLIER_WEIGHT = 0.1        # finished *Earlier* (no date)
-MOST_FILES = 200            # a word's first files only, in context order (a common word is in nearly every file)
+MOST_FILES = 30             # a word's first files only, in context order (a common word is in nearly every file;
+#                             timed 2026-11-22: 200 files a word read 1,426 of 2,016 episodes, 14 s for one episode's
+#                             35 words; 30 read 320, 1.5 s, the same best sentence for each)
 
 # How a sentence is heard (`heard`): its own clip, the AI voice's (Sonic 2026-11-22: a book with no audiobook counts
 # when the AI voice can make its audio), or not at all
@@ -205,13 +207,26 @@ def choose(language, keys, *, here=None, dial=None, never=None, young=None, file
     if files is None:
         files = sentence_corpus.library_files(language)
     here_key = os.path.normcase(os.path.abspath(here)) if here else None
-    info = _library(language, store, ai_voice(settings, language))
+    ai = ai_voice(settings, language)
+    info = dict(_library(language, store, ai))
     norm = [os.path.normcase(os.path.abspath(f)) for f in files or ()]
     if here_key and here_key not in norm:
         norm.append(here_key)
+    from app.connect import library
+    for path in norm:
+        if path not in info:            # outside the store (or none): a book or a text by its own extension
+            text = library.text_only({"rel_path": path})
+            info[path] = (None, 0.0, heard(text, False, ai), text)
+
+    def unheard(path):
+        # a book's or a text's line that can't be a choice here (`books` off; heard by nothing while media is cut):
+        # left out before the corpus keeps its few best a word, so it never stands in for a line that can
+        _item, _ctx, hear, text = info[path]
+        return path != here_key and text and not (books and (hear is not SILENT or reach is None))
+    norm = [p for p in norm if not unheard(p)]
     # The order the corpus ties on: the most remembered context first, the episode being mined first among equals —
     # so a word's eight kept sentences are the best-placed ones (`collect` keeps at most 8 a word, 2 a file)
-    order = sorted(range(len(norm)), key=lambda n: (-(info.get(norm[n], OUTSIDE)[1]), norm[n] != here_key, n))
+    order = sorted(range(len(norm)), key=lambda n: (-info[norm[n]][1], norm[n] != here_key, n))
     ordered = [norm[n] for n in order]
     if dial == NEAREST and here_key:
         holding = [here_key]
@@ -235,13 +250,14 @@ def choose(language, keys, *, here=None, dial=None, never=None, young=None, file
     reached = {}
 
     def can_cut(path, item_id):
-        if item_id not in reached:
+        at = item_id if item_id is not None else path      # a file outside the store: its own answer
+        if at not in reached:
             try:
-                reached[item_id] = bool(reach(item_id)) if reach is not None and item_id is not None \
+                reached[at] = bool(reach(item_id)) if reach is not None and item_id is not None \
                     else os.path.isfile(path)
             except Exception:
-                reached[item_id] = False
-        return reached[item_id]
+                reached[at] = False
+        return reached[at]
 
     for key in keys:
         word = words.get(key)
@@ -250,19 +266,15 @@ def choose(language, keys, *, here=None, dial=None, never=None, young=None, file
             path = holding[fidx]
             if same_line(text, never.get(key)):
                 continue
-            item_id, ctx, hear, text_only = info.get(path, OUTSIDE)
+            item_id, ctx, hear, text_only = info[path]
             is_here = path == here_key
-            if not is_here and (not (books and (hear is not SILENT or reach is None)) if text_only
-                                else not can_cut(path, item_id)):
-                continue
+            if not is_here and not text_only and not can_cut(path, item_id):
+                continue                # a book's line that can't be heard never came this far (`unheard`)
             found.append((Choice(path, item_id, text, rank[0], round(ctx + max(0.0, -rank[2]), 4), is_here,
                                  hear is not SILENT, hear == AI_VOICE), position))
         found.sort(key=lambda c: _rank(c[0], dial) + (c[1],))
         out[key] = [c for c, _p in found]
     return out
-
-
-OUTSIDE = (None, 0.0, REAL, False)     # a file the store doesn't hold: no context, its media as `reach` says
 
 
 def _rank(choice, dial):

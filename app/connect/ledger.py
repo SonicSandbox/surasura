@@ -253,6 +253,7 @@ LEFT_WHY = {"not_found": "Anki Miner couldn't find it in its line",
 LEFT_OTHER = "Anki Miner made no card for it"      # any other answer it gave
 # Kantan-SD (the sentence dial's Best, PROVISIONAL words): a word of this episode cut from another episode's line
 LEFT_ELSEWHERE = "its card comes from a better sentence elsewhere"
+BEST_SOURCE = "best-sentence"                   # `level.BEST` (level imports the ledger: named here too)
 
 
 def left_of(language, item_ids, db_path=None):
@@ -581,17 +582,19 @@ class Ledger:
     def queue_level(self, language, item_id, words, source="level", store_id=None):
         """A `queued` job of kind `level` for an item already mined, naming only `words` ((word, reading) pairs) ->
         its id. A level job still waiting gains the words (-> its id). Another open job of the item -> None: a first
-        mining not started picks from the list as it is now, so the new words are its already."""
+        mining not started picks from the list as it is now, so the new words are its already. Kantan-SD: a Best
+        sentence's job (`level.BEST`) and a raise's never share one (each keeps its own rules: the watched drop, the
+        unlisted word) -> None."""
         words = sorted({(str(w), str(r)) for w, r in words or ()})
         if not words:
             return None
         marks = ",".join("?" * len(OPEN))
-        row = self.conn.execute(f"SELECT id, kind, state, words FROM jobs WHERE language = ? AND item_id = ? AND "
-                                f"state IN ({marks}) ORDER BY id DESC LIMIT 1", (language, item_id) + OPEN).fetchone()
+        row = self.conn.execute(f"SELECT id, kind, state, words, source FROM jobs WHERE language = ? AND item_id = ? "
+                                f"AND state IN ({marks}) ORDER BY id DESC LIMIT 1", (language, item_id) + OPEN).fetchone()
         now = _now()
         if row is not None:
-            job_id, kind, state, had = row
-            if kind != LEVEL or not self._not_started(job_id):
+            job_id, kind, state, had, was = row
+            if kind != LEVEL or not self._not_started(job_id) or (was == BEST_SOURCE) != (source == BEST_SOURCE):
                 return None
             merged = sorted(set(_words(had)) | set(words))
             self.conn.execute("UPDATE jobs SET words = ?, updated_at = ? WHERE id = ?",

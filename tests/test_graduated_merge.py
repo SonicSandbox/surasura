@@ -132,7 +132,7 @@ def test_japanese_words_are_added_as_known_and_every_existing_entry_is_untouched
         assert entry["knownStatus"] == "KNOWN" and entry["hasCard"] == 0 and entry["source"] == "GraduatedList"
         assert entry["language"] == "ja" and "ankiNoteId" not in entry
         assert set(entry) == {"dictForm", "secondary", "partOfSpeech", "language", "knownStatus", "hasCard",
-                              "tracked", "created", "mod", "knownAt", "isModern", "source"}   # anki_sync._entry's
+                              "tracked", "created", "mod", "isModern", "source"}      # anki_sync._entry's shape
     with open(_known_path("ja"), encoding="utf-8") as f:
         data = json.load(f)
     assert {k: v for k, v in data.items() if k != "words"} == {k: v for k, v in ja_known.items() if k != "words"}

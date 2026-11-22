@@ -486,8 +486,8 @@ def test_every_entry_surasura_appends_keeps_the_date_it_became_known(anki, langu
     anki.add(2, signal, suspended=True, tags=["marked"])
     _sync(language)
     word_marks.apply(language, [(marked, "known")])
-    for entry in _entries(language):
-        assert entry["knownAt"] and entry["knownAt"] == entry["created"], entry
+    for entry in _entries(language):                                   # `created`: the date known, no copy of it
+        assert entry["created"] and "knownAt" not in entry, entry
 
 
 def test_a_swap_asked_with_a_line_keeps_its_line_id_through_undo():

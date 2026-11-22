@@ -275,6 +275,15 @@ ROWS = {
                            "Also make cards for words rarer than your level.",
                            "every new word all unknown words past my level rare words mine all words to make cards "
                            "from which words i+1"),
+    # Kantan-SD (PROVISIONAL words): the sentence dial — how a card's sentence is chosen, in plain words
+    "connect_sentence_dial": ("Card sentences",
+                              "Best looks through your whole library: first a sentence with no other new word, then "
+                              "one whose video is there (a book's too, with its audiobook or the AI voice on), then "
+                              "one with words you're still learning and from a show you saw lately. Nearest keeps the "
+                              "episode's own line.",
+                              "Best: the clearest sentence in your library. Nearest: the episode's own line.",
+                              "sentence dial best nearest which sentence card sentence line example context young "
+                              "words recently learned i+1 better sentence"),
     # Kyou-A (Sonic's answers 1–5, 2026-11-15): the library's own option (settings_store.py) — Mado-PZ2 (Sonic,
     # 2026-11-19): one switch, *Learn two shows at once*; found by "parallel" too, never with it in its name
     "new_cards_from": ("Learn two shows at once",
@@ -706,6 +715,7 @@ OPTIONS = {
     "loop_ignore_flag": {n: f"Suspend + {colour} flag" for n, colour in enumerate(
         ("Red", "Orange", "Green", "Blue", "Pink", "Turquoise", "Purple"), 1)},
     "study_order": {"content": "As I’ll meet it", "priority": "By leverage"},
+    "connect_sentence_dial": {"best": "Best", "nearest": "Nearest"},
     "split_books_by": {"chapters": "Chapters", "even": "Even parts"},
     "open_video": {"default": "Your default player", "program": PROGRAM_PICK},     # "program": its name once chosen
     "open_book": {"default": "Your EPUB reader", "program": PROGRAM_PICK},
@@ -1121,3 +1131,40 @@ RULE_NEW_TIP = "New rule for {source}: pick where its arrivals go. Wait here sav
 # --- round 8 row 45 (P5): a press whose wait is worth naming — its words held in the bar while it runs ------------- #
 SWITCH_TURNING_ON = "Turning on Cards made for you…"
 SWITCH_TURNING_OFF = "Turning off Cards made for you…"
+
+
+# --- Journey v3's rows (J-SET; SPEC §1.4, the settings table; every word PROVISIONAL): shown only after the cut-over
+# (`settings_catalog.use_v3`). The page's ⚙ says the same names (templates/journey/).
+ROWS.update({
+    "journey_pitch": ("Pitch and tones", "", "Each word's pitch accent, or its tones in Chinese",
+                      "pitch accent tones chinese show hide f"),
+    "journey_meanings": ("Meanings", "Yours: the dictionaries you added to Anki Miner",
+                         "Which dictionary the meaning pane shows",
+                         "meanings dictionary definition english jmdict cc-cedict yours anki miner gloss"),
+    "journey_source": ("Where each line is from", "", "How each sentence shows the episode it came from",
+                       "source where from file episode icon name hover badge"),
+    "journey_first_meeting": ("Where you'll first meet it", "The sentence you first meet the word in, marked",
+                              "Show the line you first meet each word in", "first meeting meet sentence line marked"),
+    "journey_word_size": ("Word size", "", "How big the word is on your journey", "word size text font big small"),
+    "journey_sentence_size": ("Sentence size", "", "How big the sentences are on your journey",
+                              "sentence size text font big small"),
+    "journey_theme": ("The page's theme", "", "Your journey's look: Night or Light",
+                      "theme look night light dark journey page"),
+    "journey_keys": ("Keys", "One key of your own: the page's ⚙ › Keys", "The keys your journey answers to",
+                     "keys keyboard shortcuts qwerty dvorak hotkeys"),
+    "sentences_per_word": ("Sentences per word",
+                           "All: every sentence kept for a word, up to about 85 — Generate and your lists grow with it",
+                           "Most example sentences per word, on your journey and in your lists",
+                           "max sentences per word examples all contexts up to"),
+})
+_SIZES = {"s": "Small", "m": "Medium", "l": "Large"}
+OPTIONS.update({
+    "journey_pitch": {"shown": "Shown", "hidden": "Hidden until F"},
+    "journey_meanings": {"en": "English", "yours_en": "Yours, then English", "yours": "Yours only"},
+    "journey_source": {"icon": "Icon", "full": "Icon + name", "hover": "Only on hover"},
+    "journey_word_size": _SIZES,
+    "journey_sentence_size": _SIZES,
+    "journey_theme": {"Dark Flow": "Night", "Modern Light": "Light"},
+    "journey_keys": {"qwerty": "QWERTY", "dvorak": "Dvorak"},
+    "sentences_per_word": {**{n: str(n) for n in range(1, 11)}, 0: "All"},
+})

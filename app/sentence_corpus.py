@@ -227,7 +227,8 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
     `wanted`, a set of (lemma, reading), keeps sentences for those words only — the same ranking, a
     fraction of the memory (`best_for`). `young`, a set of keys the learner is still learning, puts a
     sentence with more of them first among equally easy ones of a good length (the user, 2026-09-24:
-    "even better if the words are NOT mature"); without it the order is as it always was. `phrases`,
+    "even better if the words are NOT mature"); without it the order is as it always was. A mapping instead ({key or lemma: weight}, the sentence dial's)
+    weighs each young word: the younger, the more. `phrases`,
     {name: (lemma, …)}, finds several-word targets (当事者, 気を取り直す) as that run of lemmas, however
     inflected — never across a mark the tokenizer dropped (気が、付いた) — ranked the same with their own words
     not counted against them, except, with Settings' "Idioms and set phrases on your list" on, the words a set
@@ -300,8 +301,14 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
         return ok
 
     total = len(files)
+    # Kantan-SD (speed): with only `wanted` words asked for (no phrase, no word found as written), a sentence holding
+    # none of them is no word's sentence — skipped before its words are weighed (the wanted words' counts, orths and
+    # ranks are the same: only sentences holding one of them ever touched them)
+    only = wanted is not None and not starts and not written
     for fidx, path in enumerate(files):
         for sidx, (text, tokens) in enumerate(file_tokens(path)):
+            if only and not any((t[0], t[1]) in wanted for t in tokens):
+                continue
             present = {}        # (lemma, reading) -> the surface it has in THIS sentence
             shown = {}          # a one-word target written here -> (its key, its surface)
             alone = {}          # a wanted word the list never offers, standing on its own here -> its surface
@@ -361,7 +368,7 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
                 unknown_units = unknowns()
                 unknown = len(unknown_units)
             margin = 0 if own_lo <= size <= own_hi else 1
-            fresh = sum(1 for key in present if key in young) if young else 0
+            fresh = sum(_young(young, key) for key in present) if young else 0
             lemmas = [t[0] for t in tokens] if prefer else None
             for key, surface in alone.items():
                 word = words.get(key)
@@ -379,7 +386,7 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
                     # Its own use never counts against it (and one the list never offers never counted).
                     others = unknown - (0 if known_memo.get(key, True) else 1)
                 # Its own word never counts toward the young words it practises.
-                recent = fresh - (1 if young and key in young else 0)
+                recent = fresh - (_young(young, key) if young else 0)
                 if prefer:
                     shows = any(_has_run(lemmas, run) for run in prefer.get(key, ()))
                     rank = (others, margin, -shows, -recent, fidx, sidx)
@@ -392,7 +399,7 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
                     others = len(unknowns(key) - {key})
                 else:
                     others = unknown - (0 if known_memo.get(key, True) else 1)
-                recent = fresh - (1 if young and key in young else 0)
+                recent = fresh - (_young(young, key) if young else 0)
                 word = words.get(name)
                 if word is None:
                     word = words[name] = _Word(True)
@@ -406,7 +413,7 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
                         others = len(unknown_units.difference(unit for k in inside for unit in view.units(k)))
                     else:
                         others = unknown - sum(1 for k in inside if known_memo.get(k) is False)
-                    recent = fresh - sum(1 for k in inside if young and k in young)
+                    recent = fresh - (sum(_young(young, k) for k in inside) if young else 0)
                     word = words.get(name)
                     if word is None:
                         word = words[name] = _Word(True)
@@ -416,6 +423,15 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
         if progress and ((fidx + 1) % PROGRESS_EVERY == 0 or fidx + 1 == total):
             progress(f"Reading your library: {fidx + 1:,} / {total:,} files…")
     return words
+
+
+def _young(young, key):
+    """How much a word counts toward a sentence's young words: 1 for a key in a set of keys (例文's); a mapping's
+    weight for the key, else for its lemma (the sentence dial's {lemma: weight}, `app/connect/sentences.py`)."""
+    if isinstance(young, dict):
+        weight = young.get(key)
+        return weight if weight is not None else young.get(key[0], 0)
+    return 1 if key in young else 0
 
 
 def _has_run(lemmas, run):

@@ -207,7 +207,11 @@ ENSURE_AUDIO_EXAMPLE = False
 #     app/song_lines.py, `songs_left_out`): an .ass event in a song style, a run of lines repeated in a quarter of a
 #     title's episodes, a ♪ line that is one of them. The token store keeps each sentence's line (`lines`):
 #     SCHEMA_VERSION 28. 3.0.17.
-ENGINE_REVISION = 46
+# 47: Sentences per word (logic.context.max_contexts) 0 is All (J-SET, journey v3): a row gets every sentence the list
+#     keeps for it, and the list as many Context / Src columns as its widest row (plan_rules.context_limit /
+#     context_columns; the plan's re-pick the same) — 0 wrote no column before. Only a list with 0 changes; no
+#     tokenizing changed: SCHEMA_VERSION stays 28. 3.0.19.
+ENGINE_REVISION = 47
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -4289,7 +4293,7 @@ def plan_lines(run):
     valid = run["valid_lrs"]
     listed = {(r["Word"], r["Reading"]): r for r in run["output_rows"]
               if valid is None or (r["Word"], r["Reading"]) in valid}
-    n_contexts = run["max_contexts"]
+    n_contexts = run["context_columns"]          # the columns the run wrote (Sentences per word, or All's widest row)
     rows, ties, tied, spell = [], [], {}, []
     for k, key in enumerate(keys):
         entry = word_stats[key]
@@ -4317,7 +4321,7 @@ def plan_lines(run):
         "weights": dict(zip(("now", "soon", "goal"), run["weights"])),
         "floor": floor, "total_tokens": run["total_tokens"], "phrase_rows": run["phrase_rows"],
         "target_coverage": run["target_coverage"], "only_i_plus_one": run["only_i_plus_one"],
-        "max_contexts": n_contexts, "files": len(found_files), "keys": len(keys),
+        "max_contexts": run["max_contexts"], "files": len(found_files), "keys": len(keys),     # 0: All, re-picked so
         # The pick's own settings (F7): the recency window, the audio rule.
         "recency_files": run["pick"]["recency_files"], "ensure_audio": run["pick"]["ensure_audio"],
         "max_chars": run["pick"]["max_chars"], "near_files": plan_rules.NEAR_FILES,
@@ -4525,7 +4529,9 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
         write_list(lambda tmp: df_prog.to_csv(tmp, index=False, encoding='utf-8-sig'), OUTPUT_PROGRESSIVE)
 
     # word_stats.json's list rows: what the order moves (Score, the tier counts, the first file, the sentences)
-    n_contexts = plan.header.get("max_contexts") or 0
+    # (the columns the re-plan wrote: every row has them; under All, as many as its widest row)
+    n_contexts = plan_rules.context_columns(plan.header.get("max_contexts") or 0, [sum(
+        1 for column in (result.priority[0] if result.priority else ()) if column.startswith("Context "))])
     word_stats_path = os.path.join(RESULTS_DIR, "word_stats.json")
     with open(word_stats_path, encoding="utf-8") as f:
         stats = json.load(f)
@@ -5297,6 +5303,9 @@ def settings_signature(settings, language):
         "app_theme", "text_size",       # the 3.0 window's look (W2.1): no run or report reads them
         "app_motion",                   # the 3.0 window's motion (M2.1): no run or report reads it
         "journey_settle_s", "journey_settle_battery_s",   # when the background Generate starts (E3.2)
+        # journey v3's page settings (J-SET): looks applied in the page, and *Meanings*, the render's (never a run's)
+        "journey_pitch", "journey_word_size", "journey_sentence_size", "journey_keys", "journey_first_meeting",
+        "journey_meanings",
         # Connect's switch and the New arrivals placing rules: where an item lands, never what a run counts
         "connect_enabled", "placing_rules",
         # Anki sync config: what it WRITES (KnownWord.json) is already in known_sig; the deck
@@ -5306,6 +5315,7 @@ def settings_signature(settings, language):
         # Connect's mine path: what `pick` sends Anki Miner, never what a run counts
         "connect_mine_words", "connect_send_grammar", "connect_anki_miner_path", "connect_anki_miner_profile",
         "connect_every_word",           # Cards for every new word (Kantan-MO): what Connect mines, never a run
+        "connect_sentence_dial",        # the sentence dial (Kantan-SD): which line a card is cut from, never a run
         "study_order",                  # the study order (Kantan-MO): the journey's opening list — re-render only
         "connect_open_anki",            # when Surasura starts Anki for you (P2.3): never what a run counts
         "covers_download",              # Show covers (the setup wizard, G1.2-19): a cover's fetch, never a run
@@ -7485,12 +7495,13 @@ def main():
 
     while len(src_place) < len(source_list):
         src_place.append((plan_rules.NOT_FINISHED, 0))
-    picker = plan_rules.ContextPicker(sentences, cowords, args.max_contexts, src_place.__getitem__,
+    picker = plan_rules.ContextPicker(sentences, cowords, plan_rules.context_limit(args.max_contexts), src_place.__getitem__,
                                       src_audio_rank.__getitem__, only_i_plus_one=ONLY_I_PLUS_ONE,
                                       ensure_audio=ENSURE_AUDIO_EXAMPLE, recency_files=RECENCY_FILES)
 
     _progress("Picking sentences")
     output_rows = []
+    chosen_rows = []                    # (row, its word_stats entry, its sentences): their columns once all are picked
     for r in preliminary_rows:
         target_lr = (r["Word"], r["Reading"])
         target_seq = r["_MinSeq"]       # the file where the learner first meets THIS word
@@ -7501,8 +7512,20 @@ def main():
             words_skipped_i_plus_one += 1
             continue                    # Only i+1 and no i+1 sentence: skip this word entirely
 
-        data = word_stats[target_lr]
-        for i in range(args.max_contexts):
+        chosen_rows.append((r, word_stats[target_lr], chosen))
+        # Learned here: later rows count it as known, and prefer sentences that reuse it (recency)
+        picker.learn(k, target_lr in phrase_keys, target_seq)
+
+        del r["_CandidateContexts"] # Cleanup
+        if "_FirstContext" in r:
+            del r["_FirstContext"]
+        output_rows.append(r)
+
+    # The Context / Src columns, once every row is picked: Sentences per word's own number, or under All (0) as many as
+    # the row given the most has (`plan_rules.context_columns`). Still the last keys of each row, as before.
+    n_columns = plan_rules.context_columns(args.max_contexts, (len(chosen) for _r, _d, chosen in chosen_rows))
+    for r, data, chosen in chosen_rows:
+        for i in range(n_columns):
             has_ctx = len(chosen) > i
             context_val = picker.shown(chosen[i]) if has_ctx else ""
             r[f"Context {i+1}"] = context_val
@@ -7518,14 +7541,8 @@ def main():
             # Save back to data dictionary for progressive report and json dumping
             data[f"final_context_{i+1}"] = context_val
             data[f"final_src_{i+1}"] = src_val
-        # Learned here: later rows count it as known, and prefer sentences that reuse it (recency)
-        picker.learn(k, target_lr in phrase_keys, target_seq)
+    del chosen_rows
 
-        del r["_CandidateContexts"] # Cleanup
-        if "_FirstContext" in r:
-            del r["_FirstContext"]
-        output_rows.append(r)
-        
     _progress("Writing your list")          # results/ is written from here on: a cancel waits for the end (W1.3)
     df = pd.DataFrame(output_rows)
     # The listed words, once the list is written; None: no list, so nothing below is held back. Bound here rather
@@ -8003,7 +8020,7 @@ def main():
                 "library": _library, "weights": (WEIGHT_HIGH, WEIGHT_LOW, WEIGHT_GOAL), "floor": floor_count,
                 "total_tokens": total_tokens, "phrase_rows": _phrase_set is not None,
                 "target_coverage": args.target_coverage, "only_i_plus_one": bool(ONLY_I_PLUS_ONE),
-                "max_contexts": args.max_contexts, "data_dir": data_dir, "found_files": found_files,
+                "max_contexts": args.max_contexts, "context_columns": n_columns, "data_dir": data_dir, "found_files": found_files,
                 "plan_files": plan_files, "word_stats": word_stats, "phrase_keys": phrase_keys, "halved": _halved,
                 "shared_phrases": _shared_phrases, "output_rows": output_rows, "valid_lrs": valid_lrs,
                 "freq_data": freq_data, "phrase_set": _phrase_set, "word_state": _word_state,

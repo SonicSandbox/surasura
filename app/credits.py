@@ -20,6 +20,7 @@ Dictionaries
 • jieba — MIT licence: how Chinese is split into words.
 • OpenCC 1.4.2 — Carbo Kuo and contributors, Apache License 2.0: Simplified and Traditional Chinese, Traditional in Taiwan's standard characters.
 • CC-CEDICT — MDBG, CC BY-SA 4.0: which of jieba's phrases are words, the numbers and doubled forms Chinese counts as their word, the Traditional spellings read as their Simplified pair, the surnames a name jieba guesses starts with, and the Chinese measure words. Those tables (app/cedict_data.py, and those phrases of app/zh_script_data.py) are shared under the same licence.
+• KANJIDIC2 (EDRDG), with JMdict and CC-CEDICT — CC BY-SA 4.0: the journey's English meanings and each kanji's meanings and readings (app/gloss_ja_data.py, app/gloss_zh_data.py, app/kanji_data.py). Those tables are shared under the same licence.
 • Universal Dependencies Chinese treebanks (GSDSimp, HK, CFL) — CC BY-SA 4.0: which Chinese counts are a number and a measure word (一个 is 一 + 个).
 
 Frequency lists (ranks only)

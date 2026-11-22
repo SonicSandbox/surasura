@@ -448,6 +448,7 @@ def test_choose_line_takes_the_best_other_line_connect_can_cut_never_the_old_one
     from app import sentence_corpus, token_index
     word, old, other = CASES[lang]
     files = ["a.srt", "b.srt", "c.srt"]
+    monkeypatch.setattr(swap, "_picker", lambda: None)              # before Kantan-SD's picker: best_for ranks
     monkeypatch.setattr(sentence_corpus, "library_files", lambda l: files)
     monkeypatch.setattr(sentence_corpus, "files_holding", lambda l, f, wanted, runs=(), most=None: list(f))
     monkeypatch.setattr(swap, "_items_of", lambda l, paths: {"a.srt": 1, "b.srt": 2, "c.srt": 3})
@@ -652,3 +653,44 @@ def test_a_swap_undone_while_the_look_waited_for_anki_is_never_tagged_again(ledg
 def test_same_line_reads_past_colons_dashes_and_slashes():
     assert swap.same_line("先生：借りてもいいですか", ["先生:借りてもいいですか"])
     assert swap.same_line("A-借りたい/です", ["A借りたいです"])
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_with_the_sentence_picker_there_choose_line_takes_its_best_line_never_the_old_one(lang, monkeypatch):
+    # Why: Kantan-SD's one picker (the sentence dial) chooses a word's sentence for every maker; Swap hands it the old
+    # card's lines as `never` and what Connect can cut as `reach`, and still refuses the old line itself.
+    import sys
+    import types
+    from collections import namedtuple
+    from app import sentence_corpus, token_index
+    word, old, other = CASES[lang]
+    Choice = namedtuple("Choice", "file item_id text others weight here audio")
+    asked = []
+
+    def choose(language, keys, *, never=None, reach=None, files=None, **kw):
+        asked.append((language, list(keys), never, files))
+        ranked = [Choice("a.srt", 1, old, 0, 1.0, False, True),          # the picker missed the old line: Swap won't
+                  Choice("b.srt", 2, other + "!", 0, 0.9, False, True),  # an episode Connect can't cut
+                  Choice("c.srt", 3, other, 0, 0.5, False, True)]
+        return {k: [c for c in ranked if reach(c.item_id)] for k in keys}
+    monkeypatch.setitem(sys.modules, "app.connect.sentences", types.SimpleNamespace(choose=choose))
+    monkeypatch.setattr(sentence_corpus, "library_files", lambda l: ["a.srt", "b.srt", "c.srt"])
+    monkeypatch.setattr(sentence_corpus, "files_holding", lambda l, f, wanted, runs=(), most=None: list(f))
+    monkeypatch.setattr(sentence_corpus, "best_for", lambda *a, **k: pytest.fail("the picker ranks, not best_for"))
+    monkeypatch.setattr(swap, "_items_of", lambda l, paths: {"a.srt": 1, "b.srt": 2, "c.srt": 3})
+
+    class Store:
+        def file_tokens(self, path):
+            return {"c.srt": [(other, [[word, "R", word]])]}.get(path, [])
+
+        def close(self):
+            pass
+    monkeypatch.setattr(token_index, "open_store", lambda l: Store())
+    assert swap.choose_line(lang, word, [old], reachable=lambda item: item != 2) == (3, other)
+    assert asked == [(lang, [(word, "R")], {(word, "R"): {old}}, ["a.srt", "b.srt", "c.srt"])]
+    assert swap.choose_line(lang, word, [old], reachable=lambda item: True, skip_items=[2]) == (3, other)
+
+    def broken(*a, **k):
+        raise RuntimeError("the picker failed")
+    monkeypatch.setitem(sys.modules, "app.connect.sentences", types.SimpleNamespace(choose=broken))
+    assert swap.choose_line(lang, word, [old]) == (3, other)           # its own lines, never the old one

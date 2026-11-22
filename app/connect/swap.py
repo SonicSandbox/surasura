@@ -250,8 +250,9 @@ def choose_line(language, word, avoid=(), reachable=None, skip_items=(), reading
     (the easiest first, as 例文 picks them) of the word's keys (its `reading`, else every reading the token store holds
     it under) over the files that hold it (the token store: never re-read), then any of their lines with it — never one
     `same_line` finds in `avoid`, never an item of `skip_items`, only one `reachable(item id)` says Connect can cut (its
-    video or its text found). Kantan-SD's one picker replaces this body (its *Nearest · Best*); "never the same line"
-    stays Swap's argument."""
+    video or its text found). **The seam:** with Kantan-SD's one picker there (`app/connect/sentences.py`, the sentence
+    dial), its `choose` ranks the lines (`never` = the old lines, `reach` = Connect can cut it) and `best_for` is not
+    read; "never the same line" stays Swap's own check on what it returns. Either way: then any line."""
     from app import sentence_corpus, token_index
     files = sentence_corpus.library_files(language)
     held = sentence_corpus.files_holding(language, files, set(), runs=[[word]]) if files else []
@@ -277,8 +278,11 @@ def choose_line(language, word, avoid=(), reachable=None, skip_items=(), reading
             keys |= {(word, t[1]) for _text, tokens in store.file_tokens(path) for t in tokens if t and t[0] == word}
             if keys:
                 break
+        picked = _chosen(language, keys, avoid, files, bad, reachable) if keys else None
+        if picked is not None:
+            return picked
         try:
-            found = sentence_corpus.best_for(language, keys, files=held) if keys else {}
+            found = sentence_corpus.best_for(language, keys, files=held) if keys and not _picker() else {}
         except Exception:
             log.info("Swap: the ranked lines couldn't be read for a word; any line is used", exc_info=True)
             found = {}
@@ -295,6 +299,36 @@ def choose_line(language, word, avoid=(), reachable=None, skip_items=(), reading
                         return item, text
     finally:
         store.close()
+    return None
+
+
+def _picker():
+    """Kantan-SD's one picker (`app/connect/sentences.py`), or None until it lands."""
+    try:
+        from app.connect import sentences
+    except ImportError:
+        return None
+    return sentences if hasattr(sentences, "choose") else None
+
+
+def _chosen(language, keys, avoid, files, bad, reachable):
+    """The picker's best line for the word -> (item id, text), or None (no picker, nothing it can offer, an error)."""
+    sentences = _picker()
+    if sentences is None:
+        return None
+
+    def reach(item):
+        return item is not None and item not in bad and (reachable is None or bool(reachable(item)))
+    try:
+        ranked = sentences.choose(language, sorted(keys), never={k: set(avoid) for k in keys}, files=files,
+                                  reach=reach)
+    except Exception:
+        log.info("Swap: the sentence picker didn't answer for a word; its own lines are used", exc_info=True)
+        return None
+    for key in sorted(keys):
+        for c in ranked.get(key) or ():
+            if c.item_id is not None and c.item_id not in bad and not same_line(c.text, avoid):
+                return c.item_id, c.text
     return None
 
 

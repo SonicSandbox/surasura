@@ -469,6 +469,29 @@ def test_the_swap_queue_made_and_drop_and_nothing_ever_deletes_an_entry(anki):
         swap_queue.drop("ja", first["id"], "because")
 
 
+def test_a_made_swap_undone_keeps_its_record_and_a_new_green_flag_queues_again(anki):
+    # why: the queue is the one record of a swap — Swap's Undo turns a made entry undone (its new note kept for the
+    # record), never a waiting or dropped one, never deletes it; the card flagged green again waits anew
+    word, other, *_ = WORDS["zh"]
+    anki.add(1, word, suspended=True, flag=GREEN)
+    anki.add(2, other, suspended=True, flag=GREEN)
+    _sync("zh")
+    first, second = swap_queue.waiting("zh")
+    assert swap_queue.undone("zh", first["id"]) is None                 # waiting: not made, nothing to undo
+    swap_queue.made("zh", first["id"], 99)
+    out = swap_queue.undone("zh", first["id"])
+    assert out["state"] == "undone" and out["made"]["note"] == 99 and out["undone"]
+    assert swap_queue.undone("zh", first["id"]) is None                 # twice is nothing more
+    swap_queue.drop("zh", second["id"], "ignored")
+    assert swap_queue.undone("zh", second["id"]) is None                # dropped: stays dropped
+    assert swap_queue.waiting("zh") == [] and len(swap_queue.load("zh")) == 2
+    anki.set(1, flag=0)
+    _sync("zh")
+    anki.set(1, flag=GREEN)                                             # flagged green again: a new entry
+    _sync("zh")
+    assert [s["card"] for s in swap_queue.waiting("zh")] == [1] and len(swap_queue.load("zh")) == 3
+
+
 def test_ignore_wins_when_one_word_has_both_in_one_sync(anki):
     word, *_ = WORDS["ja"]
     anki.add(1, word, suspended=True, flag=RED)

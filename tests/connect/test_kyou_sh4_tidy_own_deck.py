@@ -415,15 +415,36 @@ def test_a_subdeck_you_made_under_a_cards_home_is_yours_and_case_is_ignored(move
     assert decks.move(one._ja(), "ja")["moved"] == 1 and moved.cards[1002][1] == one.MINER_DECK + "::自分"
 
 
-def test_homes_that_cant_be_read_count_every_card_as_before_and_never_raise(moved, monkeypatch):
+def test_homes_that_cant_be_read_show_no_card_and_move_nothing_never_a_guess(moved, monkeypatch):
+    # (Kyou-SH4's lens) the card counted with homes, the press read without them, would move the card you filed: no
+    # card while they can't be read, and a press then (a card shown a minute before) moves nothing
     with Ledger() as book:
         book.set_homes([102], one.JA_DECK)
     from app.connect import ledger as ledger_module
+    shown = decks.strays(one._ja(), "ja")
+    assert shown["cards"] == 1
 
     def busy(*a, **k):
         raise ledger_module.sqlite3.OperationalError("database is locked")
     monkeypatch.setattr(ledger_module, "homes_of", busy)
-    assert decks.strays(one._ja(), "ja") == {"deck": one.JA_DECK, "from": {one.MINER_DECK: 2}, "cards": 2}
+    decks.forget()
+    assert decks.strays(one._ja(), "ja") is None, "never raises"
+    got = decks.move(one._ja(), "ja", shown["deck"])
+    assert not got["ok"] and got["say"].startswith(decks.NOT_MOVED) and not got.get("id")
+    assert moved.moves() == [] and moved.cards[1002][1] == one.MINER_DECK
+
+
+def test_an_undo_whose_snapshot_has_no_homes_leaves_no_record_so_tidy_keeps_them(moved, monkeypatch):
+    # (Kyou-SH4's lens) the homes before couldn't be read: the cards it puts back are not left recorded at Surasura's
+    # deck (counted yours for good) — no record, as before homes: a stray again, kept by Tidy
+    monkeypatch.setattr(decks, "_homes_before", lambda url, cards: {})
+    got = decks.move(one._ja(), "ja")
+    assert got["moved"] == 2
+    assert decks.move_back(one._ja(), got["id"])["back"] == 2
+    with Ledger() as book:
+        assert book.homes([101, 102]) == {}
+    decks.forget()
+    assert decks.strays(one._ja(), "ja")["cards"] == 2
 
 
 def test_homes_of_reads_without_writing_and_answers_nothing_without_a_ledger(tmp_path):
@@ -437,6 +458,11 @@ def test_homes_of_reads_without_writing_and_answers_nothing_without_a_ledger(tmp
     bare = str(tmp_path / "old.sqlite")
     sqlite3.connect(bare).execute("CREATE TABLE meta (key TEXT, value TEXT)").connection.close()
     assert homes_of([101], db_path=bare) == {}, "a ledger from before homes"
+    from app.connect.ledger import SCHEMA, TooNew
+    with Ledger(db) as book:
+        book.conn.execute("UPDATE meta SET value = ? WHERE key = 'schema'", (str(SCHEMA + 1),))
+    with pytest.raises(TooNew):                          # a newer Surasura's homes: unknown here, never "none"
+        homes_of([101], db_path=db)
 
 
 def test_a_home_the_ledger_cant_write_never_holds_the_move(moved, monkeypatch):

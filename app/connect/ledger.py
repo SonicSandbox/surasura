@@ -354,7 +354,8 @@ def listed_of(language, item_ids, db_path=None):
 def homes_of(note_ids, db_path=None):
     """{note id: the deck Surasura last put its cards in} (`homes`, Kyou-SH4) for those of `note_ids` with a record,
     read-only as `listed_of` (no schema written, no write lock): *Move them to X*'s strays (`decks._find`). {} with no
-    ledger, one never set up or one from a newer Surasura. Raises sqlite3.Error when it can't be read just now."""
+    ledger or one never set up. Raises TooNew for one from a newer Surasura (its homes unknown here), sqlite3.Error
+    when it can't be read just now."""
     db_path = db_path or path()
     ids = sorted({int(n) for n in note_ids})
     if not ids or not os.path.exists(db_path):
@@ -367,7 +368,7 @@ def homes_of(note_ids, db_path=None):
         try:
             schema = conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
             if schema and str(schema[0]).isdigit() and int(schema[0]) > SCHEMA:
-                return {}
+                raise TooNew(int(schema[0]))
             for k in range(0, len(ids), 500):
                 chunk = ids[k:k + 500]
                 out.update((int(n), str(d)) for n, d in conn.execute(

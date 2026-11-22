@@ -17,7 +17,8 @@ finds them and, on the learner's press, moves them (lean, PROVISIONAL):
 - Kyou-SH4: a move is Surasura's, never the learner's — each moved note's home (Connect's ledger, `homes`: the deck
   Surasura last put it in, where Tidy tells your move from its own) is `deck` after it; the snapshot keeps the homes
   before, and the Undo puts them back for the cards it moves back. A record that can't be read or written is logged,
-  never a reason to stop: the cards stay in the deck Surasura shows, home by itself.
+  never a reason to stop: the cards stay in the deck Surasura shows, home by itself. (The homes `_find` reads to
+  leave out the cards you filed are another matter: unreadable, no card is shown and nothing moves.)
 
 `getDecks` names each card's deck without rendering it (`cardsInfo` would render every card's two sides).
 """
@@ -63,24 +64,15 @@ def _decks_of(url, cards):
     return out
 
 
-def _homes(notes):
-    """{note id: its home} (Connect's ledger, `homes`), or {} when it can't be read (logged: every card a stray, as
-    before homes were recorded)."""
-    try:
-        from app.connect.ledger import homes_of
-        return homes_of(notes)
-    except Exception:
-        log.warning("Couldn't read the cards' homes", exc_info=True)
-        return {}
-
-
 def _find(url, notes, deck):
     """{deck: [card ids]} of `notes`' cards outside `deck` (and its subdecks), none in a filtered deck — and none you
     moved (Kyou-SH4): a note with a home on record (`homes`) counts only its cards still in that home (Surasura put
     them there); one elsewhere, a subdeck of it included, is yours. No record (made before 2026-11-18, in Anki
-    Miner's own deck): counted, as before. `strays` counts and `move` moves the same cards."""
+    Miner's own deck): counted, as before. `strays` counts and `move` moves the same cards. Homes that can't be read
+    raise (Kyou-SH4's lens): no card shown, nothing moved — never a card you filed counted or moved on a guess."""
     from app import anki_connect
-    homes = _homes(notes)
+    from app.connect.ledger import homes_of
+    homes = homes_of(notes)
     groups = {}
     for n in notes:
         home = homes.get(int(n))
@@ -287,8 +279,8 @@ def move_back(settings, snapshot, wait=0.0, cancel=None, on_wait=None):
                         back += len(part)
                         went += part
             finally:                    # the cards that went back: their homes as they were before the move
-                if went and record.get("homes"):
-                    _set_homes(url, went, record["homes"])
+                if went:                # (a snapshot without them: no record, as before homes — Tidy keeps them)
+                    _set_homes(url, went, record.get("homes") or None)
     except Exception as e:
         return {"ok": False, "say": PART_UNDONE.format(n=back, why=e) if back else f"{NOT_UNDONE} {e}", "back": back}
     finally:

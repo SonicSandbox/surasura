@@ -17,8 +17,8 @@ disagreeing about who owns a decision, and the tests missed them because each te
   every `_store_*` function of the library store is bound.
 
 Each list names a place by (file, the function or class it is in) and says why; a place that no longer needs its entry
-fails too (a fix landed, a function renamed), so the lists stay true. A place in a file this checkout hasn't (a private
-module, on GitHub's public checkout) is no stale entry.
+fails too (a fix landed, a function renamed, a file gone), so the lists stay true. A place in a module this checkout
+hasn't at all (a private module, on GitHub's public checkout) is no stale entry.
 """
 import ast
 import os
@@ -77,6 +77,7 @@ class _Facts:
                     self.strings.append(child)
                 elif isinstance(child, ast.Dict):
                     self.dicts.append(child)
+                    self.parents.update((id(k), child) for k in child.keys if k is not None)
                 elif isinstance(child, ast.Subscript):
                     self.parents[id(child.slice)] = child
                 stack.append((child, inner))
@@ -140,11 +141,13 @@ def _named(call):
     return None, None
 
 
-# `x.shell.name = …` / `services.name, other = …` / `setattr(self.services, "name", …)`: an assignment on the window or
-# its services, read as text (a parse of every file that names either would take seconds). A name a comment, a string
-# or another object ending in either word assigns counts too: it can only let a name through, never fail one.
-_ASSIGNED_TEXT = re.compile(r"(shell|services)\.(\w+)[ \t]*(?:,[^=\n]*)?(?:[-+*/|&]?=)(?!=)"
-                            r"|setattr\([ \t]*(?:[\w.]*\.)?_?(shell|services)[ \t]*,[ \t]*[\"'](\w+)[\"']")
+# `self.shell.name = …` / `services.a, other.b = …` / `services.n += 1` / `setattr(self.services, "name", …)`: an
+# assignment on the window or its services, read as text (a parse of every file that names either takes seconds): a
+# statement that starts its line with its targets (a chain `a = services.b = …` too), each target read on its own —
+# never a call's keyword argument or a comment. Another object whose name ends in either word may let a name through; it can never fail one.
+_ASSIGN = re.compile(r"[ \t]*((?:[\w.]+[ \t]*,[ \t]*)*[\w.]+)[ \t]*(?::[^=\n]+)?(?:[-+*/|&%^@]|//|\*\*|>>|<<)?=(?!=)")
+_TARGET = re.compile(r"(?:^|\.)_?(shell|services)\.(\w+)$")
+_SETATTR_TEXT = re.compile(r"setattr\(\s*(?:[\w.]*\.)?_?(shell|services)\s*,\s*[\"'](\w+)[\"']")
 
 
 def window_names(root=ROOT, files=None):
@@ -153,13 +156,26 @@ def window_names(root=ROOT, files=None):
     tree = _parse(root, SHELL_FILE)
     out = {"shell": class_attributes(_class(tree, "ShellWindow")), "services": class_attributes(_class(tree, "Services"))}
     for path in files if files is not None else _app_only(root):
-        for m in _ASSIGNED_TEXT.finditer(_text(root, path)):
-            kind, name = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
-            out[kind].add(name)
+        text = _text(root, path)
+        if "shell." not in text and "services." not in text and "setattr(" not in text:
+            continue
+        for line in text.splitlines():
+            if "shell." not in line and "services." not in line:
+                continue
+            at, m = 0, _ASSIGN.match(line)
+            while m:
+                for target in m.group(1).split(","):
+                    hit = _TARGET.search(target.strip())
+                    if hit:
+                        out[hit.group(1)].add(hit.group(2))
+                at = m.end()
+                m = _ASSIGN.match(line, at)
+        for m in _SETATTR_TEXT.finditer(text):
+            out[m.group(1)].add(m.group(2))
     return out
 
 
-_GETATTR_TEXT = re.compile(r"\b(?:get|has)attr\([ \t]*(?:getattr\(|(?:[\w.]*\.)?_?(?:shell|services)[ \t]*,)")
+_GETATTR_TEXT = re.compile(r"\b(?:get|has)attr\s*\(\s*(?:getattr\s*\(|(?:[\w.()]*\.)?_?(?:shell|services)\s*,)")
 
 
 def names_off_the_window(root=ROOT, files=None, known=None):
@@ -168,7 +184,7 @@ def names_off_the_window(root=ROOT, files=None, known=None):
     known = known if known is not None else window_names(root)
     found = []
     for path in files if files is not None else _app_only(root):
-        if path != SHELL_FILE and not ("attr(" in _text(root, path) and _GETATTR_TEXT.search(_text(root, path))):
+        if path != SHELL_FILE and not ("attr" in _text(root, path) and _GETATTR_TEXT.search(_text(root, path))):
             continue
         facts = _facts(root, path)
         for node in facts.calls:
@@ -224,7 +240,7 @@ def unexplained_names(found, allow=None):
 def stale_names(found, allow=None, root=ROOT):
     allow = NAME_SEAMS if allow is None else allow
     seen = {(f[0], f[1], f[3]) for f in found}
-    return sorted(k for k in allow if k not in seen and os.path.isfile(os.path.join(root, k[0])))
+    return sorted(k for k in allow if k not in seen and _here(root, k[0]))
 
 
 # --- 2a. the roles lint: who may change a card in Anki -------------------------------------------------------------- #
@@ -302,8 +318,8 @@ ANKI_WRITERS = {
     ("modules/junban/ankiconnect.py", "remove_tags"): ("Junban", _JUNBAN, "the door: `removeTags`"),
     ("modules/junban/ankiconnect.py", "set_due_checked"): ("Junban", _JUNBAN, "the door: positions read back "
                                                            "before each request (`set_due`)"),
-    ("app/connect/shelf.py", "AnkiConnectAnki.suspend"): ("Connect", _SHELF, "the shelf's Anki adapter (its only "
-                                                          "caller, `shelve`, has none in the app)"),
+    ("app/connect/shelf.py", "AnkiConnectAnki.suspend"): ("Connect", _SHELF, "the shelf's Anki adapter: its one "
+                                                          "caller, `shelve`, is unreachable in the app (below)"),
     ("app/connect/shelf.py", "AnkiConnectAnki.unsuspend"): ("Connect", _CONNECT, "the shelf's Anki adapter: its own "
                                                             "set-aside cards back"),
     ("app/connect/shelf.py", "AnkiConnectAnki.add_tag"): ("Connect", _CONNECT, "the shelf's Anki adapter: the "
@@ -319,8 +335,9 @@ ANKI_WRITERS = {
     ("app/connect/decks.py", "_change"): ("Connect", _CONNECT, "One deck (Michi-DK): its own cards (the store's "
                                           "`made_words`) moved into the deck shown, on the learner's press, "
                                           "with a snapshot and Undo"),
-    ("app/connect/shelf.py", "shelve"): ("Connect", _SHELF, "suspends at the cap: no caller in the app since "
-                                         "Kyou-SH (`Steps.shelve`, `shelve_item` are called by tests only)"),
+    ("app/connect/shelf.py", "shelve"): ("Connect", _SHELF, "suspends at the cap: unreachable in the app since "
+                                         "Kyou-SH — its callers `Steps._shelve` (only from `Steps.shelve`) and "
+                                         "`shelve_item` are called by tests only"),
     ("app/connect/shelf.py", "bring_back"): ("Connect", _CONNECT, "the swap-in: its own shelved cards back"),
     ("app/connect/shelf.py", "_untag"): ("Connect", _CONNECT, "the shelf's own tag off the cards it brought back"),
     ("app/connect/shelf.py", "tidy"): ("Connect", _CONNECT, "the shelf's own tag off a card the learner "
@@ -377,15 +394,15 @@ def _list_file(node, parents, docs):
 
 
 def _deck_read(node, parents, docs):
-    """A read of the deck setting: `x.get("junban_deck")` or `x["junban_deck"]` (a write — a dict's key, an
-    assignment — is the setting's own page)."""
-    if not (isinstance(node, ast.Constant) and node.value == "junban_deck"):
+    """A read of the deck setting: the key named anywhere (`x.get("junban_deck")`, `x["junban_deck"]`, a tuple of keys
+    read in a loop, a set of keys a change is tested against) but as a write — a dict literal's key, an assignment's
+    target — which is the setting's own page."""
+    if not (isinstance(node, ast.Constant) and node.value == "junban_deck") or id(node) in docs:
         return False
     parent = parents.get(id(node))
-    if isinstance(parent, ast.Call) and isinstance(parent.func, ast.Attribute) and parent.func.attr == "get" and \
-            parent.args and parent.args[0] is node:
-        return True
-    return isinstance(parent, ast.Subscript) and parent.slice is node and isinstance(parent.ctx, ast.Load)
+    if isinstance(parent, ast.Dict):
+        return False
+    return not (isinstance(parent, ast.Subscript) and not isinstance(parent.ctx, ast.Load))
 
 
 def _pair_read(node, parents, docs):
@@ -457,6 +474,10 @@ SHARED_READERS = {
     # --- the deck
     ("the deck", "app/cli/verbs.py", "deck_aside"): "the CLI's re-sort: 順's scope check",
     ("the deck", "app/cli/verbs.py", "_junban_auto"): "the CLI's re-sort: the deck's new cards a day",
+    ("the deck", "app/qt/settings_catalog.py", "<module>"): "the Settings catalog's row: which keys 順's row reaches "
+                                                            "(a placement table, no read of the value)",
+    ("the deck", "app/qt/settings_connect.py", "ConnectRows._written"): "Connect's rows read again when the deck's key "
+                                                                        "was written (a change test, no read of the value)",
     ("the deck", "app/connect/miner_settings.py", "deck_for"): "Connect's setup: the deck among Anki's decks "
                                                                "(the recorded one first)",
     ("the deck", "app/replan_preview.py", "*"): "the fast re-plan: the deck recorded for a language, its set-aside "
@@ -473,7 +494,8 @@ SHARED_READERS = {
     ("the side-by-side pair", "modules/junban/pins.py", "*"): "Junban's groups: the store's `side_by_side()` answer",
     # --- the song rule
     ("the song rule", "app/tracks.py", "<module>"): "which subtitle track to read: a track named for signs / songs "
-                                                    "is skipped as a track, never a line's song test",
+                                                    "is read only when no other is there — a track's pick, never a "
+                                                    "line's song test",
     # --- the known test
     ("the known test", "app/anki_sync.py", "_is_known"): "a KnownWord.json entry's own status (known / ignored), "
                                                          "not a card's word",
@@ -488,8 +510,8 @@ SHARED_READERS = {
 
 _SHARED_TEXT = tuple(sorted(_LIST_FILES)) + ("junban_deck", "side_by_side", "is_known", "known_test") + \
     tuple(_NOTES.pattern[1:-1])
-_SONG_TEXT = re.compile(r"\bre\.(?:" + "|".join(sorted(_RE_CALLS)) + r")\([^\n]*(?:" + _SONG_WORDS.pattern[4:] +
-                        "|(?i:" + _SONG_WORDS.pattern[4:] + "))")
+_SONG_TEXT = re.compile(r"\bre\.(?:" + "|".join(sorted(_RE_CALLS)) + r")\(\s*[rbuRBU]*(?:\"[^\"\n]*|'[^'\n]*)(?i:" +
+                        _SONG_WORDS.pattern[4:] + ")")
 
 
 def shared_readers(root=ROOT, files=None):
@@ -505,6 +527,15 @@ def shared_readers(root=ROOT, files=None):
     return sorted(set(found), key=lambda f: (f[0], f[1], f[3]))
 
 
+def _here(root, path):
+    """Whether an entry's file can still explain anything: it is there — or it belongs to a module this checkout hasn't
+    at all (a private module, on GitHub's public checkout). A public file renamed or deleted makes its entry stale."""
+    if os.path.isfile(os.path.join(root, path)):
+        return True
+    parts = path.split("/")
+    return not (parts[0] == "modules" and len(parts) > 2 and not os.path.isdir(os.path.join(root, *parts[:2])))
+
+
 def _place(allow, path, owner):
     return (path, owner) in allow or (path, "*") in allow or (path, owner.split(".")[0]) in allow
 
@@ -517,7 +548,7 @@ def unexplained_writes(found, allow=None):
 def stale_writes(found, allow=None, root=ROOT):
     allow = ANKI_WRITERS if allow is None else allow
     return sorted(k for k in allow if not any(_place({k: 0}, f[0], f[1]) for f in found)
-                  and os.path.isfile(os.path.join(root, k[0])))
+                  and _here(root, k[0]))
 
 
 def unexplained_readers(found, owners=None, readers=None):
@@ -531,7 +562,7 @@ def stale_readers(found, owners=None, readers=None, root=ROOT):
     """A listed reader with nothing left there (an owner may own an idea no one else reads: never stale)."""
     readers = SHARED_READERS if readers is None else readers
     return sorted(k for k in readers if not any(f[0] == k[0] and _place({k[1:]: 0}, f[1], f[2]) for f in found)
-                  and os.path.isfile(os.path.join(root, k[1])))
+                  and _here(root, k[1]))
 
 
 # --- 3. a name defined twice in one block --------------------------------------------------------------------------- #

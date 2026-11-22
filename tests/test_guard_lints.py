@@ -122,13 +122,42 @@ def test_a_name_the_app_assigns_on_the_window_or_its_services_counts_as_its_own(
     assert [f for f in G.names_off_the_window(root, files, G.window_names(root, files)) if f[0] == page] == []
 
 
+def test_a_call_wrapped_over_lines_is_read_and_a_keyword_or_a_comment_never_counts_as_an_assignment(tmp_path):
+    # why: the text checks that spare a parse must never skip a wrapped getattr, nor let `f(shell.x, key=1)` or a
+    # comment add `x` to the window's names; every target of `a, b = …` and of a chain `w = services.c = …` counts
+    root = str(tmp_path)
+    _plant(root, G.SHELL_FILE, _SHELL)
+    page = _plant(root, "app/qt/planted.py", """
+        def wire(shell, services, later):
+            later(shell.status_text, sticky=True)
+            # shell.legacy_panel = None once the old dialog is gone
+            services.first, services.second = 1, 2
+            worker = services.third = object()
+            return (getattr(
+                shell, "status_text", None), getattr(shell, "legacy_panel", None),
+                getattr(services, "second", 0), getattr(services, "third", 0))
+    """)
+    files = [G.SHELL_FILE, page]
+    found = [f for f in G.names_off_the_window(root, files, G.window_names(root, files)) if f[0] == page]
+    assert [(f[2], f[3]) for f in found] == [(7, "status_text"), (8, "legacy_panel")]
+
+
 def test_a_listed_seam_whose_gap_is_closed_is_stale_so_an_owed_entry_comes_out_when_its_fix_lands(tmp_path):
     # why: Mado-SH's two search entries must fail once ShellWindow has show_arrival / show_goal (or search stops asking)
     allow = {("app/qt/search.py", "SearchCut.reveal", "show_goal"): "owed"}
     _plant(str(tmp_path), "app/qt/search.py", "x = 1\n")
     assert G.stale_names([], allow, root=str(tmp_path)) == list(allow)
     assert G.unexplained_names([("app/qt/search.py", "SearchCut.reveal", 9, "show_goal", "")], allow) == []
-    assert G.stale_names([], allow, root=str(tmp_path / "public-checkout-without-it")) == []
+    assert G.stale_names([], allow, root=str(tmp_path / "a-checkout-without-it")) == list(allow), \
+        "a public file gone (renamed, deleted) leaves its entry stale"
+
+
+def test_an_entry_in_a_private_module_this_checkout_hasnt_is_no_stale_entry_but_one_in_a_module_it_has_is(tmp_path):
+    # why: GitHub's public checkout has no private modules: their entries must not fail there, and only there
+    allow = {("modules/koe/window.py", "Window.show"): ("Koe", "row", "why")}
+    assert G.stale_writes([], allow, root=str(tmp_path)) == []
+    os.makedirs(os.path.join(str(tmp_path), "modules", "koe"))
+    assert G.stale_writes([], allow, root=str(tmp_path)) == list(allow)
 
 
 # --- 2. the roles lint ---------------------------------------------------------------------------------------------- #
@@ -191,6 +220,20 @@ def test_a_second_reader_of_a_shared_idea_is_found_and_a_write_a_docstring_or_a_
         ("the song rule", "save", 13)]
     message = G.reader_message(found[:1])
     assert f"{rel}:9" in message and "SHARED_READERS" in message and "app/services/setup_wizard.py:junban_deck" in message
+
+
+def test_a_song_pattern_wrapped_over_lines_and_the_deck_key_in_a_tuple_of_keys_are_found(tmp_path):
+    # why: a wrapped `re.compile(` must not slip past the text check; a loop over a tuple of keys reads the deck too
+    root = str(tmp_path)
+    rel = _plant(root, "app/planted.py", """
+        import re
+        SUNG = re.compile(
+            r"(?i)opening|lyric")
+        def decks(settings):
+            return [settings.get(k) for k in ("junban_deck", "anki_sync_decks")]
+    """)
+    found = G.shared_readers(root, [rel])
+    assert [(f[0], f[2], f[3]) for f in found] == [("the deck", "decks", 6), ("the song rule", "<module>", 4)]
 
 
 def test_a_shared_ideas_owner_reads_it_freely_and_a_listed_reader_goes_stale_when_gone(tmp_path):

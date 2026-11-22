@@ -92,6 +92,7 @@ READ_ACTIONS = frozenset({
     "findCards", "findNotes", "cardsInfo", "notesInfo", "cardsToNotes", "getDeckConfig", "areSuspended",
     "cardsModTime", "notesModTime",         # the fast re-plan's warm card map (E1.1 03 §3.2): reads only
     "guiReviewActive", "getActiveProfile", "getProfiles",
+    "guiCurrentCard",                       # OPEN 40: the card under review, for the one review check's idle rule
     "modelTemplates",                       # Piyo's translations: which field a card's front shows (card_translations)
     "getDecks",                             # Michi-DK: which deck each of Connect's cards is in (connect/decks.py)
     "reloadCollection", "guiDeckBrowser",
@@ -231,15 +232,62 @@ def waiting_line(holder):
     return f"Waiting for {verb} to finish writing to Anki…"
 
 
-def reviewing(url, cancel=None):
+# OPEN 40 (Sonic 2026-11-21: "a card left open overnight does not hold mining forever"): a reviewer left on one card
+# this long is no review — every writer that waits for your review (Connect's cards, Tidy, the shelf, Junban's put-back
+# …) goes on, and a card you answer after makes it a review again. Measured from the first look that saw that card, in
+# this process (Connect's own loop looks every runner.LOOK_EVERY_S while it waits). PROVISIONAL: 10 min.
+REVIEW_IDLE_S = 600.0
+_review_card = {}               # url -> (the card under review, when a look first saw it, the last look: monotonic)
+
+
+def reviewing(url, cancel=None, errors=False):
     """Is the user reviewing in Anki now (`guiReviewActive`)? False when Anki doesn't answer, or the
-    address can't be used: the writer's own first read then says why it can't go on. Never raises.
-    Anki busy with a collection operation is waited out first (`patient`, until `cancel` is set): a card answered in
-    the reviewer is one."""
+    address can't be used: the writer's own first read then says why it can't go on. Never raises — unless `errors`
+    (a caller that tells Anki busy or gone apart itself: 順's automatic run, the command line's fill): then `patient`'s
+    AnkiError as it came. Anki busy with a collection operation is waited out first (`patient`, until `cancel` is set):
+    a card answered in the reviewer is one. **The one check** (OPEN 40, the dup audit 2026-11-22): every caller asks it,
+    or `review_on` for an answer it read in a request of its own — no second "is a review on".
+    False too once the reviewer has shown the same card for REVIEW_IDLE_S (`_idle`)."""
     try:
-        return patient("guiReviewActive", url, timeout=5, cancel=cancel) is True
+        active = patient("guiReviewActive", url, timeout=5, cancel=cancel)
+    except Exception:
+        _review_card.pop(url, None)     # Anki gone or unreadable: its next review starts a clock of its own
+        if errors:
+            raise
+        return False
+    return review_on(url, active, cancel)
+
+
+def review_on(url, answer, cancel=None):
+    """The one rule over an answer to `guiReviewActive` — `reviewing`'s own, or one a writer read in the same request
+    as its cards (順's re-checks, `modules/junban`: the review and the read one answer): a review only for `True` from
+    a reviewer that isn't idle (`_idle`)."""
+    if answer is not True:
+        _review_card.pop(url, None)
+        return False
+    return not _idle(url, cancel)
+
+
+def _idle(url, cancel=None):
+    """The reviewer on the card a look saw first REVIEW_IDLE_S ago or more (`guiCurrentCard`'s id)? A card Anki
+    doesn't name (no answer, a reply without one) is never idle: the review holds, as before. A card no look saw for
+    REVIEW_IDLE_S starts its clock again: nothing says it stayed on screen meanwhile (a review closed and opened again
+    on the same card)."""
+    try:
+        card = patient("guiCurrentCard", url, timeout=5, cancel=cancel)
     except Exception:
         return False
+    card_id = card.get("cardId") if isinstance(card, dict) else None
+    if card_id is None:
+        _review_card.pop(url, None)
+        return False
+    now = time.monotonic()
+    seen = _review_card.get(url)
+    if seen is None or seen[0] != card_id or now - seen[2] >= REVIEW_IDLE_S:
+        _review_card[url] = (card_id, now, now)
+        return False
+    _review_card[url] = (card_id, seen[1], now)
+    return now - seen[1] >= REVIEW_IDLE_S
 
 
 REVIEWING = "You're reviewing in Anki. Press again when you're done."

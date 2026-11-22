@@ -487,7 +487,8 @@ def _checked(url, ids, mods, since, review):
             refused = _core.refusal("guiReviewActive", reply["error"])
             if refused.busy:            # no proof you aren't reviewing (an answered card is a collection operation,
                 raise refused           # #370): this request and the rest wait, as for any busy read
-        reviewing = isinstance(reply, dict) and reply.get("error") is None and reply.get("result") is True
+        reviewing = isinstance(reply, dict) and reply.get("error") is None \
+            and _core.review_on(url, reply.get("result"))     # the one rule over the request's own answer
     sure, unsure = {}, []
     if clear:
         reply = replies.pop(0)

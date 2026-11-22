@@ -131,7 +131,7 @@ def test_a_list_that_never_draws_still_boots_at_its_limit(gated, lines, monkeypa
 def test_the_scheduler_hears_the_boot_and_lets_background_work_go(gated, lines):
     from app.services import jobs
     g = gentle_module.Gentle(gated.registry, machine=lambda: (False, None), log=lambda line: None,
-                             reviewing=lambda: False).attach(watch=False)
+                             ).attach(watch=False)
     gated.services.gentle = g
     try:
         job = gated.registry.submit("arrivals-ja", "Counting new arrivals", start=lambda j: None, automatic=True)

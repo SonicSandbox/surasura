@@ -163,6 +163,18 @@ def test_never_while_you_review(anki):
     assert code == 3 and line["code"] == "anki-busy" and anki.fake.note_writes == []
 
 
+def test_the_verbs_review_look_is_the_one_check(anki, monkeypatch):
+    # the dup audit 2026-11-22 (OPEN 40): the fill asks `anki_connect.reviewing` — one answer everywhere, its idle rule
+    # included — never `guiReviewActive` by itself (its busy error kept: `errors=True`)
+    from app import anki_connect
+    asked = []
+    monkeypatch.setattr(anki_connect, "reviewing", lambda url, cancel=None, errors=False: asked.append(errors) or True)
+    with anki.patched(anki.fake):
+        code, line = h.call("backfill", "--tag", TAG)
+    assert asked and asked[0] is True
+    assert code == 3 and line["code"] == "anki-busy" and anki.fake.note_writes == []
+
+
 def test_a_review_started_while_it_planned_is_never_written_into(anki):
     """The verb asks before it plans; planning takes seconds, so Backfill asks again inside the writer's hold, right
     before its snapshot (review P1.4-adversary #4): `anki-busy`, nothing written, no run snapshot."""

@@ -696,3 +696,72 @@ def test_with_the_sentence_picker_there_choose_line_takes_its_best_line_never_th
         raise RuntimeError("the picker failed")
     monkeypatch.setitem(sys.modules, "app.connect.sentences", types.SimpleNamespace(choose=broken))
     assert swap.choose_line(lang, word, [old]) == (3, other)           # its own lines, never the old one
+
+
+# --------------------------------------------------------------------------- #
+# Each layer's own Known / Ignored check, and the picked line (mutants M8-M11, M18)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_the_maker_itself_drops_a_known_or_ignored_word_at_once(ledger, lang):
+    # Why: Kyou-DW's *Bad card* and the journey's ⇄ call the maker directly; they must hear "known" / "ignored" at
+    # once, with nothing asked, not a look later.
+    word = CASES[lang][0]
+    _lists(lang, known=[word])
+    got = swap.make_card(lang, word, old_note=900, ledger=ledger, wake=False)
+    assert (got["state"], got["why"]) == (swap.DROPPED, "known")
+    _lists(lang, ignored=[word])
+    got = swap.make_card(lang, word, old_note=901, ledger=ledger, wake=False)
+    assert (got["state"], got["why"]) == (swap.DROPPED, "ignored")
+    assert not swap._rows(ledger, "state = ?", (swap.ASKED,))
+
+
+def test_an_ask_whose_word_became_known_before_its_job_is_dropped_when_it_starts(ledger, monkeypatch):
+    # Why: an ask recorded while the word was new, then known before Connect's look: no job, the entry dropped.
+    lang, (word, _old, other) = "ja", CASES["ja"]
+    _lists(lang)
+    got = swap.make_card(lang, word, old_note=900, ledger=ledger, wake=False)
+    assert got["state"] == swap.ASKED
+    _lists(lang, known=[word])
+    monkeypatch.setattr(swap, "choose_line", lambda *a, **k: pytest.fail("no line for a known word"))
+    swap.look(Steps(), ledger, lang, anki=Anki(), files=5)
+    assert (_row(ledger, got["id"])["state"], _row(ledger, got["id"])["why"]) == (swap.DROPPED, "known")
+    assert not ledger.jobs(lang)
+
+
+def test_a_word_known_while_its_last_try_ran_is_dropped_not_left_waiting(ledger, monkeypatch):
+    # Why: on its third episode an ask would wait 6 h; a word known meanwhile is dropped at the job's end instead.
+    lang, (word, _old, other) = "ja", CASES["ja"]
+    _lists(lang)
+    entry = _queued(lang, word)
+    monkeypatch.setattr(swap, "choose_line", lambda *a, **k: (7, other))
+    swap.look(Steps(), ledger, lang, anki=Anki(), files=5)
+    row = swap._rows(ledger, "1 = 1")[0]
+    swap._set(ledger, row["id"], tried=json.dumps([5, 6]))           # two episodes tried before this one
+    ledger.set_state(row["job_id"], "done")                          # nothing made
+    _lists(lang, known=[word])
+    swap.look(Steps(), ledger, lang, anki=Anki(), files=5)
+    assert (_row(ledger, row["id"])["state"], _row(ledger, row["id"])["why"]) == (swap.DROPPED, "known")
+    assert [e["why"] for e in swap_queue.load(lang) if e["id"] == entry["id"]] == ["known"]
+
+
+def test_a_picked_line_that_is_the_old_cards_own_is_never_the_line(ledger, monkeypatch):
+    # Why: the journey's ⇄ may hand the very line the learner swapped away from; Swap picks another itself.
+    lang, (word, old, other) = "ja", CASES["ja"]
+    _lists(lang)
+    anki = _sentence_card(Anki(), 900, word, old)
+    _queued(lang, word, line_id="3:1000")
+    monkeypatch.setattr(swap, "_resolve_line_id", lambda steps, l, text: (3, old))
+    monkeypatch.setattr(swap, "choose_line", lambda *a, **k: (8, other))
+    swap.look(Steps(), ledger, lang, anki=anki, files=5)
+    row = swap._rows(ledger, "1 = 1")[0]
+    assert (row["state"], row["item_id"], row["line"]) == (swap.QUEUED, 8, other)
+
+
+def test_no_anki_to_read_an_old_cards_line_from_waits_too(ledger, monkeypatch):
+    # Why: Connect with no Anki address can't read a card it didn't make: the ask waits, never a job blind.
+    lang, (word, _old, other) = "ja", CASES["ja"]
+    _lists(lang)
+    _queued(lang, word)
+    monkeypatch.setattr(swap, "choose_line", lambda *a, **k: pytest.fail("no line without the old one"))
+    swap.look(Steps(), ledger, lang, anki=None, files=5)
+    assert swap._rows(ledger, "1 = 1")[0]["state"] == swap.ASKED and not ledger.jobs(lang)

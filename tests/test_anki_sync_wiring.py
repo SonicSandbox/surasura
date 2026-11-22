@@ -63,10 +63,19 @@ class _DashboardHarness(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        # FLAKES (Flake-F4, the junban --auto pair): a module first imported here bound the mocked path_utils; dropped
+        # from sys.modules it stayed its package's attribute, so a later `from app import x` (junban's --auto in
+        # test_cli_headless) took it and read every path through the mock. Its package lets go of it too
+        dropped = {name: m for name, m in sys.modules.items() if name not in cls._original_modules or name == 'app.main'}
         cls.patcher.stop()
         for mod in set(sys.modules.keys()) - cls._original_modules:
             sys.modules.pop(mod, None)
         sys.modules.pop('app.main', None)
+        for name, module in dropped.items():
+            parent, _, child = name.rpartition('.')
+            package = sys.modules.get(parent)
+            if package is not None and sys.modules.get(name) is not module and getattr(package, child, None) is module:
+                delattr(package, child)
 
     def setUp(self):
         if self.MasterDashboardApp is None:
@@ -135,6 +144,28 @@ class _DashboardHarness(unittest.TestCase):
              patch.object(self.main.threading, "Thread") as thread:
             self.MasterDashboardApp._maybe_anki_sync(self.app, force=force)
         return thread
+
+
+def _stale_package_attributes():
+    """Modules under app/ and modules/ held by their package but no longer what sys.modules holds for their name."""
+    stale = []
+    for name, package in list(sys.modules.items()):
+        if name.split(".")[0] not in ("app", "modules") or not hasattr(package, "__path__"):
+            continue
+        for child, value in list(vars(package).items()):
+            if isinstance(value, types.ModuleType) and value.__name__ == f"{name}.{child}" and \
+                    sys.modules.get(value.__name__) is not value:
+                stale.append(value.__name__)
+    return stale
+
+
+def test_the_harness_leaves_no_module_it_dropped_as_its_packages_attribute():
+    # FLAKES (Flake-F4): junban's --auto in test_cli_headless took such a module after test_anki_address (its paths
+    # through the mocked path_utils: an empty list)
+    before = set(_stale_package_attributes())
+    _DashboardHarness.setUpClass()
+    _DashboardHarness.tearDownClass()
+    assert set(_stale_package_attributes()) <= before
 
 
 class TestAutoSyncGate(_DashboardHarness):

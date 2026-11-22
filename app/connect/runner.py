@@ -1688,15 +1688,20 @@ def _pick(steps, ledger, lang, job, record=True):
     else:
         got = steps.pick(lang, job, video)
     declined = ledger.declined(lang, job["item_id"])     # Anki Miner turned them down once: never sent again (#19)
+    outcomes, skipped = ledger.declined_outcomes(lang, job["item_id"]), set()
     if got.get("anki_miner"):
         # laptop round 8 #52 (LF4-4 ⭐ A): a word this Anki Miner has no definition for, in any episode, is no card here
         # either (a name: sent once a version, never again with every episode)
         declined |= ledger.uncardable(lang, got["anki_miner"])
-        declined |= ledger.skipped_words(lang, got["anki_miner"])     # Michi-RM3: *Skip this word*, any part
+        skipped = ledger.skipped_words(lang, got["anki_miner"])       # Michi-RM3: *Skip this word*, any part
+        declined |= skipped
     words = [w for w in got.get("words") or [] if (w.get("word"), w.get("reading")) not in declined]
     picked = {"words": words, "file": got.get("file"), "subtitle": got.get("subtitle"),
               "video": video, "pairing": fit_check.version(pairing), "profile": got.get("profile"),
               "anki_miner": got.get("anki_miner")}
+    left = _left_out(got, declined, outcomes, skipped)
+    if left:
+        picked["left"] = left                       # Kantan-MA: why a word of it gets no card (`ledger.left_of`)
     if isinstance(pairing, dict) and (pairing.get("verdict") == "transcribed" or (
             pairing.get("producer") == "source" and steps.heard(lang, job))):
         picked["from_audio"] = True                 # Michi-NS (Q5): its subtitle was made from its audio: tagged
@@ -1730,6 +1735,28 @@ def _pick(steps, ledger, lang, job, record=True):
         return None
     ledger.set_state(jid, "fit-check", picked=picked)
     return picked
+
+
+# The pick's reasons that are no "not made": the word has its card (Kantan-MA)
+CARDED_REASONS = ("has-card", "in-backlog")
+
+
+def _left_out(got, declined, outcomes, skipped):
+    """Kantan-MA (*Mine again* made no card and said nothing): the words of the pick that get no card from it, each
+    with why, in plain words — the pick's own reason (`pick.REASONS`: a name, a grammar word, only sung, only near a
+    cut), or Anki Miner's earlier answer for it (`ledger.LEFT_WHY`: not found, no definition, skipped …). A word with
+    a card already is no such word. -> [{"word", "reading", "why"}]"""
+    from app.connect.ledger import LEFT_OTHER, LEFT_WHY
+    out = []
+    for w in got.get("words") or ():
+        key = (w.get("word"), w.get("reading"))
+        if key in declined:
+            outcome = outcomes.get(key) or ("skipped" if key in skipped else "no_definition")
+            out.append({"word": key[0], "reading": key[1], "why": LEFT_WHY.get(outcome, LEFT_OTHER)})
+    for w in got.get("not_offered") or ():
+        if isinstance(w, dict) and w.get("reason") not in CARDED_REASONS and w.get("why"):
+            out.append({"word": w.get("word"), "reading": w.get("reading"), "why": w["why"]})
+    return out
 
 
 def _online(steps, lang, job):
@@ -4069,7 +4096,8 @@ class Steps:
         miner = out.get("anki_miner") or {}
         return {"words": out.get("words") or [], "file": subtitle, "subtitle": out.get("subtitle"),
                 "profile": miner.get("profile"), "anki_miner": miner.get("app"),
-                "absent": out.get("skipped") == "anki miner absent"}
+                "absent": out.get("skipped") == "anki miner absent",
+                "not_offered": out.get("not_offered") or []}        # Kantan-MA: why the rest get no card
 
     on_listening = None     # Tsu-W: `_fit`'s callback for the job being checked (the row's *Listening…*), else None
 

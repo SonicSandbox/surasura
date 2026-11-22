@@ -255,6 +255,19 @@ def test_by_leverage_a_word_connect_already_carded_never_lifts_its_episode_into_
     assert isinstance(runner._full(steps, "ja", job={"item_id": 42}), runner.Wait)
 
 
+def test_by_leverage_a_best_job_is_placed_by_its_own_word_never_by_the_watched_episodes_others(monkeypatch):
+    # why (Kantan-SD): a Best job borrows a sentence from an episode (often one you've watched); its card is for its
+    # own word — the episode's other new words (撒く, place 0) must not lift it past the cap for 駐車場 (4)
+    from app.connect import level
+    made = {1: (20, "血塗れ"), 2: (21, "眼鏡"), 3: (22, "老婆")}             # list places 1, 2, 3
+    items = {40: {"rel_path": "Show/ep40.srt", "watched": True}}
+    steps = _steps(monkeypatch, "ja", [1, 2, 3], made, LIST_JA, items=items,
+                   file_words={"ep40.srt": ["撒く", "駐車場"]}, study_order="priority")
+    best = {"item_id": 40, "kind": "level", "source": level.BEST}
+    assert isinstance(runner._full(steps, "ja", job=dict(best, words=[("駐車場", "チュウシャジョウ")])), runner.Wait)
+    assert runner._full(steps, "ja", job=dict(best, words=[("撒く", "マク")])) is None, "its own word ranks: it goes"
+
+
 def test_chinese_slides_in_by_its_own_list(monkeypatch):
     listed = [("学习", "xué xí"), ("电脑", "diàn nǎo"), ("图书馆", "tú shū guǎn"), ("散步", "sàn bù")]
     made = {1: (20, "电脑"), 2: (21, "图书馆"), 3: (22, "散步")}

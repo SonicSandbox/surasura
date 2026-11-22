@@ -83,6 +83,20 @@ DEFAULT_SETTINGS = {
     # battery (Sonic, E3.2-1: 3 s, 30 s on a laptop's battery; advanced settings). No run or report reads them.
     "journey_settle_s": 3,
     "journey_settle_battery_s": 30,
+    # Journey v3's page settings (SPEC §1.4, J-SET; Settings › App › Journey and the page's ⚙, both through
+    # `app/services/journey_settings.py`, which also reads the three existing keys the page shares: `theme`,
+    # `source_display`, `logic.context.max_contexts`). Unused until the cut-over (J-CUT). Look settings, applied in the
+    # page — never in a signature (analyzer._NON_ANALYSIS_SETTINGS): *Pitch and tones* "shown" · "hidden" (until F);
+    # *Word size* / *Sentence size* "s" · "m" · "l"; *Keys* "qwerty" · "dvorak" · the learner's own {action: key};
+    # *Where you'll first meet it* (the sentence you first meet the word in, its own marked line) shown or not. A data
+    # setting, the render's (never a run's): *Meanings* "en" (JMdict / CC-CEDICT) · "yours_en" (yours, then English) · "yours"
+    # (J-CUT puts it in the render signature with the render that reads it).
+    "journey_pitch": "shown",
+    "journey_meanings": "en",
+    "journey_word_size": "m",
+    "journey_sentence_size": "m",
+    "journey_keys": "qwerty",
+    "journey_first_meeting": True,
     # Surasura Connect's preview switch (P2.1; docs/agent instructions/3.0/P1.5-connect/): off until the user turns it
     # on (2.x: an opt-in preview); with it off, `register` writes nothing. `placing_rules` = {source: target}: where a
     # program's drop goes instead of waiting in New arrivals (3.0 only, the store's `arrivals_on`; ✅ Q2-3, RD-S16:
@@ -133,6 +147,9 @@ DEFAULT_SETTINGS = {
     # list (Level is what you learn); on — for every word of the episode you don't know, past your level too, counted
     # toward the cap. `connect_every_word()` reads it; a file without it reads `connect_mine_words` == "unknown".
     "connect_every_word": False,
+    # Kantan-SD (the sentence dial; PROVISIONAL default): which sentence a card is cut from — "best" anywhere in the
+    # library, or "nearest", the episode's own line (`app/connect/sentences.py`, `dial_of`)
+    "connect_sentence_dial": "best",
     # The study order (Kantan-MO; ROLES.md: the list's): "content" — as you'll meet the words in your library;
     # "priority" — by leverage first. Read by Connect (the cap's window), 順 (its order) and the journey (its list)
     # through `study_order()`; a file without it reads 順's old `junban_order`.

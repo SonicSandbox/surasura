@@ -526,3 +526,98 @@ def test_the_build_counts_every_file_in_as_it_is_gathered_then_says_all_are_in(s
     total = told[0][1]
     assert told[0] == (0, total) and told[-1] == (total, total) and total >= len(ob.entries) - 1   # (MANIFEST: after)
     assert [d for d, _t in told] == list(range(total + 1)) and {t for _d, t in told} == {total}
+
+
+# --- the flagged sentences (journey v3 SPEC §4, J-FLAGS) ------------------------------------------------------------ #
+LINES_ZH = ["今天我们要去台北的夜市吃东西。", "這家店的牛肉麵非常有名，"]      # tests/Test Resources/zh/night_market.srt
+
+
+def _flag_two():
+    from app.services import flags
+    a = flags.add("zh", LINES_ZH[0], "夜市", "journey", key="e2:4.1", show="台北夜市", episode="第1集", at=4.1,
+                  reasons=["wrong_sentence"])
+    b = flags.add("zh", LINES_ZH[1], "牛肉麵", "journey", key="e2:7.9", show="台北夜市", episode="第1集", at=7.9,
+                  reasons=["bad_audio"], note="声音太小")
+    return flags, a, b
+
+
+def _zip_lines(body):
+    import io
+    with zipfile.ZipFile(io.BytesIO(body)) as z:
+        if report.FLAGGED not in z.namelist():
+            return []
+        return [x["word"] for x in json.loads(z.read(report.FLAGGED))["lines"]]
+
+
+def test_the_outbox_shows_every_flagged_sentence_and_a_sent_one_leaves_the_list(saved, receiver):
+    flags, a, b = _flag_two()
+    ob = send_report.build("zh")
+    assert [x["word"] for x in ob.flag_lines] == ["夜市", "牛肉麵"] and set(ob.flags) == {a["id"], b["id"]}
+    assert send_report.send(keep=[a["id"], b["id"]]).outcome == send_report.SENT
+    assert _zip_lines(receiver.got[0]["body"]) == ["夜市", "牛肉麵"]
+    assert flags.count("zh") == 0 and report.listed() == []
+
+
+def test_an_unticked_sentence_is_not_sent_and_stays_flagged(saved, receiver):
+    flags, a, b = _flag_two()
+    ob = send_report.build("zh")
+    got = send_report.send(nonce=ob.nonce, keep=[b["id"]])
+    assert got.outcome == send_report.SENT
+    body = receiver.got[0]["body"]
+    assert _zip_lines(body) == ["牛肉麵"]
+    assert receiver.got[0]["headers"]["X-Report-Sha256"] == hashlib.sha256(body).hexdigest()   # the bytes that went
+    assert receiver.got[0]["headers"]["X-Report-Nonce"] != ob.nonce                           # new bytes, new nonce
+    assert [x["word"] for x in flags.read("zh")] == ["夜市"]
+
+
+def test_a_failed_send_clears_no_flag(saved, receiver):
+    flags, a, b = _flag_two()
+    receiver.answer = (503, {"error": "paused"})
+    send_report.build("zh")
+    assert send_report.send(keep=[a["id"]]).outcome == send_report.PAUSED
+    assert flags.count("zh") == 2 and len(report.listed()) == 1
+
+
+def test_a_sentence_flagged_again_after_the_zip_was_made_stays_for_the_next_report(saved, receiver):
+    flags, a, b = _flag_two()
+    send_report.build("zh")
+    flags.add("zh", LINES_ZH[0], "夜市", "journey", key="e2:4.1", note="后来加的备注")
+    send_report.send()
+    assert [(x["word"], x["note"]) for x in flags.read("zh")] == [("夜市", "后来加的备注")]
+
+
+def test_refit_writes_the_ticks_into_the_waiting_zip_and_the_same_ticks_change_nothing(saved):
+    flags, a, b = _flag_two()
+    ob = send_report.build("zh")
+    same = send_report.refit([a["id"], b["id"]], ob.nonce)
+    assert same.nonce == ob.nonce and same.sha256 == ob.sha256
+    one = send_report.refit([a["id"]], ob.nonce)
+    with open(one.path, "rb") as f:
+        body = f.read()
+    assert one.nonce != ob.nonce and one.sha256 == hashlib.sha256(body).hexdigest() and one.size == len(body)
+    assert _zip_lines(body) == ["夜市"] and set(one.flags) == {a["id"]}
+    assert send_report.waiting().nonce == one.nonce and len(send_report.waiting().flag_lines) == 2   # all still shown
+    back = send_report.refit([a["id"], b["id"]], one.nonce)                    # ticked again: back in
+    with open(back.path, "rb") as f:
+        assert _zip_lines(f.read()) == ["夜市", "牛肉麵"]
+    with pytest.raises(ValueError):
+        send_report.refit([a["id"]], ob.nonce)                                 # an older page's zip: never refitted
+    assert flags.count("zh") == 2
+
+
+def test_flags_alone_unticked_leave_nothing_to_send_and_no_request(tmp_path, monkeypatch, receiver):
+    probe_person.make(tmp_path, monkeypatch)
+    flags, a, b = _flag_two()
+    ob = send_report.build("zh")
+    assert ob.zipped == {}
+    with pytest.raises(ValueError):
+        send_report.send(keep=[])
+    assert receiver.got == [] and flags.count("zh") == 2
+
+
+def test_a_new_press_with_other_flags_gets_a_new_nonce(saved):
+    flags, a, b = _flag_two()
+    first = send_report.build("zh")
+    assert send_report.build("zh").nonce == first.nonce                     # the same reports and flags: the same
+    flags.add("zh", "每天都有很多人排隊。", "排隊", "journey", key="e2:11.0")
+    assert send_report.build("zh").nonce != first.nonce

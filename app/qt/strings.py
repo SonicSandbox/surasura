@@ -2389,3 +2389,20 @@ NEXT_MADE_LINE = "From here, Surasura shows a next step only when one becomes us
 NEXT_OK = "OK"
 NEXT_OK_TIP = "Put this card away"
 # --- end the feature guide's path
+# --- the flagged sentences in Send report (journey v3 SPEC §4, J-FLAGS; words PROVISIONAL)
+REPORT_FLAGS_ONE = "1 sentence you flagged goes with your next report."
+REPORT_FLAGS_N = "{n} sentences you flagged go with your next report."
+REPORT_FLAGS_LINE_TIP = "Sentences you flagged on your journey page\n• Send report shows each one before it goes"
+REPORT_FLAGS_HEADING = "Sentences you flagged: untick one to leave it out of this report"
+REPORT_FLAGS_TIP = ("Each ticked sentence goes with this report\n• Click or Space: tick or untick\n"
+                    "• Unticked: left out this time, still flagged for your next report")
+REPORT_FLAGS_NAME = "Sentences you flagged"
+REPORT_FLAG_REASONS = {"parsing": "Parsing looks wrong", "too_long": "Too long", "bad_audio": "Bad audio",
+                       "wrong_sentence": "Wrong sentence for this word", "other": "Other"}
+REPORT_FLAG_NOTE = "Note: {note}"
+REPORT_FLAG_SPLIT = "Surasura read it as: {split}"
+REPORT_FLAG_ROW_NAME = "{state}: {line}"           # a line, for screen readers
+REPORT_FLAG_TICKED = "Goes"
+REPORT_FLAG_UNTICKED = "Left out"
+REPORT_FLAGS_NONE_TIP = "Nothing is ticked and no report is saved, so there's nothing to send"
+# --- end the flagged sentences in Send report

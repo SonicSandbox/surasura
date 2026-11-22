@@ -527,6 +527,156 @@ class ElidedLabel(QLabel):
 
 
 # --- the window --------------------------------------------------------------------------------------------------- #
+def _clock(at):
+    """A line's time in seconds -> 4:05 / 1:02:03 ("" with none)."""
+    if not isinstance(at, (int, float)) or isinstance(at, bool):
+        return ""
+    s = int(at)
+    return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
+
+
+def flag_texts(line):
+    """A flagged sentence as What goes shows it -> [(text, dim)]: the line; its word, where it's from with its time
+    and the reasons; the note; for parsing, Surasura's split."""
+    where = " · ".join(x for x in (line.get("show"), line.get("episode"), _clock(line.get("at"))) if x)
+    reasons = ", ".join(strings.REPORT_FLAG_REASONS.get(r, r) for r in line.get("reasons") or ())
+    out = [(line.get("line") or "", False),
+           (" · ".join(x for x in (line.get("word"), where, reasons) if x), True)]
+    if line.get("note"):
+        out.append((strings.REPORT_FLAG_NOTE.format(note=line["note"]), True))
+    if line.get("split"):
+        out.append((strings.REPORT_FLAG_SPLIT.format(split=" | ".join(str(t[0]) for t in line["split"] if t)), True))
+    return out
+
+
+class FlagList(QWidget):
+    """What goes' flagged sentences (journey v3 SPEC §4): one painted list, never a widget per line. Each line, its
+    word, where it's from with its time, the reasons, the note and a parsing line's split, with a tick (a click, or
+    Space on the current line; ↑ ↓ move). Unticked: left out of this report, still flagged. `changed()`: told on each
+    tick."""
+
+    def __init__(self, parent=None, changed=None):
+        super().__init__(parent)
+        self.lines, self.kept, self.at, self.paints = [], set(), 0, 0
+        self.changed = changed
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setToolTip(strings.REPORT_FLAGS_TIP)
+        self.setAccessibleName(strings.REPORT_FLAGS_NAME)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_lines(self, lines):
+        """Every line ticked (a new What goes)."""
+        self.lines = list(lines)
+        self.kept = {line.get("id") for line in self.lines}
+        self.at = 0
+        self._said()
+        self.updateGeometry()
+        self.update()
+
+    def keep(self):
+        """The ticked lines' ids, in order."""
+        return [line.get("id") for line in self.lines if line.get("id") in self.kept]
+
+    def toggle(self, i):
+        if not 0 <= i < len(self.lines):
+            return
+        rid = self.lines[i].get("id")
+        self.kept.symmetric_difference_update({rid})
+        self.at = i
+        self._said()
+        self.update()
+        if self.changed is not None:
+            self.changed()
+
+    def _said(self):
+        if self.lines:
+            line = self.lines[self.at]
+            state = strings.REPORT_FLAG_TICKED if line.get("id") in self.kept else strings.REPORT_FLAG_UNTICKED
+            self.setAccessibleDescription(strings.REPORT_FLAG_ROW_NAME.format(state=state, line=line.get("line") or ""))
+
+    def _f(self):
+        return theme.text_factor(style.current()[1])
+
+    def _row_height(self, line):
+        fm = QFontMetrics(self.font())
+        return len(flag_texts(line)) * fm.height() + round(8 * self._f())
+
+    def sizeHint(self):
+        return QSize(round(240 * self._f()), sum(self._row_height(x) for x in self.lines) + 2)
+
+    def minimumSizeHint(self):
+        return QSize(round(120 * self._f()), self.sizeHint().height())
+
+    def _row_at(self, y):
+        top = 1
+        for i, line in enumerate(self.lines):
+            top += self._row_height(line)
+            if y < top:
+                return i
+        return -1
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.toggle(self._row_at(event.position().y()))
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key in (Qt.Key.Key_Space, Qt.Key.Key_Select) and self.lines:
+            self.toggle(self.at)
+        elif key == Qt.Key.Key_Down and self.at < len(self.lines) - 1:
+            self.at += 1
+            self._said()
+            self.update()
+        elif key == Qt.Key.Key_Up and self.at > 0:
+            self.at -= 1
+            self._said()
+            self.update()
+        else:
+            super().keyPressEvent(event)
+
+    def paintEvent(self, _event):
+        self.paints += 1
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        f = self._f()
+        fm = QFontMetrics(self.font())
+        box, pad = round(14 * f), round(6 * f)
+        text_x = box + 2 * pad
+        width = max(1, self.width() - text_x - pad)
+        top = 1
+        for i, line in enumerate(self.lines):
+            h = self._row_height(line)
+            ticked = line.get("id") in self.kept
+            b = QRectF(pad, top + round(4 * f) + (fm.height() - box) / 2, box, box)
+            p.setPen(QPen(rows.c("accent" if ticked else "ink-dim"), 1.5))
+            p.setBrush(rows.c("accent") if ticked else Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(b, 3, 3)
+            if ticked:
+                tick = QPainterPath(QPointF(b.left() + box * 0.22, b.center().y()))
+                tick.lineTo(QPointF(b.left() + box * 0.42, b.bottom() - box * 0.25))
+                tick.lineTo(QPointF(b.right() - box * 0.2, b.top() + box * 0.25))
+                pen = QPen(rows.c("bg"), 1.8)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                p.setPen(pen)
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawPath(tick)
+            y = top + round(4 * f) + fm.ascent()
+            for text, dim in flag_texts(line):
+                p.setPen(rows.c("ink-faint" if not ticked else "ink-dim" if dim else "ink"))
+                p.drawText(QPointF(text_x, y), fm.elidedText(text, Qt.TextElideMode.ElideRight, width))
+                y += fm.height()
+            if self.hasFocus() and i == self.at:
+                p.setPen(QPen(rows.c("accent"), 2))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRoundedRect(QRectF(1, top, self.width() - 2, h - 1), theme.RADII["icon-button"],
+                                  theme.RADII["icon-button"])
+            top += h
+        p.end()
+
+
 class ReportWindow(SecondaryWindow):
     FORM, OPENED, CONTENTS, GOES, SENT = 0, 1, 2, 3, 4
 
@@ -545,6 +695,7 @@ class ReportWindow(SecondaryWindow):
         self.sending = False                                      # *Send report* under way (its save, then its zip)
         self.from_piyo = False                                    # the form holds words Piyo handed over (`fill_from_piyo`)
         self.outbox = None                                        # the zip the What goes page shows (send_report.Outbox)
+        self.flag_count = 0                                       # the flagged sentences waiting (`flags.count`)
         self.waiting = None                                       # a zip kept after a send that didn't go
         self.tries = {}                                           # {a zip's nonce: its failed sends} (`_tried`)
         self.sent_id = None                                       # the last report sent (#ID), for Copy
@@ -569,6 +720,10 @@ class ReportWindow(SecondaryWindow):
         self.list.setMinimumHeight(round(96 * f))
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)   # a long line elides instead
         self.body.addWidget(self.list)
+        self.flags_line = self._line("")                          # (only while sentences are flagged: J-FLAGS)
+        self.flags_line.setToolTip(strings.REPORT_FLAGS_LINE_TIP)
+        self.flags_line.setVisible(False)
+        self.body.addWidget(self.flags_line)
         self.body.addLayout(self._send_row())
         self.body.addLayout(self._after_rows())
         self.hint = self._line(strings.REPORT_HINT)
@@ -809,6 +964,11 @@ class ReportWindow(SecondaryWindow):
         self.goes_kept = self._line(strings.REPORT_GOES_KEPT)
         for line in (self.goes_placeholders, self.goes_name, self.goes_sender, self.goes_kept):
             lines.addWidget(line)
+        self.goes_flags_line = self._line(strings.REPORT_FLAGS_HEADING)          # (J-FLAGS: only with flagged lines)
+        self.goes_flags = FlagList(inner, changed=self._flags_ticked)
+        for w in (self.goes_flags_line, self.goes_flags):
+            w.setVisible(False)
+            lines.addWidget(w)
         self.goes_files = QLabel(inner)
         self.goes_files.setObjectName("windowline")
         self.goes_files.setTextFormat(Qt.TextFormat.PlainText)
@@ -1063,8 +1223,21 @@ class ReportWindow(SecondaryWindow):
 
     # --- the list ---------------------------------------------------------------------------------------------- #
     def read(self, then_say=None):
-        bridge.run_in_worker(core.listed, then=self.alive(lambda got: self._show(got, then_say)),
+        language = self.language
+
+        def got(both):
+            self._flags_counted(both[1])
+            self._show(both[0], then_say)
+        bridge.run_in_worker(lambda: (core.listed(), flags_waiting(language)), then=self.alive(got),
                              failed=self.alive(lambda info: self.say(strings.REPORT_READ_FAILED.format(why=info[0]))))
+
+    def _flags_counted(self, n):
+        """The flagged sentences waiting: said under the list (nothing while there are none) - Send report works with
+        them alone."""
+        self.flag_count = n
+        if n:
+            self.flags_line.setText(strings.REPORT_FLAGS_ONE if n == 1 else strings.REPORT_FLAGS_N.format(n=n))
+        self.flags_line.setVisible(bool(n) and self.pages.currentIndex() != self.GOES)
 
     def _show(self, reports, line=None):
         reports = list(reports)
@@ -1126,7 +1299,7 @@ class ReportWindow(SecondaryWindow):
         what it needs while it is grey, and the status line says it in plain sight (`REPORT_EMPTY`)."""
         if not hasattr(self, "send_button"):                      # (the form is built before the send row)
             return
-        ready = bool(self.reports) or self.save_button.isEnabled() or self.sending
+        ready = bool(self.reports) or bool(self.flag_count) or self.save_button.isEnabled() or self.sending
         self.send_button.setEnabled(ready and not self.gathering)    # (What goes is up, gathering: pressed already)
         self.send_button.setToolTip(strings.REPORT_SEND_TIP if ready else strings.REPORT_SEND_NONE_TIP)
         held = self.pages.currentIndex() == self.GOES                # (What goes up, or gathering: `_goes_hold`'s)
@@ -1135,10 +1308,10 @@ class ReportWindow(SecondaryWindow):
                                           strings.REPORT_ZIP_SAVES_TIP),
                                          (self.show_button, strings.REPORT_SHOW_TIP, strings.REPORT_SHOW_NONE_TIP,
                                           strings.REPORT_SHOW_SAVES_TIP)):
-            on = (bool(self.reports) or self.save_button.isEnabled()) and not held
+            on = (bool(self.reports) or bool(self.flag_count) or self.save_button.isEnabled()) and not held
             if button.isEnabled() != on:
                 button.setEnabled(on)
-            words = saves if typed else tip if self.reports else none
+            words = saves if typed else tip if self.reports or self.flag_count else none
             if button.toolTip() != words:
                 button.setToolTip(words)
 
@@ -1367,7 +1540,7 @@ class ReportWindow(SecondaryWindow):
             if self.save(then=lambda: self._build(saved=True) if self.gathering else self._sending(False),
                          control=self.send_button, broke=self._not_gathered) is None:
                 self._not_gathered()
-        elif self.reports:
+        elif self.reports or self.flag_count:
             self._gather()
             self._build()
 
@@ -1384,7 +1557,7 @@ class ReportWindow(SecondaryWindow):
         self.goes_gathering.setText(strings.REPORT_GATHERING)
         self.goes_gathering.setVisible(True)
         for w in (self.goes_placeholders, self.goes_name, self.goes_sender, self.goes_kept, self.goes_files,
-                  self.goes_pictures_line):
+                  self.goes_pictures_line, self.goes_flags_line, self.goes_flags):
             w.setVisible(False)
         self._clear(self.goes_pictures)
         self.goes_send.setEnabled(False)
@@ -1426,7 +1599,7 @@ class ReportWindow(SecondaryWindow):
 
     def _build(self, saved=False):
         """(The window's thread.) The outbox zip made on a worker; `saved`: a report was just saved."""
-        if not self.reports and not saved:
+        if not self.reports and not saved and not self.flag_count:
             self._sending(False)
             self.say(strings.REPORT_EMPTY)
             return
@@ -1504,6 +1677,10 @@ class ReportWindow(SecondaryWindow):
         self.goes_sender.setText(self.sender_line.text())
         self.goes_sender.setVisible(bool(self.sender_line.text()))
         self.goes_files.setText(outbox.describe())
+        self.goes_flags.set_lines(outbox.flag_lines)
+        for w in (self.goes_flags_line, self.goes_flags):
+            w.setVisible(bool(outbox.flag_lines))
+        self._flags_ticked()
         self._clear(self.goes_pictures)
         self.pages.setCurrentIndex(self.GOES)
         self._goes_hold(True)
@@ -1519,6 +1696,18 @@ class ReportWindow(SecondaryWindow):
         self.goes_pictures_line.setVisible(bool(pictures))
         self.goes_send.setFocus()
 
+    def _flags_ticked(self):
+        """A tick on What goes: *Send* needs a saved report in the zip or a ticked line."""
+        ok = self.outbox is not None and (bool(self.outbox.zipped) or bool(self.goes_flags.keep()))
+        self.goes_send.setEnabled(ok)
+        self.goes_send.setToolTip(strings.REPORT_GOES_SEND_TIP if ok else strings.REPORT_FLAGS_NONE_TIP)
+
+    def _keep(self, outbox):
+        """The ticked flagged sentences for `outbox` (None: it holds none, or it isn't the one What goes shows)."""
+        if outbox is not self.outbox or not outbox.flag_lines:
+            return None
+        return self.goes_flags.keep()
+
     def _goes_hold(self, on):
         """While What goes is up (and while its zip is sent): the name, the code and the send row wait, so what goes
         is what the page says."""
@@ -1527,6 +1716,7 @@ class ReportWindow(SecondaryWindow):
             w.setEnabled(not on)
         for w in (self.list_heading, self.list, self.hint):       # (the page's room: the list is in the zip it shows)
             w.setVisible(not on)
+        self.flags_line.setVisible(not on and bool(self.flag_count))
         self.sent_box.setEnabled(not on)                          # (a sent #ID opens once What goes is left)
         if not on:
             self.new_code_button.setEnabled(bool(self.sender_line.text()))
@@ -1580,7 +1770,8 @@ class ReportWindow(SecondaryWindow):
             self.say(words)
             self.read_send()
         self._hold(True)
-        p = qpress.run(control, "report:send", send_report.send, name, None, None, None, outbox.nonce, win=self,
+        p = qpress.run(control, "report:send", send_report.send, name, None, None, None, outbox.nonce,
+                       self._keep(outbox), win=self,
                        busy=strings.REPORT_SENDING.format(size=core._mb(outbox.size)), then=done, failed=broke)
         if p is None:
             self._hold(False)
@@ -1605,8 +1796,21 @@ class ReportWindow(SecondaryWindow):
 
     def open_outbox(self):
         """*Open the zip*: the zip that goes, selected in its folder (the exact bytes)."""
-        if self.outbox is not None:
+        if self.outbox is None:
+            return
+        keep = self._keep(self.outbox)
+        if keep is None or set(keep) == set(self.outbox.flags):
             show_zip(self, self.outbox.path, control=self.goes_open)
+            return
+
+        def refitted(ob):                                          # the ticks written into it first: what Send sends
+            if self.outbox is not None:
+                self.outbox = ob
+                self.goes_files.setText(ob.describe())
+                show_zip(self, ob.path)
+        qpress.run(self.goes_open, "report:send", send_report.refit, keep, self.outbox.nonce, win=self,
+                   then=self.alive(refitted),
+                   failed=self.alive(lambda info: self.say(strings.REPORT_SEND_FAILED.format(why=info[0]))))
 
     def read_send(self, then_say=None):
         """(A worker.) This PC's send state: a waiting zip, the sent copies, the sender code, the remembered name."""
@@ -1834,6 +2038,15 @@ def prepare_send(language, include, library, extra, step=None, width=None):
                         img = img.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
                     pictures.append(img)
     return "built", ob, pictures, send_report.sender_code()
+
+
+def flags_waiting(language):
+    """(A worker.) How many sentences are flagged for Send report (0 when the list can't be read)."""
+    try:
+        from app.services import flags
+        return flags.count(language)
+    except Exception:
+        return 0
 
 
 def discard(sha256=None, tries=5):

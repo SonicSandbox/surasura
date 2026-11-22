@@ -577,7 +577,8 @@ async function write(route, body, tag, done, slow) {
   if (a && a.ok) { for (const x of QUEUE.filter((x) => x.tag === tag && x.id < q.id)) dequeue(x); fin({ answer: a }); return; }
   if (a && (a.offline || a.kind === "closed" || a.kind === "busy" || a.kind === "not_yet")) {
     if (a.offline) setDoor(a.why === "unopened" ? "unopened" : "off");
-    enqueue(q); fin({ queued: true, kind: a.kind }); return;
+    if (LAST.get(tag) === q.id) enqueue(q);           // a newer press (taken, or waiting) replaces it: never queued behind
+    fin({ queued: true, kind: a.kind }); return;
   }
   try { fin({ refused: a ? (a.error || "Surasura couldn't take that.") : "No answer.", kind: a && a.kind }); }   // one waiting before still waits
   finally { readBack(); }                              // refused (stale above all): the page shows what the app has
@@ -586,14 +587,15 @@ async function write(route, body, tag, done, slow) {
    → undone there (and the replaced one waits again); sent by the queue since → it can't be from here, and says so. */
 function undoPress(r, route, put) {
   const back = () => { if (r.prior && !r.prior.sent && !QUEUE.includes(r.prior) && enqueue(r.prior)) flushQueue(); };
-  if (r.queued) {
-    if (dequeue(r.q)) { back(); put(); } else if (r.q.sent) toast("Already sent to Surasura: press it again to change it.");
+  if (r.queued) {                                      // on its way (the flush sending it) or sent: not from here
+    if (r.q.sent) toast("Already sent to Surasura: press it again to change it."); else if (dequeue(r.q)) { back(); put(); }
     return;
   }
   const undoId = r.answer && r.answer.undo_id;
   if (undoId == null) return;
   doorCall(route, { undo_id: undoId }).then((a) => {
-    if (a && a.ok) { back(); put(); } else toast(a && a.error || "Surasura is closed: that Undo can't be kept.");
+    if (a && a.ok) { back(); if (LAST.get(r.q.tag) === r.q.id) put(); }   // a newer press since is what's drawn
+    else toast(a && a.error || "Surasura is closed: that Undo can't be kept.");
   });
 }
 
@@ -607,13 +609,14 @@ async function flushQueue() {
       const first = QUEUE[0];
       if (!built(first.route)) { if (QUEUE.every((q) => !built(q.route))) break; QUEUE.push(QUEUE.shift()); continue; }
       const batch = first.route === "words/mark" ? QUEUE.filter((q) => q.route === "words/mark").slice(0, 150) : [first];
+      for (const q of batch) q.sent = true;          // on its way: an Undo can't take it back from here
       const a = await doorCall(first.route, first.route === "words/mark" ? { marks: batch.map((q) => q.body.marks[0]) } : first.body);
-      if (a && a.offline) { setDoor("off"); break; }
-      if (a && !a.ok && (a.kind === "busy" || a.kind === "closed")) break;
-      if (a && !a.ok && a.kind === "not_yet") { D.notyet.add(first.route); continue; }   // kept: it goes once the route is built
+      const keep = () => { for (const q of batch) q.sent = false; };
+      if (a && a.offline) { keep(); setDoor("off"); break; }
+      if (a && !a.ok && (a.kind === "busy" || a.kind === "closed")) { keep(); break; }
+      if (a && !a.ok && a.kind === "not_yet") { keep(); D.notyet.add(first.route); continue; }   // kept: it goes once the route is built
       const out = new Set(batch);                     // by identity: a press made during the wait stays
       QUEUE = QUEUE.filter((q) => !out.has(q));
-      for (const q of batch) q.sent = true;
       sent = true;
       if (a && a.ok) { answered(first.route, first.body, a); if (a.stale && a.stale.length) refused = true; } else refused = true;
       saveQueue();
@@ -668,7 +671,11 @@ async function readState() {                              // true when an answer
       if (p) PRE.set(i, { on: true, at: p.at, by: p.by }); else if (cur && cur.on) PRE.set(i, { on: false, by: "off" });
     }
   }
-  if (a.flags && Array.isArray(a.flags.flagged)) { FLAGGED.clear(); for (const [lid] of a.flags.flagged) FLAGGED.add(lid); for (const [lid, st] of FWAIT) if (st === "queued") FLAGGED.add(lid); }
+  if (a.flags && Array.isArray(a.flags.flagged)) {      // a flag press waiting or on its way stays as pressed
+    const keep = [...FWAIT.keys()].map((l) => [l, FLAGGED.has(l)]);
+    FLAGGED.clear(); for (const [lid] of a.flags.flagged) FLAGGED.add(lid);
+    for (const [l, on] of keep) if (on) FLAGGED.add(l); else FLAGGED.delete(l);
+  }
   if (a.settings && typeof a.settings === "object") {
     for (const s of SETTINGS) if (a.settings[s.key] != null && !SET_WAIT[s.k]) SET[s.k] = a.settings[s.key];
     applyLook();

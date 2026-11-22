@@ -153,7 +153,7 @@ def test_up_nexts_percent_says_what_it_counts_and_a_click_on_it_still_opens_the_
 
 
 def test_up_nexts_percent_hover_says_what_it_was_when_added_in_one_line(seeded):
-    """Kura-GS (Sonic, the journey's round 8: growth on the % hover, "it can't get cluttered over there"): Up next's
+    """Kura-GS (Sonic, the journey's round 8: growth on the % hover, kept to one line, uncluttered): Up next's
     % hover keeps Kantan-B1's words and adds one line, what the store kept of it when it was added — *When you added
     it on Nov 3: 81%*, or, for an episode already in the library when the snapshots began, the day they began. No
     snapshot (no Generate counted it yet, no numbers, a read that fails): the hover as before, never an error."""

@@ -1050,8 +1050,8 @@ ADDED_TABLES_SQL = (
       made_at  TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS made_lines_item ON made_lines (item_id)",
 )
-# Kura-GS (3.0.18; Sonic 2026-11-21, the journey's round 8: "what you would have understood when you added it vs what
-# you understand now"): what the learner understood of each item, then — a Generate's own figures for the file (its
+# Kura-GS (3.0.18; Sonic 2026-11-21, the journey's round 8: how much of an item the learner understood when it was
+# added vs now): what the learner understood of each item, then — a Generate's own figures for the file (its
 # progressive pass, the window's *% known*: `known` tokens known before any file over `counted`; `unknown`, the words
 # in it not known, each once) under one of three kinds: 'added' — the first Generate that counted it (`prior` 1: it
 # was in the library before the snapshots began, meta GROWTH_SINCE, so it is when they began, never a made-up *when

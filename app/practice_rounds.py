@@ -36,7 +36,7 @@ LAST_SCAN = 5                   # round files `last_round` reads at most, newest
 # A produce round's results (Piyo's output drills): how each attempt went, as the AI judged it — a log, read by no
 # scheduler. One result: the round word (WORD_CHARS at most), its error type, which try it was (1 to TRIES_MOST), and
 # whether it passed; a note (TEXT_CHARS at most) when the AI adds one.
-ERROR_TYPES = ("retrieval_miss", "reading_error", "morphological_error", "collocation_mismatch", "register_drift", "ok")
+ERROR_TYPES = ("retrieval_miss", "reading_error", "morphological_error", "collocation_mismatch", "tone_drift", "ok")
 WORD_CHARS = 30
 TRIES_MOST = 20
 # A word passed (ok) in a produce round is left out of the next produce rounds for this long (live testing,

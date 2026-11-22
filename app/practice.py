@@ -19,6 +19,7 @@ The words a round practises first are Anki's young cards, as the last Anki sync 
 User Files/<lang>/anki_young.json), then the newest known words: no Anki call, so a round never waits on Anki.
 `tests/test_practice.py`.
 """
+import bisect
 import json
 import os
 import re
@@ -283,6 +284,9 @@ class Checker:
             raise ValueError(f"mode must be one of {', '.join(MODES + (ANSWER,))}")
         targets, avoid = _words_of(targets), _words_of(avoid)
         text = str(text or "")
+        if (targets or avoid or mode == ANSWER) and len(text) > LOOK_CHARS:
+            raise ValueError(f"Check at most {LOOK_CHARS:,} characters at a time with targets, banned words or mode "
+                             f"answer: a drill's line and brief, or the learner's answer.")
         with _reading(self.japanese):
             out = self._check(text, "chat" if mode == ANSWER else mode)
             if not (targets or avoid or mode == ANSWER):
@@ -298,12 +302,13 @@ class Checker:
                                       f"show it, its spelling or its reading before the learner has produced it. "
                                       f"Rewrite without it, with hints about meaning only.")
             elif self.japanese:
-                # a crutch word or a hint written with one of the target's kanji shows part of its spelling (跳ぶ
-                # banned while the word is 跳躍, live testing 2026-11-20)
+                # a crutch word or a hint written with a kanji that gives the target away shows part of its spelling
+                # (跳ぶ banned while the word is 跳躍, live testing 2026-11-20); a common one doesn't (その時 for 時間)
                 for kanji in dict.fromkeys(c for c in t["word"] if _HAN_ONE.fullmatch(c) and c in text):
-                    out["reasons"].append(f"The draft shows {kanji}, a kanji of the target word {t['word']}: write "
-                                          f"that word in kana (or say it otherwise), so the target's spelling stays "
-                                          f"hidden.")
+                    if gives_away(t["word"], kanji):
+                        out["reasons"].append(f"The draft shows {kanji}, a kanji of the target word {t['word']} that "
+                                              f"gives it away: write that word in kana (or say it otherwise), so the "
+                                              f"target's spelling stays hidden.")
         out["pass"] = not out["reasons"]
         return out
 
@@ -314,12 +319,13 @@ class Checker:
                   if analyzer.has_target_language(t[0], self.language) or analyzer.has_target_language(t[2],
                                                                                                       self.language)]
         kana = self._kana_nodes(text) if self.japanese else None
+        layout = _layout(kana) if kana else None       # once a text, never once a word
         out = dict(out, text=text, lemmas=[{"surface": s, "lemma": l, "reading": r}
                                            for l, r, s, _o in tokens[:LEMMAS_SHOWN]])
-        out["targets"] = [self._find(word, text, tokens, kana, resolve, near=True) for word in targets]
+        out["targets"] = [self._find(word, text, tokens, kana, resolve, True, layout) for word in targets]
         out["avoid"] = []
         for word in avoid:
-            found = self._find(word, text, tokens, kana, resolve, near=False)
+            found = self._find(word, text, tokens, kana, resolve, False, layout)
             out["avoid"].append({"word": word, "present": found["found"],
                                  **({"form": found["form"], "how": found["how"]} if found["found"] else {})})
         return out
@@ -337,19 +343,22 @@ class Checker:
             out.append((fold_kana(kana) if kana else None, surface, getattr(node.feature, "pos1", "")))
         return out
 
-    def _find(self, word, text, tokens, kana, resolve, near):
+    def _find(self, word, text, tokens, kana, resolve, near, layout=None):
         """Where `word` is in the text -> {"word", "found"} and, when found, "how" — lemma (the word itself, any
         form: "spelling" says same, kana, or other: another kanji, a reading_error candidate), written (its own
         spelling inside a longer word), reading (its reading at a word's start, written otherwise: kana alone or
         other kanji) or near_reading (`near` only: a reading one kana off, two from five up — the word misread, or
-        another word) — "form" (the text as written) and "note"."""
+        another word) — "form" (the text as written) and "note". `layout`: `_layout(kana)`, made once a text."""
         from app.anki_match import fold_kana
         out = {"word": word, "found": False}
         key, phrase, _look, reading = resolve(self.tokenizer, self.language, word)
         own = self.tokenizer.tokenize(word)
         lemmas = (key[0],) if key else tuple(phrase or ())
         n = len(lemmas)
+        first = lemmas[0] if n else None
         for i in range(len(tokens) - n + 1) if n else ():
+            if tokens[i][0] != first and (tokens[i][3] or tokens[i][2]) != first:
+                continue                                # (the run's first token decides most: no run built)
             run = tokens[i:i + n]
             # by its lemma, or by its own dictionary spelling (臭い, a word of its own to the card matching, is
             # 匂い's lemma to the tagger: written 臭い, it is the word)
@@ -366,42 +375,39 @@ class Checker:
         if not (kana and reading):
             return out
         want = fold_kana(reading)
-        starts, ends, joined, pos = [], set(), "", 0
-        for k, *_rest in kana:
-            starts.append(pos)
-            piece = k if k else "\x00"
-            joined += piece
-            pos += len(piece)
-            ends.add(pos)
+        starts, joined, sorted_ends, ends = layout or _layout(kana)
+
         def joins(i, end):
             """May the span from node `i` to `end` be one word? Never from a particle or an auxiliary (は自由 is no
             はいゆう, これはしない holds no はし), and over two or more nodes only in kana the tagger cut otherwise
             (はいゆう read はい + ゆうに, ちょうちゃく ちょう + ちゃく) — never pieces of other words joined."""
             if kana[i][2] in GRAMMAR:
                 return False
-            covered = [n for n in range(i, len(kana)) if starts[n] < end]
-            return len(covered) == 1 or bool(_KANA_ONLY.fullmatch(_cover(kana, starts, i, end)))
-        for i, start in enumerate(starts):
+            covered = bisect.bisect_left(starts, end) - i       # the nodes from `i` that start before `end`
+            return covered == 1 or bool(_KANA_ONLY.fullmatch(_cover(kana, starts, i, end)))
+        at = joined.find(want)
+        while at != -1:
             # at a word's start; ending at a word's end too, or mid-word only in kana (`joins`) — never inside a
             # kanji word (政治 is no part of 誠実, 今日 none of 教育)
-            end = start + len(want)
-            if kana[i][0] and joined.startswith(want, start) and joins(i, end) and (
+            i, end = bisect.bisect_left(starts, at), at + len(want)
+            if i < len(starts) and starts[i] == at and kana[i][0] and joins(i, end) and (
                     end in ends or (len(want) >= 3 and _KANA_ONLY.fullmatch(_cover(kana, starts, i, end)))):
                 out.update(found=True, how="reading", form=_cover(kana, starts, i, end),
                            note="the word's reading, written otherwise (kana alone or other kanji): a reading_error "
                                 "candidate")
                 return out
+            at = joined.find(want, at + 1)
         if not near or len(want) < NEAR_KANA:
             return out
         most = 1 if len(want) <= NEAR_KANA else 2
         best = None                 # (distance, length off, node, end): the closest whole-word span
-        for i, start in enumerate(starts):
+        for i in _near_starts(joined, starts, want, most):
+            start = starts[i]
             if not kana[i][0]:
                 continue
-            for end in ends:
-                window = joined[start:end] if start < end else ""
-                if (not window or "\x00" in window or abs(len(window) - len(want)) > 1 or window == want
-                        or not joins(i, end)):
+            for end in _near_ends(sorted_ends, start, len(want)):
+                window = joined[start:end]
+                if "\x00" in window or window == want or not joins(i, end):
                     continue
                 d = _distance(window, want)
                 if d <= most and (best is None or (d, abs(len(window) - len(want))) < best[:2]):
@@ -488,6 +494,73 @@ _HAN_ONE = re.compile(f"[{HAN}]")
 GRAMMAR = ("助詞", "助動詞")          # a reading span never starts on one (`Checker._find`)
 WORDS_MOST = 10                 # targets or banned words one check looks for, at most
 WORD_CHARS = 30                 # one of them, at most
+LOOK_CHARS = 4000               # a text looked through for them, at most (a drill's line and brief, an answer: ~200)
+# A kanji of a produce round's word gives it away in a draft (PROVISIONAL rule; measured with the known-words test
+# data and the spoken ranks' 1-10,000 as targets, TheForge tracks/cli/reviews/piyo-pa-register.md) when it is the
+# word's only kanji (手, 食べる: the kanji is its spelling) or is not among the COMMON_KANJI commonest kanji of everyday
+# speech — each kanji's words in the spoken ranks' top COMMON_KANJI_FROM, weighted 1 / rank
+# (reference_data.spoken_ranks). 跳 of 跳躍 gives it away; 時 of 時間 (その時), 人 of 人生 (大人) and 日 of 毎日 (今日)
+# don't.
+COMMON_KANJI = 500
+COMMON_KANJI_FROM = 20000
+_COMMON = {}                    # "kanji" -> the COMMON_KANJI commonest, read once
+
+
+def common_kanji():
+    """The COMMON_KANJI commonest kanji of everyday speech (`gives_away`), read once a process."""
+    found = _COMMON.get("kanji")
+    if found is None:
+        from collections import Counter
+        from app import reference_data
+        weights = Counter()
+        for word, rank in reference_data.spoken_ranks().items():
+            if 0 < rank <= COMMON_KANJI_FROM:
+                for kanji in set(_HAN_ONE.findall(word)):
+                    weights[kanji] += 1.0 / rank
+        found = _COMMON["kanji"] = frozenset(k for k, _w in weights.most_common(COMMON_KANJI))
+    return found
+
+
+def gives_away(word, kanji):
+    """Does `kanji`, one of `word`'s, give the word away when a draft shows it? Its only kanji, or a rarer one."""
+    return len(set(_HAN_ONE.findall(word))) == 1 or kanji not in common_kanji()
+
+
+def _layout(kana):
+    """`_kana_nodes`' kana joined -> (each node's start, the joined kana — "\x00" for a node with none —, the node
+    ends in order, the same as a set): the reading scans' one view of a text."""
+    starts, ends, pieces, pos = [], [], [], 0
+    for k, *_rest in kana:
+        starts.append(pos)
+        piece = k if k else "\x00"
+        pieces.append(piece)
+        pos += len(piece)
+        ends.append(pos)
+    return starts, "".join(pieces), ends, set(ends)
+
+
+def _near_starts(joined, starts, want, most):
+    """The nodes (indices into `starts`, in order) a span within `most` edits of `want` may start at: of `most` + 1
+    pieces of `want`, one stays whole in such a span (pigeonhole), within `most` places of where `want` holds it — so
+    only the starts near a piece found (str.find) are looked at (a one-kana piece finds many; 4,000 characters with
+    ten 5-kana readings: 448 distances in all)."""
+    size, out = len(want) // (most + 1), set()
+    for n in range(most + 1):
+        offset = n * size
+        piece = want[offset:offset + size] if n < most else want[offset:]
+        at = joined.find(piece)
+        while at != -1:
+            lo = bisect.bisect_left(starts, at - offset - most)
+            hi = bisect.bisect_right(starts, at - offset + most)
+            out.update(range(lo, hi))
+            at = joined.find(piece, at + 1)
+    return sorted(out)
+
+
+def _near_ends(ends, start, length):
+    """The ends (sorted) of the spans from `start` one kana either side of `length` long: the near-reading scan's
+    only windows, found by position before any slice is taken (a 3,000-character text: 3.95 s before, every end)."""
+    return ends[bisect.bisect_left(ends, start + max(1, length - 1)):bisect.bisect_right(ends, start + length + 1)]
 
 
 def _words_of(values):

@@ -526,7 +526,106 @@ def test_a_draft_showing_one_of_the_targets_kanji_fails_and_says_to_write_that_w
     checker = _checker("ja", [TALK, "跳ぶのは禁止です。", "とぶのは禁止です。"])
     shown = checker.check("跳ぶのは禁止です。", "chat", targets=["跳躍"])
     assert shown["pass"] is False and shown["targets"] == [{"word": "跳躍", "found": False}]
-    assert any("shows 跳, a kanji of the target word 跳躍" in r and "in kana" in r for r in shown["reasons"])
+    assert any("shows 跳, a kanji of the target word 跳躍 that gives it away" in r and "in kana" in r
+               for r in shown["reasons"])
     assert checker.check("とぶのは禁止です。", "chat", targets=["跳躍"])["pass"] is True
     # the learner's own answer is never judged for it
     assert "reasons" not in checker.check("跳ぶのは禁止です。", practice.ANSWER, targets=["跳躍"])
+
+
+# --- Piyo-PA (our adapt): the kanji that gives a word away, and the near-reading scan's cost ----------------------- #
+@pytest.mark.parametrize("target, text", [("時間", "その時は、本当に驚いた。"), ("人生", "大人になったら、わかるよ。"),
+                                          ("毎日", "今日は天気がいいね。")])
+def test_a_common_kanji_of_the_target_gives_nothing_away_and_the_draft_passes(target, text):
+    """時 of 時間 in その時, 人 of 人生 in 大人, 日 of 毎日 in 今日: among the commonest kanji of everyday speech, they
+    narrow the word down to nothing, so the draft stays natural (the PR's rule failed all three)."""
+    result = _checker("ja", [TALK, text]).check(text, "chat", targets=[target])
+    assert result["pass"] is True, result["reasons"]
+
+
+@pytest.mark.parametrize("target, text, kanji", [("跳躍", "とても高く跳ぶ。", "跳"), ("手", "手紙を書く。", "手"),
+                                                 ("宝石", "宝物を見つけた。", "宝")])
+def test_a_rare_kanji_or_the_words_only_kanji_still_fails_the_draft(target, text, kanji):
+    """跳 (跳躍 in 跳ぶ) and 宝 (宝石 in 宝物) are rare: seeing one narrows the word to a handful. 手 is 手's whole
+    spelling (手紙 shows it, read て)."""
+    result = _checker("ja", [TALK, text]).check(text, "chat", targets=[target])
+    assert result["pass"] is False
+    assert any(f"shows {kanji}, a kanji of the target word {target} that gives it away" in r for r in result["reasons"])
+
+
+def test_the_common_kanji_are_read_from_the_spoken_ranks_weighted_by_rank(monkeypatch):
+    """The boundary: the COMMON_KANJI-th kanji by weight is common, the next is not; a word with one kanji keeps it
+    banned however common; a word past COMMON_KANJI_FROM counts for nothing."""
+    from app import reference_data
+    ranks = {"時間": 1, "時代": 2, "人生": 3, "跳躍": 4, "毎日": 30001}
+    monkeypatch.setattr(reference_data, "spoken_ranks", lambda: ranks)
+    monkeypatch.setattr(practice, "COMMON_KANJI", 4)
+    monkeypatch.setattr(practice, "_COMMON", {})
+    # weights: 時 1 + 1/2, 間 1, 代 1/2, 人 生 1/3, 跳 躍 1/4; 毎 日 past the band: the top four are 時 間 代 and 人 or 生
+    assert {"時", "間", "代"} <= practice.common_kanji() and len(practice.common_kanji()) == 4
+    assert not practice.gives_away("時間", "時") and practice.gives_away("跳躍", "跳")
+    assert practice.gives_away("毎日", "日")                 # 日 here only past COMMON_KANJI_FROM
+    assert practice.gives_away("時", "時")                   # a word's only kanji, however common
+
+
+def test_the_real_common_kanji_hold_the_everyday_ones_and_not_the_rare(monkeypatch):
+    monkeypatch.setattr(practice, "_COMMON", {})
+    common = practice.common_kanji()
+    assert len(common) == practice.COMMON_KANJI
+    assert {"時", "間", "人", "生", "日", "今", "大", "事"} <= common
+    assert not {"跳", "躍", "俳", "宝"} & common
+
+
+def _long_text(ja_resources_dir, chars=3000):
+    """About `chars` characters of real Japanese: the sample subtitles' lines, in order."""
+    import glob
+    import re
+    lines = []
+    for path in sorted(glob.glob(os.path.join(ja_resources_dir, "*.srt"))):
+        with open(path, encoding="utf-8-sig") as f:
+            lines += [l.strip() for l in f if re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", l)]
+    text = "".join(dict.fromkeys(lines))
+    while len(text) < chars:
+        text += text
+    return text[:chars]
+
+
+ABSENT = ["跳躍", "俳優", "冒険", "議事録", "誠実", "教育", "練習", "冷蔵庫", "掃除機", "郵便局"]
+
+
+def test_a_long_text_with_absent_targets_looks_at_a_few_spans_a_word_not_every_one(ja_resources_dir, monkeypatch):
+    """R4: the near-reading scan took every word start against every word end, slicing each before its length test
+    (3,000 characters, 10 absent targets: 3.95 s). Now only the ends one kana either side of the reading's length are
+    looked at: counted, not timed — at most three a word start, per target."""
+    text = _long_text(ja_resources_dir)
+    assert not [w for w in ABSENT if w in text]
+    seen = []
+    real = practice._near_ends
+
+    def counted(ends, start, length):
+        found = real(ends, start, length)
+        seen.append(len(found))
+        return found
+    monkeypatch.setattr(practice, "_near_ends", counted)
+    checker = _checker("ja", [TALK])
+    result = checker.check(text, "reading", targets=ABSENT)
+    starts = len(checker._kana_nodes(text))
+    assert all(not t["found"] or t["how"] == "near_reading" for t in result["targets"])
+    assert seen and max(seen) <= 3 and sum(seen) <= 3 * starts * len(ABSENT)
+
+
+def test_a_near_reading_is_still_found_one_kana_either_side_of_its_length():
+    """The windows by position keep what the old scan found: ちょうちゃく (one kana longer) for 跳躍; the exact
+    reading is the reading arm's, never near."""
+    assert _target(_answer("ちょうちゃくに成功した。", targets=["跳躍"]))["how"] == "near_reading"
+    assert _target(_answer("ちょうやくに成功した。", targets=["跳躍"]))["how"] == "reading"
+
+
+def test_a_text_past_the_cap_with_targets_says_what_to_check_and_reads_as_before_without(ja_resources_dir):
+    text = _long_text(ja_resources_dir, practice.LOOK_CHARS + 1)
+    checker = _checker("ja", [TALK])
+    for mode, targets, avoid in (("reading", ["跳躍"], ()), ("chat", (), ["ジャンプ"]), (practice.ANSWER, (), ())):
+        with pytest.raises(ValueError, match=f"at most {practice.LOOK_CHARS:,} characters"):
+            checker.check(text, mode, targets=targets, avoid=avoid)
+    assert "targets" not in checker.check(text, "reading")       # no targets: the old check, uncapped
+    assert "targets" in checker.check(text[:practice.LOOK_CHARS], "reading", targets=["跳躍"])

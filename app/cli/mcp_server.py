@@ -21,6 +21,7 @@ mcp's stdio transport points fd 1 at stderr while it serves, so a stray print ca
 loads on a thread as the server starts (the tagger, the join tables, the known words: about a second); the first tool
 call that needs it waits for it.
 """
+import json
 import os
 import random
 import re
@@ -79,7 +80,7 @@ ERRORS = (
     ("reading_error", "the right word with the wrong reading or kanji: ちょうちゃく for 跳躍 (ちょうやく), 匂い for 臭い"),
     ("morphological_error", "the right word in the wrong form or inflection"),
     ("collocation_mismatch", "the right word with the wrong partner or particle: ダイスを打つ for 振る"),
-    ("register_drift", "the right word, the answer in the wrong register for the role"),
+    ("tone_drift", "the right word, the answer in the wrong tone for the role (too casual, too polite)"),
     ("ok", "the word, used correctly"),
 )
 # Where a round's words come from (Sonic, 2026-11-11: "soon" means the journey's soon): soon, the journey's next
@@ -125,7 +126,6 @@ class ServerState:
         self.started = {}               # round_id -> the round as its brief gave it (its first save writes it)
         self.refused = {}               # note id -> how many of its translations were refused this session
         self.readings = {}              # language -> {a produce round's word: its reading} (the target check's)
-        self._stores = {}               # language -> the patterns databases, opened once (`patterns_of`)
 
     def keep_rounds(self):
         """Whether rounds are kept (Settings → Connections), read on each call: a switch turned off stops the next save."""
@@ -198,19 +198,6 @@ class ServerState:
                                 "keeps failing, open Surasura once (Settings → App → Processing log says why).")
         checker.refresh()
         return checker
-
-    def stores(self, language):
-        """The patterns databases for `language` in their fill order ([(name, Store or None)]), opened once a session;
-        [] when none can be opened (none built yet, or the module failing)."""
-        with self._lock:
-            if language not in self._stores:
-                try:
-                    from modules.junban import patterns
-                    self._stores[language] = patterns.open_sources(language)
-                except Exception:
-                    contract.log.exception("mcp: the patterns databases weren't opened")
-                    self._stores[language] = []
-            return self._stores[language]
 
 
 def next_words(language, source="soon", limit=NEXT_WORDS):
@@ -428,14 +415,37 @@ _PATTERN_LINE = re.compile(r'<div class="pat-(particle|form|colloc|frame|registe
 _PATTERN_KEYS = {"particle": "particles", "form": "forms", "colloc": "collocations", "frame": "frames"}
 
 
-def patterns_of(state, language, word, reading):
-    """How `word` is used, from the patterns databases as its Anki card's パターン field shows it
-    (`patterns.patterns_from_sources`: the particles and forms with their shares, the collocations, the frames, and
-    書き言葉 for a word that leans written) -> {"particles", "forms", "collocations", "frames"[, "register"][, "thin"]}
-    with only the kinds it has, or None: no database built, the word too rare or a phrase, or the lookup failing."""
+@contextmanager
+def patterns_open(language):
+    """The patterns databases for `language` in their fill order ([(name, Store or None)]; [] when the module fails),
+    open for one produce round's lookups and closed after: never held for the server's session — Backfill replaces a
+    rebuilt set in place, which Windows refuses while a reader holds the file, and a set built mid-session is read by
+    the next round."""
+    stores = []
+    try:
+        from modules.junban import patterns
+        stores = patterns.open_sources(language)
+    except Exception:
+        contract.log.exception("mcp: the patterns databases weren't opened")
+    try:
+        yield stores
+    finally:
+        for _name, store in stores:
+            if store is not None:
+                try:
+                    store.close()
+                except Exception:
+                    contract.log.exception("mcp: a patterns database wasn't closed")
+
+
+def patterns_of(state, language, word, reading, stores):
+    """How `word` is used, from the patterns databases (`stores`, `patterns_open`'s) as its Anki card's パターン field
+    shows it (`patterns.patterns_from_sources`: the particles and forms with their shares, the collocations, the
+    frames, and 書き言葉 for a word that leans written) -> {"particles", "forms", "collocations", "frames"[,
+    "register"][, "thin"]} with only the kinds it has, or None: no database built, the word too rare or a phrase, or
+    the lookup failing."""
     import html
     from app import practice
-    stores = state.stores(language)
     if not any(store for _name, store in stores):
         return None
     checker = state.checker(language)
@@ -552,10 +562,11 @@ def practice_start(state, words=5, role="friend", kind="chat", source="soon", la
     if kind == PRODUCE:
         # the target check reads each word with its round reading (臭い is におい here, never くさい)
         state.readings[lang] = {w["word"]: w["reading"] for w in out["round_words"] if w["reading"]}
-        for w in out["round_words"]:
-            found = patterns_of(state, lang, w["word"], w["reading"])
-            if found:
-                w["patterns"] = found
+        with patterns_open(lang) as stores:             # opened for this round only (Backfill may replace them)
+            for w in out["round_words"]:
+                found = patterns_of(state, lang, w["word"], w["reading"], stores)
+                if found:
+                    w["patterns"] = found
     if keep:
         round_id = again or practice_rounds.new_id()
         state.started[round_id] = {"language": lang, "round": dict(out["round"]), "words": [
@@ -592,8 +603,11 @@ def practice_start(state, words=5, role="friend", kind="chat", source="soon", la
     again_line = (f"The learner can do this round again later: surasura_practice_start(again=\"{out['round_id']}\"). "
                   if keep else "")
     if kind == PRODUCE:
+        # every round word not yet produced, never only the current one: word 1's scenario must not show word 3
+        targets = json.dumps([w["word"] for w in out["round_words"]], ensure_ascii=False)
         out["next"] = ("Write the first word's scenario now: draft it, check it with surasura_check_text(draft, "
-                       "mode=\"chat\", targets=[that word]), show it once it passes. " + again_line
+                       f"mode=\"chat\", targets={targets}) — every round word not yet produced —, show it once it "
+                       "passes. " + again_line
                        + "Once every word is done (a revealed one brought back too), say in a line or two which came "
                          "easily and which to practise again, then offer another round.")
     else:
@@ -632,15 +646,16 @@ def produce_rules(role, recent, weak=False):
         f"line in words the learner knows: {known}, and easy everyday words.",
         "Say plainly in the brief: there is a precise word for this that they know, and only the banned words are "
         "banned, not the topic.",
-        "Never show, spell or hint at the target's kanji, kana or reading before the learner has produced it: not in "
-        "the line, the brief, a hint, a retry or feedback. Hints are about meaning and use only (what it describes, "
-        "where it is said, its opposite). Write a banned word in kana when it shares a kanji with the target (とぶ, "
-        "not 跳ぶ, for a word written with 跳).",
-        "Until the learner has produced the word, check every draft you show, the line and the brief together (and a "
-        "hint, a retry, feedback on a miss), with surasura_check_text(draft, mode=\"chat\", targets=[the word]): it "
-        "fails when the draft gives the word away or shows one of its kanji. Rewrite as its reasons say and show only "
-        "a draft that passed. Once the word is produced or shown, check drafts without targets; a drill that brings "
-        "it back hides it again: check it with targets.",
+        "Never show, spell or hint at a round word, its kana or reading, or a kanji that gives it away (a rare kanji "
+        "of it, or its only kanji), before the learner has produced it: not in the line, the brief, a hint, a retry "
+        "or feedback, and never a later word in an earlier word's drill. Hints are about meaning and use only (what "
+        "it describes, where it is said, its opposite). Write a banned word in kana when it shares such a kanji (とぶ, "
+        "not 跳ぶ, for 跳躍); a common kanji of the word (時 of 時間, 日 of 毎日) is fine.",
+        "Check every draft you show, the line and the brief together (and a hint, a retry, feedback on a miss), with "
+        "surasura_check_text(draft, mode=\"chat\", targets=[every round word not yet produced]): the current word and "
+        "every later one. It fails when the draft gives one of them away or shows a kanji that does. Rewrite as its "
+        "reasons say and show only a draft that passed. Once a word is produced or shown, leave it out of targets; a "
+        "drill that brings it back hides it again: put it back in.",
         "Check each answer with surasura_check_text(answer, mode=\"answer\", targets=[the word], avoid=[the banned "
         "words]), and judge by it and the word's patterns (its usual particles, forms, collocations, register; "
         "書き言葉 means it leans written): how lemma is the word itself (its spelling other: other kanji); reading or "
@@ -657,7 +672,7 @@ def produce_rules(role, recent, weak=False):
         "too (反省 fits ＿＿した as well as 受容 does), and best of another part of speech. Do the easier step for "
         "every weak word first, in order; then their free drills, in the same order, at the end of the round, so no "
         "word is fresh from its choice when the learner must say it. A choice shows the word on purpose: check it "
-        "without targets; check a cloze with targets.",
+        "with that word left out of targets (the words still to come stay in); check a cloze with it in.",
         f"After {TRIES} failed tries, show the word with its reading and one short example. Bring it back only at "
         "the end of the round, after every other word: first as the easier step (a cloze or a choice), then a new "
         "free drill (a new goal, new banned words) as the round's last.",
@@ -1210,7 +1225,7 @@ def build(state=None, warm=True, serving=False, calls=None):
         one new word per sentence at most, new words under 3%) or answer (the learner's own answer in a produce round:
         no verdict). Returns pass, and when it fails, reasons that say which word to replace; per sentence the new
         words; the known and newly learned words used. targets (a produce round's words) and avoid (its banned crutch
-        words), up to 10 each: also returns the text checked, the lemmas the tokenizer read, per target found (how:
+        words), up to 10 each: also returns the text checked, the words as Surasura read them, per target found (how:
         lemma, written, reading or near_reading — the last two a reading_error candidate — and the form used) and per
         banned word present. In a draft, a target found fails it: the word is never shown before the learner says it."""
         return _answered(check, state, text, mode, language or None, targets, avoid)
@@ -1236,7 +1251,7 @@ def build(state=None, warm=True, serving=False, calls=None):
         or notes the learner asks to keep for later rounds: lines are your checked replies or their answers, notes
         what to remember (each 300 characters at most; 20 lines and 20 notes at most a call). results (a produce
         round's attempts, 20 at most a call): [{word, error_type, attempt, ok}] — error_type one of retrieval_miss,
-        reading_error, morphological_error, collocation_mismatch, register_drift, ok; attempt the try (1, 2, …); ok
+        reading_error, morphological_error, collocation_mismatch, tone_drift, ok; attempt the try (1, 2, …); ok
         whether it passed; an optional short note. Writes only Surasura's own round file."""
         return _answered(save_round, state, round_id, lines, notes, language or None, results)
 

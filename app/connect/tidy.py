@@ -641,6 +641,34 @@ def tidy_row(ledger, tidy_id):
     return dict(zip([d[0] for d in cur.description], r)) if r else None
 
 
+PAST = 10                                   # *Put back…* lists the last 10 tidies (Sonic 2026-11-22, PROVISIONAL)
+CAN, PUT_BACK, GONE = "can", "put back", "gone"     # a past tidy, for *Put back…*: Undo takes it / undone / no copy
+
+
+def past(ledger, language, n=PAST):
+    """*Put back…* (Kyou-SH3 part 2): `language`'s last `n` tidies that deleted cards, newest first ->
+    [{"id", "at", "why", "cards", "can"}] — `can`: CAN (done, its copy on disk: `restore` takes it), PUT_BACK
+    (undone already: a tidy goes back once) or GONE (its copy isn't on disk any more). A tidy that deleted nothing,
+    one still writing or putting back, and Swap's own Undo (`why` swap, never shown as a tidy) aren't listed; older
+    ones stay on disk, unlisted."""
+    ensure(ledger)
+    out = []
+    for tidy_id, at, why, state, folder, deleted in ledger.conn.execute(
+            "SELECT id, at, why, state, folder, deleted FROM tidies WHERE language = ? AND state IN (?, ?) AND why != ? "
+            "ORDER BY id DESC", (language, DONE, UNDONE, "swap")):
+        try:
+            cards = len(json.loads(deleted or "[]"))
+        except ValueError:
+            cards = 0
+        if not cards:
+            continue
+        can = PUT_BACK if state == UNDONE else CAN if os.path.exists(os.path.join(folder or "", "cards.apkg")) else GONE
+        out.append({"id": int(tidy_id), "at": at, "why": why, "cards": cards, "can": can})
+        if len(out) >= n:
+            break
+    return out
+
+
 def pending_tidies(ledger, language):
     """Tidies a kill left half-way (recorded, Anki maybe written), oldest first."""
     ensure(ledger)
@@ -688,7 +716,10 @@ def restore(anki, ledger, tidy_id, open_store=None, language=None):
         if anki.reviewing():
             raise Reviewing()
         with ledger.transaction():
-            ledger.conn.execute("UPDATE tidies SET state = ? WHERE id = ?", (RESTORING, row["id"]))
+            claimed = ledger.conn.execute("UPDATE tidies SET state = ? WHERE id = ? AND state = ?",
+                                          (RESTORING, row["id"], DONE)).rowcount
+        if not claimed:                 # put back meanwhile (*Needs you*'s Undo and *Put back…* at once): never twice
+            raise Refused(NOT_UNDOABLE)
         try:
             with open(os.path.join(row["folder"], "notes.json"), encoding="utf-8") as f:
                 record = json.load(f)
@@ -881,6 +912,15 @@ def act_undo(settings, language, tidy_id):
     anki = AnkiConnectTidy(anki_connect.address(settings))
     return _guarded(settings, lambda ledger: restore(anki, ledger, tidy_id, lambda: library.open_store(language),
                                                      language=language), Ledger)
+
+
+def act_past(language):
+    """*Put back…*'s list (`past`), read from Connect's ledger (no Anki) -> [] when Connect hasn't made a card yet."""
+    from app.connect.ledger import Ledger, path
+    if not os.path.exists(path()):
+        return []
+    with Ledger() as ledger:
+        return past(ledger, language)
 
 
 def _guarded(settings, fn, Ledger):

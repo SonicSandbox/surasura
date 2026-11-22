@@ -293,7 +293,7 @@ ROWS = {
                                            "studied, down to your limit, lowest first. A copy is kept: Undo in Needs "
                                            "you.",
                      "Deletes now its never-studied cards past your limit; Undo brings them back.",
-                     "tidy clean clear delete cards waiting backlog clutter limit cap overflow"),
+                     "tidy clean clear delete cards waiting backlog clutter limit cap overflow put back undo restore"),
     # a7 (DIAGNOSIS 5): an extra, under More options — the library's folders are always searched
     "connect_video_folders": ("More video folders",
                               "Library folders are searched already. Add others only if needed.",
@@ -801,6 +801,19 @@ TIDY_DONE = "{n} cards tidied · Undo in Needs you"
 TIDY_DONE_ONE = "A card tidied · Undo in Needs you"
 TIDY_NONE = "Nothing to tidy: {why}"
 TIDY_CANT = "Not tidied: {why}"
+# Kyou-SH3 part 2 (PROVISIONAL): *Put back…* — the last 10 tidies, each with its Undo
+TIDY_PUT_BACK = "Put back…"
+TIDY_PUT_BACK_NAME = "Put back an earlier tidy"
+TIDY_PUT_BACK_TIP = "Put back the cards an earlier tidy deleted."
+TIDY_PUT_BACK_NONE = "No tidy yet: nothing to put back."
+TIDY_PUT_BACK_UNREAD = "Couldn't read the tidies just now: try again in a moment."
+TIDY_PAST = "{when} · {n} cards"
+TIDY_PAST_ONE = "{when} · 1 card"
+TIDY_PAST_BACK = " · put back"
+TIDY_PAST_GONE = " · its copy is missing"
+TIDY_PAST_TIP = "Put these cards back in Anki."
+TIDY_PAST_BACK_TIP = "Already put back: a tidy goes back once."
+TIDY_PAST_GONE_TIP = "Its copy isn't on disk any more, so it can't go back."
 EXPORT_NEXT = "Save as…"
 EXPORT_NEXT_TIP = "Choose where the file goes"
 EXPORT_FORMAT_NAME = "Format"

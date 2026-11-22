@@ -342,6 +342,9 @@ def test_only_connects_own_generate_after_new_files_marks_the_runs_episodes(tmp_
     steps._serves = lambda lang, got: None
     steps.current = lambda lang, fresh=False: None
     with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        with ledger.transaction():                       # an episode this run mined before the Generate
+            job = ledger.queue("ja", 7, "user", None)
+            ledger.conn.execute("UPDATE jobs SET state = 'done' WHERE id = ?", (job,))
         assert steps.generate_after("ja", ledger) is True
         with ledger.transaction():
-            assert (ledger.take_new_files("ja") == steps._began) is marked
+            assert ledger.take_new_files("ja") == ([7] if marked else None), "the mark names the run's episodes"

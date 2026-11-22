@@ -12,7 +12,7 @@ window.JourneyRail = function (page, box) {
     '<div data-r="rail-head"></div><div class="rs-words" data-r="rail-words" data-list="1"></div>';
   const [topEl, lineEl, headEl, wordsEl] = box.children;
   const set = (el, html) => { if (el.__h !== html) { el.innerHTML = html; el.__h = html; } };
-  const swap = (el, html) => { if (el && el.outerHTML !== html) el.outerHTML = html; };
+  const swap = page.swap;                               // an element for its new source, only when the source differs
 
   /* each show's episodes, in the study order */
   const SHOW_EPS = new Map();
@@ -52,21 +52,44 @@ window.JourneyRail = function (page, box) {
       `<span class="pc ${page.pcClass(e.pct)}">${page.fmtPct(e.pct)}</span><span class="nn">· <b>${e.new}</b> new</span>${page.stone(w.ep, true)}</div>` +
       `<div class="rs-gb">${page.growth(w.ep)}</div>`;
   }
-  function rowHtml(r, k, cur) {
-    const m = r.mark ? (r.mark === "known" ? "✓" : "⊘") : "";
-    return `<div class="rw ${k === cur ? "cur" : ""} ${r.mark}" data-k="${k}" data-id="${r.id}"><span class="n">${k + 1}</span><span class="t jp">${esc(r.word)}</span>${page.marksHtml(r.marks)}${r.marks & 8 ? '<span class="anki">★</span>' : ""}<span class="x">×${r.ahead}</span><span class="m2 ${r.wait}">${m}</span></div>`;
+  /* a row is its class (where you are, its mark, waiting) and its inside (the word): a mark is one class write, and
+     its glyph is the CSS's (rail-stepper.css) */
+  function rowCls(r, k, cur) {
+    return "rw" + (k === cur ? " cur" : "") + (r.mark ? " " + r.mark : "") + (r.wait === "wait" ? " sending" : r.wait === "queued" ? " waiting" : "");
   }
-  function wordsHtml(w) {
+  function rowIn(r, k) {
+    return `<span class="n">${k + 1}</span><span class="t jp">${esc(r.word)}</span>${page.marksHtml(r.marks)}${r.marks & 8 ? '<span class="anki">★</span>' : ""}<span class="x">×${r.ahead}</span><span class="m2"></span>`;
+  }
+  function placeholder(w, rows) {
     if (w.ep < 0) return `<div class="rs-empty">Add something in Surasura and press Generate.</div>`;
-    const rows = page.words(w.ep);
     if (!rows) return `<div class="rs-empty">Opening…</div>`;
-    if (!rows.length) return `<div class="rs-empty">${page.ep(w.ep).new ? "None of its words in this filter." : "Nothing new in this one."}</div>`;
-    return rows.map((r, k) => rowHtml(r, k, w.wi)).join("");
+    return `<div class="rs-empty">${page.ep(w.ep).new ? "None of its words in this filter." : "Nothing new in this one."}</div>`;
+  }
+  let rowsKey = "";                                     // the episode + filter whose rows are in the list ("" = none)
+  function drawWords(w) {                               // the list rebuilt only for another episode or filter
+    const rows = w.ep >= 0 ? page.words(w.ep) : null, key = w.ep + "|" + filterKey();
+    if (rows && rows.length && key === rowsKey && wordsEl.children.length === rows.length) { patchAll(rows, w.wi); return; }
+    if (!rows || !rows.length) { rowsKey = ""; set(wordsEl, placeholder(w, rows)); return; }
+    wordsEl.innerHTML = rows.map((r, k) => `<div class="${rowCls(r, k, w.wi)}" data-k="${k}" data-id="${r.id}">${rowIn(r, k)}</div>`).join("");
+    wordsEl.__h = null; rowsKey = key;
+    const els = wordsEl.children;
+    for (let k = 0; k < els.length; k++) els[k].__in = rowIn(rows[k], k);
+  }
+  function patch(el, r, k, cur) {                       // only what differs: the class, else the inside
+    const c = rowCls(r, k, cur), inner = rowIn(r, k);
+    if (el.className !== c) el.className = c;
+    if ((el.__in != null ? el.__in : el.innerHTML) !== inner) el.innerHTML = inner;
+    el.__in = inner;
+  }
+  function patchAll(rows, cur) {
+    const els = wordsEl.children;
+    for (let k = 0; k < els.length && k < rows.length; k++) patch(els[k], rows[k], k, cur);
   }
   function drawAll() {
     const w = page.where();
-    set(topEl, topHtml(w)); set(lineEl, lineHtml()); set(headEl, headHtml(w)); set(wordsEl, wordsHtml(w));
-    drawnEp = w.ep; drawnWi = w.wi; drawnKey = filterKey();
+    set(topEl, topHtml(w)); set(lineEl, lineHtml()); set(headEl, headHtml(w));
+    drawnWi = w.wi; drawWords(w);
+    drawnEp = w.ep; drawnKey = filterKey();
   }
   const filterKey = () => { const f = page.filter(); return f.index + ":" + f.order; };
   function where() {
@@ -76,22 +99,17 @@ window.JourneyRail = function (page, box) {
     const a = wordsEl.querySelector(`.rw[data-k="${drawnWi}"]`), b = wordsEl.querySelector(`.rw[data-k="${w.wi}"]`);
     if (a) a.classList.remove("cur");
     if (b) { b.classList.add("cur"); requestAnimationFrame(() => b.scrollIntoView({ block: "nearest" })); }
-    wordsEl.__h = null;
     drawnWi = w.wi;
   }
   function word(id) {                                   // one word's row (its mark changed)
     const el = wordsEl.querySelector(`.rw[data-id="${id}"]`);
     if (!el) return;
     const rows = page.words(drawnEp), k = Number(el.dataset.k);
-    if (rows && rows[k]) { const html = rowHtml(rows[k], k, drawnWi); if (el.outerHTML !== html) { el.outerHTML = html; wordsEl.__h = null; } }
+    if (rows && rows[k]) patch(el, rows[k], k, drawnWi);
   }
   function marks() {                                    // marks read back from Surasura: only rows that changed
     const rows = page.words(drawnEp);
-    if (!rows) return;
-    for (const el of wordsEl.querySelectorAll(".rw")) {
-      const k = Number(el.dataset.k), html = rows[k] ? rowHtml(rows[k], k, drawnWi) : "";
-      if (html && el.outerHTML !== html) { el.outerHTML = html; wordsEl.__h = null; }
-    }
+    if (rows && rowsKey) patchAll(rows, drawnWi);
   }
   function pre(i) {                                     // a stone's mark: that stone, its row, its show's mark
     if (i === drawnEp) { const st = headEl.querySelector(`[data-pre="${i}"], .st`); if (st) { swap(st, page.stone(i, true)); headEl.__h = null; } }
@@ -236,7 +254,7 @@ window.JourneyRail = function (page, box) {
       else if (what === "word") word(arg);
       else if (what === "marks" || what === "mark") marks();
       else if (what === "pre") pre(arg);
-      else if (what === "words") { if (arg === drawnEp) set(wordsEl, wordsHtml(page.where())); }
+      else if (what === "words") { if (arg === drawnEp) drawWords(page.where()); }
       else if (what === "filter") { set(lineEl, lineHtml()); where(); }
     },
     picker: () => (P.open ? closePicker() : openPicker()),

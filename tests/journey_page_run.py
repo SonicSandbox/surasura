@@ -30,6 +30,7 @@ def run(path, query="", width=1280, height=800, seconds=120):
     url = "file:///" + path.replace("\\", "/")
     with Edge(width, height) as e:
         e.open(url)                                      # cold, then warm (the speed rows' way)
+        time.sleep(1.0)                                  # the cold page's after-first-word work ends before the warm open
         e.open(url + "?selftest=1" + ("&" + query if query else ""), until="window.__selftest && window.__selftest.total", seconds=seconds)
         res = e.evaluate("JSON.stringify(window.__selftest || null)")
         errs = e.errors()

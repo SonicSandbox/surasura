@@ -24,6 +24,10 @@
 .rw .m2 { width:14px; text-align:center; font-size:11px; flex:none; color:var(--ok); }
 .rw.known .t, .rw.ignore .t { color:var(--ink-faint); text-decoration:line-through; font-weight:400; }
 .rw.ignore .m2 { color:var(--ink-faint); }
+.rw.known .m2::before { content:"✓"; } .rw.ignore .m2::before { content:"⊘"; }
+.rw.waiting .m2::after { content:"⧗"; color:var(--warn); }
+.rw.sending .m2::after { content:""; width:8px; height:8px; border-radius:50%; border:1.5px solid var(--ink-faint); border-top-color:var(--accent); display:inline-block; animation:spin 1.6s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .rw.sending .m2::after { animation:none; } }
 .rw .mk { font-size:12px; } .rw .anki { width:15px; height:15px; font-size:9px; }
 .rs-empty { padding:16px 14px; color:var(--ink-dim); font-size:12.5px; }
 /* the picker: one row a show, the shown show open; only the rows in view are built */

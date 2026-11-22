@@ -199,6 +199,7 @@ button.st { cursor:pointer; border-radius:50%; } button.st:hover { background:va
 .empty { max-width:520px; margin:80px auto; text-align:center; color:var(--ink-dim); }
 .empty h2 { color:var(--ink); font:700 20px var(--f-ui); }
 </style>
+<script>"use strict"; window.__jFrame = 0; requestAnimationFrame(() => { window.__jFrame = performance.now(); });   /* the first frame: the shell's, before the data is read */</script>
 <!--JOURNEY-RAIL-->
 </head>
 <body>
@@ -235,7 +236,7 @@ button.st { cursor:pointer; border-radius:50%; } button.st:hover { background:va
    press waiting in the queue (⧗). View state (where you are, Focus, List, what is open) is the page's, in localStorage,
    written after the first word. The rail is one swappable piece (§1.1b): it gets `page` below and nothing else. */
 const T0 = performance.now();
-requestAnimationFrame(() => { TIMES.firstFrame = performance.now(); });
+requestAnimationFrame(() => { TIMES.firstFrame = window.__jFrame || performance.now(); });
 const $ = (id) => document.getElementById(id);
 /* A write only when it changes something (the redraw rule: a press writes only what it changed). */
 function setHtml(el, html) { if (el && el.__h !== html) { el.innerHTML = html; el.__h = html; } }
@@ -274,7 +275,7 @@ const SETTINGS = [
 ];
 const SET = {};
 for (const s of SETTINGS) SET[s.k] = (HEAD.settings && HEAD.settings[s.k] != null) ? HEAD.settings[s.k] : s.def;
-const SET_WAIT = {};                                   // setting -> "wait" | "queued" (until Surasura has it)
+const SET_WAIT = {};                                   // setting -> "send" | "wait" | "queued" (until Surasura has it)
 
 /* ---- the keys (SPEC §1.2) ---- */
 const ACTIONS = [["known", "✓ Known"], ["ignore", "⊘ Ignore"], ["pick", "⇄ Pick this sentence"], ["pre", "Pre-studied on / off"],
@@ -434,7 +435,7 @@ const saveSoon = () => { clearTimeout(saveTimer); saveTimer = setTimeout(saveVie
 
 /* ---- marks (the word lists' own, read back), the walk and the filter ---- */
 const MARK = new Map();                                // word -> "known" | "ignore" (the app's, or a sent press)
-const MWAIT = new Map();                               // word -> "wait" | "queued"
+const MWAIT = new Map();                               // word -> "send" (in flight) | "wait" (slow) | "queued"
 const FILTERS = [["All words", 0], ["✦ only", 1], ["⚖ only", 2], ["文 only", 4]];
 let RANKS = null;
 function freqRank() {
@@ -486,7 +487,7 @@ const DOOR = (function () {
   }
   return door && door.port && door.token ? door : null;
 })();
-const D = { state: DOOR ? "unknown" : "unopened", routes: null, library: null, sending: false };
+const D = { state: DOOR ? "unknown" : "unopened", routes: null, library: null, sending: false, heard: 0 };   // heard: hellos answered
 async function doorCall(route, body, ms) {
   if (window.__J_FAKE_DOOR) return window.__J_FAKE_DOOR(route, body || {});
   if (!DOOR) return { ok: false, offline: true, why: "unopened" };
@@ -518,11 +519,17 @@ function unqueue(tag) { const n = QUEUE.length; QUEUE = QUEUE.filter((q) => q.ta
 const queuedTag = (tag) => QUEUE.some((q) => q.tag === tag);
 function waitWord() { return D.state === "unopened" ? "⧗ this page only until you open it from Surasura" : "⧗ waiting for Surasura"; }
 
-/* one record write: sent now when the door answers, else queued (⧗); the answer is the read-back */
-async function write(route, body, tag, done) {
+/* one record write: sent now when the door answers, else queued (⧗); the answer is the read-back. The press has
+   already drawn its result; while it is in flight its state is "send", drawn as nothing, so an answer that agrees
+   writes nothing. Only a door slower than SLOW_MS gets the spinner (`slow`), the in-flight state drawn. */
+const SLOW_MS = 150;
+const shownWait = (w) => (w === "send" ? "" : w || "");
+async function write(route, body, tag, done, slow) {
   body.at = Date.now();
   if (!live()) { enqueue(route, body, tag); done({ queued: true }); return; }
+  const timer = slow ? setTimeout(slow, SLOW_MS) : 0;
   const a = await doorCall(route, body);
+  clearTimeout(timer);
   if (a && a.ok) { unqueue(tag); done({ answer: a }); return; }
   if (a && (a.offline || a.kind === "closed" || a.kind === "busy" || a.kind === "not_yet")) {
     if (a.offline) setDoor(a.why === "unopened" ? "unopened" : "off");
@@ -566,26 +573,31 @@ function setDoor(state) {
   const c = $("door");
   c.classList.toggle("on", state === "on");
   c.classList.toggle("off", state === "off" || state === "unopened");
-  c.dataset.tip = state === "on" ? "Surasura is open: every press goes straight to it."
+  const tip = state === "on" ? "Surasura is open: every press goes straight to it."
     : state === "off" ? "Surasura is closed: your marks wait here (⧗) and go to it the next time you open the journey from Surasura."
     : state === "unopened" ? "This page wasn't opened from Surasura: your marks stay on this page (⧗) until you open it from Surasura's Journey ↗."
     : "Waiting to hear from Surasura";
+  if (c.dataset.tip !== tip) c.dataset.tip = tip;
 }
 
 async function hello() {
-  const a = await doorCall("hello", {}, 4000);
-  if (!a || !a.ok) { setDoor(a && a.why === "unopened" ? "unopened" : "off"); redrawMarks(); return; }
-  D.routes = Array.isArray(a.routes) ? a.routes : null;
-  D.library = a.library || null;
-  setDoor("on");
-  await readState();
-  await flushQueue();
-  drawWord(); rail.update("all");                       // (only what the answers changed is written)
+  try {
+    const a = await doorCall("hello", {}, 4000);
+    if (!a || !a.ok) { setDoor(a && a.why === "unopened" ? "unopened" : "off"); redrawMarks(); return; }
+    const routes = Array.isArray(a.routes) ? a.routes : null, had = JSON.stringify(D.routes);
+    D.routes = routes;
+    D.library = a.library || null;
+    setDoor("on");
+    const changed = await readState();
+    await flushQueue();
+    if (changed || had !== JSON.stringify(routes)) { drawWord(); rail.update("all"); }   // only what the answers changed
+  } finally { D.heard++; }
 }
 const sinceMs = () => { const n = Number(HEAD.stamp); return isFinite(n) && n > 0 ? Math.floor(n / 1e6) : null; };
-async function readState() {
+async function readState() {                              // true when an answer changed something on the page
   const a = await doorCall("state", { since: sinceMs() }, 6000);
-  if (!a || !a.ok) return;
+  if (!a || !a.ok) return false;
+  const was = stateKey();
   if (a.marks && typeof a.marks === "object") {
     MARK.clear();
     for (const w in a.marks) if (RANK[a.marks[w]]) MARK.set(w, a.marks[w]);
@@ -603,6 +615,12 @@ async function readState() {
     for (const s of SETTINGS) if (a.settings[s.key] != null && !SET_WAIT[s.k]) SET[s.k] = a.settings[s.key];
     applyLook();
   }
+  return stateKey() !== was;
+}
+function stateKey() {                                     // what a state answer can change, as one string
+  const pre = [];
+  for (const [i, p] of PRE) pre.push(i + ":" + (p.on ? 1 : 0) + (p.at || "") + (p.by || ""));
+  return JSON.stringify([[...MARK], pre, [...FLAGGED], SET]);
 }
 function answered(route, body, a) {
   if (route === "episode/prestudied") { const i = ID_IX.get(body.id); if (i != null) PRE.set(i, { on: !!a.on, at: a.at, by: a.by || (a.on ? body.why : "off") }); rail.update("pre", i); }
@@ -618,16 +636,16 @@ function markWord(kind, id) {
   const word = w[0], was = MARK.get(word) || "";
   const mark = was === kind ? "" : kind;            // the same press again clears it (the list decides what that means)
   if (mark) MARK.set(word, mark); else MARK.delete(word);
-  MWAIT.set(word, "wait");
+  MWAIT.set(word, "send");
   if (!S.list && mark) step(1); else drawActs(word);
   rail.update("word", id);
   write("words/mark", { marks: [{ word, mark, was }] }, "m:" + word, (r) => {
     if (r.queued) MWAIT.set(word, "queued"); else MWAIT.delete(word);
     if (r.refused) { if (was) MARK.set(word, was); else MARK.delete(word); toast(r.refused); }
-    drawActs(word); rail.update("word", id);
+    drawActs(word); rail.update("word", id);                // each writes only what differs from the press's drawing
     if (r.answer && r.answer.stale && r.answer.stale.length) readState().then(redrawMarks);
     if (mark && !r.refused) toast(`${mark === "known" ? "✓ Known" : "⊘ Ignored"}: ${word}`, () => undoMark(word, was, r.answer && r.answer.undo_id, id));
-  });
+  }, () => { if (MWAIT.get(word) === "send") { MWAIT.set(word, "wait"); drawActs(word); rail.update("word", id); } });
 }
 function undoMark(word, was, undoId, id) {
   const put = () => { if (was) MARK.set(word, was); else MARK.delete(word); MWAIT.delete(word); drawActs(word); rail.update("word", id); };
@@ -649,16 +667,16 @@ function prestudied(i, why) {
   const before = Object.assign({}, preOf(i));
   if (why === "end" && (before.on || before.by)) return false;   // an un-mark sticks; the end card marks once
   const on = why === "end" ? true : !before.on;
-  PRE.set(i, { on, by: on ? why : "off", at: before.at, wait: "wait" });
+  PRE.set(i, { on, by: on ? why : "off", at: before.at, wait: "send" });
   rail.update("pre", i); drawPreBits(i);
   write("episode/prestudied", { id: epId(i), on, why }, "p:" + epId(i), (r) => {
     const p = PRE.get(i) || {};
     if (r.queued) PRE.set(i, Object.assign(p, { wait: "queued" }));
     else if (r.answer) PRE.set(i, { on: !!r.answer.on, at: r.answer.at, by: r.answer.by || (r.answer.on ? why : "off") });
     else { PRE.set(i, before); if (r.kind !== "stale") toast(r.refused); }
-    rail.update("pre", i); drawPreBits(i);
+    rail.update("pre", i); drawPreBits(i);                    // each writes only what differs from the press's drawing
     if (why === "press" && !r.refused) toast(`${on ? "Pre-studied" : "Un-marked"}: ${epTitle(i)}`, () => undoPre(i, before, r.answer && r.answer.undo_id));
-  });
+  }, () => { const p = PRE.get(i); if (p && p.wait === "send") { p.wait = "wait"; rail.update("pre", i); drawPreBits(i); } });
   return true;
 }
 function undoPre(i, before, undoId) {
@@ -684,13 +702,13 @@ function flagLine(id, k, reasons, note, on) {
   const src = srcOf(id, ln[1]), label = src ? src[0] : "", e = src && src[2] >= 0 ? EPS[src[2]] : null;
   const lid = lineId(ln[0], label), show = e ? showOf(src[2])[1] : label;
   if (on) FLAGGED.add(lid); else FLAGGED.delete(lid);
-  FWAIT.set(lid, "wait"); drawPart("lines");
+  FWAIT.set(lid, "send"); drawPart("lines");
   write("line/flag", { line_id: lid, word: w[0], line: ln[0], show, episode: e ? epPart(src[2]) : "", time: ln[2], reasons, note: note || "", on }, "f:" + lid, (r) => {
     if (r.queued) FWAIT.set(lid, "queued"); else FWAIT.delete(lid);
     if (r.refused) { if (on) FLAGGED.delete(lid); else FLAGGED.add(lid); toast(r.refused); }
     drawPart("lines");
     if (!r.refused) toast(on ? "Flagged: it goes with your next Send report, where you see it first." : "Flag taken off.", () => flagLine(id, k, reasons, note, !on));
-  });
+  }, () => { if (FWAIT.get(lid) === "send") { FWAIT.set(lid, "wait"); drawPart("lines"); } });
 }
 
 /* a look or data setting (§1.4): look ones applied here at once; every one written to Surasura on the press only */
@@ -702,7 +720,7 @@ const SET_DRAW = {
 };
 function setSetting(k, value) {
   const s = SETTINGS.find((x) => x.k === k);
-  SET[k] = value; SET_WAIT[k] = "wait";
+  SET[k] = value; SET_WAIT[k] = "send";
   if (k === "keys") KEYS = keymap();
   SET_DRAW[k]();
   drawSetRow(k);
@@ -710,7 +728,7 @@ function setSetting(k, value) {
     if (r.queued) SET_WAIT[k] = "queued"; else delete SET_WAIT[k];
     if (r.refused) toast(r.refused);
     drawSetRow(k);
-  });
+  }, () => { if (SET_WAIT[k] === "send") { SET_WAIT[k] = "wait"; drawSetRow(k); } });
 }
 function applyLook() {
   const r = document.documentElement, theme = SET.theme === "light" ? "light" : "night";
@@ -766,7 +784,7 @@ function lineHtml(id, w, k, sel) {
   const ln = w[9][k], src = srcOf(id, ln[1]);
   const label = src ? src[0] : "", kind = src ? src[1] : "", play = src ? src[3] : "";
   const can = play && (PLAYABLE.test(play) || built("clip/cut") && D.routes != null) && ln[2] != null;
-  const lid = lineId(ln[0], label), lit = FLAGGED.has(lid), fw = FWAIT.get(lid) || "";
+  const lid = lineId(ln[0], label), lit = FLAGGED.has(lid), fw = shownWait(FWAIT.get(lid));
   const flag = built("line/flag") ? `<button class="fl ${lit ? "lit" : ""} ${fw}" data-flag="${k}" aria-label="Flag this sentence" data-tip="${lit ? "Flagged for Send report" : "Flag this sentence for Send report"}${fw === "queued" ? "\n" + waitWord() : ""}">⚑</button>` : "";
   const oc = k === 0 && (w[6] & 8) ? `<div class="oc">On your card</div>` : "";
   return `<div class="ln ${sel ? "sel" : ""}" data-li="${k}"><button class="pl ${can ? "" : "none"}" data-play="${k}" aria-label="Play the line" data-tip="▶ the line${kt("line")}"><svg class="i" viewBox="0 0 16 16"><path d="M5 3.5v9l7-4.5z" fill="currentColor"/></svg></button><div class="lt">${oc}<div class="tx">${hl(ln[0], w)}</div><div class="src" data-tip="${esc(label)}">${kindIcon(kind)}<span class="sn">${esc(label)}</span></div></div>${flag}</div>`;
@@ -778,7 +796,7 @@ function readingPart(w) {
   return `<div class="rd" data-r="reading">${readingHtml(w)}${play}</div>`;
 }
 function actsPart(w) {
-  const m = MARK.get(w[0]) || "", mw = MWAIT.get(w[0]) || "";
+  const m = MARK.get(w[0]) || "", mw = shownWait(MWAIT.get(w[0]));
   const b = (a, label, tipOn, tipOff) => `<button class="btn ${m === a ? "lit " + a + " " + mw : ""}" data-act="${a}" data-tip="${m === a ? tipOn : tipOff}${kt(a)}${m === a && mw === "queued" ? "\n" + waitWord() : ""}">${label} <span class="kc">${esc(keyOf(a))}</span></button>`;
   const route = (w[6] & 8) ? "swap/queue" : "card/make";
   const pick = SWAP_SHOWN && built(route) ? `<button class="btn" data-act="pick" data-tip="${(w[6] & 8) ? "⇄ Make its card from the chosen sentence instead" : "Add now: make its card from the chosen sentence, first in your order"}${kt("pick")}">⇄ <span class="kc">${esc(keyOf("pick"))}</span></button>` : "";
@@ -886,9 +904,8 @@ function growthHtml(i, big) {
 function stoneBtn(i, ring) {
   const e = EPS[i], p = preOf(i), press = canPre(i);
   const st = stoneSvg(e[9], gemOf(i), p.on, (e[10] & 2) === 2);
-  const tip = stoneTip(i);
-  const cls = `st ${ring ? "ring" : ""} ${p.wait || ""}`;
-  return press ? `<button class="${cls}" data-pre="${i}" aria-label="${esc(epPart(i))}: pre-studied ${p.on ? "on" : "off"}" data-tip="${esc(tip)}">${st}</button>` : `<span class="${cls}" data-tip="${esc(tip)}">${st}</span>`;
+  const cls = `st ${ring ? "ring" : ""} ${shownWait(p.wait)}`;
+  return press ? `<button class="${cls}" data-pre="${i}" data-stone="${i}" aria-label="${esc(epPart(i))}: pre-studied ${p.on ? "on" : "off"}">${st}</button>` : `<span class="${cls}" data-stone="${i}">${st}</span>`;
 }
 function stoneTip(i) {
   const e = EPS[i], p = preOf(i), v = verb(e[5]);
@@ -900,17 +917,27 @@ function stoneTip(i) {
   else if (isWatched(i)) { const g = EPS[i][12]; lines.push(`${v[0].toUpperCase() + v.slice(1)}${g && g[6] ? " on " + g[6] : ""}`); if (g && g[0] != null && g[4] != null) lines.push(`${fmtPct(g[0])} → ${fmtPct(g[4])}${g[1] != null && g[5] != null ? ` · +${g[1] - g[5]} words learned` : ""}`); }
   return lines.join("\n");
 }
+/* One element swapped for its new source only when the source differs from what was written: an element with an SVG
+   never serializes back to its source (<path/> comes back <path></path>), so the source written is kept on the node. */
+function swapEl(el, html) {
+  if (!el || (el.__src != null ? el.__src : el.outerHTML) === html) return false;
+  const parent = el.parentNode, next = el.nextSibling;
+  el.outerHTML = html;
+  const n = next ? next.previousSibling : parent && parent.lastChild;
+  if (html && n && n.nodeType === 1) n.__src = html;
+  return true;
+}
 function drawPreBits(i) {                               // only what shows the mark: its stone, the end card's chip
   const st = $("stage");
   for (const el of st.querySelectorAll(`[data-pre="${i}"], [data-prechip="${i}"]`)) {
     const html = el.dataset.prechip != null ? preChip(i) : stoneBtn(i, el.classList.contains("ring"));
-    if (el.outerHTML !== html) { el.outerHTML = html; st.__h = null; }
+    if (swapEl(el, html)) st.__h = null;
   }
 }
 function preChip(i) {
   const p = preOf(i);
   if (!canPre(i) && !p.on) return "";
-  return `<button class="prechip ${p.on ? "on" : ""} ${p.wait || ""}" data-prechip="${i}" data-tip="${p.on ? (p.by === "end" ? "Set when you reached this card" : "Set by your press") + "\n• Click to un-mark it" + kt("pre") : "• Click to mark it pre-studied" + kt("pre")}${p.wait === "queued" ? "\n" + waitWord() : ""}">${stoneSvg(EPS[i][9], gemOf(i), p.on)}${p.on ? "Pre-studied · un-mark" : "Not pre-studied · mark it"}</button>`;
+  return `<button class="prechip ${p.on ? "on" : ""} ${shownWait(p.wait)}" data-prechip="${i}" data-tip="${p.on ? (p.by === "end" ? "Set when you reached this card" : "Set by your press") + "\n• Click to un-mark it" + kt("pre") : "• Click to mark it pre-studied" + kt("pre")}${p.wait === "queued" ? "\n" + waitWord() : ""}">${stoneSvg(EPS[i][9], gemOf(i), p.on)}${p.on ? "Pre-studied · un-mark" : "Not pre-studied · mark it"}</button>`;
 }
 function navHtml() {                                   // ↑ ↓ and the picker, on screen (a mouse, a pen, a finger)
   return `<span class="wnav"><button class="ib narrow-only" data-act="picker" aria-label="Episodes and chapters" data-tip="Episodes and chapters">☰</button><button class="ib" data-act="prev" aria-label="The word before" data-tip="The word before (↑)">↑</button><button class="ib" data-act="next" aria-label="The next word" data-tip="The next word (↓)">↓</button></span>`;
@@ -1013,13 +1040,15 @@ const tipEl = $("tip");
 let tipFor = null;
 document.addEventListener("pointerdown", () => { tipFor = null; tipEl.classList.add("hide"); }, true);
 document.addEventListener("keydown", () => { if (!tipEl.classList.contains("hide")) { tipFor = null; tipEl.classList.add("hide"); } }, true);
+/* a stone's hover is made on hover (its state, its date), so a stone's answer never rewrites a tip nobody is reading */
+function tipText(t) { return t.dataset.kanji ? kanjiTip(t.dataset.kanji) : t.dataset.stone != null ? stoneTip(Number(t.dataset.stone)) : t.dataset.tip; }
 document.addEventListener("pointerover", (e) => {
   if (e.pointerType !== "mouse") return;               // a tap never opens a tip
-  const t = e.target.closest && e.target.closest("[data-tip],[data-kanji]");
+  const t = e.target.closest && e.target.closest("[data-tip],[data-kanji],[data-stone]");
   if (t === tipFor) return;
   tipFor = t;
   if (!t) { tipEl.classList.add("hide"); return; }
-  const text = t.dataset.kanji ? kanjiTip(t.dataset.kanji) : t.dataset.tip;
+  const text = tipText(t);
   if (!text) { tipEl.classList.add("hide"); return; }
   tipEl.textContent = text;
   tipEl.classList.remove("hide");
@@ -1164,9 +1193,9 @@ const page = {
   words: (i) => {                                     // this episode's words in view, or null until its chunk is in
     const s = epReady(i) ? seq(i) : null;
     if (!s) { loadEp(i).then(() => rail.update("words", i)); return null; }
-    return s.map((id) => { const w = wordNow(id); return { id, word: w[1] || w[0], marks: w[6], ahead: w[7], mark: MARK.get(w[0]) || "", wait: MWAIT.get(w[0]) || "" }; });
+    return s.map((id) => { const w = wordNow(id); return { id, word: w[1] || w[0], marks: w[6], ahead: w[7], mark: MARK.get(w[0]) || "", wait: shownWait(MWAIT.get(w[0])) }; });
   },
-  stone: (i, ring) => stoneBtn(i, ring),
+  stone: (i, ring) => stoneBtn(i, ring), swap: swapEl,
   stoneTip, growth: (i) => growthHtml(i), kindIcon, marksHtml, pcClass, fmtPct, esc, sparkle,
   finishedStone: (f) => `<span class="st" data-tip="${esc(f[1])}\nFinished${f[5] ? "\n✧ Pre-studied parts" : ""}">${stoneSvg("fin", f[3], !!f[5])}</span>`,
   canPre, epStep, keyOf,
@@ -1354,7 +1383,7 @@ function afterFirstWord() {
 window.__J = { S, page, rail: () => rail, TIMES, D, MARK, MWAIT, PRE, FLAGGED, QUEUE: () => QUEUE, SET, SET_WAIT, SETTINGS, KEYS: () => KEYS, ACTIONS, PRESETS,
   RC, go, step, epStep, markWord, pickLine, selLine, drawPart, drawDesk, redrawMarks, prestudied, setSetting, setFilter, setOrder, toggleFocus, toggleList, search, jumpTo, hello, readState, flushQueue, drawWord,
   openSettings, openKeys, openFlag, flagLine, closeLayer, doAction, curWordId, wordNow, seq, loadEp, epReady, blob, blobNow, kanjiTip, lineId, stoneSvg, setDoor,
-  CHUNKS, SIDX, buildSearch, nextEp, listScrolled, D14_MS, SWAP_SHOWN };
+  CHUNKS, SIDX, buildSearch, tipText, nextEp, listScrolled, D14_MS, SWAP_SHOWN };
 start();
 </script>
 </body>

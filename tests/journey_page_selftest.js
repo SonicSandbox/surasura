@@ -19,6 +19,7 @@
   window.__J_FAKE_DOOR = async (route, body) => {
     CALLS.push([performance.now(), route, JSON.parse(JSON.stringify(body))]);
     await null;
+    if (window.__J_DOOR_DELAY) await new Promise((r) => setTimeout(r, window.__J_DOOR_DELAY));
     const mode = window.__J_DOOR_MODE || MODE;
     if (mode === "none") return { ok: false, offline: true, why: "unopened" };
     if (mode === "off") return { ok: false, offline: true, why: "closed" };
@@ -47,7 +48,9 @@
   /* ---- the redraw counter ---- */
   let recs = [], reflows = 0;
   const mo = new MutationObserver((l) => { recs.push(...l); });
-  mo.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+  /* It starts with the checks, after the first word: observing the parse itself would put every node of the data on the
+     page's first frame, and the counter measures presses only. */
+  const observe = () => mo.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
   const take = () => { const r = mo.takeRecords(); if (r.length) recs.push(...r); return r.length; };
   const gbr = Element.prototype.getBoundingClientRect;
   Element.prototype.getBoundingClientRect = function () { if (take()) reflows++; return gbr.call(this); };
@@ -68,6 +71,8 @@
   }
   const settle = async (n) => { for (let k = 0; k < (n || 4); k++) await new Promise((r) => setTimeout(r, 0)); };
   async function press(fn) {
+    const J = window.__J;
+    await J.loadEp(J.S.ep); await settle();            // the last press's own work (a chunk it opened) is done first
     take(); recs = []; reflows = 0;
     const rc0 = Object.assign({}, window.__J.RC);
     const t0 = performance.now();
@@ -92,15 +97,19 @@
     return { dt, regions, nodes, wholesale, reflows, renders };
   }
   const BUDGETS = [];
-  function budget(ok, name, r, allowed, caps) {
+  /* `whole`: the one list region this press may replace (‹ › and the rail's words, by the redraw rule); every other
+     list stays under the wholesale check */
+  function budget(ok, name, r, allowed, caps, whole) {
     const extra = Object.keys(r.regions).filter((k) => !allowed.includes(k));
     const over = Object.entries(caps || {}).filter(([k, v]) => (r.regions[k] || 0) > v);
+    r.wholesale = r.wholesale.filter((k) => k !== whole);
     BUDGETS.push([name, allowed.join(" · ") + (caps ? " (" + Object.entries(caps).map(([k, v]) => `${k} ≤ ${v}`).join(", ") + ")" : ""), JSON.stringify(r.regions), r.reflows]);
     ok(`redraw: ${name} writes only ${allowed.join(" · ")}`, !extra.length && !over.length && !r.wholesale.length && r.reflows <= 1,
       `regions ${JSON.stringify(r.regions)} reflows ${r.reflows}${extra.length ? " OUTSIDE: " + extra : ""}${over.length ? " OVER: " + JSON.stringify(over) : ""}${r.wholesale.length ? " WHOLESALE: " + r.wholesale : ""}`);
   }
 
   window.JSELFTEST = async function (J) {
+    observe();
     try { return await checks(J); } catch (e) {
       const out = (window.__selftest && window.__selftest.out) || [];
       out.push(["the self-checks ran to their end", false, String(e && e.stack || e)]);
@@ -119,7 +128,7 @@
     const key = (k, o) => document.dispatchEvent(new KeyboardEvent("keydown", Object.assign({ key: k, bubbles: true }, o || {})));
     const page = J.page, N = page.count();
     const H = page.head;
-    for (let k = 0; k < 100 && MODE === "on" && J.D.routes == null; k++) await settle(1);
+    for (let k = 0; k < 400 && !J.D.heard; k++) await settle(1);        // hello + state + the queue, all answered
     const t0 = J.TIMES;
     const keyName = (a) => (J.KEYS()[a] || "");
     const epsWith = (n) => { const o = []; for (let i = 0; i < N; i++) { const e = page.ep(i); if (!e.watched && e.new >= n && e.id != null) o.push(i); } return o; };
@@ -197,7 +206,7 @@
       r = await press(() => J.epStep(1));
       SPEED.pgdn = r.dt;
       ok("PgDn → the next episode, ≤ 16 ms", r.dt <= 16, r.dt.toFixed(2) + " ms");
-      budget(ok, "› next episode", r, ["word", "meaning", "more", "desk", "rail-top", "rail-head", "rail-words"]);
+      budget(ok, "› next episode", r, ["word", "meaning", "more", "desk", "rail-top", "rail-head", "rail-words"], null, "rail-words");
       ok("› / PgDn walk into an episode with nothing new too (its card shows, its stone a press)", (() => { for (let i = E + 1; i < N; i++) { const e = page.ep(i); if (e.watched) continue; return e.new > 0 || true; } return true; })());
       const nothing = (() => { for (let i = 0; i < N; i++) { const e = page.ep(i); if (!e.watched && e.new === 0) return i; } return -1; })();
       if (nothing >= 0) {
@@ -227,6 +236,17 @@
       await goWord(E, 0);
       key(keyName("ignore")); await settle();
       ok("the same press again clears it (mark '')", !J.MARK.has(w0) && CALLS.filter(([, rt]) => rt === "words/mark").pop()[2].marks[0].mark === "");
+      // a slow door: the press is drawn at once, the spinner only once the answer is late, gone with the answer
+      window.__J_DOOR_DELAY = 400;
+      const row0 = () => $(`.rw[data-id="${id0}"]`);
+      J.markWord("ignore", id0);
+      const atOnce = row0() && row0().classList.contains("ignore") && !row0().classList.contains("sending");
+      await new Promise((r) => setTimeout(r, 250));
+      const late = row0() && row0().classList.contains("sending");
+      await new Promise((r) => setTimeout(r, 300)); await settle();
+      window.__J_DOOR_DELAY = 0;
+      ok("a slow door: the mark drawn at once, the spinner only after 150 ms, gone with the answer", atOnce && late && row0() && !row0().classList.contains("sending") && row0().classList.contains("ignore"), `${atOnce} ${late}`);
+      J.markWord("ignore", id0); await settle();
     }
 
     /* ---- the keys (SPEC §1.2) ---- */
@@ -263,7 +283,7 @@
       const P = big.find((i) => !page.ep(i).pre.on && i !== E) ?? big[1];
       await goWord(P, 0);
       const stone = $(`.rs-head [data-pre="${P}"]`);
-      ok("the episode's stone is a press in the ring; its tip says what it is and what a click does (R)", stone && stone.classList.contains("ring") && /where you are/.test(stone.dataset.tip) && /Click to mark it pre-studied \(R\)/.test(stone.dataset.tip), stone && stone.dataset.tip);
+      ok("the episode's stone is a press in the ring; its tip says what it is and what a click does (R)", stone && stone.classList.contains("ring") && /where you are/.test(J.tipText(stone)) && /Click to mark it pre-studied \(R\)/.test(J.tipText(stone)), stone && J.tipText(stone));
       let r = await press(() => stone.click());
       SPEED.prePress = r.dt;
       ok("a press marks it at once (≤ 16 ms): the sheen and sparkle on its stone", page.ep(P).pre.on && r.dt <= 16 && /j-sheen/.test($(`.rs-head [data-pre="${P}"]`).innerHTML), r.dt.toFixed(2) + " ms");

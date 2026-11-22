@@ -514,6 +514,78 @@ NOT_SHOWN.update({key: "Reels: sunset (2026-09-22), excluded from every build" f
     "reels_subsync_path", "reels_words_per_part")})
 
 
+# --- Journey v3 (J-SET; SPEC §1.4, the settings table and Sonic's answers 2026-11-22; words PROVISIONAL) ---------- #
+# Off until the cut-over (`journey_settings.v3()`: J-CUT turns the door on), and the page shows the rows above. On
+# (`use_v3`), the Journey section moves to App (before App's own section: its links stay the page's last block), the
+# page's rows take the old *Look* and *Where a sentence came from* rows' place (the same keys: `journey_settings` is the
+# one place for the keys, the choices and how an older value reads), *Up to* is *Sentences per word* (its key and
+# home), and the rows for what the new page doesn't have leave Settings — their keys stay in settings.json, read by the
+# YouTube preview's old page until it moves (`_V3_NOT_SHOWN`).
+_V3_GONE = ("source_display", "inline_completed_files", "hide_audio_button", "zen_limit", "enable_koe", "koe_door",
+            "show_words_per_day")
+_V3_ROWS = ("journey_pitch", "journey_meanings", "journey_source", "journey_first_meeting", "journey_word_size",
+            "journey_sentence_size", "journey_theme", "journey_keys")           # in the page's ⚙ order (SPEC §1.4)
+_OLD_PAGE = "retired from Settings by journey v3 (Sonic 2026-11-22): the YouTube preview's old page still reads it"
+_V3_NOT_SHOWN = dict({
+    "logic.inline_completed_files": _OLD_PAGE,
+    "logic.hide_audio_button": _OLD_PAGE,
+    "show_words_per_day": _OLD_PAGE,
+    "zen_limit": "retired with Zen Mode by journey v3 (Sonic 2026-11-22): the old page's Zen view reads it",
+}, **{key: "Speak sentences left the journey (D15): the YouTube preview's old page still speaks with it" for key in (
+    "enable_koe", "koe_voice", "koe_model", "koe_style", "koe_temperature", "koe_daily_cap")})
+_BEFORE_V3 = {}
+_V3 = False
+
+
+def _v3_rows(before):
+    """The rows under journey v3, from the rows before it (`before`)."""
+    from app.services import journey_settings as J
+    new = {
+        "journey_pitch": _row("journey_pitch", "reading", "choice", ("journey_pitch",),
+                              options=J.CHOICES["journey_pitch"]),
+        "journey_meanings": _row("journey_meanings", "reading", "choice", ("journey_meanings",),
+                                 options=J.CHOICES["journey_meanings"]),
+        "journey_source": _row("journey_source", "reading", "choice", ("source_display",),
+                               options=tuple(J.stored("source_display", v) for v in J.CHOICES["source_display"])),
+        "journey_first_meeting": _row("journey_first_meeting", "reading", "toggle", ("journey_first_meeting",)),
+        "journey_word_size": _row("journey_word_size", "reading", "choice", ("journey_word_size",),
+                                  options=J.CHOICES["journey_word_size"]),
+        "journey_sentence_size": _row("journey_sentence_size", "reading", "choice", ("journey_sentence_size",),
+                                      options=J.CHOICES["journey_sentence_size"]),
+        "journey_theme": _row("journey_theme", "reading", "choice", ("theme",),
+                              options=tuple(J.stored("theme", v) for v in J.CHOICES["theme"])),
+        "journey_keys": _row("journey_keys", "reading", "choice", ("journey_keys",), options=J.CHOICES["journey_keys"]),
+    }
+    out = []
+    for row in before:
+        if row.id == "theme":                   # the section's first row: the page's rows in its place
+            out += [new[id_] for id_ in _V3_ROWS]
+        elif row.id == "max_contexts":          # the same key and home, renamed, 1–10 or All (table Q3, Q8)
+            out.append(_row("sentences_per_word", "sentences", "select", (J.SENTENCES,), options=J.SENTENCE_CHOICES))
+        elif row.id not in _V3_GONE:
+            out.append(row)
+    return tuple(out)
+
+
+def use_v3(on):
+    """Journey v3's Settings (`on`) or the one before it: the heads, the sections, the rows and NOT_SHOWN. Called once
+    below with `journey_settings.v3()`; a test or a capture calls it to see the other, and back."""
+    global HEADS, HEAD_OF, SECTIONS, ROWS, ROW, NOT_SHOWN, _V3
+    if not _BEFORE_V3:
+        _BEFORE_V3.update(HEADS=HEADS, ROWS=ROWS, NOT_SHOWN=NOT_SHOWN)
+    _V3 = bool(on)
+    HEADS, ROWS, NOT_SHOWN = _BEFORE_V3["HEADS"], _BEFORE_V3["ROWS"], _BEFORE_V3["NOT_SHOWN"]
+    if _V3:
+        HEADS = tuple((head, tuple(s for s in sections if s != "reading")[:-1] + ("reading", sections[-1])
+                       if head == "app" else tuple(s for s in sections if s != "reading")) for head, sections in HEADS)
+        ROWS = _v3_rows(ROWS)
+        NOT_SHOWN = dict(NOT_SHOWN, **_V3_NOT_SHOWN)
+    HEAD_OF = {section: head for head, sections in HEADS for section in sections}
+    SECTIONS = tuple(Section(id_, _ICONS[id_], S.SECTIONS[id_])
+                     for id_ in ("setup",) + tuple(s for _head, sections in HEADS for s in sections))
+    ROW = {row.id: row for row in ROWS}
+
+
 # --- reading ------------------------------------------------------------------------------------------------------- #
 _DEFAULTS = []
 
@@ -552,7 +624,11 @@ def _decks(settings, language):
 
 
 def _one(settings, key, language):
-    """A key's value as its control shows it: a per-language key this language's entry."""
+    """A key's value as its control shows it: a per-language key this language's entry; under journey v3 a key the
+    page shares as the page reads it (an old *Midnight* is Night: `journey_settings.stored_now`)."""
+    if _V3 and key in ("theme", "source_display", "logic.context.max_contexts"):
+        from app.services import journey_settings
+        return journey_settings.stored_now(settings, key)
     if key == "connect_backlog_cap":
         return settings_values.cap_of(plain(value_of(settings, key)), language)
     if key == "connect_video_folders":
@@ -980,3 +1056,12 @@ def words_of(row, settings, language):
     if row.kind == "number":
         return str(found)
     return str(labels.get(found, found))
+
+
+# Journey v3 or the Settings before it (above): one switch, the cut-over's (`journey_settings.v3()`)
+def _journey_v3():
+    from app.services import journey_settings
+    return journey_settings.v3()
+
+
+use_v3(_journey_v3())

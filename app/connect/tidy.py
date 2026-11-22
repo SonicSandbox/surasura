@@ -77,6 +77,7 @@ ALL_KEPT = "the cards past your limit are yours to keep: studied, changed, moved
 NOT_UNDOABLE = "That tidy can't be undone now."
 NOT_SAVED = "Anki didn't save a copy of the cards, so nothing was deleted."
 NOT_READ_BACK = "The copy of the cards couldn't be saved and read back, so nothing was deleted."
+MOVED_MEANWHILE = "A card was moved in Anki while Surasura read it, so nothing was deleted. It looks again next time."
 
 _SQL = """CREATE TABLE IF NOT EXISTS tidies (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -226,7 +227,7 @@ def _done_at(ledger, note_id):
 
 
 def why_kept(info, cards, made, reviewed, filtered, done_at, shelf, asked=frozenset(), yours=frozenset(), home=None,
-             ours=frozenset()):
+             ours=frozenset(), tidying=frozenset()):
     """**Tidy's guarantee** (Kyou-SH3), every clause in one place: why one note is not Tidy's to take, or None when it
     is. A card is Tidy's only if
     - **Connect made it**: the library's made-words record holds the note (`made`) and Connect's ledger made it
@@ -240,10 +241,10 @@ def why_kept(info, cards, made, reviewed, filtered, done_at, shelf, asked=frozen
       (`undo._why_kept`), taken off the old shelf by you (`yours`: put back, or un-suspended in Anki — P2.5-2), nor
       in a filtered deck (`filtered`);
     - **you never moved it** (Kyou-SH4, Sonic 2026-11-22): every card of it is in its `home` — the deck Surasura last
-      put it in (Connect's ledger, `homes`: its batch's deck, or *Move them to X*'s) — or in one of `ours` (the deck
-      Surasura shows for new cards now, which is never a deck of yours; Tidy's own deck while it backs the card up).
-      Anywhere else — a deck or a subdeck of yours, a deck renamed since — it is yours. No home on record (a card made
-      before homes were) and not in `ours`: kept, never a guess. Junban never moves a deck (its reorder moves a card's
+      put it in (Connect's ledger, `homes`: its batch's deck, or *Move them to X*'s) — or, only for a card with no
+      home on record (made before homes were), in one of `ours` (the deck Surasura shows for new cards now); Tidy's
+      own deck while it backs the card up (`tidying`) counts too. Anywhere else — a deck or a subdeck of yours, a deck
+      renamed since — it is yours. No home on record and not in `ours`: kept, never a guess. Junban never moves a deck (its reorder moves a card's
       due and the card's mod, which is why the mod can't tell: the guarantee's review, G3).
     `cards` {card id: Anki's card}; `shelf` the old shelf's rows (`undo._shelf_rows`)."""
     note_id = int(info["noteId"])
@@ -264,7 +265,7 @@ def why_kept(info, cards, made, reviewed, filtered, done_at, shelf, asked=frozen
         return why
     if any(c in filtered for c in card_ids):
         return FILTERED
-    fine = {str(d).casefold() for d in ours if d} | ({str(home).casefold()} if home else set())
+    fine = {str(d).casefold() for d in ({home} if home else ours) | set(tidying) if d}
     if any(str((cards.get(c) or {}).get("deckName") or "").casefold() not in fine for c in card_ids):
         return MOVED if home else NO_HOME
     return None
@@ -286,7 +287,7 @@ def asked_for(ledger, language, note_ids):
     return frozenset()
 
 
-def check(anki, ledger, note_ids, made, asked=frozenset(), ours=frozenset()):
+def check(anki, ledger, note_ids, made, asked=frozenset(), ours=frozenset(), tidying=frozenset()):
     """Read under the lock: which of `note_ids` may go now (`why_kept`; `made`: the notes the library's made-words
     record holds; `ours`: the decks that are Surasura's whatever a card's home — `run`'s) -> (go [note ids], kept
     [[note id, why]], infos {id: note}, cards {id: card}). A note Anki no longer has is neither."""
@@ -305,7 +306,7 @@ def check(anki, ledger, note_ids, made, asked=frozenset(), ours=frozenset()):
     go, kept = [], []
     for note_id in [int(n) for n in dict.fromkeys(note_ids) if int(n) in infos]:     # in the order asked: lowest first
         why = why_kept(infos[note_id], cards, made, reviewed, filtered, _done_at(ledger, note_id), shelf, asked, yours,
-                       homes.get(note_id), ours)
+                       homes.get(note_id), ours, tidying)
         if why:
             kept.append([note_id, why])
         else:
@@ -414,8 +415,9 @@ def run(anki, ledger, language, note_ids, why=AUTO, open_store=None, limit=None,
             ledger.conn.execute("UPDATE tidies SET folder = ? WHERE id = ?", (folder, tidy_id))
         try:
             _backup(anki, infos, cards, go, tidy_id, folder)
-        except Refused:
-            _fail(anki, ledger, tidy_id, notes, UNSAVED)    # said in *Needs you*: nothing deleted, every card home
+        except Refused as e:
+            # said in *Needs you*: nothing deleted, every card home (a card moved meanwhile: failed, said by *Tidy now*)
+            _fail(anki, ledger, tidy_id, notes, FAILED if e.say == MOVED_MEANWHILE else UNSAVED)
             raise
         except Exception:
             _fail(anki, ledger, tidy_id, notes)
@@ -423,7 +425,7 @@ def run(anki, ledger, language, note_ids, why=AUTO, open_store=None, limit=None,
         # read once more just before the delete: a card you answered or changed while Anki exported stays (its card
         # back home); the package may hold it too, and Undo leaves a note Anki still has as it is — in Tidy's own deck
         # now (`_backup` moved it there): one you moved out of it meanwhile is yours
-        still, late, now_infos, _c = check(anki, ledger, go, made_ids, asked, ours | {TEMP_DECK.format(id=tidy_id)})
+        still, late, now_infos, _c = check(anki, ledger, go, made_ids, asked, ours, {TEMP_DECK.format(id=tidy_id)})
         grew = [n for n in still if {str(c) for c in now_infos[n].get("cards") or ()} != set(notes[str(n)]["cards"])]
         if grew:                        # a card Anki made for the note since the backup isn't in the copy: kept
             still = [n for n in still if n not in grew]
@@ -490,6 +492,11 @@ def _backup(anki, infos, cards, go, tidy_id, folder):
         raise Refused(NOT_READ_BACK) from None
     deck = TEMP_DECK.format(id=tidy_id)
     card_ids = [int(c) for n in go for c in infos[n].get("cards") or ()]
+    # Kyou-SH4 (lens #1): a card you moved while the copy was written would be overwritten by the move below and then
+    # read as Tidy's own: read the decks again first; one moved → nothing deleted, tried again next time (kept then)
+    now = {int(c["cardId"]): c.get("deckName") for c in anki.cards(card_ids) if isinstance(c, dict) and c.get("cardId")}
+    if any(now.get(c) != (cards.get(c) or {}).get("deckName") for c in card_ids):
+        raise Refused(MOVED_MEANWHILE)
     anki.change_deck(card_ids, deck)
     package = os.path.join(folder, "cards.apkg")
     if not anki.export_package(deck, package):

@@ -147,8 +147,9 @@ def test_the_deck_surasura_shows_now_is_never_a_deck_of_your_own(ledger):
     item, tag, done_at = _mined(ledger, "ja")
     anki = _anki("ja", tag, done_at)
     anki.change_deck([1040], SHOWN)
-    assert _check(anki, ledger, "ja", [104], ours=[SHOWN.lower()]) == ([104], {})
-    assert _check(anki, ledger, "ja", [104])[1] == {104: tidy.MOVED}, "no deck shown: only its home counts"
+    assert _check(anki, ledger, "ja", [104], ours=[SHOWN])[1] == {104: tidy.MOVED}, "a home on record: only it counts"
+    _made_before_this_change(ledger)
+    assert _check(anki, ledger, "ja", [104], ours=[SHOWN.lower()]) == ([104], {}), "no record: the shown deck"
 
 
 def test_moved_and_moved_back_is_tidys_again_unless_you_changed_it_otherwise(ledger):
@@ -216,9 +217,28 @@ def test_the_home_is_one_clause_of_the_one_function(clause, args, said):
 def test_the_deck_surasura_shows_counts_as_home_in_the_one_function():
     base = dict(info=_info(), cards=_card(deckName=SHOWN), made={104}, reviewed=set(), filtered=set(), done_at=1000,
                 shelf={})
-    assert tidy.why_kept(**dict(base, home=DECK, ours=frozenset({SHOWN}))) is None
     assert tidy.why_kept(**dict(base, home=None, ours=frozenset({SHOWN.lower()}))) is None, "case ignored"
+    assert tidy.why_kept(**dict(base, home=DECK, ours=frozenset({SHOWN}))) == tidy.MOVED, "lens #2: a home wins"
+    assert tidy.why_kept(**dict(base, home=DECK, tidying=frozenset({SHOWN}))) is None, "Tidy's own deck"
     assert tidy.why_kept(**dict(base, home=DECK)) == tidy.MOVED
+
+
+def test_a_card_you_move_while_tidy_writes_its_copy_is_never_overwritten_by_tidys_own_move(ledger):
+    # lens #1: Tidy moves the cards into its own deck by id; a move of yours just before would be lost, then read as
+    # Tidy's own — the decks are read again first: nothing is deleted, every card stays where it is
+    item, tag, done_at = _mined(ledger, "zh")
+    anki = _anki("zh", tag, done_at)
+    real = anki.media_bytes
+
+    def your_move_meanwhile(name):
+        anki.cards_[1040]["deckName"] = OWN["zh"]
+        return real(name)
+    anki.media_bytes = your_move_meanwhile
+    with pytest.raises(tidy.Refused) as e:
+        tidy.run(anki, ledger, "zh", [104, 105], why=tidy.NOW, open_store=_opener("zh"))
+    assert e.value.say == tidy.MOVED_MEANWHILE and anki.deleted == []
+    assert anki.cards_[1040]["deckName"] == OWN["zh"] and anki.cards_[1050]["deckName"] == DECK
+    assert ledger.conn.execute("SELECT state FROM tidies").fetchone()[0] == tidy.FAILED, "never *Needs you*'s unsaved"
 
 
 # --------------------------------------------------------------------------- #

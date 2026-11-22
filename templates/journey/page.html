@@ -63,7 +63,7 @@ svg.i { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:1.
 .chip i { width:8px; height:8px; border-radius:50%; background:var(--ink-faint); display:inline-block; }
 .chip.on { color:var(--ink); } .chip.on i { background:var(--ok); box-shadow:0 0 8px var(--ok); }
 .chip.off i { background:var(--warn); }
-.ib { width:28px; height:28px; border-radius:7px; border:1px solid transparent; background:none; color:var(--ink-dim); display:inline-grid; place-items:center; cursor:pointer; padding:0; flex:none; position:relative; font:600 13px var(--f-ui); transition:color var(--fast) var(--ease), background var(--fast) var(--ease), border-color var(--fast) var(--ease); }
+.ib { width:32px; height:32px; border-radius:7px; border:1px solid transparent; background:none; color:var(--ink-dim); display:inline-grid; place-items:center; cursor:pointer; padding:0; flex:none; position:relative; font:600 13px var(--f-ui); transition:color var(--fast) var(--ease), background var(--fast) var(--ease), border-color var(--fast) var(--ease); }
 .ib:hover, .ib.on { color:var(--ink); background:var(--raised); border-color:var(--line-hi); }
 .body { flex:1; min-height:0; display:flex; position:relative; }
 .rail { width:296px; flex:none; border-right:1px solid var(--line); background:var(--frame); display:flex; flex-direction:column; min-height:0; transition:opacity var(--slow) var(--ease); }
@@ -71,6 +71,13 @@ svg.i { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:1.
 .desk.idle { opacity:.35; }
 .desk { width:330px; flex:none; padding:20px 24px 40px 0; overflow:auto; transition:opacity var(--slow) var(--ease); }
 @media (max-width:1100px) { .desk { display:none; } }
+.narrow-only { display:none; }
+@media (max-width:760px) {
+  .rail { display:none; } .narrow-only { display:inline-grid; }
+  .brand span { display:none; } .sbox { width:auto; min-width:0; flex:1; } .sw { flex:1; min-width:0; } .hd1 { gap:6px; padding:0 8px; } .sp { display:none; }
+  .stage { padding:14px 14px 40px; } .end { padding:22px 16px; margin-top:16px; } .end h2 { font-size:20px; flex-wrap:wrap; }
+  body.focus .stage { transform:none; } .chip { padding:0 8px; }
+}
 body.focus .rail, body.focus .desk { opacity:0; pointer-events:none; }
 body.focus .stage { transform:translateX(-148px); }
 body.focus .hd { opacity:.35; } body.focus .hd:hover { opacity:1; }
@@ -92,7 +99,7 @@ body.focus .hd { opacity:.35; } body.focus .hd:hover { opacity:1; }
 .tones { font-size:12px; color:var(--ink-dim); display:inline-flex; align-items:center; gap:4px; }
 .tones b { width:7px; height:7px; border-radius:50%; display:inline-block; }
 .btn { display:inline-flex; align-items:center; gap:8px; height:34px; padding:0 14px; border-radius:8px; border:1px solid var(--line-hi); background:var(--surface); color:var(--ink); font:600 13px var(--f-ui); cursor:pointer; transition:background var(--fast) var(--ease), border-color var(--fast) var(--ease); }
-.btn:hover { background:var(--raised); } .btn.quiet { border-color:transparent; background:none; color:var(--ink-dim); height:28px; padding:0 8px; }
+.btn:hover { background:var(--raised); } .btn.quiet { border-color:transparent; background:none; color:var(--ink-dim); height:32px; padding:0 8px; }
 .btn.go { background:var(--accent-deep); border-color:var(--accent-deep); color:#fff; }
 .acts { display:inline-flex; border:1px solid var(--line-hi); border-radius:9px; overflow:hidden; margin-bottom:22px; }
 .acts .btn { border:0; border-radius:0; height:36px; background:var(--surface); }
@@ -103,7 +110,8 @@ body.focus .hd { opacity:.35; } body.focus .hd:hover { opacity:1; }
 @keyframes spin { to { transform:rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .wait::after { animation:none; } }
 .sh { font:700 11px var(--f-ui); letter-spacing:.08em; color:var(--ink-faint); text-transform:uppercase; margin:0 0 6px; display:flex; align-items:center; gap:6px; }
-.q { width:16px; height:16px; border-radius:50%; border:1px solid var(--line-hi); background:none; color:var(--ink-dim); font:700 10px var(--f-ui); cursor:pointer; padding:0; display:inline-grid; place-items:center; }
+.q { width:32px; height:32px; margin:-8px -6px; border:0; background:none; color:var(--ink-dim); font:700 10px var(--f-ui); cursor:pointer; padding:0; display:inline-grid; place-items:center; position:relative; }
+.q::before { content:""; position:absolute; width:16px; height:16px; border-radius:50%; border:1px solid var(--line-hi); left:50%; top:50%; transform:translate(-50%,-50%); }
 .ln { display:flex; gap:12px; align-items:flex-start; padding:10px 12px; border-radius:10px; position:relative; border-left:2px solid transparent; }
 .ln:hover { background:var(--row-hover); }
 .ln.sel { background:var(--accent-wash); border-left-color:var(--accent); }
@@ -113,15 +121,15 @@ body.focus .hd { opacity:.35; } body.focus .hd:hover { opacity:1; }
 .src { display:flex; align-items:center; gap:6px; font:500 12px var(--f-ja); color:var(--ink-dim); margin-top:2px; }
 .wf-hover .ln .src { visibility:hidden; } .wf-hover .ln:hover .src, .wf-hover .ln.sel .src { visibility:visible; }
 .wf-icon .src .sn { display:none; }
-.pl { width:28px; height:28px; border-radius:7px; border:1px solid var(--line-hi); background:var(--surface); color:var(--accent); cursor:pointer; flex:none; display:grid; place-items:center; margin-top:4px; padding:0; }
+.pl { width:32px; height:32px; border-radius:7px; border:1px solid var(--line-hi); background:var(--surface); color:var(--accent); cursor:pointer; flex:none; display:grid; place-items:center; margin-top:4px; padding:0; }
 .pl.none { visibility:hidden; }
-.fl { margin-left:auto; opacity:0; border:0; background:none; color:var(--ink-faint); cursor:pointer; font-size:14px; padding:4px 6px; border-radius:6px; flex:none; }
+.fl { margin-left:auto; opacity:0; border:0; background:none; color:var(--ink-faint); cursor:pointer; font-size:14px; min-width:32px; min-height:32px; border-radius:6px; flex:none; }
 .ln:hover .fl, .fl.lit, .fl.wait, .fl.queued { opacity:1; } .fl.lit { color:var(--warn); }
 .more { color:var(--ink-dim); font-size:12px; padding:6px 12px; }
 /* the desk */
 .card { border:1px solid var(--line-hi); border-radius:12px; background:var(--surface); padding:14px 16px; margin-bottom:18px; }
 .card h4 { margin:0; display:flex; align-items:center; gap:8px; font:700 13.5px var(--f-ui); }
-.tabs { display:flex; gap:4px; margin:10px 0 6px; } .tabs button { border:1px solid var(--line-hi); background:none; border-radius:6px; padding:2px 8px; color:var(--ink-dim); cursor:pointer; font-size:11.5px; } .tabs button.on { color:var(--ink); background:var(--raised); }
+.tabs { display:flex; gap:4px; margin:10px 0 6px; } .tabs button { border:1px solid var(--line-hi); background:none; border-radius:6px; padding:2px 10px; min-height:32px; color:var(--ink-dim); cursor:pointer; font-size:11.5px; } .tabs button.on { color:var(--ink); background:var(--raised); }
 .gl { margin:6px 0 0; padding:0 0 0 18px; color:var(--ink-meta); } .gl li { margin:3px 0; } .gl i { color:var(--ink-faint); font-style:normal; font-size:11px; margin-right:6px; }
 .yours { white-space:pre-wrap; color:var(--ink-meta); font:13px/1.5 var(--f-ja); margin-top:6px; }
 .mrow { display:flex; align-items:center; gap:8px; padding:7px 4px; color:var(--ink-meta); cursor:pointer; border-radius:6px; }
@@ -130,11 +138,14 @@ body.focus .hd { opacity:.35; } body.focus .hd:hover { opacity:1; }
 .forms { padding:2px 4px 6px 24px; font:14px var(--f-ja); color:var(--ink-meta); }
 /* end card */
 .end { max-width:720px; margin:48px auto 0; border:1px solid var(--line-hi); border-radius:16px; background:var(--surface); padding:30px 36px; text-align:center; }
+.wnav { display:inline-flex; gap:2px; margin-left:auto; }
+.endnav { display:flex; justify-content:center; gap:10px; margin-top:8px; }
 .end .k { font:700 11px var(--f-ui); letter-spacing:.1em; color:var(--accent); text-transform:uppercase; }
 .end h2 { font:700 26px var(--f-ja); margin:10px 0 16px; display:flex; align-items:center; justify-content:center; gap:10px; }
-.prechip { display:inline-flex; align-items:center; gap:8px; height:30px; padding:0 12px; border:1px solid var(--line-hi); border-radius:99px; background:none; cursor:pointer; color:var(--ink-dim); font:600 12px var(--f-ui); }
+.prechip { display:inline-flex; align-items:center; gap:8px; height:32px; padding:0 12px; border:1px solid var(--line-hi); border-radius:99px; background:none; cursor:pointer; color:var(--ink-dim); font:600 12px var(--f-ui); }
 .prechip.on { color:var(--pre); border-color:var(--pre); }
-.gline { display:flex; align-items:center; justify-content:center; gap:10px; margin:16px 0 6px; color:var(--ink-dim); }
+.gline { display:flex; align-items:center; justify-content:center; gap:4px 10px; flex-wrap:wrap; margin:16px 0 6px; color:var(--ink-dim); }
+.gline > span { white-space:nowrap; }
 .gline .up { color:var(--ok); font-weight:700; }
 .counts { color:var(--ink-faint); font-size:12px; }
 .next { margin:22px 0 18px; }
@@ -145,9 +156,10 @@ body.focus .hd { opacity:.35; } body.focus .hd:hover { opacity:1; }
 .gb i { position:absolute; top:0; bottom:0; left:0; } .gb .a { background:var(--ink-faint); } .gb .n { background:var(--ok); }
 .pc { font-weight:600; } .pc.warn { color:var(--warn); } .pc.ok { color:var(--ok); }
 .st { display:inline-grid; place-items:center; width:20px; height:20px; position:relative; flex:none; padding:0; border:0; background:none; }
+button.st { width:32px; height:32px; margin:-6px; }
 .st svg { width:20px; height:20px; overflow:visible; }
 button.st { cursor:pointer; border-radius:50%; } button.st:hover { background:var(--raised); }
-.st.ring::after { content:""; position:absolute; inset:-8px; border-radius:50%; border:2px solid var(--ring); pointer-events:none; }
+.st.ring::after { content:""; position:absolute; inset:-2px; border-radius:50%; border:2px solid var(--ring); pointer-events:none; }
 .st.wait::after, .st.queued::after { position:absolute; right:-8px; bottom:-6px; }
 /* list view */
 .lv .lc { border-bottom:1px solid var(--line); padding:18px 0 14px; }
@@ -157,7 +169,7 @@ button.st { cursor:pointer; border-radius:50%; } button.st:hover { background:va
 /* pops */
 .tip { position:fixed; z-index:50; max-width:340px; background:var(--overlay); border:1px solid var(--line-hi); border-radius:8px; padding:8px 10px; font:12px/1.45 var(--f-ja); color:var(--ink); box-shadow:var(--sh-tip); pointer-events:none; white-space:pre-line; }
 .toast { position:fixed; z-index:60; left:50%; bottom:28px; transform:translateX(-50%); background:var(--overlay); border:1px solid var(--line-hi); border-radius:10px; padding:10px 14px; display:flex; gap:14px; align-items:center; box-shadow:var(--sh-tip); font:13px var(--f-ja); }
-.toast button { border:0; background:none; color:var(--accent); font-weight:700; cursor:pointer; }
+.toast button { border:0; background:none; color:var(--accent); font-weight:700; cursor:pointer; min-height:32px; padding:0 8px; }
 .scrim { position:fixed; inset:0; background:var(--scrim); z-index:30; display:grid; place-items:center; }
 .sheet { width:min(560px,92vw); max-height:84vh; overflow:auto; background:var(--overlay); border:1px solid var(--line-hi); border-radius:14px; box-shadow:var(--sh-pop); padding:18px 22px; }
 .sheet h3 { margin:0 0 12px; font:700 15px var(--f-ui); display:flex; align-items:center; gap:8px; }
@@ -166,12 +178,12 @@ button.st { cursor:pointer; border-radius:50%; } button.st:hover { background:va
 .srow { display:flex; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid var(--line); flex-wrap:wrap; }
 .srow .sl { flex:1; min-width:160px; font-weight:600; } .srow .wt { width:100%; font-size:11.5px; color:var(--warn); }
 .seg { display:inline-flex; border:1px solid var(--line-hi); border-radius:7px; overflow:hidden; }
-.seg button { border:0; background:none; padding:4px 10px; color:var(--ink-dim); cursor:pointer; font-size:12px; } .seg button.on { background:var(--raised); color:var(--ink); }
+.seg button { border:0; background:none; padding:4px 10px; min-height:32px; color:var(--ink-dim); cursor:pointer; font-size:12px; } .seg button.on { background:var(--raised); color:var(--ink); }
 .seg button + button { border-left:1px solid var(--line-hi); }
 .krow { display:flex; align-items:center; gap:10px; padding:5px 0; } .krow .kn { flex:1; color:var(--ink-meta); }
-.krow button.kc { cursor:pointer; min-width:26px; height:22px; } .krow button.kc.arm { border-color:var(--accent); color:var(--accent); }
+.krow button.kc { cursor:pointer; min-width:40px; height:32px; } .krow button.kc.arm { border-color:var(--accent); color:var(--accent); }
 .menu { position:fixed; z-index:40; background:var(--overlay); border:1px solid var(--line-hi); border-radius:10px; box-shadow:var(--sh-pop); padding:6px; min-width:240px; }
-.menu .mi { display:flex; gap:8px; align-items:center; width:100%; border:0; background:none; text-align:left; padding:6px 8px; border-radius:6px; cursor:pointer; color:var(--ink); }
+.menu .mi { display:flex; gap:8px; align-items:center; width:100%; min-height:32px; border:0; background:none; text-align:left; padding:6px 8px; border-radius:6px; cursor:pointer; color:var(--ink); }
 .menu .mi:hover { background:var(--overlay-hover); } .menu .ck { width:12px; color:var(--accent); } .menu .c { margin-left:auto; color:var(--ink-faint); }
 .menu .mg { font:700 10.5px var(--f-ui); letter-spacing:.08em; color:var(--ink-faint); text-transform:uppercase; padding:6px 8px 2px; }
 .menu hr { border:0; border-top:1px solid var(--line); margin:4px 0; }
@@ -180,7 +192,7 @@ button.st { cursor:pointer; border-radius:50%; } button.st:hover { background:va
 .res .ri b { font:600 15px var(--f-ja); } .res .ri span { color:var(--ink-dim); font:12px var(--f-ja); } .res .ri .e { margin-left:auto; }
 .res .none { padding:10px; color:var(--ink-dim); }
 .flagp { position:fixed; z-index:45; width:330px; background:var(--overlay); border:1px solid var(--line-hi); border-radius:12px; box-shadow:var(--sh-pop); padding:12px 14px; }
-.flagp .chips { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0; } .flagp .chips button { border:1px solid var(--line-hi); border-radius:99px; background:none; padding:3px 10px; cursor:pointer; font-size:12px; color:var(--ink-dim); }
+.flagp .chips { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0; } .flagp .chips button { border:1px solid var(--line-hi); border-radius:99px; background:none; padding:3px 12px; min-height:32px; cursor:pointer; font-size:12px; color:var(--ink-dim); }
 .flagp .chips button.on { color:var(--ink); border-color:var(--warn); background:var(--raised); }
 .flagp textarea { width:100%; height:54px; background:var(--cut); color:var(--ink); border:1px solid var(--line-hi); border-radius:6px; font:12px var(--f-ui); }
 .flagp .why { font-size:11.5px; color:var(--ink-dim); }
@@ -223,6 +235,7 @@ button.st { cursor:pointer; border-radius:50%; } button.st:hover { background:va
    press waiting in the queue (⧗). View state (where you are, Focus, List, what is open) is the page's, in localStorage,
    written after the first word. The rail is one swappable piece (§1.1b): it gets `page` below and nothing else. */
 const T0 = performance.now();
+requestAnimationFrame(() => { TIMES.firstFrame = performance.now(); });
 const $ = (id) => document.getElementById(id);
 /* A write only when it changes something (the redraw rule: a press writes only what it changed). */
 function setHtml(el, html) { if (el && el.__h !== html) { el.innerHTML = html; el.__h = html; } }
@@ -399,11 +412,13 @@ function blob(name) {
 const blobNow = (name) => BLOBS[name + "!"] || null;
 
 /* the search index: word / spelling / readings of every word, built a chunk at a time */
-const SIDX = [];                                       // chunk -> [keys string per word]
+const SIDX = [], SMETA = [];                           // chunk -> each word's search keys · [shown, reading, ep]
 function indexChunk(c, d) {
   if (SIDX[c]) return;
   SIDX[c] = d.w.map((w) => `${w[0]}\u0001${w[1]}\u0001${kana(w[2])}\u0001${w[3]}\u0001${w[2]}`.toLowerCase());
+  SMETA[c] = d.w.map((w) => [w[1] || w[0], kana(w[3] || w[2]), w[5]]);
 }
+const smeta = (id) => { const c = chunkOfWord(id); return SMETA[c] ? SMETA[c][id - CH[c][0]] : null; };
 
 /* ---- view state (not learning facts): in this browser, written after the first word ---- */
 const LIB = `${HEAD.library || "nolib"}_${LANG}`;
@@ -779,7 +794,7 @@ function linesPart(id, w, list) {
 }
 function wordHtml(id, w, list) {
   const s = seq(S.ep) || [];
-  const head = list ? "" : `<div class="meta">Word ${S.wi + 1} of ${s.length} <span class="ml">${kindIcon(EPS[S.ep][5], gemOf(S.ep))} ${esc(epTitle(S.ep))}</span></div>`;
+  const head = list ? "" : `<div class="meta">Word ${S.wi + 1} of ${s.length} <span class="ml">${kindIcon(EPS[S.ep][5], gemOf(S.ep))} ${esc(epTitle(S.ep))}</span>${navHtml()}</div>`;
   return `${head}<div class="wrow"><span class="w jp" lang="${LANG}">${esc(w[1] || w[0])}</span>${marksHtml(w[6])}<span class="ah" data-tip="Its count in this episode and the next two">×${w[7]}</span>${ankiHtml(w[6])}</div>
 ${readingPart(w)}${actsPart(w)}
 <div class="sh">Sentences · ${w[9].length} <button class="q" data-help="lines" aria-label="About the sentences">?</button></div>
@@ -897,6 +912,12 @@ function preChip(i) {
   if (!canPre(i) && !p.on) return "";
   return `<button class="prechip ${p.on ? "on" : ""} ${p.wait || ""}" data-prechip="${i}" data-tip="${p.on ? (p.by === "end" ? "Set when you reached this card" : "Set by your press") + "\n• Click to un-mark it" + kt("pre") : "• Click to mark it pre-studied" + kt("pre")}${p.wait === "queued" ? "\n" + waitWord() : ""}">${stoneSvg(EPS[i][9], gemOf(i), p.on)}${p.on ? "Pre-studied · un-mark" : "Not pre-studied · mark it"}</button>`;
 }
+function navHtml() {                                   // ↑ ↓ and the picker, on screen (a mouse, a pen, a finger)
+  return `<span class="wnav"><button class="ib narrow-only" data-act="picker" aria-label="Episodes and chapters" data-tip="Episodes and chapters">☰</button><button class="ib" data-act="prev" aria-label="The word before" data-tip="The word before (↑)">↑</button><button class="ib" data-act="next" aria-label="The next word" data-tip="The next word (↓)">↓</button></span>`;
+}
+function endNav(i, last) {                              // the end card's way back, and the episodes, without a keyboard
+  return `<div class="endnav">${last ? `<button class="btn" data-act="prev" data-tip="Back to its last word (↑)">↑ Back to its last word</button>` : `<button class="btn" data-act="prev" data-tip="The episode before's end (↑)">↑ Back</button>`}<button class="btn" data-act="picker" data-tip="Episodes and chapters">☰ Episodes</button></div>`;
+}
 function endHtml(i) {
   const s = seq(i) || [];
   let known = 0, ign = 0;
@@ -906,11 +927,11 @@ function endHtml(i) {
   return `<div class="end"><div class="k">End of the ${EPS[i][5] && KIND_VERB[EPS[i][5]] === "read" ? "chapter" : "episode"}</div><h2>${kindIcon(EPS[i][5], gemOf(i))}<span>${esc(epTitle(i))}</span></h2>${preChip(i)}
 ${filt ? `<p class="counts">None of its words in ${esc(FILTERS[S.filter][0])}: they show with the filter off (${esc(keyOf("filter"))}).</p>` : growthHtml(i, true)}
 <div class="counts">✓ ${known} known · ⊘ ${ign} ignored · ${s.length - known - ign} still to learn</div>
-${n >= 0 ? `<div class="next"><button class="btn go" data-act="next">Next: ${esc(epTitle(n))} ↓</button></div>` : `<p class="counts">That was the last episode with new words.</p>`}${up}</div>`;
+${n >= 0 ? `<div class="next"><button class="btn go" data-act="next" data-tip="Next episode (↓)">Next: ${esc(epTitle(n))} ↓</button></div>` : `<p class="counts">That was the last episode with new words.</p>`}${endNav(i, s.length > 0)}${up}</div>`;
 }
 const stoneSvgWrap = (i) => `<span class="st">${stoneSvg(EPS[i][9], gemOf(i), preOf(i).on)}</span>`;
 function nothingHtml(i) {
-  return `<div class="end"><div class="k">Nothing new</div><h2>${kindIcon(EPS[i][5], gemOf(i))}<span>${esc(epTitle(i))}</span></h2>${preChip(i)}<p class="counts">Nothing new in this one: every word in it is known, ignored or already on a card.</p>${growthHtml(i, true)}</div>`;
+  return `<div class="end"><div class="k">Nothing new</div><h2>${kindIcon(EPS[i][5], gemOf(i))}<span>${esc(epTitle(i))}</span></h2>${preChip(i)}<p class="counts">Nothing new in this one: every word in it is known, ignored or already on a card.</p>${growthHtml(i, true)}<div class="next"><button class="btn go" data-act="next" data-tip="On to the next words (↓)">Next ↓</button></div>${endNav(i, false)}</div>`;
 }
 function reachEnd(i) {                                 // the end card marks it pre-studied, once (§2.3)
   if (S.filter) return;
@@ -990,7 +1011,10 @@ function epStep(d) { const j = nextEp(S.ep, d, true); if (j >= 0) go(j, 0); }
 /* ---- pops: tip, toast, menus, sheets ---- */
 const tipEl = $("tip");
 let tipFor = null;
-document.addEventListener("mouseover", (e) => {
+document.addEventListener("pointerdown", () => { tipFor = null; tipEl.classList.add("hide"); }, true);
+document.addEventListener("keydown", () => { if (!tipEl.classList.contains("hide")) { tipFor = null; tipEl.classList.add("hide"); } }, true);
+document.addEventListener("pointerover", (e) => {
+  if (e.pointerType !== "mouse") return;               // a tap never opens a tip
   const t = e.target.closest && e.target.closest("[data-tip],[data-kanji]");
   if (t === tipFor) return;
   tipFor = t;
@@ -1115,17 +1139,18 @@ async function search(q) {
     for (let j = 0; j < a.length && RES.length < 40; j++) if (a[j].includes(q)) RES.push(CH[c][0] + j);
   }
   RESI = 0;
-  await Promise.all([...new Set(RES.map(chunkOfWord))].map(loadChunk));
-  box.innerHTML = RES.length ? RES.map((id, j) => { const w = wordNow(id); return `<div class="ri ${j === 0 ? "on" : ""}" data-ri="${j}"><b>${esc(w[1] || w[0])}</b><span>${esc(kana(w[3] || w[2]))}</span><span class="e">${esc(epTitle(w[5]))}</span></div>`; }).join("") : `<div class="none">No word in your journey matches.</div>`;
+  box.innerHTML = RES.length ? RES.map((id, j) => { const m = smeta(id); return `<div class="ri ${j === 0 ? "on" : ""}" data-ri="${j}"><b>${esc(m[0])}</b><span>${esc(m[1])}</span><span class="e">${esc(epTitle(m[2]))}</span></div>`; }).join("") : `<div class="none">No word in your journey matches.</div>`;
   box.classList.remove("hide");
 }
-function jumpTo(id) {
-  const w = wordNow(id); if (!w) return;
-  const i = w[5];
+async function jumpTo(id) {
+  const m = smeta(id); if (!m) return;
+  const i = m[2], back = { ep: S.ep, wi: S.wi };
+  await loadEp(i);
   $("res").classList.add("hide"); $("q").value = ""; $("q").blur();
   S.filter = 0; resetSeq();
   const s = seq(i) || [];
   go(i, Math.max(0, s.indexOf(id)));
+  S.back = back;                                       // ⌫ goes back to where you were
 }
 
 /* ---- the page's API for the rail (SPEC §1.1b) ---- */
@@ -1165,6 +1190,8 @@ document.addEventListener("click", (e) => {
     const a = el.dataset.act;
     if (a === "known" || a === "ignore") { if (S.list) { const k = el.closest(".lc"); if (k) S.wi = Number(k.dataset.k); } markWord(a); }
     else if (a === "next") step(1);
+    else if (a === "prev") step(-1);
+    else if (a === "picker") { if (rail.picker) rail.picker(); }
     else if (a === "meaning") toggleMeaning();
     else if (a === "word") playWord();
     else if (a === "pick") pickLine(S.line);

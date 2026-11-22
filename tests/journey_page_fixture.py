@@ -262,11 +262,13 @@ def rail_html(name="stepper", css=None, js=None):
     return f"<style>\n{css}\n</style>\n<script>\n{js}\n</script>"
 
 
-def assemble(parts, rail="stepper", rail_css=None, rail_js=None):
+def assemble(parts, rail="stepper", rail_css=None, rail_js=None, extra_js=None):
+    """The page as the render writes it; `extra_js` (the self-checks) goes in after the rail, before the page runs."""
     with open(os.path.join(TEMPLATES, "page.html"), encoding="utf-8") as f:
         page = f.read()
     assert page.count(DATA_MARK) == 1 and page.count(RAIL_MARK) == 1
-    page = page.replace(RAIL_MARK, rail_html(rail, rail_css, rail_js))
+    extra = f"\n<script>\n{extra_js}\n</script>" if extra_js else ""
+    page = page.replace(RAIL_MARK, rail_html(rail, rail_css, rail_js) + extra)
     return page.replace(DATA_MARK, data_html(parts))
 
 

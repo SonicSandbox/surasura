@@ -24,6 +24,10 @@ def test_every_switch_step_of_the_window_runs_with_tkinter_missing_and_the_put_b
                APPDATA=str(tmp_path / "appdata"), LOCALAPPDATA=str(tmp_path / "localappdata"),
                XDG_DATA_HOME=str(tmp_path / "xdg"),
                PYTHONUSERBASE=site.getuserbase())     # the packages installed for this user stay importable
+    for name in ("HOUSEKI_TOOLS_DIR", "SURASURA_TOOLS_CLI"):
+        env.pop(name, None)                           # surasura.json under the test root, never a caller's folder
+    for gate in ("SURASURA_NO_AUTOINDEX", "SURASURA_NO_ANKI_SYNC", "SURASURA_NO_UPDATE_CHECK"):
+        env[gate] = "1"                               # no indexer, Anki or GitHub from a test
     script = textwrap.dedent(f"""
         import json, sys
         tried = []
@@ -37,8 +41,11 @@ def test_every_switch_step_of_the_window_runs_with_tkinter_missing_and_the_put_b
         sys.meta_path.insert(0, NoTk())
 
         from app.cli.contract import CliError
-        from app.connect import undo
+        from app.connect import setup, undo
         from app.qt import settings_connect as scn
+        present = setup._present
+        setup._present = lambda name: True if name == "modules.junban.reposition" else present(name)
+        # (Junban there either way: the shelf is read for real — Connect's status record, none on this empty root)
 
         class Store:                                  # the settings service's two calls the steps make
             def fresh(self):
@@ -52,7 +59,7 @@ def test_every_switch_step_of_the_window_runs_with_tkinter_missing_and_the_put_b
         acts, waits, lines = [], [], []
 
         def act(settings, language, job=None, shelf_run=None, confirm=False):
-            acts.append(shelf_run)
+            acts.append([language, shelf_run, confirm])
             answer = answers.pop(0)
             if isinstance(answer, Exception):
                 raise answer
@@ -67,6 +74,7 @@ def test_every_switch_step_of_the_window_runs_with_tkinter_missing_and_the_put_b
         back = scn._switch_off({{"ja": (3, ["shelf-2026-11-21-a"])}}, store, lines.append, lambda: waits.append(1))
         print("\\n" + json.dumps({{"on": list(on), "off": list(off), "back": list(back), "acts": acts,
                                    "waits": len(waits), "lines": lines, "tried": tried,
+                                   "status_read": "app.connect.status" in sys.modules,
                                    "loaded": sorted(m for m in sys.modules if m.split(".")[0] in {TK!r})}}))
     """)
     proc = subprocess.run([sys.executable, "-c", script], cwd=str(root), env=env, capture_output=True, text=True,
@@ -75,7 +83,9 @@ def test_every_switch_step_of_the_window_runs_with_tkinter_missing_and_the_put_b
     got = json.loads(proc.stdout.strip().splitlines()[-1])
     assert got["tried"] == [] and got["loaded"] == [], "a switch step reached for tkinter"
     assert got["on"] == [True, None], got["lines"]
+    assert got["status_read"] is True, "the shelf was read (status), not skipped for a missing Junban"
     assert got["off"][:2] == ["off", True], got["lines"]
-    assert got["acts"] == ["shelf-2026-11-21-a"] * 2 and got["waits"] == 1, "the busy writer waited out, said once"
+    assert got["acts"] == [["ja", "shelf-2026-11-21-a", True]] * 2, "as you (confirm), tried again after the wait"
+    assert got["waits"] == 1, "the busy writer waited out, said once"
     assert "3 shelved cards back in your new cards." in got["lines"]
     assert got["back"][:2] == ["off", True], got["lines"]

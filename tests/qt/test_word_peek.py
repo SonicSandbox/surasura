@@ -575,3 +575,18 @@ def test_mado_lt_the_windows_toast_says_still_learning_with_its_undo_and_hover(p
     win._card_toast(strings.WORDS_STILL_LEARNING.format(word="看板"), lambda: undone.append(1))
     assert win.toasts.text == "看板: still learning"
     assert win.toasts.card.toolTip() == strings.WORDS_STILL_LEARNING_TIP
+
+
+def test_mado_lt_a_card_closed_and_kept_again_reads_its_in_anki_words_again(peek):
+    """A review's finding: the read was keyed to the row alone, so a card closed and kept again (its words reset with
+    the close) skipped it — a word Still learning showed its ✓ lit, and a click wrote Still learning twice. Each keep
+    reads them again; the words asked again after a mark never do."""
+    win, card, marks, _said, toasts, asked = _kept_in_anki(peek, states={"看板": "learning"})
+    assert wait_until(lambda: card.anki_states == {"看板": "learning"}, 3)
+    card.close()
+    assert wait_until(lambda: not card.isVisible(), 3)
+    _win, lst, i, _provider = peek
+    QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=_new_part(lst, i)[1].center())
+    assert wait_until(lambda: card.kept and card.card is not None and len(asked) == 2, 3)
+    assert wait_until(lambda: card.anki_states == {"看板": "learning"}, 3)
+    assert card.lit(_word_item(card, "看板").word) is None

@@ -1624,6 +1624,8 @@ class Select(_Control):
         super().__init__(tooltip, name, parent)
         self._index = 0
         self.menu = QMenu(self)
+        self._group = QActionGroup(self.menu)        # one, refilled: `menu.clear()` deletes the actions, not a group
+        self._group.setExclusive(True)
         self._fill(options)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.set_value(self._options[0][0] if value is None else value)
@@ -1631,8 +1633,6 @@ class Select(_Control):
     def _fill(self, options):
         self._options = _options(options)
         self.menu.clear()
-        group = QActionGroup(self.menu)
-        group.setExclusive(True)
         self._actions = []
         for v, label, tip in self._options:
             action = self.menu.addAction(label)
@@ -1640,7 +1640,7 @@ class Select(_Control):
             if tip:
                 action.setToolTip(tip)
             action.triggered.connect(lambda _checked=False, v=v: self._pick(v))
-            group.addAction(action)
+            self._group.addAction(action)
             self._actions.append(action)
 
     def set_options(self, options):

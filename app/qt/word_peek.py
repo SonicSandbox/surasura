@@ -878,6 +878,7 @@ class PeekHost(QObject):
         self._grace.stop()
         self._pending = None
         card = self._cards.get(row.key)
+        self._states_key = None                                # each keep reads its In Anki words again (Mado-LT)
         self.card.show_for(row, anchor, card, kept=True)       # pending painted first: the press reacts at once
         self._ask(row)                                         # always asked again: a move, a Generate since (r1 #2)
 
@@ -1028,7 +1029,7 @@ class PeekHost(QObject):
                 if self.say is not None:
                     self.say(strings.WORDS_MARK_FAILED.format(why=error))
                 return
-            if self._here(key):
+            if self._here(key) and result.done:            # (an id no longer held undoes nothing: shown as it is)
                 self.card.set_marks({w: before.get(w) for w in self._still({w: "learning" for w in words})})
                 self._again()
         self._write(self.undo, (undo_id,), then)

@@ -125,7 +125,7 @@ _SHOWS = {
 }
 
 
-def build(lang="ja", n_eps=40, seed=7, words_per_ep=None, sentences=3, meanings="en", stamp="1763700000000000000",
+def build(lang="ja", n_eps=40, seed=7, words_per_ep=None, sentences=3, meanings="en", stamp="1763700000000",
           library="lib-fixture"):
     """SHAPE v1's parts for a library of `n_eps` episodes: {"head", "chunks", "meanings", "kanji", "yours", "stones"}."""
     rng = random.Random(seed)
@@ -198,7 +198,8 @@ def build(lang="ja", n_eps=40, seed=7, words_per_ep=None, sentences=3, meanings=
                     se = eps[src_ep]
                     play = f"0/{se[1].split('/')[-1].rsplit('.', 1)[0]}.mp3" if src_ep % 3 == 0 else ""
                     cur["srcmap"][key] = len(cur["src"])
-                    cur["src"].append([se[2], se[5], src_ep, play, ""])
+                    # SHAPE 1.1: the row's store item (here its episode's id; every 7th row a file the store doesn't hold)
+                    cur["src"].append([se[2], se[5], src_ep, play, "", None if src_ep % 7 == 6 else se[0]])
                 at = round(rng.uniform(5, 1300), 2)
                 out_lines.append([text, cur["srcmap"][key], at, round(at + rng.uniform(1.5, 4.5), 2)])
             pitch = (_JA_PITCH.get(word) if lang == "ja" else next((t for z, _p, t, _g in _ZH if z == word), None))
@@ -228,7 +229,7 @@ def build(lang="ja", n_eps=40, seed=7, words_per_ep=None, sentences=3, meanings=
     finished = [[shows[0][0] + "f", shows_src[-1][0] + "（完）", shows_src[-1][1], shows_src[-1][2], 12, True]] \
         if n_eps > 10 else []
     head = {
-        "v": 1, "lang": lang, "stamp": stamp, "library": library,
+        "v": 1, "minor": 1, "lang": lang, "stamp": stamp, "library": library,
         "settings": {"sentences": sentences, "meanings": meanings},
         "shows": shows, "eps": eps, "finished": finished, "orders": {"freq": freq},
         "chunks": [[c["w0"], len(c["w"])] for c in chunks],

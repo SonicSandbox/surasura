@@ -279,7 +279,12 @@ const SETTINGS = [
     help: ["Dvorak puts every key in the same places.", "Move any key in the keys sheet (?): a moved key trades places."] },
 ];
 const SET = {};
-for (const s of SETTINGS) SET[s.k] = (HEAD.settings && HEAD.settings[s.k] != null) ? HEAD.settings[s.k] : s.def;
+const HS = Object.assign({}, HEAD.settings);           // SHAPE 1.1's names → the page's (key names PROVISIONAL until J-SET)
+const SZ = { s: 0, m: 1, l: 2 };
+if (HS.source != null && HS.where_from == null) HS.where_from = HS.source;
+if (HS.size == null && (SZ[HS.word_size] != null || SZ[HS.sentence_size] != null)) HS.size = `${SZ[HS.word_size] ?? 1}.${SZ[HS.sentence_size] ?? 1}`;
+const okSet = (s, v) => v != null && (s.k === "keys" && typeof v === "object" || s.opts.some((o) => String(o[0]) === String(v)));   // the learner's own key map is an object
+for (const s of SETTINGS) SET[s.k] = okSet(s, HS[s.k]) ? HS[s.k] : s.def;
 const SET_WAIT = {};                                   // setting -> "send" | "wait" | "queued" (until Surasura has it)
 
 /* ---- the keys (SPEC §1.2) ---- */
@@ -636,7 +641,7 @@ async function hello() {
     if (changed || had !== JSON.stringify(routes)) { drawWord(); rail.update("all"); }   // only what the answers changed
   } finally { D.heard++; }
 }
-const sinceMs = () => { const n = Number(HEAD.stamp); return isFinite(n) && n > 0 ? Math.floor(n / 1e6) : null; };
+const sinceMs = () => { const n = Number(HEAD.stamp); return isFinite(n) && n > 0 ? (HEAD.minor >= 1 ? n : Math.floor(n / 1e6)) : null; };   // 1.1: ms; v1: ns
 async function readState() {                              // true when an answer changed something on the page
   const a = await doorCall("state", { since: sinceMs() }, 6000);
   if (!a || !a.ok) return false;
@@ -741,11 +746,13 @@ function undoPre(i, before, r) {
 const FLAGGED = new Set();                             // line ids, Send report's list read back
 const FWAIT = new Map();
 /* A line's id, one format everywhere: the simple Swap's `<item id>:<start ms>` (connect/swap.py `line_id`), from the
-   line's own source (its episode's store id) and start. A line without both (a book's, one from outside the study
-   order) gets the page's own key, `p<hash of its text and source>`: ⚑ keys it; Swap and the clip refuse it. */
+   line's own source (its store item, SHAPE 1.1's `item`; a v1 page: its episode's store id) and start. A line without
+   both (a book's, a file the store doesn't hold) gets the page's own key, `p<hash of its text and source>`: ⚑ keys it;
+   Swap and the clip refuse it. */
 function lineId(ln, src) {
   const e = src && src[2] >= 0 ? EPS[src[2]] : null, at = ln[2];
-  if (e && e[0] != null && typeof at === "number" && isFinite(at)) return `${e[0]}:${Math.round(at * 1000)}`;
+  const item = src && src.length > 5 ? src[5] : e ? e[0] : null;
+  if (item != null && typeof at === "number" && isFinite(at)) return `${item}:${Math.round(at * 1000)}`;
   let h = 0x811c9dc5;
   const s = ln[0] + "\u0001" + (src ? src[0] : "");
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }

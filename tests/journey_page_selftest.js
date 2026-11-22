@@ -27,7 +27,7 @@
     if (window.__J_DOOR_HOOK) { const x = await window.__J_DOOR_HOOK(route, body); if (x) return x; }   // one check's own answer
     const h = window.__J.page.head;                   // the page's own parse: at 20,000 the head is megabytes
     switch (route) {
-      case "hello": return { ok: true, version: 1, lang: h.lang, library: h.library, render_stamp: Math.floor(Number(h.stamp) / 1e6), routes: ROUTES.filter((r) => !NOTYET.has(r)) };
+      case "hello": return { ok: true, version: 1, lang: h.lang, library: h.library, render_stamp: h.minor >= 1 ? Number(h.stamp) : Math.floor(Number(h.stamp) / 1e6), routes: ROUTES.filter((r) => !NOTYET.has(r)) };
       case "state": return { ok: true, at: Date.now() };
       case "words/mark": return { ok: true, done: body.marks.length, undo_id: "s." + (++undoN), stale: [] };
       case "words/undo": return { ok: true, done: 1 };
@@ -485,6 +485,10 @@
     /* ---- the line player: a file is played as itself, whatever its name holds ---- */
     if (group("player")) {
       const d = H.dirs && H.dirs[0];
+      const sid = (ln, src) => J.lineId(ln, src);
+      ok("a line's id is the simple Swap's <item id>:<start ms> (SHAPE 1.1's item)", sid(["文", 0, 12.345], ["x", "anime", 0, "", "", 4321]) === "4321:12345", sid(["文", 0, 12.345], ["x", "anime", 0, "", "", 4321]));
+      ok("…a v1 row (no item): its episode's store id", sid(["文", 0, 1.5], ["x", "anime", E, "", ""]) === `${page.ep(E).id}:1500`);
+      ok("…a book's line (no start) or a file the store doesn't hold: the page's own p<hash>", /^p[0-9a-f]{8}$/.test(sid(["文", 0, null], ["x", "book", 0, "", "", 4321])) && /^p[0-9a-f]{8}$/.test(sid(["文", 0, 3], ["x", "anime", E, "", "", null])));
       ok("P: a file name with # or ? plays as itself (each part of the path encoded)", d != null && !!J.mediaUrl && J.mediaUrl("0/sub dir/ep#1 ?.mp3") === d + "sub%20dir/ep%231%20%3F.mp3", J.mediaUrl && J.mediaUrl("0/sub dir/ep#1 ?.mp3"));
     }
 

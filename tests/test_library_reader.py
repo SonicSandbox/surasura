@@ -10,8 +10,25 @@ import os
 import threading
 import time
 
+import pytest
+
 from app.services import library_reader, view_rows
 from tests.fixtures import window_seed
+
+
+@pytest.fixture(autouse=True)
+def _a_stop_waits_for_the_thread(monkeypatch):
+    """FLAKES (row 119, Flake-F4): `stop()` joins the reader's thread 2 s at most (the window's close is never held
+    longer), and the thread's last steps — the looks' worker closed, then the last view's cache written — can take
+    longer under load. Every test here reads what the thread left (a next start's cache, its last write), so here a
+    stop returns once the thread has ended: a write still to come never lands on the next reader's run."""
+    real = library_reader.LibraryReader.stop
+
+    def stop(self, timeout=2.0):
+        real(self, timeout=30.0)
+        thread = self._thread
+        assert thread is None or not thread.is_alive(), "the reader's thread ended within 30 s of its stop"
+    monkeypatch.setattr(library_reader.LibraryReader, "stop", stop)
 
 
 def _collect(reader):
@@ -422,6 +439,7 @@ def test_a_move_before_the_numbers_first_load_fades_the_cached_figures_and_the_n
             assert moved.rows[0].n_new == mover.n_new, language                 # kept: never a blank ...
             assert all(_shown_faded(moved)), language                           # ... and faded, every row
             assert _wait(lambda: os.path.getmtime(cache) > 0), language         # the cache written again meanwhile
+            again.stop()                                    # read once its writer is done (Flake-F4: never mid-replace)
             with open(cache, encoding="utf-8") as f:
                 assert json.load(f)["faded"] is True, language
         finally:

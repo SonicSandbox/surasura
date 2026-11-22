@@ -273,3 +273,38 @@ def test_a_crash_mid_call_is_finished_by_the_next_start_with_no_card_made_twice(
         made = {o["word"] for o in ledger.outcomes(jobs[0][0]) if o["outcome"] == "made"}
     assert made == {home[0], away[0]}
     assert next(w for w in picked["words"] if w["word"] == away[0])["from"] == 2, "still cut from the other line"
+
+
+def test_a_stop_while_another_episode_sets_up_takes_its_clips_too(call, fake_miner, tmp_path):
+    # why (#BS0A1K): a Stop in a step that never reads the cancel file ends the call; the clips the run in flight cut
+    # go as Anki Miner's own clean-up would take them — the other episode's run as well as the episode's own
+    fake_miner.plan(app=APP, features=["word-from-line"], progress=[[1, 5, 0, 0]], progress_every=0.05, media=True,
+                    deaf_runs={"job-1-1-s1": 30})
+    run_dir = tmp_path / "runs" / "job-1"
+    with pytest.raises(anki_miner.AnkiMinerError) as raised:
+        call("ja", should_stop=lambda: (run_dir / "job-1-1-s1" / "media").exists())
+    assert raised.value.kind == "cancelled" and raised.value.stopped is True
+    assert not (run_dir / "job-1-1-s1" / "media").exists(), "the other run's clips taken"
+    assert (run_dir / "job-1-1" / "result-1.json").exists(), "the episode's own run had finished: its cards stand"
+
+
+@pytest.mark.parametrize("kind, stopped", [("crashed", False), ("timeout", False), ("cancelled", True)])
+def test_a_call_that_ended_in_doubt_leaves_every_episodes_words_to_be_read_back_by_the_tag(monkeypatch, kind, stopped):
+    # why: after a crash, a timeout or a Stop with no verdict, a word cut from another episode may have its card in
+    # Anki already (that run came first, or was half done); called not attempted, it was sent again — a second card,
+    # or a duplicate the ledger never records as this job's (made again by the next episode)
+    monkeypatch.setattr(anki_miner, "find", lambda loaded: "am.exe")
+    monkeypatch.setattr(verbs, "_anki_miner_setup",
+                        lambda loaded, lang, run_dir, held=None: (None, None, SimpleNamespace(word="Word")))
+    monkeypatch.setattr(runner.Steps, "show", lambda self, lang, job: None)
+
+    def ended(*args, **kwargs):
+        e = anki_miner.AnkiMinerError(kind, "Anki Miner stopped")
+        e.stopped = stopped
+        raise e
+    monkeypatch.setattr(anki_miner, "mine_batch", ended)
+    picked = {"video": "第01話.mkv", "subtitle": "第01話.ja.srt", "offset": 0.0, "profile": None, "sources": SOURCES}
+    got = runner.Steps({}).mine("ja", {"id": 9, "item_id": 1, "tag": "9"}, picked,
+                                [_w("迷宮", "メイキュウ", 5.0), _w("冒険", "ボウケン", 3.0, 4)], 1)
+    assert [o["outcome"] for o in got["outcomes"]] == ["uncertain", "uncertain"]
+    assert got["doubt"] is True and bool(got.get("stopped")) is stopped

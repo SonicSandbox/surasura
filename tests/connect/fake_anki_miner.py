@@ -26,7 +26,8 @@ What it does is read from the plan file named by FAKE_ANKI_MINER_PLAN (JSON; eve
     {"cancel_runs": {"<run_id>": 1},                       # Kantan-SD 7, a call of several episodes: cancel_at for
                                                            # that run only (the others never wait for a cancel file)
      "unreadable": ["<video file name>"],                  # … that episode alone VIDEO_UNREADABLE, the rest mined
-     "crash_after_runs": 1}                                # … a native crash once that many runs wrote their result
+     "crash_after_runs": 1,                                # … a native crash once that many runs wrote their result
+     "deaf_runs": {"<run_id>": 30}}                        # … `deaf` for that run only
     {"slow": {"<command>": 30}}                            # row 56: sleeps this long before it answers that command
     {"export_cut": true}                                   # row 56: half its export written, then it hangs
     {"clear_leftovers": 0.3}                               # 3.10: this long after it starts, before its setup, an
@@ -322,9 +323,10 @@ def _mine(argv, plan):
         if plan.get("media"):
             os.makedirs(os.path.join(folder, "media"), exist_ok=True)
             open(os.path.join(folder, "media", "clip-1.mp3"), "wb").close()
-        if plan.get("deaf"):
+        deaf = plan["deaf_runs"].get(episode["run_id"]) if plan.get("deaf_runs") else plan.get("deaf")
+        if deaf:
             _log({"deaf": episode["run_id"]})
-            time.sleep(plan["deaf"])
+            time.sleep(deaf)
             _log({"heard": episode["run_id"]})
         rows, note = [], 1727000000000 + 1000 * index      # (each episode of a call its own note ids)
         cancelled = False

@@ -242,3 +242,61 @@ def test_a_run_file_really_held_open_is_replaced_when_the_reader_closes_it(tmp_p
         reader.close()
     assert waits == list(runfile.REPLACE_BACKOFF[:2])
     assert json.load(open(path, encoding="utf-8"))["language"] == "zh"
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_word_the_other_line_gave_no_card_goes_home_even_when_anki_went_away_before_the_read_back(tmp_path,
+                                                                                                    monkeypatch, lang):
+    # why: the batch ended in doubt and Anki closed before its cards were read back by the tag (a Wait): the other
+    # line's not-found was recorded as it was, settled — the word was never tried on its own line, never made
+    home, away = WORDS[lang]
+    _best_from(monkeypatch, away)
+    steps, path = _spread(tmp_path, lang), str(tmp_path / "ledger.sqlite")
+    real, real_tag = steps.mine, steps.by_tag
+
+    def mine(lang_, job, picked, words, attempt):
+        there = [w for w in words if w.get("from") is not None]
+        got = real(lang_, job, picked, [w for w in words if w.get("from") is None], attempt)
+        got["outcomes"] += [{"word": w["word"], "reading": w["reading"], "outcome": "not_found", "note_id": None,
+                             "line_start": w["line_start"]} for w in there]
+        got["doubt"] = bool(there)
+        return got
+
+    def by_tag(*a):
+        raise runner.Wait(runner.ANKI_MINER_OPEN)
+    steps.mine, steps.by_tag = mine, by_tag
+    _run(steps, path, lang)
+    steps.by_tag = real_tag
+    jobs = _run(steps, path, lang)
+    assert [(kind, state) for _id, kind, state in jobs] == [("mine", "done")]
+    assert _mines(steps)[-1] == (1, 2, [away[0]]), "the next batch: the word alone, on its own line"
+    with Ledger(path) as ledger:
+        made = sorted(o["word"] for o in ledger.outcomes(jobs[0][0]) if o["outcome"] == "made")
+    assert made == sorted([home[0], away[0]])
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+@pytest.mark.parametrize("where", ["pick", "fit"])
+def test_another_episode_that_fails_in_a_way_no_one_planned_for_never_stops_this_episodes_cards(tmp_path, monkeypatch,
+                                                                                               lang, where):
+    # why: another episode is only where a better sentence might be — its broken pairing row or a bug in its check
+    # must leave this episode's words on their own lines, never end the job on an error
+    home, away = WORDS[lang]
+    _best_from(monkeypatch, away)
+    steps, path = _spread(tmp_path, lang), str(tmp_path / "ledger.sqlite")
+    if where == "pick":
+        steps.plan["pick_error"] = [2]
+    else:
+        real = steps.fit
+
+        def fit(lang_, job, pairing, video, subtitle):
+            if job["item_id"] == 2:
+                raise RuntimeError("a pairing row this test broke")
+            return real(lang_, job, pairing, video, subtitle)
+        steps.fit = fit
+    jobs = _run(steps, path, lang)
+    assert [(kind, state) for _id, kind, state in jobs] == [("mine", "done")]
+    assert _mines(steps) == [(1, 1, [home[0], away[0]])]
+    with Ledger(path) as ledger:
+        picked = ledger.picked(jobs[0][0])
+    assert "sources" not in picked and all("from" not in w for w in picked["words"])

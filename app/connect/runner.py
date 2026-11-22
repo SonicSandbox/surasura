@@ -1845,6 +1845,9 @@ def _borrow(steps, lang, job, words):
         except (Wait, Needs) as e:
             log.info("Connect: job %s: item %s gives no line now (%s): its words keep their own lines", job["id"],
                      item_id, getattr(e, "reason", None) or getattr(e, "say", None))
+        except Exception:           # (another episode is only where a better line might be: never this job's error)
+            log.warning("Connect: job %s: item %s couldn't be picked from: its words keep their own lines", job["id"],
+                        item_id, exc_info=True)
     out = []
     for w in words:
         own = {k: v for k, v in w.items() if k != "from"}
@@ -1884,6 +1887,9 @@ def _fit_sources(steps, lang, job, picked):
                      and fit_check.version(pairing) == src.get("pairing"))
         except (Wait, Needs) as e:
             timed, why = False, getattr(e, "reason", None) or getattr(e, "say", None)
+        except Exception as e:      # (as `_borrow`: never this job's error)
+            log.warning("Connect: job %s: item %s couldn't be checked", job["id"], item_id, exc_info=True)
+            timed, why = False, type(e).__name__
         if timed:
             src["offset"] = offset
             continue
@@ -2383,6 +2389,11 @@ def _mine(steps, ledger, lang, job, record=True):
         if got.get("tag_pending"):          # the names' tag Anki didn't take: added before filling (adversary #7)
             pending = sorted(set(_pending(ledger, jid)) | set(got["tag_pending"]))
             ledger.set_state(jid, "mining", tag_pending=json.dumps(pending))
+        if _back_home(picked, got["outcomes"]):
+            # Kantan-SD 6: a word another episode's line gave no card goes on its own line in the next batch — before
+            # the read-back, so a Stop or Anki gone before it never leaves the other line's answer settled
+            ledger.set_state(jid, "mining", picked=picked)
+            by_key = {(w["word"], w["reading"]): w for w in words}
         try:
             if stopped or got.get("doubt") or any(o["outcome"] == "uncertain" for o in got["outcomes"]):
                 # #47: a batch you stopped is read back by the job's tag like one in doubt: every card that reached
@@ -2403,10 +2414,6 @@ def _mine(steps, ledger, lang, job, record=True):
             if got.get("doubt") and not stopped and got.get("then") is None:
                 _count_failure(ledger, jid)     # (never for a word-at-a-time batch a wait cut short)
             raise Wait(w.reason, w.look, "mining") from None
-        if not stopped and _back_home(picked, got["outcomes"]):
-            # Kantan-SD 6: a word another episode's line gave no card goes on its own line in the next batch
-            ledger.set_state(jid, "mining", picked=picked)
-            by_key = {(w["word"], w["reading"]): w for w in words}
         state = "uncertain" if any(o["outcome"] == "uncertain" for o in got["outcomes"]) else "done"
         ledger.end_batch(jid, attempt, state, _enriched(got["outcomes"], by_key), anki_miner=got.get("app"))
         if got.get("anki_said") and state == "uncertain":    # Mattias #5: Anki refused a card: next, a word at a time
@@ -4982,8 +4989,10 @@ class Steps:
         done = self._mine_one(lang, at, first, own, attempt, more=more, titles=[title] + [m["title"] for m in more])
         sent = own + [w for m in more for w in m["words"]]
         got = {(w["word"], w["reading"]): o for w, o in zip(sent, done.get("outcomes") or ())}
-        done["outcomes"] = [got.get((w["word"], w["reading"])) or dict(_unsure(w), outcome="not_attempted")
-                            for w in words]
+        # a call that ended in doubt (a crash, a timeout, a Stop with no verdict) may have made a word's card in a run
+        # it gave no answer for: in doubt too, found by the job's tag before anything is sent again
+        missing = "uncertain" if done.get("doubt") or done.get("stopped") else "not_attempted"
+        done["outcomes"] = [got.get((w["word"], w["reading"])) or dict(_unsure(w), outcome=missing) for w in words]
         return done
 
     def _mine_one(self, lang, job, picked, words, attempt, more=None, titles=None):

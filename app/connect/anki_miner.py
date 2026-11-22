@@ -1183,6 +1183,9 @@ def _mine_call(path, run_dir, run_id, run_path, data, done, words, named, timeou
         # #BS0A1K: ended at your Stop before its card-writing stage: nothing reached Anki, as Anki Miner's own
         # CANCELLED before any write; the clips it cut go as its own clean-up would have taken them
         shutil.rmtree(os.path.join(run_dir, run_id, "media"), ignore_errors=True)
+        for other, _theirs, had in others:      # Kantan-SD 7: each other run of the call not finished, the same
+            if not result_names(run_dir, other) - set(had):
+                shutil.rmtree(os.path.join(run_dir, other, "media"), ignore_errors=True)
         raise AnkiMinerError("cancelled", "Stopped before Anki Miner made any card.", code="CANCELLED") from None
     except AnkiMinerError as e:
         # A crash or a timeout after the run: Anki Miner writes the result before its verdict, so a complete one

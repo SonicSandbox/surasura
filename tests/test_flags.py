@@ -298,3 +298,50 @@ def test_the_door_route_refuses_no_line_id_and_a_list_it_cant_write(monkeypatch)
     with pytest.raises(door.RouteError) as got:
         flags.door_route(dict(body, line_id="e3:21.0"), _App())
     assert "couldn't be saved" in got.value.message
+
+
+# --- the refuters' cases (register rows 17, 18) --------------------------------------------------------------------- #
+def _stale(at):
+    """journey_door.stale's rule (J-DOOR): a queued press older than the line's last change, in whole ms."""
+    return lambda changed: changed is not None and changed // 1_000_000 > at
+
+
+def test_two_queued_presses_flag_then_unflag_leave_the_line_unflagged():
+    """A page offline queues ⚑ on, then ⚑ off: sent later, the line must end unflagged. The flag the first press makes
+    carries the press's time, not the moment it arrived, so the second (newer) press is not taken for a stale one."""
+    t0 = 1_763_700_000_000
+    flags.add("ja", JA[7], "看板", "journey", key="e3:12.0", stale=_stale(t0), pressed=t0)
+    assert flags.unflag("ja", "journey", "e3:12.0", "看板", stale=_stale(t0 + 900)) is True
+    assert flags.count("ja") == 0 and flags.for_report("ja") == []
+
+
+def test_a_queued_note_then_unflag_leave_the_line_unflagged_and_an_older_press_stays_refused():
+    t0 = 1_763_700_000_000
+    flags.add("ja", JA[7], "看板", "journey", key="e3:12.0")                       # flagged live, now
+    changed = flags.read("ja")[0]["changed_ns"]
+    at = changed // 1_000_000 + 10
+    flags.add("ja", JA[7], "看板", "journey", key="e3:12.0", note="字幕がずれている", stale=_stale(at), pressed=at)
+    assert flags.unflag("ja", "journey", "e3:12.0", "看板", stale=_stale(at + 500)) is True
+    flags.add("ja", JA[7], "看板", "journey", key="e3:12.0")
+    with pytest.raises(flags.Stale):                                     # a press from before the last change
+        flags.unflag("ja", "journey", "e3:12.0", "看板", stale=_stale(t0))
+    assert flags.count("ja") == 1
+
+
+def test_a_press_time_from_the_future_or_not_a_time_is_stamped_now(monkeypatch):
+    monkeypatch.setattr(flags.time, "time_ns", lambda: 1_763_700_000_000_000_000)
+    for pressed in (1_763_800_000_000, float("nan"), True, "1763700000000", -5):
+        got = flags.add("zh", ZH[1], "夜市", "journey", key=f"k{pressed!r}", pressed=pressed)
+        assert got["changed_ns"] == 1_763_700_000_000_000_000
+
+
+@pytest.mark.parametrize("given, kept", [
+    ("Anime/Season 1/第3話", "第3話"),                       # a relative path: its last part only
+    ("~/Videos/進撃の巨人", "進撃の巨人"),                   # a home folder
+    ("./夜市", "夜市"),                                       # a relative start
+    ("Fate/Zero", "Fate/Zero"),                              # one slash: a title
+])
+def test_a_relative_path_keeps_only_its_last_part_and_a_title_with_a_slash_stays(given, kept):
+    flags.add("ja", JA[1], "授業", "journey", key="k", show=given, episode=given)
+    (got,) = flags.read("ja")
+    assert got["show"] == kept and got["episode"] == kept

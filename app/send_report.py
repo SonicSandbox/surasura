@@ -257,6 +257,9 @@ def _refit(ob, keep):
         return ob
     if not keep and not ob.zipped:                                   # (refused before anything is written)
         raise ValueError("nothing is ticked to send")
+    with open(ob.path, "rb") as f:                                   # (its other entries are copied as they are:
+        if hashlib.sha256(f.read()).hexdigest() != ob.sha256:        #  only the zip its record names)
+            raise ValueError("the waiting zip changed since it was made")
     lines = [{k: v for k, v in line.items() if k not in ("id", "changed")} for line in ob.flag_lines
              if line.get("id") in keep]
     entries = report.rewrite_flagged(ob.path, ob.language, lines, ob.left_out)

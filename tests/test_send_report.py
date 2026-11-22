@@ -640,3 +640,22 @@ def test_a_failed_send_after_an_untick_says_the_nonce_of_the_zip_now_waiting(sav
     ob = send_report.build("zh")
     got = send_report.send(nonce=ob.nonce, keep=[a["id"]])
     assert got.nonce == send_report.waiting().nonce != ob.nonce          # (the window counts its tries by this one)
+
+
+def test_a_waiting_zip_changed_since_it_was_made_is_never_rewritten(saved, receiver):
+    """(register row 15's refuter) _refit copies every other entry as it is: only the zip its record names may be
+    copied, so a file of the same size put in its place is refused, left as it is, and nothing is sent."""
+    flags, a, b = _flag_two()
+    ob = send_report.build("zh")
+    with open(ob.path, "rb") as f:
+        body = bytearray(f.read())
+    body[len(body) // 2] ^= 0xFF                                         # the same size, other bytes
+    with open(ob.path, "wb") as f:
+        f.write(bytes(body))
+    with pytest.raises(ValueError):
+        send_report.refit([a["id"]], ob.nonce)
+    with pytest.raises(ValueError):
+        send_report.send(nonce=ob.nonce, keep=[a["id"]])
+    with open(ob.path, "rb") as f:
+        assert f.read() == bytes(body)                                  # never rewritten
+    assert receiver.got == [] and flags.count("zh") == 2

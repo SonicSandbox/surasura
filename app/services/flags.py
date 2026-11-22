@@ -48,7 +48,8 @@ LOCK_WAIT = 5.0
 VERB = "Flagging a sentence"
 FULL = (f"You've flagged {MAX_LINES} sentences. Send them in a report first, or take some off.")   # (PROVISIONAL)
 
-_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\|/)|\\")     # a drive, a share, a root or a backslash (Fate/Zero: a title)
+_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\|/|~/|\.\.?/)|\\|/.*/")    # a drive, a share, a root, a home or relative
+#   start, a backslash, two slashes (Fate/Zero, one slash: a title)
 
 
 class Full(Exception):
@@ -102,9 +103,14 @@ def _reasons(reasons):
     return [r for r in REASONS if r in given]
 
 
-def _stamp(entry=None):
-    """A change's time (ns): later than the line's last change even when the clock didn't move (or stepped back)."""
+def _stamp(entry=None, pressed=None):
+    """A change's time (ns): later than the line's last change even when the clock didn't move (or stepped back).
+    `pressed`: a queued press's own time (ms), when it is one and not ahead of the clock — the change is that press's,
+    so a newer press queued after it is never taken for a stale one."""
     now = time.time_ns()
+    if (isinstance(pressed, (int, float)) and not isinstance(pressed, bool) and math.isfinite(pressed)
+            and 0 <= pressed < 2 ** 53):
+        now = min(now, int(pressed) * 1_000_000)
     last = (entry or {}).get("changed_ns")
     return max(now, last + 1) if isinstance(last, int) else now
 
@@ -180,12 +186,12 @@ def _change(language, change):
 
 
 def add(language, line, word, source, key="", show="", episode="", at=None, reasons=(), note="", path=None,
-        now=None, stale=None):
+        now=None, stale=None, pressed=None):
     """Flag `line` (for `word`) from `source` (`SOURCES`); `key`: the source's own key for the line (the page's
     line_id); `path`: the file it's from, when the caller has no names (kept as `place(path)`). The same source, key
     and word flagged again takes the new reasons and note. `stale(changed_ns) -> bool`: asked of the line already
-    there, under the lock (a waiting press older than its last change: Stale). Raises ValueError (no line, an unknown
-    source), Full, Stale, locks.Busy, OSError. -> the record."""
+    there, under the lock (a waiting press older than its last change: Stale); `pressed`: that press's time (ms:
+    `_stamp`). Raises ValueError (no line, an unknown source), Full, Stale, locks.Busy, OSError. -> the record."""
     if source not in SOURCES:
         raise ValueError(f"unknown source {source!r}")
     line, word, key = _cut(line, LINE_MAX), _cut(word, WORD_MAX), _cut(key, KEY_MAX)
@@ -202,12 +208,12 @@ def add(language, line, word, source, key="", show="", episode="", at=None, reas
                 if stale is not None and stale(entry.get("changed_ns")):
                     raise Stale(key)
                 if any(entry.get(k) != v for k, v in record.items()):
-                    entry.update(record, changed_ns=_stamp(entry))
+                    entry.update(record, changed_ns=_stamp(entry, pressed))
                 return dict(entry)
         if len(lines) >= MAX_LINES:
             raise Full(FULL)
         stamp = (now or datetime.datetime.now()).isoformat(timespec="seconds")
-        entry = dict(record, id=secrets.token_hex(6), added=stamp, changed_ns=_stamp())
+        entry = dict(record, id=secrets.token_hex(6), added=stamp, changed_ns=_stamp(pressed=pressed))
         lines.append(entry)
         return dict(entry)
     return _change(language, change)
@@ -311,7 +317,8 @@ def door_route(body, app):
             unflag(lang, "journey", key, word, stale=stale)
             return {"flagged": False}
         add(lang, body.get("line"), word, "journey", key=key, show=body.get("show"), episode=body.get("episode"),
-            at=body.get("time"), reasons=body.get("reasons") or (), note=body.get("note") or "", stale=stale)
+            at=body.get("time"), reasons=body.get("reasons") or (), note=body.get("note") or "", stale=stale,
+            pressed=at)
     except Stale:
         raise door.RouteError("This flag changed in Surasura since: the page shows it as it is now.",
                               journey_door.STALE)

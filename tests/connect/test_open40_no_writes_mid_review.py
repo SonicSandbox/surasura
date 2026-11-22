@@ -310,3 +310,56 @@ def test_2_anki_gone_forgets_the_card(anki, monkeypatch):
     assert URL in anki_connect._review_card
     monkeypatch.setattr(anki_connect, "invoke", lambda *a, **k: (_ for _ in ()).throw(OSError("refused")))
     assert anki_connect.reviewing(URL) is False and URL not in anki_connect._review_card
+
+
+def test_a_stop_pressed_after_a_review_paused_the_call_still_wins(batch, fake_miner, words, monkeypatch):  # noqa: F811
+    # mutant M2: the review cancels first; you press Stop before the call is over — the episode stops (it waits for a
+    # newer *Mine now*), never only waits for the review's end
+    monkeypatch.setattr(anki_miner, "POLL_S", 0.05)
+    monkeypatch.setattr(anki_miner, "PAUSE_LOOK_S", 0.0)
+    fake_miner.plan(cancel_at=2)
+    pressed = {"paused": False, "asked_after": 0}
+
+    def should_pause():
+        pressed["paused"] = True
+        return True
+
+    def should_stop():
+        if pressed["paused"]:
+            pressed["asked_after"] += 1
+            return pressed["asked_after"] >= 2      # the poll that reads the review, then the press after it
+        return False
+    done = batch(should_stop=should_stop, should_pause=should_pause)
+    assert done["stopped"] is True and done["paused"] is False
+
+
+def test_a_paused_batch_in_doubt_whose_cards_all_landed_finishes_with_no_failure(tmp_path, ledger):
+    # mutant M5: the review's cancel came as Anki Miner wrote its last card and no result was read (in doubt): the
+    # cards are found by the job's tag, the episode is done — and a review is still no failure of Anki Miner's
+    job_id = _queue(ledger, 1)
+    steps = FakeSteps(str(tmp_path), {"line": {"ja": [1]}, "review_after_all": True})
+    runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+    job = ledger.job_by_id(job_id)
+    assert job["state"] == "done"
+    assert (job["failures"] or 0) == 0
+
+
+def test_a_lined_up_books_later_files_wait_when_a_review_paused_the_first(monkeypatch):
+    # mutant M10: a book lined up with its audiobook is one call a file; a review that ended the first file's call
+    # sends none of the later ones — their words wait, not attempted, the batch carries the pause
+    from app.connect import lineup
+    words = [{"word": w, "reading": r} for w, r in WORDS[1]]
+    monkeypatch.setattr(lineup, "split", lambda ws, lined: ({("a.mp3", "a.srt"): ws[:1], ("b.mp3", "b.srt"): ws[1:]},
+                                                            []))
+    calls = []
+
+    def mine_one(self, lang, job, picked, ws, attempt):
+        calls.append(picked["video"])
+        return {"outcomes": [dict(w, outcome="made", note_id=1) for w in ws], "app": "3.13.0", "doubt": False,
+                "paused": True}
+    monkeypatch.setattr(runner.Steps, "_mine_one", mine_one)
+    got = runner.Steps({}).mine("ja", {"id": 1, "item_id": 1, "tag": "ja-1"},
+                                {"reading": "book.epub", "lineup": {"x": 1}}, words, 1)
+    assert calls == ["a.mp3"], "the later files never sent"
+    assert got["paused"] is True
+    assert [o["outcome"] for o in got["outcomes"]][1:] == ["not_attempted"] * (len(words) - 1)

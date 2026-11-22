@@ -241,6 +241,33 @@ def test_connects_batch_records_the_deck_it_made_each_card_in(tmp_path):
         assert book.homes(made) == {n: DECK for n in made}
 
 
+@pytest.mark.parametrize("answer", [{"outcomes": [], "app": "3.7.0"},
+                                    "crashed", "cancelled"])
+def test_steps_batch_answers_with_the_deck_it_mined_into(monkeypatch, answer):
+    # the real `Steps.mine`: its answer names the run's deck (Surasura's shown one, else Anki Miner's), a crash's too
+    # (its cards are found by tag and recorded with that batch)
+    from types import SimpleNamespace
+    from app.cli import verbs
+    from app.connect import anki_miner
+    monkeypatch.setattr(anki_miner, "find", lambda loaded: "am.exe")
+    monkeypatch.setattr(verbs, "_anki_miner_setup", lambda loaded, lang, run_dir, held=None: (
+        None, None, SimpleNamespace(word="Word", deck=SHOWN)))
+
+    def batch(*a, **k):
+        if answer == "crashed":
+            raise anki_miner.AnkiMinerError("crashed", "Anki Miner stopped")
+        if answer == "cancelled":
+            e = anki_miner.AnkiMinerError("cancelled", "stopped")
+            e.stopped = True
+            raise e
+        return answer
+    monkeypatch.setattr(anki_miner, "mine_batch", batch)
+    words = [{"word": "一生懸命", "reading": "イッショウケンメイ", "line_start": 3.0}]
+    got = runner.Steps({}).mine("ja", {"id": 1, "item_id": 1, "tag": "ab-1"},
+                                {"video": "v.mkv", "subtitle": "s.srt", "profile": None}, words, 1)
+    assert got["deck"] == SHOWN
+
+
 def test_a_batch_whose_deck_isnt_known_records_none_and_a_later_record_never_overwrites_a_move(ledger):
     job = ledger.queue("ja", 1, "user", None, store_id="s1")
     ledger.end_batch(job, 1, "uncertain", [{"word": "勇気", "reading": "", "outcome": "made", "note_id": 7}])

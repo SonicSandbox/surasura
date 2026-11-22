@@ -4806,9 +4806,9 @@ class Steps:
             if e.kind == "cancelled" and getattr(e, "stopped", False):
                 # #47: you stopped it before its result was written: what reached Anki is found by the job's tag
                 return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True, "stopped": True,
-                        "deck": mapping.deck}
+                        "deck": getattr(mapping, "deck", None)}
             if e.kind in ("crashed", "timeout"):
-                return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True, "deck": mapping.deck}
+                return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True, "deck": getattr(mapping, "deck", None)}
             raise _miner_wait_or_needs(e, self.url) from None
         # in doubt: a crash or a timeout after the run (`error`), or a run Anki Miner itself says failed
         if picked.get("reading"):
@@ -4821,7 +4821,7 @@ class Steps:
                 run.get("failure_is_transient") and not done.get("error") else None)
         return {"outcomes": done.get("outcomes") or [], "app": done.get("app"), "doubt": doubt,
                 "tag_pending": done.get("tag_pending") or [], "stopped": bool(done.get("stopped")), "anki_said": said,
-                "deck": mapping.deck}
+                "deck": getattr(mapping, "deck", None)}
 
     def _place(self, lang, job, picked, outcomes):
         """Z-9: each card Anki Miner made from a book put on its part (`connect.reading.place`, Hon's chapter record):

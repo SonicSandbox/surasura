@@ -117,6 +117,7 @@ CASES = [
     ("ja", 2000, "", None),
     ("zh", 2000, "", None),
     ("ja", 20000, "", None),
+    ("zh", 20000, "", None),
     ("ja", 2000, "door=none", None),                 # the page opened by hand
     ("zh", 2000, "door=off", None),                  # Surasura closed since
     ("ja", 2000, "notyet=line/flag,episode/prestudied,swap/queue,card/make", None),

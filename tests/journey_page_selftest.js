@@ -24,6 +24,7 @@
     if (mode === "none") return { ok: false, offline: true, why: "unopened" };
     if (mode === "off") return { ok: false, offline: true, why: "closed" };
     if (NOTYET.has(route)) return { ok: false, kind: "not_yet", error: "Not in this Surasura yet." };
+    if (window.__J_DOOR_HOOK) { const x = await window.__J_DOOR_HOOK(route, body); if (x) return x; }   // one check's own answer
     const h = window.__J.page.head;                   // the page's own parse: at 20,000 the head is megabytes
     switch (route) {
       case "hello": return { ok: true, version: 1, lang: h.lang, library: h.library, render_stamp: Math.floor(Number(h.stamp) / 1e6), routes: ROUTES.filter((r) => !NOTYET.has(r)) };
@@ -128,8 +129,8 @@
        way to `offline` (SPEC §3.5); a route not yet built drops the group that is only that route */
     const OFFLINE = MODE !== "on";
     const CONTRACT = Q.get("rail") === "contract";      // another rail plugged in: the page's own groups + `contract`
-    const SKIP = new Set(CONTRACT ? ["word", "marks", "pre", "picker", "door", "flag", "settings", "list", "focus", "search", "notyet", "a11y", "offline", "layout"]
-      : OFFLINE ? ["marks", "pre", "flag", "door", "settings", "contract"] : ["offline", "contract"]);
+    const SKIP = new Set(CONTRACT ? ["word", "marks", "pre", "picker", "door", "queue", "player", "flag", "settings", "list", "focus", "search", "notyet", "a11y", "offline", "layout"]
+      : OFFLINE ? ["marks", "pre", "flag", "door", "queue", "settings", "contract"] : ["offline", "contract"]);
     if (NOTYET.has("episode/prestudied")) SKIP.add("pre");
     if (NOTYET.has("line/flag")) SKIP.add("flag");
     const group = (g) => { const on = only.size ? only.has(g) : !SKIP.has(g); if (on) GROUPS.push([performance.now(), g]); return on; };
@@ -396,6 +397,95 @@
       ok("…and nothing waits any more (⧗ gone)", !J.MWAIT.has(wq) && (pq == null || !page.ep(pq).pre.wait));
       J.setSetting("theme", "night"); await settle();
       J.markWord("known", J.seq(E).find((id) => J.wordNow(id)[0] === wq)); await settle();
+    }
+
+    /* ---- the waiting queue: a press is never lost, the page never shows a mark the app doesn't have; every entry is
+       its own, from the press to its answer, never found by its place or its tag after a wait ---- */
+    if (group("queue")) {
+      await goWord(E, 0);
+      const ids = J.seq(E).slice(0, 4), words = ids.map((id) => J.wordNow(id)[0]);
+      const closed = () => { window.__J_DOOR_MODE = "off"; J.setDoor("off"); };
+      const open = () => { window.__J_DOOR_MODE = "on"; };
+      const later = (ms) => new Promise((r) => setTimeout(r, ms));
+      const reset = async () => {                       // everything sent, every test word back to no mark
+        window.__J_DOOR_HOOK = null; open(); await J.hello(); await settle(6);
+        for (let k = 0; k < ids.length; k++) { const m = J.MARK.get(words[k]); if (m) { J.markWord(m, ids[k]); await settle(); } }
+      };
+      const marksBut = (w, m) => { const o = Object.fromEntries([...J.MARK].filter(([x]) => x !== w)); if (m) o[w] = m; return o; };
+      const qOf = (tag) => J.QUEUE().filter((q) => q.tag === tag);
+      const pq = big.find((i) => i !== E && !page.ep(i).pre.on && page.canPre(i));
+      // A: a queued press the flush hears not_yet for waits on (its route isn't in this Surasura yet), never dropped
+      closed(); J.markWord("known", ids[0]); await settle();
+      open(); window.__J_DOOR_HOOK = (rt) => (rt === "words/mark" ? { ok: false, kind: "not_yet" } : null);
+      await J.hello(); await settle(6);
+      ok("A: a queued Known the flush hears not_yet for stays queued, ⧗ kept", qOf("m:" + words[0]).length === 1 && J.MWAIT.get(words[0]) === "queued" && J.MARK.get(words[0]) === "known");
+      if (pq != null) {
+        closed(); J.prestudied(pq, "press"); await settle();
+        open(); window.__J_DOOR_HOOK = (rt) => (rt === "episode/prestudied" ? { ok: false, kind: "not_yet" } : null);
+        await J.hello(); await settle(6);
+        ok("A: a queued pre-studied press the flush hears not_yet for stays queued, ⧗ kept", qOf("p:" + page.ep(pq).id).length === 1 && page.ep(pq).pre.wait === "queued");
+      }
+      await reset();
+      if (pq != null && page.ep(pq).pre.on) { J.prestudied(pq, "press"); await settle(); }
+      // B: a press made while the flush waits for an answer (Surasura busy, so it queues) is still there after it
+      if (pq != null) {
+        closed(); J.prestudied(pq, "press"); await settle();
+        open(); let n = 0;
+        window.__J_DOOR_HOOK = async (rt) => { if (rt !== "episode/prestudied") return null; if (++n === 1) { await later(40); return null; } return { ok: false, kind: "busy" }; };
+        const h = J.hello();
+        for (let k = 0; k < 200 && n < 1; k++) await settle(1);
+        J.prestudied(pq, "press");                      // un-marked while the mark is on its way
+        await h; await settle(6);
+        const e = page.ep(pq), q = qOf("p:" + e.id);
+        ok("B: an un-mark made while the queue sends its mark stays queued (by its own id, not its place)", q.length === 1 && q[0].body.on === false && !e.pre.on && e.pre.wait === "queued", JSON.stringify(q.map((x) => x.body)) + " " + JSON.stringify(e.pre));
+      }
+      {
+        closed(); J.markWord("known", ids[1]); await settle();
+        open(); let n = 0;
+        window.__J_DOOR_HOOK = async (rt) => { if (rt !== "words/mark") return null; if (++n === 1) { await later(40); return null; } return { ok: false, kind: "busy" }; };
+        const h = J.hello();
+        for (let k = 0; k < 200 && n < 1; k++) await settle(1);
+        J.markWord("ignore", ids[1]);                   // changed while the Known is on its way
+        await h; await settle(6);
+        const q = qOf("m:" + words[1]);
+        ok("B: Ignore pressed while the queue sends that word's Known stays queued (not removed by its tag)", q.length === 1 && q[0].body.marks[0].mark === "ignore" && J.MARK.get(words[1]) === "ignore" && J.MWAIT.get(words[1]) === "queued", JSON.stringify(q.map((x) => x.body.marks)) + " " + J.MWAIT.get(words[1]));
+      }
+      await reset();
+      // C: a state answer keeps every word still waiting as pressed (the app hasn't heard of it yet)
+      closed(); J.markWord("known", ids[2]); await settle();
+      open(); J.setDoor("on");
+      window.__J_DOOR_HOOK = (rt) => (rt === "state" ? { ok: true, at: Date.now(), marks: marksBut(words[2]) } : null);
+      await J.readState();
+      ok("C: a state read keeps a waiting Known as pressed (⧗), not wiped", J.MARK.get(words[2]) === "known" && J.MWAIT.get(words[2]) === "queued");
+      await reset();
+      // D: a direct press Surasura answers stale with is read back: the page shows what the app has
+      window.__J_DOOR_HOOK = (rt, b) => (rt === "words/mark" && b.marks[0].word === words[3] ? { ok: false, kind: "stale", error: "Changed in Surasura." }
+        : rt === "state" ? { ok: true, at: Date.now(), marks: marksBut(words[3], "ignore") } : null);
+      const before = CALLS.length;
+      J.markWord("known", ids[3]); await settle(10);
+      ok("D: a press answered stale reads the state back and shows the app's mark", J.MARK.get(words[3]) === "ignore" && CALLS.slice(before).some((c) => c[1] === "state"), J.MARK.get(words[3]));
+      await reset();
+      // E: Undo of a press that replaced a waiting one brings the waiting one back, still ⧗
+      closed(); J.markWord("known", ids[0]); await settle();
+      J.markWord("ignore", ids[0]); await settle();
+      $("#toast button").click(); await settle();
+      const qe = qOf("m:" + words[0]);
+      ok("E: Undo of Ignore that replaced a waiting Known: Known waits again (⧗), in the queue", J.MARK.get(words[0]) === "known" && J.MWAIT.get(words[0]) === "queued" && qe.length === 1 && qe[0].body.marks[0].mark === "known", JSON.stringify(qe.map((x) => x.body.marks)));
+      await reset();
+      // F: Undo of a waiting press the flush has since sent says so (it can't be taken back from here)
+      closed(); J.markWord("known", ids[1]); await settle();
+      const undo = $("#toast button");
+      open(); await J.hello(); await settle(6);
+      undo.click(); await settle();
+      ok("F: Undo after the queue sent the press: the toast says to press it again", /press it again/.test($("#toast").textContent) && J.MARK.get(words[1]) === "known", $("#toast").textContent);
+      await reset();
+      ok("the queue ends empty, nothing waits", !J.QUEUE().length && words.every((w) => !J.MWAIT.has(w) && !J.MARK.has(w)) && (pq == null || !page.ep(pq).pre.wait), J.QUEUE().length);
+    }
+
+    /* ---- the line player: a file is played as itself, whatever its name holds ---- */
+    if (group("player")) {
+      const d = H.dirs && H.dirs[0];
+      ok("P: a file name with # or ? plays as itself (each part of the path encoded)", d != null && !!J.mediaUrl && J.mediaUrl("0/sub dir/ep#1 ?.mp3") === d + "sub%20dir/ep%231%20%3F.mp3", J.mediaUrl && J.mediaUrl("0/sub dir/ep#1 ?.mp3"));
     }
 
     /* ---- a whole run with Surasura closed (?door=off) or the page opened by hand (?door=none): SPEC §3.5's table ---- */

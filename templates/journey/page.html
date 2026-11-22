@@ -493,7 +493,7 @@ const DOOR = (function () {
   }
   return door && door.port && door.token ? door : null;
 })();
-const D = { state: DOOR ? "unknown" : "unopened", routes: null, library: null, sending: false, heard: 0 };   // heard: hellos answered
+const D = { state: DOOR ? "unknown" : "unopened", routes: null, library: null, sending: false, heard: 0, notyet: new Set() };   // heard: hellos answered
 async function doorCall(route, body, ms) {
   if (window.__J_FAKE_DOOR) return window.__J_FAKE_DOOR(route, body || {});
   if (!DOOR) return { ok: false, offline: true, why: "unopened" };
@@ -508,21 +508,42 @@ async function doorCall(route, body, ms) {
     return { ok: false, offline: true, why: "closed" };
   } finally { clearTimeout(timer); }
 }
-const built = (route) => D.routes == null || D.routes.includes(route);   // unknown until hello: shown, and queued
+const built = (route) => !D.notyet.has(route) && (D.routes == null || D.routes.includes(route));   // unknown until hello: shown, and queued
 const live = () => D.state === "on";
 
 /* the one waiting queue (§3.2): every record write in press order, kept for this library + language */
 const QKEY = `surasura_door_queue_${LIB}`;
-let QUEUE = [];
-try { QUEUE = JSON.parse(localStorage.getItem(QKEY) || "[]"); } catch (e) { QUEUE = []; }
-function saveQueue() { try { QUEUE.length ? localStorage.setItem(QKEY, JSON.stringify(QUEUE)) : localStorage.removeItem(QKEY); } catch (e) {} }
-function enqueue(route, body, tag) {
-  QUEUE = QUEUE.filter((q) => q.tag !== tag);          // a newer press on the same thing replaces the waiting one
-  QUEUE.push({ route, body, tag });
-  saveQueue();
+/* Every entry is its own (`id`, given at the press), found by that identity from the press to its answer, never by its
+   place or its tag after a wait: a press made while another is on its way is never taken for it. */
+const QROUTES = ["words/mark", "episode/prestudied", "line/flag", "settings/set"];
+function okEntry(q) {                                  // a stored press is replayed only in the shape this page writes
+  if (!q || typeof q !== "object" || !QROUTES.includes(q.route) || typeof q.tag !== "string" || !q.body || typeof q.body !== "object") return false;
+  if (q.route !== "words/mark") return true;
+  const m = Array.isArray(q.body.marks) && q.body.marks[0];
+  return !!m && typeof m.word === "string" && (m.mark === "" || !!RANK[m.mark]);
 }
-function unqueue(tag) { const n = QUEUE.length; QUEUE = QUEUE.filter((q) => q.tag !== tag); if (QUEUE.length !== n) saveQueue(); return QUEUE.length !== n; }
+let QUEUE = [], QN = 0;
+try { QUEUE = JSON.parse(localStorage.getItem(QKEY) || "[]"); } catch (e) { QUEUE = []; }
+QUEUE = (Array.isArray(QUEUE) ? QUEUE : []).filter(okEntry).map((q) => Object.assign(q, { id: ++QN, sent: false }));
+function saveQueue() { try { QUEUE.length ? localStorage.setItem(QKEY, JSON.stringify(QUEUE)) : localStorage.removeItem(QKEY); } catch (e) {} }
+function enqueue(q) {                                  // a newer press on the same thing replaces the waiting one, never an older
+  const cur = QUEUE.find((x) => x.tag === q.tag);
+  if (cur && cur.id > q.id) return false;
+  QUEUE = QUEUE.filter((x) => x !== cur);
+  QUEUE.push(q);
+  saveQueue();
+  return true;
+}
+function dequeue(q) { const n = QUEUE.length; QUEUE = QUEUE.filter((x) => x !== q); if (QUEUE.length !== n) saveQueue(); return QUEUE.length !== n; }
 const queuedTag = (tag) => QUEUE.some((q) => q.tag === tag);
+function settleWaits() {                               // ⧗ goes only where nothing for it waits any more
+  const tags = new Set(QUEUE.map((q) => q.tag));
+  for (const [w, st] of MWAIT) if (st === "queued" && !tags.has("m:" + w)) MWAIT.delete(w);
+  for (const [i, p] of PRE) if (p.wait === "queued" && !tags.has("p:" + epId(i))) { const c = Object.assign({}, p); delete c.wait; PRE.set(i, c); }
+  for (const [l, st] of FWAIT) if (st === "queued" && !tags.has("f:" + l)) FWAIT.delete(l);
+  for (const x of SETTINGS) if (SET_WAIT[x.k] === "queued" && !tags.has("s:" + x.key)) delete SET_WAIT[x.k];
+}
+function readBack() { readState().then((c) => { if (c) { drawWord(); rail.update("all"); } }); }
 function waitWord() { return D.state === "unopened" ? "⧗ this page only until you open it from Surasura" : "⧗ waiting for Surasura"; }
 
 /* one record write: sent now when the door answers, else queued (⧗); the answer is the read-back. The press has
@@ -530,48 +551,63 @@ function waitWord() { return D.state === "unopened" ? "⧗ this page only until 
    writes nothing. Only a door slower than SLOW_MS gets the spinner (`slow`), the in-flight state drawn. */
 const SLOW_MS = 150;
 const shownWait = (w) => (w === "send" ? "" : w || "");
+const LAST = new Map();                                 // tag -> its latest press's id: an older answer settles nothing
 async function write(route, body, tag, done, slow) {
   body.at = Date.now();
-  if (!live()) { enqueue(route, body, tag); done({ queued: true }); return; }
+  const q = { id: ++QN, route, body, tag, sent: false }, prior = QUEUE.find((x) => x.tag === tag) || null;   // the waiting press it replaces
+  LAST.set(tag, q.id);
+  const fin = (r) => done(Object.assign(r, { q, prior, latest: LAST.get(tag) === q.id }));
+  if (!live()) { enqueue(q); fin({ queued: true }); return; }
   const timer = slow ? setTimeout(slow, SLOW_MS) : 0;
   const a = await doorCall(route, body);
   clearTimeout(timer);
-  if (a && a.ok) { unqueue(tag); done({ answer: a }); return; }
+  if (a && a.ok) { for (const x of QUEUE.filter((x) => x.tag === tag && x.id < q.id)) dequeue(x); fin({ answer: a }); return; }
   if (a && (a.offline || a.kind === "closed" || a.kind === "busy" || a.kind === "not_yet")) {
     if (a.offline) setDoor(a.why === "unopened" ? "unopened" : "off");
-    enqueue(route, body, tag); done({ queued: true, kind: a.kind }); return;
+    enqueue(q); fin({ queued: true, kind: a.kind }); return;
   }
-  unqueue(tag); done({ refused: a ? (a.error || "Surasura couldn't take that.") : "No answer.", kind: a && a.kind });
+  fin({ refused: a ? (a.error || "Surasura couldn't take that.") : "No answer.", kind: a && a.kind });   // one waiting before still waits
+  readBack();                                          // refused (stale above all): the page shows what the app has
+}
+/* Undo, by the press's own entry: still waiting → taken out, and the press it replaced waits again; taken by Surasura
+   → undone there (and the replaced one waits again); sent by the queue since → it can't be from here, and says so. */
+function undoPress(r, route, put) {
+  const back = () => { if (r.prior && !r.prior.sent && !QUEUE.includes(r.prior) && enqueue(r.prior)) flushQueue(); };
+  if (r.queued) {
+    if (dequeue(r.q)) { back(); put(); } else if (r.q.sent) toast("Already sent to Surasura: press it again to change it.");
+    return;
+  }
+  const undoId = r.answer && r.answer.undo_id;
+  if (undoId == null) return;
+  doorCall(route, { undo_id: undoId }).then((a) => {
+    if (a && a.ok) { back(); put(); } else toast(a && a.error || "Surasura is closed: that Undo can't be kept.");
+  });
 }
 
 async function flushQueue() {
   if (!live() || D.sending || !QUEUE.length) return;
   if (D.library && HEAD.library && D.library !== HEAD.library) return;     // another library's Surasura (D31)
   D.sending = true;
+  let sent = false, refused = false;
   try {
     while (QUEUE.length && live()) {
-      const marks = QUEUE.filter((q) => q.route === "words/mark").slice(0, 150);
       const first = QUEUE[0];
-      if (first.route === "words/mark") {
-        const a = await doorCall("words/mark", { marks: marks.map((q) => q.body.marks[0]) });
-        if (a && a.offline) { setDoor("off"); break; }
-        if (a && !a.ok && (a.kind === "busy" || a.kind === "closed")) break;
-        const tags = new Set(marks.map((q) => q.tag));
-        QUEUE = QUEUE.filter((q) => !tags.has(q.tag));
-        for (const q of marks) MWAIT.delete(q.body.marks[0].word);
-        if (a && a.ok && a.stale && a.stale.length) await readState();
-      } else {
-        if (!built(first.route)) { QUEUE.push(QUEUE.shift()); if (QUEUE.every((q) => !built(q.route))) break; continue; }
-        const a = await doorCall(first.route, first.body);
-        if (a && a.offline) { setDoor("off"); break; }
-        if (a && !a.ok && (a.kind === "busy" || a.kind === "closed")) break;
-        QUEUE.shift();
-        if (a && a.ok) answered(first.route, first.body, a);
-        else if (a && a.kind === "stale") await readState();
-      }
+      if (!built(first.route)) { if (QUEUE.every((q) => !built(q.route))) break; QUEUE.push(QUEUE.shift()); continue; }
+      const batch = first.route === "words/mark" ? QUEUE.filter((q) => q.route === "words/mark").slice(0, 150) : [first];
+      const a = await doorCall(first.route, first.route === "words/mark" ? { marks: batch.map((q) => q.body.marks[0]) } : first.body);
+      if (a && a.offline) { setDoor("off"); break; }
+      if (a && !a.ok && (a.kind === "busy" || a.kind === "closed")) break;
+      if (a && !a.ok && a.kind === "not_yet") { D.notyet.add(first.route); continue; }   // kept: it goes once the route is built
+      const out = new Set(batch);                     // by identity: a press made during the wait stays
+      QUEUE = QUEUE.filter((q) => !out.has(q));
+      for (const q of batch) q.sent = true;
+      sent = true;
+      if (a && a.ok) { answered(first.route, first.body, a); if (a.stale && a.stale.length) refused = true; } else refused = true;
       saveQueue();
     }
-  } finally { D.sending = false; saveQueue(); redrawMarks(); }
+    settleWaits();
+    if (refused) await readState();                   // refused or stale: what the app has, drawn
+  } finally { D.sending = false; settleWaits(); saveQueue(); if (sent) { drawWord(); rail.update("all"); } else redrawMarks(); }
 }
 
 function setDoor(state) {
@@ -593,6 +629,7 @@ async function hello() {
     const routes = Array.isArray(a.routes) ? a.routes : null, had = JSON.stringify(D.routes);
     D.routes = routes;
     D.library = a.library || null;
+    D.notyet.clear();
     setDoor("on");
     const changed = await readState();
     await flushQueue();
@@ -605,8 +642,10 @@ async function readState() {                              // true when an answer
   if (!a || !a.ok) return false;
   const was = stateKey();
   if (a.marks && typeof a.marks === "object") {
+    const keep = [...MWAIT.keys()].map((w) => [w, MARK.get(w)]);   // a press waiting or on its way stays as pressed
     MARK.clear();
     for (const w in a.marks) if (RANK[a.marks[w]]) MARK.set(w, a.marks[w]);
+    for (const [w, m] of keep) if (m) MARK.set(w, m); else MARK.delete(w);
   }
   if (a.prestudied && typeof a.prestudied === "object") {
     for (let i = 0; i < EPS.length; i++) {
@@ -629,8 +668,12 @@ function stateKey() {                                     // what a state answer
   return JSON.stringify([[...MARK], pre, [...FLAGGED], SET]);
 }
 function answered(route, body, a) {
-  if (route === "episode/prestudied") { const i = ID_IX.get(body.id); if (i != null) PRE.set(i, { on: !!a.on, at: a.at, by: a.by || (a.on ? body.why : "off") }); rail.update("pre", i); }
-  if (route === "settings/set") { const s = SETTINGS.find((x) => x.key === body.key); if (s) delete SET_WAIT[s.k]; }
+  if (route === "episode/prestudied") {                 // a newer press on it (waiting, or on its way) is what's drawn
+    const i = ID_IX.get(body.id), cur = i != null ? PRE.get(i) : null;
+    if (i == null || queuedTag("p:" + body.id) || cur && (cur.wait === "send" || cur.wait === "wait")) return;
+    PRE.set(i, { on: !!a.on, at: a.at, by: a.by || (a.on ? body.why : "off") }); rail.update("pre", i);
+  }
+  if (route === "settings/set") { const s = SETTINGS.find((x) => x.key === body.key); if (s && SET_WAIT[s.k] === "queued" && !queuedTag("s:" + s.key)) delete SET_WAIT[s.k]; }
 }
 
 /* ---- presses ---- */
@@ -646,20 +689,19 @@ function markWord(kind, id) {
   if (!S.list && mark) step(1); else drawActs(word);
   rail.update("word", id);
   write("words/mark", { marks: [{ word, mark, was }] }, "m:" + word, (r) => {
-    if (r.queued) MWAIT.set(word, "queued"); else MWAIT.delete(word);
+    if (!r.latest) return;                                  // a newer press on this word is drawn: its answer settles it
+    if (queuedTag("m:" + word)) MWAIT.set(word, "queued"); else MWAIT.delete(word);
     if (r.refused) { if (was) MARK.set(word, was); else MARK.delete(word); toast(r.refused); }
     drawActs(word); rail.update("word", id);                // each writes only what differs from the press's drawing
     if (r.answer && r.answer.stale && r.answer.stale.length) readState().then(redrawMarks);
-    if (mark && !r.refused) toast(`${mark === "known" ? "✓ Known" : "⊘ Ignored"}: ${word}`, () => undoMark(word, was, r.answer && r.answer.undo_id, id));
+    if (mark && !r.refused) toast(`${mark === "known" ? "✓ Known" : "⊘ Ignored"}: ${word}`, () => undoMark(word, was, r, id));
   }, () => { if (MWAIT.get(word) === "send") { MWAIT.set(word, "wait"); drawActs(word); rail.update("word", id); } });
 }
-function undoMark(word, was, undoId, id) {
-  const put = () => { if (was) MARK.set(word, was); else MARK.delete(word); MWAIT.delete(word); drawActs(word); rail.update("word", id); };
-  if (unqueue("m:" + word)) { put(); return; }
-  if (!undoId) return;
-  doorCall("words/undo", { undo_id: undoId }).then((a) => {
-    if (a && a.ok) put();
-    else toast(a && a.error || "Surasura is closed: that Undo can't be kept.");
+function undoMark(word, was, r, id) {
+  undoPress(r, "words/undo", () => {
+    if (was) MARK.set(word, was); else MARK.delete(word);
+    if (queuedTag("m:" + word)) MWAIT.set(word, "queued"); else MWAIT.delete(word);
+    drawActs(word); rail.update("word", id);
   });
 }
 
@@ -676,20 +718,23 @@ function prestudied(i, why) {
   PRE.set(i, { on, by: on ? why : "off", at: before.at, wait: "send" });
   rail.update("pre", i); drawPreBits(i);
   write("episode/prestudied", { id: epId(i), on, why }, "p:" + epId(i), (r) => {
+    if (!r.latest) return;                                  // a newer press on it is drawn: its answer settles it
     const p = PRE.get(i) || {};
     if (r.queued) PRE.set(i, Object.assign(p, { wait: "queued" }));
     else if (r.answer) PRE.set(i, { on: !!r.answer.on, at: r.answer.at, by: r.answer.by || (r.answer.on ? why : "off") });
-    else { PRE.set(i, before); if (r.kind !== "stale") toast(r.refused); }
+    else { PRE.set(i, preBack(i, before)); if (r.kind !== "stale") toast(r.refused); }
     rail.update("pre", i); drawPreBits(i);                    // each writes only what differs from the press's drawing
-    if (why === "press" && !r.refused) toast(`${on ? "Pre-studied" : "Un-marked"}: ${epTitle(i)}`, () => undoPre(i, before, r.answer && r.answer.undo_id));
+    if (why === "press" && !r.refused) toast(`${on ? "Pre-studied" : "Un-marked"}: ${epTitle(i)}`, () => undoPre(i, before, r));
   }, () => { const p = PRE.get(i); if (p && p.wait === "send") { p.wait = "wait"; rail.update("pre", i); drawPreBits(i); } });
   return true;
 }
-function undoPre(i, before, undoId) {
-  const put = () => { PRE.set(i, before); rail.update("pre", i); drawPreBits(i); };
-  if (unqueue("p:" + epId(i))) { put(); return; }
-  if (undoId == null) return;
-  doorCall("episode/undo", { undo_id: undoId }).then((a) => { if (a && a.ok) put(); else toast(a && a.error || "Surasura is closed: that Undo can't be kept."); });
+function preBack(i, before) {                         // the mark before a press, ⧗ only while a press on it waits
+  const b = Object.assign({}, before); delete b.wait;
+  if (queuedTag("p:" + epId(i))) b.wait = "queued";
+  return b;
+}
+function undoPre(i, before, r) {
+  undoPress(r, "episode/undo", () => { PRE.set(i, preBack(i, before)); rail.update("pre", i); drawPreBits(i); });
 }
 
 /* ⚑ flag a sentence → Send report (§4) */
@@ -715,7 +760,8 @@ function flagLine(id, k, reasons, note, on) {
   if (on) FLAGGED.add(lid); else FLAGGED.delete(lid);
   FWAIT.set(lid, "send"); drawPart("lines");
   write("line/flag", { line_id: lid, word: w[0], line: ln[0], show, episode: e ? epPart(src[2]) : "", time: ln[2], reasons, note: note || "", on }, "f:" + lid, (r) => {
-    if (r.queued) FWAIT.set(lid, "queued"); else FWAIT.delete(lid);
+    if (!r.latest) return;
+    if (queuedTag("f:" + lid)) FWAIT.set(lid, "queued"); else FWAIT.delete(lid);
     if (r.refused) { if (on) FLAGGED.delete(lid); else FLAGGED.add(lid); toast(r.refused); }
     drawPart("lines");
     if (!r.refused) toast(on ? "Flagged: it goes with your next Send report, where you see it first." : "Flag taken off.", () => flagLine(id, k, reasons, note, !on));
@@ -736,7 +782,8 @@ function setSetting(k, value) {
   SET_DRAW[k]();
   drawSetRow(k);
   write("settings/set", { key: s.key, value }, "s:" + s.key, (r) => {
-    if (r.queued) SET_WAIT[k] = "queued"; else delete SET_WAIT[k];
+    if (!r.latest) return;
+    if (queuedTag("s:" + s.key)) SET_WAIT[k] = "queued"; else delete SET_WAIT[k];
     if (r.refused) toast(r.refused);
     drawSetRow(k);
   }, () => { if (SET_WAIT[k] === "send") { SET_WAIT[k] = "wait"; drawSetRow(k); } });
@@ -1138,12 +1185,15 @@ function openFlag(k, anchor) {
 const player = $("player");
 let playEnd = null;
 player.addEventListener("timeupdate", () => { if (playEnd != null && player.currentTime >= playEnd) { player.pause(); playEnd = null; } });
+function mediaUrl(p) {                                  // "<dir index>/<path in it>" → its file: URL, or null
+  const [dir, ...rest] = p.split("/"), file = rest.join("/");
+  return PLAYABLE.test(file) && HEAD.dirs[Number(dir)] ? HEAD.dirs[Number(dir)] + file.split("/").map(encodeURIComponent).join("/") : null;
+}
 async function playLine(k) {
   const id = curWordId(), w = id != null && wordNow(id), ln = w && w[9][k];
   if (!ln) return;
   const src = srcOf(id, ln[1]); if (!src || !src[3]) return;
-  const [dir, ...rest] = src[3].split("/"), file = rest.join("/");
-  let url = PLAYABLE.test(file) && HEAD.dirs[Number(dir)] ? HEAD.dirs[Number(dir)] + encodeURI(file) : null;
+  let url = mediaUrl(src[3]);
   if (!url) {
     if (!live()) { toast("Surasura is closed: this line plays when the journey is open from Surasura."); return; }
     const a = await doorCall("clip/cut", { line_id: lineId(ln, src) });
@@ -1393,7 +1443,7 @@ function afterFirstWord() {
 }
 window.__J = { S, page, rail: () => rail, TIMES, D, MARK, MWAIT, PRE, FLAGGED, QUEUE: () => QUEUE, SET, SET_WAIT, SETTINGS, KEYS: () => KEYS, ACTIONS, PRESETS,
   RC, go, step, epStep, markWord, pickLine, selLine, drawPart, drawDesk, redrawMarks, prestudied, setSetting, setFilter, setOrder, toggleFocus, toggleList, search, jumpTo, hello, readState, flushQueue, drawWord,
-  openSettings, openKeys, openFlag, flagLine, closeLayer, doAction, curWordId, wordNow, seq, loadEp, epReady, blob, blobNow, kanjiTip, lineId, stoneSvg, setDoor,
+  openSettings, openKeys, openFlag, flagLine, closeLayer, doAction, curWordId, wordNow, seq, loadEp, epReady, blob, blobNow, kanjiTip, lineId, stoneSvg, setDoor, mediaUrl,
   CHUNKS, SIDX, buildSearch, tipText, nextEp, listScrolled, D14_MS, SWAP_SHOWN };
 start();
 </script>

@@ -1609,9 +1609,15 @@ class Select(_Control):
 
     def __init__(self, options, value=None, tooltip=None, name=None, parent=None):
         super().__init__(tooltip, name, parent)
-        self._options = _options(options)
         self._index = 0
         self.menu = QMenu(self)
+        self._fill(options)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.set_value(self._options[0][0] if value is None else value)
+
+    def _fill(self, options):
+        self._options = _options(options)
+        self.menu.clear()
         group = QActionGroup(self.menu)
         group.setExclusive(True)
         self._actions = []
@@ -1623,8 +1629,17 @@ class Select(_Control):
             action.triggered.connect(lambda _checked=False, v=v: self._pick(v))
             group.addAction(action)
             self._actions.append(action)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.set_value(self._options[0][0] if value is None else value)
+
+    def set_options(self, options):
+        """New choices (Mado-LT: a move's flags, less the ones another move took), the value kept — no signal. -> True
+        when they changed."""
+        if _options(options) == self._options:
+            return False
+        value = self.value()
+        self._fill(options)
+        self.set_value(value)
+        self.updateGeometry()
+        return True
 
     def _find(self, value):
         for i, (v, _l, _t) in enumerate(self._options):

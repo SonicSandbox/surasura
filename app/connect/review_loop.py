@@ -7,6 +7,8 @@ The learner answers a card on their phone with one of three moves, each *suspend
     ⇄ Swap    Suspend + Green flag (flag:3)    a better sentence, please: the word stays one to learn
     ✕ Ignore  Suspend + Red flag (flag:1)      not a word to learn
 
+(Swap's and Ignore's flags are the learner's pick since Mado-LT, Settings' move cards: `move_flags`.)
+
 A plain suspend means nothing; red and green never count as known, and win over every other state.
 
 **Each known-words sync** (`anki_sync.sync_all` → `read_known_signal`, while Connect is on) reads them here, in the
@@ -52,8 +54,42 @@ from app.connect import known_signal, swap_queue
 
 VERB = "The review loop"
 IGNORE, SWAP = "ignore", "swap"
-MOVES = {IGNORE: "is:suspended flag:1", SWAP: "is:suspended flag:3"}      # Suspend + Red · Suspend + Green
+MOVES = (IGNORE, SWAP)
+# Mado-LT (3.0.18): each move's flag is the learner's pick on Settings' move cards — Anki's flag numbers 1 … 7; red
+# and green by default (WL-46 / 46b). Read only through `move_flags`.
+FLAG_KEYS = {IGNORE: "loop_ignore_flag", SWAP: "loop_swap_flag"}
+FLAG_DEFAULTS = {IGNORE: 1, SWAP: 3}    # Suspend + Red · Suspend + Green
 KEEP_SYNCS = 30             # the newest syncs kept for Undo
+
+
+def _flag(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if 1 <= n <= 7 and str(value).strip() == str(n) else None
+
+
+def move_flags(settings):
+    """{IGNORE: n, SWAP: m}: the flag (1 … 7) that, on a suspended card, means each move — the learner's pick
+    (`loop_ignore_flag`, `loop_swap_flag`), else the default. A value that isn't a flag reads as its default; Swap on
+    Ignore's flag reads as Swap's default (or, Ignore holding that one, Ignore's: one flag never means both). Every
+    reader of the two moves asks here — this reader's searches, the known-words sync and Connect's Known signal (those
+    two flags never count as known) and Settings' picks."""
+    settings = settings or {}
+    ignore = _flag(settings.get(FLAG_KEYS[IGNORE]))
+    ignore = FLAG_DEFAULTS[IGNORE] if ignore is None else ignore
+    swap = _flag(settings.get(FLAG_KEYS[SWAP]))
+    if swap is None or swap == ignore:
+        swap = FLAG_DEFAULTS[SWAP] if FLAG_DEFAULTS[SWAP] != ignore else FLAG_DEFAULTS[IGNORE]
+    return {IGNORE: ignore, SWAP: swap}
+
+
+def move_search(move, settings):
+    """The search terms of a card carrying `move`: suspended, with its flag."""
+    return f"is:suspended flag:{move_flags(settings)[move]}"
 
 
 class Unreadable(RuntimeError):
@@ -95,7 +131,7 @@ def query(move, decks, settings=None):
     from app import anki_connect
     scope = " OR ".join(f'deck:"{anki_connect.escape_query(d)}"' for d in dict.fromkeys(decks))
     never = [t for t in known_signal._never(settings) if not t.startswith("-flag:")]
-    return f"({scope}) {MOVES[move]} " + " ".join(never)
+    return f"({scope}) {move_search(move, settings)} " + " ".join(never)
 
 
 def _found(url, queries):
@@ -150,7 +186,8 @@ def read(language, url, decks, fields, settings):
             new = {m: sorted(found[m] - seen[m]) for m in MOVES}
             move_of = {c: m for m in MOVES for c in new[m]}
             words = known_signal._words_of(url, new[IGNORE] + new[SWAP], fields, language) if move_of else []
-            back = _taken_back(language, url, seen[SWAP] - found[SWAP])     # every Anki read before any write
+            back = _taken_back(language, url, seen[SWAP] - found[SWAP],     # every Anki read before any write
+                               move_flags(settings)[SWAP])
         except anki_connect.AnkiError as e:     # Anki closed or busy mid-read: the Known words stand, the rest waits
             out["loop_error"] = str(e)
             return out
@@ -216,11 +253,12 @@ def read(language, url, decks, fields, settings):
         return out
 
 
-def _taken_back(language, url, gone):
+def _taken_back(language, url, gone, flag=FLAG_DEFAULTS[SWAP]):
     """The waiting swap cards gone from the search that the learner took back -> their ids: still in Anki and no longer
-    Suspended + Green (cardsInfo's `queue` -1 and `flags` 3). A deleted card (cardsInfo has nothing for it), or one
-    that only left the search (a leech, Surasura's own tag, another deck) while still Suspended + Green, keeps its
-    entry; a card whose answer lacks either field too."""
+    suspended with Swap's flag `flag` (cardsInfo's `queue` -1 and `flags`; green, 3, by default). A deleted card
+    (cardsInfo has nothing for it), or one that only left the search (a leech, Surasura's own tag, another deck) while
+    still suspended with that flag, keeps its entry; a card whose answer lacks either field too. (Mado-LT: Swap's flag
+    changed in Settings, a card waiting with the old one reads as taken back — PROVISIONAL, the register's For Sonic.)"""
     if not gone:
         return set()
     try:
@@ -236,7 +274,7 @@ def _taken_back(language, url, gone):
     for c in known_signal._chunked(anki_connect.cards_info, url, ask):
         if not isinstance(c, dict) or c.get("cardId") is None or "queue" not in c or "flags" not in c:
             continue
-        if not (c.get("queue") == -1 and c.get("flags") == 3):
+        if not (c.get("queue") == -1 and c.get("flags") == flag):
             back.add(c["cardId"])
     return back
 

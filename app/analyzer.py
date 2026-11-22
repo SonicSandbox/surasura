@@ -5321,6 +5321,8 @@ def settings_signature(settings, language):
         "connect_backlog_cap",          # how many cards Connect keeps waiting (P2.4): never what a run counts
         "known_from_anki",              # P2.4: what it adds lands in KnownWord.json (known_sig), not as a key
         "known_from_anki_chosen",       # Kantan-B3: whether those states are the learner's pick, never a run
+        "loop_ignore_flag",             # Mado-LT: the loop's Ignore / Swap flags: what they move is in the lists
+        "loop_swap_flag",
         "connect_video_folders",        # P2.5: where Connect looks for a moved video, never what a run counts
         "connect_trust_timing",         # P-LF-9: whether Connect mines an episode nothing can time, never a run
         "connect_spot_every_episode",   # Michi-T1: when Connect hears a timed video's audio, never a run

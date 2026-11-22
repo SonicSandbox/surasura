@@ -207,6 +207,12 @@ DEFAULT_SETTINGS = {
     # yet writes every default (`_read_file_as_is`), so a saved ["suspended"] without it is the old default, never a
     # choice (`load_settings` reads today's). Written beside every pick (the Settings row, the 2.x panel).
     "known_from_anki_chosen": False,
+    # The review loop's two other moves (Mado-LT, 3.0.18; WL-46 / 46b, ruled 2026-11-20): the flag that, with the card
+    # suspended, means Ignore (1, red) and Swap (3, green) — Anki's flag numbers 1 … 7, picked on Settings' move cards.
+    # Read only through `review_loop.move_flags` (a bad value, or Swap on Ignore's flag, reads as the default); those
+    # two flags never count as known, suspended or not. Never in a signature: what they move is in the word lists.
+    "loop_ignore_flag": 1,
+    "loop_swap_flag": 3,
     "logic": {
         # D29 (3.0): the automation's switch. Off stops exactly three things: the re-order host (Anki re-ordered as
         # you move, with its AnkiWeb sync), the journey keeper's background Generate and AutoJunban's re-order. The

@@ -57,7 +57,7 @@ BOOKS = ("book", "lightnovel")                   # a book an audiobook can line 
 
 Facts = namedtuple("Facts", "has_library journey_opened episodes_done cards_made own_cards junban anki_synced "
                             "junban_ordered backfilled book_in_current lined_up video_waiting hato_paired piyo_round "
-                            "journey_ready yours_picked miner_found", defaults=(True, False, True))
+                            "journey_ready yours_picked miner_found loop_read", defaults=(True, False, True, False))
 # journey_ready: a journey is on disk (the header's *Journey ↗* shows) — step 1's press has a page to open;
 # yours_picked: the learner chose which words get a card (the `yours` moment); miner_found: Anki Miner is here (the
 # cards step's press is *Make … cards*, else *Set up Anki Miner*)
@@ -88,7 +88,10 @@ STEPS = (
          lambda f: f.junban_ordered, "circle:junban", lambda f: f.junban, AUTOMATE),
     Step("backfill", READY, lambda f: f.junban and (f.cards_made or (f.own_cards and f.anki_synced)),
          lambda f: f.backfilled, "settings:backfill_patterns", lambda f: f.junban, AUTOMATE),
-    # (WL-9, Mado-WL: the review loop's step joins here, the last of stage ③ after Backfill — not built yet)
+    # WL-9 (Mado-LT, 3.0.18; PROVISIONAL words): the review loop, the last of stage ③ — useful once cards are in Anki,
+    # done once a sync read a move from the phone (the loop's record holds one)
+    Step("loop", READY, lambda f: _cards(f) and f.anki_synced, lambda f: f.loop_read, "settings:known_from_anki",
+         stage=AUTOMATE),
     Step("yours", READY, _cards, lambda f: f.yours_picked, "settings:setup_mining", stage=YOURS),
     Step("audiobook", READY, lambda f: f.book_in_current, lambda f: f.lined_up, "tab:current@audiobook"),
     Step("hato", READY, lambda f: f.video_waiting, lambda f: f.hato_paired, "settings:hato"),
@@ -261,7 +264,14 @@ def facts(language, settings, view, state, journey_ready=True):
         hato_paired=unless("hato", _hato_paired, language),
         piyo_round=unless("piyo", _piyo_round, language), journey_ready=journey_ready,
         yours_picked="yours" in (state.get("moments") or {}),
-        miner_found=True if "cards" in ticked else safe(_miner_found, settings))
+        miner_found=True if "cards" in ticked else safe(_miner_found, settings),
+        loop_read=unless("loop", _loop_read, language))
+
+
+def _loop_read(language):
+    """The review loop read a move from the phone (Known, Swap or Ignore): its record keeps the syncs that moved one."""
+    from app.connect import review_loop
+    return bool(review_loop.syncs(language))
 
 
 def _miner_found(settings):

@@ -1288,8 +1288,8 @@ class SettingsPage(QWidget):
             control = sc.Toggle(value, tooltip=tip, name=name)
         elif kind in ("choice", "cards", "select"):
             opts = list(catalog.options(row, settings, self.language))
-            if value not in [v for v, _l, _line in opts]:
-                opts.append((value, str(value), ""))       # a value no option names (hand-edited): shown, kept
+            if value not in [v for v, _l, _line in opts]:      # a value no option names (hand-edited), or a move's
+                opts.append((value, S.OPTIONS.get(row.id, {}).get(value, str(value)), ""))   # flag another took: kept
             tips = catalog.option_tips(row, settings)
             if kind == "cards":
                 control = sc.Cards([(v, label, line) for v, label, line in opts], value, tooltip=tip, name=name)
@@ -1339,6 +1339,12 @@ class SettingsPage(QWidget):
             view.set_words(row.label, catalog.help_line(row, settings, self.language))   # DIAGNOSIS 3), Junban's deck
         values = [value[row.keys[0]], value[row.keys[1]]] if row.kind == "slider" else [value]
         moved = False
+        if row.id in catalog.MOVE_ROWS and row.kind == "select":     # Mado-LT: another move took or freed a flag
+            opts = list(catalog.options(row, settings, self.language))
+            if value not in [v for v, _l, _line in opts]:
+                opts.append((value, S.OPTIONS.get(row.id, {}).get(value, str(value)), ""))   # held: shown, kept
+            tips = catalog.option_tips(row, settings)
+            moved = view.controls[0].set_options([(v, label, tips.get(v)) for v, label, _line in opts])
         if row.id in catalog.PROGRAM_ROWS:                 # the program's name on its choice, *Change…* once kept
             label, tip = catalog.program_label(row, settings)
             moved = view.controls[0].set_label("program", label, tip)

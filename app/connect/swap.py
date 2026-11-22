@@ -246,60 +246,11 @@ def _queue_made(language, ref, note):
 # The line (the one seam until Kantan-SD's picker)
 # --------------------------------------------------------------------------- #
 def choose_line(language, word, avoid=(), reachable=None, skip_items=(), reading=None):
-    """The word's best other line in the library -> (item id, line text), or None: `sentence_corpus.best_for`'s ranking
-    (the easiest first, as 例文 picks them) of the word's keys (its `reading`, else every reading the token store holds
-    it under) over the files that hold it (the token store: never re-read), then any of their lines with it — never one
-    `same_line` finds in `avoid`, never an item of `skip_items`, only one `reachable(item id)` says Connect can cut (its
-    video or its text found). **The seam:** with Kantan-SD's one picker there (`app/connect/sentences.py`, the sentence
-    dial), its `choose` ranks the lines (`never` = the old lines, `reach` = Connect can cut it) and `best_for` is not
-    read; "never the same line" stays Swap's own check on what it returns. Either way: then any line."""
-    from app import sentence_corpus, token_index
-    files = sentence_corpus.library_files(language)
-    held = sentence_corpus.files_holding(language, files, set(), runs=[[word]]) if files else []
-    if not held:
-        return None
-    items = _items_of(language, held)
-    looked, bad = set(), set(skip_items or ())
-
-    def fits(path, text):
-        item = items.get(path)
-        if item is None or item in bad or same_line(text, avoid):
-            return None
-        if item not in looked:
-            looked.add(item)
-            if reachable is not None and not reachable(item):
-                bad.add(item)
-                return None
-        return item
-    store = token_index.open_store(language)
-    try:
-        keys = {(word, reading)} if reading else set()
-        for path in held if not keys else ():
-            keys |= {(word, t[1]) for _text, tokens in store.file_tokens(path) for t in tokens if t and t[0] == word}
-            if keys:
-                break
-        picked = _chosen(language, keys, avoid, files, bad, reachable) if keys else None
-        if picked is not None:
-            return picked
-        try:
-            found = sentence_corpus.best_for(language, keys, files=held) if keys and not _picker() else {}
-        except Exception:
-            log.info("Swap: the ranked lines couldn't be read for a word; any line is used", exc_info=True)
-            found = {}
-        best = sorted((rank for lines in found.values() for rank in lines), key=lambda r: r[0])
-        for _others, text, _surface, at in best:
-            item = fits(held[at], text) if 0 <= at < len(held) else None
-            if item is not None:
-                return item, text
-        for path in held:
-            for text, tokens in store.file_tokens(path):
-                if any(t and t[0] == word for t in tokens):
-                    item = fits(path, text)
-                    if item is not None:
-                        return item, text
-    finally:
-        store.close()
-    return None
+    """The word's other line -> (item id, line text), or None: **only the one picker's** (Kantan-SD's
+    `sentences.choose`, over Generate's list, the one source of a word's sentences) — never one `same_line` finds in
+    `avoid`, never an item of `skip_items`, only one `reachable(item id)` says Connect can cut. Swap has no ranking or
+    search of its own: no picker yet, or nothing it offers, is None (the swap waits, as for a word with one line)."""
+    return _chosen(language, {(word, reading or "")}, avoid, None, set(skip_items or ()), reachable)
 
 
 def _picker():

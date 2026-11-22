@@ -443,36 +443,17 @@ def test_the_window_says_each_swap_with_undo_and_ok(ledger, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# The seam until Kantan-SD's picker: the best other line Connect can cut
+# The line: only the one picker's (Generate's list is the one source of a word's sentences)
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("lang", ["ja", "zh"])
-def test_choose_line_takes_the_best_other_line_connect_can_cut_never_the_old_one(lang, monkeypatch):
+def test_choose_line_never_reads_the_library_itself_and_waits_without_the_picker(monkeypatch):
+    # Why: a sentence Swap found by its own search could be one the journey never showed; without the picker: None.
     from app import sentence_corpus, token_index
-    word, old, other = CASES[lang]
-    files = ["a.srt", "b.srt", "c.srt"]
-    monkeypatch.setattr(swap, "_picker", lambda: None)              # before Kantan-SD's picker: best_for ranks
-    monkeypatch.setattr(sentence_corpus, "library_files", lambda l: files)
-    monkeypatch.setattr(sentence_corpus, "files_holding", lambda l, f, wanted, runs=(), most=None: list(f))
-    monkeypatch.setattr(swap, "_items_of", lambda l, paths: {"a.srt": 1, "b.srt": 2, "c.srt": 3})
-
-    class Store:
-        def file_tokens(self, path):
-            return {"a.srt": [(old, [[word, "R", word]])], "c.srt": [(other, [[word, "R", word]])]}.get(path, [])
-
-        def close(self):
-            pass
-    monkeypatch.setattr(token_index, "open_store", lambda l: Store())
-    asked = []
-    # ranked best first: the old card's own line, then a line in an episode with no video, then the good one
-    ranked = [(0, old, word, 0), (0, other + "。", word, 1), (1, other, word, 2)]
-    monkeypatch.setattr(sentence_corpus, "best_for", lambda l, w, files=None: asked.append(set(w)) or {(word, "R"): ranked})
-    assert swap.choose_line(lang, word, [old], reachable=lambda item: item != 2) == (3, other)
-    assert asked == [{(word, "R")}]                  # its reading from the token store: the word's own key
-    assert swap.choose_line(lang, word, [old], reachable=lambda item: True, skip_items=[2]) == (3, other)
-    # nothing ranked (no sentence of a good length): any line of the files that says it, never the old one
-    monkeypatch.setattr(sentence_corpus, "best_for", lambda *a, **k: {})
-    assert swap.choose_line(lang, word, [old]) == (3, other)
-    assert swap.choose_line(lang, word, [old, other]) is None
+    for name in ("library_files", "files_holding", "best_for", "collect"):
+        monkeypatch.setattr(sentence_corpus, name, lambda *a, **k: pytest.fail("Swap searched the library itself"))
+    monkeypatch.setattr(token_index, "open_store", lambda *a, **k: pytest.fail("Swap read the token store itself"))
+    monkeypatch.setattr(swap, "_picker", lambda: None)
+    word, old, _other = CASES["ja"]
+    assert swap.choose_line("ja", word, [old]) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -676,26 +657,17 @@ def test_with_the_sentence_picker_there_choose_line_takes_its_best_line_never_th
                   Choice("c.srt", 3, other, 0, 0.5, False, True)]
         return {k: [c for c in ranked if reach(c.item_id)] for k in keys}
     monkeypatch.setitem(sys.modules, "app.connect.sentences", types.SimpleNamespace(choose=choose))
-    monkeypatch.setattr(sentence_corpus, "library_files", lambda l: ["a.srt", "b.srt", "c.srt"])
-    monkeypatch.setattr(sentence_corpus, "files_holding", lambda l, f, wanted, runs=(), most=None: list(f))
-    monkeypatch.setattr(sentence_corpus, "best_for", lambda *a, **k: pytest.fail("the picker ranks, not best_for"))
-    monkeypatch.setattr(swap, "_items_of", lambda l, paths: {"a.srt": 1, "b.srt": 2, "c.srt": 3})
-
-    class Store:
-        def file_tokens(self, path):
-            return {"c.srt": [(other, [[word, "R", word]])]}.get(path, [])
-
-        def close(self):
-            pass
-    monkeypatch.setattr(token_index, "open_store", lambda l: Store())
+    for name in ("library_files", "files_holding", "best_for", "collect"):
+        monkeypatch.setattr(sentence_corpus, name, lambda *a, **k: pytest.fail("the picker ranks, not Swap"))
+    monkeypatch.setattr(token_index, "open_store", lambda *a, **k: pytest.fail("the picker reads, not Swap"))
     assert swap.choose_line(lang, word, [old], reachable=lambda item: item != 2) == (3, other)
-    assert asked == [(lang, [(word, "R")], {(word, "R"): {old}}, ["a.srt", "b.srt", "c.srt"])]
+    assert asked == [(lang, [(word, "")], {(word, ""): {old}}, None)]
     assert swap.choose_line(lang, word, [old], reachable=lambda item: True, skip_items=[2]) == (3, other)
 
     def broken(*a, **k):
         raise RuntimeError("the picker failed")
     monkeypatch.setitem(sys.modules, "app.connect.sentences", types.SimpleNamespace(choose=broken))
-    assert swap.choose_line(lang, word, [old]) == (3, other)           # its own lines, never the old one
+    assert swap.choose_line(lang, word, [old]) is None                 # the picker failed: the swap waits
 
 
 # --------------------------------------------------------------------------- #

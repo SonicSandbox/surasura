@@ -33,49 +33,67 @@ def _all(out):
 # --- shape 1.1 ------------------------------------------------------------------------------------------------------ #
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_the_head_carries_all_seven_setting_rows_with_their_defaults_when_unset(language):
+def test_the_head_carries_all_nine_setting_rows_with_their_defaults_when_unset(language):
     out = jr.build(language, _rows(language, 3), _stats(3), pitch=jr.Pitch(language, kanjium={}))
     assert out.head["v"] == 1 and out.head["minor"] == 1        # additive: a v1 reader reads it as before
     assert out.head["settings"] == {"sentences": 3, "meanings": "en", "pitch": "shown", "source": "icon",
-                                    "word_size": "m", "sentence_size": "m", "theme": "night", "keys": "qwerty"}
+                                    "word_size": "m", "sentence_size": "m", "theme": "night", "keys": "qwerty",
+                                    "first_meeting": True}
 
 
-def test_a_setting_outside_its_choices_is_its_default_and_a_key_map_passes_as_text():
-    settings = {"theme": "neon", "journey_pitch": "hidden", "source_display": None,
-                "journey_keys": {"next": "j", "known": "k", 3: "x", "bad": 4}, "logic": {"context": {"max_contexts": 1}}}
-    shown = jr.page_settings(settings, 1)
-    assert shown["theme"] == "night" and shown["pitch"] == "hidden" and shown["source"] == "icon"
-    assert shown["keys"] == {"next": "j", "known": "k"} and shown["sentences"] == 1
-    assert jr.page_settings({"journey_keys": {}}, 3)["keys"] == "qwerty"
-
-
-def test_the_apps_own_source_and_theme_keys_read_as_the_pages_choices():
-    # One key each (J-SET-TABLE § 2): the app's `source_display` and `theme`, never journey_* copies of them.
-    # Today's values as the page reads them: Hidden and Icon as Icon, File name and Icon + file name as Icon + name;
-    # Modern Light as Light, every dark look (and Zen) as Night; the page's own choices as they are.
-    shown = {v: jr.page_settings({"source_display": v}, 3)["source"]
-             for v in ("off", "icon", "filename", "full", "hover")}
-    assert shown == {"off": "icon", "icon": "icon", "filename": "icon_name", "full": "icon_name", "hover": "hover"}
-    looks = {v: jr.page_settings({"theme": v}, 3)["theme"]
-             for v in ("Modern Light", "Dark Flow", "Default (Dark)", "Midnight (Vibrant)", "Zen Mode", "light")}
-    assert looks == {"Modern Light": "light", "Dark Flow": "night", "Default (Dark)": "night",
-                     "Midnight (Vibrant)": "night", "Zen Mode": "night", "light": "light"}
-    assert jr.page_settings({"journey_theme": "light", "journey_source": "hover"}, 3)["theme"] == "night"
+def test_the_heads_settings_are_journey_settings_page_values_the_one_reader():
+    # One reader of the journey's settings in the app (J-SET's page_values): the render only renames its keys to the
+    # head's names. Older values (Hidden, File name, Modern Light, Zen, a hand-edited list) read as page_values reads
+    # them, and every key J-SET has a head name, so a key it adds can't be missed here.
+    from app.services import journey_settings
+    assert sorted(jr.HEAD_SETTINGS.values()) == sorted(journey_settings.KEYS)
+    for settings in ({}, {"theme": "Modern Light", "source_display": "filename", "journey_pitch": "hidden",
+                          "journey_keys": {"known": "k", "next": "j"}, "journey_first_meeting": False,
+                          "logic": {"context": {"max_contexts": 0}}},
+                     {"theme": "Zen Mode", "source_display": "off", "journey_meanings": "yours",
+                      "journey_word_size": "l", "journey_keys": "dvorak", "logic": {"context": {"max_contexts": 7}}},
+                     {"theme": "neon", "source_display": ["full"], "journey_first_meeting": "false",
+                      "journey_sentence_size": "xl", "logic": {"context": {"max_contexts": "5"}}}):
+        values = journey_settings.page_values(settings)
+        shown = jr.build("ja", _rows("ja", 1), _stats(1), settings=settings,
+                         pitch=jr.Pitch("ja", kanjium={})).head["settings"]
+        assert shown == {name: values[key] for name, key in jr.HEAD_SETTINGS.items()}, settings
 
 
 def test_all_sentences_per_word_stored_as_0_shows_every_kept_sentence_not_one():
     # The page's All is max_contexts 0: every Context column the list kept for the word (here five), and the head
-    # says 0 (All) so the page's control reads back as All; 2 is two, and a negative is one, as before.
+    # says 0 (All) so the page's control reads back as All; 2 is two, and a negative is All, as page_values reads it.
     lines = ["冒険の始まりだ。", "冒険に出よう。", "冒険は続く。", "冒険が好きだ。", "冒険の終わり。"]
     row = {"Sequence": 1, "Source File": "ep01.srt", "Word": "冒険", "Reading": "ボウケン", "Occurrences (File)": 5}
     for n, line in enumerate(lines, 1):
         row[f"Context {n}"], row[f"Src {n}"] = line, "Show/ep01.srt"
-    for stored, want, head in ((0, 5, 0), (2, 2, 2), (-1, 1, 1)):
+    for stored, want, head in ((0, 5, 0), (2, 2, 2), (-1, 5, 0)):
         out = jr.build("ja", [dict(row)], _stats(1), settings={"logic": {"context": {"max_contexts": stored}}},
                        pitch=jr.Pitch("ja", kanjium={}))
         word = [w for chunk in out.chunks for w in _decode(chunk)["w"]][0]
         assert out.head["settings"]["sentences"] == head
         assert [line[0] for line in word[9]] == lines[:want], (stored, word[9])     # each line [text, src, ...]
+
+
+@pytest.mark.parametrize("language,lines", [
+    ("ja", ["冒険の始まりだ。", "冒険に出よう。", "冒険は続く。", "冒険が好きだ。", "冒険の終わり。", "冒険者になる。",
+            "冒険の地図。", "冒険の仲間。", "冒険の夜。", "冒険の朝。", "冒険の歌。"]),
+    ("zh", ["我们去冒险吧。", "冒险开始了。", "这次冒险很难。", "冒险的路很长。", "他喜欢冒险。", "冒险结束了。",
+            "冒险家来了。", "冒险的地图。", "冒险的伙伴。", "冒险的夜晚。", "冒险的早晨。"])])
+def test_the_sentences_are_the_lists_own_in_its_order_read_in_one_place(language, lines):
+    # The page's sentence choice is read in one function (Sonic is deciding which sentence comes first): today the
+    # list's Context columns as kept, Context 1 first, an empty one skipped, All by number (Context 10 after 9,
+    # never after 1), each with its own Src.
+    row = {"Word": "冒険" if language == "ja" else "冒险"}
+    for n, line in reversed(list(enumerate(lines, 1))):        # a row's columns in any order: read by number
+        row[f"Context {n}"], row[f"Src {n}"] = line, f"Show/ep{n:02}.srt"
+    row["Context 3"] = ""
+    kept = [(line, f"Show/ep{n:02}.srt") for n, line in enumerate(lines, 1) if n != 3]
+    assert jr.sentences_of(row, 0) == kept
+    assert jr.sentences_of(row, 4) == kept[:3]
+    assert jr.sentences_of(row, 10 ** 9) == kept and jr.sentences_of(row, 60) == kept     # a hand-edited 10**9: no 10**9 columns
+    assert jr.sentences_of(dict(row, **{"Src 1": None}), 1) == [(lines[0], "")]
+    assert jr.sentences_of({"Word": row["Word"]}, 0) == [] and jr.sentences_of({}, 3) == []
 
 
 def test_the_stamp_is_the_render_time_in_milliseconds():

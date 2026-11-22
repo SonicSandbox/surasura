@@ -41,7 +41,6 @@ CHUNK_EPISODES = 100
 CHUNK_BYTES = 240_000           # a chunk's JSON closes past this (≈ 60–80 KB gzipped for Japanese sentences)
 AHEAD = 3                       # "its count in the next few episodes": its own and the next two
 GZIP_LEVEL = 4                  # level 6 took 2.5x as long for 9 % less (2k: 0.36 s -> 0.14 s)
-MEANINGS = ("en", "yours_en", "yours")      # English · Yours, then English · Yours only (SPEC §1.4)
 KIND_TIERS = ("now", "soon", "goal")        # `library_store.ANALYSED`: the head's tier 0 · 1 · 2
 
 # JMdict's part-of-speech codes, as the page says them (the rest are shown as their code)
@@ -55,23 +54,20 @@ POS_WORDS = {"n": "noun", "pn": "pronoun", "adv": "adverb", "adv-to": "adverb (�
              "vi": "intransitive", "vt": "transitive", "n-suf": "noun (suffix)", "n-pref": "noun (prefix)",
              "n-adv": "adverbial noun", "n-t": "noun (temporal)"}
 
-# The page's seven setting rows (SPEC §1.4) as the head carries them: {head name: (settings key, choices, default)}.
-# Sentences per word is `logic.context.max_contexts` (0 = All); where the line is from and the look are the app's own
-# `source_display` and `theme` (J-SET-TABLE § 2); the other keys are PROVISIONAL names until J-SET adds them to
-# DEFAULT_SETTINGS (rename them here, nowhere else). A value outside its choices is the default.
-PAGE_SETTINGS = {
-    "meanings": ("journey_meanings", MEANINGS, "en"),
-    "pitch": ("journey_pitch", ("shown", "hidden"), "shown"),
-    "source": ("source_display", ("icon", "icon_name", "hover"), "icon"),
-    "word_size": ("journey_word_size", ("s", "m", "l"), "m"),
-    "sentence_size": ("journey_sentence_size", ("s", "m", "l"), "m"),
-    "theme": ("theme", ("night", "light"), "night"),
-    "keys": ("journey_keys", ("qwerty", "dvorak"), "qwerty"),      # or the learner's own map {action: key}
+# The head's `settings` (SHAPE 1.1: the page reads them by these names) -> the journey's settings keys. Every value is
+# `journey_settings.page_values`' (J-SET: the one reader of the journey's settings, its choices, defaults and how an
+# older value reads); nothing here reads a setting itself. A key J-SET adds needs its name here (a test holds it).
+HEAD_SETTINGS = {
+    "sentences": "logic.context.max_contexts",      # 0 = All
+    "meanings": "journey_meanings",
+    "pitch": "journey_pitch",
+    "source": "source_display",
+    "word_size": "journey_word_size",
+    "sentence_size": "journey_sentence_size",
+    "theme": "theme",
+    "keys": "journey_keys",                         # or the learner's own map {action: key}
+    "first_meeting": "journey_first_meeting",       # sent, not yet acted on: the page has no first-meeting line yet
 }
-# The existing keys' values as the page reads them (PROVISIONAL, J-SET-TABLE § 2): `source_display`'s Hidden and Icon
-# read as Icon (the default), File name and Icon + file name as Icon + name; `theme`'s Modern Light as Light, every
-# dark look as Night (the default)
-READ_AS = {"source": {"filename": "icon_name", "full": "icon_name"}, "theme": {"Modern Light": "light"}}
 
 _Ep = namedtuple("_Ep", "watched cards status missing removed in_top")
 StoreFacts = namedtuple("StoreFacts", "items works order cards pre growth library")
@@ -127,18 +123,38 @@ def _hira(text):
     return (text or "").translate(_TO_HIRA)
 
 
-def page_settings(settings, per_word):
-    """The head's `settings`: every row of SPEC §1.4 with its value at this render, the default when unset."""
-    out = {"sentences": per_word}
-    for name, (key, choices, default) in PAGE_SETTINGS.items():
-        value = settings.get(key, default)
-        value = READ_AS.get(name, {}).get(value, value) if isinstance(value, str) else value
-        if name == "keys" and isinstance(value, dict):
-            value = {str(k): str(v) for k, v in value.items() if isinstance(k, str) and isinstance(v, str)} or default
-        elif value not in choices:
-            value = default
-        out[name] = value
-    return out
+def page_settings(settings):
+    """The head's `settings`: every row of SPEC §1.4 with its value at this render (`journey_settings.page_values`)."""
+    from app.services.journey_settings import page_values
+    values = page_values(settings)
+    return {name: values[key] for name, key in HEAD_SETTINGS.items()}
+
+
+def sentences_of(row, per_word):
+    """The word's sentences as the page shows them, first to last: [(text, its source's rel path or "")], at most
+    `per_word` (0 = All: every one the row has). **The one place the page's sentence choice is read**: today the
+    list's own, as it keeps them (`Context n` / `Src n` in its order, Context 1 first). Sonic is deciding which
+    sentence comes first (the sentence-choice study, 2026-11-22): his ruling changes this function, nothing else."""
+    if 0 < per_word <= 50:
+        columns = _columns(per_word)
+    else:                                       # All (or a hand-edited number past any list): the row's own columns
+        columns = [(f"Context {n}", f"Src {n}") for n in sorted(
+            int(k[8:]) for k in row if k.startswith("Context ") and k[8:].isdigit()) if not per_word or n <= per_word]
+    found = []
+    for context, src in columns:
+        text = _text(row.get(context))
+        if text:
+            found.append((text, _text(row.get(src))))
+    return found
+
+
+_COLUMNS = {}
+
+
+def _columns(n):
+    if n not in _COLUMNS:
+        _COLUMNS[n] = tuple((f"Context {i}", f"Src {i}") for i in range(1, n + 1))
+    return _COLUMNS[n]
 
 
 def _day(stamp):
@@ -846,13 +862,8 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
     `memo` a `WordMemo` (the meanings and pitch looked up last time; None: everything looked up)."""
     settings = settings or {}
     logic = settings.get("logic") if isinstance(settings.get("logic"), dict) else {}
-    context = logic.get("context") if isinstance(logic.get("context"), dict) else {}
-    try:
-        per_word = int(context.get("max_contexts", 3))
-        per_word = 0 if per_word == 0 else max(1, per_word)        # 0 = All (the page's choice): every kept one
-    except (TypeError, ValueError):
-        per_word = 3
-    shown_settings = page_settings(settings, per_word)
+    shown_settings = page_settings(settings)
+    per_word = shown_settings["sentences"]                         # 0 = All (the page's choice): every kept one
     meanings_mode = shown_settings["meanings"]
     thresholds = logic.get("priority_markers") if isinstance(logic.get("priority_markers"), dict) else {}
     from app.path_utils import infer_source_type, report_name
@@ -982,10 +993,6 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
             lines.append(line)
         return lines, added
 
-    if per_word == 0:                                               # All: every Context column the rows have
-        per_word = max((int(k[8:]) for k in {k for _e, row in words for k in row}
-                        if k.startswith("Context ") and k[8:].isdigit()), default=1)
-    columns = [(f"Context {n}", f"Src {n}") for n in range(1, per_word + 1)]
     for wid, (e, row) in enumerate(words):
         if e not in cur_eps and len(cur_eps) >= CHUNK_EPISODES:
             close()
@@ -995,12 +1002,8 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
         if language == "zh" and meanings is not None:
             pinyin = meanings.pinyin(word) or meanings.pinyin(orth)
             reading = reading or pinyin
-        found_lines = []
-        for context, src in columns:
-            text = _text(row.get(context))
-            if text:
-                rel = _text(row.get(src))
-                found_lines.append((text, rel) + (sources.times(rel, text) if rel else (None, None)))
+        found_lines = [(text, rel) + (sources.times(rel, text) if rel else (None, None))
+                       for text, rel in sentences_of(row, per_word)]
         marks = marks_of(row, thresholds) | (8 if in_anki(row, keys, owners, language) else 0)
         here = ahead.get(e, {}).get(key) if ahead else None
         count = int(_num(row.get("Occurrences (File)"))) if here is None else sum(
@@ -1179,10 +1182,10 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
             ranks = reference_data.spoken_ranks()
         except Exception:
             ranks = {}
-    own = None
-    if settings.get("journey_meanings", "en") != "en":
+
+    def own(keys):                              # Yours: `build` asks only when *Meanings* is not English
         from app import own_dicts
-        own = own_dicts.lookup
+        return own_dicts.lookup(keys)
     memo = WordMemo(os.path.join(gen.RESULTS_DIR, WORD_MEMO), *memo_keys(language))
     out = build(language, rows, stats, priority, facts, settings, backlog=backlog,
                 known=_known_terms(language, script),

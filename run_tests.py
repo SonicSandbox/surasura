@@ -13,6 +13,48 @@ import locale
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
+# --- every child without a console window of its own ----------------------------------------------------------- #
+# On Windows, a console program started by a parent that has no console (an AI app's shell, a scheduled task, an IDE)
+# gets a NEW console window: each --all shard, pytest run, git and taskkill opened one and took the focus, so the PC
+# couldn't be used while the suite ran. CREATE_NO_WINDOW starts a child on a console with no window, and whatever it
+# starts in turn (pytest, a test's own `python -m app.cli …`) shares that console: no window anywhere below, and no
+# test has to pass the flag itself. Such a child would write to its windowless console, so it gets this process's own
+# stdin, stdout and stderr unless the call names its own. A parent IN a console (a terminal) changes nothing: its
+# children share that console, as they always did.
+def _has_console():
+    """Has this process a console (a terminal)? Always, off Windows: there no child opens a window of its own."""
+    if os.name != "nt":
+        return True
+    import ctypes
+    return bool(ctypes.windll.kernel32.GetConsoleWindow())
+
+
+def _quiet(kwargs):
+    """`kwargs` for a child, without a console window of its own when this process has none (`_run`, `_popen`)."""
+    if _has_console():
+        return kwargs
+    kwargs.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
+    for name, stream in (("stdin", sys.stdin), ("stdout", sys.stdout), ("stderr", sys.stderr)):
+        if kwargs.get(name) is None:
+            try:
+                stream.flush() if name != "stdin" else None
+                stream.fileno()
+                kwargs[name] = stream
+            except (AttributeError, OSError, ValueError):
+                kwargs[name] = subprocess.DEVNULL
+    return kwargs
+
+
+def _run(*args, **kwargs):
+    """subprocess.run, without a console window of its own (`_quiet`)."""
+    return subprocess.run(*args, **_quiet(kwargs))
+
+
+def _popen(*args, **kwargs):
+    """subprocess.Popen, without a console window of its own (`_quiet`)."""
+    return subprocess.Popen(*args, **_quiet(kwargs))
+
+
 # --- --all: every suite at once --------------------------------------------------------------- #
 # Each suite runs in its own `python -m pytest <dir>` process from the project root — the command
 # docs/agent instructions/testing.md gives for a module suite — so they share nothing but the
@@ -178,7 +220,7 @@ def _run_shard(project_root, label, files, times_path):
     started = time.perf_counter()
     env = os.environ.copy()
     env["SURASURA_TEST_TIMES"] = times_path
-    result = subprocess.run(
+    result = _run(
         [sys.executable, "-m", "pytest", *files, "-ra", "-p", "no:cacheprovider"],
         cwd=project_root, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -232,7 +274,7 @@ def run_shard(project_root, spec):
     print(f"Core suite, shard {spec}: {len(files)} files", flush=True)
     if not files:                                          # more shards than files: nothing of the suite is lost
         return 0
-    result = subprocess.run([sys.executable, "-m", "pytest", *files, "-v", "-ra"],
+    result = _run([sys.executable, "-m", "pytest", *files, "-v", "-ra"],
                             cwd=project_root, env=os.environ.copy())
     died = death(result.returncode)
     if died:
@@ -253,7 +295,7 @@ def _decode(raw):
 def _run_suite(project_root, suite):
     """Run one suite to the end. Returns (suite, exit code, output, seconds)."""
     started = time.perf_counter()
-    result = subprocess.run(
+    result = _run(
         [sys.executable, "-m", "pytest", suite, "-ra", "-p", "no:cacheprovider"],
         cwd=project_root, env=os.environ.copy(),
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -353,7 +395,7 @@ def _changed_test_files(project_root, base):
     those changed and not yet committed, in path order."""
     names = set()
     for args in (["diff", "--name-only", f"{base}...HEAD"], ["diff", "--name-only", "HEAD"]):
-        out = subprocess.run(["git", "-c", "core.quotepath=false", *args], cwd=project_root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        out = _run(["git", "-c", "core.quotepath=false", *args], cwd=project_root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         names.update(line.strip() for line in _decode(out.stdout).splitlines() if line.strip())
     return sorted(n for n in names if _is_test_file(n) and os.path.isfile(os.path.join(project_root, n)))
 
@@ -365,7 +407,7 @@ def _is_test_file(path):
 
 
 def _git_out(project_root, *args):
-    out = subprocess.run(["git", *args], cwd=project_root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    out = _run(["git", *args], cwd=project_root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     return _decode(out.stdout) if out.returncode == 0 else ""
 
 
@@ -495,7 +537,7 @@ def _repeat(project_root, groups, times, env):
     first red, or None."""
     for n in range(1, times + 1):
         for label, args in groups:
-            result = subprocess.run([sys.executable, "-m", "pytest", *args, "-q", "-ra", "-p", "no:cacheprovider"],
+            result = _run([sys.executable, "-m", "pytest", *args, "-q", "-ra", "-p", "no:cacheprovider"],
                                     cwd=project_root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             code = result.returncode
             print(f"  {'PASS' if code == 0 else 'FAIL'}  {label} run {n}/{times}  {_last_line(_decode(result.stdout))}",
@@ -540,7 +582,7 @@ def run_stress_changed(project_root, base="origin/3.0-dev", times=STRESS_TIMES, 
     if listing:
         return 0
     def start(spec):
-        return subprocess.Popen([sys.executable, os.path.abspath(__file__), "--shard", spec], cwd=project_root,
+        return _popen([sys.executable, os.path.abspath(__file__), "--shard", spec], cwd=project_root,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     loads = {spec: start(spec) for spec in LOAD_SHARDS}      # started before the first repeat, ended after the last
     stop = threading.Event()
@@ -584,7 +626,7 @@ def _groups(nodes, suffix=""):
 def _end_tree(proc):
     """End a load shard and every process it started (pytest's own children too)."""
     if sys.platform == "win32":
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL,
+        _run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL)
     else:
         proc.kill()
@@ -792,7 +834,7 @@ GUARDS_BUDGET_S = 120
 
 def _public_files(project_root):
     """The files the public repo tracks (what GitHub's runner checks out), as paths from the top, or None."""
-    out = subprocess.run(["git", "-c", "core.quotepath=false", "ls-files", "-z"], cwd=project_root,
+    out = _run(["git", "-c", "core.quotepath=false", "ls-files", "-z"], cwd=project_root,
                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     if out.returncode != 0:
         return None
@@ -818,7 +860,7 @@ def _by_suite(nodes):
 def _run_groups(project_root, groups, env, label):
     """Each suite's tests in one pytest process (the read audit on), side by side. -> (failed suites, outputs)."""
     def one(suite, nodes):
-        result = subprocess.run([sys.executable, "-m", "pytest", *nodes, "-q", "-ra", "-p", "no:cacheprovider",
+        result = _run([sys.executable, "-m", "pytest", *nodes, "-q", "-ra", "-p", "no:cacheprovider",
                                  "-p", "tests.read_audit"], cwd=project_root, env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         return suite, result.returncode, _decode(result.stdout)
@@ -1158,7 +1200,7 @@ def run_touched_callers(project_root, base="origin/3.0-dev", listing=False):
     env = _audit_env()
 
     def one(label, nodes):
-        result = subprocess.run([sys.executable, "-m", "pytest", *nodes, "-q", "-ra", "-p", "no:cacheprovider",
+        result = _run([sys.executable, "-m", "pytest", *nodes, "-q", "-ra", "-p", "no:cacheprovider",
                                  "-p", "tests.read_audit"], cwd=project_root, env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         return label, (0 if result.returncode == 5 else result.returncode), _decode(result.stdout)
@@ -1263,7 +1305,7 @@ def main():
     
     try:
         # 3. Execution
-        result = subprocess.run(cmd, env=os.environ.copy())
+        result = _run(cmd, env=os.environ.copy())
         
         # 4. Result Handling
         print("\n" + "-"*60)

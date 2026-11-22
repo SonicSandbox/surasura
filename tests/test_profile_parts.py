@@ -77,8 +77,6 @@ CALL_SITES = {
     "modules/junban/patterns_build.py": 1,
     "modules/junban/patterns_package.py": 1,
     "modules/junban/undo.py": 1,
-    "modules/koe/keystore.py": 1,
-    "modules/koe/server.py": 1,
     "modules/youtube_downloader/downloader_view.py": 1,
     "modules/youtube_downloader/ytdlp_manager.py": 1,
 }
@@ -171,13 +169,10 @@ def _writers():
         out.append((f"the {lang} library store", ls.library_db_path(lang, path_utils.get_data_path(lang)), False))
     try:
         from modules.junban import backlog_shows, patterns_build, undo
-        from modules.koe import keystore, server
         from modules.youtube_downloader import downloader_view, ytdlp_manager
-    except ImportError:                                  # a public checkout: no modules/
+    except ImportError:                                  # a checkout without modules/
         return out
     out += [
-        ("Koe's key", keystore._path(), False),
-        ("Koe's usage", server._usage_path(), False),
         ("Junban's backlog shows", backlog_shows.path("ja"), False),
         ("Junban's runs", undo.runs_folder("ja"), True),
         ("パターン", patterns_build.default_db_path("ja"), False),

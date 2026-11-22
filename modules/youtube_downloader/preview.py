@@ -24,7 +24,7 @@ import threading
 import traceback
 from collections import namedtuple
 
-from app import settings_manager
+from app import plan_rules, settings_manager
 from app.path_utils import get_user_file, get_user_files_path, get_data_path, get_resource, list_reader
 
 YOUTUBE_ID_RE = re.compile(r'(?:v=|/shorts/|/embed/|youtu\.be/|/watch\?v=)([0-9A-Za-z_-]{11})')
@@ -290,7 +290,8 @@ def analyze_transcript(transcript_path, language):
     ctx_cfg = logic.get("context", {})
     min_chars = ctx_cfg.get("min_chars", 10)
     pref_max = ctx_cfg.get("preferred_max_chars", 50)
-    max_contexts = ctx_cfg.get("max_contexts", 3)
+    # Sentences per word; 0 is All (`plan_rules.context_limit`: every sentence there is, as the list's rows)
+    max_contexts = plan_rules.context_limit(ctx_cfg.get("max_contexts", 3))
 
     def is_known(l, r):
         return (l, r) in known_tuples or l in known_lemmas or l in ignore

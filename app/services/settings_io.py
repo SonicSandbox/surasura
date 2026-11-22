@@ -48,6 +48,11 @@ PROGRAMS = {"open_video": "open_video_program", "open_book": "open_book_program"
 PAUSED = "paused"                # Mado-PZ: this PC's paused circles — never exported; an import keeps this PC's
 # A key named like a secret never leaves or comes in (none is in settings.json: Speech's key is in its keystore)
 SECRET = re.compile(r"(^|_)(api_?key|key|token|secret|password|passwd|credentials?)s?$", re.IGNORECASE)
+NOT_SECRETS = frozenset({"journey_keys"})    # named like one, but not: the journey page's keyboard keys (J-SET)
+
+
+def _secret(name):
+    return name not in NOT_SECRETS and bool(SECRET.search(name))
 LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
 
 Outcome = namedtuple("Outcome", "ok message path undo", defaults=(None, None))   # undo: the way back (an export)
@@ -120,7 +125,7 @@ def known(path):
     sits in, is placed, its optional module is installed, and it isn't named like a secret. A `_comment` note isn't a
     setting (the defaults bring their own back)."""
     leaf = path.rsplit(".", 1)[-1]
-    if leaf == "_comment" or SECRET.search(leaf):
+    if leaf == "_comment" or _secret(leaf):
         return False
     placed = path
     while placed not in settings_placement.PLACED and "." in placed:
@@ -139,7 +144,7 @@ def _filter(value, path, dropped):
             out[key] = _filter(item, child, dropped)
         elif known(child):
             out[key] = _no_secrets(item)
-        elif isinstance(item, dict) and path and not SECRET.search(key) and key != "_comment":
+        elif isinstance(item, dict) and path and not _secret(key) and key != "_comment":
             kept = _filter(item, child, dropped)         # a block of placed settings (logic.weights: .high, .low …)
             if kept:
                 out[key] = kept
@@ -151,7 +156,7 @@ def _filter(value, path, dropped):
 def _no_secrets(value):
     """`value` with every key named like a secret left out, at any depth (a placed block is kept whole otherwise)."""
     if isinstance(value, dict):
-        return {k: _no_secrets(v) for k, v in value.items() if not (isinstance(k, str) and SECRET.search(k))}
+        return {k: _no_secrets(v) for k, v in value.items() if not (isinstance(k, str) and _secret(k))}
     if isinstance(value, list):
         return [_no_secrets(v) for v in value]
     return value

@@ -11375,11 +11375,6 @@ def _origin_record(root_id, origin, f):
     return record
 
 
-def _store_copy_dirty(self):
-    """Bookkeeping the copy carries (§6.6): no version moves, the next export writes it."""
-    self._set_meta({"copy_dirty": self._meta().get("copy_dirty", 0) + 1})
-
-
 def _store_not_a_source(self, path):
     """Why `path` can't be a source (B3), or None: not a folder; a whole drive; the user's profile folder; Surasura's own
     folders — every language's data and user files, the store's folder — a folder inside one, or one that holds one
@@ -14668,7 +14663,6 @@ Store.settle_editions = _store_settle_editions
 Store.pending_editions = _store_pending_editions
 Store.other_groups = _store_other_groups
 
-Store._copy_dirty = _store_copy_dirty
 Store._not_a_source = _store_not_a_source
 Store.add_source = _store_add_source
 Store.sources = _store_sources

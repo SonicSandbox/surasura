@@ -346,6 +346,24 @@ def test_a_heartbeat_into_a_folder_already_removed_never_raises(api, tmp_path):
     anki_miner.run_setup(MINER, "ja", None, tmp_path / "gone" / "progress.json")
 
 
+def test_the_speech_models_heartbeat_keeps_a_quiet_download_read_as_setting_up_and_never_makes_the_folder(
+        tmp_path, monkeypatch):
+    """`anki_miner.touch_heartbeat`, the one heartbeat the line-up's speech model and a show's *Make them from the
+    audio* touch each poll (they each had a copy): a quiet stretch past SETUP_FRESH_S still reads as setting up
+    after it; with the setup's folder gone, nothing is made and nothing raised."""
+    from app import path_utils
+    monkeypatch.setattr(path_utils, "get_local_data_path", lambda: str(tmp_path))
+    folder = tmp_path / anki_miner.SETUP_STAGING
+    anki_miner.touch_heartbeat()
+    assert not folder.exists(), "no folder made by a heartbeat"
+    folder.mkdir()
+    stale = time.time() - anki_miner.SETUP_FRESH_S - 60
+    os.utime(folder, (stale, stale))
+    assert anki_miner.setting_up() is False
+    anki_miner.touch_heartbeat()
+    assert anki_miner.setting_up() is True and (folder / anki_miner.HEARTBEAT).is_file()
+
+
 # --- A5F2: the card's state names what Surasura sets itself and what only an update brings -------------------------- #
 def test_the_card_offers_finish_for_a_profile_surasura_makes_and_the_steps_only_before_37():
     found = {"anki_miner": {"path": MINER, "app": "3.10.1"}}

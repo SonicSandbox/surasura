@@ -553,19 +553,27 @@ def test_a_rare_kanji_or_the_words_only_kanji_still_fails_the_draft(target, text
     assert any(f"shows {kanji}, a kanji of the target word {target} that gives it away" in r for r in result["reasons"])
 
 
-def test_the_common_kanji_are_read_from_the_spoken_ranks_weighted_by_rank(monkeypatch):
-    """The boundary: the COMMON_KANJI-th kanji by weight is common, the next is not; a word with one kanji keeps it
-    banned however common; a word past COMMON_KANJI_FROM counts for nothing."""
+def _common(monkeypatch, ranks, most, band=20000):
     from app import reference_data
-    ranks = {"時間": 1, "時代": 2, "人生": 3, "跳躍": 4, "毎日": 30001}
     monkeypatch.setattr(reference_data, "spoken_ranks", lambda: ranks)
-    monkeypatch.setattr(practice, "COMMON_KANJI", 4)
+    monkeypatch.setattr(practice, "COMMON_KANJI", most)
+    monkeypatch.setattr(practice, "COMMON_KANJI_FROM", band)
     monkeypatch.setattr(practice, "_COMMON", {})
-    # weights: 時 1 + 1/2, 間 1, 代 1/2, 人 生 1/3, 跳 躍 1/4; 毎 日 past the band: the top four are 時 間 代 and 人 or 生
-    assert {"時", "間", "代"} <= practice.common_kanji() and len(practice.common_kanji()) == 4
+    return practice.common_kanji()
+
+
+def test_a_kanji_is_common_by_how_much_its_words_are_spoken_not_by_how_many_words_hold_it(monkeypatch):
+    """跳 is in three words, each rare (ranks 10-12: weight 0.27); 時 and 間 in one each, the commonest (rank 1): with
+    room for two, 時 and 間 are the common ones — counting words would pick 跳."""
+    assert _common(monkeypatch, {"時間": 1, "跳躍": 10, "跳ぶ": 11, "跳ね": 12}, most=2) == {"時", "間"}
     assert not practice.gives_away("時間", "時") and practice.gives_away("跳躍", "跳")
-    assert practice.gives_away("毎日", "日")                 # 日 here only past COMMON_KANJI_FROM
     assert practice.gives_away("時", "時")                   # a word's only kanji, however common
+
+
+def test_a_word_past_the_spoken_band_makes_no_kanji_common(monkeypatch):
+    """毎日 ranked past COMMON_KANJI_FROM counts for nothing: with room for six, only the four kanji in the band."""
+    assert _common(monkeypatch, {"時間": 1, "人生": 3, "毎日": 6}, most=6, band=5) == {"時", "間", "人", "生"}
+    assert practice.gives_away("毎日", "日")
 
 
 def test_the_real_common_kanji_hold_the_everyday_ones_and_not_the_rare(monkeypatch):
@@ -619,6 +627,22 @@ def test_a_near_reading_is_still_found_one_kana_either_side_of_its_length():
     reading is the reading arm's, never near."""
     assert _target(_answer("ちょうちゃくに成功した。", targets=["跳躍"]))["how"] == "near_reading"
     assert _target(_answer("ちょうやくに成功した。", targets=["跳躍"]))["how"] == "reading"
+
+
+@pytest.mark.parametrize("target, text, form", [
+    ("冒険", "ぼけんに行こう。", "ぼけん"),               # one kana short: the window one under the reading's length
+    ("俳優", "はゆうになりたい。", "はゆう"),
+    ("郵便局", "ゆびんきょくに行く。", "ゆびんきょく"),   # a kana dropped before the piece left whole: its place shifts
+    ("跳躍", "じうやくに成功した。", "じうやく")])
+def test_a_misreading_shorter_than_the_word_or_shifted_by_a_dropped_kana_is_still_found_near(target, text, form):
+    found = _target(_answer(text, targets=[target]))
+    assert (found["how"], found["form"]) == ("near_reading", form)
+
+
+def test_a_reading_found_by_its_text_still_starts_at_a_word_never_inside_one():
+    """かお inside なかおやすみ (なか + おやすみ) starts mid-word: not 顔 (the scan finds the reading in the joined
+    kana first, then keeps only a find at a word's start)."""
+    assert _target(_answer("なかおやすみ。", targets=["顔"])) == {"word": "顔", "found": False}
 
 
 def test_a_text_past_the_cap_with_targets_says_what_to_check_and_reads_as_before_without(ja_resources_dir):

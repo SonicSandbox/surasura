@@ -572,6 +572,19 @@ def setup_folder():
     return os.path.join(get_local_data_path(), SETUP_STAGING)
 
 
+def touch_heartbeat():
+    """Surasura's heartbeat, touched beside the setup's progress file (`setting_up`): a speech-model download (the
+    line-up's, a show's *Make them from the audio*) that writes no progress for minutes still reads as *finishing its
+    setup*. Never made when the folder is gone ("a" opens no folder); never raises."""
+    path = os.path.join(setup_folder(), HEARTBEAT)
+    try:
+        with open(path, "a"):
+            pass
+        os.utime(path)
+    except OSError:
+        pass
+
+
 def setting_up():
     """Is Surasura's *Finish its setup* running Anki Miner's setup now (A2-6: a Connect run told BUSY meanwhile names
     the setup, never "Anki Miner is open")? Its folder is there, and it or the progress file Anki Miner writes in it

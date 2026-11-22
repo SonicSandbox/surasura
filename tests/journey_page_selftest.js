@@ -483,6 +483,51 @@
       undo.click(); await settle();
       ok("F: Undo after the queue sent the press: the toast says to press it again", /press it again/.test($("#toast").textContent) && J.MARK.get(words[1]) === "known", $("#toast").textContent);
       await reset();
+      // G: an older press that comes back busy after a newer one was taken is dropped, never queued behind it
+      {
+        let n = 0;
+        window.__J_DOOR_HOOK = async (rt, b) => { if (rt !== "words/mark" || b.marks[0].word !== words[0]) return null; if (++n === 1) { await later(40); return { ok: false, kind: "busy" }; } return null; };
+        J.markWord("known", ids[0]); J.markWord("ignore", ids[0]);
+        await later(80); await settle(6);
+        ok("G: Known answered busy after Ignore was taken: not queued behind it, Ignore drawn", !qOf("m:" + words[0]).length && J.MARK.get(words[0]) === "ignore" && !J.MWAIT.has(words[0]), JSON.stringify(qOf("m:" + words[0]).map((x) => x.body.marks)));
+      }
+      await reset();
+      // H: Undo while the queue is sending that very press: it says so, and the mark stays (the app gets it)
+      {
+        closed(); J.markWord("known", ids[1]); await settle();
+        const undoH = $("#toast button"); open(); let n = 0;
+        window.__J_DOOR_HOOK = async (rt) => { if (rt === "words/mark" && ++n === 1) await later(40); return null; };
+        const h = J.hello();
+        for (let k = 0; k < 200 && n < 1; k++) await settle(1);
+        undoH.click(); await h; await settle(6);
+        ok("H: Undo while the queue sends the press: the toast says to press it again, the mark stays", /press it again/.test($("#toast").textContent) && J.MARK.get(words[1]) === "known" && !qOf("m:" + words[1]).length, $("#toast").textContent + " · " + J.MARK.get(words[1]));
+      }
+      await reset();
+      // I: a state read keeps a flag whose press is on its way
+      if (J.D.routes && J.D.routes.includes("line/flag")) {
+        let n = 0;
+        window.__J_DOOR_HOOK = async (rt) => {
+          if (rt === "line/flag" && ++n === 1) { await later(40); return null; }
+          return rt === "state" ? { ok: true, at: Date.now(), flags: { flagged: [] } } : null;
+        };
+        const fb = CALLS.length;
+        J.flagLine(ids[2], 0, ["other"], "", true);
+        await J.readState(); await later(60); await settle(6);
+        const fc = CALLS.slice(fb).find((c) => c[1] === "line/flag");
+        ok("I: a state read keeps a flag whose press is on its way", !!fc && J.FLAGGED.has(fc[2].line_id), fc && fc[2].line_id);
+        window.__J_DOOR_HOOK = null; J.flagLine(ids[2], 0, ["other"], "", false); await settle(6);
+      }
+      // J: an online Undo answered after a newer press on the word leaves the newer press drawn
+      {
+        J.markWord("known", ids[3]); await settle(6);
+        let n = 0;
+        window.__J_DOOR_HOOK = async (rt) => { if (rt === "words/undo" && ++n === 1) await later(40); return null; };
+        $("#toast button").click();                     // Undo of Known, on its way
+        J.markWord("ignore", ids[3]);                   // a newer press meanwhile
+        await later(80); await settle(6);
+        ok("J: Undo answered after a newer Ignore: Ignore stays drawn", J.MARK.get(words[3]) === "ignore", J.MARK.get(words[3]));
+      }
+      await reset();
       ok("the queue ends empty, nothing waits", !J.QUEUE().length && words.every((w) => !J.MWAIT.has(w) && !J.MARK.has(w)) && (pq == null || !page.ep(pq).pre.wait), J.QUEUE().length);
     }
 

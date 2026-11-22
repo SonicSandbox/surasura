@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- The page reaches nothing but Surasura's door on this PC (127.0.0.1) and the learner's own media files. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; media-src file: http://127.0.0.1:*; connect-src http://127.0.0.1:*">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; media-src file: http://127.0.0.1:*; connect-src http://127.0.0.1:*">
 <title>Surasura · Journey</title>
 <style>
 /* Journey v3 (SPEC §1). The window's 3.0 tokens (night) and the page's light set. */
@@ -70,10 +70,15 @@ svg.i { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:1.
 .stage { flex:1; min-width:0; overflow:auto; padding:22px 34px 60px; transition:transform var(--glide) var(--ease); }
 .desk.idle { opacity:.35; }
 .desk { width:330px; flex:none; padding:20px 24px 40px 0; overflow:auto; transition:opacity var(--slow) var(--ease); }
-@media (max-width:1100px) { .desk { display:none; } }
+/* below 1100 px the meaning and More go under the word, never away (the word flow: see → understand → hear → decide) */
+@media (max-width:1100px) {
+  .body { display:grid; grid-template-columns:296px minmax(0, 1fr); grid-template-rows:minmax(0, 1fr) auto; }
+  .rail { grid-row:1 / span 2; } .stage { grid-column:2; grid-row:1; } .desk { grid-column:2; grid-row:2; width:auto; max-height:38vh; padding:10px 34px 16px; border-top:1px solid var(--line); }
+}
 .narrow-only { display:none; }
 @media (max-width:760px) {
   .rail { display:none; } .narrow-only { display:inline-grid; }
+  .body { grid-template-columns:minmax(0, 1fr); } .stage, .desk { grid-column:1; } .desk { padding:10px 14px 14px; }
   .brand span { display:none; } .sbox { width:auto; min-width:0; flex:1; } .sw { flex:1; min-width:0; } .hd1 { gap:6px; padding:0 8px; } .sp { display:none; }
   .stage { padding:14px 14px 40px; } .end { padding:22px 16px; margin-top:16px; } .end h2 { font-size:20px; flex-wrap:wrap; }
   body.focus .stage { transform:none; } .chip { padding:0 8px; }
@@ -346,7 +351,8 @@ function epPart(i) {                                  // the episode's own part 
   return s && t.startsWith(s[1] + " · ") ? t.slice(s[1].length + 3) : t;
 }
 const showOf = (i) => SHOWS[EPS[i][3]] || ["", "", EPS[i][5], "sapphire"];
-const gemOf = (i) => showOf(i)[3] || KIND_GEM[EPS[i][5]] || "sapphire";
+const GEMS = new Set(["sapphire", "emerald", "ruby"]);              // a gem names a colour token: only these three
+const gemOf = (i) => { const g = showOf(i)[3] || KIND_GEM[EPS[i][5]]; return GEMS.has(g) ? g : "sapphire"; };
 const ID_IX = new Map();
 for (let i = 0; i < EPS.length; i++) if (EPS[i][0] != null) ID_IX.set(EPS[i][0], i);
 
@@ -689,18 +695,23 @@ function undoPre(i, before, undoId) {
 /* ⚑ flag a sentence → Send report (§4) */
 const FLAGGED = new Set();                             // line ids, Send report's list read back
 const FWAIT = new Map();
-function lineId(text, label) {                         // a line's id: its text and where it is from (no path)
+/* A line's id, one format everywhere: the simple Swap's `<item id>:<start ms>` (connect/swap.py `line_id`), from the
+   line's own source (its episode's store id) and start. A line without both (a book's, one from outside the study
+   order) gets the page's own key, `p<hash of its text and source>`: ⚑ keys it; Swap and the clip refuse it. */
+function lineId(ln, src) {
+  const e = src && src[2] >= 0 ? EPS[src[2]] : null, at = ln[2];
+  if (e && e[0] != null && typeof at === "number" && isFinite(at)) return `${e[0]}:${Math.round(at * 1000)}`;
   let h = 0x811c9dc5;
-  const s = text + "\u0001" + label;
+  const s = ln[0] + "\u0001" + (src ? src[0] : "");
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
-  return h.toString(16).padStart(8, "0");
+  return "p" + h.toString(16).padStart(8, "0");
 }
 const REASONS = [["parsing", "Parsing looks wrong"], ["too_long", "Too long"], ["bad_audio", "Bad audio"], ["wrong_sentence", "Wrong sentence for this word"], ["other", "Other"]];
 function flagLine(id, k, reasons, note, on) {
   const w = wordNow(id), ln = w && w[9][k];
   if (!ln) return;
   const src = srcOf(id, ln[1]), label = src ? src[0] : "", e = src && src[2] >= 0 ? EPS[src[2]] : null;
-  const lid = lineId(ln[0], label), show = e ? showOf(src[2])[1] : label;
+  const lid = lineId(ln, src), show = e ? showOf(src[2])[1] : label;
   if (on) FLAGGED.add(lid); else FLAGGED.delete(lid);
   FWAIT.set(lid, "send"); drawPart("lines");
   write("line/flag", { line_id: lid, word: w[0], line: ln[0], show, episode: e ? epPart(src[2]) : "", time: ln[2], reasons, note: note || "", on }, "f:" + lid, (r) => {
@@ -784,7 +795,7 @@ function lineHtml(id, w, k, sel) {
   const ln = w[9][k], src = srcOf(id, ln[1]);
   const label = src ? src[0] : "", kind = src ? src[1] : "", play = src ? src[3] : "";
   const can = play && (PLAYABLE.test(play) || built("clip/cut") && D.routes != null) && ln[2] != null;
-  const lid = lineId(ln[0], label), lit = FLAGGED.has(lid), fw = shownWait(FWAIT.get(lid));
+  const lid = lineId(ln, src), lit = FLAGGED.has(lid), fw = shownWait(FWAIT.get(lid));
   const flag = built("line/flag") ? `<button class="fl ${lit ? "lit" : ""} ${fw}" data-flag="${k}" aria-label="Flag this sentence" data-tip="${lit ? "Flagged for Send report" : "Flag this sentence for Send report"}${fw === "queued" ? "\n" + waitWord() : ""}">⚑</button>` : "";
   const oc = k === 0 && (w[6] & 8) ? `<div class="oc">On your card</div>` : "";
   return `<div class="ln ${sel ? "sel" : ""}" data-li="${k}"><button class="pl ${can ? "" : "none"}" data-play="${k}" aria-label="Play the line" data-tip="▶ the line${kt("line")}"><svg class="i" viewBox="0 0 16 16"><path d="M5 3.5v9l7-4.5z" fill="currentColor"/></svg></button><div class="lt">${oc}<div class="tx">${hl(ln[0], w)}</div><div class="src" data-tip="${esc(label)}">${kindIcon(kind)}<span class="sn">${esc(label)}</span></div></div>${flag}</div>`;
@@ -1116,7 +1127,7 @@ function setFilter(k) { S.filter = k; resetSeq(); const s = seq(S.ep); if (s && 
 function setOrder(o) { S.order = o; resetSeq(); S.wi = 0; drawWord(); rail.update("filter"); saveSoon(); }
 function openFlag(k, anchor) {
   const id = curWordId(), w = id != null && wordNow(id); if (!w) return;
-  const ln = w[9][k], src = srcOf(id, ln[1]), lid = lineId(ln[0], src ? src[0] : "");
+  const ln = w[9][k], src = srcOf(id, ln[1]), lid = lineId(ln, src);
   const lit = FLAGGED.has(lid), r = anchor.getBoundingClientRect();
   const html = lit ? `<b>Flagged for Send report</b><div class="why">It goes with your next report; you see it there first.</div><div class="next"><button class="btn" data-unflag="${k}">Take the flag off</button></div>`
     : `<b>What's wrong with this line?</b><div class="chips">${REASONS.map(([key, t]) => `<button data-reason="${key}">${esc(t)}</button>`).join("")}</div><textarea class="hide" id="fnote" placeholder="A note (optional)"></textarea><div class="why">It goes to Send report, where you see it before anything is sent.</div><div style="margin-top:8px"><button class="btn go" data-flagit="${k}">Flag it</button></div>`;
@@ -1135,7 +1146,7 @@ async function playLine(k) {
   let url = PLAYABLE.test(file) && HEAD.dirs[Number(dir)] ? HEAD.dirs[Number(dir)] + encodeURI(file) : null;
   if (!url) {
     if (!live()) { toast("Surasura is closed: this line plays when the journey is open from Surasura."); return; }
-    const a = await doorCall("clip/cut", { line_id: lineId(ln[0], src[0]) });
+    const a = await doorCall("clip/cut", { line_id: lineId(ln, src) });
     if (!a || !a.ok) { toast(a && a.error || "Surasura couldn't cut that line."); return; }
     url = `http://127.0.0.1:${DOOR.port}${a.url}`;
   }
@@ -1329,7 +1340,7 @@ async function pickLine(k) {                            // ⇄ for a carded word
   if (!built(route)) return;
   if (!live()) { toast("Surasura is closed: this needs Surasura open (nothing kept)."); return; }
   const src = srcOf(id, ln[1]);
-  const a = await doorCall(route, { word: w[0], line_id: lineId(ln[0], src ? src[0] : ""), at: Date.now() });
+  const a = await doorCall(route, { word: w[0], line_id: lineId(ln, src), at: Date.now() });
   if (a && a.ok) toast(route === "swap/queue" ? `⇄ Queued: Swap makes ${w[0]}'s new card from this line.` : `Asked: Connect makes ${w[0]}'s card from this line, first in your order.`);
   else if (a && a.kind === "not_yet") { D.routes = (D.routes || []).filter((r) => r !== route); drawPart("acts"); }
   else toast(a && a.error || "Surasura is closed: this needs Surasura open (nothing kept).");

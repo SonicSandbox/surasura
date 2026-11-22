@@ -128,7 +128,7 @@
        way to `offline` (SPEC §3.5); a route not yet built drops the group that is only that route */
     const OFFLINE = MODE !== "on";
     const CONTRACT = Q.get("rail") === "contract";      // another rail plugged in: the page's own groups + `contract`
-    const SKIP = new Set(CONTRACT ? ["word", "marks", "pre", "picker", "door", "flag", "settings", "list", "focus", "search", "notyet", "a11y", "offline"]
+    const SKIP = new Set(CONTRACT ? ["word", "marks", "pre", "picker", "door", "flag", "settings", "list", "focus", "search", "notyet", "a11y", "offline", "layout"]
       : OFFLINE ? ["marks", "pre", "flag", "door", "settings", "contract"] : ["offline", "contract"]);
     if (NOTYET.has("episode/prestudied")) SKIP.add("pre");
     if (NOTYET.has("line/flag")) SKIP.add("flag");
@@ -437,6 +437,19 @@
       let r = await press(() => $(".flagp [data-flagit]").click());
       const call = CALLS.filter(([, rt]) => rt === "line/flag").pop();
       ok("Flag it: line/flag with the line, its word, show, episode, time, the reasons and the note — never a path", call && call[2].on === true && call[2].reasons.slice().sort().join() === "other,parsing" && call[2].note === "分かち書きが変" && call[2].line && call[2].word && !/[\\/]/.test(call[2].show + call[2].episode), call && JSON.stringify(call[2]).slice(0, 200));
+      {
+        // the flagged line is the word's first; its id is its episode's store id and its start in ms, else the page's key
+        const ln0 = J.wordNow(J.curWordId())[9][0], lid = call[2].line_id, m = /^(\d+):(\d+)$/.exec(lid);
+        const ids = new Set(); for (let i = 0; i < N; i++) if (page.ep(i).id != null) ids.add(String(page.ep(i).id));
+        ok("one line id everywhere, the simple Swap's <item id>:<start ms> (a line with both)",
+          m ? ids.has(m[1]) && Number(m[2]) === Math.round(ln0[2] * 1000) : /^p[0-9a-f]{8}$/.test(lid), lid);   // p…: no store id or no start
+        if ($('#stage [data-act="pick"]')) {
+          const n0 = CALLS.length;
+          J.pickLine(0); await settle();
+          const pc = CALLS.slice(n0).find(([, rt]) => rt === "swap/queue" || rt === "card/make");
+          ok("…and ⇄ sends that same id", pc && pc[2].line_id === call[2].line_id, pc && pc[2].line_id);
+        }
+      }
       ok("the line's ⚑ stays lit; a toast with Undo", $("#stage .fl").classList.contains("lit") && /Undo/.test($("#toast").textContent));
       budget(ok, "⚑ flag a line", r, ["layer", "lines", "word", "toast"]);
       $("#toast button").click(); await settle();
@@ -540,6 +553,21 @@
       if (NOTYET.has("line/flag")) ok("line/flag not yet in this Surasura: ⚑ hidden, never an error", !$("#stage .fl"));
       if (NOTYET.has("episode/prestudied")) ok("episode/prestudied not yet: the stone is no press", !$(`.rs-head [data-pre]`));
       if (NOTYET.has("swap/queue") && NOTYET.has("card/make")) ok("swap/queue + card/make not yet: ⇄ hidden (the one flag still on)", !$('#stage [data-act="pick"]') && J.SWAP_SHOWN);
+    }
+
+    /* ---- the width (390 · 800 · 1280): nothing cut off, every press reachable, the meaning never away ---- */
+    if (group("layout")) {
+      await goWord(E, 0);
+      const W = innerWidth, inView = (el) => { if (!visible(el)) return false; const r = gbr.call(el); return r.left >= -0.5 && r.right <= W + 0.5 && r.width > 0; };
+      ok(`${W} px: no sideways scroll`, document.documentElement.scrollWidth <= W + 1 && $("#stage").scrollWidth <= $("#stage").clientWidth + 1, `${document.documentElement.scrollWidth} / ${W}`);
+      ok(`${W} px: the top bar fits (nothing pushed off it)`, $$(".hd1 > *").filter(visible).every(inView));
+      ok(`${W} px: the word, its sentences and ✓ ⊘ in view`, inView($("#stage .w")) && $$("#stage .ln").filter(visible).every(inView) && inView($('#stage [data-act="known"]')) && inView($('#stage [data-act="ignore"]')));
+      ok(`${W} px: ↑ ↓ and the picker on screen`, inView($('#stage [data-act="next"]')) && inView($('#stage [data-act="prev"]')) && (inView($('[data-rs="picker"]')) || inView($('#stage [data-act="picker"]'))));
+      ok(`${W} px: the rail ${W > 760 ? "beside the word" : "behind ☰"}`, W > 760 ? visible($("#rail")) : !visible($("#rail")) && inView($('#stage [data-act="picker"]')));
+      ok(`${W} px: the meaning and More reachable (beside the word, or under it)`, inView($("#b-meaning")) && visible($("#more")));
+      key(keyName("meaning")); await settle(); await J.blob("meanings"); await settle();
+      ok(`${W} px: D shows the meaning where it can be read`, J.S.open.meaning && inView($("#meaning")) && $("#meaning").textContent.trim().length > 0);
+      key(keyName("meaning")); await settle();
     }
 
     /* ---- the rail contract (SPEC §1.1b): a second rail through the page API, page.html unchanged ---- */

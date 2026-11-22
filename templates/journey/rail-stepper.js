@@ -42,7 +42,7 @@ window.JourneyRail = function (page, box) {
   function lineHtml() {
     const f = page.filter();
     return `<button class="ofb" data-rs="order" data-tip="Order and filter (this view only: your order in Surasura stays)\nFilter: ${esc(page.keyOf("filter") || "not set")}">${f.order === "freq" ? "Most frequent" : "In order"} · ${esc(f.name)} ▾</button><span class="sp"></span>` +
-      `<button class="ib" data-rs="picker" aria-label="Episodes and chapters" data-tip="Episodes and chapters${page.keyOf("picker") ? " (" + page.keyOf("picker") + ")" : ""}">☰</button>` +
+      `<button class="ib" data-rs="picker" aria-label="Episodes and chapters" data-tip="Episodes and chapters${page.keyOf("picker") ? " (" + esc(page.keyOf("picker")) + ")" : ""}">☰</button>` +
       `<button class="q" data-rs="help" aria-label="About the rail" data-tip="About the rail">?</button>`;
   }
   function headHtml(w) {

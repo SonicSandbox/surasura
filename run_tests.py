@@ -278,21 +278,31 @@ _SEP = r"""(?:[./\\]+|["']\s*,\s*["'])"""  # modules/x, modules.x, modules\x (or
 
 def _names_folder(folder):
     """A pattern for a source naming `folder` ("modules/<name>"): as a path, a dotted module, os.path.join's parts, or
-    `from modules import <name>`."""
+    `from modules import <name>` (on one line, or in brackets over several)."""
     top, name = (re.escape(part) for part in folder.split("/"))
-    return re.compile(rf"\b{top}{_SEP}{name}\b|\bfrom\s+{top}\s+import\s+[^\n]*\b{name}\b")
+    return re.compile(rf"\b{top}{_SEP}{name}\b|\bfrom\s+{top}\s+import\s+(?:\([^)]*?|[^\n]*?)\b{name}\b")
 
 
 def _private_folders(project_root, public):
     """(here, missing): the private folders ("modules/<name>", "tests/<name>") this checkout holds, and those the
-    private repo tracks that it lacks. `public`: the public repo's files."""
+    private repo tracks that it lacks. `public`: the public repo's files. None when the private repo is here but git
+    can't read it (never read as "it tracks nothing")."""
     shared = {"/".join(p.split("/")[:2]) for p in public if p.count("/") >= 2}
-    listed = _git_out(project_root, "-c", "core.quotepath=false", f"--git-dir={project_root}.priv.git", "ls-files",
-                      "--", *PRIVATE_TOPS)
-    folders = {"/".join(p.split("/")[:2]) for p in listed.splitlines() if p.count("/") >= 2}
-    on_disk = {f"modules/{name}" for name in os.listdir(os.path.join(project_root, "modules"))
-               if os.path.isdir(os.path.join(project_root, "modules", name)) and name != "__pycache__"
-               } if os.path.isdir(os.path.join(project_root, "modules")) else set()
+    listed = []
+    if os.path.isdir(project_root + ".priv.git"):
+        try:
+            out = _run(["git", "-c", "core.quotepath=false", f"--git-dir={project_root}.priv.git", "ls-files", "-z",
+                        "--", *PRIVATE_TOPS], cwd=project_root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        except OSError:
+            return None
+        if out.returncode != 0:
+            return None
+        listed = out.stdout.decode("utf-8", "replace").split("\0")
+    folders = {"/".join(p.split("/")[:2]) for p in listed if p.count("/") >= 2}
+    top = os.path.join(project_root, "modules")
+    on_disk = {f"modules/{name}" for name in (os.listdir(top) if os.path.isdir(top) else ())
+               if os.path.isdir(os.path.join(top, name)) and name != "__pycache__"
+               and any(entry != "__pycache__" for entry in os.listdir(os.path.join(top, name)))}   # (a left-over: none)
     folders = (folders | on_disk) - shared
     here = sorted(f for f in folders if os.path.isdir(os.path.join(project_root, f)))
     return here, sorted(folders - set(here))
@@ -300,14 +310,17 @@ def _private_folders(project_root, public):
 
 def local_only(project_root):
     """--local-only's part of an --all: {"core": {file: why}, "suites": [module suites], "missing": [private folders not
-    here], "private_repo": bool}; None when git can't list the public repo's files."""
+    here], "private_repo": bool}; None when git can't list the public repo's files, or the private repo's."""
     try:
         public = _public_files(project_root)
     except OSError:                                          # no git on PATH
         public = None
     if not public:
         return None
-    here, missing = _private_folders(project_root, public)
+    folders = _private_folders(project_root, public)
+    if folders is None:
+        return None
+    here, missing = folders
     names = [(folder, folder.split("/")[1], _names_folder(folder)) for folder in here]
     core, all_core = {}, _core_files(project_root)
     for path in all_core:
@@ -316,7 +329,8 @@ def local_only(project_root):
             core[path] = f"in {folder}/, which the public repo doesn't track" if folder in here else \
                 "not tracked by the public repo"
     # What a tracked file of tests/ names (read once; the pattern only where the name is in the text at all): a test
-    # file for itself; a conftest for every test file under its folder; a helper for every test file that imports it.
+    # file for itself; a conftest for every test file under its folder; a helper for every test file that imports it,
+    # and every test file under a conftest that imports it.
     texts = {}
     for path in (p for p in public if p.startswith("tests/") and p.endswith(".py")):
         try:
@@ -339,7 +353,10 @@ def local_only(project_root):
             stem = base[:-3]
             word = re.escape(stem)
             uses = re.compile(rf"\b(?:import|from)\s+(?:[\w.]*\.)?{word}\b|\bimport\s+[^\n]*\b{word}\b")
-            users = [p for p in tracked_core if stem in texts[p] and uses.search(texts[p])]
+            importers = [p for p in texts if p != path and stem in texts[p] and uses.search(texts[p])]
+            users = [p for p in importers if p in tracked_core]
+            for conftest in (p for p in importers if os.path.basename(p) == "conftest.py"):
+                users += [p for p in tracked_core if p.startswith(conftest[:-len("conftest.py")])]
         for user in users:
             why = f"names {', '.join(hits)}" + ("" if user == path else f" (through {path})")
             core.setdefault(user, why)
@@ -358,7 +375,8 @@ def _local_only_summary(part):
              f"{len(part['core']) - untracked} naming a private folder) + {len(part['suites'])} private module "
              f"suite(s){': ' + ', '.join(part['suites']) if part['suites'] else ''}"]
     if part["missing"]:
-        lines.append(f"  NOT HERE (the private repo tracks it, this checkout lacks it): {', '.join(part['missing'])}")
+        lines.append(f"  NOT HERE (a private folder this checkout lacks, or a private module without its tests/): "
+                     f"{', '.join(part['missing'])}")
     if not part["private_repo"]:
         lines.append("  no private repo beside this checkout (<top folder>.priv.git): a private module it lacks can't "
                      "be named")
@@ -370,7 +388,7 @@ def run_local_only(project_root, listing=False):
     can't list the public repo's files (nothing run)."""
     part = local_only(project_root)
     if part is None:
-        print("--local-only: git can't list the public repo's files here: nothing was run.")
+        print("--local-only: git can't list the public repo's files here, or the private repo's: nothing was run.")
         return 2
     print(_local_only_summary(part), flush=True)
     if listing:

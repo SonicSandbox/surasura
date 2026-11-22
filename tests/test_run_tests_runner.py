@@ -1281,6 +1281,9 @@ def _local_repo(tmp_path, private_repo=True):
         "tests/sub/conftest.py": "import modules.kaminari\n",
         "tests/sub/test_below.py": "def test_below():\n    assert '雪'\n",
         "tests/test_names_the_suite.py": "SUITE = 'tests/sakura'\n",
+        "tests/test_paren.py": "from modules import (\n    junban,\n    kaminari,\n)\n",
+        "tests/deep/conftest.py": "from tests import kaminari_help\n",
+        "tests/deep/test_deep.py": "def test_deep():\n    assert '深い'\n",
         "modules/junban/__init__.py": "",
         "modules/junban/tests/test_j.py": "def test_j():\n    assert '順番'\n",
     }
@@ -1290,7 +1293,8 @@ def _local_repo(tmp_path, private_repo=True):
         "modules/kaminari/tests/test_k.py": "def test_k():\n    assert '雷'\n",
         "modules/hoshi/__init__.py": "",
     }
-    for rel, text in {**public, **private, "modules/oboro/__init__.py": ""}.items():
+    left_over = {"modules/oboro/__init__.py": "", "modules/kumo/__pycache__/gone.cpython-311.pyc": ""}
+    for rel, text in {**public, **private, **left_over}.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(text.encode("utf-8"))
@@ -1309,17 +1313,21 @@ def _local_repo(tmp_path, private_repo=True):
 
 def test_local_only_is_the_untracked_suite_the_private_suites_and_every_file_naming_a_private_folder(tmp_path):
     """Each way a core file can name a private folder counts: a dotted import, os.path.join's parts, `from modules
-    import`, a Windows path in a CRLF file with Japanese in it, a helper it imports, a conftest above it; a lookalike
-    name (kaminari_old, module.kaminari, the bare word) doesn't. A private folder the private repo tracks but this
-    checkout lacks, and a private module here with no suite, are named — never skipped quietly."""
+    import` (one line or bracketed over several), a Windows path in a CRLF file with Japanese in it, a helper it
+    imports, a conftest above it, a conftest above it that imports such a helper; a lookalike name (kaminari_old,
+    module.kaminari, the bare word) doesn't. A private folder the private repo tracks but this checkout lacks, and a
+    private module here with no suite, are named — never skipped quietly; a module folder left holding only
+    __pycache__ is no module."""
     root = _local_repo(tmp_path)
     part = run_tests.local_only(root)
     assert part["core"] == {
+        "tests/deep/test_deep.py": "names modules/kaminari (through tests/kaminari_help.py)",
         "tests/sakura/test_cases.py": "in tests/sakura/, which the public repo doesn't track",
         "tests/sub/test_below.py": "names modules/kaminari (through tests/sub/conftest.py)",
         "tests/test_from.py": "names modules/kaminari",
         "tests/test_join.py": "names modules/kaminari",
         "tests/test_names_the_suite.py": "names tests/sakura",
+        "tests/test_paren.py": "names modules/kaminari",
         "tests/test_slash.py": "names modules/kaminari",
         "tests/test_through_helper.py": "names modules/kaminari (through tests/kaminari_help.py)",
         "tests/test_voice.py": "names modules/kaminari",
@@ -1327,7 +1335,7 @@ def test_local_only_is_the_untracked_suite_the_private_suites_and_every_file_nam
     assert part["suites"] == ["modules/kaminari/tests"], "the public module's suite is GitHub's"
     assert part["missing"] == ["modules/hoshi", "modules/oboro/tests"] and part["private_repo"]
     summary = run_tests._local_only_summary(part)
-    assert summary.startswith("Local-only set: 8 core test file(s) (1 the public repo doesn't track, 7 naming a "
+    assert summary.startswith("Local-only set: 10 core test file(s) (1 the public repo doesn't track, 9 naming a "
                               "private folder) + 1 private module suite(s): modules/kaminari/tests")
     assert "NOT HERE" in summary and "modules/hoshi, modules/oboro/tests" in summary
 
@@ -1342,6 +1350,22 @@ def test_local_only_without_a_private_repo_still_finds_the_modules_here_and_says
     assert part["core"]["tests/sakura/test_cases.py"] == "not tracked by the public repo"
     assert "tests/test_names_the_suite.py" not in part["core"], "unknown as a private folder without the private repo"
     assert not part["private_repo"] and "can't be named" in run_tests._local_only_summary(part)
+
+
+def test_a_private_repo_git_cannot_read_fails_local_only_never_an_empty_set(tmp_path, monkeypatch, capsys):
+    """The private repo is there but git can't read it (not a repository, a locked index, an owner git refuses): the
+    set can't be told, so nothing runs and the gate fails — never read as "the private repo tracks nothing"."""
+    root = _local_repo(tmp_path)
+    real = run_tests._run
+
+    def failing_private(cmd, *a, **k):
+        if any(str(part).startswith("--git-dir=") for part in cmd):
+            return subprocess.CompletedProcess(cmd, 128, b"", b"")
+        return real(cmd, *a, **k)
+    monkeypatch.setattr(run_tests, "_run", failing_private)
+    assert run_tests.local_only(root) is None
+    monkeypatch.setattr(run_tests, "run_all", lambda *a, **k: pytest.fail("ran without knowing the set"))
+    assert run_tests.run_local_only(root) == 2 and "nothing was run" in capsys.readouterr().out
 
 
 def test_local_only_without_git_runs_nothing_and_fails(tmp_path, monkeypatch, capsys):
@@ -1451,7 +1475,7 @@ def test_githubs_run_and_the_local_only_run_hold_every_file_of_all_between_them(
     on_github = {path for i in numbers if i <= len(packed) for path in packed[i - 1]}
     modules = text.split("\n  modules:\n", 1)[1].split("\n  tests:\n", 1)[0]
     github_suites = {line.split("python -m pytest ", 1)[1].split()[0] for line in modules.splitlines()
-                     if "run: python -m pytest " in line}
+                     if line.strip().startswith("run: python -m pytest ")}               # (never a commented-out one)
     everything = run_tests._core_files(root)
     assert set(part["core"]) <= set(everything), "a local-only file --all doesn't run"
     fell_between = [path for path in everything if path not in on_github and path not in part["core"]]
@@ -1493,7 +1517,7 @@ def test_no_tracked_core_test_file_imports_a_private_module_outside_the_local_on
     public = run_tests._public_files(root)
     assert part is not None and public, "git can't list this checkout's files"
     names = {suite.split("/")[1] for suite in part["suites"]}
-    names |= {m.split("/")[1] for m in part["missing"] if m.startswith("modules/") and m.endswith("/tests")}
+    names |= {m.split("/")[1] for m in part["missing"] if m.startswith("modules/")}
     core = [path for path in run_tests._core_files(root) if path in public]
     sources = {}
     for path in (p for p in public if p.startswith("tests/") and p.endswith(".py")):

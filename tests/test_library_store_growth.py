@@ -1083,3 +1083,33 @@ def test_two_generates_writing_by_turns_never_set_an_items_last_back(language, m
     assert _snap(store, ep, "last") == newer[_rel(store, ep)]
     assert _snap(store, other, "last") == older[_rel(store, other)]
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_first_generate_stopped_after_its_first_write_has_already_begun_the_snapshots(language, monkeypatch):
+    """A store that never began the snapshots (no `growth_since`): its first Generate stops after the first of its
+    writes (closed, a full disk). The date it began them is kept with that first write — so an episode added before
+    the next Generate counts as *when added*, never `prior` — and the next Generate keeps that same date."""
+    monkeypatch.setattr(ls, "GROWTH_CHUNK", 300, raising=False)
+    window = big_store(language, 1200)
+    with window._writing():
+        window.conn.execute("DELETE FROM meta WHERE key = ?", (ls.GROWTH_SINCE,))
+    analyzer = ls.open_store(language, *roots(language), role="analyzer")
+    figs = _spread(analyzer)
+    real = ls.Store._writing
+
+    def stop(n):
+        if n == 1:
+            raise sqlite3.OperationalError("database or disk is full")
+    _watch_writes(monkeypatch, analyzer, after=stop)
+    with pytest.raises(sqlite3.OperationalError):
+        analyzer.record_growth(figs)
+    since = window._meta().get(ls.GROWTH_SINCE)
+    assert since is not None, "the first write began them"
+    part = len(window.growth_of(kinds=("added",)))
+    assert 0 < part < len(figs)
+    monkeypatch.setattr(ls.Store, "_writing", real)
+    assert analyzer.record_growth(figs) == len(figs) - part
+    assert window._meta()[ls.GROWTH_SINCE] == since
+    analyzer.close()
+    window.close()

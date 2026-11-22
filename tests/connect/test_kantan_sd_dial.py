@@ -205,10 +205,15 @@ def test_inside_an_episode_a_young_word_breaks_the_last_tie_only(tmp_path):
     assert start({"今日": 0.9}) == 40.0
     assert start({"未知": 1.0, "明日": 1.0}, new=("冒険", "未知")) == 10.0, "never over a line with no other new word"
     # ...nor over a line with fewer other new words: two lines that both hold some, the young word on the harder one
+    # (only 冒険 asked for, so no other word's pick takes a line first)
     srt = _srt(tmp_path, [(10.0, 12.0, HARD), (40.0, 42.0, NEAR)])
     read = cues.read(srt, "ja")
     tokens = cues.tokens(read, "ja")
-    assert start({"始まる": 1.0}, new=("冒険", "未知", "迷宮", "壮絶")) == 40.0, "1 other new word over 3, young or not"
+    new = {"冒険", "未知", "迷宮", "壮絶"}
+    for young, line in ((None, 40.0), ({"始まる": 1.0}, 40.0)):
+        chosen = pick.pick(read, tokens, "ja", lambda k: k[0] not in new, mode="list",
+                           listed={_key(EASY, "冒険"): 0}, young=young)
+        assert [(w["word"], w["line_start"]) for w in chosen["words"]] == [("冒険", line)],             "1 other new word over 3, young or not"
 
 
 def test_a_word_with_one_sentence_gets_it_either_way_and_none_gets_an_empty_list(no_store):

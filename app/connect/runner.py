@@ -326,6 +326,17 @@ class Repick(Exception):
     """What the words were picked for changed (Anki Miner's profile, the pairing): pick again."""
 
 
+class _Asked1:
+    """A `cancel` already set: `anki_connect.patient` asks once and never waits out a busy Anki."""
+
+    @staticmethod
+    def is_set():
+        return True
+
+
+_NO_WAIT = _Asked1()
+
+
 class _Again(Repick):
     """Pick again from the same subtitle in other bytes (`_fit`) — the one beside its video (Michi-NT), or its library
     copy re-timed by tsubasa (Michi-NT2) — never a change of what the words were picked for: it counts as none of
@@ -2279,11 +2290,12 @@ def _mine(steps, ledger, lang, job, record=True):
             steps.on_progress = steps.should_stop = None
         _through(ledger, lang, "mining")    # Anki Miner took the batch: its setup, the deck and note type are there
         stopped = bool(got.get("stopped"))
+        paused = bool(got.get("paused")) and not stopped    # OPEN 40: a review ended the batch: it waits, never stops
         if got.get("tag_pending"):          # the names' tag Anki didn't take: added before filling (adversary #7)
             pending = sorted(set(_pending(ledger, jid)) | set(got["tag_pending"]))
             ledger.set_state(jid, "mining", tag_pending=json.dumps(pending))
         try:
-            if stopped or got.get("doubt") or any(o["outcome"] == "uncertain" for o in got["outcomes"]):
+            if stopped or paused or got.get("doubt") or any(o["outcome"] == "uncertain" for o in got["outcomes"]):
                 # #47: a batch you stopped is read back by the job's tag like one in doubt: every card that reached
                 # Anki recorded, none sent twice
                 # a word Anki Miner doesn't account for may be in Anki: found by the job's tag first, never sent twice
@@ -2296,18 +2308,23 @@ def _mine(steps, ledger, lang, job, record=True):
                     got["outcomes"] = _merge(got["outcomes"], steps.by_tag(lang, job, picked, dup), ("duplicate",))
         except Wait as w:
             # Anki went away before the tag check: Anki Miner's own outcomes kept, the rest in doubt (adversary #16)
-            ledger.end_batch(jid, attempt, "uncertain", _enriched(got["outcomes"], by_key), anki_miner=got.get("app"))
+            ledger.end_batch(jid, attempt, "uncertain", _enriched(got["outcomes"], by_key), anki_miner=got.get("app"),
+                             deck=got.get("deck"))
             if got.get("anki_said"):        # Mattias #5 (review r2 B1): Anki's refusal kept, as below
                 _keep_alone(ledger, jid, got["anki_said"], got.get("refused"))
-            if got.get("doubt") and not stopped and got.get("then") is None:
-                _count_failure(ledger, jid)     # (never for a word-at-a-time batch a wait cut short)
+            if got.get("doubt") and not stopped and not paused and got.get("then") is None:
+                _count_failure(ledger, jid)     # (never for a word-at-a-time batch a wait cut short, nor a review)
             raise Wait(w.reason, w.look, "mining") from None
         state = "uncertain" if any(o["outcome"] == "uncertain" for o in got["outcomes"]) else "done"
-        ledger.end_batch(jid, attempt, state, _enriched(got["outcomes"], by_key), anki_miner=got.get("app"))
+        # Kyou-SH4: the deck the batch made its cards in is each card's home (`homes`: Tidy keeps one you moved)
+        ledger.end_batch(jid, attempt, state, _enriched(got["outcomes"], by_key), anki_miner=got.get("app"),
+                         deck=got.get("deck"))
         if got.get("anki_said") and state == "uncertain":    # Mattias #5: Anki refused a card: next, a word at a time
             _keep_alone(ledger, jid, got["anki_said"], got.get("refused"))
         then = got.get("then")              # a word-at-a-time batch a wait cut short: its words not all sent
-        if got.get("doubt") and not stopped and then is None:
+        if then is None and paused and any(_row(got, w) in UNSETTLED for w in todo):
+            then = Wait(REVIEWING, resume="mining")     # OPEN 40: its cards recorded; the rest once you've reviewed
+        if got.get("doubt") and not stopped and not paused and then is None:
             _count_failure(ledger, jid)     # only a run that crashed or timed out: an unknown status is no crash
         if any(o["outcome"] == "made" for o in got["outcomes"]):
             steps.after_write(lang)         # new cards: the session's sync clock (S3), Junban or not (adversary #12)
@@ -2412,10 +2429,10 @@ def _mine_batch(steps, ledger, lang, job, picked, todo, attempt):
         if out is None:
             out = dict(done, outcomes=None)
         else:
-            for flag in ("doubt", "stopped", "anki_said"):
+            for flag in ("doubt", "stopped", "anki_said", "paused"):
                 out[flag] = out.get(flag) or done.get(flag)
             out["tag_pending"] = list(out.get("tag_pending") or ()) + list(done.get("tag_pending") or ())
-        if done.get("stopped"):
+        if done.get("stopped") or done.get("paused"):
             break
     out["outcomes"] = [got.get((w["word"], w["reading"])) or dict(_unsure(w), outcome="not_attempted") for w in todo]
     out["refused"] = refused
@@ -3851,9 +3868,11 @@ class Steps:
         chosen, need = tidy.candidates(cards, cap, now=now)
         if not chosen:
             return None
+        from app.connect import fields
         done = tidy.run(tidy.AnkiConnectTidy(self.url, wait=0.0 if not now else 10.0), ledger, lang,
                         [c.note for c in chosen],
-                        why=tidy.NOW if now else tidy.AUTO, open_store=lambda: library.open_store(lang), limit=need)
+                        why=tidy.NOW if now else tidy.AUTO, open_store=lambda: library.open_store(lang), limit=need,
+                        ours=fields.surasura_deck(loaded, lang))
         if done["deleted"]:
             self._say(lang, f"{len(done['deleted'])} waiting cards made for you were tidied away (copy kept: tidy "
                             f"{done['id']}).")
@@ -4828,9 +4847,10 @@ class Steps:
             else:
                 out["doubt"] = out.get("doubt") or done.get("doubt")
                 out["stopped"] = out.get("stopped") or done.get("stopped")
+                out["paused"] = out.get("paused") or done.get("paused")
                 out["tag_pending"] = list(out.get("tag_pending") or ()) + list(done.get("tag_pending") or ())
-            if done.get("stopped"):
-                break                       # your *Stop*: the next files' words wait with the job
+            if done.get("stopped") or done.get("paused"):
+                break                       # your *Stop* (or a review, OPEN 40): the next files' words wait
         out["outcomes"] = [got.get((w["word"], w["reading"])) or dict(_unsure(w), outcome="not_attempted")
                            for w in words]
         return out
@@ -4869,7 +4889,8 @@ class Steps:
                                          should_stop=getattr(self, "should_stop", None),
                                          show=self.show(lang, job), reading=picked.get("reading"),
                                          from_audio=bool(picked.get("from_audio")), names=picked.get("names"),
-                                         word_audio=runfile.word_audio_on(now, lang), workers=workers)
+                                         word_audio=runfile.word_audio_on(now, lang), workers=workers,
+                                         should_pause=self._reviewing)
         except anki_miner.AnkiMinerError as e:
             held.clear()                        # any Anki Miner failure (a profile changed too): read again next time
             if e.kind == "profile-changed":
@@ -4887,9 +4908,14 @@ class Steps:
                 raise Needs("book-unreadable", BOOK_UNREADABLE.format(title=title, why=e.message)) from None
             if e.kind == "cancelled" and getattr(e, "stopped", False):
                 # #47: you stopped it before its result was written: what reached Anki is found by the job's tag
-                return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True, "stopped": True}
+                return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True, "stopped": True,
+                        "deck": getattr(mapping, "deck", None)}
+            if e.kind == "cancelled" and getattr(e, "paused", False):
+                # OPEN 40: a review began before its result was written: read back by the job's tag, as a Stop's
+                return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True, "paused": True,
+                        "deck": getattr(mapping, "deck", None)}
             if e.kind in ("crashed", "timeout"):
-                return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True}
+                return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True, "deck": getattr(mapping, "deck", None)}
             raise _miner_wait_or_needs(e, self.url) from None
         # in doubt: a crash or a timeout after the run (`error`), or a run Anki Miner itself says failed
         if picked.get("reading"):
@@ -4901,7 +4927,15 @@ class Steps:
         said = (run.get("message") or run.get("error") if run.get("error") == "MINING_FAILED" and not
                 run.get("failure_is_transient") and not done.get("error") else None)
         return {"outcomes": done.get("outcomes") or [], "app": done.get("app"), "doubt": doubt,
-                "tag_pending": done.get("tag_pending") or [], "stopped": bool(done.get("stopped")), "anki_said": said}
+                "tag_pending": done.get("tag_pending") or [], "stopped": bool(done.get("stopped")), "anki_said": said,
+                "paused": bool(done.get("paused")), "deck": getattr(mapping, "deck", None)}
+
+    def _reviewing(self):
+        """OPEN 40: is a review on in Anki now (the one check, `anki_connect.reviewing`, at Connect's own address)?
+        The mine call asks it while Anki Miner works (`anki_miner.PAUSE_LOOK_S`): once, never waiting out a busy Anki
+        (its sync: no review) — the call's poll also watches your *Stop*."""
+        from app import anki_connect
+        return anki_connect.reviewing(self.url, cancel=_NO_WAIT)
 
     def _place(self, lang, job, picked, outcomes):
         """Z-9: each card Anki Miner made from a book put on its part (`connect.reading.place`, Hon's chapter record):

@@ -33,6 +33,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 from app.connect import runfile, stopping
@@ -91,6 +92,11 @@ STAGE_SHARES = (0.05, 0.01, 0.57, 0.01, 0.36)
 CARDS_STAGE = 5
 STOP_GRACE_S = 1.5
 ENDS_FROM = (3, 11, 0)
+# OPEN 40 (Sonic, 2026-11-21): a review in Anki ends a running batch at Anki Miner's next card — every card it writes
+# redraws the card you review back to its question side (Haya-LD2's review bench: 46 re-shows in 12 cards), and its
+# clip cuts slow each card. E2 holds a new batch while you review; this ends the one already running. The review is
+# looked at (AnkiConnect's guiReviewActive, a call on Anki's own thread) at most once this many seconds.
+PAUSE_LOOK_S = 2.0
 
 # Anki Miner's `features` names (Z-4; 3.7.0 `cli/api/contract.py` FEATURES), and the ask each answers. A name not
 # here is a later addition: ignored until Surasura knows it.
@@ -970,7 +976,7 @@ def tag_names(url, words, outcomes):
 def mine_batch(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, url, attempt=1,
                subtitle_offset=0.0, timeout=MINE_TIMEOUT, wait=0.0, expect_profile=None, on_progress=None,
                known=None, should_stop=None, show=None, reading=None, from_audio=False, names=None,
-               word_audio=True, workers=None):
+               word_audio=True, workers=None, should_pause=None):
     """One batch of one episode, end to end (§ above), holding `anki-writer` (waiting up to `wait` s for another
     writer; still held -> AnkiMinerError `busy`). `words`: pick's; `mapping`: fields.Mapping (from this profile's
     export); `profile_name`: `connect_anki_miner_profile`; `url`: AnkiConnect's address, for the names' tag. Returns
@@ -983,7 +989,10 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
     poll from then on and removed once the call is over (Anki Miner 3.10 clears an unconsumed one as it starts):
     Anki Miner ends at its own next check (0.2 s), every note it wrote whole; one it hasn't acted on STOP_GRACE_S
     later while it has written nothing (`before_anki`) is ended, and the wait for another writer ends at the press
-    (#BS0A1K). The answer then carries `stopped` (an AnkiMinerError `cancelled` too, its `stopped` set). `show`
+    (#BS0A1K). The answer then carries `stopped` (an AnkiMinerError `cancelled` too, its `stopped` set).
+    `should_pause()` (OPEN 40: is a review on in Anki?): asked at a poll at most every PAUSE_LOOK_S; True -> the same
+    cancel file, Anki Miner ends at its next card, and the answer carries `paused` instead (`cancelled`'s `paused`):
+    the batch waits for the review's end, never a Stop — a Stop pressed too wins (`stopped`). `show`
     (laptop round 8 #50, LF4-3): the title of the show the episode belongs to: every card it makes also carries
     `runfile.from_tag(show)`. `reading` (Z-9): the book's or
     the text's file Anki Miner reads (an Anki Miner naming `reading` only): `video` and `subtitle` unused, each word
@@ -1010,7 +1019,7 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
         try:
             done = _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
                               subtitle_offset, timeout, expect_profile, on_progress, known, should_stop, show,
-                              reading, from_audio, names, word_audio, workers)
+                              reading, from_audio, names, word_audio, workers, should_pause)
         except runfile.RunFileError as e:
             raise AnkiMinerError("refused", f"The run file for Anki Miner couldn't be written: {e}") from None
         done["tagged"], done["tag_pending"] = [], []
@@ -1058,7 +1067,8 @@ ZH_UPDATE = ("Chinese cards need Anki Miner 3.12 or newer. Update Anki Miner fro
 
 def _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
                subtitle_offset, timeout, expect_profile=None, on_progress=None, known=None, should_stop=None,
-               show=None, reading=None, from_audio=False, names=None, word_audio=True, workers=None):
+               show=None, reading=None, from_audio=False, names=None, word_audio=True, workers=None,
+               should_pause=None):
     info, profile = preflight(path, language, profile_name, known)
     if expect_profile is not None and profile != expect_profile:
         raise AnkiMinerError("profile-changed", "Anki Miner's profile changed since the words were picked.")
@@ -1096,12 +1106,32 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
             "error": None, "_before": before}
 
     cancelled = []                  # #47: a Stop asked during the call (asked until it is, then held)
+    paused = []                     # OPEN 40: the cancel was a review's, not a Stop
+    review = {"next": 0.0, "look": None, "on": False}     # OPEN 40: the review look, on a thread of its own
     ends = (version_tuple(info.get("app")) or (0, 0, 0)) >= ENDS_FROM      # #BS0A1K
 
+    def look_review():
+        try:
+            review["on"] = bool(should_pause())
+        except Exception:
+            review["on"] = False    # a look that fails is no review (Anki gone: its own write fails as always)
+
     def poll():
+        stop = bool(cancelled) or (should_stop is not None and should_stop())
+        if not stop and should_pause is not None:
+            # the look never blocks the poll (a hung Anki answers in seconds, a Stop is read at the next poll): its
+            # last answer read here, the next one started at most every PAUSE_LOOK_S
+            if review["on"]:
+                paused.append(True)
+                cancelled.append(time.monotonic())
+                stop = True
+            elif (review["look"] is None or not review["look"].is_alive()) and time.monotonic() >= review["next"]:
+                review["next"] = time.monotonic() + PAUSE_LOOK_S
+                review["look"] = threading.Thread(target=look_review, name="review-look", daemon=True)
+                review["look"].start()
         # the cancel file stands while the Stop does: Anki Miner 3.10 deletes an unconsumed one once, before its
         # setup (a second or two in) — written once, a Stop pressed as the call began was lost
-        if should_stop is not None and (cancelled or should_stop()):
+        if stop:
             cancel(run_dir, run_id)
             cancelled[:] = cancelled or [time.monotonic()]
         late = ends and cancelled and time.monotonic() - cancelled[0] >= STOP_GRACE_S
@@ -1110,11 +1140,19 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
             on_progress(progress)
         if late and before_anki(run_dir, run_id, progress):
             return stopping.END     # #BS0A1K: in a step that never reads the cancel file, nothing written yet
-    poll = poll if (on_progress is not None or should_stop is not None) else None
+    poll = poll if (on_progress is not None or should_stop is not None or should_pause is not None) else None
+
+    def review_only():
+        # a review's cancel, unless a Stop is pressed too (the Stop wins: the episode stops, not only waits)
+        return bool(paused) and not (should_stop is not None and should_stop())
     try:
-        return _mine_call(path, run_dir, run_id, run_path, data, done, words, named, timeout, poll, cancelled)
+        got = _mine_call(path, run_dir, run_id, run_path, data, done, words, named, timeout, poll, cancelled)
+        got["paused"] = review_only() and bool(got.get("stopped"))
+        got["stopped"] = bool(got.get("stopped")) and not got["paused"]
+        return got
     except AnkiMinerError as e:
-        e.stopped = bool(cancelled)
+        e.paused = review_only() and bool(cancelled)
+        e.stopped = bool(cancelled) and not e.paused
         raise
     finally:
         if cancelled:               # the call over: the file it was held by goes too (none left for the next call)

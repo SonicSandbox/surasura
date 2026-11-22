@@ -1062,6 +1062,9 @@ ADDED_TABLES_SQL = (
 # records them (`record_growth`, `growth_of`); the Generate computes them, the window and the journey show them.
 GROWTH = "growth"
 GROWTH_SINCE = "growth_since"     # meta: when this store began keeping the snapshots (an item added before: `prior`)
+GROWTH_CHUNK = 2000               # items a `record_growth` write takes: ~42 ms of write lock at 20k, one commit's
+GROWTH_GAP_S = 0.005              # floor (Kura-GS3); then this pause, so a save waiting for the lock gets in (it
+                                  # tries every LOCK_RETRY: a lock taken again at once leaves it no gap)
 GROWTH_SQL = """CREATE TABLE IF NOT EXISTS growth (
       item_id INTEGER NOT NULL,
       kind    TEXT NOT NULL,
@@ -1125,6 +1128,22 @@ ADDED_DATES_SQL = (
     "CREATE INDEX IF NOT EXISTS items_watched_at ON items (watched_at) WHERE watched_at IS NOT NULL",
 )
 ADDED_DATES = "items_watched_at"
+# J-STORE (3.0.19; journey v3 SPEC §2): pre-studied — an episode or chapter whose words the learner went through before
+# watching or reading it. Two added columns, as the watched date's (no row rewritten, no schema version: an older
+# Surasura never reads them, and a row it writes keeps them): `prestudied_at`, when it was marked (NULL: it isn't), and
+# `prestudied_by`, how — NULL never touched, 'end' the journey's end card, 'press' a press, 'off' un-marked by a press
+# (an end card never marks it again: `set_prestudied`). Nothing else reads them: the order, the tiers, watched, Connect,
+# Junban and the cards stay as they are (a status write: state_version only). Carried by the copy (ITEM_FIELDS), a
+# Remove's trash row and Put back, Repair; a switch in place keeps the row. Made at a writer's first open
+# (`_added_prestudied`); the index, on the marked rows only, keeps the reader's look to them (`prestudied_marks`).
+# Dropped as easily: DROP INDEX items_prestudied_at, then the two columns.
+PRESTUDIED_SQL = (
+    "ALTER TABLE items ADD COLUMN prestudied_at TEXT",
+    "ALTER TABLE items ADD COLUMN prestudied_by TEXT",
+    "CREATE INDEX IF NOT EXISTS items_prestudied_at ON items (prestudied_at) WHERE prestudied_at IS NOT NULL",
+)
+PRESTUDIED_COLUMNS = ("prestudied_at", "prestudied_by")
+PRESTUDIED_BY = ("end", "press", "off")
 # F13b (3.0.1): which items' origins changed, logged by SQLite itself — whoever writes, an older Surasura too — so a
 # look reads only what changed since the origins it kept (`origins_kept`; reading every origin cost a look ~0.25–0.45 s
 # at 20k). One row an item an origin row (`pairings`, "src:") or an item's copy (`rel_path`, `availability`) changed:
@@ -1256,6 +1275,7 @@ COPY_META_KEYS = ("soon_line", "auto_band", "rename_asks", "kept_apart", "show_g
 ITEM_FIELDS = ("id", "root_id", "rel_path", "tier", "availability", "size", "mtime_ns", "added_at",
                "graduated_at", "piece_id", "watched", "mined_at", "pinned", "in_learning_order", "work_id",
                "mine_asked", "watched_at")     # watched_at: Kura-WD (None where the store has no column yet)
+ITEM_FIELDS += PRESTUDIED_COLUMNS      # J-STORE (None where the store has no columns yet)
 
 # Forward-only upgrades: {from_version: function(store)}, each run inside one transaction after a .bak; filled
 # below, where the functions are (`_upgrade_1_to_2`)
@@ -1928,6 +1948,17 @@ def _note_id(value):
         return None
 
 
+def _prestudied_pair(values):
+    """J-STORE: (prestudied_at, prestudied_by) of a copy's item or a trash row's columns, as the store keeps them — a
+    value it can't hold (a hand-edited copy) read as never touched."""
+    at, by = values.get("prestudied_at"), values.get("prestudied_by")
+    at = at if isinstance(at, str) and at else None
+    by = by if by in PRESTUDIED_BY else None
+    if at is not None and by in ("end", "press"):
+        return at, by
+    return None, "off" if by == "off" else None
+
+
 def _chunks(seq, size):
     for i in range(0, len(seq), size):
         yield seq[i:i + size]
@@ -2372,6 +2403,7 @@ class Store:
         self._held = False               # inside `held()`: closed at the span's end
         if role != "reader":
             self._added_indexes()
+            self._added_prestudied()
 
     def _added_indexes(self):
         """ADDED_INDEXES, made at the first open by a writer of a store made before them, under the write lock: one
@@ -2423,6 +2455,41 @@ class Store:
         if not getattr(self, "_dated_items", False):           # a reader made with `Store.__new__` has none
             self._dated_items = any(r[1] == "watched_at" for r in self.conn.execute("PRAGMA table_info(items)"))
         return self._dated_items
+
+    def _prestudied_column(self):
+        """J-STORE: whether this store has `items.prestudied_at` and `prestudied_by` yet (a busy first open leaves
+        them to a later one)."""
+        if not getattr(self, "_prestudied", False):            # a reader made with `Store.__new__` has none
+            names = {r[1] for r in self.conn.execute("PRAGMA table_info(items)")}
+            self._prestudied = set(PRESTUDIED_COLUMNS) <= names
+        return self._prestudied
+
+    def _make_prestudied(self):
+        """J-STORE: PRESTUDIED_SQL inside the caller's write — each column only where it isn't yet (another open may
+        have made it meanwhile), then the index."""
+        names = {r[1] for r in self.conn.execute("PRAGMA table_info(items)")}
+        for sql in PRESTUDIED_SQL:
+            if sql.startswith("ALTER") and sql.split()[5] in names:
+                continue
+            self.conn.execute(sql)
+        self._prestudied = False                # (read again when next asked: a write rolled back takes them back)
+
+    def _added_prestudied(self):
+        """J-STORE: the pre-studied columns and their index, made at the first open by a writer of a store made before
+        them, under the write lock — the watched date's way (`_added_indexes`), in a step of its own: one schema read
+        at every other open. A store not made yet, a newer one, a damaged or busy one (or this process inside a write
+        already) is left as it is: a later open makes them. Never a version or data change."""
+        try:
+            if self._prestudied_column() or self._wlock.depth:
+                return
+            if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'items'").fetchone():
+                return
+            if self.conn.execute("PRAGMA user_version").fetchone()[0] > STORE_SCHEMA:
+                return
+            with self._writing(wait=BUSY_AT_OPEN):
+                self._make_prestudied()
+        except (StoreError, sqlite3.Error):
+            self._prestudied = False
 
     def close(self):
         """Close the handle, never checkpointing outside the write lock (`_close`, §6.12). Inside `held()`, nothing
@@ -4000,9 +4067,9 @@ class Store:
             self._back_in_order(cmd, change, [i for i in moving if rows[i][1] == "graduated" and tier != "graduated"])
             # --- end P4.1 L2 ---
             if tier == "graduated":
-                self.conn.executemany("UPDATE items SET graduated_at = ? WHERE id = ?",
-                                      [(_now(), i) for i in moving])
-                self._snap_done(moving, _now())                  # Kura-GS: what it understood as it finished
+                stamp = _now()      # Kura-GS3 2: one stamp, the date and its snapshot's, so the Undo finds that press's
+                self.conn.executemany("UPDATE items SET graduated_at = ? WHERE id = ?", [(stamp, i) for i in moving])
+                self._snap_done(moving, stamp)                   # Kura-GS: what it understood as it finished
                 # --- W3.2 (IK-L2-3, A2 #28): an arrival to Finished is recorded as already watched (undone with it)
                 came = [i for i in moving if rows[i][1] == "arrivals"]
                 if came:
@@ -4518,6 +4585,10 @@ class Store:
                      search_fold(title, self.language), cols.get("mine_asked")))
                 if cols.get("watched_at") is not None and self._dates_column():   # Kura-WD: seen on its own day
                     self.conn.execute("UPDATE items SET watched_at = ? WHERE id = ?", (cols["watched_at"], r["item_id"]))
+                mark = _prestudied_pair(cols)
+                if mark != (None, None) and self._prestudied_column():           # J-STORE: as it was marked
+                    self.conn.execute("UPDATE items SET prestudied_at = ?, prestudied_by = ? WHERE id = ?",
+                                      mark + (r["item_id"],))
                 cmd.back.add(r["item_id"])
                 self._put(r["tier"], [r["item_id"]], self._restore_where(r), changed_in)
                 self.conn.executemany("INSERT OR IGNORE INTO pairings (content_key, item_id, pairing, paired_at) "
@@ -5989,8 +6060,8 @@ class Store:
     def _snap_done(self, ids, at):
         """Kura-GS: each of `ids` just marked watched or moved to Finished keeps what the newest Generate counted of it
         then (its 'last') as its 'done' snapshot, at `at` — once: a later mark (a re-watch, a Finished after a Done)
-        keeps the first, and an Undo leaves it (written once, never by an Undo). An item no Generate counted yet
-        has none. Inside the caller's write; a failure here is its own (SQLite takes back the one statement), never
+        keeps the first; only the Undo of the press that made it takes it back (`_unsnap_done`, Kura-GS3). An item no
+        Generate counted yet has none. Inside the caller's write; a failure here is its own (SQLite takes back the one statement), never
         the mark's or the move's — unless SQLite took back the whole write (a full disk, an I/O error: no transaction
         left), when it is the write's: raised, so the rest of the move never saves line by line (G3, Kura-GS2)."""
         try:
@@ -6004,6 +6075,14 @@ class Store:
         except sqlite3.Error:
             if not self.conn.in_transaction:
                 raise
+
+    def _unsnap_done(self, marks):
+        """Kura-GS3 (Sonic 2026-11-22, OPEN 58a): the Undo of a ✓ Done takes back the 'done' snapshot that press made —
+        `marks` [(item id, the date its Done set)], the snapshot dated by that same stamp (`_dated`), so only that
+        press's: one an earlier Done made (a re-watch kept the first) stays, and an un-Done or a re-watch is never an
+        Undo (they keep it, as before). Inside the undo's write: the Undo is whole or not at all (F1)."""
+        if marks and self._has_table(GROWTH):
+            self.conn.executemany("DELETE FROM growth WHERE item_id = ? AND kind = 'done' AND at = ?", marks)
 
     def _moves_counted(self, ids):
         """W-1: does a watched mark (set or taken back) on `ids` move what counts? Only while `keep_watched` is off,
@@ -6079,6 +6158,69 @@ class Store:
             for part in _chunks(list(dict.fromkeys(ids)), 500):
                 out.update(self.conn.execute(f"{sql} AND id IN ({','.join('?' * len(part))})", part))
             return out
+
+    def set_prestudied(self, ids, on, why, pressed_at=None):
+        """J-STORE (journey v3 SPEC §2.2): mark `ids` pre-studied (`on`) or not — a status write (state_version only:
+        never the order, the tiers, watched or a card; no re-plan), one Change its Undo takes back (the pair's value
+        check, `_undo_prestudied`). `why`:
+          'end'   — the journey's end card reached: marks only an item never touched (`prestudied_by` NULL), so an
+                    un-mark sticks: the end card met again never marks it back. Never `on` False.
+          'press' — the learner's press, whatever came before: on dates it now ('press'; one already on keeps its date
+                    and how), off clears the date and keeps 'off'.
+        `pressed_at` (the store's UTC stamp, optional): when the press was made — one the page kept while Surasura was
+        closed. An item marked after it is left as it is (G4: a waiting press never erases newer work). An un-mark has
+        no date, so only a mark stops it. -> the Change, None when nothing changed (or the store has no columns yet)."""
+        if why not in ("end", "press") or (why == "end" and not on):
+            raise ValueError(f"set_prestudied: why={why!r}, on={on!r}")
+        ids = list(dict.fromkeys(ids))
+        if not ids or not self._prestudied_column():
+            return None
+        with self._command("set_prestudied") as cmd:
+            held = {}
+            for part in _chunks(ids, 500):
+                held.update((i, (at, by)) for i, at, by in self.conn.execute(
+                    f"SELECT id, prestudied_at, prestudied_by FROM items WHERE id IN ({','.join('?' * len(part))})",
+                    part))
+            stamp = _now()
+            changes = []
+            for i in ids:
+                if i not in held:
+                    continue
+                at, by = held[i]
+                if pressed_at is not None and at is not None and at > pressed_at:
+                    continue                                    # marked since that press was made
+                if on and (at is not None or (why == "end" and by is not None)):
+                    continue                                    # already on; or touched before, for the end card
+                new = (stamp, why) if on else (None, "off")
+                if (at, by) != new:
+                    changes.append((i, (at, by), new))
+            if not changes:
+                return None
+            self.conn.executemany("UPDATE items SET prestudied_at = ?, prestudied_by = ? WHERE id = ?",
+                                  [new + (i,) for i, _old, new in changes])
+            cmd.feed(i for i, _o, _n in changes)
+            change = self._change(cmd, "set_prestudied")
+            change.status = [(i, column, old[n], new[n]) for i, old, new in changes
+                             for n, column in enumerate(PRESTUDIED_COLUMNS)]
+            cmd.touch()
+            return change
+
+    def prestudied_marks(self, ids=None, by=False):
+        """J-STORE: {item id: the date it was marked pre-studied} of every item marked (of `ids` only, when given) —
+        with `by`, {item id: (date, how)}, how 'end' or 'press'. An un-marked item is not in it. Read by the stones and
+        the journey only (the render, the door's `state`); never in the render signature (S19: a press never redraws
+        the journey). One read transaction, through the index on the marked rows; {} on a store without the columns."""
+        with self._reading():
+            if not self._prestudied_column():
+                return {}
+            sql = "SELECT id, prestudied_at, prestudied_by FROM items WHERE prestudied_at IS NOT NULL"
+            rows = []
+            if ids is None:
+                rows = self.conn.execute(sql).fetchall()
+            else:
+                for part in _chunks(list(dict.fromkeys(ids)), 500):
+                    rows += self.conn.execute(f"{sql} AND id IN ({','.join('?' * len(part))})", part).fetchall()
+        return {i: (at, how) if by else at for i, at, how in rows}
 
     # --- the library's options (L2.2 04 §4.2): the Soon line, the mine line, New arrivals ------------ #
 
@@ -7533,20 +7675,27 @@ class Store:
         before it began the snapshots (GROWTH_SINCE; a store with no such date yet starts them now: every item
         `prior`). A file the store no longer holds (moved or removed meanwhile) is passed by. Bookkeeping: no version
         moves; a new 'added' sets `copy_dirty` (the copy carries it). A file it counted no words of keeps nothing: no
-        snapshot until it has words, and one that had words keeps its last count's, dated (Kura-GS2). Only what changed is written; the files read to
-        items in a read transaction first, so the write lock is held for the writes alone. -> the 'added' written."""
+        snapshot until it has words, and one that had words keeps its last count's, dated (Kura-GS2). Only what changed is
+        written; the files read to items in a read transaction first, then written `GROWTH_CHUNK` items a write, each its
+        own (`join_same_shows`' way: Kura-GS3), the lock let go `GROWTH_GAP_S` between them so a move or a Done waits
+        one chunk, never the set. An item's 'last' and 'added' go in one write: a reader between two sees each item's
+        older figures or this Generate's, whole. A write that fails is taken back whole and raises; the ones before it
+        stay (bookkeeping: the next full Generate writes what is missing, 'added' once); a 'last' is replaced only by a
+        newer Generate's (two writing by turns never set it back); a reset or a rebuild meanwhile (another store id or
+        epoch) ends it: the ids it read are the old library's. -> the 'added' written."""
         if not figures:
             return 0
         with self._reading():
             have = self._has_table(GROWTH)
-            since = self._meta().get(GROWTH_SINCE)
+            meta = self._meta()
+            since, library = meta.get(GROWTH_SINCE), (meta.get("store_id"), meta.get("epoch"))
             items = {key: (i, added) for key, i, added in self.conn.execute("SELECT rel_key, id, added_at FROM items")}
             last = {r[0]: r[1:] for r in self.conn.execute(
                 "SELECT item_id, known, counted, unknown FROM growth WHERE kind = 'last'")} if have else {}
             added = {r[0] for r in self.conn.execute(
                 "SELECT item_id FROM growth WHERE kind = 'added'")} if have else set()
         at = _now()
-        put_last, put_added = [], []
+        todo = []                           # (its 'last' or None, its 'added' or None), an item each
         for rel, fig in figures.items():
             hit = items.get(path_key(rel))
             if hit is None:
@@ -7555,26 +7704,37 @@ class Store:
             fig = (int(fig[0]), int(fig[1]), int(fig[2]))
             if fig[1] <= 0:
                 continue                    # Kura-GS2: a file it counted no words of has no figure yet (never 0 of 0)
-            if last.get(item) != fig:
-                put_last.append((item,) + fig + (at,))
+            put_last = (item,) + fig + (at,) if last.get(item) != fig else None
+            put_added = None
             if item not in added:
-                put_added.append((item,) + fig + (at, 0 if since is not None and (added_at or "") > since else 1))
-        if not put_last and not put_added:
-            return 0
-        with self._writing():
-            self.conn.execute(GROWTH_SQL)
-            meta = self._meta()
-            values = {}
-            if GROWTH_SINCE not in meta:
-                values[GROWTH_SINCE] = at
-            self.conn.executemany("INSERT OR REPLACE INTO growth (item_id, kind, known, counted, unknown, at) "
-                                  "VALUES (?, 'last', ?, ?, ?, ?)", put_last)
-            made = self.conn.executemany("INSERT OR IGNORE INTO growth (item_id, kind, known, counted, unknown, at, "
-                                         "prior) VALUES (?, 'added', ?, ?, ?, ?, ?)", put_added).rowcount
-            if made:
-                values["copy_dirty"] = int(meta.get("copy_dirty") or 0) + 1
-            if values:
-                self._set_meta(values)
+                put_added = (item,) + fig + (at, 0 if since is not None and (added_at or "") > since else 1)
+            if put_last or put_added:
+                todo.append((put_last, put_added))
+        made = 0
+        for start in range(0, len(todo), GROWTH_CHUNK):
+            if start:
+                time.sleep(GROWTH_GAP_S)
+            part = todo[start:start + GROWTH_CHUNK]
+            with self._writing():
+                meta = self._meta()
+                if (meta.get("store_id"), meta.get("epoch")) != library:
+                    break                   # a reset or a rebuild meanwhile: these ids are another library's
+                self.conn.execute(GROWTH_SQL)
+                values = {}
+                if GROWTH_SINCE not in meta:
+                    values[GROWTH_SINCE] = at
+                self.conn.executemany("INSERT INTO growth (item_id, kind, known, counted, unknown, at) VALUES "
+                                      "(?, 'last', ?, ?, ?, ?) ON CONFLICT (item_id, kind) DO UPDATE SET known = "
+                                      "excluded.known, counted = excluded.counted, unknown = excluded.unknown, at = "
+                                      "excluded.at WHERE excluded.at > growth.at", [r for r, _a in part if r])
+                n = self.conn.executemany("INSERT OR IGNORE INTO growth (item_id, kind, known, counted, unknown, "
+                                          "at, prior) VALUES (?, 'added', ?, ?, ?, ?, ?)",
+                                          [a for _r, a in part if a]).rowcount
+                if n:
+                    values["copy_dirty"] = int(meta.get("copy_dirty") or 0) + 1
+                if values:
+                    self._set_meta(values)
+            made += n
         return made
 
     def growth_of(self, ids=None, kinds=("added", "done")):
@@ -7812,6 +7972,8 @@ class Store:
                             cmd.hints[item_id] = piece      # (else settling folds one beside its own into it)
                     _o, more = self._undo_works(cmd, change)
                     skipped = list(skipped) + [i for i in more if i not in skipped]
+            elif change.status and all(s[1] in PRESTUDIED_COLUMNS for s in change.status):   # J-STORE
+                out, skipped = self._undo_prestudied(cmd, change)
             elif change.status:
                 out, skipped = self._undo_status(cmd, change)
             elif change.works is not None:
@@ -7885,12 +8047,44 @@ class Store:
         back += [("watched_at", old, i) for i, c, old, _n in change.status if c == "watched_at" and i in restored]
         for column, old, item_id in back:
             self.conn.execute(f"UPDATE items SET {column} = ? WHERE id = ?", (old, item_id))
+        self._unsnap_done([(i, new) for i, c, _o, new in change.status if c == "watched_at" and i in restored and new])
         cmd.feed(i for _c, _o, i in back)
         if back:
             cmd.touch(pins=any(c in ("pinned", "in_learning_order") for c, _o, _i in back),   # P4.1 L2 (T-4)
                       order=self._moves_counted([i for c, _o, i in back if c == "watched"]))   # W-1
             news = {(s[0], s[1]): s[3] for s in change.status}  # (an item may hold several: watched + its date)
             out.status = [(i, c, news[(i, c)], o) for c, o, i in back]
+        return out, skipped
+
+    def _undo_prestudied(self, cmd, change):
+        """J-STORE: the value check (§6.11) on each item's pair — its date and how it was set — put back together where
+        the item still holds both values the change wrote, else left as it is (one item skipped, never one of its two
+        values): an Undo puts back how the mark was set (an end card's, a press's, an un-mark). Its own Undo the same."""
+        out = self._change(cmd, "undo")
+        pairs = {}
+        for item_id, column, old, new in change.status:
+            pairs.setdefault(item_id, {})[column] = (old, new)
+        if not self._prestudied_column():
+            return out, list(pairs)
+        held = {}
+        for part in _chunks(list(pairs), 500):
+            held.update((i, (at, by)) for i, at, by in self.conn.execute(
+                f"SELECT id, prestudied_at, prestudied_by FROM items WHERE id IN ({','.join('?' * len(part))})", part))
+        skipped, back = [], []
+        for item_id, values in pairs.items():
+            old = tuple(values.get(c, (None, None))[0] for c in PRESTUDIED_COLUMNS)
+            new = tuple(values.get(c, (None, None))[1] for c in PRESTUDIED_COLUMNS)
+            if held.get(item_id) != new:
+                skipped.append(item_id)
+            else:
+                back.append((item_id, old, new))
+        self.conn.executemany("UPDATE items SET prestudied_at = ?, prestudied_by = ? WHERE id = ?",
+                              [old + (i,) for i, old, _n in back])
+        cmd.feed(i for i, _o, _n in back)
+        if back:
+            cmd.touch()
+            out.status = [(i, column, new[n], old[n]) for i, old, new in back
+                          for n, column in enumerate(PRESTUDIED_COLUMNS)]
         return out, skipped
 
     def _undo_pieces(self, cmd, change):
@@ -7943,6 +8137,11 @@ class Store:
         for it in ok:
             seqs[cur[it["id"]][1]].remove(it["id"])
         info = {it["id"]: it for it in items}
+        # Kura-GS3 2 (Sonic 2026-11-22): the Undo of a move to Finished takes back the 'done' snapshot that press made,
+        # as the Done's does (`_unsnap_done`): dated by the stamp of the Finished date it set — the row unchanged since
+        # (the value check) still holds it — so a Done's or an earlier Finish's snapshot (kept, written once) stays
+        self._unsnap_done([(it["id"], cur[it["id"]][8]) for it in ok if cur[it["id"]][1] == "graduated"
+                           and it["tier"] != "graduated" and cur[it["id"]][8] is not None])
         _walk_back(seqs, items, okset, one)
         self._write_seqs(seqs, ords, okset, lambda i: info[i]["changed_in"])
         cmd.walked.update({i: (info[i]["tier"], info[i]["changed_in"]) for i in okset})
@@ -8270,6 +8469,7 @@ def _ensure_schema(store):
                 raise StoreError("a library database without a schema version; left alone")
             for sql in SCHEMA_SQL + SCHEMA_2_SQL + ADDED_HASH_SQL + ADDED_DATES_SQL + ORIGIN_LOG_SQL:   # A4K-7, F13b, WD
                 store.conn.execute(sql)
+            store._make_prestudied()                                                       # J-STORE
             store.conn.execute(f"PRAGMA user_version = {STORE_SCHEMA}")
     return version
 
@@ -8695,6 +8895,8 @@ def _write_image(store, image, meta):
     if not store._dates_column():               # Kura-WD: a rebuild in place of a store a busy open left without it
         for sql in ADDED_DATES_SQL:
             conn.execute(sql)
+    if not store._prestudied_column():          # J-STORE: the same, for the pre-studied columns
+        store._make_prestudied()
     tables = image["tables"]
     roots = tables.get("roots")
     if roots and roots["rows"]:
@@ -8739,6 +8941,10 @@ def _write_image(store, image, meta):
         "availability, size, mtime_ns, changed_in, added_at, graduated_at, piece_id, watched, mined_at, pinned, "
         "in_learning_order, work_id, mine_asked, watched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
         "?, ?, ?, ?, ?, ?, ?, ?)", rows)
+    marked = [_prestudied_pair(item) + (item["id"],) for item in image["items"]       # J-STORE: as each was marked
+              if item.get("prestudied_by") is not None]
+    conn.executemany("UPDATE items SET prestudied_at = ?, prestudied_by = ? WHERE id = ?",
+                     [m for m in marked if m[:2] != (None, None)])
     have = {r[0] for r in rows}
     for name in ("anki_links", "pairings"):
         t = tables.get(name)
@@ -15827,7 +16033,7 @@ def repair_store(db_path, language, data_dir, user_files_dir, lock):
             item = {k: r.get(k) for k in ("id", "root_id", "rel_path", "rel_key", "tier", "size", "mtime_ns",
                                           "availability", "added_at", "graduated_at", "piece_id", "watched",
                                           "mined_at", "pinned", "in_learning_order", "changed_in", "work_id",
-                                          "mine_asked", "watched_at")}
+                                          "mine_asked", "watched_at") + PRESTUDIED_COLUMNS}
             item["entry"] = json.loads(r["entry"])
             image["items"].append(item)
     else:

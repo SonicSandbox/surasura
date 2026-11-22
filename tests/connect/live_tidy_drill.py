@@ -99,7 +99,7 @@ def main():
                 ids = ask("addNotes", notes=notes)
             time.sleep(1.5)
             ledger.end_batch(job_id, 1, "done", [{"word": w, "reading": "", "outcome": "made", "note_id": n}
-                                                 for n, w in zip(ids, WORDS)])
+                                                 for n, w in zip(ids, WORDS)], deck="DevTest")
             ledger.set_state(job_id, "done")
             with c.store("ja") as s:
                 library.record_batch(s, item, {w: [n] for n, w in zip(ids, WORDS)},

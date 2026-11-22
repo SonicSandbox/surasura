@@ -110,7 +110,7 @@ def main():
             made = [cs for cs in CASES if cs != "made_by_hand"]
             time.sleep(1.5)
             ledger.end_batch(job_id, 1, "done", [{"word": word[cs], "reading": "", "outcome": "made",
-                                                  "note_id": note[cs]} for cs in made])
+                                                  "note_id": note[cs]} for cs in made], deck="DevTest")
             ledger.set_state(job_id, "done")
             with c.store("ja") as s:
                 library.record_batch(s, item, {word[cs]: [note[cs]] for cs in made},

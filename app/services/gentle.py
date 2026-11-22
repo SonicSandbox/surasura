@@ -29,19 +29,19 @@ again every BATTERY_EVERY_S): on a **gentle** PC (a laptop, a small or unplugged
   episode) — Connect's next step in turn waits while a Generate runs (`runner.Steps.blocked`, GENERATE_FIRST), so
   the Generate goes in at Connect's next step boundary.
 On **every** PC (a strong desktop runs the rest side by side as before):
-- the rest waits while you review in Anki (`guiReviewActive`, asked every REVIEW_LOOK_S while background work
-  waits or runs: never a request while nothing does);
-- and while the system's CPU is busy (`power.CpuLoad` over LOAD_WINDOW_S at or over `power.BUSY`, until it is under
+- the rest waits while the system's CPU is busy (`power.CpuLoad` over LOAD_WINDOW_S at or over `power.BUSY`, until it is under
   `power.QUIET`) — a hold for load alone lasts at most HOLD_MAX_S a kind (a PC always busy still gets its estimates).
+A review in Anki holds nothing here (OPEN 30, Sonic 2026-11-21: measured on DevTest, none of these jobs slows a
+review — Haya-LD's register §10): what does — Connect writing cards — is Connect's own rule (E2 + OPEN 40, its run
+ended at Anki Miner's next card), and every writer into Anki keeps its own look (`anki_connect.reviewing`).
 
-**Words** (the bar's *waiting* line, a job's `reason`; PROVISIONAL): WINDOW_FIRST, REVIEWING, BUSY_NOW, TURN. Every
+**Words** (the bar's *waiting* line, a job's `reason`; PROVISIONAL): WINDOW_FIRST, BUSY_NOW, TURN. Every
 change of the machine's state is logged (`write_app_log`, *gentle: …*), so a Send report says what waited and why.
 
 `hold(kind)` (module level) is what a step outside the registry asks: None (go on) when no window's scheduler is
 attached — a test, the 2.x window, a command-line run — so nothing changes there.
 """
 import collections
-import os
 import threading
 import time
 
@@ -55,18 +55,15 @@ MINE = jobs_module.CONNECT_KIND
 
 TICK_S = 1.0                    # the watcher's look: the CPU sampled, the holds asked again
 LOAD_WINDOW_S = 5.0             # the CPU's busy share is the mean of this many seconds' samples
-REVIEW_LOOK_S = 10.0            # `guiReviewActive` asked at most this often, only while background work wants a turn
 BATTERY_EVERY_S = 30.0          # plugged in or not, read again (a laptop unplugged becomes gentle)
 SETTLE_S = 3.0                  # on a gentle PC, after the boot the rest waits this much more (its first paints)
 START_HOLD_MAX_S = 60.0         # the boot never told (a window that never drew its list): the rest goes this long after
 #                                 the services were made all the same (the window's own limit, BOOT_MAX_S, comes first)
 HOLD_MAX_S = 300.0              # a kind held for load alone goes after this long (still below normal priority)
-WANTED_FOR_S = 30.0             # a `hold` asked within this long counts as background work wanting a turn
 STEP_LOOK_S = 1.0               # how often a step held outside the registry asks again (`wait_turn`)
 
 WINDOW_FIRST = "Waits for the window to finish opening"
 BOOT_MAX_S = 30.0               # the window's limit after its first frame: booted all the same (`ShellWindow`)
-REVIEWING = "Waits while you review in Anki"
 BUSY_NOW = "Waits for a quieter moment: this computer is busy"
 TURN = "Waits its turn: {label} first"
 
@@ -112,26 +109,17 @@ def _log(line):
         pass
 
 
-def _reviewing_now(settings):
-    """Is the learner reviewing in Anki now? False when Anki doesn't answer (closed, busy) or isn't set up."""
-    if os.environ.get("SURASURA_NO_ANKI_SYNC"):
-        return False
-    from app import anki_connect
-    return bool(anki_connect.reviewing(anki_connect.address(settings())))
-
-
 class Gentle:
     """`registry`: the window's job registry; `settings()`: the settings now (for Anki's address). Stand-ins (tests):
-    `machine()` -> `power.gentle`'s (gentle, why); `load` -> a `power.CpuLoad`; `reviewing()` -> bool; `clock`
+    `machine()` -> `power.gentle`'s (gentle, why); `load` -> a `power.CpuLoad`; `clock`
     (monotonic); `log(line)`."""
 
-    def __init__(self, registry, settings=None, machine=None, load=None, reviewing=None, clock=None, log=None):
+    def __init__(self, registry, settings=None, machine=None, load=None, clock=None, log=None):
         from app.connect import power
         self.registry = registry
         self._settings = settings or (lambda: {})
         self._machine = machine or power.gentle
         self._load = load if load is not None else power.CpuLoad()
-        self._reviewing = reviewing or (lambda: _reviewing_now(self._settings))
         self._clock = clock or time.monotonic
         self._log = log or _log
         self._lock = threading.RLock()
@@ -141,13 +129,10 @@ class Gentle:
         self._samples = collections.deque()
         self.busy = False               # the CPU over power.BUSY (until under power.QUIET)
         self.busy_share = None
-        self.reviewing = False
         self._started_at = None
         self._ready_at = None           # when the window's list was up (or START_HOLD_MAX_S passed)
         self._held_since = {}           # kind -> when load alone began holding it
         self._overdue = set()           # the kinds past HOLD_MAX_S already let go (told once)
-        self._asked_at = None           # the last `hold` asked (background work wanting a turn)
-        self._review_looked = float("-inf")
         self._battery_looked = float("-inf")
         self._open = None               # the last state the rules read (a change reschedules)
         self._late = False              # the boot never told by START_HOLD_MAX_S (the watcher says so once)
@@ -173,7 +158,6 @@ class Gentle:
             if self._ready_at is not None:
                 return
             self._ready_at = self._clock()
-            self._asked_at = self._ready_at     # the start's background work comes now: the next look asks Anki
             began = self._started_at
         if began is not None:
             self._log(f"the window booted {self._ready_at - began:.1f} s after its services were made")
@@ -197,9 +181,7 @@ class Gentle:
         return self._reason(kind, self.registry.live())
 
     def hold(self, kind):
-        """`check` for a step outside the registry (it counts as background work wanting a turn)."""
-        with self._lock:
-            self._asked_at = self._clock()
+        """`check` for a step outside the registry."""
         return self._reason(kind, self.registry.live())
 
     def _reason(self, kind, live):
@@ -215,8 +197,6 @@ class Gentle:
                 return None
             if not self._window_up(now, settle=False):
                 return WINDOW_FIRST                     # booted first, on every PC
-            if self.reviewing:
-                return REVIEWING
             if self.busy:
                 since = self._held_since.setdefault(kind, now)
                 if now - since < HOLD_MAX_S:
@@ -240,7 +220,7 @@ class Gentle:
         if self._ready_at is None:
             if self._started_at is None or now - self._started_at < START_HOLD_MAX_S:
                 return False
-            self._ready_at = self._asked_at = now   # never told: the rest goes all the same (said by the watcher:
+            self._ready_at = now                    # never told: the rest goes all the same (said by the watcher:
             self._late = True                       # never a file written under the registry's lock)
         return not settle or now - self._ready_at >= SETTLE_S
 
@@ -253,8 +233,8 @@ class Gentle:
                 self._log(f"a look failed: {e!r}")
 
     def tick(self):
-        """One look (the watcher's, every TICK_S; a test calls it): the CPU sampled, the battery and your review asked
-        when due, and the registry rescheduled when the rest may go now where it couldn't."""
+        """One look (the watcher's, every TICK_S; a test calls it): the CPU sampled, the battery asked when due, and
+        the registry rescheduled when the rest may go now where it couldn't."""
         now = self._clock()
         share = self._load.sample()
         with self._lock:
@@ -279,27 +259,7 @@ class Gentle:
             self._log(f"the window's boot wasn't told in {START_HOLD_MAX_S:.0f} s: background work goes on")
         if now - self._battery_looked >= BATTERY_EVERY_S:
             self._read_machine()
-        if self._wanted(now) and now - self._review_looked >= REVIEW_LOOK_S:
-            self._review_looked = now
-            try:
-                reviewing = bool(self._reviewing())
-            except Exception:
-                reviewing = False
-            if reviewing != self.reviewing:
-                self.reviewing = reviewing
-                self._log("you're reviewing in Anki: background work waits" if reviewing else "your review ended")
-        elif not self._wanted(now) and self.reviewing:
-            self.reviewing = False          # nothing waits: no request, and no stale hold for the next one
         self._reconsider()
-
-    def _wanted(self, now):
-        """Is background work waiting or running — a live automatic job of a background kind, or a `hold` lately?
-        Never before the boot (no request to Anki while the window opens: everything waits for the boot anyway)."""
-        if self._ready_at is None:
-            return False
-        if self._asked_at is not None and now - self._asked_at < WANTED_FOR_S:
-            return True
-        return any(j.kind in BACKGROUND and j.automatic for j in self.registry.live())
 
     def _read_machine(self, first=False):
         self._battery_looked = self._clock()
@@ -313,11 +273,11 @@ class Gentle:
                       else "this computer runs its background work side by side")
 
     def _reconsider(self):
-        """The scheduler's state now against the last: any change (the window up, a review, the load, the machine) →
+        """The scheduler's state now against the last: any change (the window up, the load, the machine) →
         the registry asked again — what may go starts, and what still waits shows its reason now, never an old one."""
         now = self._clock()
         with self._lock:
-            state = (self.reviewing, self.busy, self.gentle, self._window_up(now, settle=False),
+            state = (self.busy, self.gentle, self._window_up(now, settle=False),
                      not self.gentle or self._window_up(now, settle=True))
             changed, self._open = state != self._open, state
             # a kind held for load alone past HOLD_MAX_S goes now (told once, until the CPU is quiet again)
@@ -326,7 +286,7 @@ class Gentle:
             self._overdue.update(overdue)
             if not self.busy:
                 self._overdue.clear()
-        if overdue and not self.reviewing:
+        if overdue:
             self._log(f"held {HOLD_MAX_S:.0f} s by a busy computer, goes on: {', '.join(sorted(overdue))}")
-        if changed or (overdue and not self.reviewing):
+        if changed or overdue:
             self.registry.reschedule()

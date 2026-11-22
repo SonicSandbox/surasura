@@ -142,3 +142,47 @@ def test_the_top_folders_env_is_tolerated_but_never_a_users_file_or_another_env(
 
 def test_no_repository_means_no_verdict_never_a_pass(audited):
     assert read_audit.ignored_reads({"tests/test_a.py::test_one": {"lists/jmnedict.zip"}}) is None
+
+
+def test_a_private_modules_own_tracked_data_is_tolerated_but_never_a_users_file(audited):
+    """Why: a private module ships data in its own folder (modules/irodori/voices/*.json, the voices Piyo's tests list;
+    modules/immersion_architect/architect_settings.json, read by that module's own suite). The public repo ignores
+    modules/*, so the audit named them in every local run with the module checked out (2026-11-21), though they are
+    there wherever the module is: GitHub's runner has neither the module nor its suite, and the public tests pass
+    without it. Tolerated: a file under modules/ the private repo (the top folder's <name>.priv.git, as `git priv`)
+    tracks. Still named: a module's file the private repo doesn't track (a download, a learner's own file), and
+    anything outside modules/, even if the private repo tracked it."""
+    (audited / ".gitignore").write_text("modules/*\nUser Files/\ndata/\nresults/\nsettings.json\n", encoding="utf-8")
+    _git(str(audited), "init", "-q")
+    _git(str(audited), "add", "-A")
+    _git(str(audited), "commit", "-q", "-m", "base")
+    shipped = ["modules/irodori/voices/woman-20s.json", "modules/immersion_architect/architect_settings.json",
+               "settings.json", "data/ja/本.txt"]                     # (the last two: never tolerated, tracked or not)
+    for rel in shipped:
+        (audited / rel).parent.mkdir(parents=True, exist_ok=True)
+        (audited / rel).write_text('{"name": "女性・20代"}\n', encoding="utf-8")
+    priv = ["--git-dir=" + str(audited) + ".priv.git", "--work-tree=" + str(audited)]
+    _git(str(audited), *priv, "init", "-q")
+    _git(str(audited), *priv, "add", "-f", *shipped)
+    _git(str(audited), *priv, "commit", "-q", "-m", "private")
+    reads = {"tests/test_mcp_piyo_rounds.py::test_voices": {"modules/irodori/voices/woman-20s.json"},
+             "modules/immersion_architect/tests/test_ia.py::test_load": {
+                 "modules/immersion_architect/architect_settings.json"},
+             "tests/test_mcp_steps_aside.py::test_lists": {"modules/irodori/voices/my-own.json",
+                                                           "modules/irodori/runtime/model.safetensors",
+                                                           "User Files/ja/KnownWord.json", "data/ja/本.txt",
+                                                           "results/ja_frequency.csv", "settings.json"}}
+    assert read_audit.ignored_reads(reads) == {"tests/test_mcp_steps_aside.py::test_lists": [
+        "User Files/ja/KnownWord.json", "data/ja/本.txt", "modules/irodori/runtime/model.safetensors",
+        "modules/irodori/voices/my-own.json", "results/ja_frequency.csv", "settings.json"]}
+
+
+def test_without_the_private_repo_a_modules_data_is_still_named(audited):
+    """No <name>.priv.git beside the top folder (or git can't read it): nothing more is tolerated, the read stays a red."""
+    (audited / ".gitignore").write_text("modules/*\n", encoding="utf-8")
+    _git(str(audited), "init", "-q")
+    _git(str(audited), "add", "-A")
+    _git(str(audited), "commit", "-q", "-m", "base")
+    reads = {"tests/test_mcp_piyo_rounds.py::test_voices": {"modules/irodori/voices/woman-20s.json"}}
+    assert read_audit.ignored_reads(reads) == {"tests/test_mcp_piyo_rounds.py::test_voices": [
+        "modules/irodori/voices/woman-20s.json"]}

@@ -228,6 +228,7 @@ def context_of(language, path, store=None):
 
 
 _KEPT = {}                  # language -> (the plan file's path, time and size, its candidates, {key: its row}): `_listed`
+_LEMMAS = {}                # language -> (the rows `_listed` read, {lemma: their row numbers}): `_row_of`
 
 
 def _listed(language):
@@ -249,6 +250,31 @@ def _listed(language):
         rows = {(key[0], key[1] or ""): k for k, key in enumerate(kept.keys) if k in kept.pools}
         hit = _KEPT[language] = (stamp, kept, rows)
     return hit[1], hit[2]
+
+
+def _row_of(language, kept, rows, key, old=None):
+    """The list's row for `key` -> its number, or None (no row: the library search looks for the word). The exact
+    (lemma, reading); a key with no reading (a swap from the review loop's queue: Anki's ⇄ carries none) is the
+    lemma's row when the list has one. Two or more (one spelling, two words: 今日 きょう / こんにち) -> only the one whose
+    kept sentences hold the old card's line (`old`, by `same_line`: the Generate's own reading of that line says which
+    word it is), else None as before — a guess could give the card the other word's sentences."""
+    k = rows.get((key[0], key[1] or ""))
+    if k is not None or key[1]:
+        return k
+    hit = _LEMMAS.get(language)
+    if hit is None or hit[0] is not rows:
+        index = {}
+        for (lemma, _reading), n in rows.items():
+            index.setdefault(lemma, []).append(n)
+        hit = _LEMMAS[language] = (rows, index)
+    same = hit[1].get(key[0]) or []
+    if len(same) == 1:
+        return same[0]
+    from app import plan_rules
+    held = [n for n in same if old and any(
+        0 <= s < len(kept.sentences) and same_line(kept.sentences[s][plan_rules.TEXT], old)
+        for s in list(kept.pools[n][1]) + [kept.pools[n][0]])]
+    return held[0] if len(held) == 1 else None
 
 
 def _from_list(language, kept, listed, here_key, never, young, files, reach, books, ai, store, window):
@@ -342,7 +368,8 @@ def _from_list(language, kept, listed, here_key, never, young, files, reach, boo
         held = read[at]
         if not (0 <= number < len(held)) or str(held[number][0]).strip() != text:
             return None
-        return sum(sentence_corpus._young(young, word) for word in {(t[0], t[1]) for t in held[number][1]} - {key})
+        me = {key, (kept.keys[listed[key]][0], kept.keys[listed[key]][1] or "")}    # a key with no reading: its row's
+        return sum(sentence_corpus._young(young, word) for word in {(t[0], t[1]) for t in held[number][1]} - me)
 
     out = {}
     try:
@@ -409,9 +436,10 @@ def choose(language, keys, *, here=None, dial=None, never=None, young=None, file
     books). A sentence of the library outside the learner's length range is not a candidate
     (the corpus's window), so a word met only in short lines gets [] here and keeps its own episode's line.
 
-    A word that is a row of the list gets the list's candidates (`_from_list`: the module's docstring) — Best, and
-    Nearest asked with no `here`; at most TOP, and the mined episode's own line; its `Choice.number` says where the
-    sentence stands in its file. Any other word, and Nearest's own lines, are read from the token store."""
+    A word that is a row of the list (a word with no reading: the lemma's one row, `_row_of`) gets the list's
+    candidates (`_from_list`: the module's docstring) — Best, and Nearest asked with no `here`; at most TOP, and the
+    mined episode's own line; its `Choice.number` says where the sentence stands in its file. Any other word, and
+    Nearest's own lines, are read from the token store."""
     from app import settings_manager, sentence_corpus, analyzer, token_index
     keys = list(dict.fromkeys(tuple(k) for k in keys or ()))
     if not keys:
@@ -426,7 +454,8 @@ def choose(language, keys, *, here=None, dial=None, never=None, young=None, file
     if dial == BEST or not here_key:
         # The list's candidates first (the module's docstring); a word with no row is looked for in the library below
         kept, rows = _listed(language)
-        listed = {key: rows[(key[0], key[1] or "")] for key in keys if (key[0], key[1] or "") in rows}
+        listed = {key: k for key in keys for k in [_row_of(language, kept, rows, key, never.get(key))]
+                  if k is not None}
         if listed:
             try:
                 out.update(_from_list(language, kept, listed, here_key, never, young, files, reach, books, ai, store,

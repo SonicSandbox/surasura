@@ -17,7 +17,7 @@ waits as every one does (never while you review, the cap, Anki closed): there is
   `surasura::swapped` (`SWAP_TAG`) — Swap's only write to it. Said on *Needs you*: *A new card for 「…」 · Undo · OK*.
 - **The cap:** the swap's job carries its time as an ask (`asked_at`): never held by the cap, the learner's move is the
   yes — the old card left the count when it was suspended, the new one counts as any Connect card (one out, one in).
-  Tidy treats it as any Connect card.
+  Tidy never takes it by itself: you asked for it (`new_cards`, read by `tidy.asked_for`); only its Undo does.
 - **Undo** (`undo`): the new card removed with a backup, as Tidy removes one (`tidy.run`, why `swap`: notes, media and
   an Anki package kept; a card you studied or changed stays, and then nothing is undone), the old card unsuspended,
   its green flag off and its tag gone, then the queue's entry `undone` (`swap_queue.undone`) with the ledger's row in
@@ -89,6 +89,18 @@ def ensure(ledger):
 
 def _now():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def new_cards(ledger, language, note_ids):
+    """The notes of `note_ids` that are a made swap's new card (the ledger's `swaps`, state made) -> frozenset; none
+    before any swap was asked. Tidy's `asked_for` reads it: your green flag asked for that card."""
+    ids = {int(n) for n in note_ids}
+    if not ids or not ledger.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'swaps'"
+                                          ).fetchone():
+        return frozenset()
+    return frozenset(int(n) for (n,) in ledger.conn.execute(
+        "SELECT DISTINCT new_note FROM swaps WHERE language = ? AND state = ? AND new_note IS NOT NULL",
+        (language, MADE)) if int(n) in ids)
 
 
 def _rows(ledger, where, params=()):
@@ -563,13 +575,15 @@ class AnkiSwap(tidy.AnkiConnectTidy):
 # --------------------------------------------------------------------------- #
 # Undo
 # --------------------------------------------------------------------------- #
-def undo(anki, ledger, language, swap_id, open_store=None):
+def undo(anki, ledger, language, swap_id, open_store=None, ours=None):
     """One swap undone -> {"undone": True, "word"}: the new card removed with a backup (`tidy.run`, why "swap": a card
-    you studied or changed stays — `tidy.Refused`, and nothing here changes), then the old card back to study
-    (unsuspended, its green flag off, `SWAP_TAG` gone), then the swap `undone` in the queue and the ledger together
-    (the queue's write fails: neither changes, and a retry finishes it — the new card isn't deleted twice). Refused
-    (`Refused`) when it isn't made or is undone already (the queue's word first); Anki's Reviewing / Busy / errors, and
-    a queue that can't be read or written, raise as Tidy's do."""
+    you studied or changed stays — moved to a deck of your own too — `tidy.Refused`, and nothing here changes), then
+    the old card back to study (unsuspended, its green flag off, `SWAP_TAG` gone), then the swap `undone` in the queue
+    and the ledger together (the queue's write fails: neither changes, and a retry finishes it — the new card isn't
+    deleted twice). `ours`: the deck Surasura shows for the language's new cards (`fields.surasura_deck`), handed to
+    Tidy as an ordinary tidy hands it — a card with no home on record is Surasura's only there. Refused (`Refused`)
+    when it isn't made or is undone already (the queue's word first); Anki's Reviewing / Busy / errors, and a queue
+    that can't be read or written, raise as Tidy's do."""
     ensure(ledger)
     rows = _rows(ledger, "id = ? AND language = ?", (int(swap_id), language))
     if not rows:
@@ -590,7 +604,8 @@ def undo(anki, ledger, language, swap_id, open_store=None):
     gone = not any(isinstance(n, dict) and n.get("noteId") for n in anki.notes([int(row["new_note"])]) or ())
     if not others and not row.get("tidy_id") and not gone:     # a card two greens share goes with the last of them;
         try:                                                    # one you deleted yourself: nothing to delete
-            tidied = tidy.run(anki, ledger, language, [int(row["new_note"])], why=BY_SWAP, open_store=open_store)
+            tidied = tidy.run(anki, ledger, language, [int(row["new_note"])], why=BY_SWAP, open_store=open_store,
+                              ours=ours)
         except tidy.Refused as e:
             raise tidy.Refused(KEPT if e.say == tidy.ALL_KEPT else e.say) from None
         _set(ledger, row["id"], tidy_id=tidied.get("id"))   # a retry after the old card's write failed skips it
@@ -635,7 +650,7 @@ def act_undo(settings, language, swap_id):
     """*Undo* on a swap (Needs you) -> {"undone": True} or {"why": plain words}; anything else (a disk or ledger error)
     raises to the window's press, which says it failed."""
     from app import anki_connect, locks
-    from app.connect import library
+    from app.connect import fields, library
     from app.connect.ledger import Ledger, TooNew, path
     from app.connect.undo import NO_ANKI, NO_LEDGER, Reviewing
     if os.environ.get("SURASURA_NO_ANKI_SYNC"):
@@ -645,7 +660,7 @@ def act_undo(settings, language, swap_id):
     try:
         with Ledger() as ledger:
             return undo(AnkiSwap(anki_connect.address(settings)), ledger, language, swap_id,
-                        lambda: library.open_store(language))
+                        lambda: library.open_store(language), ours=fields.surasura_deck(settings, language))
     except tidy.Refused as e:
         return {"why": e.say}
     except Reviewing:

@@ -43,6 +43,8 @@ ZH = os.path.join(RESOURCES, "zh", "night_market.srt")
 # The word, the old card's line, the other line the word is said in (both real lines of the files above)
 CASES = {"ja": ("借りる", "すみません、この本を借りたいんですが。", "ペンを借りてもいいですか"),
          "zh": ("我们", "今天我们要去台北的夜市吃东西。", "我们先点一碗牛肉面")}
+MINING = "日本語::Mining"       # the deck a batch makes its cards in (Tidy's fake's own): each made card's home
+SHOWN = "Surasura::日本語"      # the deck Surasura shows for new cards (Settings: `fields.surasura_deck`)
 
 
 @pytest.fixture(autouse=True)
@@ -191,12 +193,14 @@ def _old_card(anki, lang, note=900, word=None):
     return anki
 
 
-def _make_the_job(ledger, row, note=950, tag="surasura::connect::x", record=False):
-    """Connect's job for the swap ends having made `note` (what its steps would leave in the ledger); `record`: the
-    mining's store write too — the runner's own step (`runner._record_made`, the library's made-words record), as
-    every Connect job writes it before it ends (a library store must be there: `c.library`)."""
+def _make_the_job(ledger, row, note=950, tag="surasura::connect::x", record=False, deck=MINING):
+    """Connect's job for the swap ends having made `note`, as the runner's `_mine` ends it: the batch's outcomes with
+    the deck it made its cards in (`end_batch(deck=…)`: each made card's home, Kyou-SH4's `homes`; `deck` None only
+    for a test of a card with no home on record — a lost or empty mapping deck); `record`: the mining's store write
+    too — the runner's own step (`runner._record_made`, the library's made-words record), as every Connect job writes
+    it before it ends (a library store must be there: `c.library`)."""
     ledger.end_batch(row["job_id"], 1, "done", [{"word": row["word"], "reading": "", "outcome": "made",
-                                                 "note_id": note}])
+                                                 "note_id": note}], deck=deck)
     if record:
         from app.connect import runner
         runner._record_made(runner.Steps({}), ledger, row["language"], ledger.job_by_id(row["job_id"]), True)
@@ -222,7 +226,7 @@ def test_a_queued_green_becomes_one_swap_job_then_made_with_the_pair_and_the_old
         picked.append((w, list(avoid))) or (7, other)))
     anki = _old_card(Anki(), lang)
     ledger.end_batch(ledger.queue(lang, 3, "user", None, store_id="s1"), 1, "done",
-                     [{"word": word, "reading": "", "outcome": "made", "note_id": 900, "sentence": old}])
+                     [{"word": word, "reading": "", "outcome": "made", "note_id": 900, "sentence": old}], deck=MINING)
     got = swap.look(Steps(), ledger, lang, store_id="s1", anki=anki, files=5)
     assert got["queued"] == 1 and picked == [(word, [old])]          # the old card's line from Connect's record
     row = swap._rows(ledger, "language = ?", (lang,))[0]
@@ -405,10 +409,11 @@ class _NoStore:
 # --------------------------------------------------------------------------- #
 # Undo
 # --------------------------------------------------------------------------- #
-def _made_swap(ledger, monkeypatch, lang="ja", old_here=False):
-    """A swap made as Connect makes it: its job's card in the ledger (`made`) and in the library's made-words record
-    (the runner's own write) — the two records Tidy's guarantee asks of a card Surasura made (Kyou-SH3). `old_here`:
-    the old card is Connect's too, made from the episode the swap's line comes from."""
+def _made_swap(ledger, monkeypatch, lang="ja", old_here=False, home=MINING, deck=MINING):
+    """A swap made as Connect makes it: its job's card in the ledger (`made`, with its batch's deck: its home) and in
+    the library's made-words record (the runner's own write) — the records Tidy's guarantee asks of a card Surasura
+    made (Kyou-SH3, Kyou-SH4). `old_here`: the old card is Connect's too, made from the episode the swap's line comes
+    from. `home`: the deck on record (None: none, a lost or empty mapping deck); `deck`: where Anki has the card."""
     word, _old, other = CASES[lang]
     c.library(lang)
     _lists(lang)
@@ -420,16 +425,16 @@ def _made_swap(ledger, monkeypatch, lang="ja", old_here=False):
     if old_here:
         job = ledger.queue(lang, item, "user", None, store_id="s1")
         ledger.end_batch(job, 1, "done", [{"word": word, "reading": "", "outcome": "made", "note_id": 900,
-                                           "sentence": _old}])
+                                           "sentence": _old}], deck=MINING)
         ledger.set_state(job, "done")
     monkeypatch.setattr(swap, "choose_line", lambda *a, **k: (item, other))
     anki = _old_card(Anki(), lang)
     swap.look(Steps(), ledger, lang, anki=anki, files=5)
     row = swap._rows(ledger, "1 = 1")[0]
     tag = "surasura::connect::" + ledger.tag_id(row["job_id"])
-    _make_the_job(ledger, row, record=True)
+    _make_the_job(ledger, row, record=True, deck=home)
     done_at = calendar.timegm(time.strptime(ledger.job_by_id(row["job_id"])["updated_at"], "%Y-%m-%dT%H:%M:%SZ"))
-    anki.add(950, tag, word, done_at - 60, sound="swap-new.mp3")      # untouched since its job made it
+    anki.add(950, tag, word, done_at - 60, deck=deck, sound="swap-new.mp3")      # untouched since its job made it
     swap.look(Steps(), ledger, lang, anki=anki, files=5)
     return anki, row["id"]
 
@@ -458,6 +463,66 @@ def test_a_new_card_you_studied_stays_and_undo_changes_nothing(ledger, monkeypat
     assert anki.cards_[9000]["queue"] == -1 and _row(ledger, swap_id)["state"] == swap.MADE
 
 
+# --------------------------------------------------------------------------- #
+# Undo and where the new card is (Kyou-SH4: Tidy takes a card only where Surasura put it)
+# --------------------------------------------------------------------------- #
+def _undone(anki, ledger, swap_id):
+    old = anki.cards_[9000]
+    assert anki.deleted == [950] and _row(ledger, swap_id)["state"] == swap.UNDONE
+    assert (old["queue"], old["flags"]) == (0, 0), "the old card back in reviews, its green flag off"
+    assert swap.SWAP_TAG not in anki.notes_[900]["tags"]
+
+
+def _unchanged(anki, ledger, swap_id):
+    old = anki.cards_[9000]
+    assert anki.deleted == [] and _row(ledger, swap_id)["state"] == swap.MADE
+    assert (old["queue"], old["flags"]) == (-1, 3) and swap.SWAP_TAG in anki.notes_[900]["tags"], \
+        "a refused Undo leaves the old card as it was"
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+@pytest.mark.parametrize("home, deck", [(MINING, MINING), (None, SHOWN)], ids=["its-home", "no-home-in-surasuras-deck"])
+def test_undo_takes_back_a_swaps_card_in_its_home_or_with_no_home_in_surasuras_deck(ledger, lang, home, deck,
+                                                                                    monkeypatch):
+    # Why: Undo removes the new card only through Tidy (ROLES row 81), and Tidy takes a card only where Surasura put
+    # it: the deck its batch recorded (its home), or — no home on record (a lost or empty mapping deck) — the deck
+    # Surasura shows for new cards, handed in as an ordinary tidy hands it. Without that deck a swap's card with no
+    # home could never be undone (train 62's join).
+    anki, swap_id = _made_swap(ledger, monkeypatch, lang, home=home, deck=deck)
+    assert ledger.homes([950]) == ({950: home} if home else {})
+    assert swap.undo(anki, ledger, lang, swap_id, open_store=_opener(lang), ours=SHOWN)["undone"]
+    _undone(anki, ledger, swap_id)
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+@pytest.mark.parametrize("home, moved_to", [(None, None), (MINING, "自分の単語")], ids=["no-home-elsewhere", "moved-by-you"])
+def test_undo_refuses_a_swaps_card_outside_surasuras_decks_with_the_words_undo_has(ledger, lang, home, moved_to,
+                                                                                  monkeypatch):
+    # Why: Sonic's 56 c — Undo is refused once you have studied or changed the new card, and moving it to a deck of
+    # your own is changing it (Kyou-SH4's MOVED); with no home on record and outside Surasura's deck Tidy can't tell
+    # whose it is: kept, never a guess. Refused with Undo's own words, and nothing changes.
+    anki, swap_id = _made_swap(ledger, monkeypatch, lang, home=home)       # made in MINING; ours below is SHOWN
+    if moved_to:
+        anki.cards_[9500]["deckName"] = moved_to
+    with pytest.raises(swap.tidy.Refused) as kept:
+        swap.undo(anki, ledger, lang, swap_id, open_store=_opener(lang), ours=SHOWN)
+    assert kept.value.say == swap.KEPT == "The new card stays: you've studied or changed it."
+    _unchanged(anki, ledger, swap_id)
+
+
+def test_the_windows_undo_hands_tidy_the_deck_settings_show_through_the_same_function_an_ordinary_tidy_uses(
+        ledger, monkeypatch):
+    # Why: *Undo* on Needs you (`act_undo`) reads Surasura's deck as Connect's tidy does (`fields.surasura_deck` on
+    # the settings: Settings' *New cards a day* deck) — no second rule of its own.
+    anki, swap_id = _made_swap(ledger, monkeypatch, "ja", home=None, deck=SHOWN)
+    monkeypatch.setattr(swap, "AnkiSwap", lambda url: anki)
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
+    assert swap.act_undo({}, "ja", swap_id) == {"why": swap.KEPT}, "no deck shown: Anki Miner's own, no home: kept"
+    _unchanged(anki, ledger, swap_id)
+    assert swap.act_undo({"junban_deck": SHOWN, "junban_scope": "deck"}, "ja", swap_id)["undone"]
+    _undone(anki, ledger, swap_id)
+
+
 @pytest.mark.parametrize("lang", ["ja", "zh"])
 def test_a_swapped_card_is_in_both_of_surasuras_records_and_tidys_guarantee_takes_it_as_its_own(ledger, lang,
                                                                                                  monkeypatch):
@@ -478,22 +543,62 @@ def test_a_swapped_card_is_in_both_of_surasuras_records_and_tidys_guarantee_take
     assert swap.undo(anki, ledger, lang, swap_id, open_store=_opener(lang))["undone"] and anki.deleted == [950]
 
 
+def _connect_card(ledger, anki, lang, note=960, word=None):
+    """An ordinary Connect card beside the swap's: its own job made it in the deck it records (the runner's steps:
+    the batch's end with its deck, the made-words record, done), never studied, untouched since."""
+    from app.connect import runner
+    word = word or {"ja": "本", "zh": "夜市"}[lang]
+    with c.store(lang) as s:
+        item = s.ids("now")[-1]                     # another episode than the swap's (one job an item)
+    job = ledger.queue(lang, item, "user", None, store_id="s1")
+    assert job is not None
+    ledger.end_batch(job, 1, "done", [{"word": word, "reading": "", "outcome": "made", "note_id": note}], deck=MINING)
+    runner._record_made(runner.Steps({}), ledger, lang, ledger.job_by_id(job), True)
+    ledger.set_state(job, "done")
+    done_at = calendar.timegm(time.strptime(ledger.job_by_id(job)["updated_at"], "%Y-%m-%dT%H:%M:%SZ"))
+    anki.add(note, "surasura::connect::" + ledger.tag_id(job), word, done_at - 60, sound=f"plain-{note}.mp3")
+    return note
+
+
 @pytest.mark.parametrize("lang", ["ja", "zh"])
-def test_an_ordinary_tidy_takes_a_swaps_unstudied_new_card_as_any_connect_card_and_undo_still_gives_the_old_back(
-        ledger, lang, monkeypatch):
-    # Why: a swap's new card counts as any Connect card once made (ROLES: Tidy treats a swapped-in card as any Connect
-    # card, PROVISIONAL) — past the window and never studied, Tidy may delete it with a copy kept. Tidy must never touch
-    # the old card (suspended, green, tagged swapped), and the swap's Undo must still give it back, deleting nothing.
+@pytest.mark.parametrize("why", [tidy.AUTO, tidy.NOW])
+def test_an_ordinary_tidy_never_deletes_a_swaps_new_card_you_asked_for_and_the_swaps_undo_still_does(
+        ledger, lang, why, monkeypatch):
+    # Why (OPEN 56 g, PROVISIONAL): your ⇄ asked for the swap's new card — it is never held by the cap (56 f), so it
+    # must never be tidied for being past the cap either: the old card stays suspended, and a tidied new card left the
+    # word with no card in reviews until someone pressed Undo. It is Tidy's rule (`tidy.asked_for`, the clause ASKED):
+    # an ordinary Connect card beside it still goes, the old card is never touched, and only the swap's own Undo
+    # (why "swap") takes the new card back.
     anki, swap_id = _made_swap(ledger, monkeypatch, lang, old_here=True)     # the old card Connect's own too
-    done = tidy.run(anki, ledger, lang, [950, 900], why=tidy.AUTO, open_store=_opener(lang))
-    assert done["deleted"] == [950] and [n for n, _w in done["kept"]] == [900]
-    assert dict(done["kept"])[900] != tidy.NOT_MADE, "kept as studied / suspended: the clauses past Connect-made"
+    plain = _connect_card(ledger, anki, lang)
+    assert tidy.asked_for(ledger, lang, [950, 900, plain]) == {950}, "the swap's new card only"
+    assert tidy.asked_for(ledger, lang, [950], swap.BY_SWAP) == frozenset(), "not in the swap's own Undo"
+    assert tidy.asked_for(ledger, "zh" if lang == "ja" else "ja", [950]) == frozenset(), "one language's swaps"
+    done = tidy.run(anki, ledger, lang, [950, 900, plain], why=why, open_store=_opener(lang))
+    assert done["deleted"] == [plain], "an ordinary Connect card beside it still goes"
+    assert dict(done["kept"])[950] == tidy.ASKED and dict(done["kept"])[900] != tidy.NOT_MADE
+    with pytest.raises(tidy.Refused) as alone:                                 # past the cap, never studied: kept
+        tidy.run(anki, ledger, lang, [950], why=why, open_store=_opener(lang))
+    assert alone.value.say == tidy.ALL_KEPT and 950 not in anki.deleted
     old = anki.cards_[9000]
-    assert (old["queue"], old["flags"]) == (-1, 3) and swap.SWAP_TAG in anki.notes_[900]["tags"],         "the old card stays suspended, green and tagged: Tidy never changes it"
-    assert _row(ledger, swap_id)["state"] == swap.MADE, "the swap stays made: its Undo is still offered"
+    assert (old["queue"], old["flags"]) == (-1, 3) and swap.SWAP_TAG in anki.notes_[900]["tags"], \
+        "the old card stays suspended, green and tagged: Tidy never changes it"
     assert swap.undo(anki, ledger, lang, swap_id, open_store=_opener(lang))["undone"]
-    assert anki.deleted == [950], "the new card already gone: Undo deletes nothing more"
+    assert anki.deleted == [plain, 950], "the swap's Undo takes its new card back"
     assert (anki.cards_[9000]["queue"], anki.cards_[9000]["flags"]) == (0, 0), "the old card back in reviews"
+    assert tidy.asked_for(ledger, lang, [950]) == frozenset(), "an undone swap asks for nothing"
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_connects_own_tidy_past_the_cap_reads_on_past_a_swaps_new_card_and_takes_the_next_one(ledger, lang,
+                                                                                               monkeypatch):
+    # Why: the swap's card is one of Connect's own in the count (one out, one in), so Connect's look may choose it
+    # past the cap; Tidy keeps it (ASKED) and reads the next candidate instead (`candidates`: a kept one is skipped),
+    # so the pile still shrinks by what is past the cap.
+    anki, _swap_id = _made_swap(ledger, monkeypatch, lang)
+    plain = _connect_card(ledger, anki, lang)
+    done = tidy.run(anki, ledger, lang, [950, plain], why=tidy.AUTO, open_store=_opener(lang), limit=1)
+    assert done["deleted"] == [plain] and dict(done["kept"]) == {950: tidy.ASKED}
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
@@ -947,3 +1052,79 @@ def test_a_listed_word_whose_kept_lines_all_changed_since_generate_waits_for_ano
     entries = needs._swap_entries({"swaps": swap.status_of(ledger.conn, "ja")}, frozenset())
     assert [e.kind for e in entries] == [needs.SWAP_WAITS]
     assert entries[0].title == "No other sentence for 「冒険」 yet."
+
+
+# --------------------------------------------------------------------------- #
+# A listed word swapped from Anki: the review loop's queue carries no reading (the picker's match, `_row_of`)
+# --------------------------------------------------------------------------- #
+KYOU, KONNICHI = ("今日", "キョウ"), ("今日", "コンニチ")       # one spelling, two words
+KYOU_LINES = ("今日は雨が降っている。", "今日から学校が始まる。")
+KONNICHI_LINES = ("今日の日本では高齢化が進んでいる。", "今日に至るまで続いている伝統だ。")
+
+
+def _searched(monkeypatch):
+    """The library search's first step, noted (it finds nothing here): [the keys it was asked for]."""
+    from app import sentence_corpus
+    asked = []
+    monkeypatch.setattr(sentence_corpus, "library_files", lambda language, *a, **k: asked.append(language) or [])
+    return asked
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_listed_word_swapped_with_no_reading_reaches_the_lists_kept_lines_never_the_library_search(
+        placed, lang, monkeypatch):
+    # Why: a swap from the review loop's queue carries no reading; the list's rows are keyed (lemma, reading), so the
+    # word missed its row and went to the slow library search and another pool. One row with that lemma is the word.
+    if lang == "ja":
+        key, lines, old = BOUKEN, [HARD, EASY], TODAY
+    else:
+        key, lines, old = ("电话", ""), ["那个陌生人打来的电话很奇怪。", "他接到电话了。"], "我刚才给妈妈打了电话。"
+    _lists(lang)
+    here, there = _sd_write(lang, "第01話.srt", [lines[0]]), _sd_write(lang, "第02話.srt", ["……", lines[1]])
+    _sd_place(placed, here, 1)
+    _sd_place(placed, there, 2)
+    _sd_plan(lang, [here, there], {key: [(0, 0, lines[0], 3), (1, 1, lines[1], 0)]})
+    _no_library_search(monkeypatch)
+    no_reading = (key[0], "")
+    got = sentences.choose(lang, [no_reading], dial=sentences.BEST, young={}, never={no_reading: {old}})
+    assert [ch.text for ch in got[no_reading]] == [lines[1], lines[0]], "the row's kept lines, in Best's order"
+    assert swap.choose_line(lang, key[0], [old]) == (2, lines[1]), "Swap's own ask, with no reading"
+    assert swap.choose_line(lang, key[0], [lines[1]]) == (1, lines[0]), "never the old card's line"
+
+
+def _homographs(placed):
+    here, there = _sd_write("ja", "第01話.srt", list(KYOU_LINES)), _sd_write("ja", "第02話.srt", list(KONNICHI_LINES))
+    _sd_place(placed, here, 1)
+    _sd_place(placed, there, 2)
+    _sd_plan("ja", [here, there], {KYOU: [(0, 0, KYOU_LINES[0], 1), (0, 1, KYOU_LINES[1], 1)],
+                                   KONNICHI: [(1, 0, KONNICHI_LINES[0], 1), (1, 1, KONNICHI_LINES[1], 1)]})
+
+
+@pytest.mark.parametrize("old, row", [(KONNICHI_LINES[0], KONNICHI), (KYOU_LINES[1], KYOU)],
+                         ids=["konnichi", "kyou"])
+def test_homographs_with_no_reading_take_the_row_whose_kept_lines_hold_the_old_cards_sentence(placed, old, row,
+                                                                                              monkeypatch):
+    # Why: 今日 is two words (きょう / こんにち), two rows of the list. A swap with no reading can't tell which — but its
+    # old card's sentence was cut from one of them: the row whose kept lines hold it is the word (the Generate's own
+    # reading of that line), and the new card gets that word's other line, never the other word's.
+    _homographs(placed)
+    _no_library_search(monkeypatch)
+    key = ("今日", "")
+    got = sentences.choose("ja", [key], dial=sentences.BEST, young={}, never={key: {old}})[key]
+    want = KONNICHI_LINES if row == KONNICHI else KYOU_LINES
+    assert [ch.text for ch in got] == [line for line in want if line != old]
+
+
+@pytest.mark.parametrize("old", [None, "今日はいい天気ですね。", KYOU_LINES[0] + KONNICHI_LINES[0]],
+                         ids=["no-old-line", "in-neither-row", "in-both-rows"])
+def test_homographs_with_no_reading_and_no_telling_row_fall_back_to_the_library_search_as_before(placed, old,
+                                                                                                 monkeypatch):
+    # Why: with no old line to tell by (Bad card on a deleted card), or one neither row's kept lines hold, or one both
+    # do, a guess could give the card the other word's sentence: the word is no row, as before this change — the
+    # library search (here: it finds nothing).
+    _homographs(placed)
+    asked = _searched(monkeypatch)
+    key = ("今日", "")
+    got = sentences.choose("ja", [key], dial=sentences.BEST, young={}, never={key: {old}} if old else None)
+    assert got == {key: []} and asked == ["ja"], "the library search, as for a word with no row"
+    assert sentences.choose("ja", [KYOU], dial=sentences.BEST, young={})[KYOU], "a key with its reading: its row"

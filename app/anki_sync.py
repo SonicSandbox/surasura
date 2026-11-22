@@ -58,6 +58,8 @@ GRADUATED_MARK = "graduated"        # an entry the merge raised to KNOWN: kept_g
 # A word marked known by hand in Surasura (app/services/word_marks.py, Kotoba-K): Replace keeps it, as it keeps a past
 # Graduate's word — the same kind of word, one the learner said they know.
 MARKED_SOURCE = "Surasura"
+NOT_KNOWN_FLAGS = "-flag:1 -flag:3"   # red (Ignore) and green (Swap): never known, suspended or not (the review loop)
+TURNED = "notKnown"                   # an entry Still learning turned not known (`app/services/word_marks.py`)
 KEPT_SOURCES = (GRADUATED_SOURCE, MARKED_SOURCE)
 # The new-card backlog of the same decks (Junban_Backlog_Spec §5.2, WP-B7): the words waiting in Anki,
 # so the report can mark them. Derived data — never the user's known words — and read-only on Anki.
@@ -144,6 +146,9 @@ class SyncResult:
     # sync: the notes it read (notesInfo), handed to the young cards' read beside it (`sync_all`) so a card studied
     # today isn't asked for twice; emptied there, never shown
     read: list = field(default_factory=list, repr=False, compare=False)
+    # sync_all: the review loop's payoff (`review_loop.read`: {"sync", "known", "swap", "ignored"}), None when your
+    # phone sent nothing this time — the window's *From your phone* toast, with its Undo
+    loop: "dict | None" = field(default=None, compare=False)
 
 
 class _KnownFileError(Exception):
@@ -346,12 +351,15 @@ def _clean_decks(decks):
 def scope_query(decks, include_suspended=False):
     """'(deck:"A" OR deck:"B") -is:new [-is:suspended]'. `deck:"A"` includes A's subdecks. `include_suspended`: False
     (no suspended card), True (every studied one), or the search terms a suspended card must carry to count
-    (`counted_suspended`: *Count as known in Anki*'s picks)."""
+    (`counted_suspended`: *Count as known in Anki*'s picks). A red or a green card never counts, suspended or not
+    (`NOT_KNOWN_FLAGS`: the review loop's Ignore and Swap; Kyou-LR, Kotoba-WS2's note b)."""
     terms = " OR ".join(f'deck:"{anki_connect.escape_query(d)}"' for d in _clean_decks(decks))
     query = f"({terms}) -is:new"
     if isinstance(include_suspended, str):
-        return f"{query} (-is:suspended OR (is:suspended {include_suspended}))"
-    return query if include_suspended else query + " -is:suspended"
+        query = f"{query} (-is:suspended OR (is:suspended {include_suspended}))"
+    elif not include_suspended:
+        query += " -is:suspended"
+    return f"{query} {NOT_KNOWN_FLAGS}"
 
 
 def counted_suspended(settings):
@@ -570,10 +578,43 @@ def _terms_from_notes(notes, fields, language, result):
     return out
 
 
+def turned_since(words, known=None):
+    """{word key: the newest time (ms) Still learning turned one of its entries not known} for every word none of whose
+    entries is known now (`app/services/word_marks.py`). The sync never reads such a word known again from a note made
+    before that time — the same card, or another older one whose sentence holds it (Kyou-LR, WL ⑦: it never re-reads
+    as Known from the same card); a new card for it (a note made after) counts as any studied card does."""
+    known = _known_keys(words) if known is None else known
+    out = {}
+    for w in words:
+        mark = w.get(TURNED) if isinstance(w, dict) else None
+        if not isinstance(mark, dict) or _is_known(w):
+            continue
+        key = _norm(w.get("dictForm"))
+        try:
+            ms = int(mark.get("ms"))
+        except (TypeError, ValueError):
+            continue
+        if key and key not in known:
+            out[key] = max(ms, out.get(key, 0))
+    return out
+
+
+def _made_before(note_id, ms):
+    """Was the note made before `ms` (Anki's note id is its creation time in ms)? A note without an id counts as old."""
+    if ms is None:
+        return False
+    try:
+        return int(note_id) <= ms
+    except (TypeError, ValueError):
+        return True
+
+
 def _entry(term, note_id, language, now):
+    # `knownAt` (Kyou-LR, 2026-11-21): when the word became known, kept beside it for the *Your words* window and a
+    # later stats page; older versions ignore the key (an entry without it: its `created`, or the file's order).
     entry = {"dictForm": term, "secondary": "", "partOfSpeech": "", "language": language,
              "knownStatus": "KNOWN", "hasCard": 1, "tracked": 0,
-             "created": now, "mod": now, "isModern": 1, "source": SOURCE}
+             "created": now, "mod": now, "knownAt": now, "isModern": 1, "source": SOURCE}
     try:
         entry["ankiNoteId"] = int(note_id)
     except (TypeError, ValueError):
@@ -649,7 +690,9 @@ def _sync(language, url, decks, fields, include_suspended, full):
 
     known = _known_keys(words or [])
     now = _now_iso()
-    new_entries = [_entry(t, nid, language, now) for t, nid in terms if _norm(t) not in known]
+    held_back = turned_since(words or [], known)
+    new_entries = [_entry(t, nid, language, now) for t, nid in terms
+                   if _norm(t) not in known and not _made_before(nid, held_back.get(_norm(t)))]
 
     if new_entries:
         if data is None:
@@ -847,20 +890,25 @@ def sync_all(language, url, decks, fields, settings, include_suspended=False, fu
     if marked and result is not None:
         result.added += marked
         result.total_known += marked
+    if result is not None:
+        result.loop = (signal or {}).get("loop") or None
+        if result.loop and result.loop.get("unknown"):      # Ignore / Swap took known words out (the move rule)
+            result.total_known = count_known(language)
     return result, signal
 
 
 def read_known_signal(language, url, decks, fields, settings):
-    """Known from Anki (P2.4 row 2.4.15), beside this sync, in the same decks: cards you suspended (or the signal you
-    chose, `known_from_anki`) mark their words known — `app/connect/known_signal.py`. Only while Connect is on (its
-    switch and, 3.0, D29's automation: `settings_manager.connect_on`, P4.1 row 4.1.1): off, nothing is imported or
-    asked (None). Never raises: a read that fails is tried at the next sync."""
+    """The review loop's reader (Kyou-LR: `app/connect/review_loop.py`), beside this sync, in the same decks: Known
+    from Anki first (P2.4 row 2.4.15: cards you suspended and marked, or the signal you chose, `known_from_anki`, mark
+    their words known — `app/connect/known_signal.py`), then Suspend + Red (Ignore) and Suspend + Green (Swap). Only
+    while Connect is on (its switch and, 3.0, D29's automation: `settings_manager.connect_on`, P4.1 row 4.1.1): off,
+    nothing is imported or asked (None). Never raises: a read that fails is tried at the next sync."""
     from app import settings_manager
     if not settings_manager.connect_on(settings):
         return None
     try:
-        from app.connect import known_signal
-        return known_signal.read(language, url, _clean_decks(decks), [str(f) for f in (fields or [])], settings)
+        from app.connect import review_loop
+        return review_loop.read(language, url, _clean_decks(decks), [str(f) for f in (fields or [])], settings)
     except Exception as e:
         print(f"Count as known in Anki skipped: {e}")
         return None

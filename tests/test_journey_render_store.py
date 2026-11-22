@@ -42,7 +42,8 @@ def test_no_store_is_no_facts_and_the_page_names_episodes_by_file(language):
     data_dir, user_files_dir = roots(language)
     assert jr.store_facts(language, data_dir, user_files_dir) is None
     out = jr.build(language, [], [{"File": "ep01.srt", "Coverage (%)": 88.5}], pitch=jr.Pitch(language, kanjium={}))
-    assert out.head["eps"][0][0] is None and out.head["eps"][0][6] == 88.5
+    # No store and no plan: no *% known* (the window's em dash), never the stats file's Coverage (%) (the dup audit)
+    assert out.head["eps"][0][0] is None and out.head["eps"][0][6] is None
 
 
 def test_a_store_without_growth_or_pre_studied_readers_draws_neither(monkeypatch):

@@ -804,9 +804,11 @@ def _show_of(item_id, work_id, folder):
 
 def _now():
     """A sortable UTC time stamp with microseconds (`added_at`, `removed_at`, the log's `at`), never one this process
-    gave already (Windows' clock moves ~15 ms at a time: two Removes in one tick were one Removed entry, alpha 5)."""
+    gave already (Windows' clock moves ~15 ms at a time: two Removes in one tick were one Removed entry, alpha 5). The
+    clock's own integer (Flake-F4): `time.time() * 1e6` truncated a float that can sit just under a whole microsecond,
+    a stamp 1 µs before `datetime.now()` read at the same instant."""
     with _NOW_LOCK:
-        us = _NOW_LAST[0] = max(int(time.time() * 1e6), _NOW_LAST[0] + 1)
+        us = _NOW_LAST[0] = max(time.time_ns() // 1000, _NOW_LAST[0] + 1)
     secs, frac = divmod(us, 10 ** 6)
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(secs)) + ".%06dZ" % frac
 

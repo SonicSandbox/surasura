@@ -232,7 +232,7 @@ def look(key):
                                failed_at=utc()))
     if verdict is None:
         if key == SPEECH:
-            _heartbeat()
+            anki_miner.touch_heartbeat()
             return state
         progress = anki_miner.read_progress(os.path.join(folder(key), "run"), RUN_ID)
         if progress and progress.get("stages"):
@@ -246,19 +246,6 @@ def look(key):
 def utc():
     """Now as Connect's ledger writes times (`ledger._now`): a stop compared with a job's `asked_at`."""
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def _heartbeat():
-    """`anki_miner.run_setup`'s heartbeat, beside the speech model's progress file: a download that writes no progress
-    for minutes still reads as *finishing its setup* (`anki_miner.setting_up`)."""
-    from app.connect import anki_miner
-    beat = os.path.join(anki_miner.setup_folder(), anki_miner.HEARTBEAT)
-    try:
-        with open(beat, "a"):
-            pass
-        os.utime(beat)
-    except OSError:
-        pass
 
 
 def _ended(key, state, verdict):

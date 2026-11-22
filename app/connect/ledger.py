@@ -204,6 +204,10 @@ _RUNNER_SQL = (
       deleted TEXT NOT NULL,
       kept TEXT NOT NULL,
       finished_at TEXT)""",
+    # Kyou-SH4 (Sonic 2026-11-22: a card you moved into a deck of your own is yours): the deck Surasura last put each
+    # note's cards in — made there by its batch (`end_batch`), moved there by *Move them to X* (`decks.move`) — so
+    # Tidy tells your move from Surasura's own (`tidy.why_kept`). No schema change: an older Surasura ignores it.
+    "CREATE TABLE IF NOT EXISTS homes (note_id INTEGER PRIMARY KEY, deck TEXT NOT NULL)",
 )
 # SCHEMA 3 -> 4: *Needs you*'s own columns (P2.5)
 _NEEDS_COLUMNS = (("seen_at", "TEXT"), ("dismissed_at", "TEXT"), ("fixed_at", "TEXT"))
@@ -846,12 +850,45 @@ class Ledger:
                               "VALUES (?, ?, ?, 'running', ?)", (job_id, attempt, run_dir, _now()))
             self.conn.execute("UPDATE jobs SET attempt = ?, updated_at = ? WHERE id = ?", (attempt, _now(), job_id))
 
-    def end_batch(self, job_id, attempt, state, outcomes=(), anki_miner=None):
-        """The batch's end and its words' outcomes, in one transaction (a kill leaves the batch running, or both)."""
+    def end_batch(self, job_id, attempt, state, outcomes=(), anki_miner=None, deck=None):
+        """The batch's end and its words' outcomes, in one transaction (a kill leaves the batch running, or both);
+        `deck`: the deck the batch made its cards in (None: not known — a kill's batch read back by its tag), each
+        made note's home (`homes`), never over one recorded before."""
         with self.transaction():
             self.record_outcomes(job_id, attempt, outcomes)
             self.conn.execute("UPDATE batches SET state = ?, anki_miner = ?, ended_at = ? WHERE job_id = ? AND "
                               "attempt = ?", (state, anki_miner, _now(), job_id, attempt))
+            if deck:
+                self.conn.executemany("INSERT OR IGNORE INTO homes (note_id, deck) VALUES (?, ?)",
+                                      [(int(o["note_id"]), str(deck)) for o in outcomes
+                                       if o.get("outcome") == "made" and o.get("note_id") is not None])
+
+    def set_homes(self, note_ids, deck):
+        """Surasura put `note_ids`' cards in `deck` (*Move them to X*); None takes the record away (its Undo putting
+        it back as it was)."""
+        with self.transaction():
+            if deck is None:
+                self.conn.executemany("DELETE FROM homes WHERE note_id = ?", [(int(n),) for n in note_ids])
+            else:
+                self.conn.executemany("INSERT OR REPLACE INTO homes (note_id, deck) VALUES (?, ?)",
+                                      [(int(n), str(deck)) for n in note_ids])
+
+    def homes(self, note_ids):
+        """{note id: the deck Surasura last put its cards in} for those of `note_ids` it has a record of."""
+        ids, out = sorted({int(n) for n in note_ids}), {}
+        for at in range(0, len(ids), 500):
+            chunk = ids[at:at + 500]
+            out.update((int(n), d) for n, d in self.conn.execute(
+                f"SELECT note_id, deck FROM homes WHERE note_id IN ({','.join('?' * len(chunk))})", chunk))
+        return out
+
+    def carry_homes(self, id_map):
+        """A note Anki gave a new id (an Undo's import) keeps the home of the note it was, inside the caller's
+        transaction."""
+        for old, new in id_map.items():
+            if int(old) != int(new):
+                self.conn.execute("INSERT OR IGNORE INTO homes (note_id, deck) SELECT ?, deck FROM homes "
+                                  "WHERE note_id = ?", (int(new), int(old)))
 
     def record_outcomes(self, job_id, attempt, outcomes):
         """N6 rows, inside the caller's transaction: a later attempt's row replaces an earlier one's, never a word

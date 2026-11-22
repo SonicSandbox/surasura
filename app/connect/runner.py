@@ -2213,14 +2213,17 @@ def _mine(steps, ledger, lang, job, record=True):
                     got["outcomes"] = _merge(got["outcomes"], steps.by_tag(lang, job, picked, dup), ("duplicate",))
         except Wait as w:
             # Anki went away before the tag check: Anki Miner's own outcomes kept, the rest in doubt (adversary #16)
-            ledger.end_batch(jid, attempt, "uncertain", _enriched(got["outcomes"], by_key), anki_miner=got.get("app"))
+            ledger.end_batch(jid, attempt, "uncertain", _enriched(got["outcomes"], by_key), anki_miner=got.get("app"),
+                             deck=got.get("deck"))
             if got.get("anki_said"):        # Mattias #5 (review r2 B1): Anki's refusal kept, as below
                 _keep_alone(ledger, jid, got["anki_said"], got.get("refused"))
             if got.get("doubt") and not stopped and got.get("then") is None:
                 _count_failure(ledger, jid)     # (never for a word-at-a-time batch a wait cut short)
             raise Wait(w.reason, w.look, "mining") from None
         state = "uncertain" if any(o["outcome"] == "uncertain" for o in got["outcomes"]) else "done"
-        ledger.end_batch(jid, attempt, state, _enriched(got["outcomes"], by_key), anki_miner=got.get("app"))
+        # Kyou-SH4: the deck the batch made its cards in is each card's home (`homes`: Tidy keeps one you moved)
+        ledger.end_batch(jid, attempt, state, _enriched(got["outcomes"], by_key), anki_miner=got.get("app"),
+                         deck=got.get("deck"))
         if got.get("anki_said") and state == "uncertain":    # Mattias #5: Anki refused a card: next, a word at a time
             _keep_alone(ledger, jid, got["anki_said"], got.get("refused"))
         then = got.get("then")              # a word-at-a-time batch a wait cut short: its words not all sent
@@ -3764,9 +3767,11 @@ class Steps:
         chosen, need = tidy.candidates(cards, cap, now=now)
         if not chosen:
             return None
+        from app.connect import fields
         done = tidy.run(tidy.AnkiConnectTidy(self.url, wait=0.0 if not now else 10.0), ledger, lang,
                         [c.note for c in chosen],
-                        why=tidy.NOW if now else tidy.AUTO, open_store=lambda: library.open_store(lang), limit=need)
+                        why=tidy.NOW if now else tidy.AUTO, open_store=lambda: library.open_store(lang), limit=need,
+                        ours=fields.surasura_deck(loaded, lang))
         if done["deleted"]:
             self._say(lang, f"{len(done['deleted'])} waiting cards made for you were tidied away (copy kept: tidy "
                             f"{done['id']}).")
@@ -4800,9 +4805,10 @@ class Steps:
                 raise Needs("book-unreadable", BOOK_UNREADABLE.format(title=title, why=e.message)) from None
             if e.kind == "cancelled" and getattr(e, "stopped", False):
                 # #47: you stopped it before its result was written: what reached Anki is found by the job's tag
-                return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True, "stopped": True}
+                return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True, "stopped": True,
+                        "deck": mapping.deck}
             if e.kind in ("crashed", "timeout"):
-                return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True}
+                return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True, "deck": mapping.deck}
             raise _miner_wait_or_needs(e, self.url) from None
         # in doubt: a crash or a timeout after the run (`error`), or a run Anki Miner itself says failed
         if picked.get("reading"):
@@ -4814,7 +4820,8 @@ class Steps:
         said = (run.get("message") or run.get("error") if run.get("error") == "MINING_FAILED" and not
                 run.get("failure_is_transient") and not done.get("error") else None)
         return {"outcomes": done.get("outcomes") or [], "app": done.get("app"), "doubt": doubt,
-                "tag_pending": done.get("tag_pending") or [], "stopped": bool(done.get("stopped")), "anki_said": said}
+                "tag_pending": done.get("tag_pending") or [], "stopped": bool(done.get("stopped")), "anki_said": said,
+                "deck": mapping.deck}
 
     def _place(self, lang, job, picked, outcomes):
         """Z-9: each card Anki Miner made from a book put on its part (`connect.reading.place`, Hon's chapter record):

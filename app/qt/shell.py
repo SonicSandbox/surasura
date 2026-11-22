@@ -3433,8 +3433,11 @@ class ShellWindow(QMainWindow):
     def pick_your_cards(self, control=None):
         """Step ④'s press, *Pick your cards* — **the one entry point** the Essentials picker over Current fills
         (Mado-EZC, SPEC-r2 lane 3: §0.3's picker; its Done writes the `yours` moment through `path_moment`). Until
-        it lands: Settings' *Words to make cards from*, revealed (the learner's save there ticks ④)."""
-        return self.guide_show_me("settings:connect_mine_words")
+        it lands: Settings' *Level* — which words get cards since the mining model (Kantan-MO: *Words to make cards
+        from* retired) — revealed (the learner's save there ticks ④). The place is `path.YOURS_PRESS` (its row's press
+        in ✦ follows it: `path.has_press`)."""
+        from app.services import path as path_service
+        return self.guide_show_me(path_service.YOURS_PRESS)
 
     def path_show_me(self, where):
         """The Next card's *Show me*: only a look at where the same press lives, for next time — Up Next's part or a

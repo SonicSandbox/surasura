@@ -59,6 +59,7 @@ CALL_SITES = {
     "app/services/first_run.py": 1,
     "app/services/generate.py": 1,
     "app/services/guide.py": 1,       # the feature guide's guide.json (PARTS: install, moves with Start over)
+    "app/services/hato_update.py": 1,  # Hato-UP: hato_update.json (PARTS: install, stays)
     "app/services/journey.py": 1,
     "app/services/library_reader.py": 1,
     "app/services/moves.py": 1,

@@ -94,7 +94,7 @@ ANALYSED = tuple(t for t, v in TIERS.items() if v[2])                    # now, 
 # the run signature's "reference" part), `_mine_ids`, `text_lists`, `_moves_counted`, `_watched_aside`,
 # `_store_has_content`, `read_only_schedule` (the copy) and `watched_marks` (the journey's stones: the report's
 # `static_html_generator._journey_stones`, the render signature's `analyzer._stones_fingerprint`); outside,
-# `moves._set_aside` (the window's numbers) and Connect's `library.counting` / `library.counts` (`level._walk` beyond
+# `moves._set_aside` (the window's numbers) and Connect's `library.counting` / `library.counts` (`library.ahead` beyond
 # the line, a gap's `inbox._gone`; M-W1 — `level.watched_out` stays stricter, LF4-1). Not yet: the window's drawn
 # lines (`view_rows._mine_ids`, `drag.lines_for`).
 def _tiers_sql(tiers):
@@ -9502,7 +9502,7 @@ def _build(db_path, language, data_dir, user_files_dir, from_folders, retry):
 def maintain(language, data_dir=None, user_files_dir=None, from_folders=False, repair=False,
              check_integrity=False, export=True, retry=False, lock=None):
     """The helper (§6.7): under the maintenance lock, (1) build if needed, (2) check the copy for an
-    outside change, (3) export if behind. Dialog-free; exits 0 did something · 3 nothing to do · 4 needs
+    outside change, (3) export if behind — and once more before it ends if a write landed meanwhile (EXPORT_AGAIN). Dialog-free; exits 0 did something · 3 nothing to do · 4 needs
     the user · 5 busy (another holder, or an update staged) · 1 failed. The analyzer runs steps 1–2
     in-process (`export=False`)."""
     from app.path_utils import get_data_path, get_user_files_path
@@ -9598,6 +9598,14 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
             did = bool(store.untag_book_titles()) or did
         except Exception as exc:                # as above: the next run tries again
             _log(db_path, f"untag_book_titles failed: {type(exc).__name__}: {exc}")
+        if export:
+            # once more before the lock goes (F2): a write that landed while this run worked — Connect's, the
+            # analyzer's, whose own ask for a helper was skipped because this one was at work — reaches the copy now,
+            # never only at the next trigger
+            for _again in range(EXPORT_AGAIN):
+                if not store.export_due():
+                    break
+                did = export_copy(store) or did
         store.checkpoint()
         return EXIT_DONE if did else EXIT_NOTHING
     finally:
@@ -9605,6 +9613,10 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
 
 
 _spawned = {}                   # language -> the helper this process started last (its Popen)
+# A helper someone pressed for (2.x's *Repair* / *Try again*, train 53's intent keeper F2): never skipped beside one at
+# work — it waits for the lock itself (MAINT_WAIT), as before
+PRESSED_HELPER = frozenset({"--repair", "--retry"})
+EXPORT_AGAIN = 3                # the helper's export looked at again this many times at most before it ends (F2)
 _owed = set()                   # languages a spawn was skipped for while one ran: `take_owed` (the window's watch)
 
 
@@ -9647,7 +9659,7 @@ def spawn_maintain(language, *extra):
     import subprocess
     if update_staged():
         return None
-    if maintain_running(language):
+    if maintain_running(language) and not set(extra) & PRESSED_HELPER:
         _owed.add(language)
         return None
     flags = 0

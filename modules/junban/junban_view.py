@@ -4,8 +4,8 @@
 The Tk window (`gui.py`, left as it is for 2.x and the `dashboard` verb) kept these rules inside its class; the Qt
 window (`qt_junban.py`) paints what this file answers. Each piece names the Tk method it replaces (the inventory's §5):
 
-* the engine settings from the controls (`engine_settings`, `touchup_settings`, `own_values`, `unlisted_value`:
-  `_settings`, `_touchup_settings`, `_own_values`, `_unlisted_value`) — a fresh dict and fresh containers every time,
+* the engine settings from the controls (`engine_settings`, `touchup_settings`, `own_values`, `off_list`:
+  `_settings`, `_touchup_settings`, `_own_values`, `_unlisted_value` there) — a fresh dict and fresh containers every time,
   an unticked box sends the disabling value, the clicked-off rows ride along as `junban_exclude_cards`, never saved;
 * **the I5 scope key** (`scope_key`: `_scope_key`, its eleven parts) and **the gate** (`Session`): a preview is valid
   only for the key read when Preview was pressed. A redraw (a click, a tick, the earlier answers shown) never stamps
@@ -31,6 +31,7 @@ rule's header says what 3.0 does).
 import threading
 from collections import namedtuple
 
+from app import settings_manager
 from modules.junban import match, reposition, spaced, touchup, undo, unlisted
 
 # The report's glyphs — text, never emoji (gui.py's reasons) — and the preview's own marks.
@@ -42,10 +43,12 @@ MAX_PREVIEW_ROWS = 4000
 MARKS_HEADER = "".join(MARKER_GLYPHS[m] for m in match.MARKERS)
 
 # The controls the window keeps, by name (`Controls`). `own_tag` is None when the Connect row isn't shown.
-CONTROL_NAMES = ("scope", "deck", "order", "list_first", "phrases", "ready_first", "only_markers", "own_tag",
+CONTROL_NAMES = ("scope", "deck", "order", "phrases", "only_markers", "own_tag",
                  "order_all", "tag_on", "tag_name", "markers_on", "freq_on", "freq_field", "freqsort_on",
-                 "later_tag", "later_flag", "later_suspend")
-LATER = ("tag", "flag", "suspend")
+                 "off_list", "later_flag", "later_suspend")
+# Kyou-MO (the mining model): *Set aside*'s two ticks beside its own tag — *List first* and *i+1 first* are gone (the
+# unlocking word always comes first; Surasura's cards past your level follow Connect's *Cards for every new word*)
+LATER = ("flag", "suspend")
 
 
 def window_job(settings):
@@ -86,10 +89,10 @@ def controls_from(saved, connect_row):
     controls = {
         "scope": "all" if saved.get("junban_scope") == "all" else "deck",
         "deck": str(saved.get("junban_deck") or ""),
-        "order": "priority" if saved.get("junban_order") == "priority" else "content",
-        "list_first": str(saved.get("junban_unlisted") or "").strip().lower() != "journey",
+        # the study order is the list's (Settings › Level, Kantan-MO): read here, never a control of this window
+        "order": settings_manager.study_order(saved),
         "phrases": saved.get("junban_phrases", True) is not False,
-        "ready_first": saved.get("junban_ready_first") is True,
+        "off_list": unlisted.choice(saved),           # Kyou-MO: leave · back · aside (3.0.17's keys while unset)
         "only_markers": tuple(name for name in match.MARKERS if name in chosen),
         "own_tag": None, "order_all": False,
         "tag_on": bool(str(saved.get("junban_tag") or "").strip()),
@@ -108,14 +111,6 @@ def controls_from(saved, connect_row):
     return controls
 
 
-def unlisted_value(controls, unlisted_saved):
-    """`junban_unlisted` as "List first" says it: unticked "journey"; ticked "list_first" — or "back", kept when the
-    file held it (the Tk `_unlisted_value`)."""
-    if not controls.get("list_first"):
-        return "journey"
-    return "back" if str(unlisted_saved or "").strip().lower() == "back" else "list_first"
-
-
 def own_values(controls):
     """`junban_own_tag` / `junban_order_all` as shown; {} when the Connect row isn't there (nothing handed on)."""
     if controls.get("own_tag") is None:
@@ -132,7 +127,7 @@ def touchup_settings(controls):
         "junban_write_frequency": bool(controls.get("freq_on")),
         "junban_frequency_field": str(controls.get("freq_field") or "").strip(),
         "junban_write_freqsort": bool(controls.get("freqsort_on")),
-        "junban_later_tag": bool(controls.get("later_tag")),
+        "junban_off_list": off_list(controls),
         "junban_later_flag": bool(controls.get("later_flag")),
         "junban_later_suspend": bool(controls.get("later_suspend")),
     }
@@ -146,7 +141,13 @@ def replan_on(saved, language):
     return saved.get("junban_replan_preview") is True and replan_preview.preview_language(saved) == language
 
 
-def engine_settings(saved, controls, language, deselected=(), unlisted_saved=None):
+def off_list(controls):
+    """The one switch for your own cards not on the list, as the window shows it (Kyou-MO; `unlisted.OFF_LIST`)."""
+    value = controls.get("off_list")
+    return value if value in unlisted.OFF_LIST else "leave"
+
+
+def engine_settings(saved, controls, language, deselected=()):
     """What the engine is handed: the saved settings plus what the controls say. A **fresh** dict, with a fresh
     `junban_word_fields` and `junban_only_markers` (a container in loaded settings is the one inside
     `SETTINGS_DEFAULTS` after the shallow merge: spec §13 #12)."""
@@ -158,9 +159,8 @@ def engine_settings(saved, controls, language, deselected=(), unlisted_saved=Non
                 junban_deck=str(controls.get("deck") or "").strip(),
                 junban_word_fields=dict(overrides) if isinstance(overrides, dict) else {},
                 junban_order="priority" if controls.get("order") == "priority" else "content",
-                junban_unlisted=unlisted_value(controls, unlisted_saved),
+                study_order="priority" if controls.get("order") == "priority" else "content",
                 junban_phrases=bool(controls.get("phrases")),
-                junban_ready_first=bool(controls.get("ready_first")),
                 junban_only_markers=list(controls.get("only_markers") or ()),
                 junban_replan_preview=replan_on(saved, language),
                 junban_exclude_cards=sorted(deselected),
@@ -168,28 +168,25 @@ def engine_settings(saved, controls, language, deselected=(), unlisted_saved=Non
                 **touchup_settings(controls))
 
 
-def scope_key(language, controls, replan, unlisted_saved=None):
-    """What a preview is valid for — the I5 key, its eleven parts (the Tk `_scope_key`): the language, the scope, the
-    deck, the order, List first, Phrases, i+1 first, the markers, the own-tag row, every touch-up and later action,
-    and the re-plan switch. Changing ANY of it throws the preview away."""
+def scope_key(language, controls, replan):
+    """What a preview is valid for — the I5 key, its nine parts (the Tk `_scope_key`, less *List first* and *i+1
+    first*: Kyou-MO): the language, the scope, the deck, the order, Phrases, the markers, the own-tag row, every
+    touch-up and the switch for your cards not on the list, and the re-plan switch. Changing ANY of it throws the
+    preview away."""
     return (language, controls.get("scope"), str(controls.get("deck") or "").strip(),
             "priority" if controls.get("order") == "priority" else "content",
-            unlisted_value(controls, unlisted_saved), bool(controls.get("phrases")),
-            bool(controls.get("ready_first")), tuple(controls.get("only_markers") or ()),
+            bool(controls.get("phrases")), tuple(controls.get("only_markers") or ()),
             tuple(sorted(own_values(controls).items())),
             tuple(sorted(touchup_settings(controls).items())),
             bool(replan))
 
 
-def window_keys(controls, unlisted_saved=None):
+def window_keys(controls):
     """Every key the window owns, as the controls say them (the Tk `_save_scope`'s dict, without the pair)."""
     keys = {
         "junban_scope": controls.get("scope"),
         "junban_deck": str(controls.get("deck") or "").strip(),
-        "junban_order": "priority" if controls.get("order") == "priority" else "content",
-        "junban_unlisted": unlisted_value(controls, unlisted_saved),
         "junban_phrases": bool(controls.get("phrases")),
-        "junban_ready_first": bool(controls.get("ready_first")),
         "junban_only_markers": list(controls.get("only_markers") or ()),
     }
     keys.update(own_values(controls))
@@ -244,7 +241,8 @@ def touch_summary(controls):
         parts.append("frequency")
     if controls.get("freqsort_on"):
         parts.append("sort number")
-    later = [name for name in LATER if controls.get(f"later_{name}")]
+    aside = off_list(controls) == "aside"           # Kyou-MO: set aside tags, + its ticks
+    later = ["tag"] + [name for name in LATER if controls.get(f"later_{name}")] if aside else []
     if later:
         parts.append("not on your list: " + " + ".join(later))
     return parts, not later
@@ -743,8 +741,7 @@ def backlog_picture(stats, settings=None):
     if not considered:
         return None
     tiers = stats.get("tiers") or {}
-    unlisted_as = stats.get("unlisted") or (settings or {}).get("junban_unlisted") or "list_first"
-    by_leverage = (settings or {}).get("junban_order") == "priority"
+    by_leverage = settings_manager.study_order(settings) == "priority"
     yours = tiers.get("yours", 0)
     placed = tiers.get("list", 0) + tiers.get("phrase", 0)
     library = tiers.get("library", 0)
@@ -760,13 +757,14 @@ def backlog_picture(stats, settings=None):
     if library:
         lines.append(f"{_n(library, 'is', 'are')} too rare for your list: mixed in where your shows meet "
                      f"{'it' if library == 1 else 'them'}")
-    if rest:
-        one = rest == 1
-        verb, its = ("isn't", "its") if one else ("aren't", "their")
-        where = {"journey": f"{verb} in your shows: after the ones that are, by {its} own sentence",
-                 "back": f"{verb} on your list: at the back, in {its} order"}.get(
-            unlisted_as, f"{verb} on your list: after it, by {its} own sentence")
-        lines.append(f"{rest:,} {where}")
+    # Kyou-MO: off the list, by their own sentence (yours, *Leave*) or at the back (Surasura's, and yours under *At
+    # the back* / *Set aside*: no tier)
+    by_sentence = min(rest, tiers.get("i+1", 0) + tiers.get("multi", 0) + tiers.get("rest", 0))
+    for count, where in ((by_sentence, "after it, by {its} own sentence"), (rest - by_sentence,
+                                                                             "at the back, in {its} order")):
+        if count:
+            verb, its = ("isn't", "its") if count == 1 else ("aren't", "their")
+            lines.append(f"{count:,} {verb} on your list: " + where.format(its=its))
     if aside:
         lines.append(f"{_n(aside, 'is a card', 'are cards')} you clicked off: left where "
                      f"{'it is' if aside == 1 else 'they are'}")
@@ -919,9 +917,9 @@ def preview_view(stats, checks, deselected=frozenset(), ticked=None, display_ord
         placed += f" · {phrases} frequent phrase{'' if phrases == 1 else 's'} with them"
     match_line = (f"{stats.get('matched', 0)} of {considered} new card{'' if considered == 1 else 's'} matched "
                   f"your current list{placed}{filtered}")
-    if stats.get("library_missing") and stats.get("unlisted") == "journey":
-        lines.append(("The words your list cut off wait at the back for now: press Generate in Surasura once, and "
-                      "the next preview places them where your journey meets them.", "warning"))
+    if stats.get("library_missing") and stats.get("mixed_in"):
+        lines.append(("Surasura's cards past your level wait at the back for now: press Generate in Surasura once, "
+                      "and the next preview places them where your journey meets them.", "warning"))
     elif stats.get("library_missing"):
         lines.append(("Phrases wait with the rarer cards for now: press Generate in Surasura once, and the next "
                       "preview puts the ones you meet often with your list's words.", "warning"))
@@ -933,11 +931,12 @@ def preview_view(stats, checks, deselected=frozenset(), ticked=None, display_ord
     ready = stats.get("ready_first") or {}
     moved = [f"{ready['pulled']} brought right before the card that needs {'it' if ready['pulled'] == 1 else 'them'}"
              if ready.get("pulled") else "",
-             f"{ready['held']} wait{'s' if ready['held'] == 1 else ''} for a word "
-             f"{'its' if ready['held'] == 1 else 'their'} sentence needs" if ready.get("held") else ""]
+             f"{ready['kept']} keep{'s' if ready['kept'] == 1 else ''} {'its' if ready['kept'] == 1 else 'their'} "
+             f"place: a word {'its' if ready['kept'] == 1 else 'their'} sentence needs has no card ready"
+             if ready.get("kept") else ""]
     moved = " · ".join(part for part in moved if part)
     if moved:
-        lines.append((f"i+1 first: {moved}.", ""))
+        lines.append((f"Unlocking words first: {moved}.", ""))
     known = tiers.get("known", 0)
     if known:
         lines.append((f"{known} card{' is a word' if known == 1 else 's are words'} you already know — they go last. "

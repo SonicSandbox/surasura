@@ -128,10 +128,19 @@ def _module_data():
     return (out or "").split("\0")
 
 
+def _local_test(node):
+    """A test inside a TOLERATED test folder (the local-only parsing suite): GitHub's runner never has it, so what it
+    reads is never this guard's (2026-11-22, train 59: --touched-callers picked it by a name; its own data went red)."""
+    p = node.split("::", 1)[0].replace("\\", "/").lower()
+    return any(p.startswith(entry.lower()) for entry, _why in TOLERATED
+               if entry.startswith("tests/") and entry.endswith("/"))
+
+
 def ignored_reads(reads, written=()):
     """{node id: [the files it read that the public repo ignores]} for `reads` ({node id: {paths}}), leaving out code,
-    TOLERATED, a private module's own data (_module_data) and the files the run wrote itself (`written`); None when
-    git can't say (no repo: no verdict, a red)."""
+    TOLERATED, a local-only test's own reads (_local_test), a private module's own data (_module_data) and the files
+    the run wrote itself (`written`); None when git can't say (no repo: no verdict, a red)."""
+    reads = {node: paths for node, paths in reads.items() if not _local_test(node)}
     tracked = _git("ls-files", "-z")
     if tracked is None:
         return None

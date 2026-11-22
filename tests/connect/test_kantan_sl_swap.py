@@ -105,6 +105,8 @@ def test_same_line_reads_text_not_markup_and_never_an_empty_line():
     assert swap.same_line("「借りたい」", ["借りたい"]) and swap.same_line("借りたい", ["本を<b>借りたい</b>んです"])
     assert not swap.same_line("返します", ["借りたい"])
     assert not swap.same_line("…", ["…"]) and not swap.same_line("あ", ["あいう"])
+    # an old card whose sentence is only markup or punctuation avoids nothing (it must never block every line)
+    assert not swap.same_line("借りたい", ["", "<b></b>", "……"])
 
 
 def test_a_line_id_names_an_item_and_its_start():

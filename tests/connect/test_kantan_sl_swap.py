@@ -467,7 +467,7 @@ def test_a_swapped_card_is_in_both_of_surasuras_records_and_tidys_guarantee_take
     assert tidy._done_at(ledger, 950) is not None, "Connect's ledger made it: its job ended"
     go, kept, _infos, _cards = tidy.check(anki, ledger, [950, 900], tidy._made_notes(_opener(lang), [950, 900]))
     assert go == [950], "the guarantee takes the swap's new card as Surasura's own, never studied, unchanged"
-    assert kept == [[900, tidy.NOT_MADE]], "the old card is never Tidy's (here: not Connect's; studied besides)"
+    assert kept == [[900, tidy.NOT_MADE]], "the old card is never Tidy's (here: Connect didn't make it)"
     # the guarantee isn't loosened for a swap: without the made-words record (no store) the new card stays
     with pytest.raises(swap.tidy.Refused) as refused:
         swap.undo(anki, ledger, lang, swap_id, open_store=lambda: None)
@@ -482,9 +482,10 @@ def test_an_ordinary_tidy_takes_a_swaps_unstudied_new_card_as_any_connect_card_a
     # Why: a swap's new card counts as any Connect card once made (ROLES: Tidy treats a swapped-in card as any Connect
     # card, PROVISIONAL) — past the window and never studied, Tidy may delete it with a copy kept. Tidy must never touch
     # the old card (suspended, green, tagged swapped), and the swap's Undo must still give it back, deleting nothing.
-    anki, swap_id = _made_swap(ledger, monkeypatch, lang)
+    anki, swap_id = _made_swap(ledger, monkeypatch, lang, old_here=True)     # the old card Connect's own too
     done = tidy.run(anki, ledger, lang, [950, 900], why=tidy.AUTO, open_store=_opener(lang))
     assert done["deleted"] == [950] and [n for n, _w in done["kept"]] == [900]
+    assert dict(done["kept"])[900] != tidy.NOT_MADE, "kept as studied / suspended: the clauses past Connect-made"
     old = anki.cards_[9000]
     assert (old["queue"], old["flags"]) == (-1, 3) and swap.SWAP_TAG in anki.notes_[900]["tags"],         "the old card stays suspended, green and tagged: Tidy never changes it"
     assert _row(ledger, swap_id)["state"] == swap.MADE, "the swap stays made: its Undo is still offered"

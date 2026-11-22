@@ -283,14 +283,22 @@ def test_3_a_hung_review_look_never_delays_your_stop(batch, fake_miner, words, m
     monkeypatch.setattr(anki_miner, "POLL_S", 0.05)
     monkeypatch.setattr(anki_miner, "PAUSE_LOOK_S", 0.0)
     fake_miner.plan(cancel_at=2)
+    import threading
+    released = threading.Event()
     began = time.monotonic()
 
-    def hung():
-        time.sleep(4)
+    def hung():                                     # Anki hung: the look answers only when the test ends
+        released.wait(30)
         return False
-    done = batch(should_stop=lambda: time.monotonic() - began > 0.2, should_pause=hung)
+    try:
+        done = batch(should_stop=lambda: time.monotonic() - began > 0.2, should_pause=hung)
+        took = time.monotonic() - began
+    finally:
+        released.set()
     assert done["stopped"] is True and done["paused"] is False
-    assert time.monotonic() - began < 3.5, "the Stop wasn't held behind the hung look"
+    # held behind the look, the Stop would take 30 s; a slow runner's own start-up is a few seconds (GitHub: 4.3 s
+    # against the first bound of 3.5 s, next to a 4 s look — too close to tell the two apart)
+    assert took < 15, f"the Stop was held behind the hung look ({took:.1f} s)"
 
 
 def test_2_a_card_no_look_saw_for_the_rule_starts_its_clock_again(anki):

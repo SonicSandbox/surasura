@@ -358,7 +358,9 @@ def test_without_the_window_a_logic_key_is_put_in_its_place_and_the_block_is_kep
         on_file = json.load(f)
     assert on_file["logic"]["context"] == dict(old_ja["logic"]["context"], max_contexts=0)
     assert on_file["logic"]["inline_completed_files"] is True
-    assert {k: v for k, v in on_file.items() if k != "logic"} == {k: v for k, v in old_ja.items() if k != "logic"}
+    # `hide_satoru` is save_settings' own: stripped wherever the shelved Immersion Architect is absent (GitHub, a build)
+    kept = ("logic", "hide_satoru")
+    assert {k: v for k, v in on_file.items() if k not in kept} == {k: v for k, v in old_ja.items() if k not in kept}
 
 
 @pytest.mark.parametrize("body", [{"key": "theme", "value": "Zen Mode"}, {"key": "target_language", "value": "zh"},

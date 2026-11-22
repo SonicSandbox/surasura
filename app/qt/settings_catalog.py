@@ -533,6 +533,10 @@ _V3_NOT_SHOWN = dict({
     "zen_limit": "retired with Zen Mode by journey v3 (Sonic 2026-11-22): the old page's Zen view reads it",
 }, **{key: "Speak sentences left the journey (D15): the YouTube preview's old page still speaks with it" for key in (
     "enable_koe", "koe_voice", "koe_model", "koe_style", "koe_temperature", "koe_daily_cap")})
+# Before the cut-over the page's new keys have no row: their defaults are what the page shows until J-CUT
+_PRE_V3_NOT_SHOWN = {key: "journey v3's page (J-SET): its row shows from the cut-over (J-CUT, `journey_settings.v3()`)"
+                     for key in ("journey_pitch", "journey_meanings", "journey_first_meeting", "journey_word_size",
+                                 "journey_sentence_size", "journey_keys")}
 _BEFORE_V3 = {}
 _V3 = False
 
@@ -580,6 +584,8 @@ def use_v3(on):
                        if head == "app" else tuple(s for s in sections if s != "reading")) for head, sections in HEADS)
         ROWS = _v3_rows(ROWS)
         NOT_SHOWN = dict(NOT_SHOWN, **_V3_NOT_SHOWN)
+    else:
+        NOT_SHOWN = dict(NOT_SHOWN, **_PRE_V3_NOT_SHOWN)
     HEAD_OF = {section: head for head, sections in HEADS for section in sections}
     SECTIONS = tuple(Section(id_, _ICONS[id_], S.SECTIONS[id_])
                      for id_ in ("setup",) + tuple(s for _head, sections in HEADS for s in sections))

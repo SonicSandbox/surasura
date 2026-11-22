@@ -628,9 +628,11 @@
       ok("Sentences per word › 1: one line, '+N more' says where the rest are", $$("#stage .lines > .ln").length === 1);
       budget(ok, "a setting: sentences per word", r, ["word", "lines", "layer"]);
       J.setSetting("sentences", H.settings.sentences || 3); await settle();
-      r = await press(() => J.setSetting("size", "2.2"));
-      budget(ok, "a setting: word and sentence size", r, ["root", "layer"]);
-      J.setSetting("size", "1.1"); await settle();
+      r = await press(() => J.setSetting("word_size", "l"));
+      budget(ok, "a setting: word size", r, ["root", "layer"]);
+      r = await press(() => J.setSetting("sentence_size", "l"));
+      budget(ok, "a setting: sentence size", r, ["root", "layer"]);
+      J.setSetting("word_size", "m"); J.setSetting("sentence_size", "m"); await settle();
       await J.blob("kanji");
       const kc = H.lang === "ja" ? Object.keys(J.blobNow("kanji") || {})[0] : null;
       if (kc) {

@@ -262,21 +262,23 @@ $("lname").textContent = (LANG === "zh" ? "中文" : "日本語") + " · Journey
 
 /* ---- the page's settings (SPEC §1.4): Surasura's keys, written through the door; look ones applied here ---- */
 /* PROVISIONAL seam (J-SET): the key each row writes, and the head's `settings` name it is read from. */
-/* One table of PROVISIONAL names, waiting for J-SET's table (J-SET's first step decides every existing journey
-   setting): `theme` here vs the app's own "Your journey's look" (app/qt/settings_catalog.py `theme`), and the one
-   `journey_text_size` row where the SPEC has word size and sentence size as two rows — no key is final until then. */
+/* One table, the app's keys (J-SET-TABLE § 2, the same as J-DATA's): the existing `logic.context.max_contexts` (All is
+   stored as 0), `source_display` and `theme` (the journey's look: Night · Light), and the new journey_* keys. The rows
+   still wait for J-SET (its first step decides every existing journey setting). */
 const SETTINGS = [
-  { k: "sentences", key: "logic.context.max_contexts", data: true, name: "Sentences per word", def: 3, opts: [[1, "1"], [2, "2"], [3, "3"], [5, "5"], [0, "All"]],
+  { k: "sentences", key: "logic.context.max_contexts", data: true, name: "Sentences per word", def: 3, opts: [[1, "1"], [2, "2"], [3, "3"], [5, "5"], [10, "10"], [0, "All"]],
     help: ["How many of the word's sentences show, best first.", "Each extra sentence makes the page about 0.4 MB bigger at 20,000 episodes.", "More than the page holds now arrive at the next Generate."] },
   { k: "pitch", key: "journey_pitch", name: "Pitch and tones", def: "shown", opts: [["shown", "Shown"], ["hidden", "Hidden until F"]],
     help: ["Japanese: the pitch graph over the reading.", "Chinese: the tone marks and the tones line.", "Hidden: F shows it for the word you are on."] },
   { k: "meanings", key: "journey_meanings", data: true, name: "Meanings", def: "en", opts: [["en", "English"], ["yours_en", "Yours, then English"], ["yours", "Yours only"]],
     help: ["English: JMdict (Japanese) or CC-CEDICT (Chinese).", "Yours: your own dictionaries in Anki Miner, first, as your card will say it.", "Yours only: the kanji hover shows readings, no English.", "Your dictionaries' text never leaves this PC."] },
-  { k: "where_from", key: "journey_where_from", name: "Where each line is from", def: "icon", opts: [["icon", "Icon"], ["icon_name", "Icon + name"], ["hover", "Only on hover"]],
+  { k: "where_from", key: "source_display", name: "Where each line is from", def: "icon", opts: [["icon", "Icon"], ["icon_name", "Icon + name"], ["hover", "Only on hover"]],
     help: ["Icon: its kind (anime, book, YouTube…), the name in the hover.", "Icon + name: the show and episode under each line.", "Only on hover: nothing until the pointer is on the line."] },
-  { k: "size", key: "journey_text_size", name: "Word size · sentence size", def: "1.1", opts: [["0.0", "S · S"], ["1.1", "M · M"], ["2.2", "L · L"], ["2.1", "L · M"]],
-    help: ["The big word and the sentences, three steps each."] },
-  { k: "theme", key: "journey_theme", name: "The page's theme", def: "night", opts: [["night", "Night"], ["light", "Light"]],
+  { k: "word_size", key: "journey_word_size", name: "Word size", def: "m", opts: [["s", "S"], ["m", "M"], ["l", "L"]],
+    help: ["The big word, three steps."] },
+  { k: "sentence_size", key: "journey_sentence_size", name: "Sentence size", def: "m", opts: [["s", "S"], ["m", "M"], ["l", "L"]],
+    help: ["The sentences, three steps."] },
+  { k: "theme", key: "theme", name: "The page's theme", def: "night", opts: [["night", "Night"], ["light", "Light"]],
     help: ["For this page only: Surasura's window keeps its own."] },
   { k: "keys", key: "journey_keys", name: "Keys", def: "qwerty", opts: [["qwerty", "QWERTY"], ["dvorak", "Dvorak"]],
     help: ["Dvorak puts every key in the same places.", "Move any key in the keys sheet (?): a moved key trades places."] },
@@ -285,7 +287,7 @@ const SET = {};
 const HS = Object.assign({}, HEAD.settings);           // SHAPE 1.1's names → the page's (key names PROVISIONAL until J-SET)
 const SZ = { s: 0, m: 1, l: 2 };
 if (HS.source != null && HS.where_from == null) HS.where_from = HS.source;
-if (HS.size == null && (SZ[HS.word_size] != null || SZ[HS.sentence_size] != null)) HS.size = `${SZ[HS.word_size] ?? 1}.${SZ[HS.sentence_size] ?? 1}`;
+if (HS.theme != null && HS.theme !== "night" && HS.theme !== "light") HS.theme = /light/i.test(String(HS.theme)) ? "light" : "night";   // the old looks: Modern Light → Light, the rest → Night (Zen Mode: J-SET's Q6)
 const okSet = (s, v) => v != null && (s.k === "keys" && typeof v === "object" || s.opts.some((o) => String(o[0]) === String(v)));   // the learner's own key map is an object
 for (const s of SETTINGS) SET[s.k] = okSet(s, HS[s.k]) ? HS[s.k] : s.def;
 const SET_WAIT = {};                                   // setting -> "send" | "wait" | "queued" (until Surasura has it)
@@ -793,7 +795,7 @@ function flagLine(id, k, reasons, note, on) {
 /* a look or data setting (§1.4): look ones applied here at once; every one written to Surasura on the press only */
 /* each setting redraws only the part it owns (the redraw rule): a look one is CSS, a data one its own part */
 const SET_DRAW = {
-  theme: () => applyLook(), size: () => applyLook(), where_from: () => applyLook(),
+  theme: () => applyLook(), word_size: () => applyLook(), sentence_size: () => applyLook(), where_from: () => applyLook(),
   pitch: () => drawPart("reading"), sentences: () => drawPart("lines"), meanings: () => drawDesk(),
   keys: () => { drawPart("acts"); drawDesk(); },
 };
@@ -813,7 +815,7 @@ function setSetting(k, value) {
 function applyLook() {
   const r = document.documentElement, theme = SET.theme === "light" ? "light" : "night";
   if (r.dataset.theme !== theme) r.dataset.theme = theme;
-  const [ws, ss] = String(SET.size || "1.1").split(".").map(Number);
+  const ws = SZ[SET.word_size] ?? 1, ss = SZ[SET.sentence_size] ?? 1;
   const wsz = [44, 52, 62][ws] + "px", ssz = [17, 20, 23][ss] + "px";
   if (r.style.getPropertyValue("--wsz") !== wsz) r.style.setProperty("--wsz", wsz);
   if (r.style.getPropertyValue("--ssz") !== ssz) r.style.setProperty("--ssz", ssz);

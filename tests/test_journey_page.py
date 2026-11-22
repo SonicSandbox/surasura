@@ -109,6 +109,13 @@ def test_the_page_colours_a_percent_by_the_windows_own_bands():
     assert m and (int(m.group(1)), int(m.group(2))) == (view_rows.LEARNED_AT, view_rows.HEADS_UP_BELOW)
 
 
+def test_the_page_writes_only_the_settings_keys_of_spec_1_4():
+    # the app's own keys (J-SET-TABLE § 2, the same names as the data): the page never invents one
+    keys = set(re.findall(r'\{ k: "\w+", key: "([\w.]+)"', _read(PAGE)))
+    assert keys == {"logic.context.max_contexts", "journey_pitch", "journey_meanings", "source_display", "journey_word_size",
+                    "journey_sentence_size", "theme", "journey_keys"}, keys
+
+
 def test_the_render_inlines_only_the_chosen_rail():
     parts = fx.build("ja", 12)
     tiny = fx.assemble(parts, rail_css=".tiny{}", rail_js=_read(TINY_RAIL))

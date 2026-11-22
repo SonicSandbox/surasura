@@ -1062,6 +1062,9 @@ ADDED_TABLES_SQL = (
 # records them (`record_growth`, `growth_of`); the Generate computes them, the window and the journey show them.
 GROWTH = "growth"
 GROWTH_SINCE = "growth_since"     # meta: when this store began keeping the snapshots (an item added before: `prior`)
+GROWTH_CHUNK = 2000               # items a `record_growth` write takes: ~42 ms of write lock at 20k, one commit's
+GROWTH_GAP_S = 0.005              # floor (Kura-GS3); then this pause, so a save waiting for the lock gets in (it
+                                  # tries every LOCK_RETRY: a lock taken again at once leaves it no gap)
 GROWTH_SQL = """CREATE TABLE IF NOT EXISTS growth (
       item_id INTEGER NOT NULL,
       kind    TEXT NOT NULL,
@@ -7533,8 +7536,12 @@ class Store:
         before it began the snapshots (GROWTH_SINCE; a store with no such date yet starts them now: every item
         `prior`). A file the store no longer holds (moved or removed meanwhile) is passed by. Bookkeeping: no version
         moves; a new 'added' sets `copy_dirty` (the copy carries it). A file it counted no words of keeps nothing: no
-        snapshot until it has words, and one that had words keeps its last count's, dated (Kura-GS2). Only what changed is written; the files read to
-        items in a read transaction first, so the write lock is held for the writes alone. -> the 'added' written."""
+        snapshot until it has words, and one that had words keeps its last count's, dated (Kura-GS2). Only what changed is
+        written; the files read to items in a read transaction first, then written `GROWTH_CHUNK` items a write, each its
+        own (`join_same_shows`' way: Kura-GS3), the lock let go `GROWTH_GAP_S` between them so a move or a Done waits
+        one chunk, never the set. An item's 'last' and 'added' go in one write: a reader between two sees each item's
+        older figures or this Generate's, whole. A write that fails is taken back whole and raises; the ones before it
+        stay (bookkeeping: the next Generate writes what is missing, 'added' once). -> the 'added' written."""
         if not figures:
             return 0
         with self._reading():
@@ -7546,7 +7553,7 @@ class Store:
             added = {r[0] for r in self.conn.execute(
                 "SELECT item_id FROM growth WHERE kind = 'added'")} if have else set()
         at = _now()
-        put_last, put_added = [], []
+        todo = []                           # (its 'last' or None, its 'added' or None), an item each
         for rel, fig in figures.items():
             hit = items.get(path_key(rel))
             if hit is None:
@@ -7555,26 +7562,33 @@ class Store:
             fig = (int(fig[0]), int(fig[1]), int(fig[2]))
             if fig[1] <= 0:
                 continue                    # Kura-GS2: a file it counted no words of has no figure yet (never 0 of 0)
-            if last.get(item) != fig:
-                put_last.append((item,) + fig + (at,))
+            put_last = (item,) + fig + (at,) if last.get(item) != fig else None
+            put_added = None
             if item not in added:
-                put_added.append((item,) + fig + (at, 0 if since is not None and (added_at or "") > since else 1))
-        if not put_last and not put_added:
-            return 0
-        with self._writing():
-            self.conn.execute(GROWTH_SQL)
-            meta = self._meta()
-            values = {}
-            if GROWTH_SINCE not in meta:
-                values[GROWTH_SINCE] = at
-            self.conn.executemany("INSERT OR REPLACE INTO growth (item_id, kind, known, counted, unknown, at) "
-                                  "VALUES (?, 'last', ?, ?, ?, ?)", put_last)
-            made = self.conn.executemany("INSERT OR IGNORE INTO growth (item_id, kind, known, counted, unknown, at, "
-                                         "prior) VALUES (?, 'added', ?, ?, ?, ?, ?)", put_added).rowcount
-            if made:
-                values["copy_dirty"] = int(meta.get("copy_dirty") or 0) + 1
-            if values:
-                self._set_meta(values)
+                put_added = (item,) + fig + (at, 0 if since is not None and (added_at or "") > since else 1)
+            if put_last or put_added:
+                todo.append((put_last, put_added))
+        made = 0
+        for start in range(0, len(todo), GROWTH_CHUNK):
+            if start:
+                time.sleep(GROWTH_GAP_S)
+            part = todo[start:start + GROWTH_CHUNK]
+            with self._writing():
+                self.conn.execute(GROWTH_SQL)
+                meta = self._meta()
+                values = {}
+                if GROWTH_SINCE not in meta:
+                    values[GROWTH_SINCE] = at
+                self.conn.executemany("INSERT OR REPLACE INTO growth (item_id, kind, known, counted, unknown, at) "
+                                      "VALUES (?, 'last', ?, ?, ?, ?)", [r for r, _a in part if r])
+                n = self.conn.executemany("INSERT OR IGNORE INTO growth (item_id, kind, known, counted, unknown, "
+                                          "at, prior) VALUES (?, 'added', ?, ?, ?, ?, ?)",
+                                          [a for _r, a in part if a]).rowcount
+                if n:
+                    values["copy_dirty"] = int(meta.get("copy_dirty") or 0) + 1
+                if values:
+                    self._set_meta(values)
+            made += n
         return made
 
     def growth_of(self, ids=None, kinds=("added", "done")):

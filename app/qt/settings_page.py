@@ -1345,6 +1345,10 @@ class SettingsPage(QWidget):
                 opts.append((value, S.OPTIONS.get(row.id, {}).get(value, str(value)), ""))   # held: shown, kept
             tips = catalog.option_tips(row, settings)
             moved = view.controls[0].set_options([(v, label, tips.get(v)) for v, label, _line in opts])
+        elif row.id in catalog.MOVE_ROWS and row.kind == "tablets":  # Known's states: as built (a flag held drops)
+            tips = S.OPTION_TIPS.get(row.id, {})
+            moved = view.controls[0].set_options(
+                [(v, label, tips.get(v)) for v, label, _line in catalog.options(row, settings, self.language)])
         if row.id in catalog.PROGRAM_ROWS:                 # the program's name on its choice, *Change…* once kept
             label, tip = catalog.program_label(row, settings)
             moved = view.controls[0].set_label("program", label, tip)

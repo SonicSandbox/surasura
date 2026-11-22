@@ -779,6 +779,19 @@ class Tablets(_Control):
         self.updateGeometry()
         self.update()
 
+    def set_options(self, options):
+        """New choices (Mado-LT: Known's states, less the flags Swap and Ignore took), the picks still offered kept —
+        no signal; a pick no longer offered drops out, as at build. -> True when they changed."""
+        if self.is_list or _options(options) == self._options:
+            return False
+        value = self.value()
+        self._options = _options(options)
+        self.setMouseTracking(any(t for _v, _l, t in self._options))
+        if not self.multi and value not in {v for v, _l, _t in self._options}:
+            value = self._options[0][0]
+        self.set_value(value)
+        return True
+
     def add_item(self, item):
         """A list's new item (the page's picker answered): added at the end and emitted, unless it is there already."""
         item = str(item)

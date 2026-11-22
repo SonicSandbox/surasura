@@ -3335,7 +3335,7 @@ def _still_new(url, later, touchups=False):
         return later
     try:
         if not reading:
-            return None if ankiconnect.invoke("guiReviewActive", url, timeout=5) is True else later
+            return None if anki_connect.reviewing(url, errors=True) else later     # the one review check
         actions = [{"action": "cardsInfo", "params": {"cards": batch}} for batch in ankiconnect._chunks(cards, 250)]
         replies = ankiconnect.multi(actions + [{"action": "guiReviewActive"}], url)
     except AnkiError:
@@ -3343,8 +3343,8 @@ def _still_new(url, later, touchups=False):
     if not isinstance(replies, list) or len(replies) != len(actions) + 1:
         return None
     review = replies[-1]
-    if isinstance(review, dict) and review.get("error") is None and review.get("result") is True:
-        return None
+    if isinstance(review, dict) and review.get("error") is None and anki_connect.review_on(url, review.get("result")):
+        return None                                     # the one rule over the request's own answer
     rows = []
     for reply in replies[:-1]:
         if not isinstance(reply, dict) or reply.get("error") is not None or not isinstance(reply.get("result"), list):
@@ -3496,7 +3496,7 @@ def _put_back_out(url, settings, decks, read):
     try:
         got = answers(ankiconnect.multi([{"action": "cardsInfo", "params": {"cards": batch}} for batch in batches]
                                         + [{"action": "guiReviewActive"}], url), len(batches) + 1)
-        if got is not None and got[-1] is not True:
+        if got is not None and not anki_connect.review_on(url, got[-1]):     # the one rule over its own answer
             info = {row.get("cardId"): row for part in got[:-1] if isinstance(part, list)
                     for row in part if isinstance(row, dict) and row}
             notes = sorted({row.get("note") for row in info.values() if _is_int(row.get("note"))} | candidates)

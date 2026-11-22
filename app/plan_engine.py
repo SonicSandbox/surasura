@@ -1194,8 +1194,10 @@ class Engine:
         spelling = self._spelling
         score = [self._score(k) for k in range(self._n)]
         counts = self._counts
-        n_contexts = plan.header.get("max_contexts") or 0
         picked = (self.contexts(texts) if pick else None) or {}
+        # the columns: Sentences per word's number, or under All (0) as many as the row given the most has
+        n_contexts = plan_rules.context_columns(plan.header.get("max_contexts") or 0, (
+            len(picked.get(k, rows[k][6] if rows[k] is not None else ())) // 2 for k in range(self._n)))
 
         priority = []
         for r in self._ranked:
@@ -1286,7 +1288,7 @@ class Engine:
         def live(ids):
             return [s for s in ids if sentences[s][4] >= n_files or pos[sentences[s][4]] is not None]
 
-        n_contexts = h.get("max_contexts") or 0
+        n_contexts = plan_rules.context_limit(h.get("max_contexts") or 0)      # 0: All, every kept candidate
         picker = plan_rules.ContextPicker(sentences, plan.cowords, n_contexts, place, audio,
                                           only_i_plus_one=bool(h.get("only_i_plus_one")),
                                           ensure_audio=h.get("ensure_audio"), recency_files=h.get("recency_files", 1))

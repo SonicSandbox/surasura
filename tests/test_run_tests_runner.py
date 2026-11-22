@@ -636,9 +636,9 @@ def test_pr_yml_runs_every_shard_once_and_one_tests_job_reads_them_all():
 
 
 def test_pr_yml_runs_every_public_module_suite_with_the_shards_install():
-    """GitHub ran no module suite before 2026-11-21 (Junban's 1,941 tests, YouTube's 459). Every module suite this
-    repository tracks runs in the `modules` job, each in its own pytest process as --all runs it, the second even after
-    a red first; the job installs exactly what the shards install, so a pin moved in one place only shows here."""
+    """GitHub ran no module suite before 2026-11-21 (Junban's 1,941 tests, YouTube's 459; the AI voice's 112 since it
+    went public in 3.0.18). Every module suite this repository tracks runs in the `modules` job, each in its own pytest
+    process as --all runs it, each after a red one before it too; the job installs exactly what the shards install, so a pin moved in one place only shows here."""
     root = os.path.dirname(os.path.abspath(run_tests.__file__))
     with open(os.path.join(root, ".github", "workflows", "pr.yml"), encoding="utf-8") as f:
         text = f.read()
@@ -649,7 +649,7 @@ def test_pr_yml_runs_every_public_module_suite_with_the_shards_install():
     assert tracked.returncode == 0, "git ls-files failed"
     suites = sorted({"/".join(p.split("/")[:3]) for p in tracked.stdout.split()
                      if len(p.split("/")) > 3 and p.split("/")[2] == "tests"})
-    assert suites == ["modules/junban/tests", "modules/youtube_downloader/tests"]
+    assert suites == ["modules/irodori/tests", "modules/junban/tests", "modules/youtube_downloader/tests"]
     runs = [line.strip() for line in modules.splitlines() if line.strip().startswith("run: python -m pytest")]
     assert runs == [f"run: python -m pytest {suite} -v -ra -p no:cacheprovider" for suite in suites]
     assert modules.count("if: ${{ !cancelled() }}") == len(suites) - 1

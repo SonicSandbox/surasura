@@ -114,7 +114,15 @@ jobs:
       - name: The folders the tests expect
         shell: bash
         run: mkdir -p data/ja data/zh "User Files"
+      - name: The AI voice (no model, no GPU, no network: its downloads, server and Anki are faked)
+        env:
+          PYTHONIOENCODING: utf-8
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        shell: bash
+        run: python -m pytest modules/irodori/tests -v -ra -p no:cacheprovider
       - name: Junban
+        if: ${{ !cancelled() }}      # runs after a red AI voice too: every result shows
         env:
           PYTHONIOENCODING: utf-8
           TMP: ${{ runner.temp }}
@@ -122,7 +130,7 @@ jobs:
         shell: bash
         run: python -m pytest modules/junban/tests -v -ra -p no:cacheprovider
       - name: YouTube transcripts
-        if: ${{ !cancelled() }}      # runs after a red Junban too: both results show
+        if: ${{ !cancelled() }}      # runs after a red one before it too: every result shows
         env:
           PYTHONIOENCODING: utf-8
           TMP: ${{ runner.temp }}

@@ -31,18 +31,20 @@ def _suites(project_root):
 # --- --all: the core suite split into shards --------------------------------------------------- #
 # The core suite is most of an --all (~17 min of ~6,000 tests alone, 2026-10-06; a module suite ends in about a
 # minute), so --all splits it by file into shards, each its own `python -m pytest <files>` process like a suite. Each
-# shard's files are packed by their last recorded times (debug/test_times.json, written by the shards' own conftest
-# hook, SURASURA_TEST_TIMES), the file's size until there is one. How many shards: as many as fit in the memory free
-# now (one unsplit core process peaked at ~4.8 GB; each further shard adds ~0.5 GB; RESERVE_MB is left for the module
-# suites and the machine), at most SHARD_MAX and half the CPUs idle over half a second as it starts (two logical CPUs
-# share a core) — so a quiet machine gets more, one already running other test runs fewer. SURASURA_TEST_SHARDS=N
-# chooses N (1: unsplit).
+# shard's files are packed by their last recorded times: this copy's own (debug/test_times.json, written by the shards'
+# own conftest hook, SURASURA_TEST_TIMES) over the tracked ones (tests/test_times.json, a train's green --all's, saved
+# by --save-times: all a fresh copy or GitHub has), the file's size where neither has one. How many shards: as many as
+# fit in the memory free now (one unsplit core process peaked at ~4.8 GB; each further shard adds ~0.5 GB; RESERVE_MB
+# is left for the module suites and the machine), at most SHARD_MAX and half the CPUs idle over half a second as it
+# starts (two logical CPUs share a core) — so a quiet machine gets more, one already running other test runs fewer.
+# SURASURA_TEST_SHARDS=N chooses N (1: unsplit).
 
 SHARD_MAX = 8
 CORE_PEAK_MB = 4800
 SHARD_MB = 500
 RESERVE_MB = 3000
 TIMES = os.path.join("debug", "test_times.json")
+TRACKED_TIMES = os.path.join("tests", "test_times.json")
 
 
 def _core_files(project_root):
@@ -123,13 +125,17 @@ STRESS_DIR = "stress"
 
 
 def _read_times(project_root):
+    """{file: seconds}: the tracked times, then this copy's own over them (a file in both: this copy's)."""
     import json
-    try:
-        with open(os.path.join(project_root, TIMES), encoding="utf-8") as f:
-            times = json.load(f)
-        return {k: float(v) for k, v in times.items()} if isinstance(times, dict) else {}
-    except (OSError, ValueError, TypeError):
-        return {}
+    times = {}
+    for name in (TRACKED_TIMES, TIMES):
+        try:
+            with open(os.path.join(project_root, name), encoding="utf-8") as f:
+                part = json.load(f)
+            times.update({k: float(v) for k, v in part.items()} if isinstance(part, dict) else {})
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+    return times
 
 
 def _shards(project_root, files, count):
@@ -171,6 +177,33 @@ def _save_times(project_root, parts):
         os.replace(path + ".tmp", path)
     except OSError:
         pass
+
+
+# --- --save-times: the times GitHub and a fresh copy pack by ------------------------------------------------------- #
+# debug/test_times.json is this copy's and git-ignored, so GitHub's PR shards (pr.yml) packed by file size: the slowest
+# of four took 27-38 min against the fastest's 20-26 (2026-11-21). After a train's green --all, `--save-times` writes
+# tests/test_times.json (tracked) from it: only the core test files git tracks (a local-only suite's names never go
+# public), to a tenth of a second, sorted. It writes nothing when this copy has no times or git can't list the files.
+
+def save_times(project_root):
+    """`--save-times`: tests/test_times.json from this copy's times. Returns 0, or 2 with nothing written."""
+    import json
+    tracked = set(_git_out(project_root, "-c", "core.quotepath=false", "ls-files", "--", "tests").splitlines())
+    if not os.path.isfile(os.path.join(project_root, TIMES)) or not tracked:
+        print(f"--save-times: no {TIMES} here (an --all writes it) or git lists no tests/ files: nothing written.")
+        return 2
+    times = _read_times(project_root)
+    core = [path for path in _core_files(project_root) if path in tracked]
+    kept = {path: round(times[path], 1) for path in core if path in times}
+    path = os.path.join(project_root, TRACKED_TIMES)
+    with open(path + ".tmp", "w", encoding="utf-8", newline="\n") as f:
+        json.dump(kept, f, indent=0, sort_keys=True)
+        f.write("\n")
+    os.replace(path + ".tmp", path)
+    print(f"--save-times: {TRACKED_TIMES} holds {len(kept)} files' times ({sum(kept.values()) / 60:.0f} min); "
+          f"{len(core) - len(kept)} core file(s) without one pack by size; {len(set(times) - set(kept))} name(s) "
+          f"left out (not a tracked core test file).")
+    return 0
 
 
 def _run_shard(project_root, label, files, times_path):
@@ -1175,8 +1208,8 @@ def run_touched_callers(project_root, base="origin/3.0-dev", listing=False):
     return 1 if failed else 0
 
 
-FLAGS = ("--all", "--shard", "--stress", "--stress-changed", "--guards", "--touched-callers", "--list", "--help",
-         "-h")                                                       # main's (a value follows some)
+FLAGS = ("--all", "--shard", "--stress", "--stress-changed", "--guards", "--touched-callers", "--list", "--save-times",
+         "--help", "-h")                                                       # main's (a value follows some)
 
 
 def _value_after(args, flag):
@@ -1203,6 +1236,8 @@ def main():
     `python run_tests.py --touched-callers [BASE]`  a lane's touched run: the test files that reach what the branch
         changed since BASE (origin/3.0-dev) and the area's guards, under the read audit (no test reads an ignored file).
     `--list` with any of the three: prints what it would run, and runs nothing.
+    `python run_tests.py --save-times`  writes tests/test_times.json (the times GitHub's shards pack by) from this
+        copy's last --all: a train's, after its green --all. Runs no test.
     `python run_tests.py --help`  prints this and runs nothing; so does a flag it doesn't know (exit 2).
     """
     # 0. --help, or a flag it doesn't know: the usage, nothing run (either used to start the whole core suite — outside
@@ -1234,6 +1269,8 @@ def main():
             except KeyboardInterrupt:
                 print("\nTest run cancelled via KeyboardInterrupt.")
                 sys.exit(130)
+    if "--save-times" in args:
+        sys.exit(save_times(project_root))
     if "--all" in sys.argv[1:]:
         try:
             sys.exit(run_all(project_root))

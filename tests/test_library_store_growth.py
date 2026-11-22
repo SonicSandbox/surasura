@@ -563,3 +563,90 @@ def test_the_windows_numbers_read_degrades_to_no_line_when_the_store_cant_answer
     n.opener = NS(mode="store", check=gone, handle=lambda: None)
     n._read_growth()
     assert n.growth(1) == {"added": {"known": 1}}, "a failed read keeps the last answer"
+
+
+# --- Kura-GS2: a whole write taken back, a file with no words, the read after a Generate ---------------------------- #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_snapshot_failure_that_takes_back_the_whole_write_takes_back_the_whole_move(language):
+    """G3, a store write is all or nothing: when SQLite takes back the whole write at the snapshot (a full disk, an I/O
+    error — here a trigger's RAISE(ROLLBACK)), the Done or the move to Finished fails whole, never its rows taken back
+    and the rest of it (the change, its Undo, the versions) saved line by line after. A refusal that takes back the one
+    statement only keeps the learner's Done (the test above)."""
+    store = migrated(language)
+    show = [i for i in store.ids("goal") if store.item(i)["parent_folder"]][:3]
+    ep = store.ids("now")[0]
+    store.record_growth(_figures(store, show + [ep]))
+    with store._writing():
+        store.conn.execute("CREATE TEMP TRIGGER fail_done BEFORE INSERT ON growth WHEN NEW.kind = 'done' "
+                           "BEGIN SELECT RAISE(ROLLBACK, 'database or disk is full'); END")
+    before = list(store.conn.iterdump())
+    with pytest.raises(sqlite3.Error):
+        store.finish(show)
+    assert list(store.conn.iterdump()) == before, "nothing of the move saved"
+    with pytest.raises(sqlite3.Error):
+        store.set_watched([ep])
+    assert list(store.conn.iterdump()) == before, "nothing of the Done saved"
+    assert not store.conn.in_transaction
+    with store._writing():
+        store.conn.execute("DROP TRIGGER fail_done")
+    store.finish(show)                                          # the next write goes through whole
+    assert all(store.item(i)["tier"] == "graduated" and _snap(store, i, "done") for i in show)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_file_with_no_words_keeps_no_snapshot_until_a_generate_counts_its_words(language):
+    """A file the Generate counted no words of (an empty subtitle) has no figure: no 'added' of 0 of 0 kept for good,
+    nor a 'done' from it — no snapshot at all, so the journey shows no bar rather than a made-up one. The first
+    Generate that counts its words is its 'added'; a later one that counts none moves nothing. A file whose words are
+    all known (none unknown) has words: it is kept."""
+    store = migrated(language)
+    empty, other, known = store.ids("now")[:3]
+    assert store.record_growth({_rel(store, empty): (0, 0, 0), _rel(store, known): (60, 60, 0),
+                                **_figures(store, [other])}) == 2
+    assert _snap(store, known, "added") == (60, 60, 0)
+    assert store.growth_of([empty], kinds=("added", "done", "last")) == {}
+    store.set_watched([empty])
+    assert store.growth_of([empty], kinds=("added", "done", "last")) == {}
+    words = _figures(store, [empty], base=300)
+    assert store.record_growth(words) == 1
+    assert _snap(store, empty, "added") == _snap(store, empty, "last") == words[_rel(store, empty)]
+    assert store.record_growth({_rel(store, empty): (0, 0, 0)}) == 0
+    assert _snap(store, empty, "last") == words[_rel(store, empty)]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_generates_end_reads_its_snapshots_again_after_a_move_read_them_too_early(language):
+    """A Generate writes its plan, then its snapshots: a move between the two reads the new plan, and the snapshots
+    with it, before they are there. The Generate's end (`Services._generate_ended`) reads them again on the numbers'
+    worker — after the snapshots' write — so the % hover's line is this Generate's, never none until the next one.
+    A run whose list was written but not its report ends "failed" with its snapshots written too: read the same."""
+    pytest.importorskip("PyQt6")
+    import threading
+    from types import SimpleNamespace as NS
+    from app.qt import shell
+    from app.services import moves as M
+    store = migrated(language)
+    numbers = M.Numbers(M.store_opener(language), language)
+
+    def resync():
+        raise RuntimeError("the numbers' re-read failed")          # (each step its own: the read still goes)
+    numbers.resync = resync
+    services = NS(closing=threading.Event(), gentle=None, writer=NS(numbers=numbers))
+    try:
+        for ep, outcome in zip(store.ids("now")[:2], ("current", "failed")):
+            numbers._read_growth()                              # the move's plan read: no snapshot yet
+            assert numbers.growth(ep) is None
+            store.record_growth(_figures(store, [ep]))          # the Generate's write, after its plan
+            shell.Services._generate_ended(services, None, outcome)
+            read = threading.Event()
+            numbers.worker.put(read.set)                        # (one worker: behind what the end queued)
+            assert read.wait(20)
+            got = (numbers.growth(ep) or {}).get("added")
+            assert got is not None and (got["known"], got["counted"], got["unknown"]) == _snap(store, ep, "added"), \
+                outcome
+    finally:
+        numbers.close()
+        store.close()

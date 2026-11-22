@@ -354,6 +354,8 @@ ANKI_WRITERS = {
     ("app/connect/tidy.py", "_cards_home"): ("Tidy", _TIDY, "only cards found in its own deck, back to the decks its "
                                              "ledger recorded"),
     ("app/connect/tidy.py", "_drop_temp"): ("Tidy", _TIDY, "its own deck, only when a search finds no card in it"),
+    ("app/connect/tidy.py", "_left_out"): ("Tidy", _TIDY, "Undo after a re-mine: only its own just-imported copy, "
+                                           "every card still in its own deck and never reviewed"),
     ("app/connect/sentence_audio.py", "AnkiConnectNotes.tag"): (
         "the one sentence-field writer (Add audio, the AI audio, Piyo's translations)",
         "Backfill: fills fields of existing cards; Piyo: writes cards only when asked",
@@ -480,7 +482,6 @@ SHARED_READERS = {
     ("the list file", "modules/junban/reposition.py", "<module>"): "Junban's order reads the list",
     ("the list file", "modules/youtube_downloader/preview.py", "library_contexts_path"):
         "the YouTube preview ranks by the list",
-    ("the list file", "modules/reels/gui.py", "*"): "Reels (sunset 2026-09-22): its old window",
     # --- the deck
     ("the deck", "app/cli/verbs.py", "deck_aside"): "the CLI's re-sort: 順's scope check",
     ("the deck", "app/cli/verbs.py", "_junban_auto"): "the CLI's re-sort: the deck's new cards a day",

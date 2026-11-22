@@ -6059,7 +6059,8 @@ class Store:
         then (its 'last') as its 'done' snapshot, at `at` — once: a later mark (a re-watch, a Finished after a Done)
         keeps the first, and an Undo leaves it (written once, never by an Undo). An item no Generate counted yet
         has none. Inside the caller's write; a failure here is its own (SQLite takes back the one statement), never
-        the mark's or the move's."""
+        the mark's or the move's — unless SQLite took back the whole write (a full disk, an I/O error: no transaction
+        left), when it is the write's: raised, so the rest of the move never saves line by line (G3, Kura-GS2)."""
         try:
             if not ids or not self._has_table(GROWTH):
                 return
@@ -6069,7 +6070,8 @@ class Store:
                     f"'done', known, counted, unknown, ?, 0 FROM growth WHERE kind = 'last' AND item_id IN "
                     f"({','.join('?' * len(part))})", [at] + part)
         except sqlite3.Error:
-            pass
+            if not self.conn.in_transaction:
+                raise
 
     def _moves_counted(self, ids):
         """W-1: does a watched mark (set or taken back) on `ids` move what counts? Only while `keep_watched` is off,
@@ -7661,7 +7663,8 @@ class Store:
         each item's 'last'; an item with no 'added' yet takes them as its 'added' too, `prior` when the store held it
         before it began the snapshots (GROWTH_SINCE; a store with no such date yet starts them now: every item
         `prior`). A file the store no longer holds (moved or removed meanwhile) is passed by. Bookkeeping: no version
-        moves; a new 'added' sets `copy_dirty` (the copy carries it). Only what changed is written; the files read to
+        moves; a new 'added' sets `copy_dirty` (the copy carries it). A file it counted no words of keeps nothing: no
+        snapshot until it has words, and one that had words keeps its last count's, dated (Kura-GS2). Only what changed is written; the files read to
         items in a read transaction first, so the write lock is held for the writes alone. -> the 'added' written."""
         if not figures:
             return 0
@@ -7681,6 +7684,8 @@ class Store:
                 continue
             item, added_at = hit
             fig = (int(fig[0]), int(fig[1]), int(fig[2]))
+            if fig[1] <= 0:
+                continue                    # Kura-GS2: a file it counted no words of has no figure yet (never 0 of 0)
             if last.get(item) != fig:
                 put_last.append((item,) + fig + (at,))
             if item not in added:

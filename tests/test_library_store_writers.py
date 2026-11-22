@@ -1208,8 +1208,9 @@ def test_the_window_hands_the_helper_an_outside_copy_once_and_its_own_export_nev
     assert store_helper_spawns == [], "the window handed its own export to the helper"
     with open(target, "rb") as f:
         data = f.read()
-    with open(target, "wb") as f:                                # another program rewrites the copy
-        f.write(data + b"\n")
+    with open(target + ".new", "wb") as f:                       # another program rewrites the copy, whole at once:
+        f.write(data + b"\n")                                    # a poll between a truncate and its write saw a
+    os.replace(target + ".new", target)                          # 0-byte copy, a second rewrite (FLAKES)
     assert _pump(app, lambda: bool(store_helper_spawns), timeout=3.0), "an outside copy was never handed over"
     _pump(app, lambda: False, timeout=1.5)                       # three more polls, nothing new
     assert store_helper_spawns == [(language,)], "an outside copy is handed to the helper once"

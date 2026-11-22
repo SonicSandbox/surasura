@@ -96,3 +96,45 @@ def test_a_copy_never_overwrites_its_own_subtitle(tmp_path):
     path.write_text(open(TV, encoding="utf-8").read(), encoding="utf-8")
     with pytest.raises(ValueError):
         caption_clean.copy_for(str(path), str(tmp_path))
+
+
+# --- the cleaned copy's replace (Kantan-SD 7: the run file's helper, `runfile.replace_held`) --------------------------
+@pytest.mark.skipif(os.name != "nt", reason="only Windows refuses a replace onto a file held open")
+def test_a_cleaned_copy_another_program_is_reading_is_written_once_it_lets_go(tmp_path, monkeypatch):
+    # why: the copy is written again at every pick of the episode, seconds after the last; a virus check still reading
+    # it made the replace fail at once ([WinError 32]) and the pick with it — the run file's same exposure
+    from app.connect import runfile
+    folder = str(tmp_path / "runs" / "9")
+    dest = caption_clean.copy_for(TV, folder)
+    reader, waits = open(dest, "rb"), []
+
+    def wait(seconds):
+        waits.append(seconds)
+        if len(waits) == 2:
+            reader.close()
+    monkeypatch.setattr(runfile.time, "sleep", wait)
+    try:
+        assert caption_clean.copy_for(TV, folder) == dest
+    finally:
+        reader.close()
+    assert waits == list(runfile.REPLACE_BACKOFF[:2])
+    assert os.listdir(folder) == [os.path.basename(TV)], "no temp file left"
+    assert open(dest, encoding="utf-8").read() == caption_clean.clean(caption_clean.read_text(TV, "ja"))
+
+
+def test_a_cleaned_copy_held_for_good_is_an_error_with_the_last_copy_whole_and_no_temp_left(tmp_path, monkeypatch):
+    # why: a wait without an end would hang Connect's one mining thread; the pick's own handling takes over
+    from app.connect import runfile
+    folder = str(tmp_path / "runs" / "9")
+    dest = caption_clean.copy_for(TV, folder)
+    before, calls = open(dest, "rb").read(), []
+
+    def held(src, dst):
+        calls.append(dst)
+        raise PermissionError(13, "The process cannot access the file because it is being used by another process")
+    monkeypatch.setattr(runfile.os, "replace", held)
+    monkeypatch.setattr(runfile.time, "sleep", lambda s: None)
+    with pytest.raises(PermissionError):
+        caption_clean.copy_for(TV, folder)
+    assert len(calls) == len(runfile.REPLACE_BACKOFF) + 1
+    assert open(dest, "rb").read() == before and os.listdir(folder) == [os.path.basename(TV)]

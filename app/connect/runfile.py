@@ -343,6 +343,13 @@ def write(path, data):
         f.write(raw)
         f.flush()
         os.fsync(f.fileno())
+    return replace_held(tmp, path)
+
+
+def replace_held(tmp, path):
+    """os.replace(tmp, path), tried again while another program holds `path` open (a virus check reading a file just
+    written: `REPLACE_BACKOFF`) -> `path`. Still held after the last wait: the PermissionError, the file there before
+    left as it was and `tmp` removed. The run file's write and a subtitle's cleaned copy (`caption_clean.copy_for`)."""
     for wait in REPLACE_BACKOFF + (None,):
         try:
             os.replace(tmp, path)

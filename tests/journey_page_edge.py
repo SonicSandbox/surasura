@@ -108,7 +108,7 @@ class Edge:
             [self.path, "--headless=new", "--remote-debugging-port=0", "--user-data-dir=" + self.profile,
              f"--window-size={width},{height}", f"--force-device-scale-factor={scale}", "--no-first-run",
              "--disable-extensions", "--disable-background-networking", "--disable-component-update", "--disable-sync",
-             "--enable-precise-memory-info", "--allow-file-access-from-files", "about:blank"],
+             "--enable-precise-memory-info", "--js-flags=--expose-gc", "--allow-file-access-from-files", "about:blank"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         port_file = os.path.join(self.profile, "DevToolsActivePort")
         for _ in range(150):

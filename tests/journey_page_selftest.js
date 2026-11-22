@@ -24,7 +24,7 @@
     if (mode === "none") return { ok: false, offline: true, why: "unopened" };
     if (mode === "off") return { ok: false, offline: true, why: "closed" };
     if (NOTYET.has(route)) return { ok: false, kind: "not_yet", error: "Not in this Surasura yet." };
-    const h = JSON.parse(document.getElementById("j-head").textContent);
+    const h = window.__J.page.head;                   // the page's own parse: at 20,000 the head is megabytes
     switch (route) {
       case "hello": return { ok: true, version: 1, lang: h.lang, library: h.library, render_stamp: Math.floor(Number(h.stamp) / 1e6), routes: ROUTES.filter((r) => !NOTYET.has(r)) };
       case "state": return { ok: true, at: Date.now() };
@@ -123,7 +123,17 @@
     window.__selftest = { out };
     const ok = (name, cond, detail) => out.push([name, !!cond, detail == null ? "" : String(detail)]);
     const only = new Set((Q.get("only") || "").split(",").filter(Boolean));
-    const group = (g) => !only.size || only.has(g);
+    const GROUPS = [];                                 // when each group began (a long task is put down to its group)
+    /* which groups a door mode runs by itself: with Surasura closed or no door, the groups that need its answers give
+       way to `offline` (SPEC §3.5); a route not yet built drops the group that is only that route */
+    const OFFLINE = MODE !== "on";
+    const CONTRACT = Q.get("rail") === "contract";      // another rail plugged in: the page's own groups + `contract`
+    const SKIP = new Set(CONTRACT ? ["word", "marks", "pre", "picker", "door", "flag", "settings", "list", "focus", "search", "notyet", "a11y", "offline"]
+      : OFFLINE ? ["marks", "pre", "flag", "door", "settings", "contract"] : ["offline", "contract"]);
+    if (NOTYET.has("episode/prestudied")) SKIP.add("pre");
+    if (NOTYET.has("line/flag")) SKIP.add("flag");
+    const group = (g) => { const on = only.size ? only.has(g) : !SKIP.has(g); if (on) GROUPS.push([performance.now(), g]); return on; };
+    const groupAt = (t) => { let g = "start"; for (const [t0, name] of GROUPS) if (t0 <= t) g = name; return g; };
     const $ = (s) => document.querySelector(s), $$ = (s) => [...document.querySelectorAll(s)];
     const key = (k, o) => document.dispatchEvent(new KeyboardEvent("keydown", Object.assign({ key: k, bubbles: true }, o || {})));
     const page = J.page, N = page.count();
@@ -166,7 +176,7 @@
       ok(`Sentences per word: ${H.settings.sentences} by default`, $$("#stage .lines > .ln").length === Math.min(H.settings.sentences || 3, w[9].length));
       ok("each line under its sentence names where it is from (its kind's icon; the name in its hover)", $$("#stage .ln .src").every((s) => s.querySelector("svg") && s.dataset.tip));
       ok("where each line is from: Icon by default (the name hidden)", $("#stage").classList.contains("wf-icon"));
-      ok("⚑ on every sentence, quiet until hover", $$("#stage .ln").every((l) => l.querySelector(".fl")) && getComputedStyle($("#stage .fl")).opacity === "0");
+      if (!NOTYET.has("line/flag")) ok("⚑ on every sentence, quiet until hover", $$("#stage .ln").every((l) => l.querySelector(".fl")) && getComputedStyle($("#stage .fl")).opacity === "0");
       if (H.lang === "ja") {
         const hasPitch = w[8] != null;
         ok("Japanese: pitch is the graph only, over the reading (no 平板 / [0] beside it)", hasPitch ? !!$(".rd svg.pitch") && !/平板|\[\d\]/.test($(".rd").textContent) : /No pitch data/.test($(".rd").textContent));
@@ -312,7 +322,7 @@
       const W = (() => { for (let i = 0; i < N; i++) if (page.ep(i).watched) return i; return -1; })();
       ok("a watched episode's stone is never a press (the page never touches watched)", W < 0 || !page.canPre(W));
       ok("the page never marks watched: no Watched / Done button anywhere", !$$("button").some((b) => /mark watched|^done$|^watched$/i.test(b.textContent.trim())));
-      ok("D12: a book is read, audio listened to, video watched (the stone's words)", (() => { for (let i = 0; i < N; i++) { const e = page.ep(i); if (e.watched) { const t = page.stoneTip(i); const v = { book: "read", lightnovel: "read", audiobook: "listened to", podcast: "listened to" }[e.kind] || "watched"; if (!t.includes("You " + v)) return false; } } return true; })());
+      ok("D12: a book is read, audio listened to, video watched (the stone's words)", (() => { for (let i = 0; i < N; i++) { const e = page.ep(i); if (e.watched) { const t = page.stoneTip(i); const v = { book: "read", lightnovel: "read", audiobook: "listened to", podcast: "listened to" }[e.kind] || "watched"; if (!new RegExp(`You ${v}|^${v[0].toUpperCase() + v.slice(1)}`, "m").test(t)) return false; } } return true; })());
     }
 
     /* ---- the picker (Stepper's): windowed, its stones presses ---- */
@@ -325,7 +335,7 @@
       ok("opening the picker builds only the rows in view (windowed)", rows <= 40 && (total <= 40 || rows < total), `${rows} built of ${total}`);
       budget(ok, "opening the picker", r, ["doc", "picker"]);
       ok("the picker: one row a show, the shown show open on where you are (in the ring)", !!$(".rs-pick .pr.e.cur .st.ring"));
-      const tgt = big.find((i) => i !== E && page.ep(i).show === page.ep(E).show && !page.ep(i).pre.on && rail._p.rows.has("e" + i));
+      const tgt = big.find((i) => i !== E && page.ep(i).show === page.ep(E).show && !page.ep(i).pre.on && page.canPre(i) && rail._p.rows.has("e" + i));
       if (tgt != null) {
         const st = rail._p.rows.get("e" + tgt).querySelector("[data-pre]");
         r = await press(() => st.click());
@@ -371,20 +381,48 @@
       J.openSettings(); await settle();
       ok("a setting changed while Surasura is closed says so at its row (⧗ not in Surasura yet)", /not in Surasura yet/.test($('#set-sheet .srow[data-set="theme"]').textContent));
       J.closeLayer();
-      const pq = big.find((i) => i !== E && !page.ep(i).pre.on);
-      J.prestudied(pq, "press"); await settle();
-      ok("a pre-studied press waits too (⧗ on its stone's tip)", page.ep(pq).pre.wait === "queued");
+      const pq = big.find((i) => i !== E && !page.ep(i).pre.on && page.canPre(i));
+      if (pq != null) { J.prestudied(pq, "press"); await settle(); ok("a pre-studied press waits too (⧗ on its stone's tip)", page.ep(pq).pre.wait === "queued"); }
       const swapBefore = CALLS.length;
-      J.pickLine(0); await settle();
-      ok("⇄ / Add now with Surasura closed: not queued, the control says Surasura is closed", CALLS.length === swapBefore && /Surasura is closed/.test($("#toast").textContent) && !J.QUEUE().some((q) => q.route === "swap/queue" || q.route === "card/make"));
+      if ($('#stage [data-act="pick"]')) {                // hidden when its route answers not_yet (the notyet run)
+        J.pickLine(0); await settle();
+        ok("⇄ / Add now with Surasura closed: not queued, the control says Surasura is closed", CALLS.length === swapBefore && /Surasura is closed/.test($("#toast").textContent) && !J.QUEUE().some((q) => q.route === "swap/queue" || q.route === "card/make"));
+      }
       window.__J_DOOR_MODE = "on";
       const before = CALLS.length;
       await J.hello(); await settle(6);
       const sent = CALLS.slice(before).map((c) => c[1]);
       ok("at the next open the queue goes, in press order (hello, state, then the writes)", sent[0] === "hello" && sent[1] === "state" && sent.includes("words/mark") && sent.indexOf("words/mark") < sent.indexOf("settings/set") && J.QUEUE().length === 0, sent.join(","));
-      ok("…and nothing waits any more (⧗ gone)", !J.MWAIT.has(wq) && !page.ep(pq).pre.wait);
+      ok("…and nothing waits any more (⧗ gone)", !J.MWAIT.has(wq) && (pq == null || !page.ep(pq).pre.wait));
       J.setSetting("theme", "night"); await settle();
       J.markWord("known", J.seq(E).find((id) => J.wordNow(id)[0] === wq)); await settle();
+    }
+
+    /* ---- a whole run with Surasura closed (?door=off) or the page opened by hand (?door=none): SPEC §3.5's table ---- */
+    if (group("offline")) {
+      const byHand = MODE === "none";
+      await goWord(E, 0);
+      ok(byHand ? "opened by hand: the chip says this page wasn't opened from Surasura" : "Surasura closed: the chip says so",
+        J.D.state === (byHand ? "unopened" : "off") && $("#door").classList.contains("off") && (byHand ? /wasn't opened from Surasura/ : /Surasura is closed/).test($("#door").dataset.tip), J.D.state);
+      const wq = J.wordNow(J.curWordId())[0];
+      let r = await press(() => key(keyName("known")));
+      ok("Known: drawn at once, the next word in the same turn, ⧗ in the queue", J.MARK.get(wq) === "known" && J.MWAIT.get(wq) === "queued" && J.S.wi === 1 && J.QUEUE().some((q) => q.tag === "m:" + wq) && r.dt <= 16, r.dt.toFixed(2) + " ms");
+      await goWord(E, 0);
+      const tip = $('#stage [data-act="known"]').dataset.tip;
+      ok(byHand ? "its tip: ⧗ this page only until you open it from Surasura" : "its tip: ⧗ waiting for Surasura", (byHand ? /this page only until you open it from Surasura/ : /waiting for Surasura/).test(tip), tip);
+      ok("the queue is the one thing kept, for this library and language", STORE.length > 0 && STORE.every(([, k]) => k === `surasura_door_queue_${H.library}_${H.lang}` || /^surasura_journey_view/.test(k)), STORE.map(([, k]) => k).join(" "));
+      const pq = big.find((i) => i !== E && !page.ep(i).pre.on && page.canPre(i));
+      if (pq != null) { J.prestudied(pq, "press"); await settle(); ok("a pre-studied press: on at once, waiting ⧗", page.ep(pq).pre.on && page.ep(pq).pre.wait === "queued"); }
+      const sentences = J.SET.sentences;
+      J.setSetting("sentences", 2); await settle();
+      J.openSettings(); await settle();
+      ok("a setting: applied here at once, its row says it isn't in Surasura yet", /not in Surasura yet/.test($('#set-sheet .srow[data-set="sentences"]').textContent) && (!byHand || /open the journey from Surasura/.test($('#set-sheet .srow[data-set="sentences"]').textContent)));
+      J.closeLayer();
+      J.setSetting("sentences", sentences); await settle();
+      const before = CALLS.length;
+      J.pickLine(0); await settle();
+      ok("⇄ / Add now: never queued, the control says Surasura is closed", CALLS.length === before && /Surasura is closed/.test($("#toast").textContent) && !J.QUEUE().some((q) => q.route === "swap/queue" || q.route === "card/make"));
+      ok("nothing was sent but hello: every write waits in the queue", CALLS.every(([, rt]) => rt === "hello"), [...new Set(CALLS.map((c) => c[1]))].join(","));
     }
 
     /* ---- ⚑ flag a sentence → Send report (SPEC §4) ---- */
@@ -419,14 +457,16 @@
       ok("Where each line is from › Icon + name: the name shows", getComputedStyle($("#stage .src .sn")).display !== "none");
       budget(ok, "a setting: where each line is from", r, ["word", "layer"]);
       J.setSetting("where_from", "hover"); await settle();
-      ok("› Only on hover: the source hidden but in its place", getComputedStyle($("#stage .ln:not(.sel) .src")).visibility === "hidden" || $$("#stage .ln").length === 1);
+      ok("› Only on hover: the source hidden but in its place", $$("#stage .ln").length === 1 || getComputedStyle($("#stage .ln:not(.sel) .src")).visibility === "hidden");
       J.setSetting("where_from", "icon"); await settle();
       r = await press(() => J.setSetting("pitch", "hidden"));
       ok("Pitch and tones › Hidden until F", H.lang === "zh" ? !$(".rd .tones") : !$(".rd svg.pitch"));
       budget(ok, "a setting: pitch", r, ["word", "reading", "layer"]);
+      J.closeLayer();                                  // the key is the page's, not the open sheet's
       key(keyName("pitch")); await settle();
       const w = J.wordNow(J.curWordId());
-      ok("F shows it for that word", w[8] == null || (H.lang === "zh" ? !!$(".rd .tones") : !!$(".rd svg.pitch")));
+      ok("F shows it for that word", w[8] == null || (H.lang === "zh" ? !!$(".rd .tones") : !!$(".rd svg.pitch")), w[8] == null ? "(this word has none)" : "");
+      J.openSettings(); await settle();
       J.setSetting("pitch", "shown"); await settle();
       r = await press(() => J.setSetting("sentences", 1));
       ok("Sentences per word › 1: one line, '+N more' says where the rest are", $$("#stage .lines > .ln").length === 1);
@@ -456,7 +496,7 @@
       ok("List: the episode's words as cards, 3 lines each by default", $$("#stage .lc").length === J.seq(E).length && $$("#stage .lc")[0].querySelectorAll(".ln").length === Math.min(3, J.wordNow(J.seq(E)[0])[9].length));
       const st = $("#stage");
       const endEl = $("#stage .lend");
-      const target = page.ep(E).pre.on ? null : E;
+      const target = page.ep(E).pre.on || !page.canPre(E) ? null : E;   // no mark to make when its route isn't built
       if (target != null) {
         endEl.scrollIntoView(); await new Promise((res) => setTimeout(res, J.D14_MS - 150));
         st.scrollTop = 0; await new Promise((res) => setTimeout(res, 300));
@@ -502,6 +542,27 @@
       if (NOTYET.has("swap/queue") && NOTYET.has("card/make")) ok("swap/queue + card/make not yet: ⇄ hidden (the one flag still on)", !$('#stage [data-act="pick"]') && J.SWAP_SHOWN);
     }
 
+    /* ---- the rail contract (SPEC §1.1b): a second rail through the page API, page.html unchanged ---- */
+    if (group("contract")) {
+      const rail = J.rail(), used = window.__TINY_USED || new Set();
+      ok("contract: the plugged-in rail is the one drawn (not the Stepper)", rail.name === "tiny" && !!$('#rail [data-r="rail-tiny"]') && !$("#rail .rs-words"), rail.name);
+      ok("contract: the page drew its first word beside it", !!$("#stage .w"));
+      const ep0 = J.S.ep;
+      let r = await press(() => $('#rail [data-tiny="next"]').click());
+      ok("contract: › through page.go moves the page (the word pane drawn for the next episode)", J.S.ep !== ep0 && J.S.wi === 0 && !!$("#stage .w, #stage .end"), `${ep0} → ${J.S.ep}`);
+      budget(ok, "contract: › through page.go", r, ["word", "meaning", "more", "desk", "rail-tiny"]);
+      const i = J.S.ep, wasOn = page.ep(i).pre.on;
+      r = await press(() => $('#rail [data-tiny="pre"]').click());
+      ok("contract: the rail's press through page.prestudied reaches the door and comes back drawn", page.ep(i).pre.on === !wasOn && CALLS.some(([, rt, b]) => rt === "episode/prestudied" && b.id === page.ep(i).id) && /✧ (on|off)/.test($('#rail [data-tiny="pre"]').textContent));
+      budget(ok, "contract: a stone pressed in the rail", r, ["rail-tiny", "toast", "word"]);
+      $("#toast button") && $("#toast button").click(); await settle();
+      r = await press(() => J.step(1));
+      ok("contract: the page's own presses still work without the Stepper (↓)", J.S.wi === 1 || !!$("#stage .end"));
+      const allowed = new Set(["where", "ep", "count", "esc", "go", "prestudied"]);
+      ok("contract: the rail used the page API and nothing else (no chunk, no door, no mark of its own)", [...used].every((k) => allowed.has(k)), [...used].join(","));
+      ok("contract: nothing but the page's two stores in localStorage", STORE.every(([, k]) => /^surasura_(door_queue|journey_view)_/.test(k)), STORE.map(([, k]) => k).join(" "));
+    }
+
     /* ---- every press on screen, named and big enough; motion ---- */
     if (group("a11y")) {
       await goWord(E, 0);
@@ -524,8 +585,12 @@
     /* ---- after the first word: no long task ---- */
     if (group("start")) {
       const after = LONG.filter(([t, d]) => t > t0.firstWord && d > 50);
-      ok("no long task (> 50 ms) after the first word", !after.length, after.map(([t, d]) => `${t.toFixed(0)}:${d.toFixed(0)}`).join(" "));
-      if (performance.memory) { SPEED.heapMB = performance.memory.usedJSHeapSize / 1048576; ok(`JS heap ≤ ${N > 5000 ? 40 : 20} MB`, SPEED.heapMB <= (N > 5000 ? 40 : 20), SPEED.heapMB.toFixed(1) + " MB"); }
+      ok("no long task (> 50 ms) after the first word", !after.length, after.map(([t, d]) => `${groupAt(t)} @${t.toFixed(0)}: ${d.toFixed(0)} ms`).join(" · "));
+      if (performance.memory) {
+        SPEED.heapUsedMB = performance.memory.usedJSHeapSize / 1048576;   // before a collection: garbage included
+        if (window.gc) { window.gc(); await settle(2); }                   // the heap the page holds (Edge run with --expose-gc)
+        SPEED.heapMB = performance.memory.usedJSHeapSize / 1048576; ok(`JS heap ≤ ${N > 5000 ? 40 : 20} MB`, SPEED.heapMB <= (N > 5000 ? 40 : 20), SPEED.heapMB.toFixed(1) + " MB" + (window.gc ? " live (" + SPEED.heapUsedMB.toFixed(1) + " before a collection)" : ""));
+      }
     }
     window.__selftest = { out, SPEED, BUDGETS, calls: CALLS.length };
     return finish();

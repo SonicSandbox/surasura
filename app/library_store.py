@@ -1239,9 +1239,11 @@ SCHEMA_2_SQL = (
 FEED_POLL = 0.1                  # s: a window looks at `PRAGMA data_version` this often (its store worker)
 FEED_ITEM_FIELDS = ("id", "tier", "ord", "rel_path", "title", "parent_folder", "source_type", "availability",
                     "work_id", "piece_id", "watched", "mined_at", "pinned", "mine_asked", "graduated_at",
-                    "in_learning_order", "added_at", "feed_in", "mtime_ns")
+                    "in_learning_order", "added_at", "feed_in", "mtime_ns", "prestudied_at")
 #   mtime_ns (a7): the file's own date — a source's copy keeps its original's (`sources._dated`) — what
 #   `view_rows.still_arriving` reads beside `added_at` (a first look takes a whole show in at one time)
+#   prestudied_at (J-STONES): the date it was marked pre-studied — the stones' add; read as NULL on a store still
+#   without the column (`feed_item_cols`). `prestudied_by` isn't the window's: a press feeds only a changed date
 FEED_WORK_FIELDS = ("id", "title", "title_by_user", "titles", "folder_key", "anilist_id", "tmdb_id", "youtube_channel",
                     "media_type", "media_type_by", "cover_source", "cover_ref", "cover_path", "cover_fetched_at",
                     "cover_locked", "feed_in")
@@ -2464,6 +2466,13 @@ class Store:
             self._prestudied = set(PRESTUDIED_COLUMNS) <= names
         return self._prestudied
 
+    def feed_item_cols(self):
+        """J-STONES: FEED_ITEM_FIELDS as a SELECT's columns — `prestudied_at` read as NULL on a store still without it
+        (a busy first open leaves the column to a later one), so every reader of the feed's rows reads either store."""
+        if self._prestudied_column():
+            return ", ".join(FEED_ITEM_FIELDS)
+        return ", ".join("NULL" if f == "prestudied_at" else f for f in FEED_ITEM_FIELDS)
+
     def _make_prestudied(self):
         """J-STORE: PRESTUDIED_SQL inside the caller's write — each column only where it isn't yet (another open may
         have made it meanwhile), then the index."""
@@ -2992,10 +3001,10 @@ class Store:
         changed rows sit in (a piece's kind or name written feeds its rows: `_set_piece`). A piece no row names is gone.
         A group's `title` None: the window derives "<first item's work's title> + N more"; a run's title is never shown
         (its work's is)."""
-        item_cols = ", ".join(FEED_ITEM_FIELDS)
         work_cols = ", ".join(FEED_WORK_FIELDS)
         piece_cols = ", ".join(FEED_PIECE_FIELDS)
         with self._reading():
+            item_cols = self.feed_item_cols()
             meta = self._meta()
             version, now_epoch = meta["state_version"], meta["epoch"]
             full = seen is None or epoch != now_epoch or seen < int(meta.get("feed_floor") or 0)
@@ -6198,7 +6207,7 @@ class Store:
                 return None
             self.conn.executemany("UPDATE items SET prestudied_at = ?, prestudied_by = ? WHERE id = ?",
                                   [new + (i,) for i, _old, new in changes])
-            cmd.feed(i for i, _o, _n in changes)
+            cmd.feed(i for i, old, new in changes if old[0] != new[0])    # the window reads the date only (F6)
             change = self._change(cmd, "set_prestudied")
             change.status = [(i, column, old[n], new[n]) for i, old, new in changes
                              for n, column in enumerate(PRESTUDIED_COLUMNS)]
@@ -8080,7 +8089,7 @@ class Store:
                 back.append((item_id, old, new))
         self.conn.executemany("UPDATE items SET prestudied_at = ?, prestudied_by = ? WHERE id = ?",
                               [old + (i,) for i, old, _n in back])
-        cmd.feed(i for i, _o, _n in back)
+        cmd.feed(i for i, old, new in back if old[0] != new[0])           # the date only, as the press (F6)
         if back:
             cmd.touch()
             out.status = [(i, column, new[n], old[n]) for i, old, new in back

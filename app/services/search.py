@@ -159,7 +159,7 @@ def _goal_read(store, view, works, items, probe, query, language, limit):
     first.sort(key=lambda r: (r[1] or 0.0, r[0]))
     order = [w for w, _o in first if w in listed]
     shown = order[:limit]
-    cols = ", ".join(ls.FEED_ITEM_FIELDS)
+    cols = store.feed_item_cols()
     by_work = {w: [] for w in shown}
     if shown:                                     # the files of the titles shown only
         for r in conn.execute(f"SELECT {cols} FROM items WHERE +tier = 'goal' AND work_id IN "

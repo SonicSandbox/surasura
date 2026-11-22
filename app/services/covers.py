@@ -104,8 +104,9 @@ def rows_for(store, work_ids, chunk=500):
     from app.library_store import FEED_ITEM_FIELDS, FEED_WORK_FIELDS
     ids = sorted({int(w) for w in work_ids if w is not None})
     items, works = [], []
-    item_cols, work_cols = ", ".join(FEED_ITEM_FIELDS), ", ".join(FEED_WORK_FIELDS)
+    work_cols = ", ".join(FEED_WORK_FIELDS)
     with store._reading():
+        item_cols = store.feed_item_cols()
         for at in range(0, len(ids), chunk):
             part = ids[at:at + chunk]
             marks = ", ".join("?" * len(part))

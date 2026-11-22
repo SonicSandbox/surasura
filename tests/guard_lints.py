@@ -302,6 +302,8 @@ _TIDY = "Tidy / Torii: keep Anki uncluttered — Connect's own never-studied car
         "never delete anything without a backup"
 
 # (file, function) -> (the piece, its ROLES.md row, why this place may change a card).
+_SWAP = "Swap: gives a card a better sentence (simple: a new card) — the old card only tagged; Undo through " \
+    "Tidy's guarantee, the old card back in reviews"
 ANKI_WRITERS = {
     # --- the doors themselves
     ("modules/junban/ankiconnect.py", "_write_action"): ("Junban", _JUNBAN, "the door: a position (or a flag) "
@@ -356,6 +358,14 @@ ANKI_WRITERS = {
     ("app/connect/tidy.py", "_drop_temp"): ("Tidy", _TIDY, "its own deck, only when a search finds no card in it"),
     ("app/connect/tidy.py", "_left_out"): ("Tidy", _TIDY, "Undo after a re-mine: only its own just-imported copy, "
                                            "every card still in its own deck and never reviewed"),
+    ("app/connect/swap.py", "AnkiSwap.add_tags"): ("Swap", _SWAP, "Swap's adapter: the old card's tag surasura::swapped"),
+    ("app/connect/swap.py", "AnkiSwap.remove_tags"): ("Swap", _SWAP, "Swap's adapter: that tag off again, on Undo"),
+    ("app/connect/swap.py", "AnkiSwap.unsuspend"): ("Swap", _SWAP, "Swap's adapter: the old card back in reviews, on Undo"),
+    ("app/connect/swap.py", "AnkiSwap.set_flag"): ("Swap", _SWAP, "Swap's adapter: the old card's green flag off, on Undo"),
+    ("app/connect/swap.py", "_tag_waiting"): ("Swap", _SWAP, "the old card of a made swap tagged (its only write to it), "
+                                              "under the writer, never while reviewing"),
+    ("app/connect/swap.py", "_old_back"): ("Swap", _SWAP, "Undo: only the old card the swap suspended and flagged, back "
+                                           "in reviews, its tag off unless the note's other card is still swapped"),
     ("app/connect/sentence_audio.py", "AnkiConnectNotes.tag"): (
         "the one sentence-field writer (Add audio, the AI audio, Piyo's translations)",
         "Backfill: fills fields of existing cards; Piyo: writes cards only when asked",

@@ -113,6 +113,8 @@ REASONS = {
     "sung": "said only in a song line",
     # Tsu-U (based on Mattias's Tsubasa-sync #2): said only where a cut in the recording leaves the timing unsure
     "unsure": "said only near a cut in the recording, where its line's timing is unsure",
+    # Kantan-SL (Swap): the word's lines here are all its old card's
+    "same-line": "said here only in the line its old card has",
 }
 
 
@@ -648,7 +650,7 @@ def occurrences(cues, tokens, language, is_known, skip_single=True, phrase_set=N
 
 def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None, carded_source="anki",
          ignore_names=False, send_grammar=True, skip_single=True, phrase_set=None, readable=None, unsure=(),
-         sentence_length=None, view=None):
+         sentence_length=None, view=None, swap=None):
     """The words of one subtitle to make cards from, and why the rest of its new words aren't sent:
     {"words": [...], "not_offered": [...]} (row 1.3.3's shapes). `is_known((lemma, reading))`: known or ignored, by the
     analyzer's rule; `readable(key)`: a word read through known words (`analyzer.LearningView`), no new word in a line.
@@ -666,7 +668,12 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
     with only sentences outside it still sent. A video's lines never read it.
 
     `view` (Kantan-MA): the list's own `analyzer.LearningView` (the last Generate's counts), so a word the list counted
-    only inside a rare compound of this episode (大衆 in 大衆食堂) is found there (`occurrences`)."""
+    only inside a rare compound of this episode (大衆 in 大衆食堂) is found there (`occurrences`).
+
+    `swap` (Kantan-SL, Swap's simple version: `app/connect/swap.py`): {"word", "reading" ("" for any), "avoid": [line
+    texts, `swap.norm_line`'s], "line": a line text or None} — only that word is sent, whatever the mode, the list or
+    its old card (it has one: that's the card being swapped), never from a line its old card holds (`swap.same_line`;
+    none left: `same-line`), from `line` when the episode says it there (the learner's pick), else as any word."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
     found, new_in = occurrences(cues, tokens, language, is_known, skip_single, phrase_set, readable, ignore_names,
@@ -757,8 +764,17 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
         n = len(line_of(at))
         return (int(bool(cap) and n > cap), int(n < low), int(n > high))
 
+    avoid = None
+    if swap:
+        from app.connect import swap as swapping
+        avoid = lambda o: swapping.same_line(line_of(o.cue), swap.get("avoid") or ())     # noqa: E731
+        wanted = lambda o: swapping.same_line(line_of(o.cue), [swap["line"]])                # noqa: E731
     candidates = []
     for key, uses in by_key.items():
+        if swap:
+            if key[0] == swap["word"] and (not swap.get("reading") or key[1] == swap["reading"]) and not is_known(key):
+                candidates.append(key)
+            continue
         phrase = uses[0].phrase
         if is_known(key) or (phrase and key not in listed):
             continue
@@ -781,13 +797,18 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
         elif not send_grammar and (first.phrase.grammar if first.phrase else (
                 first.token.node is not None and first.token.node.feature.pos1 in GRAMMAR)):
             reason = "grammar"      # a grammar word, or a grammar expression's row (かもしれない: phrases.Phrase.grammar)
-        if reason is None:
+        if reason is None and not swap:
             spellings = {first.front, key[0], first.orth, first.surface}
             spellings |= {anki_match.fold_kana(s) for s in spellings if s} if language == "ja" else set()
             if not carded.isdisjoint(spellings):
                 reason = "has-card" if carded_source == "anki" else "in-backlog"
         heard = [o for o in uses if not cues[o.cue].sung and (mode != "i1" or others(o) == 0)]
         usable = [o for o in heard if timed(o)]
+        if swap and usable:
+            fresh = [o for o in usable if not avoid(o)]
+            if not fresh and reason is None:
+                reason = "same-line"
+            usable = ([o for o in fresh if wanted(o)] or fresh) if swap.get("line") else fresh
         if reason is None and not heard:
             reason = "sung"
         elif reason is None and not usable:

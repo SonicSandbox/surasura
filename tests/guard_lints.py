@@ -304,6 +304,8 @@ _CONNECT = "Connect: makes cards — never another card's state, except undoing 
 _JUNBAN = "Junban: orders Anki's new cards; your own cards off the list: Leave them · At the back · Set aside"
 _SHELF = "overlaps: Connect's shelf vs Junban's Suspend them (Kyou-SH 3.0.17) — the shelf's code has no caller, " \
          "kept for its tests, listed to retire"
+_TIDY = "Tidy / Torii: keep Anki uncluttered — Connect's own never-studied cards past the window, backup + Undo; " \
+        "never delete anything without a backup"
 
 # (file, function) -> (the piece, its ROLES.md row, why this place may change a card).
 ANKI_WRITERS = {
@@ -327,6 +329,12 @@ ANKI_WRITERS = {
     ("app/connect/shelf.py", "AnkiConnectAnki.remove_tag"): ("Connect", _CONNECT, "the shelf's Anki adapter: the "
                                                              "shelf's own tag off"),
     ("app/connect/undo.py", "AnkiConnectUndo.delete_notes"): ("Connect", _CONNECT, "Undo this batch's adapter"),
+    ("app/connect/tidy.py", "AnkiConnectTidy.change_deck"): ("Tidy", _TIDY, "Tidy's adapter: the cards it tidies "
+                                                             "into a deck of their own for the package backup, and "
+                                                             "back to their decks (a failed backup, a card that "
+                                                             "changed meanwhile, the next look after a kill, Undo)"),
+    ("app/connect/tidy.py", "AnkiConnectTidy.delete_deck"): ("Tidy", _TIDY, "Tidy's adapter: its own deck, removed "
+                                                             "once no card is in it (`_drop_temp`)"),
     # --- Connect
     ("app/connect/anki_miner.py", "tag_names"): ("Connect", _CONNECT, "the batch it just made: `surasura::name` on "
                                                  "the cards made for names"),
@@ -344,6 +352,9 @@ ANKI_WRITERS = {
                                        "un-suspended in Anki (the card itself untouched)"),
     ("app/connect/shelf.py", "restore"): ("Connect", _CONNECT, "Put back: its own shelved cards back"),
     ("app/connect/undo.py", "run"): ("Connect", _CONNECT, "Undo this batch: its own never-studied notes"),
+    ("app/connect/tidy.py", "run"): ("Tidy", _TIDY, "the tidy itself: Connect's own never-studied notes past the "
+                                     "cap, deleted only once their package backup holds every note, each read again "
+                                     "just before"),
     ("app/connect/sentence_audio.py", "AnkiConnectNotes.tag"): (
         "the one sentence-field writer (Add audio, the AI audio, Piyo's translations)",
         "Backfill: fills fields of existing cards; Piyo: writes cards only when asked",

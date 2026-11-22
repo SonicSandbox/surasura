@@ -1268,3 +1268,22 @@ def test_an_undo_of_a_finish_whose_snapshot_cannot_be_taken_back_fails_whole(lan
     store.undo(change)
     assert _dones(store, show) == {i: None for i in show}
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_undo_of_a_move_after_a_put_back_keeps_the_finishs_snapshot(language):
+    """An episode put back out of Finished keeps its old Finished date, and that date is its Finish's snapshot's: a
+    later move between Current and Soon is not a move to Finished, so its Undo leaves the snapshot exactly."""
+    store = migrated(language)
+    ep = _show(store, 1)[0]
+    store.record_growth(_figures(store, [ep]))
+    store.finish([ep])
+    first = store.growth_of([ep])[ep]["done"]
+    store.put_back_finished([ep])
+    assert store.item(ep)["graduated_at"] == first["at"]       # (the date the snapshot shares, kept outside Finished)
+    change = store.set_tier([ep], "soon")
+    assert change is not None
+    store.undo(change)
+    assert store.item(ep)["tier"] != "soon"
+    assert store.growth_of([ep])[ep]["done"] == first
+    store.close()

@@ -251,10 +251,10 @@ ANKI_ACTIONS = frozenset({"suspend", "unsuspend", "addTags", "removeTags", "repl
                           "deleteNotes", "deleteDecks", "removeEmptyNotes", "forgetCards", "relearnCards",
                           "setDueDate", "setEaseFactors"})
 # The app's own doors to those actions: Junban's (modules/junban/ankiconnect.py) and Connect's adapters
-# (app/connect/shelf.py `AnkiConnectAnki`, app/connect/undo.py `AnkiConnectUndo`). A call by one of these names is a
-# write as much as the action itself.
+# (app/connect/shelf.py `AnkiConnectAnki`, app/connect/undo.py `AnkiConnectUndo`, app/connect/tidy.py
+# `AnkiConnectTidy`). A call by one of these names is a write as much as the action itself.
 ANKI_DOORS = frozenset({"suspend", "unsuspend", "add_tags", "remove_tags", "add_tag", "remove_tag", "set_flags",
-                        "set_due", "set_due_checked", "delete_notes"})
+                        "set_due", "set_due_checked", "delete_notes", "change_deck", "delete_deck"})
 
 
 # A call that sends an action named by its first argument: `anki_connect.invoke`, Junban's `_suspend_action` /
@@ -355,6 +355,11 @@ ANKI_WRITERS = {
     ("app/connect/tidy.py", "run"): ("Tidy", _TIDY, "the tidy itself: Connect's own never-studied notes past the "
                                      "cap, deleted only once their package backup holds every note, each read again "
                                      "just before"),
+    ("app/connect/tidy.py", "_backup"): ("Tidy", _TIDY, "the cards of the notes it will tidy (already checked) into "
+                                         "its own deck, so the package holds exactly them"),
+    ("app/connect/tidy.py", "_cards_home"): ("Tidy", _TIDY, "only cards found in its own deck, back to the decks its "
+                                             "ledger recorded"),
+    ("app/connect/tidy.py", "_drop_temp"): ("Tidy", _TIDY, "its own deck, only when a search finds no card in it"),
     ("app/connect/sentence_audio.py", "AnkiConnectNotes.tag"): (
         "the one sentence-field writer (Add audio, the AI audio, Piyo's translations)",
         "Backfill: fills fields of existing cards; Piyo: writes cards only when asked",

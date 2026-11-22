@@ -23,6 +23,10 @@ What it does is read from the plan file named by FAKE_ANKI_MINER_PLAN (JSON; eve
      "progress_every": 0.3,                                # … this many seconds apart (API.md's stage/stages/done/total)
      "cancel_at": 1}                                       # waits (≤ 5 s) for the run's cancel file before this row:
                                                            # 0 -> CANCELLED, no result; n -> rows from n not_attempted
+    {"cancel_runs": {"<run_id>": 1},                       # Kantan-SD 7, a call of several episodes: cancel_at for
+                                                           # that run only (the others never wait for a cancel file)
+     "unreadable": ["<video file name>"],                  # … that episode alone VIDEO_UNREADABLE, the rest mined
+     "crash_after_runs": 1}                                # … a native crash once that many runs wrote their result
     {"slow": {"<command>": 30}}                            # row 56: sleeps this long before it answers that command
     {"export_cut": true}                                   # row 56: half its export written, then it hangs
     {"clear_leftovers": 0.3}                               # 3.10: this long after it starts, before its setup, an
@@ -293,7 +297,13 @@ def _mine(argv, plan):
         return {**_ok("mine", runs=runs), "ok": False}
     runs, made_from_line = [], "word-from-line" in plan.get("features", [])
     dry = data.get("dry_run") is True
-    for episode in data["episodes"]:
+    for index, episode in enumerate(data["episodes"]):
+        if index and index == plan.get("crash_after_runs"):
+            sys.exit(3)                     # Kantan-SD 7: the runs before were written, no verdict, the rest never ran
+        if os.path.basename(episode.get("video_file") or "") in (plan.get("unreadable") or ()):
+            runs.append({"run_id": episode["run_id"], "ok": False, "error": "VIDEO_UNREADABLE",
+                         "message": f"The video cannot be opened: {episode['video_file']}", "file": None})
+            continue
         folder = os.path.join(data["run_dir"], episode["run_id"])
         os.makedirs(folder, exist_ok=True)
         for stage, stages, done, total in plan.get("progress") or ():     # as 3.9.0's ProgressFile writes it
@@ -316,10 +326,11 @@ def _mine(argv, plan):
             _log({"deaf": episode["run_id"]})
             time.sleep(plan["deaf"])
             _log({"heard": episode["run_id"]})
-        rows, note = [], 1727000000000
+        rows, note = [], 1727000000000 + 1000 * index      # (each episode of a call its own note ids)
         cancelled = False
+        cancel_at = plan["cancel_runs"].get(episode["run_id"]) if plan.get("cancel_runs") else plan.get("cancel_at")
         for n, request in enumerate(episode["words"]):
-            if plan.get("cancel_at") == n and not cancelled:
+            if cancel_at == n and not cancelled:
                 cancelled = _cancel_seen(folder)
                 if cancelled and n == 0:            # nothing reached Anki: CANCELLED, no result file
                     runs.append({"run_id": episode["run_id"], "ok": False, "error": "CANCELLED",

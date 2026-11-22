@@ -137,6 +137,28 @@ def test_another_episode_that_isnt_timed_gives_its_words_back_before_anything_is
     assert "sources" not in picked and all("from" not in w for w in picked["words"])
 
 
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_another_episode_re_timed_since_its_line_was_picked_gives_its_words_back(tmp_path, monkeypatch, lang):
+    # why: hato re-timed the other episode between the pick and the timing check — the line picked there may sit
+    # elsewhere now; cut as picked, its clip would be the wrong moment (E17, as for the episode's own subtitle)
+    home, away = WORDS[lang]
+    _best_from(monkeypatch, away)
+    steps, path = _spread(tmp_path, lang), str(tmp_path / "ledger.sqlite")
+    steps.plan["pairings"] = {"2": {"sha256": "a1"}}
+    real = steps.fit
+
+    def fit(lang_, job, pairing, video, subtitle):
+        steps.plan["pairings"] = {"2": {"sha256": "b2"}}      # re-timed while this episode's own fit ran
+        return real(lang_, job, pairing, video, subtitle)
+    steps.fit = fit
+    jobs = _run(steps, path, lang)
+    assert [(kind, state) for _id, kind, state in jobs] == [("mine", "done")]
+    assert _mines(steps) == [(1, 1, [home[0], away[0]])]
+    with Ledger(path) as ledger:
+        picked = ledger.picked(jobs[0][0])
+    assert "sources" not in picked and all("from" not in w for w in picked["words"])
+
+
 def test_best_keeps_a_videos_word_in_the_job_and_gives_a_books_its_own_job(tmp_path, monkeypatch):
     # why: a book's line needs its own making (its audiobook's line-up, the AI voice): that path stays as it was
     from app.connect import level, sentences

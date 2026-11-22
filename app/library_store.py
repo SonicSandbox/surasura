@@ -1062,6 +1062,9 @@ ADDED_TABLES_SQL = (
 # records them (`record_growth`, `growth_of`); the Generate computes them, the window and the journey show them.
 GROWTH = "growth"
 GROWTH_SINCE = "growth_since"     # meta: when this store began keeping the snapshots (an item added before: `prior`)
+GROWTH_CHUNK = 2000               # items a `record_growth` write takes: ~42 ms of write lock at 20k, one commit's
+GROWTH_GAP_S = 0.005              # floor (Kura-GS3); then this pause, so a save waiting for the lock gets in (it
+                                  # tries every LOCK_RETRY: a lock taken again at once leaves it no gap)
 GROWTH_SQL = """CREATE TABLE IF NOT EXISTS growth (
       item_id INTEGER NOT NULL,
       kind    TEXT NOT NULL,
@@ -4000,9 +4003,9 @@ class Store:
             self._back_in_order(cmd, change, [i for i in moving if rows[i][1] == "graduated" and tier != "graduated"])
             # --- end P4.1 L2 ---
             if tier == "graduated":
-                self.conn.executemany("UPDATE items SET graduated_at = ? WHERE id = ?",
-                                      [(_now(), i) for i in moving])
-                self._snap_done(moving, _now())                  # Kura-GS: what it understood as it finished
+                stamp = _now()      # Kura-GS3 2: one stamp, the date and its snapshot's, so the Undo finds that press's
+                self.conn.executemany("UPDATE items SET graduated_at = ? WHERE id = ?", [(stamp, i) for i in moving])
+                self._snap_done(moving, stamp)                   # Kura-GS: what it understood as it finished
                 # --- W3.2 (IK-L2-3, A2 #28): an arrival to Finished is recorded as already watched (undone with it)
                 came = [i for i in moving if rows[i][1] == "arrivals"]
                 if came:
@@ -5989,9 +5992,10 @@ class Store:
     def _snap_done(self, ids, at):
         """Kura-GS: each of `ids` just marked watched or moved to Finished keeps what the newest Generate counted of it
         then (its 'last') as its 'done' snapshot, at `at` — once: a later mark (a re-watch, a Finished after a Done)
-        keeps the first, and an Undo leaves it (written once, never by an Undo). An item no Generate counted yet
-        has none. Inside the caller's write; a failure here is its own (SQLite takes back the one statement), never
-        the mark's or the move's."""
+        keeps the first; only the Undo of the press that made it takes it back (`_unsnap_done`, Kura-GS3). An item no
+        Generate counted yet has none. Inside the caller's write; a failure here is its own (SQLite takes back the one statement), never
+        the mark's or the move's — unless SQLite took back the whole write (a full disk, an I/O error: no transaction
+        left), when it is the write's: raised, so the rest of the move never saves line by line (G3, Kura-GS2)."""
         try:
             if not ids or not self._has_table(GROWTH):
                 return
@@ -6001,7 +6005,16 @@ class Store:
                     f"'done', known, counted, unknown, ?, 0 FROM growth WHERE kind = 'last' AND item_id IN "
                     f"({','.join('?' * len(part))})", [at] + part)
         except sqlite3.Error:
-            pass
+            if not self.conn.in_transaction:
+                raise
+
+    def _unsnap_done(self, marks):
+        """Kura-GS3 (Sonic 2026-11-22, OPEN 58a): the Undo of a ✓ Done takes back the 'done' snapshot that press made —
+        `marks` [(item id, the date its Done set)], the snapshot dated by that same stamp (`_dated`), so only that
+        press's: one an earlier Done made (a re-watch kept the first) stays, and an un-Done or a re-watch is never an
+        Undo (they keep it, as before). Inside the undo's write: the Undo is whole or not at all (F1)."""
+        if marks and self._has_table(GROWTH):
+            self.conn.executemany("DELETE FROM growth WHERE item_id = ? AND kind = 'done' AND at = ?", marks)
 
     def _moves_counted(self, ids):
         """W-1: does a watched mark (set or taken back) on `ids` move what counts? Only while `keep_watched` is off,
@@ -7530,46 +7543,67 @@ class Store:
         each item's 'last'; an item with no 'added' yet takes them as its 'added' too, `prior` when the store held it
         before it began the snapshots (GROWTH_SINCE; a store with no such date yet starts them now: every item
         `prior`). A file the store no longer holds (moved or removed meanwhile) is passed by. Bookkeeping: no version
-        moves; a new 'added' sets `copy_dirty` (the copy carries it). Only what changed is written; the files read to
-        items in a read transaction first, so the write lock is held for the writes alone. -> the 'added' written."""
+        moves; a new 'added' sets `copy_dirty` (the copy carries it). A file it counted no words of keeps nothing: no
+        snapshot until it has words, and one that had words keeps its last count's, dated (Kura-GS2). Only what changed is
+        written; the files read to items in a read transaction first, then written `GROWTH_CHUNK` items a write, each its
+        own (`join_same_shows`' way: Kura-GS3), the lock let go `GROWTH_GAP_S` between them so a move or a Done waits
+        one chunk, never the set. An item's 'last' and 'added' go in one write: a reader between two sees each item's
+        older figures or this Generate's, whole. A write that fails is taken back whole and raises; the ones before it
+        stay (bookkeeping: the next full Generate writes what is missing, 'added' once); a 'last' is replaced only by a
+        newer Generate's (two writing by turns never set it back); a reset or a rebuild meanwhile (another store id or
+        epoch) ends it: the ids it read are the old library's. -> the 'added' written."""
         if not figures:
             return 0
         with self._reading():
             have = self._has_table(GROWTH)
-            since = self._meta().get(GROWTH_SINCE)
+            meta = self._meta()
+            since, library = meta.get(GROWTH_SINCE), (meta.get("store_id"), meta.get("epoch"))
             items = {key: (i, added) for key, i, added in self.conn.execute("SELECT rel_key, id, added_at FROM items")}
             last = {r[0]: r[1:] for r in self.conn.execute(
                 "SELECT item_id, known, counted, unknown FROM growth WHERE kind = 'last'")} if have else {}
             added = {r[0] for r in self.conn.execute(
                 "SELECT item_id FROM growth WHERE kind = 'added'")} if have else set()
         at = _now()
-        put_last, put_added = [], []
+        todo = []                           # (its 'last' or None, its 'added' or None), an item each
         for rel, fig in figures.items():
             hit = items.get(path_key(rel))
             if hit is None:
                 continue
             item, added_at = hit
             fig = (int(fig[0]), int(fig[1]), int(fig[2]))
-            if last.get(item) != fig:
-                put_last.append((item,) + fig + (at,))
+            if fig[1] <= 0:
+                continue                    # Kura-GS2: a file it counted no words of has no figure yet (never 0 of 0)
+            put_last = (item,) + fig + (at,) if last.get(item) != fig else None
+            put_added = None
             if item not in added:
-                put_added.append((item,) + fig + (at, 0 if since is not None and (added_at or "") > since else 1))
-        if not put_last and not put_added:
-            return 0
-        with self._writing():
-            self.conn.execute(GROWTH_SQL)
-            meta = self._meta()
-            values = {}
-            if GROWTH_SINCE not in meta:
-                values[GROWTH_SINCE] = at
-            self.conn.executemany("INSERT OR REPLACE INTO growth (item_id, kind, known, counted, unknown, at) "
-                                  "VALUES (?, 'last', ?, ?, ?, ?)", put_last)
-            made = self.conn.executemany("INSERT OR IGNORE INTO growth (item_id, kind, known, counted, unknown, at, "
-                                         "prior) VALUES (?, 'added', ?, ?, ?, ?, ?)", put_added).rowcount
-            if made:
-                values["copy_dirty"] = int(meta.get("copy_dirty") or 0) + 1
-            if values:
-                self._set_meta(values)
+                put_added = (item,) + fig + (at, 0 if since is not None and (added_at or "") > since else 1)
+            if put_last or put_added:
+                todo.append((put_last, put_added))
+        made = 0
+        for start in range(0, len(todo), GROWTH_CHUNK):
+            if start:
+                time.sleep(GROWTH_GAP_S)
+            part = todo[start:start + GROWTH_CHUNK]
+            with self._writing():
+                meta = self._meta()
+                if (meta.get("store_id"), meta.get("epoch")) != library:
+                    break                   # a reset or a rebuild meanwhile: these ids are another library's
+                self.conn.execute(GROWTH_SQL)
+                values = {}
+                if GROWTH_SINCE not in meta:
+                    values[GROWTH_SINCE] = at
+                self.conn.executemany("INSERT INTO growth (item_id, kind, known, counted, unknown, at) VALUES "
+                                      "(?, 'last', ?, ?, ?, ?) ON CONFLICT (item_id, kind) DO UPDATE SET known = "
+                                      "excluded.known, counted = excluded.counted, unknown = excluded.unknown, at = "
+                                      "excluded.at WHERE excluded.at > growth.at", [r for r, _a in part if r])
+                n = self.conn.executemany("INSERT OR IGNORE INTO growth (item_id, kind, known, counted, unknown, "
+                                          "at, prior) VALUES (?, 'added', ?, ?, ?, ?, ?)",
+                                          [a for _r, a in part if a]).rowcount
+                if n:
+                    values["copy_dirty"] = int(meta.get("copy_dirty") or 0) + 1
+                if values:
+                    self._set_meta(values)
+            made += n
         return made
 
     def growth_of(self, ids=None, kinds=("added", "done")):
@@ -7880,6 +7914,7 @@ class Store:
         back += [("watched_at", old, i) for i, c, old, _n in change.status if c == "watched_at" and i in restored]
         for column, old, item_id in back:
             self.conn.execute(f"UPDATE items SET {column} = ? WHERE id = ?", (old, item_id))
+        self._unsnap_done([(i, new) for i, c, _o, new in change.status if c == "watched_at" and i in restored and new])
         cmd.feed(i for _c, _o, i in back)
         if back:
             cmd.touch(pins=any(c in ("pinned", "in_learning_order") for c, _o, _i in back),   # P4.1 L2 (T-4)
@@ -7938,6 +7973,11 @@ class Store:
         for it in ok:
             seqs[cur[it["id"]][1]].remove(it["id"])
         info = {it["id"]: it for it in items}
+        # Kura-GS3 2 (Sonic 2026-11-22): the Undo of a move to Finished takes back the 'done' snapshot that press made,
+        # as the Done's does (`_unsnap_done`): dated by the stamp of the Finished date it set — the row unchanged since
+        # (the value check) still holds it — so a Done's or an earlier Finish's snapshot (kept, written once) stays
+        self._unsnap_done([(it["id"], cur[it["id"]][8]) for it in ok if cur[it["id"]][1] == "graduated"
+                           and it["tier"] != "graduated" and cur[it["id"]][8] is not None])
         _walk_back(seqs, items, okset, one)
         self._write_seqs(seqs, ords, okset, lambda i: info[i]["changed_in"])
         cmd.walked.update({i: (info[i]["tier"], info[i]["changed_in"]) for i in okset})

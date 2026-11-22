@@ -159,7 +159,7 @@ def _backfill_report(settings):
         url = reposition._url(settings)
         if not ankiconnect.probe(url).get("ok"):
             return "", False
-        if anki_connect.patient("guiReviewActive", url) is True:
+        if anki_connect.reviewing(url, errors=True):     # the one review check (its busy error as before)
             return "", False
         from modules.junban import backfill
         report = backfill.run_auto(settings)
@@ -235,7 +235,7 @@ def reorder(settings, list_current=None, positions_only=False, run_id=None, job=
         url = reposition._url(settings)
         if not ankiconnect.probe(url).get("ok"):
             return {"outcome": "anki-closed"}
-        if anki_connect.patient("guiReviewActive", url) is True:
+        if anki_connect.reviewing(url, errors=True):     # the one review check (its busy error as before)
             return {"outcome": "reviewing"}
         language = reposition._language(settings)
         if list_current is False or (list_current is None and reposition.list_is_stale(

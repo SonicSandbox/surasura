@@ -793,6 +793,24 @@ def made_rows(store, note_ids):
     return out
 
 
+def word_notes(store, words):
+    """Tidy's Undo (Kyou-SH3, F5): the notes the made-words record holds now for each of `words`, whatever the
+    episode, read only -> {word: [note id, …]} (a word with no row: absent)."""
+    wanted = set(words or ())
+    out = {}
+    if not wanted or not store._has_table("made_words"):
+        return out
+    with store._reading():
+        for word, ids in store.conn.execute("SELECT word, note_ids FROM made_words"):
+            if word not in wanted:
+                continue
+            try:
+                out.setdefault(word, []).extend(int(n) for n in json.loads(ids))
+            except (ValueError, TypeError):
+                continue
+    return out
+
+
 def remake(store, made, id_map):
     """Tidy's Undo (Kyou-SH2): `made_rows`' record put back for the notes in Anki again (`id_map` {old note id: its id
     now}), in one short write as role `connect`'s command — each made-words row gains those notes again (a row gone is

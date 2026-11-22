@@ -58,6 +58,8 @@ GRADUATED_MARK = "graduated"        # an entry the merge raised to KNOWN: kept_g
 # A word marked known by hand in Surasura (app/services/word_marks.py, Kotoba-K): Replace keeps it, as it keeps a past
 # Graduate's word — the same kind of word, one the learner said they know.
 MARKED_SOURCE = "Surasura"
+NOT_KNOWN_FLAGS = "-flag:1 -flag:3"   # red (Ignore) and green (Swap): never known, suspended or not (the review loop)
+TURNED = "notKnown"                   # an entry Still learning turned not known (`app/services/word_marks.py`)
 KEPT_SOURCES = (GRADUATED_SOURCE, MARKED_SOURCE)
 # The new-card backlog of the same decks (Junban_Backlog_Spec §5.2, WP-B7): the words waiting in Anki,
 # so the report can mark them. Derived data — never the user's known words — and read-only on Anki.
@@ -144,6 +146,9 @@ class SyncResult:
     # sync: the notes it read (notesInfo), handed to the young cards' read beside it (`sync_all`) so a card studied
     # today isn't asked for twice; emptied there, never shown
     read: list = field(default_factory=list, repr=False, compare=False)
+    # sync_all: the review loop's payoff (`review_loop.read`: {"sync", "known", "swap", "ignored"}), None when your
+    # phone sent nothing this time — the window's *From your phone* toast, with its Undo
+    loop: "dict | None" = field(default=None, compare=False)
 
 
 class _KnownFileError(Exception):
@@ -354,6 +359,13 @@ def scope_query(decks, include_suspended=False):
     return query if include_suspended else query + " -is:suspended"
 
 
+def known_query(decks, include_suspended=False):
+    """The studied cards whose words count known (the sync and Replace): `scope_query`'s, never a red or a green card,
+    suspended or not (`NOT_KNOWN_FLAGS`: the review loop's Ignore and Swap; Kyou-LR, Kotoba-WS2's note b). The decks'
+    counts, note types and sentences keep `scope_query` (a deck of flagged cards is still a deck you study)."""
+    return f"{scope_query(decks, include_suspended)} {NOT_KNOWN_FLAGS}"
+
+
 def counted_suspended(settings):
     """Which studied cards you suspended the known-words sync counts (Kotoba-WS2: *Count suspended cards as known*
     folded into *Count as known in Anki*; Sonic 2026-11-19) -> `scope_query`'s `include_suspended`: the search terms
@@ -523,9 +535,11 @@ def _field_order(value):
         return 0
 
 
-def _terms_from_notes(notes, fields, language, result):
+def _terms_from_notes(notes, fields, language, result, newest=None):
     """[(term, note_id)] from notesInfo entries, in note order, deduped within the batch.
-    Fills result.fields_by_model and result.skipped_by_model."""
+    Fills result.fields_by_model and result.skipped_by_model. `newest` (a dict): filled {term key: the newest note id
+    naming it} — a word Still learning holds back counts from a note made after the mark, whichever note named it
+    first (`_not_held`)."""
     from app import anki_match
     out = []
     seen = set()
@@ -563,14 +577,105 @@ def _terms_from_notes(notes, fields, language, result):
             for line in lines:
                 term = line.strip()
                 key = _norm(term)
-                if not key or key in seen or not _has_target(term, language):
+                if not key or not _has_target(term, language):
+                    continue
+                if newest is not None:
+                    try:
+                        newest[key] = max(int(note.get("noteId")), newest.get(key, 0))
+                    except (TypeError, ValueError):
+                        pass
+                if key in seen:
                     continue
                 seen.add(key)
                 out.append((term, note.get("noteId")))
     return out
 
 
+def turned_since(words, known=None):
+    """{word key: the newest time (ms) Still learning turned one of its entries not known} for every word none of whose
+    entries is known now (`app/services/word_marks.py`). The sync never reads such a word known again from a note made
+    before that time — the same card, or another older one whose sentence holds it (Kyou-LR, WL ⑦: it never re-reads
+    as Known from the same card); a new card for it (a note made after) counts as any studied card does."""
+    known = _known_keys(words) if known is None else known
+    out = {}
+    for w in words:
+        mark = w.get(TURNED) if isinstance(w, dict) else None
+        if not isinstance(mark, dict) or _is_known(w):
+            continue
+        key = _norm(w.get("dictForm"))
+        try:
+            ms = int(mark.get("ms"))
+        except (TypeError, ValueError):
+            continue
+        if key and key not in known:
+            out[key] = max(ms, out.get(key, 0))
+    return out
+
+
+def _turned(entry):
+    """An entry Still learning turned not known (`app/services/word_marks.py`), not made known since."""
+    return isinstance(entry, dict) and isinstance(entry.get(TURNED), dict) and not _is_known(entry)
+
+
+def held_learning(path, language, words, newest=None):
+    """Anki's Replace keeps Still learning (Kyou-LR, WL ⑦): the start-over never reads a word known again from a note
+    made before the learner took it back (`turned_since` over the KnownWord.json at `path`), and the entries Still
+    learning turned are carried over as they are, so the mark holds at every later sync. `newest`: the newest note
+    naming each word (`_terms_from_notes`). -> (the entries of `words` to write, those turned entries). A file missing
+    or unreadable holds none."""
+    try:
+        data = json.loads(read_text(path, language, errors="strict"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return words, []
+    current = data.get("words") if isinstance(data, dict) else data
+    if not isinstance(current, list):
+        return words, []
+    current = [e for e in current if isinstance(e, dict)]
+    held = turned_since(current)
+    if not held:
+        return words, []
+    newest = newest or {}
+    keep = []
+    for w in words:
+        key = _norm(w.get("dictForm"))
+        if key in held:
+            note_id = newest.get(key, w.get("ankiNoteId"))
+            if _made_before(note_id, held[key]):
+                continue
+            w = dict(w, ankiNoteId=note_id)             # the new card that makes it known again
+        keep.append(w)
+    again = {_norm(w.get("dictForm")) for w in keep if _is_known(w)}
+    return keep, [e for e in current if _turned(e) and _norm(e.get("dictForm")) in held.keys() - again]
+
+
+def _not_held(terms, newest, held):
+    """`terms` without those Still learning holds back (`turned_since`'s `held`): a held word counts only from a note
+    made after the mark — its newest note (`newest`, `_terms_from_notes`), which the entry then names."""
+    out = []
+    for term, note_id in terms:
+        ms = held.get(_norm(term))
+        if ms is not None:
+            note_id = newest.get(_norm(term), note_id)
+            if _made_before(note_id, ms):
+                continue
+        out.append((term, note_id))
+    return out
+
+
+def _made_before(note_id, ms):
+    """Was the note made before `ms` (Anki's note id is its creation time in ms)? A note without an id counts as old."""
+    if ms is None:
+        return False
+    try:
+        return int(note_id) <= ms
+    except (TypeError, ValueError):
+        return True
+
+
 def _entry(term, note_id, language, now):
+    # `created` is the date the word became known (*Your words*, newest first; `recently_known` read it). Still
+    # learning, then known again, needs no other date: a new card's sync or a fresh Known move appends a new entry
+    # (its own `created`), and clearing the mark puts the same entry back as it was (known since then).
     entry = {"dictForm": term, "secondary": "", "partOfSpeech": "", "language": language,
              "knownStatus": "KNOWN", "hasCard": 1, "tracked": 0,
              "created": now, "mod": now, "isModern": 1, "source": SOURCE}
@@ -627,7 +732,7 @@ def _sync(language, url, decks, fields, include_suspended, full):
     full = bool(full or changed)
     result = SyncResult(mode="full" if full else "delta")
 
-    query = scope_query(decks, include_suspended)
+    query = known_query(decks, include_suspended)
     # A delta asks, in one request, for the studied notes and for those edited since the last sync — an edited
     # card's text is read again (add-only: its new words are appended; a word the edit took out stays known).
     note_ids, edited = ((anki_connect.find_notes(url, query), set()) if full
@@ -637,7 +742,8 @@ def _sync(language, url, decks, fields, include_suspended, full):
     notes = anki_connect.notes_info(url, todo)
     result.scanned = len(notes)
     result.read = notes
-    terms = _terms_from_notes(notes, fields, language, result)
+    newest = {}
+    terms = _terms_from_notes(notes, fields, language, result, newest)
 
     # Re-read right before writing: never append to a stale in-memory copy.
     try:
@@ -649,7 +755,9 @@ def _sync(language, url, decks, fields, include_suspended, full):
 
     known = _known_keys(words or [])
     now = _now_iso()
-    new_entries = [_entry(t, nid, language, now) for t, nid in terms if _norm(t) not in known]
+    held_back = turned_since(words or [], known)
+    new_entries = [_entry(t, nid, language, now) for t, nid in _not_held(terms, newest, held_back)
+                   if _norm(t) not in known]
 
     if new_entries:
         if data is None:
@@ -847,20 +955,25 @@ def sync_all(language, url, decks, fields, settings, include_suspended=False, fu
     if marked and result is not None:
         result.added += marked
         result.total_known += marked
+    if result is not None:
+        result.loop = (signal or {}).get("loop") or None
+        if result.loop and result.loop.get("unknown"):      # Ignore / Swap took known words out (the move rule)
+            result.total_known = count_known(language)
     return result, signal
 
 
 def read_known_signal(language, url, decks, fields, settings):
-    """Known from Anki (P2.4 row 2.4.15), beside this sync, in the same decks: cards you suspended (or the signal you
-    chose, `known_from_anki`) mark their words known — `app/connect/known_signal.py`. Only while Connect is on (its
-    switch and, 3.0, D29's automation: `settings_manager.connect_on`, P4.1 row 4.1.1): off, nothing is imported or
-    asked (None). Never raises: a read that fails is tried at the next sync."""
+    """The review loop's reader (Kyou-LR: `app/connect/review_loop.py`), beside this sync, in the same decks: Known
+    from Anki first (P2.4 row 2.4.15: cards you suspended and marked, or the signal you chose, `known_from_anki`, mark
+    their words known — `app/connect/known_signal.py`), then Suspend + Red (Ignore) and Suspend + Green (Swap). Only
+    while Connect is on (its switch and, 3.0, D29's automation: `settings_manager.connect_on`, P4.1 row 4.1.1): off,
+    nothing is imported or asked (None). Never raises: a read that fails is tried at the next sync."""
     from app import settings_manager
     if not settings_manager.connect_on(settings):
         return None
     try:
-        from app.connect import known_signal
-        return known_signal.read(language, url, _clean_decks(decks), [str(f) for f in (fields or [])], settings)
+        from app.connect import review_loop
+        return review_loop.read(language, url, _clean_decks(decks), [str(f) for f in (fields or [])], settings)
     except Exception as e:
         print(f"Count as known in Anki skipped: {e}")
         return None
@@ -1120,14 +1233,15 @@ def replace(language, url, decks, fields, include_suspended=False, dry_run=False
             result.total_known = count_known(language)
             return result
         try:
-            note_ids = anki_connect.find_notes(url, scope_query(decks, include_suspended))
+            note_ids = anki_connect.find_notes(url, known_query(decks, include_suspended))
             notes = anki_connect.notes_info(url, note_ids)
         except AnkiError as e:
             result.error = str(e)
             result.total_known = count_known(language)
             return result
         result.scanned = len(notes)
-        terms = _terms_from_notes(notes, fields, language, result)
+        newest = {}
+        terms = _terms_from_notes(notes, fields, language, result, newest)
         now = _now_iso()
         words = [_entry(t, nid, language, now) for t, nid in terms]
         result.added = len(words)
@@ -1144,7 +1258,7 @@ def replace(language, url, decks, fields, include_suspended=False, dry_run=False
             result.error = refusal
             return result
         if dry_run:
-            _count_replacement(result, known_path, language, words)
+            _count_replacement(result, known_path, language, words, newest)
             return result
 
         held, refused = _hold_known(language, mode)
@@ -1152,30 +1266,32 @@ def replace(language, url, decks, fields, include_suspended=False, dry_run=False
             return refused
         try:
             return _replace_held(language, result, known_path, words, url, decks, fields, include_suspended,
-                                 note_ids, now, expect)
+                                 note_ids, now, expect, newest)
         finally:
             if held is not None:
                 held.release()
 
 
-def _count_replacement(result, path, language, words):
+def _count_replacement(result, path, language, words, newest=None):
     """`result`'s numbers for a replace of `path` with `words`: the totals now and after, the words kept. -> the words
     to write."""
-    final, result.kept_graduated, result.dropped_ignored = replaced_words(path, language, words)
+    words, learning = held_learning(path, language, words, newest)
+    result.added = len(words)
+    final, result.kept_graduated, result.dropped_ignored = replaced_words(path, language, words + learning)
     result.total_known = count_known(language)
     result.total_after = len(_known_keys(final))
     return final
 
 
 def _replace_held(language, result, known_path, words, url, decks, fields, include_suspended, note_ids, now,
-                  expect=None):
+                  expect=None, newest=None):
     """`replace`'s write, holding KnownWord.json's lock: the numbers checked against the confirmed ones, the backup,
     then the write."""
     refusal = known_file_refusal(language)                # changed since the dry run: still never written over
     if refusal is not None:
         result.error = refusal
         return result
-    words = _count_replacement(result, known_path, language, words)
+    words = _count_replacement(result, known_path, language, words, newest)
     if expect is not None and tuple(confirmed(result)) != tuple(expect):
         result.mode, result.changed = "dry-run", True       # nothing written: the window asks again
         return result
@@ -1207,7 +1323,8 @@ def kept_graduated(path, language, words):
     the file — Anki's Replace, the Jiten and Migaku imports (S3.1 D13, Q4-10): -> those `words` doesn't name, to add,
     known (one the user also dismissed, a marked IGNORED entry, is added KNOWN, `previousStatus: IGNORED`: AD-1); and
     an UNKNOWN / LEARNING entry of `words` one of them names is made KNOWN in place (marked too), an IGNORED one only
-    marked. A file that is missing or can't be read keeps none (the replacer's backup holds them)."""
+    marked. A word the learner took back to Still learning (`_turned`) stays not known: its entry is kept as it is,
+    never raised (Kyou-LR). A file that is missing or can't be read keeps none (the replacer's backup holds them)."""
     try:
         data = json.loads(read_text(path, language, errors="strict"))
     except (OSError, ValueError, UnicodeDecodeError):
@@ -1226,7 +1343,7 @@ def kept_graduated(path, language, words):
         if isinstance(w, dict):
             key = _norm(w.get("dictForm"))
             taken.add(key)
-            if key in graduated and w.get("knownStatus") in ("UNKNOWN", "LEARNING"):
+            if key in graduated and w.get("knownStatus") in ("UNKNOWN", "LEARNING") and not _turned(w):
                 w["previousStatus"] = w["knownStatus"]
                 w["knownStatus"] = "KNOWN"
                 w[GRADUATED_MARK] = True
@@ -1236,7 +1353,7 @@ def kept_graduated(path, language, words):
     for key, entry in graduated.items():
         if key not in taken:
             taken.add(key)
-            if not _is_known(entry):            # a past Graduate's word the user dismissed: known (AD-1)
+            if not _is_known(entry) and not _turned(entry):     # a past Graduate's word dismissed: known (AD-1)
                 entry = dict(entry, previousStatus=entry.get("knownStatus"), knownStatus="KNOWN")
             kept.append(entry)
     return kept

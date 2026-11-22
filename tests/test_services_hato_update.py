@@ -170,28 +170,28 @@ def test_surasuras_own_hato_run_waits(hato):
 
 
 def test_the_schedulers_turn_waits(hato, monkeypatch):
-    """`gentle.hold` names a reason (the window still opening, a review in Anki, a busy PC, a heavy job's turn)."""
+    """`gentle.hold` names a reason (the window still opening, a busy PC, a heavy job's turn)."""
     from app.services import gentle
-    monkeypatch.setattr(gentle, "hold", lambda kind: gentle.REVIEWING if kind == H.KIND else None)
+    monkeypatch.setattr(gentle, "hold", lambda kind: gentle.BUSY_NOW if kind == H.KIND else None)
     fake = _Hato()
     assert H.attempt({}, now=NOW, popen=fake) == H.WAIT and fake == []
 
 
 def test_hato_update_is_background_work_for_the_scheduler():
-    """Its kind is the scheduler's background: held before the boot, while you review, on a busy PC — never HEAVY (a
-    separate program's download is no CPU job of the window's)."""
+    """Its kind is the scheduler's background: held before the boot and on a busy PC (never for a review in Anki:
+    OPEN 30) — never HEAVY (a separate program's download is no CPU job of the window's)."""
     from app.services import gentle
     from app.services.jobs import JobRegistry
     assert H.KIND in gentle.BACKGROUND and H.KIND not in gentle.HEAVY
     g = gentle.Gentle(JobRegistry(), machine=lambda: (False, None), load=type("L", (), {"sample": lambda s: None})(),
-                      reviewing=lambda: False, log=lambda line: None)
+                      log=lambda line: None)
     g.attach(watch=False)
     try:
         assert gentle.hold(H.KIND) == gentle.WINDOW_FIRST     # booted first
         g.ready()
         assert gentle.hold(H.KIND) is None
-        g.reviewing = True
-        assert gentle.hold(H.KIND) == gentle.REVIEWING
+        g.busy = True
+        assert gentle.hold(H.KIND) == gentle.BUSY_NOW
     finally:
         g.close()
 

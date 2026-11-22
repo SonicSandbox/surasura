@@ -560,21 +560,30 @@ class Ledger:
         transaction)."""
         self.conn.execute("DELETE FROM listed WHERE language = ?", (language,))
         self.conn.execute("DELETE FROM meta WHERE key = ?", (f"listed:{language}",))
+        self.conn.execute("DELETE FROM meta WHERE key = ?", (f"new_files:{language}",))   # its list is gone too
 
     def mark_new_files(self, language, since):
         """Kantan-MO: Connect's own Generate after mining new files ran (`runner.Steps.generate_after`): the items
         mined since `since` (this run's start) were mined from a list that didn't have their own new words yet — the
-        next list look gives them those (`level.check`). Inside the caller's transaction."""
-        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"new_files:{language}", since))
+        next list look gives them those (`level.check`). The mark names those items, never a time: an episode mined
+        after it (from a list that already held its words) is never given a level job by it (train 56's keeper F1). A
+        mark not yet taken keeps its items. Inside the caller's transaction."""
+        items = set(self.take_new_files(language) or ()) | set(self.mined_since(language, since))
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                          (f"new_files:{language}", json.dumps(sorted(items))))
 
     def take_new_files(self, language):
-        """The mark `mark_new_files` left (a ledger time), taken (cleared) — or None. Inside the caller's
-        transaction."""
+        """The items the mark `mark_new_files` left, taken (cleared) — or None. A mark an older ledger wrote (a bare
+        time) is dropped, never read as every episode mined since. Inside the caller's transaction."""
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (f"new_files:{language}",)).fetchone()
         if row is None:
             return None
         self.conn.execute("DELETE FROM meta WHERE key = ?", (f"new_files:{language}",))
-        return row[0]
+        try:
+            items = json.loads(row[0])
+        except (TypeError, ValueError):
+            return None
+        return [i for i in items if isinstance(i, int)] if isinstance(items, list) else None
 
     def mined_since(self, language, since):
         """[item ids] with a job other than a level job that ended `done` at or after `since`, in the order they

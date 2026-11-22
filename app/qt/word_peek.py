@@ -590,8 +590,11 @@ class WordPeek(motion.Overlay):
         gap = round(11 * f)
         x = 0
         placed = 0
+        # Mado-LT: kept, an In Anki word can carry its mark (drawn after it): its room kept before the next word
+        mark = (max(_adv(g, "badge") for g in strings.WORDS_MARK_GLYPH.values()) + round(3 * f)) if self.kept else 0
         for text, ink, word, extra in entries:
-            w = _adv(text, WORD_ROLE) + (_adv(extra[0], extra[1]) + round(3 * f) if extra else 0)
+            room = mark if word is not None and anki_word(word) else 0
+            w = _adv(text, WORD_ROLE) + room + (_adv(extra[0], extra[1]) + round(3 * f) if extra else 0)
             if one_line:
                 left = total - placed - 1
                 more_w = _adv(strings.WORDS_MORE.format(n=left), "row-sub") + gap if left > 0 else 0
@@ -601,7 +604,7 @@ class WordPeek(motion.Overlay):
                 x, y = 0, y + word_h
             items.append(_Item(QRect(x, y, _adv(text, WORD_ROLE), word_h), text, WORD_ROLE, ink, word=word))
             if extra:
-                ex = x + _adv(text, WORD_ROLE) + round(3 * f)
+                ex = x + _adv(text, WORD_ROLE) + room + round(3 * f)
                 items.append(_Item(QRect(ex, y, _adv(extra[0], extra[1]), word_h), extra[0], extra[1],
                                    c("overlay-ink-dim")))
             x += w + gap

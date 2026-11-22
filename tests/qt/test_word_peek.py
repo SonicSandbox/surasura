@@ -473,7 +473,8 @@ class Toasts:
 
 def _kept_in_anki(peek, words=ANKI_JA, new=NEW, states=None, error=None):
     win, lst, i, provider = peek
-    provider.kw = dict(new=list(new), anki=_anki(words) if isinstance(words, tuple) else words)
+    provider.kw = dict(new=list(new), anki=_anki(words) if isinstance(words, tuple) and isinstance(words[0], str)
+                       else words)
     toasts = Toasts()
     asked = []
 
@@ -590,3 +591,18 @@ def test_mado_lt_a_card_closed_and_kept_again_reads_its_in_anki_words_again(peek
     assert wait_until(lambda: card.kept and card.card is not None and len(asked) == 2, 3)
     assert wait_until(lambda: card.anki_states == {"看板": "learning"}, 3)
     assert card.lit(_word_item(card, "看板").word) is None
+
+
+def test_mado_lt_a_kept_cards_in_anki_words_leave_room_for_their_mark(peek):
+    """The 150 % capture showed 看板○扉: the In Anki words flow a word gap apart, and the ○ (drawn after a word) ran into
+    the next one. Kept, each leaves its mark's room before the next word, and a struggling word's badge after it."""
+    from app.qt import strings
+    win, card, marks, _said, toasts, _asked = _kept_in_anki(peek, words=_anki(ANKI_JA, leech_first=True))
+    words = [it for it in card.sheet.items if it.word is not None and word_peek.anki_word(it.word)]
+    room = max(word_peek._adv(g, "badge") for g in strings.WORDS_MARK_GLYPH.values())
+    badge = next(it for it in card.sheet.items if it.text == strings.WORDS_LEECH)
+    leech = next(it for it in words if it.text == ANKI_JA[0])
+    assert badge.rect.left() >= leech.rect.right() + room                 # the badge after the mark's room
+    young = [it for it in words if it.text != ANKI_JA[0]]
+    a, b = young[0], young[1]
+    assert a.rect.top() == b.rect.top() and b.rect.left() >= a.rect.right() + room

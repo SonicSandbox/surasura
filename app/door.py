@@ -15,8 +15,8 @@ Its routes are one table the window gives (`start(routes, ...)`): Known and Igno
   `#door=<port>.<token>`; after LAUNCH_S or at stop it is written again without the door (a browser slower than that
   still opens the report: review 2), and swept at the next start; the report takes it out of its address at once and keeps
   it for that tab (`sessionStorage`). A report opened any other way (by hand, from Junban) has no door and says so.
-  Every call carries the token (`hmac.compare_digest`); a call from a web page (an `Origin` other than `null`, a file
-  page's) is refused before its token is read.
+  Every call carries the token (`hmac.compare_digest`); a call with any `Origin` but `null` (a file page's — which a
+  sandboxed frame also sends, so the token stays the gate) is refused before its token is read.
 - **Simple requests only:** `POST /v1/<route>` with a `text/plain` JSON body (no custom header, so no CORS
   preflight). Bodies over 64 KB are refused.
 - **The one GET** (journey v3 SPEC §3.3, #385's): an `<audio>` element can't send a body, so `GET /v1/clip/<name>`
@@ -37,7 +37,6 @@ import secrets
 import threading
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
 
 HOST = "127.0.0.1"
 # The one-time page's name is a secret's, so Send report's scrub leaves it out (`report.SECRET_NAMES`: *secret*): it
@@ -92,7 +91,7 @@ def _handler(door):
         def do_GET(self):                           # (every route is a POST; the one GET is a clip, `serve_file`)
             if not self._allowed():
                 return self._send(403, {"ok": False, "error": "refused"})
-            path = urlsplit(self.path).path
+            path = _path(self.path)
             clip = door.clip(path[len(CLIP_PATH):]) if path.startswith(CLIP_PATH) else None
             if clip is None:
                 return self._send(404, {"ok": False, "error": "no such route"})
@@ -114,11 +113,11 @@ def _handler(door):
                 return self._send(413, {"ok": False, "error": "too big"})
             try:
                 body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-            except (ValueError, UnicodeDecodeError):
+            except (ValueError, UnicodeDecodeError, RecursionError):     # (a body nested past Python's depth too)
                 return self._send(400, {"ok": False, "error": "not JSON"})
             if not isinstance(body, dict) or not door.token_ok(body.get("token")):
                 return self._send(403, {"ok": False, "error": "refused"})
-            path = urlsplit(self.path).path
+            path = _path(self.path)
             route = door.routes.get(path[len("/v1/"):]) if path.startswith("/v1/") else None
             if route is None:
                 return self._send(404, {"ok": False, "error": "no such route"})
@@ -128,13 +127,14 @@ def _handler(door):
             try:
                 try:
                     answer = route(body)
+                    data = json.dumps(dict({"ok": True}, **(answer or {})), ensure_ascii=False).encode("utf-8")
                 except RouteError as e:
                     return self._send(200, {"ok": False, "error": e.message, "kind": e.kind})
-                except Exception as e:              # a route's bug: said, never the window's crash
+                except Exception as e:              # a route's bug (or an answer JSON can't carry): said, never a crash
                     door.on_error(path, e)
                     return self._send(200, {"ok": False, "error": "Something went wrong in Surasura: try again.",
                                             "kind": "crashed"})
-                self._send(200, dict({"ok": True}, **(answer or {})))
+                self._send(200, data)
             finally:
                 door.leave()
 
@@ -160,7 +160,13 @@ class Door:
         self._calls_done = threading.Condition()
 
     def token_ok(self, token):
-        return isinstance(token, str) and hmac.compare_digest(token.encode("utf-8"), self.token.encode("utf-8"))
+        if not isinstance(token, str):
+            return False
+        try:
+            sent = token.encode("utf-8")
+        except UnicodeEncodeError:                  # (a lone surrogate, "\ud800": no token of ours)
+            return False
+        return hmac.compare_digest(sent, self.token.encode("utf-8"))
 
     def enter(self):
         """A call going into its route -> False once the quit has begun (the call is answered *closed*)."""
@@ -244,7 +250,9 @@ class Door:
             return
         with self._calls_done:                      # the calls already in a route answered first, a new one *closed*
             self._closing = True
-            self._calls_done.wait_for(lambda: self._calls == 0, STOP_WAIT_S)
+            drained = self._calls_done.wait_for(lambda: self._calls == 0, STOP_WAIT_S)
+        if not drained:                             # (said: the quit goes on with a route still running)
+            self.on_error("stop", TimeoutError(f"a call still in its route after {STOP_WAIT_S:g} s"))
         for path in pages:
             self._retire(path)
         server.shutdown()
@@ -256,6 +264,11 @@ def _page(path, target):
     with open(path, "w", encoding="utf-8") as f:
         f.write('<!DOCTYPE html><meta charset="utf-8"><title>Surasura</title><body style="background:#1e1e1e">'
                 '<script>location.replace(%s);</script>\n' % json.dumps(target).replace("</", "<\\/"))
+
+
+def _path(target):
+    """A request's path: its target before any query (an absolute or malformed target: no route of ours)."""
+    return target.split("?", 1)[0].split("#", 1)[0]
 
 
 def _remove(path):

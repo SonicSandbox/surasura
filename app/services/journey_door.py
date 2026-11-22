@@ -29,6 +29,7 @@ Off until the journey v3 page ships (`enabled()`; J-CUT turns `ON`): until then 
 listens, and *Your journey* opens the report as before. Light to import: the window imports it after its first frame.
 """
 import importlib
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -87,9 +88,16 @@ def stale(at, changed_ns):
     """True when a waiting press is older than its record's last change: `at` the press's time (ms since the epoch),
     `changed_ns` the record's last change (ns since the epoch; None: unknown or never). A press with no time (sent at
     once, not from the queue) is never stale, and neither is one in the very ms of the change."""
-    if isinstance(at, bool) or not isinstance(at, (int, float)) or changed_ns is None:
+    if not _ms_time(at) or changed_ns is None:
         return False
     return changed_ns // 1_000_000 > at             # (whole ms: exact for an int or a float `at`)
+
+
+def _ms_time(value):
+    """A time the page can send: a finite number of ms since the epoch, not before it (JSON's NaN / Infinity, a bool,
+    a string: no time)."""
+    return (isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+            and 0 <= value < 2 ** 53)
 
 
 def resolve(spec):
@@ -135,11 +143,13 @@ def _lang(body):
 
 
 def _built(spec, app):
+    """Whether `hello` lists the route: built, or there but broken (logged; its press then answers *crashed*, so a
+    broken owner is seen, never hidden as not yet)."""
     try:
         return resolve(spec) is not None
     except Exception as e:
         app.log("journey_door.resolve", e)
-        return False
+        return True
 
 
 def hello(body, app):
@@ -172,8 +182,7 @@ def state(body, app):
     readers not built or failing left out, and `at`, the time it was read (ms)."""
     lang = _lang(body)
     since = body.get("since")
-    since_ns = (int(since * 1_000_000) if isinstance(since, (int, float)) and not isinstance(since, bool)
-                and since >= 0 else None)
+    since_ns = int(since * 1_000_000) if _ms_time(since) else None
     out = {"at": time.time_ns() // 1_000_000}
     for key, spec in READERS.items():
         try:

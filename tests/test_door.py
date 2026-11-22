@@ -317,3 +317,23 @@ def test_with_no_door_open_no_clip_is_handed_out_and_a_stop_forgets_them(tmp_pat
     door.serve_file(str(tmp_path / "a.mp3"), "audio/mpeg")
     door.stop()
     assert d._clips == {}
+
+
+def test_an_answer_json_cant_carry_is_said_as_a_crash_never_a_dropped_call(tmp_path):
+    # a route (an owner's reader) answering a set: the page still gets its answer, and the window's log the error
+    errors = []
+    d = door.Door({"odd": lambda _body: {"words": {"猫", "犬"}}}, str(tmp_path),
+                  on_error=lambda path, e: errors.append(path)).start()
+    try:
+        status, _h, answer = _post(d, "odd", {"token": d.token})
+        assert status == 200 and answer["ok"] is False and answer["kind"] == "crashed" and errors == ["/v1/odd"]
+    finally:
+        d.stop()
+
+
+def test_a_body_too_deep_a_token_no_encoding_holds_and_an_odd_target_are_each_answered(opened):
+    # each was a dropped connection (no answer, a traceback) before: Python's depth, a lone surrogate, urlsplit
+    assert _request(opened, "POST", "/v1/echo", raw=b"[" * 50_000)[0] == 400
+    assert _request(opened, "POST", "/v1/echo", raw=b'{"token": "\\ud800"}')[0] == 403
+    assert _request(opened, "GET", "//[")[0] == 404 and _request(opened, "GET", "/v1/clip/x?y#z")[0] == 404
+    assert opened.calls == []

@@ -4997,9 +4997,12 @@ def start_door(window):
             from app import door
             from app.path_utils import get_user_file
             door.start(routes, get_user_file("results"), on_error=lambda path, e: applog.log("door", f"{path}: {e!r}"))
+            if _door_quit.is_set():             # (the quit came while it started, and waited past its join)
+                door.stop()
         except Exception as e:
             applog.log("shell", f"the journey's door: {e!r}")
 
+    _door_quit.clear()
     _door_starting = threading.Thread(target=run, name="journey-door-start", daemon=True)
     _door_starting.start()
     return _door_starting
@@ -5008,6 +5011,7 @@ def start_door(window):
 def stop_door():
     """At quit: the door's start waited for (a quit right after the first frame), then the door closed (its running
     calls answered first, `door.Door.stop`)."""
+    _door_quit.set()
     starting = _door_starting
     if starting is not None:
         starting.join(DOOR_START_WAIT_S)
@@ -5021,6 +5025,7 @@ def stop_door():
 
 
 _door_starting = None               # J-DOOR: the door's start thread (`start_door`), joined at quit
+_door_quit = threading.Event()      # J-DOOR: set at quit: a start still running stops its own door
 DOOR_START_WAIT_S = 2.0             # J-DOOR: the quit waits this long at most for the door's start to end
 NUMBERS_WAIT_S = 2.0                # Kotoba-K: a mark's write waits this long at most for the numbers to follow it
 SESSION_JOB = "anki-session"        # IK-6: the window's start look at Anki, a registry job (`jobs.RESOURCES`)

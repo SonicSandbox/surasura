@@ -34,9 +34,11 @@ NEW = {"ja": ("喫茶店", "ハルヒ"), "zh": ("风筝", "鲁迅")}
 def _fresh_session():
     word_lists._BACKED_UP.clear()
     word_marks._UNDO.clear()
+    word_marks._CHANGED.clear()
     yield
     word_lists._BACKED_UP.clear()
     word_marks._UNDO.clear()
+    word_marks._CHANGED.clear()
     door.stop()
 
 
@@ -232,8 +234,11 @@ def test_the_pages_undo_never_takes_back_the_windows_own_last_mark(opened, lang)
     word_marks.apply(lang, [(name, "ignore")])                      # the window's word card, after it
     assert _post(opened, "words/undo", {"lang": lang, "undo_id": page["undo_id"]})[1]["done"] == 1
     assert known not in word_marks.marks(lang) and word_marks.marks(lang)[name] == "ignore"
+    session, _dot, number = page["undo_id"].partition(".")
     for bad in ({"lang": lang}, {"lang": lang, "undo_id": None}, {"lang": lang, "undo_id": True},
-                {"lang": lang, "undo_id": "1"}, {"lang": "en", "undo_id": 1}):
+                {"lang": lang, "undo_id": int(number)}, {"lang": lang, "undo_id": "1"},
+                {"lang": lang, "undo_id": f"{session}.-1"}, {"lang": lang, "undo_id": f"{session}.١"},
+                {"lang": lang, "undo_id": f"0000ffff.{number}"}, {"lang": "en", "undo_id": page["undo_id"]}):
         answer = _post(opened, "words/undo", bad)[1]
         assert answer["ok"] is False and answer["kind"] == "refused"
     assert word_marks.marks(lang)[name] == "ignore"
@@ -410,3 +415,65 @@ def test_with_the_door_off_neither_the_start_nor_your_journey_imports_the_door(t
                          encoding="utf-8", timeout=120)
     assert run.returncode == 0, run.stderr
     assert "door imported: False" in run.stdout
+
+
+def test_a_time_the_page_cant_have_sent_is_no_time(opened, lang):
+    # JSON carries NaN and Infinity (Python reads them): `state` answers whole rather than failing, and a waiting mark
+    # with such a press time is treated as one sent at once
+    for since in (float("nan"), float("inf"), -1, "1763770000123", True, 2 ** 60):
+        assert journey_door._ms_time(since) is False
+        answer = _post(opened, "state", {"lang": lang, "since": since})[1]
+        assert answer["ok"] is True and isinstance(answer["marks"], dict)
+        assert journey_door.stale(since, 10 ** 30) is False
+
+
+# --- the review's cases (register: j-door-register.md) ------------------------------------------------------------ #
+def test_a_waiting_mark_never_erases_a_word_changed_in_the_window_and_back_since(opened, lang):
+    # the page showed Known and queued Ignore; the window then cleared the word and marked it Known again: the word
+    # reads as the page showed it, but it is newer work than the press (Charter G4)
+    known, _name = NEW[lang]
+    word_marks.apply(lang, [(known, "known")])
+    pressed = _ms(time.time_ns()) + 1
+    time.sleep(0.01)
+    word_marks.apply(lang, [(known, None)])
+    word_marks.apply(lang, [(known, "known")])
+    answer = _post(opened, "words/mark", {"lang": lang, "marks": [{"word": known, "mark": "ignore", "was": "known",
+                                                                   "at": pressed}]})[1]
+    assert answer["stale"] == [known] and word_marks.marks(lang)[known] == "known"
+
+
+def test_an_undo_from_an_earlier_surasura_is_refused_never_another_write_undone(opened, lang, monkeypatch):
+    # undo numbers start again in each Surasura: the page's Undo kept from before a restart must not take back
+    # whatever this one numbered the same
+    known, name = NEW[lang]
+    old = _post(opened, "words/mark", {"lang": lang, "marks": [{"word": known, "mark": "known"}]})[1]["undo_id"]
+    monkeypatch.setattr(word_marks, "_DOOR_SESSION", "0badcafe")            # (Surasura opened again)
+    word_marks.apply(lang, [(name, "ignore")])
+    answer = _post(opened, "words/undo", {"lang": lang, "undo_id": old})[1]
+    assert answer["ok"] is False and answer["kind"] == "refused"
+    assert word_marks.marks(lang)[known] == "known" and word_marks.marks(lang)[name] == "ignore"
+
+
+def test_a_known_words_file_deleted_since_the_render_is_read_as_changed(lang):
+    word_marks.apply(lang, [(NEW[lang][0], "known")])
+    time.sleep(0.02)
+    render = time.time_ns()                                               # a render after both lists were written
+    assert word_marks.door_state(lang, render, _app()) is None
+    time.sleep(0.02)
+    os.remove(anki_sync._known_path(lang))
+    after = word_marks.door_state(lang, render, _app())                   # read: the render's Known marks are gone
+    assert after is not None and NEW[lang][0] not in after and set(after.values()) == {"ignore"}
+
+
+def test_hello_shows_a_broken_owner_so_its_press_says_so(opened, monkeypatch):
+    def broken(name, *a, **k):
+        if name == "app.services.flags":
+            raise ModuleNotFoundError("No module named 'tkinterdnd9'", name="tkinterdnd9")
+        return __import__("importlib").import_module(name)
+    real = journey_door.importlib.import_module
+    monkeypatch.setattr(journey_door.importlib, "import_module",
+                        lambda name, *a, **k: broken(name) if name == "app.services.flags" else real(name, *a, **k))
+    monkeypatch.setitem(journey_door.ROUTES, "line/flag", ("app.services.flags", "door_route"))
+    answer = _post(opened, "hello", {"lang": "ja"})[1]
+    assert "line/flag" in answer["routes"] and opened.logged
+    assert _post(opened, "line/flag", {"lang": "ja"})[1]["kind"] == "crashed"

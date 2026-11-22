@@ -38,7 +38,7 @@ def card(world, monkeypatch):  # noqa: F811
 
 def test_the_card_says_how_many_were_tidied_and_offers_undo_and_ok(card):
     _win, ny, entry, _got, _answer = card
-    assert entry.title == "37 set-aside cards tidied."
+    assert entry.title == "37 unstudied cards deleted, a copy kept."       # Kyou-SH3: never "set aside"
     assert {b.property("action") for b in ny.cards.buttons(entry.key)} == {"undo_tidy", "leave_tidy"}
     assert button(ny, entry.key, "undo_tidy").toolTip() and button(ny, entry.key, "leave_tidy").toolTip()
 

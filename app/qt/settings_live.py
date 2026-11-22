@@ -141,6 +141,30 @@ def read_piyo(language):
     return practice_rounds.last_round(language)
 
 
+def read_tidies(language):
+    """Kyou-SH3 part 2: *Put back…*'s list — the last 10 tidies (`tidy.act_past`: Connect's ledger, no Anki); [] when
+    None when it can't be read."""
+    from app.connect import tidy
+    try:
+        return tidy.act_past(language)
+    except Exception as e:                          # (a ledger too new or locked: no answer, the door as it was)
+        applog.log("settings", f"the past tidies: {e}")
+        return None
+
+
+PUT_BACK_KEY = "settings:connect_tidy:put-back"       # its own press: *Tidy now* working doesn't silence it
+
+
+def tidy_line(past):
+    """One past tidy in *Put back…*'s menu: when (your clock), how many cards, and whether it went back already."""
+    from app.connect import tidy, undo
+    at = undo._epoch(past.get("at") or "")
+    when = "" if at is None else time.strftime("%d %b %H:%M", time.localtime(at)).lstrip("0")
+    n = int(past.get("cards") or 0)
+    line = S.TIDY_PAST_ONE.format(when=when) if n == 1 else S.TIDY_PAST.format(when=when, n=n)
+    return line + {tidy.PUT_BACK: S.TIDY_PAST_BACK, tidy.GONE: S.TIDY_PAST_GONE}.get(past.get("can"), "")
+
+
 def open_hato(folder, settings):
     """*Find hato…*: hato in `folder` started so it connects (`tools_found.open_hato`) -> (its folder, an answer now)."""
     from app.services import tools_found
@@ -576,7 +600,7 @@ class Live(QObject):
                 failed(info)
         return bridge.run_in_worker(fn, *args, then=done, failed=fault)
 
-    def _press(self, row_id, part, fn, *args, then=None, failed=None, busy=None):
+    def _press(self, row_id, part, fn, *args, then=None, failed=None, busy=None, key=None):
         """Round 8 row 45: `row_id`'s button pressed — its arc turns, painted before `fn` goes to the worker (as `_run`
         then: `then` / `failed` while the page lives); a second press while it works does nothing. -> the press, or
         None (live already: nothing started)."""
@@ -589,7 +613,7 @@ class Live(QObject):
             if failed is not None and self._alive():
                 failed(info)
         control = self.parts.get(row_id, {}).get(part)
-        return qpress.run(control, f"settings:{row_id}", fn, *args, busy=busy, then=done, failed=fault,
+        return qpress.run(control, key or f"settings:{row_id}", fn, *args, busy=busy, then=done, failed=fault,
                           win=self.shell)
 
     def _slot(self, row_id):
@@ -756,8 +780,14 @@ class Live(QObject):
         elif row_id == "connect_tidy":                             # --- Kyou-SH2: *Tidy now*
             door = qpress.room(sc.Door(S.TIDY_NOW, tooltip=row.tip, name=row.label))
             door.clicked.connect(lambda _c=False: self.tidy_now())
+            # Kyou-SH3 part 2: *Put back…* — an earlier tidy's Undo; off, with its tip, until a tidy is listed
+            back = qpress.room(sc.Door(S.TIDY_PUT_BACK, tooltip=S.TIDY_PUT_BACK_NONE, name=S.TIDY_PUT_BACK_NAME))
+            back.setEnabled(False)
+            back.clicked.connect(lambda _c=False: self.put_back())
             self._slot(row_id).layout().addWidget(door)
-            self.parts[row_id] = {"tidy": door}
+            self._slot(row_id).layout().addWidget(back)
+            self.parts[row_id] = {"tidy": door, "back": back}
+            self._read_tidies()
         elif row_id == "remove_downloaded_covers":                 # --- W3.2 L3
             door = qpress.room(sc.Door(S.COVERS_REMOVE, tooltip=row.tip, name=row.label))
             door.clicked.connect(lambda _c=False: self.remove_covers())
@@ -788,6 +818,7 @@ class Live(QObject):
         self._read_known()
         self._read_level()
         self._read_piyo()
+        self._read_tidies()
         self._paint_setup()
 
     def _status(self, snap):
@@ -1316,7 +1347,84 @@ class Live(QObject):
                 self.say(S.TIDY_CANT.format(why=got["why"]), "connect_tidy")
             else:
                 self.say(S.TIDY_NONE.format(why=got.get("say") or tidy.NOTHING), "connect_tidy")
+            self._read_tidies()                     # a new tidy: *Put back…* lists it
         return self._press("connect_tidy", "tidy", tidy_it, then=done,
+                           failed=lambda info: done({"why": str(info[1] if len(info) > 1 else info)}))
+
+    # --- Kyou-SH3 part 2: *Put back…* — the last 10 tidies (`tidy.past`), each with the Undo *Needs you* gives the
+    # newest (`tidy.act_undo`: its rules hold for every one); one already put back, or whose copy is gone, is shown so
+    # and can't be pressed; the press reads the list again on a worker, then the menu opens
+    def _read_tidies(self):
+        if "back" not in self.parts.get("connect_tidy", {}):
+            return                                        # (its row not built yet: read when it is)
+        language = self.page.language
+        self._run(read_tidies, language, then=lambda rows, lang=language: self._tidies(lang, rows))
+
+    def _tidies(self, language, rows):
+        back = self.parts.get("connect_tidy", {}).get("back")
+        if back is None or language != self.page.language:
+            return False
+        if rows is None:                                  # couldn't be read just now: on, its press reads again
+            back.setEnabled(True)
+            back.setToolTip(S.TIDY_PUT_BACK_TIP)
+            return True
+        self.past_tidies = list(rows)
+        back.setEnabled(bool(self.past_tidies))
+        back.setToolTip(S.TIDY_PUT_BACK_TIP if self.past_tidies else S.TIDY_PUT_BACK_NONE)
+        return True
+
+    def put_back(self):
+        language = self.page.language
+        return self._press("connect_tidy", "back", read_tidies, language, key=PUT_BACK_KEY,
+                           then=lambda rows, lang=language: self._offer_tidies(lang, rows))
+
+    def _offer_tidies(self, language, rows):
+        from PyQt6.QtGui import QAction
+        from PyQt6.QtWidgets import QMenu
+        from app.connect import tidy
+        if not self._tidies(language, rows):
+            return None
+        if rows is None:
+            self.say(S.TIDY_PUT_BACK_UNREAD, "connect_tidy")
+            return None
+        if not self.past_tidies:
+            self.say(S.TIDY_PUT_BACK_NONE, "connect_tidy")
+            return None
+        back = self.parts["connect_tidy"]["back"]
+        menu = QMenu(back)
+        menu.setObjectName("rowmenu")
+        menu.setToolTipsVisible(True)
+        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        tips = {tidy.CAN: S.TIDY_PAST_TIP, tidy.PUT_BACK: S.TIDY_PAST_BACK_TIP, tidy.GONE: S.TIDY_PAST_GONE_TIP}
+        for past in self.past_tidies:
+            act = QAction(tidy_line(past), menu)
+            act.setToolTip(tips.get(past["can"], S.TIDY_PAST_TIP))
+            act.setEnabled(past["can"] == tidy.CAN)        # a tidy goes back once; one with no copy can't
+            act.triggered.connect(lambda _c=False, tidy_id=past["id"]: self.put_back_tidy(tidy_id))
+            menu.addAction(act)
+        self.parts["connect_tidy"]["menu"] = menu
+        menu.popup(back.mapToGlobal(QPoint(0, back.height())))
+        return menu
+
+    def put_back_tidy(self, tidy_id):
+        from app.cli.contract import CliError
+        from app.connect import tidy
+        settings, language = dict(self._settings() or {}), self.page.language
+
+        def undo_it():
+            try:
+                return tidy.act_undo(settings, language, tidy_id)
+            except CliError as e:
+                return {"why": e.message}
+
+        def done(got):
+            from app.qt import needs
+            self.say(needs.tidy_back_said(got), "connect_tidy")
+            self._read_tidies()
+            page = getattr(self.shell, "needs_you", None)          # its *Needs you* card, if it still shows: updated
+            if page is not None and hasattr(page, "refresh"):
+                page.refresh()
+        return self._press("connect_tidy", "back", undo_it, then=done, key=PUT_BACK_KEY,
                            failed=lambda info: done({"why": str(info[1] if len(info) > 1 else info)}))
 
     # --- W3.2 L3: *Remove downloaded covers* — the shell's fetcher (Q7's `remove_downloaded`: the writer's

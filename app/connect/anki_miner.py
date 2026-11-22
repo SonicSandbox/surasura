@@ -33,6 +33,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 from app.connect import runfile, stopping
@@ -1106,18 +1107,31 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
 
     cancelled = []                  # #47: a Stop asked during the call (asked until it is, then held)
     paused = []                     # OPEN 40: the cancel was a review's, not a Stop
-    look = [0.0]                    # OPEN 40: the next review look (monotonic)
+    review = {"next": 0.0, "look": None, "on": False}     # OPEN 40: the review look, on a thread of its own
     ends = (version_tuple(info.get("app")) or (0, 0, 0)) >= ENDS_FROM      # #BS0A1K
 
+    def look_review():
+        try:
+            review["on"] = bool(should_pause())
+        except Exception:
+            review["on"] = False    # a look that fails is no review (Anki gone: its own write fails as always)
+
     def poll():
-        if should_pause is not None and not cancelled and time.monotonic() >= look[0]:
-            look[0] = time.monotonic() + PAUSE_LOOK_S
-            if should_pause():
+        stop = bool(cancelled) or (should_stop is not None and should_stop())
+        if not stop and should_pause is not None:
+            # the look never blocks the poll (a hung Anki answers in seconds, a Stop is read at the next poll): its
+            # last answer read here, the next one started at most every PAUSE_LOOK_S
+            if review["on"]:
                 paused.append(True)
                 cancelled.append(time.monotonic())
+                stop = True
+            elif (review["look"] is None or not review["look"].is_alive()) and time.monotonic() >= review["next"]:
+                review["next"] = time.monotonic() + PAUSE_LOOK_S
+                review["look"] = threading.Thread(target=look_review, name="review-look", daemon=True)
+                review["look"].start()
         # the cancel file stands while the Stop does: Anki Miner 3.10 deletes an unconsumed one once, before its
         # setup (a second or two in) — written once, a Stop pressed as the call began was lost
-        if cancelled or (should_stop is not None and should_stop()):
+        if stop:
             cancel(run_dir, run_id)
             cancelled[:] = cancelled or [time.monotonic()]
         late = ends and cancelled and time.monotonic() - cancelled[0] >= STOP_GRACE_S

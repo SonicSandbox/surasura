@@ -275,3 +275,38 @@ def test_10_undo_of_a_batch_a_review_paused_is_refused_until_its_cards_are_made(
         undo.plan(None, ledger, job_id)
     assert err.value.say == undo.STILL_RUNNING
     assert [o["outcome"] for o in ledger.outcomes(job_id)].count("made") == 1, "its card stays recorded"
+
+
+def test_3_a_hung_review_look_never_delays_your_stop(batch, fake_miner, words, monkeypatch):  # noqa: F811
+    # review (Haiku contract #2): Anki hung answers a look in seconds; the look runs beside the poll, so a Stop
+    # pressed meanwhile is written at the next poll as before
+    monkeypatch.setattr(anki_miner, "POLL_S", 0.05)
+    monkeypatch.setattr(anki_miner, "PAUSE_LOOK_S", 0.0)
+    fake_miner.plan(cancel_at=2)
+    began = time.monotonic()
+
+    def hung():
+        time.sleep(4)
+        return False
+    done = batch(should_stop=lambda: time.monotonic() - began > 0.2, should_pause=hung)
+    assert done["stopped"] is True and done["paused"] is False
+    assert time.monotonic() - began < 3.5, "the Stop wasn't held behind the hung look"
+
+
+def test_2_a_card_no_look_saw_for_the_rule_starts_its_clock_again(anki):
+    # review (Haiku state #1): a review closed while nobody looked, opened again on the same card hours later, is a
+    # fresh review — never idle at its first look
+    from app import anki_connect
+    anki.active = True
+    anki_connect.reviewing(URL)
+    anki.now[0] += anki_connect.REVIEW_IDLE_S * 4
+    assert anki_connect.reviewing(URL) is True
+
+
+def test_2_anki_gone_forgets_the_card(anki, monkeypatch):
+    from app import anki_connect
+    anki.active = True
+    anki_connect.reviewing(URL)
+    assert URL in anki_connect._review_card
+    monkeypatch.setattr(anki_connect, "invoke", lambda *a, **k: (_ for _ in ()).throw(OSError("refused")))
+    assert anki_connect.reviewing(URL) is False and URL not in anki_connect._review_card

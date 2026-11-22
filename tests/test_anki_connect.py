@@ -523,7 +523,8 @@ def test_reviewing_waits_out_a_busy_anki(no_naps):
     fake, patched = _run(_in_turn(_busy(), _ok(True)))
     with patched:
         assert anki_connect.reviewing(URL) is True
-    assert len(fake.requests) == 2
+    # the reviewer open, then the card it shows (OPEN 40's idle rule: the one check's second read, only during a review)
+    assert len(fake.requests) == 3 and fake.requests[-1]["action"] == "guiCurrentCard"
 
 
 def test_a_refusal_read_from_a_multi_slot_is_marked_busy_too():

@@ -354,6 +354,8 @@ ANKI_WRITERS = {
     ("app/connect/tidy.py", "_cards_home"): ("Tidy", _TIDY, "only cards found in its own deck, back to the decks its "
                                              "ledger recorded"),
     ("app/connect/tidy.py", "_drop_temp"): ("Tidy", _TIDY, "its own deck, only when a search finds no card in it"),
+    ("app/connect/tidy.py", "_left_out"): ("Tidy", _TIDY, "Undo after a re-mine: only its own just-imported copy, "
+                                           "every card still in its own deck and never reviewed"),
     ("app/connect/sentence_audio.py", "AnkiConnectNotes.tag"): (
         "the one sentence-field writer (Add audio, the AI audio, Piyo's translations)",
         "Backfill: fills fields of existing cards; Piyo: writes cards only when asked",

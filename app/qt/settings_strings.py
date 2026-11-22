@@ -290,7 +290,8 @@ ROWS = {
                             "cap backlog waiting keep up to limit"),
     # Kyou-SH2 (PROVISIONAL): Tidy — by itself past 1.5 × the limit; this press past the limit
     "connect_tidy": ("Tidy waiting cards", "Past 1.5 × your limit, Surasura deletes the cards it made that you never "
-                                           "studied, lowest first. A copy is kept: Undo in Needs you.",
+                                           "studied, down to your limit, lowest first. A copy is kept: Undo in Needs "
+                                           "you.",
                      "Deletes now its never-studied cards past your limit; Undo brings them back.",
                      "tidy clean clear delete cards waiting backlog clutter limit cap overflow"),
     # a7 (DIAGNOSIS 5): an extra, under More options — the library's folders are always searched

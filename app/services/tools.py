@@ -9,7 +9,7 @@ writes every line it prints to the tool's own log (`<logs>/<kind>.log`, the comm
 lines), hands each line to `on_line` and, when it ends, **its exit code decides**: 0 is done, anything else failed,
 with the log's path. Cancelling the job ends the child. `on_end(returncode)` (None when it never started) is told last.
 
-`command(argv)` is the frozen / source map the Tk dashboard's `run_command_async` holds (`SCRIPT_MAP`, kept as it is
+`command(argv)` is the frozen / source map the Tk dashboard's `run_command_async` reads too (`SCRIPT_MAP`, the one map
 there): a frozen build runs `Surasura.exe <subcommand>`, source runs `python app/<script>`. Qt-free: nothing here
 waits on the caller's thread — `run` returns the job at once; callbacks run on the tool's thread.
 """
@@ -22,7 +22,7 @@ from collections import namedtuple
 
 from app import path_utils
 
-# The frozen build's subcommand for each script (app_entry.py's dispatch) — the Tk dashboard's map, as it is there.
+# The frozen build's subcommand for each script (app_entry.py's dispatch) — the one map; the Tk dashboard reads it.
 SCRIPT_MAP = {
     'analyzer.py': 'analyzer',
     'epub_importer.py': 'epub_importer',
@@ -36,7 +36,7 @@ SCRIPT_MAP = {
     'indexer.py': 'index',
     'sentence_corpus.py': 'sentence_corpus',
 }
-# The 3.0 window's own tools (W3.4 row 2): the Tk dashboard never starts them, so its map doesn't hold them.
+# The 3.0 window's own tools (W3.4 row 2): the Tk dashboard never starts them.
 QT_SCRIPTS = {
     'anki_db_import.py': 'apkg_known_import',
     'extract.py': 'extract',

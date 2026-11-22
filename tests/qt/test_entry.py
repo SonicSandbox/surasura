@@ -114,6 +114,7 @@ HEAVY = ("pandas", "numpy", "requests", "app.static_html_generator")
 # Proof the duties ran: made (chores), their controls attached (duties), started, and the start's last timer rang (the
 # Rarity tables' warm-up at `chores.WARM_AT` reads the one-kanji table).
 RAN = ("app.services.chores", "app.qt.duties", "app.one_kanji_data")
+TK = ("tkinter", "_tkinter", "tkinterdnd2")     # the 2.x windows' toolkit: no part of the window's start reaches it
 
 
 def test_the_window_start_brings_in_no_pandas_numpy_or_requests(tmp_path):
@@ -122,7 +123,8 @@ def test_the_window_start_brings_in_no_pandas_numpy_or_requests(tmp_path):
     whether a journey exists imported the report's generator for its file name: pandas → numpy, whose OpenBLAS reserves
     a buffer per CPU thread — idle went from 65 MB to ~890 MB on a 24-thread desktop, ~360 MB on the laptop, budget
     ≤ ~250), nor requests (the heartbeat's module imported it at every start, ~0.1 s before the first frame: only a
-    heartbeat that is sent imports it now, on its own thread). What a wrong answer would cost: the laptop's budgets."""
+    heartbeat that is sent imports it now, on its own thread). Nor tkinter: the 2.x windows' ties to the window are
+    cut, and a start that loads it is a tie come back. What a wrong answer would cost: the laptop's budgets."""
     import site
     root = tmp_path / "root"
     root.mkdir()
@@ -143,7 +145,8 @@ def test_the_window_start_brings_in_no_pandas_numpy_or_requests(tmp_path):
         except SystemExit:
             pass
         sys.stdout.write("\\n" + json.dumps([sorted(m for m in {HEAVY!r} if m in sys.modules),
-                                              sorted(m for m in {RAN!r} if m in sys.modules)]) + "\\n")
+                                              sorted(m for m in {RAN!r} if m in sys.modules),
+                                              sorted(m for m in sys.modules if m.split(".")[0] in {TK!r})]) + "\\n")
     """)
     proc = subprocess.run([sys.executable, "-c", script], cwd=str(root), env=env, capture_output=True, text=True,
                           timeout=120)
@@ -157,6 +160,7 @@ def test_the_window_start_brings_in_no_pandas_numpy_or_requests(tmp_path):
     # first (~2 s here) — and the start's timers count from then, so the probe's idle is 8 s (it was 4.5)
     assert "window (shell): booted" in log
     assert "duties not made" not in log and "duties at start" not in log
-    heavy, ran = json.loads(proc.stdout.strip().splitlines()[-1])
+    heavy, ran, tk = json.loads(proc.stdout.strip().splitlines()[-1])
     assert ran == sorted(RAN), "the duties were made, attached and started, and the warm-up rang"
     assert heavy == []
+    assert tk == [], "the window's start loaded the 2.x windows' toolkit"

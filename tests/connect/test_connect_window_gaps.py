@@ -9,7 +9,7 @@ Every Connect call is stood in for; real Japanese words."""
 from tkinter import ttk
 
 from app import updater
-from app.connect import connect_window
+from app.connect import connect_window, undo
 from tests.connect.test_connect_window import (BUSY, PLAN, RECORD, Act, Clock, _bare, _press, _window,
                                                root)  # noqa: F401  (the fixture)
 from tests.connect_tk_helpers import Pump, Tips, widgets
@@ -22,9 +22,9 @@ def test_the_writer_is_busy_only_while_ankis_write_lock_is_held(monkeypatch):
     monkeypatch.setattr(locks, "in_use", lambda name, **k: name in held)
     monkeypatch.setattr(locks, "unopenable", lambda name: None)
     held.add("connect")
-    assert connect_window.writer_busy() is False
+    assert undo.writer_busy() is False
     held.add("anki-writer")
-    assert connect_window.writer_busy() is True
+    assert undo.writer_busy() is True
 
 
 def test_what_the_window_marked_seen_makes_the_dashboards_badge_read_again(root):
@@ -80,7 +80,7 @@ def test_an_undo_refused_through_a_whole_anki_miner_batch_is_waited_out_and_retu
     30 times, a second apart, then answers. The undo waits through every refusal (well inside its 120 s wait) and
     returns the answer — never gives up early with the act's 'busy' words."""
     clock = Clock()
-    monkeypatch.setattr(connect_window, "time", clock)
+    monkeypatch.setattr(undo, "time", clock)          # the wait: undo.wait_for_writer
     calls = []
 
     def act(settings, language, **kw):
@@ -93,17 +93,17 @@ def test_an_undo_refused_through_a_whole_anki_miner_batch_is_waited_out_and_retu
     assert w._write(None, job=7, confirm=True) == {"say": "2 cards deleted."}, "the wait returns the act's answer"
     assert len(calls) == 31, "thirty refusals, then the one call that answers"
     assert len(clock.sleeps) == 30 and all(s >= 1.0 for s in clock.sleeps), "a retry about a second apart"
-    assert clock.now < connect_window.WAIT_FOR_WRITER_S, "the answer came well inside the whole wait"
+    assert clock.now < undo.WAIT_FOR_WRITER_S, "the answer came well inside the whole wait"
 
 
 def test_update_waits_follows_the_updater_when_an_update_is_held(monkeypatch):
     """An update that is holding its children makes the window wait: True is returned, not a truthy stand-in.
     The same call flips back to False as soon as the updater lets go, so the answer is live, not cached."""
     monkeypatch.setattr(updater, "children_held", lambda: True)
-    assert connect_window.update_waits() is True
+    assert undo.update_waits() is True
 
     monkeypatch.setattr(updater, "children_held", lambda: False)
-    assert connect_window.update_waits() is False
+    assert undo.update_waits() is False
 
 
 def test_update_waits_is_false_when_the_updater_cannot_be_asked(monkeypatch):
@@ -112,7 +112,7 @@ def test_update_waits_is_false_when_the_updater_cannot_be_asked(monkeypatch):
         raise RuntimeError("the updater's hold flag is unreadable")
 
     monkeypatch.setattr(updater, "children_held", broken)
-    assert connect_window.update_waits() is False
+    assert undo.update_waits() is False
 
 
 def test_a_dismiss_that_fails_keeps_the_entry_listed_and_its_button_pressable(root):

@@ -3766,21 +3766,8 @@ class MasterDashboardApp:
         def task():
             nonlocal process
             self._flush_settings()          # every child reads settings.json: the newest choice first
-            # Dispatch Mapping for Frozen Environment
-            SCRIPT_MAP = {
-                'analyzer.py': 'analyzer',
-                'epub_importer.py': 'epub_importer',
-                'migaku_db_importer_gui.py': 'migaku_importer',
-                'jiten_db_importer_gui.py': 'jiten_importer',
-                'content_importer_gui.py': 'content_importer',
-                'static_html_generator.py': 'static_generator',
-                'migaku_converter.py': 'convert_db',
-                'anki_db_importer_gui.py': 'anki_importer',
-                'frequency_list_gui.py': 'frequency_list_manager',
-                'indexer.py': 'index',
-                'sentence_corpus.py': 'sentence_corpus'
-            }
-            
+            from app.services.tools import SCRIPT_MAP     # the frozen build's subcommand for each script: one map
+
             try:
                 from app.path_utils import is_frozen
                 

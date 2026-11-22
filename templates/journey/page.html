@@ -1,0 +1,1334 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="night">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- The page reaches nothing but Surasura's door on this PC (127.0.0.1) and the learner's own media files. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; media-src file: http://127.0.0.1:*; connect-src http://127.0.0.1:*">
+<title>Surasura · Journey</title>
+<style>
+/* Journey v3 (SPEC §1). The window's 3.0 tokens (night) and the page's light set. */
+:root {
+  --ground:#070a0f; --bg:#04060a; --surface:#0a0e14; --raised:#101621; --line:#161e2a; --line-hi:#243044;
+  --ink:#e6ecf5; --ink-dim:#7d8aa2; --ink-faint:#56627a; --ink-meta:#97a3b8; --accent:#62b6f2; --accent-deep:#2a6fa8;
+  --accent-wash:#1a2a3a; --frame:#0c1017; --cut:#05070c; --overlay:#111a2b; --overlay-hover:#182439; --ring:#26d1cf;
+  --ok:#7fcf9f; --warn:#e7bf72; --bad:#c02040; --row-hover:#0d121a; --scrim:#04060acc;
+  --iris:linear-gradient(90deg,#36c9cf 0%,#4f9cf0 45%,#a98bff 100%);
+  --sapphire:#4b8ff0; --emerald:#3cc48f; --ruby:#e2546f; --graphite:#8a94a3;
+  --gem-sapphire-b:#1d4fae; --gem-sapphire-e:#d6e7ff; --gem-emerald-b:#13744f; --gem-emerald-e:#d8f8ea;
+  --gem-ruby-b:#98203a; --gem-ruby-e:#ffdbe3; --rock-dark:#22262c; --rock-lit:#6a717c; --rock-rim:#181b20;
+  --m-p:#f2c94c; --m-l:#03dac6; --m-r:#d0a5ff;
+  --heiban:#6f9fd8; --atamadaka:#dc4a45; --nakadaka:#d69a55; --odaka:#5faa79;
+  --t1:#e2546f; --t2:#e89a3c; --t3:#4fbf7f; --t4:#5b9cf0; --t5:#8a94a6;
+  --sh-pop:0 24px 50px -16px #000; --sh-tip:0 14px 32px -12px #000;
+  --f-ui:"Segoe UI",system-ui,sans-serif;
+  --f-ja:"Segoe UI","Yu Gothic UI","Yu Gothic",Meiryo,"Hiragino Sans","Noto Sans CJK JP",sans-serif;
+  --f-zh:"Segoe UI","Microsoft YaHei UI","PingFang SC","Noto Sans CJK SC",sans-serif;
+  --fast:120ms; --pop:140ms; --slow:260ms; --glide:160ms; --ease:cubic-bezier(.2,.7,.3,1);
+  --wsz:52px; --ssz:20px; --pre:#b3c8ff; --pre-spark:#eef3ff;
+  color-scheme:dark;
+}
+:root[data-theme="light"] {
+  --ground:#e9ecf0; --bg:#f6f7f9; --surface:#ffffff; --raised:#f0f2f5; --line:#e3e7ec; --line-hi:#cfd6df;
+  --ink:#1b2230; --ink-dim:#5b6577; --ink-faint:#8a94a6; --ink-meta:#4d5869; --accent:#2a6fa8; --accent-deep:#2a6fa8;
+  --accent-wash:#e6f0f8; --frame:#eef1f4; --cut:#eceff3; --overlay:#ffffff; --overlay-hover:#eef3f9; --ring:#0f8f8d;
+  --ok:#2e8b57; --warn:#a86b00; --row-hover:#eef2f6; --scrim:#1b223066;
+  --sapphire:#1d4fae; --emerald:#13744f; --ruby:#98203a; --graphite:#5b6577;
+  --m-p:#b8860b; --m-l:#00897b; --m-r:#7c4dff; --t5:#6b7486; --pre:#5a6fd6; --pre-spark:#3b4fc4;
+  --sh-pop:0 24px 50px -16px #1b223040; --sh-tip:0 14px 32px -12px #1b223040;
+  color-scheme:light;
+}
+@media (prefers-reduced-motion: reduce) { :root { --fast:0ms; --pop:0ms; --slow:0ms; --glide:0ms; } }
+* { box-sizing:border-box; }
+html, body { margin:0; height:100%; overflow:hidden; }
+body { background:var(--ground); color:var(--ink); font:13px/1.45 var(--f-ui); -webkit-font-smoothing:antialiased; }
+button { font:inherit; color:inherit; }
+.jp { font-family:var(--f-ja); } .zh .jp { font-family:var(--f-zh); }
+.hide { display:none !important; }
+svg.i { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; flex:none; vertical-align:-2px; }
+#app { height:100vh; min-height:480px; display:flex; flex-direction:column; background:var(--bg); }
+.hd { background:var(--frame); border-bottom:1px solid var(--line); flex:none; position:relative; z-index:5; transition:opacity var(--slow) var(--ease); }
+.hd1 { display:flex; align-items:center; gap:14px; height:54px; padding:0 18px; }
+.brand { display:flex; align-items:baseline; gap:8px; white-space:nowrap; }
+.brand b { font:700 18px var(--f-ui); letter-spacing:-.01em; }
+.brand b i { font-style:normal; background:var(--iris); -webkit-background-clip:text; background-clip:text; color:transparent; }
+.brand span { font-size:11.5px; color:var(--ink-dim); }
+.sw { position:relative; }
+.sbox { display:flex; align-items:center; gap:8px; height:32px; width:300px; padding:0 6px 0 10px; border-radius:8px; background:var(--cut); border:1px solid var(--line); color:var(--ink-dim); }
+.sbox input { flex:1; min-width:0; background:none; border:0; outline:0; color:var(--ink); font:13px var(--f-ja); }
+.sbox:focus-within { border-color:var(--accent-deep); }
+.kc { display:inline-grid; place-items:center; min-width:18px; height:18px; padding:0 4px; border-radius:5px; border:1px solid var(--line-hi); color:var(--ink-dim); font:700 10.5px var(--f-ui); background:var(--surface); line-height:1; flex:none; }
+.sp { flex:1; }
+.chip { display:inline-flex; align-items:center; gap:7px; height:28px; padding:0 11px; border-radius:99px; white-space:nowrap; border:1px solid var(--line-hi); color:var(--ink-dim); font:600 11.5px var(--f-ui); background:none; cursor:default; }
+.chip i { width:8px; height:8px; border-radius:50%; background:var(--ink-faint); display:inline-block; }
+.chip.on { color:var(--ink); } .chip.on i { background:var(--ok); box-shadow:0 0 8px var(--ok); }
+.chip.off i { background:var(--warn); }
+.ib { width:28px; height:28px; border-radius:7px; border:1px solid transparent; background:none; color:var(--ink-dim); display:inline-grid; place-items:center; cursor:pointer; padding:0; flex:none; position:relative; font:600 13px var(--f-ui); transition:color var(--fast) var(--ease), background var(--fast) var(--ease), border-color var(--fast) var(--ease); }
+.ib:hover, .ib.on { color:var(--ink); background:var(--raised); border-color:var(--line-hi); }
+.body { flex:1; min-height:0; display:flex; position:relative; }
+.rail { width:296px; flex:none; border-right:1px solid var(--line); background:var(--frame); display:flex; flex-direction:column; min-height:0; transition:opacity var(--slow) var(--ease); }
+.stage { flex:1; min-width:0; overflow:auto; padding:22px 34px 60px; transition:transform var(--glide) var(--ease); }
+.desk.idle { opacity:.35; }
+.desk { width:330px; flex:none; padding:20px 24px 40px 0; overflow:auto; transition:opacity var(--slow) var(--ease); }
+@media (max-width:1100px) { .desk { display:none; } }
+body.focus .rail, body.focus .desk { opacity:0; pointer-events:none; }
+body.focus .stage { transform:translateX(-148px); }
+body.focus .hd { opacity:.35; } body.focus .hd:hover { opacity:1; }
+.sk { color:var(--ink-faint); font-size:12px; letter-spacing:.08em; text-transform:uppercase; padding:8px 0; }
+/* the word */
+.meta { display:flex; align-items:center; gap:8px; font:700 11px var(--f-ui); letter-spacing:.08em; color:var(--ink-faint); text-transform:uppercase; }
+.meta .ml { text-transform:none; letter-spacing:0; font-weight:600; color:var(--ink-dim); font-family:var(--f-ja); }
+.wrow { display:flex; align-items:center; gap:12px; margin:6px 0 0; flex-wrap:wrap; }
+.w { font:700 var(--wsz)/1.15 var(--f-ja); letter-spacing:.01em; }
+.zh .w { font-family:var(--f-zh); }
+.mk { font:600 15px var(--f-ui); } .mk.p { color:var(--m-p); } .mk.l { color:var(--m-l); } .mk.r { color:var(--m-r); }
+.ah { color:var(--ink-dim); font:500 17px var(--f-ui); }
+.anki { display:inline-grid; place-items:center; width:20px; height:20px; border:1.5px solid var(--ok); border-radius:4px; color:var(--ok); font:700 11px var(--f-ui); }
+.rd { display:flex; align-items:flex-end; gap:12px; margin:2px 0 14px; min-height:34px; }
+.kana { font:400 19px var(--f-ja); color:var(--ink-meta); position:relative; display:inline-block; }
+.kana .alt { color:var(--ink-faint); font-size:14px; margin-left:8px; }
+.pitch { position:absolute; left:0; bottom:100%; height:14px; overflow:visible; }
+.nop { font-size:11.5px; color:var(--ink-faint); }
+.tones { font-size:12px; color:var(--ink-dim); display:inline-flex; align-items:center; gap:4px; }
+.tones b { width:7px; height:7px; border-radius:50%; display:inline-block; }
+.btn { display:inline-flex; align-items:center; gap:8px; height:34px; padding:0 14px; border-radius:8px; border:1px solid var(--line-hi); background:var(--surface); color:var(--ink); font:600 13px var(--f-ui); cursor:pointer; transition:background var(--fast) var(--ease), border-color var(--fast) var(--ease); }
+.btn:hover { background:var(--raised); } .btn.quiet { border-color:transparent; background:none; color:var(--ink-dim); height:28px; padding:0 8px; }
+.btn.go { background:var(--accent-deep); border-color:var(--accent-deep); color:#fff; }
+.acts { display:inline-flex; border:1px solid var(--line-hi); border-radius:9px; overflow:hidden; margin-bottom:22px; }
+.acts .btn { border:0; border-radius:0; height:36px; background:var(--surface); }
+.acts .btn + .btn { border-left:1px solid var(--line-hi); }
+.acts .btn.lit.known { color:var(--ok); } .acts .btn.lit.ignore { color:var(--warn); }
+.wait::after { content:""; width:10px; height:10px; border-radius:50%; border:1.5px solid var(--ink-faint); border-top-color:var(--accent); display:inline-block; animation:spin 1.6s linear infinite; }
+.queued::after { content:"⧗"; font-size:11px; color:var(--warn); }
+@keyframes spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .wait::after { animation:none; } }
+.sh { font:700 11px var(--f-ui); letter-spacing:.08em; color:var(--ink-faint); text-transform:uppercase; margin:0 0 6px; display:flex; align-items:center; gap:6px; }
+.q { width:16px; height:16px; border-radius:50%; border:1px solid var(--line-hi); background:none; color:var(--ink-dim); font:700 10px var(--f-ui); cursor:pointer; padding:0; display:inline-grid; place-items:center; }
+.ln { display:flex; gap:12px; align-items:flex-start; padding:10px 12px; border-radius:10px; position:relative; border-left:2px solid transparent; }
+.ln:hover { background:var(--row-hover); }
+.ln.sel { background:var(--accent-wash); border-left-color:var(--accent); }
+.ln .tx { font:400 var(--ssz)/1.5 var(--f-ja); } .zh .ln .tx { font-family:var(--f-zh); }
+.ln .tx b { color:var(--accent); font-weight:700; }
+.ln .oc { font:700 10.5px var(--f-ui); letter-spacing:.08em; color:var(--accent); text-transform:uppercase; }
+.src { display:flex; align-items:center; gap:6px; font:500 12px var(--f-ja); color:var(--ink-dim); margin-top:2px; }
+.wf-hover .ln .src { visibility:hidden; } .wf-hover .ln:hover .src, .wf-hover .ln.sel .src { visibility:visible; }
+.wf-icon .src .sn { display:none; }
+.pl { width:28px; height:28px; border-radius:7px; border:1px solid var(--line-hi); background:var(--surface); color:var(--accent); cursor:pointer; flex:none; display:grid; place-items:center; margin-top:4px; padding:0; }
+.pl.none { visibility:hidden; }
+.fl { margin-left:auto; opacity:0; border:0; background:none; color:var(--ink-faint); cursor:pointer; font-size:14px; padding:4px 6px; border-radius:6px; flex:none; }
+.ln:hover .fl, .fl.lit, .fl.wait, .fl.queued { opacity:1; } .fl.lit { color:var(--warn); }
+.more { color:var(--ink-dim); font-size:12px; padding:6px 12px; }
+/* the desk */
+.card { border:1px solid var(--line-hi); border-radius:12px; background:var(--surface); padding:14px 16px; margin-bottom:18px; }
+.card h4 { margin:0; display:flex; align-items:center; gap:8px; font:700 13.5px var(--f-ui); }
+.tabs { display:flex; gap:4px; margin:10px 0 6px; } .tabs button { border:1px solid var(--line-hi); background:none; border-radius:6px; padding:2px 8px; color:var(--ink-dim); cursor:pointer; font-size:11.5px; } .tabs button.on { color:var(--ink); background:var(--raised); }
+.gl { margin:6px 0 0; padding:0 0 0 18px; color:var(--ink-meta); } .gl li { margin:3px 0; } .gl i { color:var(--ink-faint); font-style:normal; font-size:11px; margin-right:6px; }
+.yours { white-space:pre-wrap; color:var(--ink-meta); font:13px/1.5 var(--f-ja); margin-top:6px; }
+.mrow { display:flex; align-items:center; gap:8px; padding:7px 4px; color:var(--ink-meta); cursor:pointer; border-radius:6px; }
+.mrow:hover { background:var(--row-hover); } .mrow .c { margin-left:auto; color:var(--ink-dim); font-family:var(--f-ja); }
+.kj { font:600 15px var(--f-ja); padding:0 3px; border-radius:4px; cursor:default; } .kj:hover { background:var(--raised); }
+.forms { padding:2px 4px 6px 24px; font:14px var(--f-ja); color:var(--ink-meta); }
+/* end card */
+.end { max-width:720px; margin:48px auto 0; border:1px solid var(--line-hi); border-radius:16px; background:var(--surface); padding:30px 36px; text-align:center; }
+.end .k { font:700 11px var(--f-ui); letter-spacing:.1em; color:var(--accent); text-transform:uppercase; }
+.end h2 { font:700 26px var(--f-ja); margin:10px 0 16px; display:flex; align-items:center; justify-content:center; gap:10px; }
+.prechip { display:inline-flex; align-items:center; gap:8px; height:30px; padding:0 12px; border:1px solid var(--line-hi); border-radius:99px; background:none; cursor:pointer; color:var(--ink-dim); font:600 12px var(--f-ui); }
+.prechip.on { color:var(--pre); border-color:var(--pre); }
+.gline { display:flex; align-items:center; justify-content:center; gap:10px; margin:16px 0 6px; color:var(--ink-dim); }
+.gline .up { color:var(--ok); font-weight:700; }
+.counts { color:var(--ink-faint); font-size:12px; }
+.next { margin:22px 0 18px; }
+.upn { border-top:1px solid var(--line); padding-top:14px; display:flex; align-items:center; justify-content:center; gap:10px; color:var(--ink-dim); font-size:12.5px; }
+.upn .k2 { font:700 10.5px var(--f-ui); letter-spacing:.1em; color:var(--ink-faint); text-transform:uppercase; }
+/* growth bar · % bands · stones */
+.gb { display:inline-block; width:64px; height:4px; border-radius:2px; background:var(--line-hi); position:relative; overflow:hidden; vertical-align:middle; }
+.gb i { position:absolute; top:0; bottom:0; left:0; } .gb .a { background:var(--ink-faint); } .gb .n { background:var(--ok); }
+.pc { font-weight:600; } .pc.warn { color:var(--warn); } .pc.ok { color:var(--ok); }
+.st { display:inline-grid; place-items:center; width:20px; height:20px; position:relative; flex:none; padding:0; border:0; background:none; }
+.st svg { width:20px; height:20px; overflow:visible; }
+button.st { cursor:pointer; border-radius:50%; } button.st:hover { background:var(--raised); }
+.st.ring::after { content:""; position:absolute; inset:-8px; border-radius:50%; border:2px solid var(--ring); pointer-events:none; }
+.st.wait::after, .st.queued::after { position:absolute; right:-8px; bottom:-6px; }
+/* list view */
+.lv .lc { border-bottom:1px solid var(--line); padding:18px 0 14px; }
+.lv .lc.cur { border-left:2px solid var(--accent); padding-left:14px; margin-left:-16px; }
+.lv .lc .w { font-size:calc(var(--wsz) * .62); }
+.lv .acts { margin:8px 0 6px; }
+/* pops */
+.tip { position:fixed; z-index:50; max-width:340px; background:var(--overlay); border:1px solid var(--line-hi); border-radius:8px; padding:8px 10px; font:12px/1.45 var(--f-ja); color:var(--ink); box-shadow:var(--sh-tip); pointer-events:none; white-space:pre-line; }
+.toast { position:fixed; z-index:60; left:50%; bottom:28px; transform:translateX(-50%); background:var(--overlay); border:1px solid var(--line-hi); border-radius:10px; padding:10px 14px; display:flex; gap:14px; align-items:center; box-shadow:var(--sh-tip); font:13px var(--f-ja); }
+.toast button { border:0; background:none; color:var(--accent); font-weight:700; cursor:pointer; }
+.scrim { position:fixed; inset:0; background:var(--scrim); z-index:30; display:grid; place-items:center; }
+.sheet { width:min(560px,92vw); max-height:84vh; overflow:auto; background:var(--overlay); border:1px solid var(--line-hi); border-radius:14px; box-shadow:var(--sh-pop); padding:18px 22px; }
+.sheet h3 { margin:0 0 12px; font:700 15px var(--f-ui); display:flex; align-items:center; gap:8px; }
+.sheet h5 { margin:14px 0 4px; font:700 11px var(--f-ui); letter-spacing:.08em; color:var(--ink-faint); text-transform:uppercase; }
+.sheet ul { margin:0; padding-left:18px; color:var(--ink-meta); } .sheet li { margin:3px 0; }
+.srow { display:flex; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+.srow .sl { flex:1; min-width:160px; font-weight:600; } .srow .wt { width:100%; font-size:11.5px; color:var(--warn); }
+.seg { display:inline-flex; border:1px solid var(--line-hi); border-radius:7px; overflow:hidden; }
+.seg button { border:0; background:none; padding:4px 10px; color:var(--ink-dim); cursor:pointer; font-size:12px; } .seg button.on { background:var(--raised); color:var(--ink); }
+.seg button + button { border-left:1px solid var(--line-hi); }
+.krow { display:flex; align-items:center; gap:10px; padding:5px 0; } .krow .kn { flex:1; color:var(--ink-meta); }
+.krow button.kc { cursor:pointer; min-width:26px; height:22px; } .krow button.kc.arm { border-color:var(--accent); color:var(--accent); }
+.menu { position:fixed; z-index:40; background:var(--overlay); border:1px solid var(--line-hi); border-radius:10px; box-shadow:var(--sh-pop); padding:6px; min-width:240px; }
+.menu .mi { display:flex; gap:8px; align-items:center; width:100%; border:0; background:none; text-align:left; padding:6px 8px; border-radius:6px; cursor:pointer; color:var(--ink); }
+.menu .mi:hover { background:var(--overlay-hover); } .menu .ck { width:12px; color:var(--accent); } .menu .c { margin-left:auto; color:var(--ink-faint); }
+.menu .mg { font:700 10.5px var(--f-ui); letter-spacing:.08em; color:var(--ink-faint); text-transform:uppercase; padding:6px 8px 2px; }
+.menu hr { border:0; border-top:1px solid var(--line); margin:4px 0; }
+.res { position:absolute; left:0; top:38px; width:420px; max-height:60vh; overflow:auto; background:var(--overlay); border:1px solid var(--line-hi); border-radius:10px; box-shadow:var(--sh-pop); z-index:40; padding:4px; }
+.res .ri { display:flex; gap:10px; align-items:baseline; padding:6px 8px; border-radius:6px; cursor:pointer; } .res .ri.on, .res .ri:hover { background:var(--overlay-hover); }
+.res .ri b { font:600 15px var(--f-ja); } .res .ri span { color:var(--ink-dim); font:12px var(--f-ja); } .res .ri .e { margin-left:auto; }
+.res .none { padding:10px; color:var(--ink-dim); }
+.flagp { position:fixed; z-index:45; width:330px; background:var(--overlay); border:1px solid var(--line-hi); border-radius:12px; box-shadow:var(--sh-pop); padding:12px 14px; }
+.flagp .chips { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0; } .flagp .chips button { border:1px solid var(--line-hi); border-radius:99px; background:none; padding:3px 10px; cursor:pointer; font-size:12px; color:var(--ink-dim); }
+.flagp .chips button.on { color:var(--ink); border-color:var(--warn); background:var(--raised); }
+.flagp textarea { width:100%; height:54px; background:var(--cut); color:var(--ink); border:1px solid var(--line-hi); border-radius:6px; font:12px var(--f-ui); }
+.flagp .why { font-size:11.5px; color:var(--ink-dim); }
+.empty { max-width:520px; margin:80px auto; text-align:center; color:var(--ink-dim); }
+.empty h2 { color:var(--ink); font:700 20px var(--f-ui); }
+</style>
+<!--JOURNEY-RAIL-->
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <linearGradient id="j-sheen" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff" stop-opacity=".55"/><stop offset=".5" stop-color="#b3c8ff" stop-opacity=".18"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/></linearGradient>
+</defs></svg>
+<div id="app">
+  <header class="hd" data-r="top"><div class="hd1">
+    <div class="brand"><b>Sura<i>sura</i></b><span id="lname">Journey</span></div>
+    <div class="sw"><label class="sbox"><svg class="i" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg><input id="q" autocomplete="off" spellcheck="false" placeholder="Search your journey" aria-label="Search your journey"><span class="kc">/</span></label><div id="res" class="res hide" role="listbox"></div></div>
+    <span class="sp"></span>
+    <span class="chip" id="door" data-tip="Waiting to hear from Surasura"><i></i>Surasura</span>
+    <button class="ib" id="b-list" aria-label="List view" data-tip="List view: the episode's words as cards"><svg class="i" viewBox="0 0 16 16"><path d="M3 4h10M3 8h10M3 12h10"/></svg></button>
+    <button class="ib" id="b-focus" aria-label="Focus" data-tip="Focus: only the word (X; Esc to leave)"><svg class="i" viewBox="0 0 16 16"><rect x="3" y="3" width="10" height="10" rx="2"/></svg></button>
+    <button class="ib" id="b-keys" aria-label="Keys" data-tip="Keys (?)"><svg class="i" viewBox="0 0 16 16"><rect x="1.5" y="4" width="13" height="8" rx="1.5"/><path d="M4 7h1M7 7h1M10 7h1M5 9.5h6"/></svg></button>
+    <button class="ib" id="b-set" aria-label="Settings" data-tip="The journey's settings"><svg class="i" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></svg></button>
+  </div></header>
+  <div class="body">
+    <aside id="rail" class="rail" data-r="rail" aria-label="Episodes"></aside>
+    <main id="stage" class="stage" data-r="word" tabindex="-1"><div class="sk">Opening your journey…</div></main>
+    <section id="desk" class="desk" data-r="desk" aria-label="Meaning and more"><div class="card"><h4>Meaning <span class="kc" id="k-meaning"></span><span class="sp"></span><button class="btn quiet" id="b-meaning" data-act="meaning">Show</button></h4><div id="meaning" data-r="meaning"></div></div>
+      <div class="sh">More <button class="q" data-help="more" aria-label="About More">?</button></div><div id="more" data-r="more"></div></section>
+  </div>
+</div>
+<div id="tip" class="tip hide" data-r="tip" role="tooltip"></div>
+<div id="toast" class="toast hide" data-r="toast" role="status"></div>
+<div id="layer" data-r="layer"></div>
+<video id="player" class="hide" data-r="player" preload="none"></video>
+<!--JOURNEY-DATA-->
+<script>
+"use strict";
+/* Journey v3, the page (SPEC §1). It draws the render's data and sends every press through Surasura's door to the
+   piece that owns it (§3). It keeps no learning fact of its own: a lit mark is the render's, the door's answer, or a
+   press waiting in the queue (⧗). View state (where you are, Focus, List, what is open) is the page's, in localStorage,
+   written after the first word. The rail is one swappable piece (§1.1b): it gets `page` below and nothing else. */
+const T0 = performance.now();
+const $ = (id) => document.getElementById(id);
+/* A write only when it changes something (the redraw rule: a press writes only what it changed). */
+function setHtml(el, html) { if (el && el.__h !== html) { el.innerHTML = html; el.__h = html; } }
+function setText(el, t) { if (el && el.textContent !== t) el.textContent = t; }
+function setCls(el, c, on) { if (el && el.classList.contains(c) !== !!on) el.classList.toggle(c, !!on); }
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const HEAD = JSON.parse(($("j-head") || { textContent: '{"v":1,"lang":"ja","stamp":"0","library":"","settings":{},"shows":[],"eps":[],"finished":[],"orders":{"freq":[]},"chunks":[],"dirs":[],"blobs":[],"counts":{"eps":0,"words":0,"shows":0,"with_new":0}}' }).textContent);
+const LANG = HEAD.lang === "zh" ? "zh" : "ja";
+const EPS = HEAD.eps, SHOWS = HEAD.shows, CH = HEAD.chunks;
+const STONES = JSON.parse(($("j-stones") || { textContent: "{}" }).textContent || "{}");
+const RANK = { known: 1, ignore: 2 };
+const TIER = ["Now", "Soon", "6+ Months"];
+/* ⇄ ships with the simple Swap (D2); this one flag hides it, and it hides by itself while its route answers not_yet. */
+const SWAP_SHOWN = true;
+document.documentElement.lang = LANG === "zh" ? "zh" : "ja";
+document.body.classList.toggle("zh", LANG === "zh");
+$("lname").textContent = (LANG === "zh" ? "中文" : "日本語") + " · Journey";
+
+/* ---- the page's settings (SPEC §1.4): Surasura's keys, written through the door; look ones applied here ---- */
+/* PROVISIONAL seam (J-SET): the key each row writes, and the head's `settings` name it is read from. */
+const SETTINGS = [
+  { k: "sentences", key: "logic.context.max_contexts", data: true, name: "Sentences per word", def: 3, opts: [[1, "1"], [2, "2"], [3, "3"], [5, "5"], [0, "All"]],
+    help: ["How many of the word's sentences show, best first.", "Each extra sentence makes the page about 0.4 MB bigger at 20,000 episodes.", "More than the page holds now arrive at the next Generate."] },
+  { k: "pitch", key: "journey_pitch", name: "Pitch and tones", def: "shown", opts: [["shown", "Shown"], ["hidden", "Hidden until F"]],
+    help: ["Japanese: the pitch graph over the reading.", "Chinese: the tone marks and the tones line.", "Hidden: F shows it for the word you are on."] },
+  { k: "meanings", key: "journey_meanings", data: true, name: "Meanings", def: "en", opts: [["en", "English"], ["yours_en", "Yours, then English"], ["yours", "Yours only"]],
+    help: ["English: JMdict (Japanese) or CC-CEDICT (Chinese).", "Yours: your own dictionaries in Anki Miner, first, as your card will say it.", "Yours only: the kanji hover shows readings, no English.", "Your dictionaries' text never leaves this PC."] },
+  { k: "where_from", key: "journey_where_from", name: "Where each line is from", def: "icon", opts: [["icon", "Icon"], ["icon_name", "Icon + name"], ["hover", "Only on hover"]],
+    help: ["Icon: its kind (anime, book, YouTube…), the name in the hover.", "Icon + name: the show and episode under each line.", "Only on hover: nothing until the pointer is on the line."] },
+  { k: "size", key: "journey_text_size", name: "Word size · sentence size", def: "1.1", opts: [["0.0", "S · S"], ["1.1", "M · M"], ["2.2", "L · L"], ["2.1", "L · M"]],
+    help: ["The big word and the sentences, three steps each."] },
+  { k: "theme", key: "journey_theme", name: "The page's theme", def: "night", opts: [["night", "Night"], ["light", "Light"]],
+    help: ["For this page only: Surasura's window keeps its own."] },
+  { k: "keys", key: "journey_keys", name: "Keys", def: "qwerty", opts: [["qwerty", "QWERTY"], ["dvorak", "Dvorak"]],
+    help: ["Dvorak puts every key in the same places.", "Move any key in the keys sheet (?): a moved key trades places."] },
+];
+const SET = {};
+for (const s of SETTINGS) SET[s.k] = (HEAD.settings && HEAD.settings[s.k] != null) ? HEAD.settings[s.k] : s.def;
+const SET_WAIT = {};                                   // setting -> "wait" | "queued" (until Surasura has it)
+
+/* ---- the keys (SPEC §1.2) ---- */
+const ACTIONS = [["known", "✓ Known"], ["ignore", "⊘ Ignore"], ["pick", "⇄ Pick this sentence"], ["pre", "Pre-studied on / off"],
+  ["line", "▶ the line"], ["word", "▶ the word"], ["meaning", "Meaning"], ["pitch", "Pitch (show / hide on this word)"],
+  ["filter", "Filter (All → ✦ → ⚖ → 文)"], ["focus", "Focus"], ["lookup", "⌕ Look the word up"], ["picker", "Episodes (the picker)"]];
+const PRESETS = {
+  qwerty: { known: "q", ignore: "w", pick: "e", pre: "r", line: "a", word: "s", meaning: "d", pitch: "f", filter: "z", focus: "x", lookup: "\\", picker: "" },
+  dvorak: { known: "'", ignore: ",", pick: ".", pre: "p", line: "a", word: "o", meaning: "e", pitch: "u", filter: ";", focus: "q", lookup: "\\", picker: "" },
+};
+function keymap() {
+  const v = SET.keys;
+  if (v && typeof v === "object") return Object.assign({}, PRESETS.qwerty, v);
+  return PRESETS[v] || PRESETS.qwerty;
+}
+let KEYS = keymap();
+const keyOf = (a) => KEYS[a] ? KEYS[a].toUpperCase() : "";
+const kt = (a) => keyOf(a) ? ` (${keyOf(a)})` : "";
+
+/* ---- icons ---- */
+const KIND_GEM = { book: "emerald", lightnovel: "emerald", manga: "emerald", text: "emerald", audiobook: "emerald", podcast: "emerald", youtube: "ruby" };
+const KIND_VERB = { book: "read", lightnovel: "read", manga: "read", text: "read", audiobook: "listened to", podcast: "listened to" };
+const verb = (kind) => KIND_VERB[kind] || "watched";
+const PATH = {
+  tv: '<rect x="2" y="3.5" width="12" height="8" rx="1.5"/><path d="M6 14h4"/>',
+  film: '<rect x="2" y="3" width="12" height="10" rx="1"/><path d="M2 6.3h12M2 9.7h12M6 3v10M10 3v10"/>',
+  play: '<rect x="1.8" y="3.5" width="12.4" height="9" rx="2.2"/><path d="M6.8 6.2v3.6L9.9 8z"/>',
+  book: '<path d="M2.5 3.5h4a1.5 1.5 0 0 1 1.5 1.5v8a1.5 1.5 0 0 0-1.5-1.5h-4zM13.5 3.5h-4A1.5 1.5 0 0 0 8 5v8a1.5 1.5 0 0 1 1.5-1.5h4z"/>',
+  ear: '<path d="M3 10V8a5 5 0 0 1 10 0v2"/><rect x="2.5" y="9.5" width="2.5" height="4" rx="1"/><rect x="11" y="9.5" width="2.5" height="4" rx="1"/>',
+  game: '<rect x="1.8" y="5" width="12.4" height="7" rx="3"/><path d="M5 7.3v2.4M3.8 8.5h2.4M10.5 8h.01M12 9.3h.01"/>',
+  cc: '<rect x="2" y="3.5" width="12" height="9" rx="1.5"/><path d="M7 7a1.5 1.5 0 1 0 0 2M11 7a1.5 1.5 0 1 0 0 2"/>',
+};
+const KIND_PATH = { anime: "tv", drama: "tv", movie: "film", youtube: "play", video: "play", podcast: "ear", audiobook: "ear", book: "book", lightnovel: "book", manga: "book", text: "book", game: "game", subtitle: "cc" };
+function kindIcon(kind, gem) {
+  const g = gem || KIND_GEM[kind] || "sapphire";
+  return `<svg class="i" viewBox="0 0 16 16" style="color:var(--${g})" aria-label="${esc(kind || "")}">${PATH[KIND_PATH[kind] || "tv"]}</svg>`;
+}
+const pcClass = (p) => p == null ? "" : (p < 93 ? "warn" : (p >= 96 ? "ok" : ""));
+const fmtPct = (p) => p == null ? "" : `${Math.round(p)}%`;
+
+/* ---- the stones (SPEC §2.4): J-STONES's baked pictures when the render carries them, else the page's own ---- */
+const SHAPES = {
+  rock: "4,14 6,7 11,4 16,7 17,13 12,17 6,17",
+  raw: "10,2.5 14.5,7 13,17.5 7,17.5 5.5,7",
+  cut: "10,2.5 16,7.5 16,12.5 10,17.5 4,12.5 4,7.5",
+};
+function stoneSvg(state, gem, pre, missing) {
+  const key = `${state}.${gem}${pre ? ".pre" : ""}`;
+  if (STONES[key]) return STONES[key];
+  const sh = state === "rock" ? "rock" : (state === "cut" || state === "fin" ? "cut" : "raw");
+  const pts = SHAPES[sh];
+  let body;
+  if (missing) body = `<polygon points="${pts}" fill="none" stroke="var(--ink-faint)" stroke-dasharray="2 2"/>`;
+  else if (sh === "rock") body = `<polygon points="${pts}" fill="var(--rock-dark)" stroke="var(--rock-rim)"/><path d="M6 7 11 4 16 7 11 9z" fill="var(--rock-lit)" opacity=".55"/>`;
+  else if (sh === "raw") body = `<polygon points="${pts}" fill="var(--gem-${gem}-b)" stroke="var(--${gem})" stroke-width=".8" opacity=".92"/><path d="M10 2.5 10 17.5M5.5 7 14.5 7" stroke="var(--${gem})" stroke-width=".5" opacity=".6"/>`;
+  else body = `<polygon points="${pts}" fill="var(--${gem})" stroke="var(--gem-${gem}-e)" stroke-width=".7"/><path d="M4 7.5 16 7.5M10 2.5 7 7.5 10 17.5 13 7.5z" fill="none" stroke="var(--gem-${gem}-e)" stroke-width=".5" opacity=".8"/>`;
+  const add = pre ? `<polygon points="${pts}" fill="url(#j-sheen)" stroke="var(--pre)" stroke-width=".9"/><path d="M17.5 0.2 18.3 2.2 20.3 3 18.3 3.8 17.5 5.8 16.7 3.8 14.7 3 16.7 2.2z" fill="var(--pre-spark)"/>` : "";
+  return `<svg viewBox="0 0 20 20" aria-hidden="true">${body}${add}</svg>`;
+}
+const sparkle = () => `<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3 11.4 8.6 17 10 11.4 11.4 10 17 8.6 11.4 3 10 8.6 8.6z" fill="var(--pre-spark)"/></svg>`;
+
+/* ---- the episodes (the head) ---- */
+const EP = (i) => EPS[i];
+const epId = (i) => EPS[i][0];
+const isWatched = (i) => (EPS[i][10] & 1) === 1;
+const epTitle = (i) => EPS[i][2];
+function epPart(i) {                                  // the episode's own part of its title (the show is its row)
+  const t = EPS[i][2], s = SHOWS[EPS[i][3]];
+  return s && t.startsWith(s[1] + " · ") ? t.slice(s[1].length + 3) : t;
+}
+const showOf = (i) => SHOWS[EPS[i][3]] || ["", "", EPS[i][5], "sapphire"];
+const gemOf = (i) => showOf(i)[3] || KIND_GEM[EPS[i][5]] || "sapphire";
+const ID_IX = new Map();
+for (let i = 0; i < EPS.length; i++) if (EPS[i][0] != null) ID_IX.set(EPS[i][0], i);
+
+/* pre-studied: the render's, then the door's answers; a press waits (pending) until its answer */
+const PRE = new Map();                                // ep index -> {on, by, at, wait}
+for (let i = 0; i < EPS.length; i++) if (EPS[i][11]) PRE.set(i, { on: true, at: EPS[i][11][0], by: EPS[i][11][1] });
+const preOf = (i) => PRE.get(i) || { on: false, by: null };
+
+/* ---- the words: gzip chunks, decoded when needed (§5.1) ---- */
+const CHUNKS = new Map();                             // chunk index -> decoded {w0, src, w}
+const DECODING = new Map();
+function chunkOfWord(id) {
+  let lo = 0, hi = CH.length - 1;
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (CH[m][0] <= id) lo = m; else hi = m - 1; }
+  return lo;
+}
+async function gunzipJson(el) {
+  const bin = atob(el.textContent.trim());
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const text = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
+  return JSON.parse(text);
+}
+function loadChunk(c) {
+  if (CHUNKS.has(c)) return Promise.resolve(CHUNKS.get(c));
+  if (DECODING.has(c)) return DECODING.get(c);
+  const p = gunzipJson($("j-c" + c)).then((d) => { CHUNKS.set(c, d); DECODING.delete(c); indexChunk(c, d); trimChunks(c); return d; });
+  DECODING.set(c, p);
+  return p;
+}
+function trimChunks(keep) {                           // the heap stays small: only a few chunks kept whole
+  if (CHUNKS.size <= 6) return;
+  for (const c of CHUNKS.keys()) {
+    if (c === keep || c === chunkOfWord(EPS[S.ep] ? EPS[S.ep][8] : 0)) continue;
+    CHUNKS.delete(c);
+    if (CHUNKS.size <= 6) break;
+  }
+}
+function wordNow(id) {                                // a word, when its chunk is decoded; else null
+  const c = chunkOfWord(id), d = CHUNKS.get(c);
+  return d ? d.w[id - d.w0] : null;
+}
+function epChunks(i) {
+  const e = EPS[i];
+  if (!e[7] || !CH.length) return [];
+  const a = chunkOfWord(e[8]), b = chunkOfWord(e[8] + e[7] - 1), out = [];
+  for (let c = a; c <= b; c++) out.push(c);
+  return out;
+}
+const epReady = (i) => epChunks(i).every((c) => CHUNKS.has(c));
+const loadEp = (i) => Promise.all(epChunks(i).map(loadChunk));
+function srcOf(id, k) {
+  const d = CHUNKS.get(chunkOfWord(id));
+  return d && k != null ? d.src[k] : null;
+}
+
+/* the blobs: meanings, kanji and Yours, at idle (or on first use) */
+const BLOBS = {};
+function blob(name) {
+  if (!(HEAD.blobs || []).includes(name) || !$("j-" + name)) return Promise.resolve(null);
+  if (!BLOBS[name]) BLOBS[name] = gunzipJson($("j-" + name)).then((d) => (BLOBS[name + "!"] = d));
+  return BLOBS[name];
+}
+const blobNow = (name) => BLOBS[name + "!"] || null;
+
+/* the search index: word / spelling / readings of every word, built a chunk at a time */
+const SIDX = [];                                       // chunk -> [keys string per word]
+function indexChunk(c, d) {
+  if (SIDX[c]) return;
+  SIDX[c] = d.w.map((w) => `${w[0]}\u0001${w[1]}\u0001${kana(w[2])}\u0001${w[3]}\u0001${w[2]}`.toLowerCase());
+}
+
+/* ---- view state (not learning facts): in this browser, written after the first word ---- */
+const LIB = `${HEAD.library || "nolib"}_${LANG}`;
+const VIEW_KEY = `surasura_journey_view_${LIB}`;
+const S = { ep: 0, wi: 0, list: false, focus: false, filter: 0, order: "meet", open: {}, line: 0, pitchShown: false, back: null };
+let VIEW_OK = false;
+function saveView() {
+  if (!VIEW_OK) return;
+  try { localStorage.setItem(VIEW_KEY, JSON.stringify({ id: epId(S.ep), name: EPS[S.ep] && EPS[S.ep][1], wi: S.wi, list: S.list, focus: S.focus, filter: S.filter, order: S.order, open: S.open })); } catch (e) {}
+}
+let saveTimer = 0;
+const saveSoon = () => { clearTimeout(saveTimer); saveTimer = setTimeout(saveView, 300); };
+
+/* ---- marks (the word lists' own, read back), the walk and the filter ---- */
+const MARK = new Map();                                // word -> "known" | "ignore" (the app's, or a sent press)
+const MWAIT = new Map();                               // word -> "wait" | "queued"
+const FILTERS = [["All words", 0], ["✦ only", 1], ["⚖ only", 2], ["文 only", 4]];
+let RANKS = null;
+function freqRank() {
+  if (RANKS) return RANKS;
+  RANKS = new Int32Array(HEAD.counts.words || 0);
+  const f = HEAD.orders && HEAD.orders.freq || [];
+  for (let i = 0; i < f.length; i++) RANKS[f[i]] = i;
+  return RANKS;
+}
+const SEQ = new Map();                                 // ep -> word ids in view (order + filter)
+function seq(i) {
+  let s = SEQ.get(i);
+  if (s) return s;
+  const e = EPS[i], bit = FILTERS[S.filter][1];
+  s = [];
+  for (let k = 0; k < e[7]; k++) {
+    const id = e[8] + k;
+    if (bit) { const w = wordNow(id); if (!w) return null; if (!(w[6] & bit)) continue; }
+    s.push(id);
+  }
+  if (S.order === "freq") { const r = freqRank(); s.sort((a, b) => r[a] - r[b]); }
+  SEQ.set(i, s);
+  return s;
+}
+const resetSeq = () => SEQ.clear();
+function nextEp(i, dir, withNothing) {                 // the next episode not watched (nothing-new ones when asked)
+  for (let j = i + dir; j >= 0 && j < EPS.length; j += dir) {
+    if (isWatched(j)) continue;
+    if (EPS[j][7] > 0 || withNothing) return j;
+  }
+  return -1;
+}
+function startEp() {
+  for (let i = 0; i < EPS.length; i++) if (!isWatched(i) && EPS[i][7] > 0) return i;
+  return EPS.length ? 0 : -1;
+}
+
+/* ---- the door (SPEC §3): loopback only, the token handed over in the address once ---- */
+const DOOR = (function () {
+  let door = null;
+  const m = /^#door=(\d+)\.([A-Za-z0-9_-]+)(?:&(.*))?$/.exec(location.hash);
+  if (m) {
+    door = { port: Number(m[1]), token: m[2] };
+    const rest = m[3] ? "#" + m[3] : "";
+    try { history.replaceState(null, "", location.href.split("#")[0] + rest); } catch (e) { location.replace(rest || "#"); }
+    try { sessionStorage.setItem("surasura-door", JSON.stringify(door)); } catch (e) {}
+  } else {
+    try { door = JSON.parse(sessionStorage.getItem("surasura-door") || "null"); } catch (e) {}
+  }
+  return door && door.port && door.token ? door : null;
+})();
+const D = { state: DOOR ? "unknown" : "unopened", routes: null, library: null, sending: false };
+async function doorCall(route, body, ms) {
+  if (window.__J_FAKE_DOOR) return window.__J_FAKE_DOOR(route, body || {});
+  if (!DOOR) return { ok: false, offline: true, why: "unopened" };
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms || 8000);
+  try {
+    const r = await fetch(`http://127.0.0.1:${DOOR.port}/v1/${route}`, { method: "POST", headers: { "Content-Type": "text/plain" }, signal: ctl.signal,
+      body: JSON.stringify(Object.assign({ token: DOOR.token, lang: LANG }, body || {})) });
+    if (r.status === 403) return { ok: false, offline: true, why: "unopened" };
+    return await r.json();
+  } catch (e) {
+    return { ok: false, offline: true, why: "closed" };
+  } finally { clearTimeout(timer); }
+}
+const built = (route) => D.routes == null || D.routes.includes(route);   // unknown until hello: shown, and queued
+const live = () => D.state === "on";
+
+/* the one waiting queue (§3.2): every record write in press order, kept for this library + language */
+const QKEY = `surasura_door_queue_${LIB}`;
+let QUEUE = [];
+try { QUEUE = JSON.parse(localStorage.getItem(QKEY) || "[]"); } catch (e) { QUEUE = []; }
+function saveQueue() { try { QUEUE.length ? localStorage.setItem(QKEY, JSON.stringify(QUEUE)) : localStorage.removeItem(QKEY); } catch (e) {} }
+function enqueue(route, body, tag) {
+  QUEUE = QUEUE.filter((q) => q.tag !== tag);          // a newer press on the same thing replaces the waiting one
+  QUEUE.push({ route, body, tag });
+  saveQueue();
+}
+function unqueue(tag) { const n = QUEUE.length; QUEUE = QUEUE.filter((q) => q.tag !== tag); if (QUEUE.length !== n) saveQueue(); return QUEUE.length !== n; }
+const queuedTag = (tag) => QUEUE.some((q) => q.tag === tag);
+function waitWord() { return D.state === "unopened" ? "⧗ this page only until you open it from Surasura" : "⧗ waiting for Surasura"; }
+
+/* one record write: sent now when the door answers, else queued (⧗); the answer is the read-back */
+async function write(route, body, tag, done) {
+  body.at = Date.now();
+  if (!live()) { enqueue(route, body, tag); done({ queued: true }); return; }
+  const a = await doorCall(route, body);
+  if (a && a.ok) { unqueue(tag); done({ answer: a }); return; }
+  if (a && (a.offline || a.kind === "closed" || a.kind === "busy" || a.kind === "not_yet")) {
+    if (a.offline) setDoor(a.why === "unopened" ? "unopened" : "off");
+    enqueue(route, body, tag); done({ queued: true, kind: a.kind }); return;
+  }
+  unqueue(tag); done({ refused: a ? (a.error || "Surasura couldn't take that.") : "No answer.", kind: a && a.kind });
+}
+
+async function flushQueue() {
+  if (!live() || D.sending || !QUEUE.length) return;
+  if (D.library && HEAD.library && D.library !== HEAD.library) return;     // another library's Surasura (D31)
+  D.sending = true;
+  try {
+    while (QUEUE.length && live()) {
+      const marks = QUEUE.filter((q) => q.route === "words/mark").slice(0, 150);
+      const first = QUEUE[0];
+      if (first.route === "words/mark") {
+        const a = await doorCall("words/mark", { marks: marks.map((q) => q.body.marks[0]) });
+        if (a && a.offline) { setDoor("off"); break; }
+        if (a && !a.ok && (a.kind === "busy" || a.kind === "closed")) break;
+        const tags = new Set(marks.map((q) => q.tag));
+        QUEUE = QUEUE.filter((q) => !tags.has(q.tag));
+        for (const q of marks) MWAIT.delete(q.body.marks[0].word);
+        if (a && a.ok && a.stale && a.stale.length) await readState();
+      } else {
+        if (!built(first.route)) { QUEUE.push(QUEUE.shift()); if (QUEUE.every((q) => !built(q.route))) break; continue; }
+        const a = await doorCall(first.route, first.body);
+        if (a && a.offline) { setDoor("off"); break; }
+        if (a && !a.ok && (a.kind === "busy" || a.kind === "closed")) break;
+        QUEUE.shift();
+        if (a && a.ok) answered(first.route, first.body, a);
+        else if (a && a.kind === "stale") await readState();
+      }
+      saveQueue();
+    }
+  } finally { D.sending = false; saveQueue(); redrawMarks(); }
+}
+
+function setDoor(state) {
+  D.state = state;
+  const c = $("door");
+  c.classList.toggle("on", state === "on");
+  c.classList.toggle("off", state === "off" || state === "unopened");
+  c.dataset.tip = state === "on" ? "Surasura is open: every press goes straight to it."
+    : state === "off" ? "Surasura is closed: your marks wait here (⧗) and go to it the next time you open the journey from Surasura."
+    : state === "unopened" ? "This page wasn't opened from Surasura: your marks stay on this page (⧗) until you open it from Surasura's Journey ↗."
+    : "Waiting to hear from Surasura";
+}
+
+async function hello() {
+  const a = await doorCall("hello", {}, 4000);
+  if (!a || !a.ok) { setDoor(a && a.why === "unopened" ? "unopened" : "off"); redrawMarks(); return; }
+  D.routes = Array.isArray(a.routes) ? a.routes : null;
+  D.library = a.library || null;
+  setDoor("on");
+  await readState();
+  await flushQueue();
+  drawWord(); rail.update("all");                       // (only what the answers changed is written)
+}
+const sinceMs = () => { const n = Number(HEAD.stamp); return isFinite(n) && n > 0 ? Math.floor(n / 1e6) : null; };
+async function readState() {
+  const a = await doorCall("state", { since: sinceMs() }, 6000);
+  if (!a || !a.ok) return;
+  if (a.marks && typeof a.marks === "object") {
+    MARK.clear();
+    for (const w in a.marks) if (RANK[a.marks[w]]) MARK.set(w, a.marks[w]);
+  }
+  if (a.prestudied && typeof a.prestudied === "object") {
+    for (let i = 0; i < EPS.length; i++) {
+      const id = EPS[i][0]; if (id == null) continue;
+      const p = a.prestudied[id], cur = PRE.get(i);
+      if (cur && cur.wait) continue;
+      if (p) PRE.set(i, { on: true, at: p.at, by: p.by }); else if (cur && cur.on) PRE.set(i, { on: false, by: "off" });
+    }
+  }
+  if (a.flags && Array.isArray(a.flags.flagged)) { FLAGGED.clear(); for (const [lid] of a.flags.flagged) FLAGGED.add(lid); for (const [lid, st] of FWAIT) if (st === "queued") FLAGGED.add(lid); }
+  if (a.settings && typeof a.settings === "object") {
+    for (const s of SETTINGS) if (a.settings[s.key] != null && !SET_WAIT[s.k]) SET[s.k] = a.settings[s.key];
+    applyLook();
+  }
+}
+function answered(route, body, a) {
+  if (route === "episode/prestudied") { const i = ID_IX.get(body.id); if (i != null) PRE.set(i, { on: !!a.on, at: a.at, by: a.by || (a.on ? body.why : "off") }); rail.update("pre", i); }
+  if (route === "settings/set") { const s = SETTINGS.find((x) => x.key === body.key); if (s) delete SET_WAIT[s.k]; }
+}
+
+/* ---- presses ---- */
+function curWordId() { const s = seq(S.ep); return s && S.wi < s.length ? s[S.wi] : null; }
+function markWord(kind, id) {
+  id = id == null ? curWordId() : id;
+  const w = id == null ? null : wordNow(id);
+  if (!w) return;
+  const word = w[0], was = MARK.get(word) || "";
+  const mark = was === kind ? "" : kind;            // the same press again clears it (the list decides what that means)
+  if (mark) MARK.set(word, mark); else MARK.delete(word);
+  MWAIT.set(word, "wait");
+  if (!S.list && mark) step(1); else drawActs(word);
+  rail.update("word", id);
+  write("words/mark", { marks: [{ word, mark, was }] }, "m:" + word, (r) => {
+    if (r.queued) MWAIT.set(word, "queued"); else MWAIT.delete(word);
+    if (r.refused) { if (was) MARK.set(word, was); else MARK.delete(word); toast(r.refused); }
+    drawActs(word); rail.update("word", id);
+    if (r.answer && r.answer.stale && r.answer.stale.length) readState().then(redrawMarks);
+    if (mark && !r.refused) toast(`${mark === "known" ? "✓ Known" : "⊘ Ignored"}: ${word}`, () => undoMark(word, was, r.answer && r.answer.undo_id, id));
+  });
+}
+function undoMark(word, was, undoId, id) {
+  const put = () => { if (was) MARK.set(word, was); else MARK.delete(word); MWAIT.delete(word); drawActs(word); rail.update("word", id); };
+  if (unqueue("m:" + word)) { put(); return; }
+  if (!undoId) return;
+  doorCall("words/undo", { undo_id: undoId }).then((a) => {
+    if (a && a.ok) put();
+    else toast(a && a.error || "Surasura is closed: that Undo can't be kept.");
+  });
+}
+
+function canPre(i) {
+  return i >= 0 && i < EPS.length && EPS[i][0] != null && !isWatched(i) && built("episode/prestudied");
+}
+function prestudied(i, why) {
+  if (i == null) i = S.ep;
+  if (!canPre(i)) return false;
+  why = why || "press";
+  const before = Object.assign({}, preOf(i));
+  if (why === "end" && (before.on || before.by)) return false;   // an un-mark sticks; the end card marks once
+  const on = why === "end" ? true : !before.on;
+  PRE.set(i, { on, by: on ? why : "off", at: before.at, wait: "wait" });
+  rail.update("pre", i); drawPreBits(i);
+  write("episode/prestudied", { id: epId(i), on, why }, "p:" + epId(i), (r) => {
+    const p = PRE.get(i) || {};
+    if (r.queued) PRE.set(i, Object.assign(p, { wait: "queued" }));
+    else if (r.answer) PRE.set(i, { on: !!r.answer.on, at: r.answer.at, by: r.answer.by || (r.answer.on ? why : "off") });
+    else { PRE.set(i, before); if (r.kind !== "stale") toast(r.refused); }
+    rail.update("pre", i); drawPreBits(i);
+    if (why === "press" && !r.refused) toast(`${on ? "Pre-studied" : "Un-marked"}: ${epTitle(i)}`, () => undoPre(i, before, r.answer && r.answer.undo_id));
+  });
+  return true;
+}
+function undoPre(i, before, undoId) {
+  const put = () => { PRE.set(i, before); rail.update("pre", i); drawPreBits(i); };
+  if (unqueue("p:" + epId(i))) { put(); return; }
+  if (undoId == null) return;
+  doorCall("episode/undo", { undo_id: undoId }).then((a) => { if (a && a.ok) put(); else toast(a && a.error || "Surasura is closed: that Undo can't be kept."); });
+}
+
+/* ⚑ flag a sentence → Send report (§4) */
+const FLAGGED = new Set();                             // line ids, Send report's list read back
+const FWAIT = new Map();
+function lineId(text, label) {                         // a line's id: its text and where it is from (no path)
+  let h = 0x811c9dc5;
+  const s = text + "\u0001" + label;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(16).padStart(8, "0");
+}
+const REASONS = [["parsing", "Parsing looks wrong"], ["too_long", "Too long"], ["bad_audio", "Bad audio"], ["wrong_sentence", "Wrong sentence for this word"], ["other", "Other"]];
+function flagLine(id, k, reasons, note, on) {
+  const w = wordNow(id), ln = w && w[9][k];
+  if (!ln) return;
+  const src = srcOf(id, ln[1]), label = src ? src[0] : "", e = src && src[2] >= 0 ? EPS[src[2]] : null;
+  const lid = lineId(ln[0], label), show = e ? showOf(src[2])[1] : label;
+  if (on) FLAGGED.add(lid); else FLAGGED.delete(lid);
+  FWAIT.set(lid, "wait"); drawPart("lines");
+  write("line/flag", { line_id: lid, word: w[0], line: ln[0], show, episode: e ? epPart(src[2]) : "", time: ln[2], reasons, note: note || "", on }, "f:" + lid, (r) => {
+    if (r.queued) FWAIT.set(lid, "queued"); else FWAIT.delete(lid);
+    if (r.refused) { if (on) FLAGGED.delete(lid); else FLAGGED.add(lid); toast(r.refused); }
+    drawPart("lines");
+    if (!r.refused) toast(on ? "Flagged: it goes with your next Send report, where you see it first." : "Flag taken off.", () => flagLine(id, k, reasons, note, !on));
+  });
+}
+
+/* a look or data setting (§1.4): look ones applied here at once; every one written to Surasura on the press only */
+/* each setting redraws only the part it owns (the redraw rule): a look one is CSS, a data one its own part */
+const SET_DRAW = {
+  theme: () => applyLook(), size: () => applyLook(), where_from: () => applyLook(),
+  pitch: () => drawPart("reading"), sentences: () => drawPart("lines"), meanings: () => drawDesk(),
+  keys: () => { drawPart("acts"); drawDesk(); },
+};
+function setSetting(k, value) {
+  const s = SETTINGS.find((x) => x.k === k);
+  SET[k] = value; SET_WAIT[k] = "wait";
+  if (k === "keys") KEYS = keymap();
+  SET_DRAW[k]();
+  drawSetRow(k);
+  write("settings/set", { key: s.key, value }, "s:" + s.key, (r) => {
+    if (r.queued) SET_WAIT[k] = "queued"; else delete SET_WAIT[k];
+    if (r.refused) toast(r.refused);
+    drawSetRow(k);
+  });
+}
+function applyLook() {
+  const r = document.documentElement, theme = SET.theme === "light" ? "light" : "night";
+  if (r.dataset.theme !== theme) r.dataset.theme = theme;
+  const [ws, ss] = String(SET.size || "1.1").split(".").map(Number);
+  const wsz = [44, 52, 62][ws] + "px", ssz = [17, 20, 23][ss] + "px";
+  if (r.style.getPropertyValue("--wsz") !== wsz) r.style.setProperty("--wsz", wsz);
+  if (r.style.getPropertyValue("--ssz") !== ssz) r.style.setProperty("--ssz", ssz);
+  const st = $("stage");
+  setCls(st, "wf-icon", SET.where_from === "icon");
+  setCls(st, "wf-hover", SET.where_from === "hover");
+}
+
+/* ---- drawing: the word (see → understand → hear → decide) ---- */
+function kana(s) { return LANG === "ja" ? String(s || "").replace(/[\u30a1-\u30f6]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60)) : String(s || ""); }
+function morae(s) { const out = []; for (const c of s) { if (/[ゃゅょぁぃぅぇぉゎャュョァィゥェォヮ]/.test(c) && out.length) out[out.length - 1] += c; else out.push(c); } return out; }
+function pitchSvg(pitch, reading) {
+  const m = morae(kana(reading)); if (!m.length) return "";
+  const n = parseInt(String(pitch).replace(/^k:/, "").split(",")[0], 10); if (isNaN(n)) return "";
+  const hi = m.map((_, j) => n === 0 ? j > 0 : (n === 1 ? j === 0 : (j > 0 && j < n)));
+  hi.push(n === 0);                                    // the particle after it
+  const col = n === 0 ? "heiban" : n === 1 ? "atamadaka" : n === m.length ? "odaka" : "nakadaka";
+  const pts = hi.map((h, j) => `${j * 19 + 9.5},${h ? 2 : 12}`);
+  return `<svg class="pitch" width="${m.length * 19 + 4}" viewBox="0 0 ${m.length * 19 + 4} 14" aria-label="pitch ${n}"><polyline points="${pts.slice(0, m.length).join(" ")}" fill="none" stroke="var(--${col})" stroke-width="1.6"/><line x1="${(m.length - 1) * 19 + 9.5}" y1="${hi[m.length - 1] ? 2 : 12}" x2="${m.length * 19 + 9.5}" y2="${hi[m.length] ? 2 : 12}" stroke="var(--${col})" stroke-width="1.2" stroke-dasharray="2 2"/><circle cx="${m.length * 19 + 9.5}" cy="${hi[m.length] ? 2 : 12}" r="2.4" fill="none" stroke="var(--${col})" stroke-width="1.2"/></svg>`;
+}
+function readingHtml(w) {
+  const r = w[2] || "", k = w[3] || "", showPitch = SET.pitch !== "hidden" || S.pitchShown;
+  if (LANG === "zh") {
+    const syl = r.split(/\s+/).filter(Boolean), tones = String(w[8] || "");
+    const sy = syl.map((s, j) => `<span style="color:var(--t${showPitch && tones[j] ? tones[j] : 5})">${esc(s)}</span>`).join(" ");
+    const line = showPitch && tones ? `<span class="tones">${[...tones].map((t) => `<b style="background:var(--t${t})"></b>`).join("")} tones ${[...tones].join(" ")} <button class="q" data-help="tones" aria-label="What the tones mean">?</button></span>` : "";
+    return `<span class="kana jp">${sy}</span>${line}`;
+  }
+  const base = kana(k || r), alt = k && r && kana(k) !== kana(r) ? `<span class="alt">· ${esc(kana(r))}</span>` : "";
+  let graph = "";
+  if (showPitch) graph = w[8] == null ? "" : pitchSvg(w[8], k || r);
+  const none = showPitch && w[8] == null ? `<span class="nop">No pitch data for this word</span>` : "";
+  return `<span class="kana jp">${graph}${esc(base)}${alt}</span>${none}`;
+}
+function marksHtml(m) {
+  return (m & 1 ? `<span class="mk p" data-tip="✦ High leverage: it unlocks many lines soon">✦</span>` : "") +
+    (m & 2 ? `<span class="mk l" data-tip="⚖ Lots soon, rare later">⚖</span>` : "") +
+    (m & 4 ? `<span class="mk r" data-tip="文 A reading word: more in books than in speech">文</span>` : "");
+}
+const ankiHtml = (m) => m & 8 ? `<span class="anki" data-tip="It has a card in Anki">★</span>` : "";
+function hl(text, w) {
+  const forms = [w[1], w[0], ...(w[4] || [])].filter(Boolean).sort((a, b) => b.length - a.length);
+  for (const f of forms) { const i = text.indexOf(f); if (i >= 0) return esc(text.slice(0, i)) + "<b>" + esc(f) + "</b>" + esc(text.slice(i + f.length)); }
+  return esc(text);
+}
+const PLAYABLE = /\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|mp4|m4v|webm)$/i;
+function lineHtml(id, w, k, sel) {
+  const ln = w[9][k], src = srcOf(id, ln[1]);
+  const label = src ? src[0] : "", kind = src ? src[1] : "", play = src ? src[3] : "";
+  const can = play && (PLAYABLE.test(play) || built("clip/cut") && D.routes != null) && ln[2] != null;
+  const lid = lineId(ln[0], label), lit = FLAGGED.has(lid), fw = FWAIT.get(lid) || "";
+  const flag = built("line/flag") ? `<button class="fl ${lit ? "lit" : ""} ${fw}" data-flag="${k}" aria-label="Flag this sentence" data-tip="${lit ? "Flagged for Send report" : "Flag this sentence for Send report"}${fw === "queued" ? "\n" + waitWord() : ""}">⚑</button>` : "";
+  const oc = k === 0 && (w[6] & 8) ? `<div class="oc">On your card</div>` : "";
+  return `<div class="ln ${sel ? "sel" : ""}" data-li="${k}"><button class="pl ${can ? "" : "none"}" data-play="${k}" aria-label="Play the line" data-tip="▶ the line${kt("line")}"><svg class="i" viewBox="0 0 16 16"><path d="M5 3.5v9l7-4.5z" fill="currentColor"/></svg></button><div class="lt">${oc}<div class="tx">${hl(ln[0], w)}</div><div class="src" data-tip="${esc(label)}">${kindIcon(kind)}<span class="sn">${esc(label)}</span></div></div>${flag}</div>`;
+}
+function linesShown(w) { const n = Number(SET.sentences) || 0; return n > 0 ? Math.min(n, w[9].length) : w[9].length; }
+/* the word's parts, each its own region, so a setting or a press redraws only its own */
+function readingPart(w) {
+  const play = (w[6] & 8) && built("word/audio") && D.routes != null ? `<button class="ib" data-act="word" aria-label="Play the word" data-tip="▶ the word, from its card${kt("word")}"><svg class="i" viewBox="0 0 16 16"><path d="M3 6v4h2.5L9 13V3L5.5 6z"/><path d="M11 5.5a3.5 3.5 0 0 1 0 5"/></svg></button>` : "";
+  return `<div class="rd" data-r="reading">${readingHtml(w)}${play}</div>`;
+}
+function actsPart(w) {
+  const m = MARK.get(w[0]) || "", mw = MWAIT.get(w[0]) || "";
+  const b = (a, label, tipOn, tipOff) => `<button class="btn ${m === a ? "lit " + a + " " + mw : ""}" data-act="${a}" data-tip="${m === a ? tipOn : tipOff}${kt(a)}${m === a && mw === "queued" ? "\n" + waitWord() : ""}">${label} <span class="kc">${esc(keyOf(a))}</span></button>`;
+  const route = (w[6] & 8) ? "swap/queue" : "card/make";
+  const pick = SWAP_SHOWN && built(route) ? `<button class="btn" data-act="pick" data-tip="${(w[6] & 8) ? "⇄ Make its card from the chosen sentence instead" : "Add now: make its card from the chosen sentence, first in your order"}${kt("pick")}">⇄ <span class="kc">${esc(keyOf("pick"))}</span></button>` : "";
+  const look = LANG === "ja" ? `<a class="ib" href="https://nadeshiko.co/en/search/${encodeURIComponent(w[0])}" target="_blank" rel="noopener noreferrer" aria-label="Look the word up" data-tip="⌕ Look it up in your browser${kt("lookup")}">⌕</a>` : "";
+  return `<div class="actw" data-r="acts" data-w="${esc(w[0])}"><div class="acts">${b("known", "✓ Known", "Known: press again to clear it", "Known: off your list")}${b("ignore", "⊘ Ignore", "Ignored: press again to clear it", "Ignore: never study it")}${pick}</div>${look}</div>`;
+}
+function linesPart(id, w, list) {
+  const n = linesShown(w);
+  let h = "";
+  for (let k = 0; k < n; k++) h += lineHtml(id, w, k, !list && k === S.line);
+  const more = w[9].length > n ? `<div class="more">+${w[9].length - n} more in Settings › Sentences per word</div>` : "";
+  return `<div class="lines" data-r="lines">${h}${more}</div>`;
+}
+function wordHtml(id, w, list) {
+  const s = seq(S.ep) || [];
+  const head = list ? "" : `<div class="meta">Word ${S.wi + 1} of ${s.length} <span class="ml">${kindIcon(EPS[S.ep][5], gemOf(S.ep))} ${esc(epTitle(S.ep))}</span></div>`;
+  return `${head}<div class="wrow"><span class="w jp" lang="${LANG}">${esc(w[1] || w[0])}</span>${marksHtml(w[6])}<span class="ah" data-tip="Its count in this episode and the next two">×${w[7]}</span>${ankiHtml(w[6])}</div>
+${readingPart(w)}${actsPart(w)}
+<div class="sh">Sentences · ${w[9].length} <button class="q" data-help="lines" aria-label="About the sentences">?</button></div>
+${linesPart(id, w, list)}`;
+}
+/* one part of the shown word redrawn in place (word view), or of each card showing the word (List) */
+function drawPart(part, word) {
+  const st = $("stage");
+  for (const el of st.querySelectorAll(`[data-r="${part}"]`)) {
+    const card = el.closest(".lc"), id = card ? (seq(S.ep) || [])[Number(card.dataset.k)] : curWordId();
+    const w = id != null && wordNow(id);
+    if (!w || (word != null && w[0] !== word)) continue;
+    const html = part === "reading" ? readingPart(w) : part === "acts" ? actsPart(w) : linesPart(id, w, !!card);
+    if (el.outerHTML !== html) { el.outerHTML = html; st.__h = null; }
+  }
+}
+const drawActs = (word) => drawPart("acts", word);
+function meaningHtml(id, w) {
+  if (!S.open.meaning) return "";
+  const mean = blobNow("meanings"), yours = blobNow("yours");
+  const tabs = [];
+  if ((SET.meanings === "yours_en" || SET.meanings === "yours") && (HEAD.blobs || []).includes("yours")) tabs.push("yours");
+  if (SET.meanings !== "yours") tabs.push("en");
+  const tab = S.open.mtab && tabs.includes(S.open.mtab) ? S.open.mtab : tabs[0];
+  let body;
+  if (tab === "yours") { const y = yours && yours[String(id)]; body = y ? `<div class="yours">${esc(y[1])}</div><div class="nop">${esc(y[0])}</div>` : `<div class="nop">${yours ? "Not in your dictionaries" : "Opening your dictionaries…"}</div>`; }
+  else if (!tab) body = `<div class="nop">Your dictionaries arrive with the next Generate.</div>`;
+  else { const g = mean && mean[String(id)]; body = g ? `<ol class="gl">${g.map(([pos, gl]) => `<li>${pos ? `<i>${esc(pos)}</i>` : ""}${esc(gl.join("; "))}</li>`).join("")}</ol>` : `<div class="nop">${mean || !(HEAD.blobs || []).includes("meanings") ? `No meaning in ${LANG === "zh" ? "CC-CEDICT" : "JMdict"} for this word` : "Opening…"}</div>`; }
+  if (tabs.length > 1) body = `<div class="tabs">${tabs.map((t) => `<button data-mtab="${t}" class="${t === tab ? "on" : ""}">${t === "yours" ? "Yours" : "English"}</button>`).join("")}</div>` + body;
+  return body;
+}
+function moreHtml(w) {
+  const kj = blobNow("kanji");
+  const chars = LANG === "ja" ? [...(w[1] || w[0])].filter((c) => /[一-鿿々]/.test(c)) : [];
+  const forms = (w[4] || []).filter((f) => f !== w[0]);
+  return (forms.length ? `<div class="mrow" data-open="forms">▸ Forms you'll meet <span class="c">${forms.length}</span></div>${S.open.forms ? `<div class="forms">${forms.map(esc).join("　")}</div>` : ""}` : "") +
+    (chars.length && kj ? `<div class="mrow">▸ Kanji <span class="c">${chars.map((c) => `<span class="kj" data-kanji="${esc(c)}">${esc(c)}</span>`).join("")}</span></div>` : "");
+}
+/* the meaning pane: its frame stays; only its two slots change, and only when their content does */
+function drawDesk() {
+  const id = curWordId(), w = id != null ? wordNow(id) : null;
+  setCls($("desk"), "idle", !w);
+  setText($("k-meaning"), keyOf("meaning"));
+  setText($("b-meaning"), S.open.meaning ? "Hide" : "Show");
+  const tip = "Meaning" + kt("meaning");
+  if ($("b-meaning").dataset.tip !== tip) $("b-meaning").dataset.tip = tip;
+  setHtml($("meaning"), w ? meaningHtml(id, w) : "");
+  setHtml($("more"), w ? moreHtml(w) : "");
+}
+function kanjiTip(c) {
+  const k = blobNow("kanji"), e = k && k[c];
+  if (!e) return "";
+  const en = SET.meanings === "yours" ? "" : e[0] + "\n";    // D7 (b): the kanji hover follows Meanings
+  return `${c}\n${en}${e[1] ? "音 " + e[1] + "\n" : ""}${e[2] ? "訓 " + e[2] + "\n" : ""}${e[3] ? "You know: " + e[3] : ""}`.trim();
+}
+const RC = {};                                          // render counts (the redraw rule's self-checks read them)
+function drawWord() {
+  if (S.list) { drawList(); return; }
+  RC.drawWord = (RC.drawWord || 0) + 1;
+  const st = $("stage"), i = S.ep;
+  let html, end = false;
+  if (i < 0 || !EPS.length) html = emptyHtml();
+  else {
+    const s = seq(i);
+    if (!s || !epReady(i)) { setHtml(st, `<div class="sk">Opening ${esc(epTitle(i))}…</div>`); loadEp(i).then(() => { resetSeqEp(i); drawWord(); rail.update("words", i); }); return; }
+    if (EPS[i][7] === 0) html = nothingHtml(i);
+    else if (S.wi >= s.length) { html = endHtml(i); end = true; }
+    else { const id = s[S.wi]; html = wordHtml(id, wordNow(id), false); }
+  }
+  setHtml(st, html);
+  drawDesk();
+  if (end) reachEnd(i);
+}
+function resetSeqEp(i) { SEQ.delete(i); }
+function emptyHtml() {
+  return `<div class="empty"><h2>Nothing in your journey yet</h2><p>Add a show, a book or a video in Surasura and press Generate: its words show here, episode by episode.</p></div>`;
+}
+function growthHtml(i, big) {
+  const g = EPS[i][12], now = EPS[i][6];
+  if (!g || g[0] == null) return "";
+  const watched = isWatched(i), to = watched && g[4] != null ? g[4] : now;
+  if (to == null) return "";
+  const gain = g[1] != null && (watched ? g[5] : g[7]) != null ? g[1] - (watched ? g[5] : g[7]) : null;
+  const since = g[3] ? "since snapshots began" : "since you added it";
+  const bar = `<span class="gb" style="${big ? "width:120px;height:6px" : ""}"><i class="n" style="width:${Math.max(0, Math.min(100, to))}%"></i><i class="a" style="width:${Math.max(0, Math.min(100, g[0]))}%"></i></span>`;
+  if (!big) return bar;
+  return `<div class="gline" data-tip="When you added it: ${fmtPct(g[0])} known${g[1] != null ? ", " + g[1] + " words not known" : ""}">${bar} <span>${fmtPct(g[0])}</span> → <span class="pc ${pcClass(to)}">${fmtPct(to)}</span>${gain != null && gain > 0 ? ` · <span class="up">+${gain} words</span> <span>${since}</span>` : ""}</div>`;
+}
+function stoneBtn(i, ring) {
+  const e = EPS[i], p = preOf(i), press = canPre(i);
+  const st = stoneSvg(e[9], gemOf(i), p.on, (e[10] & 2) === 2);
+  const tip = stoneTip(i);
+  const cls = `st ${ring ? "ring" : ""} ${p.wait || ""}`;
+  return press ? `<button class="${cls}" data-pre="${i}" aria-label="${esc(epPart(i))}: pre-studied ${p.on ? "on" : "off"}" data-tip="${esc(tip)}">${st}</button>` : `<span class="${cls}" data-tip="${esc(tip)}">${st}</span>`;
+}
+function stoneTip(i) {
+  const e = EPS[i], p = preOf(i), v = verb(e[5]);
+  const what = e[10] & 2 ? "Its file is missing" : e[9] === "cut" ? `You ${v} it` : e[9] === "raw" ? "Cards in Anki" : e[9] === "nothing" ? "Mined: nothing new to make" : "No cards yet";
+  const lines = [`${epPart(i)} · ${what}${i === S.ep ? " · where you are" : ""}`];
+  if (p.on) lines.push(`Pre-studied${p.at ? " on " + p.at : ""}${p.by === "end" ? " (when you reached its end)" : p.by === "press" ? " (by your press)" : ""}`);
+  if (p.wait === "queued") lines.push(waitWord());
+  if (canPre(i)) lines.push(`• Click to ${p.on ? "un-mark it" : "mark it pre-studied"}${i === S.ep ? kt("pre") : ""}`);
+  else if (isWatched(i)) { const g = EPS[i][12]; lines.push(`${v[0].toUpperCase() + v.slice(1)}${g && g[6] ? " on " + g[6] : ""}`); if (g && g[0] != null && g[4] != null) lines.push(`${fmtPct(g[0])} → ${fmtPct(g[4])}${g[1] != null && g[5] != null ? ` · +${g[1] - g[5]} words learned` : ""}`); }
+  return lines.join("\n");
+}
+function drawPreBits(i) {                               // only what shows the mark: its stone, the end card's chip
+  const st = $("stage");
+  for (const el of st.querySelectorAll(`[data-pre="${i}"], [data-prechip="${i}"]`)) {
+    const html = el.dataset.prechip != null ? preChip(i) : stoneBtn(i, el.classList.contains("ring"));
+    if (el.outerHTML !== html) { el.outerHTML = html; st.__h = null; }
+  }
+}
+function preChip(i) {
+  const p = preOf(i);
+  if (!canPre(i) && !p.on) return "";
+  return `<button class="prechip ${p.on ? "on" : ""} ${p.wait || ""}" data-prechip="${i}" data-tip="${p.on ? (p.by === "end" ? "Set when you reached this card" : "Set by your press") + "\n• Click to un-mark it" + kt("pre") : "• Click to mark it pre-studied" + kt("pre")}${p.wait === "queued" ? "\n" + waitWord() : ""}">${stoneSvg(EPS[i][9], gemOf(i), p.on)}${p.on ? "Pre-studied · un-mark" : "Not pre-studied · mark it"}</button>`;
+}
+function endHtml(i) {
+  const s = seq(i) || [];
+  let known = 0, ign = 0;
+  for (const id of s) { const w = wordNow(id); const m = w && MARK.get(w[0]); if (m === "known") known++; else if (m === "ignore") ign++; }
+  const n = nextEp(i, 1, false), filt = S.filter && !s.length;
+  const up = n >= 0 ? `<div class="upn"><span class="k2">Up next</span>${kindIcon(EPS[n][5], gemOf(n))} <span class="jp">${esc(epTitle(n))}</span> ${stoneSvgWrap(n)} ${growthHtml(n)} <span class="pc ${pcClass(EPS[n][6])}">${fmtPct(EPS[n][6])}</span> · <b>${EPS[n][7]}</b> new</div>` : "";
+  return `<div class="end"><div class="k">End of the ${EPS[i][5] && KIND_VERB[EPS[i][5]] === "read" ? "chapter" : "episode"}</div><h2>${kindIcon(EPS[i][5], gemOf(i))}<span>${esc(epTitle(i))}</span></h2>${preChip(i)}
+${filt ? `<p class="counts">None of its words in ${esc(FILTERS[S.filter][0])}: they show with the filter off (${esc(keyOf("filter"))}).</p>` : growthHtml(i, true)}
+<div class="counts">✓ ${known} known · ⊘ ${ign} ignored · ${s.length - known - ign} still to learn</div>
+${n >= 0 ? `<div class="next"><button class="btn go" data-act="next">Next: ${esc(epTitle(n))} ↓</button></div>` : `<p class="counts">That was the last episode with new words.</p>`}${up}</div>`;
+}
+const stoneSvgWrap = (i) => `<span class="st">${stoneSvg(EPS[i][9], gemOf(i), preOf(i).on)}</span>`;
+function nothingHtml(i) {
+  return `<div class="end"><div class="k">Nothing new</div><h2>${kindIcon(EPS[i][5], gemOf(i))}<span>${esc(epTitle(i))}</span></h2>${preChip(i)}<p class="counts">Nothing new in this one: every word in it is known, ignored or already on a card.</p>${growthHtml(i, true)}</div>`;
+}
+function reachEnd(i) {                                 // the end card marks it pre-studied, once (§2.3)
+  if (S.filter) return;
+  prestudied(i, "end");
+}
+
+/* ---- List view (§1.1): the episode's words as cards; the card under the top edge is the one the keys act on ---- */
+let LIST_EP = -1, listObs = null;
+const D14_MS = 1000;
+function drawList() {
+  const st = $("stage"), i = S.ep;
+  if (!epReady(i)) { setHtml(st, `<div class="sk">Opening ${esc(epTitle(i))}…</div>`); loadEp(i).then(() => { resetSeqEp(i); drawList(); }); return; }
+  const s = seq(i) || [];
+  RC.drawList = (RC.drawList || 0) + 1;
+  let h = `<div class="lv"><div class="meta"><span class="ml">${kindIcon(EPS[i][5], gemOf(i))} ${esc(epTitle(i))}</span> · ${s.length} words</div>`;
+  s.forEach((id, k) => { h += `<div class="lc ${k === S.wi ? "cur" : ""}" data-k="${k}">${wordHtml(id, wordNow(id), true)}</div>`; });
+  h += `<div class="lend" data-ep="${i}">${EPS[i][7] ? endHtml(i) : nothingHtml(i)}</div></div>`;
+  setHtml(st, h);
+  LIST_EP = i;
+  watchListEnd();
+  drawDesk();
+}
+function watchListEnd() {                              // D14: its end on screen one full second marks it
+  if (listObs) listObs.disconnect();
+  if (typeof IntersectionObserver === "undefined") return;
+  const timers = new Map();
+  listObs = new IntersectionObserver((ents) => {
+    for (const en of ents) {
+      const i = Number(en.target.dataset.ep);
+      if (en.isIntersecting) { if (!timers.has(i)) timers.set(i, setTimeout(() => { timers.delete(i); prestudied(i, "end"); }, D14_MS)); }
+      else { clearTimeout(timers.get(i)); timers.delete(i); }     // a fly-past doesn't count: its second starts again
+    }
+  }, { root: $("stage"), threshold: 0.6 });
+  for (const el of document.querySelectorAll("#stage .lend")) listObs.observe(el);
+}
+function listScrolled() {
+  if (!S.list) return;
+  const st = $("stage"), top = st.getBoundingClientRect().top + 8;
+  for (const el of st.querySelectorAll(".lc")) {
+    if (el.getBoundingClientRect().bottom > top + 40) {
+      const k = Number(el.dataset.k);
+      if (k !== S.wi) { const old = st.querySelector(".lc.cur"); if (old) old.classList.remove("cur"); el.classList.add("cur"); S.wi = k; rail.update("where"); saveSoon(); }
+      return;
+    }
+  }
+}
+
+/* ---- moving ---- */
+function go(i, wi) {
+  if (i == null || i < 0 || i >= EPS.length) return;
+  const changed = i !== S.ep;
+  if (changed) S.back = { ep: S.ep, wi: S.wi };
+  S.ep = i; S.wi = wi == null ? 0 : wi; S.line = 0; S.pitchShown = false;
+  if (S.wi < 0) { const s = seq(i); S.wi = s ? s.length : 0; }
+  drawWord();
+  rail.update("where");
+  if (S.list) $("stage").scrollTop = 0;
+  saveSoon();
+  idle(() => { const n = nextEp(i, 1, false); if (n >= 0) loadEp(n); });
+}
+function step(d) {
+  const s = seq(S.ep);
+  if (!s) return;
+  if (EPS[S.ep][7] === 0) {                          // a nothing-new card: ↑ the end of the one before, ↓ on
+    if (d > 0) { const n = nextEp(S.ep, 1, false); if (n >= 0) go(n, 0); }
+    else { const p = nextEp(S.ep, -1, false); if (p >= 0) go(p, -1); }
+    return;
+  }
+  const wi = S.wi + d;
+  if (wi < 0) { const p = nextEp(S.ep, -1, false); if (p >= 0) go(p, -1); return; }
+  if (wi > s.length) { const n = nextEp(S.ep, 1, false); if (n >= 0) go(n, 0); return; }
+  S.wi = wi; S.line = 0; S.pitchShown = false;
+  drawWord(); rail.update("where"); saveSoon();
+}
+function epStep(d) { const j = nextEp(S.ep, d, true); if (j >= 0) go(j, 0); }
+
+/* ---- pops: tip, toast, menus, sheets ---- */
+const tipEl = $("tip");
+let tipFor = null;
+document.addEventListener("mouseover", (e) => {
+  const t = e.target.closest && e.target.closest("[data-tip],[data-kanji]");
+  if (t === tipFor) return;
+  tipFor = t;
+  if (!t) { tipEl.classList.add("hide"); return; }
+  const text = t.dataset.kanji ? kanjiTip(t.dataset.kanji) : t.dataset.tip;
+  if (!text) { tipEl.classList.add("hide"); return; }
+  tipEl.textContent = text;
+  tipEl.classList.remove("hide");
+  const r = t.getBoundingClientRect(), w = tipEl.offsetWidth, h = tipEl.offsetHeight;
+  tipEl.style.left = Math.max(6, Math.min(innerWidth - w - 6, r.left + r.width / 2 - w / 2)) + "px";
+  tipEl.style.top = (r.bottom + h + 10 > innerHeight ? r.top - h - 8 : r.bottom + 8) + "px";
+});
+let toastTimer = 0;
+function toast(text, undo) {
+  const el = $("toast");
+  el.innerHTML = `<span></span>${undo ? `<button>Undo</button>` : ""}`;
+  el.firstChild.textContent = text;
+  if (undo) el.querySelector("button").onclick = () => { el.classList.add("hide"); undo(); };
+  el.classList.remove("hide");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.add("hide"), 6000);
+}
+function closeLayer() { $("layer").innerHTML = ""; }
+const layerOpen = () => !!$("layer").firstChild;
+function sheet(id, html) {
+  $("layer").innerHTML = `<div class="scrim" data-close="1"><div class="sheet" id="${id}" role="dialog" aria-modal="true">${html}</div></div>`;
+}
+const HELP = {
+  lines: [["Sentences", ["The first is the one on your card, or the one Surasura would put on it.", "The rest follow in your list's ranking.", "▶ plays the line where your file can be played here."]], ["Under each line", ["Its kind (anime, book, YouTube…), the show and the episode.", "⚑ flags a line for Send report: you see it before anything is sent."]]],
+  more: [["More", ["Forms you'll meet: the forms of the word in your content.", "Kanji: hover one for its meaning and readings."]]],
+  tones: [["Tones", ["1 high · 2 rising · 3 dipping · 4 falling.", "A dot a syllable, in its tone's colour."]]],
+  rail: [["The rail", ["‹ › the episode before and after (PgUp / PgDn).", "The title opens the picker: every show, one row each.", "The stone is the episode's state in Surasura; click it to mark it pre-studied."]], ["Marks", ["✦ high leverage · ⚖ lots soon, rare later · 文 a reading word.", "✓ known · ⊘ ignored, greyed in the list."]], ["Stones", ["Rock: no cards yet · raw gem: cards in Anki · cut gem: watched or read.", "The sheen and sparkle: pre-studied."]]],
+};
+function helpHtml(name) { return (HELP[name] || []).map(([h, items]) => `<h5>${esc(h)}</h5><ul>${items.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`).join(""); }
+function openHelp(name) { sheet("help-sheet", `<h3>${esc((HELP[name] || [["Help"]])[0][0])}</h3>${helpHtml(name)}`); }
+function setRowHtml(s) {
+  const v = SET[s.k], wt = SET_WAIT[s.k];
+  const wait = wt === "queued" ? `<div class="wt">⧗ not in Surasura yet${D.state === "unopened" ? ": open the journey from Surasura" : ""}</div>` : "";
+  const data = s.data && wt ? `<div class="wt">The page catches up at your next Generate.</div>` : "";
+  return `<div class="srow" data-set="${s.k}"><span class="sl">${esc(s.name)} <button class="q" data-shelp="${s.k}" aria-label="About ${esc(s.name)}">?</button></span><span class="seg">${s.opts.map(([val, t]) => `<button data-val="${esc(JSON.stringify(val))}" class="${String(v) === String(val) ? "on" : ""}">${esc(t)}</button>`).join("")}</span>${wait}${data}</div>`;
+}
+function openSettings() {
+  sheet("set-sheet", `<h3>The journey's settings</h3><div class="counts">The same rows as Settings › App › Journey in Surasura.</div>${SETTINGS.map(setRowHtml).join("")}<div id="shelp"></div>`);
+}
+function drawSetRow(k) {                                // the settings sheet: only the row that changed
+  const el = document.querySelector(`#set-sheet .srow[data-set="${k}"]`), s = SETTINGS.find((x) => x.k === k);
+  if (el && s) { const html = setRowHtml(s); if (el.outerHTML !== html) el.outerHTML = html; }
+}
+function openKeys(arm) {
+  const rows = ACTIONS.filter(([a]) => a !== "pick" || SWAP_SHOWN).map(([a, t]) => `<div class="krow"><span class="kn">${esc(t)}</span><button class="kc ${arm === a ? "arm" : ""}" data-bind="${a}" aria-label="Move ${esc(t)}" data-tip="Click, then press the new key">${esc(arm === a ? "…" : (keyOf(a) || "not set"))}</button></div>`).join("");
+  sheet("keys-sheet", `<h3>Keys</h3><h5>Left hand</h5>${rows}<h5>Right hand</h5><ul><li>↓ / Space next word · ↑ the word before · ← → lines · Enter ▶ the line</li><li>PgUp / PgDn (‹ ›) episodes · / search · ⌫ back after a jump · Esc close</li><li>Shift is never taken: it is Yomitan's.</li></ul><div class="counts">Preset: <span class="seg"><button data-preset="qwerty">QWERTY</button><button data-preset="dvorak">Dvorak</button></span></div>`);
+}
+let ARM = null;
+function bindKey(action, key) {                        // a moved key trades places with the action that had it
+  const map = Object.assign({}, KEYS), had = Object.keys(map).find((a) => map[a] === key);
+  if (had && had !== action) map[had] = map[action] || "";
+  map[action] = key;
+  setSetting("keys", map);
+}
+function openMenu(name, anchor) {
+  const r = anchor.getBoundingClientRect();
+  let h = "";
+  if (name === "order") {
+    h = `<div class="mg">Order</div><button class="mi" data-order="meet" data-tip="This view only: your order in Surasura stays"><span class="ck">${S.order === "meet" ? "✓" : ""}</span>As you'll meet them</button><button class="mi" data-order="freq" data-tip="This view only: your order in Surasura stays"><span class="ck">${S.order === "freq" ? "✓" : ""}</span>Most frequent first</button><hr><div class="mg">Show</div>` +
+      FILTERS.map(([t], k) => `<button class="mi" data-filter="${k}"><span class="ck">${S.filter === k ? "✓" : ""}</span>${esc(t)}</button>`).join("");
+  }
+  $("layer").innerHTML = `<div class="scrim" style="background:none" data-close="1"><div class="menu" role="menu" style="left:${r.left}px;top:${r.bottom + 4}px">${h}</div></div>`;
+}
+function setFilter(k) { S.filter = k; resetSeq(); const s = seq(S.ep); if (s && S.wi > s.length) S.wi = s.length; drawWord(); rail.update("filter"); saveSoon(); }
+function setOrder(o) { S.order = o; resetSeq(); S.wi = 0; drawWord(); rail.update("filter"); saveSoon(); }
+function openFlag(k, anchor) {
+  const id = curWordId(), w = id != null && wordNow(id); if (!w) return;
+  const ln = w[9][k], src = srcOf(id, ln[1]), lid = lineId(ln[0], src ? src[0] : "");
+  const lit = FLAGGED.has(lid), r = anchor.getBoundingClientRect();
+  const html = lit ? `<b>Flagged for Send report</b><div class="why">It goes with your next report; you see it there first.</div><div class="next"><button class="btn" data-unflag="${k}">Take the flag off</button></div>`
+    : `<b>What's wrong with this line?</b><div class="chips">${REASONS.map(([key, t]) => `<button data-reason="${key}">${esc(t)}</button>`).join("")}</div><textarea class="hide" id="fnote" placeholder="A note (optional)"></textarea><div class="why">It goes to Send report, where you see it before anything is sent.</div><div style="margin-top:8px"><button class="btn go" data-flagit="${k}">Flag it</button></div>`;
+  $("layer").innerHTML = `<div class="scrim" style="background:none" data-close="1"><div class="flagp" role="dialog" style="left:${Math.max(8, Math.min(innerWidth - 340, r.right - 330))}px;top:${Math.min(innerHeight - 220, r.bottom + 6)}px">${html}</div></div>`;
+}
+
+/* ▶ a line: the learner's own file, where this browser can play it; Connect's clip for the rest (clip/cut) */
+const player = $("player");
+let playEnd = null;
+player.addEventListener("timeupdate", () => { if (playEnd != null && player.currentTime >= playEnd) { player.pause(); playEnd = null; } });
+async function playLine(k) {
+  const id = curWordId(), w = id != null && wordNow(id), ln = w && w[9][k];
+  if (!ln) return;
+  const src = srcOf(id, ln[1]); if (!src || !src[3]) return;
+  const [dir, ...rest] = src[3].split("/"), file = rest.join("/");
+  let url = PLAYABLE.test(file) && HEAD.dirs[Number(dir)] ? HEAD.dirs[Number(dir)] + encodeURI(file) : null;
+  if (!url) {
+    if (!live()) { toast("Surasura is closed: this line plays when the journey is open from Surasura."); return; }
+    const a = await doorCall("clip/cut", { line_id: lineId(ln[0], src[0]) });
+    if (!a || !a.ok) { toast(a && a.error || "Surasura couldn't cut that line."); return; }
+    url = `http://127.0.0.1:${DOOR.port}${a.url}`;
+  }
+  try { player.src = url; player.currentTime = ln[2] || 0; playEnd = ln[3]; await player.play(); } catch (e) { toast("This browser can't play that file."); }
+}
+async function playWord() {
+  const id = curWordId(), w = id != null && wordNow(id);
+  if (!w || !(w[6] & 8)) return;
+  if (!live()) { toast("Surasura is closed: ▶ the word plays from your card when Surasura is open."); return; }
+  const a = await doorCall("word/audio", { word: w[0] });
+  if (!a || !a.ok) { toast(a && a.error || "No audio on its card."); return; }
+  try { player.src = `http://127.0.0.1:${DOOR.port}${a.url}`; playEnd = null; await player.play(); } catch (e) {}
+}
+
+/* ---- search (/): every word, by spelling or reading ---- */
+let searchReady = null;
+function buildSearch() {
+  if (!searchReady) searchReady = (async () => { for (let c = 0; c < CH.length; c++) if (!SIDX[c]) { const d = await loadChunk(c); indexChunk(c, d); } })();
+  return searchReady;
+}
+let RES = [], RESI = 0;
+async function search(q) {
+  q = kana(q.trim()).toLowerCase();
+  const box = $("res");
+  if (!q) { box.classList.add("hide"); return; }
+  await buildSearch();
+  RES = [];
+  for (let c = 0; c < SIDX.length && RES.length < 40; c++) {
+    const a = SIDX[c]; if (!a) continue;
+    for (let j = 0; j < a.length && RES.length < 40; j++) if (a[j].includes(q)) RES.push(CH[c][0] + j);
+  }
+  RESI = 0;
+  await Promise.all([...new Set(RES.map(chunkOfWord))].map(loadChunk));
+  box.innerHTML = RES.length ? RES.map((id, j) => { const w = wordNow(id); return `<div class="ri ${j === 0 ? "on" : ""}" data-ri="${j}"><b>${esc(w[1] || w[0])}</b><span>${esc(kana(w[3] || w[2]))}</span><span class="e">${esc(epTitle(w[5]))}</span></div>`; }).join("") : `<div class="none">No word in your journey matches.</div>`;
+  box.classList.remove("hide");
+}
+function jumpTo(id) {
+  const w = wordNow(id); if (!w) return;
+  const i = w[5];
+  $("res").classList.add("hide"); $("q").value = ""; $("q").blur();
+  S.filter = 0; resetSeq();
+  const s = seq(i) || [];
+  go(i, Math.max(0, s.indexOf(id)));
+}
+
+/* ---- the page's API for the rail (SPEC §1.1b) ---- */
+const page = {
+  lang: LANG, head: HEAD,
+  count: () => EPS.length,
+  ep: (i) => { const e = EPS[i]; return { i, id: e[0], name: e[1], title: e[2], part: epPart(i), show: e[3], tier: e[4], kind: e[5], pct: e[6], new: e[7], state: e[9], watched: isWatched(i), missing: (e[10] & 2) === 2, cards: (e[10] & 4) === 4, pre: preOf(i), gem: gemOf(i) }; },
+  shows: () => SHOWS, finished: () => HEAD.finished || [], tiers: TIER,
+  where: () => { const s = seq(S.ep); return { ep: S.ep, wi: S.wi, end: !!s && S.wi >= s.length }; },
+  filter: () => ({ index: S.filter, name: FILTERS[S.filter][0], order: S.order }),
+  words: (i) => {                                     // this episode's words in view, or null until its chunk is in
+    const s = epReady(i) ? seq(i) : null;
+    if (!s) { loadEp(i).then(() => rail.update("words", i)); return null; }
+    return s.map((id) => { const w = wordNow(id); return { id, word: w[1] || w[0], marks: w[6], ahead: w[7], mark: MARK.get(w[0]) || "", wait: MWAIT.get(w[0]) || "" }; });
+  },
+  stone: (i, ring) => stoneBtn(i, ring),
+  stoneTip, growth: (i) => growthHtml(i), kindIcon, marksHtml, pcClass, fmtPct, esc, sparkle,
+  finishedStone: (f) => `<span class="st" data-tip="${esc(f[1])}\nFinished${f[5] ? "\n✧ Pre-studied parts" : ""}">${stoneSvg("fin", f[3], !!f[5])}</span>`,
+  canPre, epStep, keyOf,
+  go: (i, wi) => go(i, wi),
+  prestudied: (i) => prestudied(i, "press"),
+  menu: (name, anchor) => openMenu(name, anchor),
+  help: (name) => openHelp(name),
+};
+let rail = { name: "none", update() {} };
+try {
+  rail = (window.JourneyRail ? window.JourneyRail(page, $("rail")) : null) || rail;
+} catch (e) { console.error(e); }
+
+/* ---- the presses, by click and by key ---- */
+document.addEventListener("click", (e) => {
+  const t = e.target;
+  const c = (sel) => t.closest && t.closest(sel);
+  let el;
+  if ((el = c("[data-close]")) && t === el) { closeLayer(); return; }
+  if ((el = c("[data-act]"))) {
+    const a = el.dataset.act;
+    if (a === "known" || a === "ignore") { if (S.list) { const k = el.closest(".lc"); if (k) S.wi = Number(k.dataset.k); } markWord(a); }
+    else if (a === "next") step(1);
+    else if (a === "meaning") toggleMeaning();
+    else if (a === "word") playWord();
+    else if (a === "pick") pickLine(S.line);
+    return;
+  }
+  if ((el = c("[data-pre]"))) { prestudied(Number(el.dataset.pre), "press"); return; }
+  if ((el = c("[data-prechip]"))) { prestudied(Number(el.dataset.prechip), "press"); return; }
+  if ((el = c("[data-play]"))) { playLine(Number(el.dataset.play)); return; }
+  if ((el = c("[data-flag]"))) { openFlag(Number(el.dataset.flag), el); return; }
+  if ((el = c("[data-reason]"))) { el.classList.toggle("on"); if (el.dataset.reason === "other") $("fnote").classList.toggle("hide", !el.classList.contains("on")); return; }
+  if ((el = c("[data-flagit]"))) {
+    const reasons = [...document.querySelectorAll("[data-reason].on")].map((b) => b.dataset.reason);
+    if (!reasons.length) { toast("Pick what's wrong first."); return; }
+    const note = $("fnote") ? $("fnote").value : ""; closeLayer(); flagLine(curWordId(), Number(el.dataset.flagit), reasons, note, true); return;
+  }
+  if ((el = c("[data-unflag]"))) { closeLayer(); flagLine(curWordId(), Number(el.dataset.unflag), [], "", false); return; }
+  if ((el = c("[data-li]")) && !S.list) { selLine(Number(el.dataset.li)); return; }
+  if ((el = c("[data-mtab]"))) { S.open.mtab = el.dataset.mtab; drawDesk(); return; }
+  if ((el = c("[data-open]"))) { S.open[el.dataset.open] = !S.open[el.dataset.open]; drawDesk(); saveSoon(); return; }
+  if ((el = c("[data-help]"))) { openHelp(el.dataset.help); return; }
+  if ((el = c("[data-shelp]"))) { const s = SETTINGS.find((x) => x.k === el.dataset.shelp); $("shelp").innerHTML = `<h5>${esc(s.name)}</h5><ul>${s.help.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`; return; }
+  if ((el = c(".srow [data-val]"))) { setSetting(el.closest(".srow").dataset.set, JSON.parse(el.dataset.val)); return; }
+  if ((el = c("[data-bind]"))) { ARM = el.dataset.bind; openKeys(ARM); return; }
+  if ((el = c("[data-preset]"))) { setSetting("keys", el.dataset.preset); openKeys(); return; }
+  if ((el = c("[data-order]"))) { closeLayer(); setOrder(el.dataset.order); return; }
+  if ((el = c("[data-filter]"))) { closeLayer(); setFilter(Number(el.dataset.filter)); return; }
+  if ((el = c("[data-ri]"))) { jumpTo(RES[Number(el.dataset.ri)]); return; }
+});
+$("b-set").onclick = openSettings;
+$("b-keys").onclick = () => openKeys();
+$("b-focus").onclick = () => toggleFocus();
+$("b-list").onclick = () => toggleList();
+$("q").addEventListener("input", (e) => search(e.target.value));
+$("q").addEventListener("focus", () => buildSearch());
+$("stage").addEventListener("scroll", () => { if (S.list) requestAnimationFrame(listScrolled); }, { passive: true });
+function toggleMeaning() { S.open.meaning = !S.open.meaning; if (S.open.meaning) Promise.all([blob("meanings"), blob("yours")]).then(() => drawDesk()); drawDesk(); saveSoon(); }
+function toggleFocus(on) { S.focus = on == null ? !S.focus : on; document.body.classList.toggle("focus", S.focus); $("b-focus").classList.toggle("on", S.focus); saveSoon(); }
+function toggleList() { S.list = !S.list; $("b-list").classList.toggle("on", S.list); $("b-list").dataset.tip = S.list ? "Word view: one word at a time" : "List view: the episode's words as cards"; drawWord(); saveSoon(); }
+document.addEventListener("keydown", (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const inField = e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA");
+  if (ARM) { e.preventDefault(); if (e.key !== "Escape" && e.key.length === 1 && !e.shiftKey) { const a = ARM; ARM = null; bindKey(a, e.key.toLowerCase()); openKeys(); } else { ARM = null; openKeys(); } return; }
+  if (inField) {
+    if (e.target.id === "q") {
+      if (e.key === "Escape") { e.target.value = ""; $("res").classList.add("hide"); e.target.blur(); }
+      else if (e.key === "Enter" && RES.length) jumpTo(RES[RESI]);
+      else if (e.key === "ArrowDown" || e.key === "ArrowUp") { RESI = Math.max(0, Math.min(RES.length - 1, RESI + (e.key === "ArrowDown" ? 1 : -1))); for (const r of document.querySelectorAll(".res .ri")) r.classList.toggle("on", Number(r.dataset.ri) === RESI); e.preventDefault(); }
+    }
+    return;
+  }
+  const picker = rail.isOpen && rail.isOpen();
+  if (e.key === "Escape") { if (layerOpen()) closeLayer(); else if (picker) rail.close(); else if (!$("res").classList.contains("hide")) $("res").classList.add("hide"); else if (S.focus) toggleFocus(false); return; }
+  if (layerOpen() || picker) return;
+  if (e.shiftKey && e.key !== "?") return;            // Shift is Yomitan's
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  const act = Object.keys(KEYS).find((a) => KEYS[a] && KEYS[a] === k);
+  if (act) { e.preventDefault(); doAction(act); return; }
+  switch (e.key) {
+    case "ArrowDown": case " ": e.preventDefault(); if (S.list) listMove(1); else step(1); break;
+    case "ArrowUp": e.preventDefault(); if (S.list) listMove(-1); else step(-1); break;
+    case "ArrowLeft": case "ArrowRight": selLine(S.line + (e.key === "ArrowRight" ? 1 : -1)); e.preventDefault(); break;
+    case "Enter": pickLine(S.line); break;
+    case "PageDown": e.preventDefault(); epStep(1); break;
+    case "PageUp": e.preventDefault(); epStep(-1); break;
+    case "/": e.preventDefault(); $("q").focus(); break;
+    case "?": openKeys(); break;
+    case "Backspace": if (S.back) { const b = S.back; S.back = null; go(b.ep, b.wi); S.back = null; } break;
+  }
+});
+function listMove(d) {
+  const s = seq(S.ep) || [], k = S.wi + d;
+  if (k < 0 || k > s.length) { epStep(d); return; }
+  S.wi = k;
+  const el = k === s.length ? $("stage").querySelector(".lend") : $("stage").querySelector(`.lc[data-k="${k}"]`);
+  if (el) el.scrollIntoView({ block: "start" });
+}
+function doAction(a) {
+  if (a === "known" || a === "ignore") { if (S.list) { markWord(a); listMove(1); } else markWord(a); }
+  else if (a === "pre") prestudied(S.ep, "press");
+  else if (a === "line") playLine(S.line);
+  else if (a === "word") playWord();
+  else if (a === "meaning") toggleMeaning();
+  else if (a === "pitch") { S.pitchShown = !S.pitchShown; drawPart("reading"); }
+  else if (a === "pick") pickLine(S.line);
+  else if (a === "filter") setFilter((S.filter + 1) % FILTERS.length);
+  else if (a === "focus") toggleFocus();
+  else if (a === "lookup") { const a2 = $("stage").querySelector('a[aria-label="Look the word up"]'); if (a2) a2.click(); }
+  else if (a === "picker" && rail.picker) rail.picker();
+}
+function redrawMarks() {                               // marks read back: each shown word's buttons, the rail's rows
+  const s = seq(S.ep);
+  if (!S.list && s && S.wi >= s.length) drawWord(); else drawPart("acts");
+  rail.update("marks");
+}
+function selLine(k) {                                   // the chosen line: two lines' class, nothing else
+  const id = curWordId(), w = id != null && wordNow(id);
+  if (!w) return;
+  S.line = Math.max(0, Math.min(linesShown(w) - 1, k));
+  for (const el of $("stage").querySelectorAll(".lines > .ln")) setCls(el, "sel", Number(el.dataset.li) === S.line);
+  $("stage").__h = null;
+}
+async function pickLine(k) {                            // ⇄ for a carded word (Swap) · Add now for one without (Connect)
+  const id = curWordId(), w = id != null && wordNow(id), ln = w && w[9][k];
+  if (!ln || !SWAP_SHOWN) return;
+  const route = (w[6] & 8) ? "swap/queue" : "card/make";
+  if (!built(route)) return;
+  if (!live()) { toast("Surasura is closed: this needs Surasura open (nothing kept)."); return; }
+  const src = srcOf(id, ln[1]);
+  const a = await doorCall(route, { word: w[0], line_id: lineId(ln[0], src ? src[0] : ""), at: Date.now() });
+  if (a && a.ok) toast(route === "swap/queue" ? `⇄ Queued: Swap makes ${w[0]}'s new card from this line.` : `Asked: Connect makes ${w[0]}'s card from this line, first in your order.`);
+  else if (a && a.kind === "not_yet") { D.routes = (D.routes || []).filter((r) => r !== route); drawPart("acts"); }
+  else toast(a && a.error || "Surasura is closed: this needs Surasura open (nothing kept).");
+}
+
+/* ---- the start: shell painted, the head parsed, the shown episode's chunk, the first word; then the rest ---- */
+const idle = (fn) => (window.requestIdleCallback ? requestIdleCallback(fn, { timeout: 1500 }) : setTimeout(fn, 60));
+const TIMES = { start: T0 };
+function restoreView() {
+  let v = null;
+  try { v = JSON.parse(localStorage.getItem(VIEW_KEY) || "null"); } catch (e) {}
+  let i = -1;
+  if (v) { if (v.id != null && ID_IX.has(v.id)) i = ID_IX.get(v.id); else if (v.name) i = EPS.findIndex((e) => e[1] === v.name); }
+  if (location.hash.startsWith("#file=")) { const name = decodeURIComponent(location.hash.slice(6).split("&")[0]); const j = EPS.findIndex((e) => e[1] === name); if (j >= 0) { i = j; v = null; } }
+  if (i < 0) { i = startEp(); v = null; }
+  S.ep = i;
+  if (v) { S.wi = v.wi || 0; S.filter = v.filter || 0; S.order = v.order === "freq" ? "freq" : "meet"; S.open = v.open || {}; S.list = !!v.list; S.focus = !!v.focus; }
+}
+async function start() {
+  applyLook();
+  restoreView();
+  if (S.focus) toggleFocus(true);
+  if (S.list) $("b-list").classList.add("on");
+  for (const q of QUEUE) {                            // a press still waiting from before: drawn as waiting (⧗)
+    if (q.route === "words/mark") { const m = q.body.marks[0]; if (m.mark) MARK.set(m.word, m.mark); else MARK.delete(m.word); MWAIT.set(m.word, "queued"); }
+    else if (q.route === "episode/prestudied") { const i = ID_IX.get(q.body.id); if (i != null) PRE.set(i, { on: q.body.on, by: q.body.on ? q.body.why : "off", wait: "queued" }); }
+    else if (q.route === "line/flag") { if (q.body.on) FLAGGED.add(q.body.line_id); else FLAGGED.delete(q.body.line_id); FWAIT.set(q.body.line_id, "queued"); }
+    else if (q.route === "settings/set") { const s = SETTINGS.find((x) => x.key === q.body.key); if (s) { SET[s.k] = q.body.value; SET_WAIT[s.k] = "queued"; } }
+  }
+  KEYS = keymap(); applyLook();
+  rail.update("all");
+  TIMES.shell = performance.now();
+  if (S.ep >= 0) { await loadEp(S.ep); if (S.filter) await loadEp(S.ep); }
+  const s = S.ep >= 0 ? seq(S.ep) : [];
+  if (s && S.wi > s.length) S.wi = 0;
+  drawWord(); rail.update("all");
+  TIMES.firstWord = performance.now();
+  requestAnimationFrame(() => setTimeout(afterFirstWord, 0));
+}
+function afterFirstWord() {
+  VIEW_OK = true;
+  setDoor(D.state);
+  hello();                                             // §3.4: nothing is asked before the first word is drawn
+  idle(() => { const n = nextEp(S.ep, 1, false); if (n >= 0) loadEp(n); });
+  idle(() => blob("meanings"));
+  idle(() => blob("kanji").then(() => drawDesk()));
+  window.addEventListener("focus", () => { if (D.state !== "unopened") hello(); });
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && D.state !== "unopened") hello(); });
+  if (window.JSELFTEST && /[?&]selftest=/.test(location.search)) setTimeout(() => window.JSELFTEST(window.__J), 50);
+}
+window.__J = { S, page, rail: () => rail, TIMES, D, MARK, MWAIT, PRE, FLAGGED, QUEUE: () => QUEUE, SET, SET_WAIT, SETTINGS, KEYS: () => KEYS, ACTIONS, PRESETS,
+  RC, go, step, epStep, markWord, pickLine, selLine, drawPart, drawDesk, redrawMarks, prestudied, setSetting, setFilter, setOrder, toggleFocus, toggleList, search, jumpTo, hello, readState, flushQueue, drawWord,
+  openSettings, openKeys, openFlag, flagLine, closeLayer, doAction, curWordId, wordNow, seq, loadEp, epReady, blob, blobNow, kanjiTip, lineId, stoneSvg, setDoor,
+  CHUNKS, SIDX, buildSearch, nextEp, listScrolled, D14_MS, SWAP_SHOWN };
+start();
+</script>
+</body>
+</html>

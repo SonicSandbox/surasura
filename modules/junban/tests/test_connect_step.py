@@ -82,13 +82,13 @@ def test_after_a_batch_the_step_places_its_cards_by_the_list_positions_only(tmp_
     assert not {"reloadCollection", "guiDeckBrowser"} & set(fake.action_names), "never pulls you out of Anki"
     order = fake.queue_order()
     assert order[0] == "走る", "your own card first"
-    # Job 2's 散歩 joins the list's 散歩 (file 1); its 須藤, on no list, goes with the cards placed by their sentence —
-    # i+1 here, by its FreqSort (500) ahead of 眼鏡 (5,000).
-    assert order[:5] == ["走る", "冒険", "散歩", "散歩", "須藤"]
+    # Job 2's 散歩 joins the list's 散歩 (file 1); its 須藤, on no list, is Surasura's — at the back, untouched, in the
+    # order it had (Kyou-MO), with the scene's 眼鏡 (Connect's too) just before it.
+    assert order[:4] == ["走る", "冒険", "散歩", "散歩"] and order[-2:] == ["眼鏡", "須藤"]
     # 2.x-dev keeps `== 冒険's due + 2` here (the preview off: 2.5's dense block, one number a card); 3.0 (Haya's G2b):
     # the step numbers spaced always, so only the order is the step's to keep — the numbers are E2.1's
-    assert fake.card_of("冒険")["due"] < fake.cards[batch[0]]["due"] < fake.cards[batch[1]]["due"] < \
-        fake.card_of("眼鏡")["due"]
+    assert fake.card_of("冒険")["due"] < fake.cards[batch[0]]["due"] < fake.card_of("眼鏡")["due"] < \
+        fake.cards[batch[1]]["due"]
     saved = undo.load("ja", run_id=line["undo"])
     assert saved["complete"] is True and set(map(int, saved["cards"])) == {c for c, _ in fake.writes}
     assert not os.path.exists(undo.snapshot_path("ja")), "the window's Restore point is untouched"
@@ -175,15 +175,15 @@ def test_with_the_preview_on_the_dashboards_automatic_reorder_only_reorders_what
 def test_on_3_0_after_a_batch_the_step_places_its_cards_then_suspends_as_your_setting_says(tmp_path, cli):
     # 2.x-dev: positions only (test_after_a_batch_the_step_places_its_cards_by_the_list_positions_only, held above with
     # the flag off); 3.0 (G1.3-8, W3.5 row 7, Haya's G2b): the step's spaced job carries the actions `auto.reorder`
-    # decided — positions only plus Junban's suspend setting (on in the scene): every card off the list suspended and
-    # tagged `::later` (never flagged: positions_only), the returning 老婆 unsuspended, all in the run's own snapshot
+    # decided — positions only plus Junban's suspend setting (on in the scene): every card of yours off the list
+    # suspended and tagged `::later` (never flagged: positions_only; never one Surasura made, Kyou-MO: Connect's 眼鏡 and
+    # job 2's 須藤 stay), the returning 老婆 unsuspended, all in the run's own snapshot
     fake = scene(tmp_path)
     batch = _batch(fake, ["散歩", "須藤"])
     with _patched(fake):
         code, line = cli("junban", "--auto")
     assert code == 0, line
-    off = sorted([fake.card_of("須藤")["cardId"], fake.card_of("図書館")["cardId"], fake.card_of("眼鏡")["cardId"],
-                  batch[1]])
+    off = sorted([fake.card_of("須藤")["cardId"], fake.card_of("図書館")["cardId"]])
     assert [ids for action, ids in fake.suspend_calls if action == "suspend"] == [off]
     assert ("unsuspend", [fake.card_of("老婆")["cardId"]]) in fake.suspend_calls
     assert fake.flag_writes == [], "positions only and the suspend setting: no flag"
@@ -192,8 +192,9 @@ def test_on_3_0_after_a_batch_the_step_places_its_cards_then_suspends_as_your_se
     # Yours first, in the order you mined them — the scene's 老婆 too (no Connect tag, mined after Connect's first
     # card) — then the list's
     assert fake.queue_order()[:5] == ["走る", "老婆", "冒険", "散歩", "散歩"]
-    assert fake.card_of("冒険")["due"] < fake.cards[batch[0]]["due"] < fake.cards[batch[1]]["due"] < \
-        fake.card_of("眼鏡")["due"], "every card placed before the suspend"
+    assert fake.card_of("冒険")["due"] < fake.cards[batch[0]]["due"] < fake.card_of("眼鏡")["due"] < \
+        fake.cards[batch[1]]["due"], "every card placed before the suspend"
+    assert fake.cards[batch[1]]["queue"] == 0 and fake.card_of("眼鏡")["queue"] == 0, "Surasura's never set aside"
     saved = undo.load("ja", run_id=line["undo"])
     assert saved["complete"] is True and saved["suspended"] == off
     assert saved["unsuspended"] == [fake.card_of("老婆")["cardId"]]

@@ -17,8 +17,8 @@
   `left_mine_line`.
 - **What drops one:** an item that left the top 20 (or was removed or finished) before its mining started. A job
   carrying an ask is never dropped for leaving the top 20 or for being finished (*Mine it too* asks on a finished
-  item) — only when its item is removed or its ask undone; a level job beyond the line (`level.BEYOND_LINE`, C4) is
-  never dropped for leaving the line, still by a `finished` or `removed` event (`keeps`).
+  item) — only when its item is removed or its ask undone; a level job is no longer kept anywhere (Kantan-MO: a raise
+  mines nothing again; the runner drops one not started, `runner.LEVEL_DROPPED`).
 - **Asks** (P4.1 row 4.1.3, C2 / C3): every look reads the store's asks (`mine_asked`) no receipt answers
   (`library.asked`): one no job holds yet → a job of kind `asked` (by `user`), or the item's open job carries it and
   goes first (*Mine now*); an ask made before the asks watermark (`asks_from:<lang>`, set at every off → on by
@@ -52,14 +52,15 @@ LEAVES = ("left_mine_line", "removed", "finished")
 
 def keeps(job, event=None, current=None):
     """Does a job not started stay though its item is out of the top 20 (`event`: the item's latest leaving event, or
-    None — the runner's look at the line)? A job carrying an ask — unless its item was removed — and, on the 3.0 line,
-    a level job beyond the line — unless its item was finished or removed (C3, C4); a show's earlier part (Michi-EO)
-    unless its item was finished or removed or left Current (`current`: False once it is elsewhere; None: not read)."""
+    None — the runner's look at the line)? A job carrying an ask — unless its item was removed (C3); a show's earlier
+    part (Michi-EO) unless its item was finished or removed or left Current (`current`: False once it is elsewhere;
+    None: not read). A level job only for new files, unless its item was finished or removed (Kantan-MO, F1: a
+    raise mines no episode again)."""
     if job.get("asked_at") or job.get("kind") == ASKED:
         return event != "removed"
     if job.get("kind") == LEVEL:
         from app.connect import level
-        return level.BEYOND_LINE and event not in ("removed", "finished")
+        return job.get("source") == level.NEW_FILES and event not in ("removed", "finished")
     if job.get("kind") == SHOW:
         return event not in ("removed", "finished") and current is not False
     return False

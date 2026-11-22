@@ -47,7 +47,8 @@ import time
 
 from app.services import jobs as jobs_module
 
-BACKGROUND = frozenset({"indexer", "replan", "arrivals-ja", "arrivals-zh", "covers", "library-maintain"})
+BACKGROUND = frozenset({"indexer", "replan", "arrivals-ja", "arrivals-zh", "covers", "library-maintain",
+                        "hato-update"})       # Hato-UP: hato's own daily update (`services.hato_update`)
 HEAVY = frozenset({"generate", "mine", "indexer", "replan", "sentence-corpus", "library-maintain"})
 GENERATE = "generate"
 MINE = jobs_module.CONNECT_KIND

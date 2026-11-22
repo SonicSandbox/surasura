@@ -824,6 +824,7 @@ PARTS = (
     ("install", "locks", "locks", STAYS, STAYS),                 # the running programs' own (the running marks too)
     ("install", "window-*.lock", "window_lock", STAYS, STAYS),   # one window per sign-in (app/qt/single.py): held now
     ("install", "update_state.json", "update_state", STAYS, STAYS),
+    ("install", "hato_update.json", "hato_update", STAYS, STAYS),   # Hato-UP: the day hato's update was started
     ("install", PROFILE_JOURNAL, "journal", STAYS, STAYS),
     ("install", PROFILE_JOURNAL + ".tmp", "journal", STAYS, STAYS),
     ("install", BACKUPS, "backups", STAYS, STAYS),

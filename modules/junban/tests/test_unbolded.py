@@ -128,7 +128,8 @@ def test_with_the_preview_on_junban_places_the_unbolded_card_by_its_sentence(tmp
     def tier_of(preview):
         fake = scene(tmp_path, without_connect())   # no card of Connect's: 走る isn't "yours", its sentence places it
         with _patched(fake):
-            _writes, stats = reposition.dry_run(settings(preview=preview))
+            # *Leave* (Kyou-MO): your own cards off the list go by their sentence — the scene's ticks would set them aside
+            _writes, stats = reposition.dry_run(settings(preview=preview, junban_off_list="leave"))
         return next(row for row in stats["order"] if row.word == "走る").why, fake
 
     off, _fake = tier_of(False)
@@ -142,7 +143,7 @@ def test_an_unsure_card_stays_unplaced_and_the_preview_names_it(tmp_path):
                ("かける", "皿が欠けて、壁に絵を掛けた。", 4000, [], 0)]
     fake = scene(tmp_path, entries)
     with _patched(fake):
-        _writes, stats = reposition.dry_run(settings())
+        _writes, stats = reposition.dry_run(settings(junban_off_list="leave"))     # by its sentence (Kyou-MO)
     row = next(row for row in stats["order"] if row.word == "かける")
     assert row.tier == "rest" and row.why == connect.UNSURE
     assert stats["unsure"] == ["かける"]

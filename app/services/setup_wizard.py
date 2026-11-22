@@ -80,13 +80,17 @@ def _language(language):
 
 
 def _later_of(settings):
-    """The three-way choice the three later-actions read as: suspend → *Set them aside*, a tag or a flag → *Mark them*
-    (a mix such as a flag alone is shown as its nearest), none → *Leave them*."""
-    if settings.get("junban_later_suspend") is True:
-        return "aside"
-    if settings.get("junban_later_tag") is True or settings.get("junban_later_flag") is True:
-        return "mark"
-    return "leave"
+    """The three-way choice Junban's switch reads as (Kyou-MO: `junban_off_list`, `unlisted.choice` — 3.0.17's keys
+    while it is unset): *Set aside* with its suspend → *Set them aside*, without → *Mark them*; *Leave* or *At the
+    back* → *Leave them* (the nearest)."""
+    try:
+        from modules.junban import unlisted
+    except Exception:
+        return "leave"
+    opts = unlisted.options(settings)
+    if not opts["tag"]:
+        return "leave"
+    return "aside" if opts["suspend"] else "mark"
 
 
 def _pair(settings):
@@ -251,7 +255,8 @@ def writes(page, answers, settings, language):
                 if deck:
                     out["junban_deck"] = deck
         if was is None or later != was["later"]:
-            out.update({"junban_later_tag": tag, "junban_later_flag": flag, "junban_later_suspend": suspend})
+            out.update({"junban_later_tag": tag, "junban_later_flag": flag, "junban_later_suspend": suspend,
+                        "junban_off_list": "aside" if tag else "leave"})        # Kyou-MO: the one switch
         return out
     if page == "cards":
         if answers.get("make_cards") is None:

@@ -111,9 +111,10 @@ def test_from_3_0_an_unattended_spaced_run_suspends_and_unsuspends_as_the_settin
     assert done["report"]["numbering"]["kind"] == spaced.FULL
     assert fake.card_of(RETURNING)["queue"] == 0
     parked_now = sorted(c for c, card in fake.cards.items() if card["queue"] == -1)
-    # Every card not on the list in any form — Connect's 眼鏡 too — but never yours (走る).
+    # Every card of yours not on the list in any form — never Connect's 眼鏡 (Kyou-MO: Junban never sets aside a card
+    # Surasura made), nor the ones you mined since Connect's first (走る).
     assert [fake.notes[fake.cards[c]["note"]]["fields"]["Expression"]["value"] for c in parked_now] == \
-        ["須藤", "図書館", "眼鏡"]
+        ["須藤", "図書館"]
     assert fake.card_of("走る")["queue"] == 0, "your own card is never suspended"
     assert fake.flag_writes == [], "positions and the suspend setting only: no flag"
     saved = undo.load("ja", run_id=run_id)

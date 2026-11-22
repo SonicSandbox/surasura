@@ -382,12 +382,13 @@ def mark_shown(language, words=None):
         print(f"Count as known in Anki: not marked shown ({e})")
 
 
-def undo(language, word, url):
+def undo(language, word, url, cards_too=True):
     """Undo one word: its cards un-suspended first if still suspended and `suspended` was part of the signal (read
     under Anki's writer, never while you review: adversary B #7, #10), then out of KnownWord.json only if this signal
     added it (a dated backup first) -> {"removed": bool, "unsuspended": [card ids]}. Anki closed or busy, or you're
     reviewing: raises with nothing changed; tried again after a later failure, the cards are back already (review B
-    #13, #25)."""
+    #13, #25). `cards_too=False` (the review loop's Undo, `review_loop.undo`): the word only — the card stays as you
+    left it, and Anki is never asked."""
     from app import anki_connect, anki_sync
     from app.path_utils import backup_to_trash
     with _held(language, "Count as known in Anki (undo)"):
@@ -395,7 +396,7 @@ def undo(language, word, url):
         mine = [m for m in state.get("marked") or () if m.get("word") == word and not m.get("undone")]
         if not mine:
             return {"removed": False, "unsuspended": []}
-        cards = [m["card"] for m in mine if m.get("card") is not None
+        cards = [m["card"] for m in mine if cards_too and m.get("card") is not None
                  and "suspended" in (m["terms"] if m.get("terms") is not None else state.get("terms") or ())]
         back = []
         if cards:

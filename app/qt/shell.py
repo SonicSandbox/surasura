@@ -1542,6 +1542,7 @@ class _Duties:
         self.level_asked = 0                                       # the newest level read (older answers dropped)
         self.update_state = self.generate_state = self.auto_state = None
         self.notice = self.junban_said = self.updated_said = None      # the lines toasted once (IK-23)
+        self.payoff_said = None             # the review loop's last *From your phone* toasted (its sync, once)
         self.update_unseen = ()             # the update's failures not looked at yet (the bar's line: HR-23)
         self.update_applies = False         # W31A-1: the update chip has something to say (it then holds the slot)
         self.paints = {}                    # control -> how many times it was repainted (S19)
@@ -3586,6 +3587,17 @@ class ShellWindow(QMainWindow):
             at = QRect(central.width() // 2, central.height() // 3, 1, 1)
         self.words.keep(row, at)
 
+    # --- J-DOOR: the journey's door (`start_door`, after the first frame) -------------------------------------------- #
+    def door_routes(self):
+        """The journey's door's routes: the registry (`app/services/journey_door.py`), each answered by its owner's
+        function on the door's thread, with this window's services (a mark through `Services.mark_words`, followed as
+        the card's are)."""
+        from app.services import journey_door
+        services = self.services
+        return journey_door.routes(journey_door.App(
+            services=services, language=lambda: self.language, closing=services.closing.is_set,
+            log=lambda where, e: applog.log("door", f"{where}: {e!r}")))
+
     # --- Kotoba-K: Known / Ignore on the word card ----------------------------------------------------------------- #
     def _card_mark(self, marks):
         """(A worker: the word card's ✓ / ⊘ and *I know all of these*, `PeekHost`.) Written in the window's language
@@ -3847,6 +3859,10 @@ class ShellWindow(QMainWindow):
         if junban and junban != d.junban_said:             # 順's line, once (the Tk `_on_junban_auto`: IK-23)
             d.junban_said = junban
             self.toasts.show(junban, why=self._job_cause("junban"))   # help cards: the job's own cause (one record)
+        payoff = getattr(state, "payoff", None)
+        if payoff and payoff != d.payoff_said:             # the review loop's *From your phone*, once a sync
+            d.payoff_said = payoff
+            self._show_payoff(payoff)
         known = getattr(state, "known", None)
         self._known_road()
         if d.known.set_known(known, strings.BAR_KNOWN_TIP):     # W3.1a: the known corner (repainted on a change only)
@@ -4053,6 +4069,25 @@ class ShellWindow(QMainWindow):
         changed = d.level.set_level(d.level_text, tip)
         if d.level.set_mark(mark) or changed:
             d.paints[d.level] = d.paints.get(d.level, 0) + 1
+
+    def _show_payoff(self, payoff):
+        """The review loop's payoff (Kyou-LR, mock 03-payoff-toast): *From your phone: 3 known · 2 to swap · 1 ignored*
+        with *Undo* — that sync's moves put back on the automation's worker (the word lists only; the cards stay as
+        the learner left them), its answer said in a toast. Another language's sync: not shown here."""
+        language, sync_id, known, swap, ignored = payoff
+        automation = self.services.automation
+        if language != self.language:
+            return
+        if getattr(self, "_payoff_relay", None) is None:
+            self._payoff_relay = bridge.Relay(self)
+            self._payoff_relay.said.connect(
+                lambda answer: self.toasts.show(strings.LOOP_UNDONE if answer and answer.get("undone")
+                                                else strings.LOOP_UNDO_FAILED))
+
+        def undo():
+            automation.undo_payoff(language, sync_id, then=self._payoff_relay.call)
+        self.toasts.show(strings.LOOP_PAYOFF.format(known=known, swap=swap, ignored=ignored),
+                         undo=undo if automation is not None else None, tip=strings.LOOP_PAYOFF_TIP)
 
     def _job_cause(self, kind):
         """The newest `kind` job's cause in the registry (help cards §5.2: a toast reads its job's record, never a copy
@@ -4978,12 +5013,14 @@ def main(argv=None, after_gate=None):
         hud.Probe(window, probe_file, hud=meter)
     window.first_frame.connect(window.start_duties)  # W3.5: the duties after the first paint
     window.first_frame.connect(services.load_numbers)  # W3.2 P0: the plan's numbers after it too
+    window.first_frame.connect(lambda: start_door(window))   # the journey's door (`app/door.py`), after it too
     window.show_first()
     hud.mark("shown")
     try:
         code = app.exec()
     finally:
         unwire_idle()                                     # (the loop has ended: the quit's saves never wait for it)
+        stop_door()
         try:
             services.shutdown(release=instance.release)   # the claim goes before the store's close trigger
         finally:
@@ -5002,6 +5039,57 @@ def main(argv=None, after_gate=None):
     return code
 
 
+def start_door(window):
+    """The journey's door (`app/door.py`): a loopback server the journey page asks only on a press, its routes the
+    registry's (`ShellWindow.door_routes`, `app/services/journey_door.py`). Off until the journey v3 page ships
+    (`journey_door.enabled()`): then nothing listens and *Your journey* opens the report as before. Opened on a thread
+    of its own after the first frame (the GUI thread never waits on its imports or its socket). Never raises: no door,
+    and the page says Surasura isn't open."""
+    global _door_starting
+    try:
+        from app.services import journey_door
+        if not journey_door.enabled():
+            return None
+        routes = window.door_routes()
+    except Exception as e:
+        applog.log("shell", f"the journey's door: {e!r}")
+        return None
+
+    def run():
+        try:
+            from app import door
+            from app.path_utils import get_user_file
+            door.start(routes, get_user_file("results"), on_error=lambda path, e: applog.log("door", f"{path}: {e!r}"))
+            if _door_quit.is_set():             # (the quit came while it started, and waited past its join)
+                door.stop()
+        except Exception as e:
+            applog.log("shell", f"the journey's door: {e!r}")
+
+    _door_quit.clear()
+    _door_starting = threading.Thread(target=run, name="journey-door-start", daemon=True)
+    _door_starting.start()
+    return _door_starting
+
+
+def stop_door():
+    """At quit: the door's start waited for (a quit right after the first frame), then the door closed (its running
+    calls answered first, `door.Door.stop`)."""
+    _door_quit.set()
+    starting = _door_starting
+    if starting is not None:
+        starting.join(DOOR_START_WAIT_S)
+    door = sys.modules.get("app.door")      # (not imported: no door was started, and none is imported to stop)
+    if door is None:
+        return
+    try:
+        door.stop()
+    except Exception as e:
+        applog.log("shell", f"the journey's door at quit: {e!r}")
+
+
+_door_starting = None               # J-DOOR: the door's start thread (`start_door`), joined at quit
+_door_quit = threading.Event()      # J-DOOR: set at quit: a start still running stops its own door
+DOOR_START_WAIT_S = 2.0             # J-DOOR: the quit waits this long at most for the door's start to end
 NUMBERS_WAIT_S = 2.0                # Kotoba-K: a mark's write waits this long at most for the numbers to follow it
 SESSION_JOB = "anki-session"        # IK-6: the window's start look at Anki, a registry job (`jobs.RESOURCES`)
 

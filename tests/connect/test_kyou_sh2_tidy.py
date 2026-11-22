@@ -52,6 +52,7 @@ class FakeAnki:
         self.export_ok = True
         self.keep_ids = True          # the import keeps the note and card ids (they're free again)
         self.filtered = set()
+        self.history = set()          # Kyou-SH3: card ids with a line in Anki's review history (`getReviewsOfCards`)
 
     def add(self, note_id, tag, word, mod, deck="日本語::Mining", cards=None, sound=None):
         cards = cards or [{"reps": 0, "type": 0, "queue": 0}]
@@ -76,6 +77,9 @@ class FakeAnki:
 
     def reviewing(self):
         return self.busy
+
+    def reviewed(self, card_ids):
+        return {int(c_) for c_ in card_ids} & self.history
 
     def writer(self, verb):
         self.log.append(("writer", verb))
@@ -292,7 +296,7 @@ def test_the_backup_comes_before_any_delete_and_a_package_that_doesnt_hold_them_
     assert anki.deleted == [] and anki.media_deleted == []
     assert {anki.cards_[1040]["deckName"], anki.cards_[1050]["deckName"]} == {"日本語::Mining"}, "back in their deck"
     (row,) = ledger.conn.execute("SELECT state FROM tidies").fetchall()
-    assert row[0] == tidy.FAILED
+    assert row[0] == tidy.UNSAVED, "Kyou-SH3: a backup that didn't hold is said in Needs you (`tidy_unsaved`)"
     with c.store("ja") as s:
         assert set(WORDS["ja"]) <= library.made_words_all(s)
 

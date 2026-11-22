@@ -321,7 +321,7 @@ def test_undo_leaves_out_a_card_whose_word_was_mined_again_and_says_how_many(led
     again = int(time.time() * 1000)
     with c.store(lang) as s:
         other = s.ids("now")[1]
-        library.record_batch(s, other, {WORDS[lang][4]: [again]}, "2026-11-22T10:00:00Z", batch="t-2")
+        library.record_batch(s, other, {WORDS[lang][4]: [again]}, "2026-11-21T11:00:00Z", batch="t-2")
     anki.add(again, tag, WORDS[lang][4], done_at + 10)
     anki.keep_ids = keep_ids
     back = tidy.restore(anki, ledger, done["id"], _opener(lang))
@@ -347,7 +347,7 @@ def test_a_kill_after_the_left_out_copy_went_finishes_with_it_still_left_out(led
     done = tidy.run(anki, ledger, "ja", tidied, open_store=_opener("ja"))
     again = int(time.time() * 1000)
     with c.store("ja") as s:
-        library.record_batch(s, s.ids("now")[1], {WORDS["ja"][4]: [again]}, "2026-11-22T10:00:00Z", batch="t-2")
+        library.record_batch(s, s.ids("now")[1], {WORDS["ja"][4]: [again]}, "2026-11-21T11:00:00Z", batch="t-2")
     anki.add(again, tag, WORDS["ja"][4], done_at + 10)
     with monkeypatch.context() as killed:
         killed.setattr(tidy, "_cards_home", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
@@ -380,7 +380,7 @@ def test_undo_never_deletes_a_copy_whose_card_has_a_review_line(ledger):
     done = tidy.run(anki, ledger, "ja", [105], open_store=_opener("ja"))
     again = int(time.time() * 1000)
     with c.store("ja") as s:
-        library.record_batch(s, s.ids("now")[1], {WORDS["ja"][4]: [again]}, "2026-11-22T10:00:00Z", batch="t-2")
+        library.record_batch(s, s.ids("now")[1], {WORDS["ja"][4]: [again]}, "2026-11-21T11:00:00Z", batch="t-2")
     anki.add(again, tag, WORDS["ja"][4], done_at + 10)
     anki.history.add(1050)                      # the copy's card (the import keeps its id) answered
     back = tidy.restore(anki, ledger, done["id"], _opener("ja"))
@@ -401,7 +401,7 @@ def test_a_card_mined_again_then_deleted_by_you_doesnt_keep_the_old_one_out(ledg
     anki = _anki("ja", tag, done_at)
     done = tidy.run(anki, ledger, "ja", [105], open_store=_opener("ja"))
     with c.store("ja") as s:
-        library.record_batch(s, s.ids("now")[1], {WORDS["ja"][4]: [int(time.time() * 1000)]}, "2026-11-22T10:00:00Z",
+        library.record_batch(s, s.ids("now")[1], {WORDS["ja"][4]: [int(time.time() * 1000)]}, "2026-11-21T11:00:00Z",
                              batch="t-2")
     back = tidy.restore(anki, ledger, done["id"], _opener("ja"))
     assert back["back"] == 1 and back["skipped"] == [] and 105 in anki.notes_

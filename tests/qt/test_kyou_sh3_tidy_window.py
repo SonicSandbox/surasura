@@ -16,7 +16,7 @@ from tests.qt.conftest import wait_until
 from tests.qt.test_needs_you import button, world  # noqa: F401 (the fixture)
 
 TIDIED = {"id": 4, "cards": 3, "at": "2026-11-21T06:00:00Z", "why": "auto"}
-UNSAVED = {"id": 5, "cards": 12, "at": "2026-11-22T06:00:00Z", "why": "auto"}
+UNSAVED = {"id": 5, "cards": 12, "at": "2026-11-21T07:00:00Z", "why": "auto"}
 
 
 def test_an_undo_that_left_cards_out_says_how_many(world, monkeypatch):  # noqa: F811

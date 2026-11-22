@@ -96,7 +96,7 @@ if not enable_junban:
     print("BUILD CONFIG: Excluding Junban module (build_config: junban off)")
     excluded_modules.append('modules.junban')
 
-# Irodori (Iro-AA, the AI voice's beta; private, like Koe): bundled when the build config names it and its folder
+# Irodori (the AI voice's beta; public since 3.0.18): bundled when the build config names it and its folder
 # exists; off at runtime (`enable_irodori`). Its runtime (Python, PyTorch, the model) is never bundled: the learner's
 # *Install* downloads it into their own local data folder.
 irodori_dir = os.path.join(project_root, 'modules', 'irodori')

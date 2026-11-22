@@ -1,0 +1,22 @@
+{
+  "id": "k2-natural",
+  "version": 1,
+  "name": "Natural speech (K2)",
+  "about": "Irodori v4.1 Small, a voice described in words for each sentence (who says it, and how), natural everyday speech, speed 1.1. No reference clip.",
+  "voice": "none",
+  "speed": 1.1,
+  "steps": null,
+  "lora": null,
+  "captions": {
+    "who": {
+      "female": "20代の女性の自然な声。",
+      "male": "20代の男性の自然な声。"
+    },
+    "how": {
+      "tell": "友達に話しかけるように、ふつうの速さで気軽に話している。",
+      "ask": "相手に尋ねるように、ふつうの速さで話している。",
+      "request": "相手に頼むように、丁寧に、ふつうの速さで話している。",
+      "exclaim": "少し気持ちを込めて、友達に話すように、ふつうの速さで話している。"
+    }
+  }
+}

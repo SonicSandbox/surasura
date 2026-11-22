@@ -1,0 +1,14 @@
+{
+  "id": "storyteller",
+  "version": 1,
+  "name": "Storyteller (woman)",
+  "for": "listening",
+  "about": "A calm adult woman telling a memory. Calm words on purpose (the card voice leaves them out: they slow a line). One voice for every line of a listening round: this caption and seed 7 on each, speed 1.1. No reference clip. PROVISIONAL.",
+  "voice": "none",
+  "speed": 1.1,
+  "steps": null,
+  "lora": null,
+  "seed": 7,
+  "caption": "落ち着いた大人の女性の声。淡々と語りつつ、少し懐かしさをにじませて話している。",
+  "captions": null
+}

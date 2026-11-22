@@ -124,7 +124,7 @@ def _included_module_test_dirs(modules):
         d = os.path.join("modules", "junban", "tests")
         if os.path.isdir(d):
             dirs.append(d)
-    # Irodori (the AI voice's beta, Iro-AA): bundled when named and present (private, like Koe; off at runtime).
+    # Irodori (the AI voice's beta): bundled when named and present (public since 3.0.18; off at runtime).
     if modules.get("irodori") is True:
         d = os.path.join("modules", "irodori", "tests")
         if os.path.isdir(d):

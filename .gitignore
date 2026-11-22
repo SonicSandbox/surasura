@@ -54,10 +54,12 @@ updater.exe
 docs/agent instructions
 docs/pre release notes
 
-# Modules: private, except the two published with 3.0 under GPL-3.0-or-later (Junban + Backfill, YouTube)
+# Modules: private, except those published under GPL-3.0-or-later (Junban + Backfill and YouTube with 3.0, the AI voice
+# with 3.0.18)
 modules/*
 !modules/junban/
 !modules/youtube_downloader/
+!modules/irodori/
 launch_immersion_architect.py
 CLAUDE.md
 

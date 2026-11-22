@@ -1,0 +1,14 @@
+{
+  "id": "woman-30s",
+  "version": 1,
+  "name": "Woman, 30s",
+  "for": "listening",
+  "about": "A woman in her 30s, natural everyday speech. One voice for every line of a listening round: this caption and seed 7 on each, speed 1.1. No reference clip. PROVISIONAL.",
+  "voice": "none",
+  "speed": 1.1,
+  "steps": null,
+  "lora": null,
+  "seed": 7,
+  "caption": "30代の女性の自然な声。友達に話すように、ふつうの速さで話している。",
+  "captions": null
+}

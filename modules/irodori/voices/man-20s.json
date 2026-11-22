@@ -1,0 +1,14 @@
+{
+  "id": "man-20s",
+  "version": 1,
+  "name": "Man, 20s",
+  "for": "listening",
+  "about": "A man in his 20s, natural everyday speech, as a friend talking. One voice for every line of a listening round: this caption and seed 7 on each, speed 1.1. No reference clip. PROVISIONAL.",
+  "voice": "none",
+  "speed": 1.1,
+  "steps": null,
+  "lora": null,
+  "seed": 7,
+  "caption": "20代の男性の自然な声。友達に話しかけるように、ふつうの速さで気軽に話している。",
+  "captions": null
+}

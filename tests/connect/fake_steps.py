@@ -274,6 +274,11 @@ class FakeSteps:
             hook = self.plan.get("on_word")           # a test's press while the batch runs (#47's Stop)
             if hook is not None:
                 hook(n, job)
+            if self.plan.get("review_at") is not None and n >= self.plan["review_at"]:
+                # OPEN 40: a review began in Anki: Anki Miner read its cancel file, the rest wait for the review's end
+                rest = [dict(_unsure(x), outcome="not_attempted") for x in words[n:]]
+                return {"outcomes": out + rest, "app": self.plan.get("app", "3.7.0"), "doubt": False,
+                        "paused": True}
             should_stop = getattr(self, "should_stop", None)
             if should_stop is not None and should_stop():
                 # Anki Miner read its cancel file: the words so far are made, the rest never attempted

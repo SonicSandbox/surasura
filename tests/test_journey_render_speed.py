@@ -292,9 +292,11 @@ def test_a_memo_written_while_a_key_could_not_be_read_is_never_served(tmp_path):
     # the next render that also can't read it — the part may have changed meanwhile.
     path = str(tmp_path / jr.WORD_MEMO)
     first = jr.WordMemo(path, "?", "?")
+    first.meaning("準備", "ジュンビ", "準備"), first.pitch_of([("準備", "ジュンビ")])    # asked, so the save keeps them
     first.add_meaning("準備", "ジュンビ", "準備", '"old"')
     first.add_pitch({("準備", "ジュンビ"): "0"})
     first.save()
+    assert json.load(open(path, encoding="utf-8"))["m"]                # written: the next one must still refuse it
     again = jr.WordMemo(path, "?", "?")
     assert again.meaning("準備", "ジュンビ", "準備") is None and again.pitch_of([("準備", "ジュンビ")]) == {}
     assert ":%d" % jr.MEMO_FORMAT in jr.memo_keys("ja")[0]          # a change to how a meaning is written: no memo

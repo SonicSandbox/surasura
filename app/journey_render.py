@@ -25,7 +25,6 @@ this module, so a 3.0.18 learner's journey is what it was.
 import base64
 import math
 import gzip
-import hashlib
 import json
 import os
 import re
@@ -1069,9 +1068,9 @@ def _records(path, columns=ROW_COLUMNS, contexts=True):
     down the list (a source's path, a file's name, a count) is held once; a sentence never is looked for."""
     if not os.path.exists(path):
         return None
-    import csv
+    from app.path_utils import list_reader
     with open(path, encoding="utf-8-sig", newline="") as f:
-        reader = csv.reader(f)
+        reader = list_reader(f, header=False)    # the shared reader: its field limit raised (a long context)
         header = next(reader, None) or []
         keep = [(n, name, name.startswith("Context ")) for n, name in enumerate(header)
                 if name in columns or (contexts and name.startswith(("Context ", "Src ")))]
@@ -1163,7 +1162,9 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
         timer.save_memo()
     memo.save()
     if not out.head.get("library"):
-        out.head["library"] = hashlib.sha1(os.path.abspath(gen.RESULTS_DIR).encode("utf-8")).hexdigest()[:12]
+        from app import library_store           # the store's own key (the scrub knows it as the install's)
+        from app.path_utils import get_data_path
+        out.head["library"] = library_store.library_key(get_data_path(language))
     return out
 
 

@@ -15,7 +15,8 @@ puts the profile back at the end).
   (Junban's plain-AnkiConnect write) on one card.
 - `tidy.run` (*Tidy now*) over every note, with no deck shown (`ours` None: only the homes on record count): the
   control, the reordered, the moved-back and the Surasura-moved go; the two you moved stay (`MOVED`), each where you
-  put it. Then the tidy undone (`tidy.restore`), so the drill leaves nothing behind but what it deletes itself.
+  put it. *Needs you*'s strays card counts the card in "Anki Miner's" deck before *Move them to X*, and none after
+  your moves (the card you filed is yours, never a stray). Then the tidy undone (`tidy.restore`), so the drill leaves nothing behind but what it deletes itself.
 
 `getActiveProfile == "DevTest"` before anything and before teardown. Teardown: every note with the drill's tag deleted
 (a test-only delete, holding `anki-writer`), the drill's decks deleted once empty, counted back to 0. The ledger, the
@@ -134,6 +135,8 @@ def main():
             out["homes_made"] = {cs: h for cs, h in zip(CASES, [ledger.homes([note[cs]]).get(note[cs]) for cs in CASES])}
             time.sleep(7)                   # every move below comes after Connect's last write + the grace
             # Surasura's move first (it moves every made card outside DevTest, so before any of the learner's)
+            decks.forget()                  # *Needs you*'s strays card: the one in "Anki Miner's" deck (its home)
+            out["strays_before_move_them"] = decks.strays(settings, "ja")
             moved = decks.move(settings, "ja", "DevTest", wait=60)
             out["move_them"] = {"ok": moved.get("ok"), "moved": moved.get("moved"), "say": moved.get("say")}
             out["home_after_move_them"] = ledger.homes([note["moved_by_surasura"]]).get(note["moved_by_surasura"])
@@ -147,6 +150,8 @@ def main():
             write("changeDeck", cards=[card["moved_to_your_subdeck"]], deck=sub_deck)
             write("changeDeck", cards=[card["moved_and_back"]], deck=own_deck)
             write("changeDeck", cards=[card["moved_and_back"]], deck="DevTest")
+            decks.forget()                  # your filing is no stray: the card never counts it (None)
+            out["strays_after_your_moves"] = decks.strays(settings, "ja")
             anki = tidy.AnkiConnectTidy(a.url)
             done = tidy.run(anki, ledger, "ja", ids, why=tidy.NOW, open_store=open_store, ours=None)
             by_note = {v: k for k, v in note.items()}

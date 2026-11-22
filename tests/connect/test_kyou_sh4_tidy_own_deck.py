@@ -363,6 +363,82 @@ def test_move_them_to_x_records_x_as_home_and_its_undo_puts_the_record_back(move
         assert book.homes([101, 102]) == {101: one.MINER_DECK}, "as it was before the move"
 
 
+def _line(record):
+    """*Needs you*'s card for `strays`' answer: its words and its count (None: no card)."""
+    from app.services import needs
+    entry = needs._strays_entry(record, seen=set()) if record else None
+    return (entry.title, entry.data["cards"]) if entry else None
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_card_you_moved_out_of_its_home_is_no_stray_never_counted_nor_moved_back(moved, lang, monkeypatch):
+    # PROVISIONAL (For Sonic 6, the lead's lean): Connect made it in its home; you filed it in a deck of your own —
+    # *Move them to X* would undo your filing. A card with no home on record (made before 2026-11-18, in Anki Miner's
+    # own deck) is a stray as before, and one still in its recorded home (Surasura put it there) too.
+    if lang == "ja":
+        settings, ours, theirs, stray, filed = one._ja(), one.JA_DECK, one.MINER_DECK, 1001, 1002
+        with Ledger() as book:
+            book.set_homes([102], one.JA_DECK)           # made in Surasura's deck, you moved it to Anki Miner's
+    else:
+        settings = {"junban_deck": one.ZH_DECK, "junban_replan_deck": one.ZH_DECK, "junban_replan_language": "zh"}
+        ours, theirs, stray, filed = one.ZH_DECK, OWN["zh"], 2001, 2002
+        moved.cards[2001] = [201, theirs]                # no home on record: a stray, as before
+        moved.cards[2002] = [202, theirs]
+        moved.decks.add(theirs)
+        from app.connect import library
+        monkeypatch.setattr(library, "made_notes_of",
+                            lambda lang: {"ja": one.JA_MADE, "zh": {201: "学习", 202: "老师"}}.get(lang, {}))
+        with Ledger() as book:
+            book.set_homes([202], ours)                  # made in Surasura's deck, you moved it to your own
+    got = decks.strays(settings, lang)
+    assert got == {"deck": ours, "from": {theirs: 1}, "cards": 1}, "your filing is never counted"
+    title, n = _line(got)
+    assert n == 1 and "A card Surasura made" in title and theirs in title
+    done = decks.move(settings, lang)
+    assert done["moved"] == n, "the card's count is what the press then moves"
+    assert moved.cards[stray][1] == ours and moved.cards[filed][1] == theirs, "your card stays where you put it"
+    with Ledger() as book:
+        assert book.homes([moved.cards[filed][0]]) == {moved.cards[filed][0]: ours}, "its record untouched"
+    back = decks.move_back(settings, done["id"])         # the Undo, unchanged: the one card it moved goes back
+    assert back["back"] == 1 and moved.cards[stray][1] == theirs and moved.cards[filed][1] == theirs
+
+
+def test_a_subdeck_you_made_under_a_cards_home_is_yours_and_case_is_ignored(moved):
+    # home recorded as the setting named it ("japanese::anki miner"), Anki answers "Japanese::Anki Miner": the same
+    # deck (Anki ignores case); a subdeck you made under it is a deck of your own
+    moved.cards[1002] = [102, one.MINER_DECK + "::自分"]
+    moved.decks.add(one.MINER_DECK + "::自分")
+    with Ledger() as book:
+        book.set_homes([101, 102], one.MINER_DECK.lower())
+    got = decks.strays(one._ja(), "ja")
+    assert got == {"deck": one.JA_DECK, "from": {one.MINER_DECK: 1}, "cards": 1}
+    assert decks.move(one._ja(), "ja")["moved"] == 1 and moved.cards[1002][1] == one.MINER_DECK + "::自分"
+
+
+def test_homes_that_cant_be_read_count_every_card_as_before_and_never_raise(moved, monkeypatch):
+    with Ledger() as book:
+        book.set_homes([102], one.JA_DECK)
+    from app.connect import ledger as ledger_module
+
+    def busy(*a, **k):
+        raise ledger_module.sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(ledger_module, "homes_of", busy)
+    assert decks.strays(one._ja(), "ja") == {"deck": one.JA_DECK, "from": {one.MINER_DECK: 2}, "cards": 2}
+
+
+def test_homes_of_reads_without_writing_and_answers_nothing_without_a_ledger(tmp_path):
+    from app.connect.ledger import homes_of
+    assert homes_of([101], db_path=str(tmp_path / "none.sqlite")) == {}
+    db = str(tmp_path / "ledger.sqlite")
+    with Ledger(db) as book:
+        book.set_homes([101, 102], "日本語::Mining")
+    assert homes_of([101, 103], db_path=db) == {101: "日本語::Mining"} and homes_of([], db_path=db) == {}
+    import sqlite3
+    bare = str(tmp_path / "old.sqlite")
+    sqlite3.connect(bare).execute("CREATE TABLE meta (key TEXT, value TEXT)").connection.close()
+    assert homes_of([101], db_path=bare) == {}, "a ledger from before homes"
+
+
 def test_a_home_the_ledger_cant_write_never_holds_the_move(moved, monkeypatch):
     # the cards sit in the deck Surasura shows, which is home by itself: only the record is missing
     monkeypatch.setattr(Ledger, "set_homes", lambda self, *a: 1 / 0)

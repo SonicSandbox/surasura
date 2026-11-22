@@ -351,6 +351,36 @@ def listed_of(language, item_ids, db_path=None):
     return out
 
 
+def homes_of(note_ids, db_path=None):
+    """{note id: the deck Surasura last put its cards in} (`homes`, Kyou-SH4) for those of `note_ids` with a record,
+    read-only as `listed_of` (no schema written, no write lock): *Move them to X*'s strays (`decks._find`). {} with no
+    ledger, one never set up or one from a newer Surasura. Raises sqlite3.Error when it can't be read just now."""
+    db_path = db_path or path()
+    ids = sorted({int(n) for n in note_ids})
+    if not ids or not os.path.exists(db_path):
+        return {}
+    from pathlib import Path
+    conn = sqlite3.connect(Path(os.path.abspath(db_path)).as_uri() + "?mode=rw", uri=True, timeout=2.0)
+    out = {}
+    try:
+        conn.execute("PRAGMA query_only=ON")
+        try:
+            schema = conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
+            if schema and str(schema[0]).isdigit() and int(schema[0]) > SCHEMA:
+                return {}
+            for k in range(0, len(ids), 500):
+                chunk = ids[k:k + 500]
+                out.update((int(n), str(d)) for n, d in conn.execute(
+                    f"SELECT note_id, deck FROM homes WHERE note_id IN ({','.join('?' * len(chunk))})", chunk))
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                return {}                              # a ledger never set up, or one from before homes
+            raise
+    finally:
+        conn.close()
+    return out
+
+
 class Ledger:
     """One connection to the ledger; `with Ledger() as ledger:` closes it."""
 

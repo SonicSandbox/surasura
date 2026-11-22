@@ -6,7 +6,8 @@ finds them and, on the learner's press, moves them (lean, PROVISIONAL):
 
 - `strays(settings, language)` (read-only, a worker): this language's cards Connect made (the store's `made_words`, so
   never another language's, nor a card the learner mined by hand) that are in another deck than `fields.surasura_deck`
-  — never one in a filtered deck (a Custom Study session: Anki puts it back itself). Kept `KEEP_S` a deck, so
+  — never one in a filtered deck (a Custom Study session: Anki puts it back itself), nor one you moved out of its home
+  (Kyou-SH4, PROVISIONAL: `_find`; the move moves the same cards it counts). Kept `KEEP_S` a deck, so
   *Needs you*'s refreshes don't ask Anki each time (a move or its Undo asks again at once).
 - `move(settings, language, deck, …)`: *Move them to <deck>* — under the Anki-writing lock, never while you review:
   read again, a snapshot of each card's deck written first (Connect's folder, `deck-moves/`), `changeDeck`, read
@@ -62,13 +63,37 @@ def _decks_of(url, cards):
     return out
 
 
+def _homes(notes):
+    """{note id: its home} (Connect's ledger, `homes`), or {} when it can't be read (logged: every card a stray, as
+    before homes were recorded)."""
+    try:
+        from app.connect.ledger import homes_of
+        return homes_of(notes)
+    except Exception:
+        log.warning("Couldn't read the cards' homes", exc_info=True)
+        return {}
+
+
 def _find(url, notes, deck):
-    """{deck: [card ids]} of `notes`' cards outside `deck` (and its subdecks), none in a filtered deck."""
+    """{deck: [card ids]} of `notes`' cards outside `deck` (and its subdecks), none in a filtered deck — and none you
+    moved (Kyou-SH4): a note with a home on record (`homes`) counts only its cards still in that home (Surasura put
+    them there); one elsewhere, a subdeck of it included, is yours. No record (made before 2026-11-18, in Anki
+    Miner's own deck): counted, as before. `strays` counts and `move` moves the same cards."""
     from app import anki_connect
-    cards = []
-    for start in range(0, len(notes), CHUNK):
-        cards += anki_connect.find_cards(url, _ids_query(notes[start:start + CHUNK], deck))
-    return _decks_of(url, sorted(set(cards))) if cards else {}
+    homes = _homes(notes)
+    groups = {}
+    for n in notes:
+        home = homes.get(int(n))
+        groups.setdefault(str(home).casefold() if home else None, []).append(n)
+    out = {}
+    for home, ids in groups.items():
+        cards = []
+        for start in range(0, len(ids), CHUNK):
+            cards += anki_connect.find_cards(url, _ids_query(ids[start:start + CHUNK], deck))
+        for d, got in (_decks_of(url, sorted(set(cards))) if cards else {}).items():
+            if home is None or d.casefold() == home:
+                out.setdefault(d, []).extend(got)
+    return out
 
 
 def strays(settings, language):

@@ -1,7 +1,8 @@
 # Every pull request's tests: the core suite on Windows, once per push (opened, a new push, reopened, ready for review),
-# never on a label or an edit, as four shards side by side (`run_tests.py --shard I/N`: one job had reached 25-28 of
-# GitHub's 30 minutes on 3.0-dev); the one `tests` job passes only if every shard passed, and it is the check the branch
-# requires and the job pr-merge.yml reads. A pull request that changes only docs (docs/, any *.md) runs no Windows job.
+# never on a label or an edit, as eight shards side by side (`run_tests.py --shard I/N`, packed by the tracked
+# tests/test_times.json: four packed by file size took 27-38 min, 2026-11-21) and the public module suites beside them;
+# the one `tests` job passes only if every shard and the module suites passed, and it is the check the branch requires
+# and the job pr-merge.yml reads. A pull request that changes only docs (docs/, any *.md) runs no Windows job.
 # Merging is pr-merge.yml's: a pull request into 3.0-dev or 2.x-dev merges itself when the session adds the `reviewed`
 # label after its local review (the register is kept outside this repo), if these tests passed on its head commit. A new
 # push takes the label off: new commits need a new review. main takes only pull requests the owner merges.
@@ -55,11 +56,13 @@ jobs:
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}     # a failed check of the files runs them
     name: core ${{ matrix.shard }}/${{ strategy.job-total }}
     runs-on: windows-latest
-    timeout-minutes: 45     # a backstop: a shard takes about a quarter of the suite
+    timeout-minutes: 45     # a backstop: a shard takes about an eighth of the suite's time (~14 of ~114 min)
     strategy:
       fail-fast: false      # every shard runs to the end: one red shard still shows the others' results
+      # Eight: a Free account runs 20 jobs at once, so two pull requests' runs (8 shards + the module suites each) fit
+      # side by side; a third waits for runners, as it would with fewer, longer shards.
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -87,18 +90,59 @@ jobs:
         # would skip them (tests/tk_on_github.py).
         run: python run_tests.py --shard ${{ matrix.shard }}/${{ strategy.job-total }}
 
+  modules:
+    # The public module suites, each in its own pytest process as `run_tests.py --all` runs them (the private ones are
+    # not in this repo).
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    name: module suites
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install (the versions the release is built with)
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pandas==2.0.0 numpy==1.25.2 fugashi==1.5.2 unidic-lite==1.0.8 pysrt==1.1.2 EbookLib==0.20
+          beautifulsoup4==4.12.2 soupsieve==2.4 lxml==4.9.2 requests==2.28.2 tkinterdnd2==0.4.3 jieba==0.42.1
+          pytest==9.0.2 python-dotenv==1.0.0 zstandard==0.25.0
+          PyQt6==6.11.0 PyQt6-Qt6==6.11.2 PyQt6-sip==13.13.0
+          mcp==2.3.0
+      - name: The folders the tests expect
+        shell: bash
+        run: mkdir -p data/ja data/zh "User Files"
+      - name: Junban
+        env:
+          PYTHONIOENCODING: utf-8
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        shell: bash
+        run: python -m pytest modules/junban/tests -v -ra -p no:cacheprovider
+      - name: YouTube transcripts
+        if: ${{ !cancelled() }}      # runs after a red Junban too: both results show
+        env:
+          PYTHONIOENCODING: utf-8
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        shell: bash
+        run: python -m pytest modules/youtube_downloader/tests -v -ra -p no:cacheprovider
+
   tests:
-    # The one result of the core suite: passed only if every shard passed (a docs-only pull request skips both).
+    # The one result: passed only if every shard and the module suites passed (a docs-only pull request skips them).
     # always(), not !cancelled(): a run cancelled mid-shards must fail this check, never skip it (skipped reads green).
-    needs: [changes, shards]
+    needs: [changes, shards, modules]
     if: ${{ always() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - env:
           SHARDS: ${{ needs.shards.result }}
+          MODULES: ${{ needs.modules.result }}
         run: |
-          echo "shards: $SHARDS"
-          test "$SHARDS" = success
+          echo "shards: $SHARDS, module suites: $MODULES"
+          test "$SHARDS" = success && test "$MODULES" = success
 
   unreview:
     # New commits after a review: the label comes off at once, so nothing unreviewed can merge.

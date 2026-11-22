@@ -69,13 +69,13 @@ def test_every_subcommand_in_the_map_is_one_the_frozen_build_dispatches():
         assert f"command == '{word}'" in dispatch, (script, word)
 
 
-def test_the_map_is_the_tk_dashboards_map_as_it_is():
+def test_the_tk_dashboard_reads_the_one_map():
+    """One map (Mado-TK): the Tk dashboard's `run_command_async` imports tools' instead of keeping its own copy, so the
+    two can never disagree on a frozen subcommand."""
     from app.main import MasterDashboardApp
     source = inspect.getsource(MasterDashboardApp.run_command_async)
-    for script, word in tools.SCRIPT_MAP.items():
-        if script in tools.QT_SCRIPTS:                     # the 3.0 window's own tools (W3.4 row 2)
-            continue
-        assert f"'{script}': '{word}'" in source
+    assert "from app.services.tools import SCRIPT_MAP" in source
+    assert not [script for script in tools.SCRIPT_MAP if f"'{script}':" in source], "a second copy of the map"
 
 
 # --- running a child as a job ---------------------------------------------------------------------------------- #

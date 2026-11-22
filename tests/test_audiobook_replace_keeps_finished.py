@@ -62,10 +62,11 @@ def _new_beside(store, language, title, old):
 
 
 def _state(store, ids):
-    """Each item's tier, title, Finished date and ✓ Done mark (None: not in the library)."""
+    """Each item's tier, title, Finished date, ✓ Done mark and its date (Kura-WD's `watched_at`; None: not in the
+    library)."""
     out = {}
     for i in ids:
-        row = store.conn.execute("SELECT tier, work_id, graduated_at, watched FROM items WHERE id = ?",
+        row = store.conn.execute("SELECT tier, work_id, graduated_at, watched, watched_at FROM items WHERE id = ?",
                                  (i,)).fetchone()
         out[i] = tuple(row) if row else None
     return out
@@ -87,7 +88,7 @@ def test_replace_keeps_the_finished_and_done_parts_and_replaces_only_the_unread(
         work = before[p1][1]
         finished_at = before[p1][2]
         assert before[p1][0] == "graduated" and finished_at, "part 1 Finished, dated"
-        assert before[p2][0] == "now" and before[p2][3] == 1, "part 2 ✓ Done in Current"
+        assert before[p2][0] == "now" and before[p2][3] == 1 and before[p2][4], "part 2 ✓ Done in Current, dated"
         new = _new_beside(store, language, title, old)
         new_parts = _parts(store, new)
         goal = store.ids("goal")
@@ -128,6 +129,114 @@ def test_one_undo_of_a_replace_that_kept_parts_puts_everything_back_exactly(lang
         assert _state(store, [p1, p2, p3, p4] + new_parts) == states
         assert _record(store, ab)["book"]["epub"] == os.path.abspath(old)
         assert store.new_version_of(new_parts[0]) is not None, "offered again after the Undo"
+
+
+def _put_back(store, groups):
+    """Put back the Replace's Removed parts, one Put back per group of items (Removed's own trash ids)."""
+    by_item = {r["item_id"]: r["id"] for r in store.trash_rows() if not r["restored_at"]}
+    for group in groups:
+        store.restore([by_item[i] for i in group])
+
+
+# Kura-AB7 (Kura-AB6's review, R8): the Replace's Undo returned early when the old parts were all back already (put
+# back from Removed before the Undo) — the new parts stayed in the old book's title, its audiobook with the new one.
+# Every order of put-backs: the Undo leaves the library as it was before the Replace.
+PUT_BACKS = {"all at once": lambda p3, p4: [[p3, p4]], "one by one": lambda p3, p4: [[p4], [p3]],
+             "only one": lambda p3, p4: [[p3]]}
+
+
+@pytest.mark.parametrize("order", sorted(PUT_BACKS))
+@pytest.mark.parametrize("language,title", (("ja", NEKO), ("zh", SAIYU)))
+def test_the_undo_of_a_replace_whose_parts_were_put_back_first_puts_everything_back(language, title, order):
+    """The unread parts put back from Removed first (all in one Put back, one by one, or only one), then the
+    Replace's Undo: every tier's order, every item's tier / title / dates / mark, the audiobook with the old version,
+    nothing left in Removed — as before the Replace — and the new version offered again."""
+    store, old, ab = _book(language, title)
+    with store:
+        p1, p2, p3, p4 = _parts(store, old)
+        new = _new_beside(store, language, title, old)
+        new_parts = _parts(store, new)
+        everyone = [p1, p2, p3, p4, ab] + new_parts
+        orders, states = _orders(store), _state(store, everyone)
+        change = store.replace_book(new, old)
+        assert change is not None
+        _put_back(store, PUT_BACKS[order](p3, p4))
+        out = store.undo(change)
+        assert out is not None
+        assert store.removed() == [], "nothing left in Removed"
+        assert _orders(store) == orders
+        assert _state(store, everyone) == states
+        assert _record(store, ab)["book"]["epub"] == os.path.abspath(old), "its audiobook back with the old version"
+        assert store.new_version_of(new_parts[0]) is not None, "offered again after the Undo"
+
+
+@pytest.mark.parametrize("audiobook_too", (False, True), ids=("parts moved", "parts moved, audiobook removed"))
+def test_the_undo_after_every_part_was_put_back_lands_only_when_something_of_the_rest_comes_back(audiobook_too):
+    """Every replaced part put back, then the new parts moved by the learner (changed since: the value check keeps
+    them where they are). The audiobook still paired with the new version: its pair goes back to the old one — the
+    Undo landed. The audiobook removed too: nothing of the Replace's rest comes back — the window's writer calls it
+    refused ("can't undo"), never a landed Undo that did nothing."""
+    language = "ja"
+    store, old, ab = _book(language, NEKO)
+    with store:
+        p1, p2, p3, p4 = _parts(store, old)
+        new = _new_beside(store, language, NEKO, old)
+        new_parts = _parts(store, new)
+        change = store.replace_book(new, old)
+        _put_back(store, [[p3, p4]])
+        store.set_tier(new_parts, "soon")
+        if audiobook_too:
+            store.remove([ab])
+        soon = store.ids("soon")
+        out = store.undo(change)
+        assert [i for i in store.ids("soon") if i in new_parts] == [i for i in soon if i in new_parts], \
+            "the moved parts stay where the learner put them"
+        assert out.replaced_back is (not audiobook_too)
+        assert M._refused(change, out) is audiobook_too
+        if not audiobook_too:
+            assert _record(store, ab)["book"]["epub"] == os.path.abspath(old), "its pair back with the old version"
+
+
+@pytest.mark.parametrize("language,title", (("ja", NEKO), ("zh", SAIYU)))
+def test_the_toasts_undo_after_a_put_back_of_every_replaced_part_is_not_refused(language, title):
+    """The window's writer: *Replace*, then Removed's *Put back* of its parts, then the Replace's toast Undo — the Undo
+    lands (no "nothing was undone"), the new version back in New arrivals as a title of its own, the audiobook with
+    the old one, every copy where it was."""
+    store, old, ab = _book(language, title)
+    data_dir = store.data_dir
+    with store:
+        p1, p2, p3, p4 = _parts(store, old)
+        new = _new_beside(store, language, title, old)
+        new_parts = _parts(store, new)
+        offer = store.new_version_of(new_parts[0])
+        files = {p: os.path.join(data_dir, *store.item(p)["rel_path"].split("/")) for p in (p1, p2, p3, p4)}
+        everyone = [p1, p2, p3, p4, ab] + new_parts
+        orders, states = _orders(store), _state(store, everyone)
+    store.close()
+    heard = Heard()
+    w = M.Writer(ls.StoreOpener(language, data_dir, store.user_files_dir, role="window"), language,
+                 journal_file=M.journal_path(language), retry=0.05, words=WORDS, **heard.kw())
+    w.start()
+    try:
+        w.replace_book(offer["old"]["replaced"], new, old, label="replaced")
+        assert h.until(lambda: len(heard.saved) == 1 or heard.notes)
+        replace = heard.saved[0][0]
+        with ls.open_store(language, data_dir, store.user_files_dir) as now:
+            (entry,) = now.removed()
+        w.restore(entry["trash_ids"], label="put back")
+        assert h.until(lambda: len(heard.saved) == 2 or heard.notes)
+        assert all(os.path.exists(f) for f in files.values())
+        w.undo(replace, label="undo replace")
+        assert h.until(lambda: heard.undone or heard.notes)
+        assert [label for _c, label in heard.undone] == ["undo replace"], heard.notes
+    finally:
+        w.finish(time.monotonic() + 5)
+    with ls.open_store(language, data_dir, store.user_files_dir) as again:
+        assert _orders(again) == orders
+        assert _state(again, everyone) == states
+        assert _record(again, ab)["book"]["epub"] == os.path.abspath(old)
+        assert again.removed() == []
+    assert all(os.path.exists(f) for f in files.values())
 
 
 def test_a_book_with_nothing_unread_is_no_replacement():

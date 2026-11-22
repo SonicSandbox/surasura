@@ -59,7 +59,8 @@ class LoopAnki:
         monkeypatch.setattr(anki_connect, "find_notes", lambda url, q: self._ask(
             "findNotes", sorted({self.cards[c]["note"] for c in self._find(q)})))
         monkeypatch.setattr(anki_connect, "cards_info", lambda url, ids, chunk=250: self._ask(
-            "cardsInfo", [{"cardId": c, "note": self.cards[c]["note"]} if c in self.cards else {} for c in ids]))
+            "cardsInfo", [{"cardId": c, "note": self.cards[c]["note"], "queue": -1 if self.cards[c]["suspended"] else 2,
+                           "flags": self.cards[c]["flag"]} if c in self.cards else {} for c in ids]))
         monkeypatch.setattr(anki_connect, "notes_info", lambda url, ids, chunk=250: self._ask(
             "notesInfo", [self._note(n) for n in ids]))
         monkeypatch.setattr(anki_connect, "invoke", self._invoke)
@@ -268,7 +269,7 @@ def test_a_studied_unsuspended_red_or_green_card_never_counts_known(anki, langua
     anki.add(2, other, flag=ORANGE)
     _sync(language)
     assert _known(language) == {other}
-    assert anki_sync.scope_query([DECK]).endswith("-flag:1 -flag:3")
+    assert anki_sync.known_query([DECK]).endswith("-flag:1 -flag:3") and "flag" not in anki_sync.scope_query([DECK])
 
 
 # --- Still learning ------------------------------------------------------------------------------------------------ #
@@ -499,3 +500,76 @@ def test_a_swap_asked_with_a_line_keeps_its_line_id_through_undo():
     swap_queue.drop_sync("zh", "s1")
     kept = {s["card"]: s for s in swap_queue.load("zh")}
     assert kept[7]["line_id"] == "ep03:0412" and kept[7]["why"] == "undone"
+
+
+# --- the review's findings (register R-rows) ---------------------------------------------------------------------- #
+def test_a_known_move_never_clears_an_ignore_made_by_hand_after_a_loop_swap(anki):
+    # why (R2): the loop swapped the word, then the learner ignored it by hand; a later Known move on another card of it
+    # must not take their own Ignore line away
+    word, *_ = WORDS["ja"]
+    _baseline("ja")
+    anki.add(1, word, suspended=True, flag=GREEN)
+    _sync("ja")
+    word_marks.apply("ja", [(word, "ignore")])                         # by hand, in the window
+    anki.add(2, word, suspended=True, tags=["marked"], note=2002)
+    _sync("ja")
+    assert word in _ignored("ja")
+
+
+def test_a_swap_card_that_only_left_the_search_keeps_its_entry(anki):
+    # why (R4): a leech tag (or Surasura's own tag, another deck) takes the card out of the search while it is still
+    # Suspended + Green: the learner never took the swap back
+    word, *_ = WORDS["zh"]
+    anki.add(1, word, suspended=True, flag=GREEN)
+    _sync("zh")
+    anki.set(1, tags=["leech"])
+    _sync("zh")
+    assert _waiting("zh") == [(word, 1)]
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_undo_of_a_swap_on_a_word_known_only_by_hand_brings_the_known_mark_back(anki, language):
+    # why (R7): Still learning on a word known only in Surasura turns nothing (its mark just goes): Undo still finds it
+    # as that sync left it and puts the Known back
+    word, *_ = WORDS[language]
+    word_marks.apply(language, [(word, "known")])
+    anki.add(1, word, new=True, suspended=True, flag=GREEN)
+    result, _ = _sync(language)
+    assert word not in _known(language)
+    review_loop.undo(language, result.loop["sync"])
+    assert word_marks.marks(language).get(word) == "known"
+
+
+def test_undo_of_an_ignore_over_a_word_known_both_ways_keeps_its_own_known_mark(anki):
+    # why (R6): known by hand and by a studied card (an older file holds both entries); the red move turns the card's
+    # entry and drops the hand mark — Undo puts both back (the hand mark is what a Replace keeps)
+    word, *_ = WORDS["ja"]
+    word_marks.apply("ja", [(word, "known")])
+    path = os.path.join(get_user_files_path("ja"), "KnownWord.json")
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    data["words"].append(anki_sync._entry(word, 1001, "ja", anki_sync._now_iso()))
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    anki.add(1, word, suspended=True, flag=RED)
+    result, _ = _sync("ja")
+    assert word not in _known("ja") and word in _ignored("ja")
+    review_loop.undo("ja", result.loop["sync"])
+    assert word_marks.marks("ja").get(word) == "known" and word in _known("ja") and word not in _ignored("ja")
+    assert all(anki_sync._is_known(e) for e in _entries("ja"))
+
+
+def test_a_swap_queue_that_cant_be_read_leaves_the_lists_recorded_and_queues_at_the_next_read(anki):
+    # why (R1): the Ignore list written, the queue damaged: the sync keeps its record (its Undo) and the swap waits
+    ignore, swap, *_ = WORDS["ja"]
+    path = swap_queue.path("ja")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("[broken")
+    anki.add(1, ignore, suspended=True, flag=RED)
+    anki.add(2, swap, suspended=True, flag=GREEN)
+    out = review_loop.read("ja", URL, [DECK], [], _settings())
+    assert out["loop_error"] and _ignored("ja") == {ignore} and out["loop"]["ignored"] == 1
+    os.remove(path)
+    _sync("ja")
+    assert _waiting("ja") == [(swap, 2)]

@@ -185,10 +185,11 @@ def learning(language):
 def states(language, words):
     """{word: "known" | "ignore" | "learning" | None} for `words`, as `apply` reads each before it marks it."""
     marked = marks(language)
+    ours = {_norm(w) for w, m in marked.items() if m == "known"}
     turned = {_norm(w) for w in learning(language)}
     out = {}
     for word in words:
-        if marked.get(str(word).strip()) == "known":
+        if _norm(word) in ours:
             out[word] = "known"
         elif marked.get(word_lists._term(word, language)) == "ignore":
             out[word] = "ignore"
@@ -263,6 +264,7 @@ def _apply_held(language, wanted, result, unknow=False):
         elif before == "ignore":
             drop_ignore.add(term)
             listed.discard(term)
+        known_elsewhere = key in known_any          # before any entry is put back: Known then writes its own
         if mark == "learning" or (mark == "ignore" and unknow):
             if key in others:
                 flip.add(key)
@@ -273,7 +275,7 @@ def _apply_held(language, wanted, result, unknow=False):
             flip.discard(key)
             known_any.add(key)
         if mark == "known":
-            if key not in known_any:                # known some other way already: nothing to write for it
+            if not known_elsewhere:                 # known some other way already: nothing to write for it
                 add_known.append(word)
                 known_any.add(key)
             ours.add(key)

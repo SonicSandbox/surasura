@@ -351,15 +351,19 @@ def _clean_decks(decks):
 def scope_query(decks, include_suspended=False):
     """'(deck:"A" OR deck:"B") -is:new [-is:suspended]'. `deck:"A"` includes A's subdecks. `include_suspended`: False
     (no suspended card), True (every studied one), or the search terms a suspended card must carry to count
-    (`counted_suspended`: *Count as known in Anki*'s picks). A red or a green card never counts, suspended or not
-    (`NOT_KNOWN_FLAGS`: the review loop's Ignore and Swap; Kyou-LR, Kotoba-WS2's note b)."""
+    (`counted_suspended`: *Count as known in Anki*'s picks)."""
     terms = " OR ".join(f'deck:"{anki_connect.escape_query(d)}"' for d in _clean_decks(decks))
     query = f"({terms}) -is:new"
     if isinstance(include_suspended, str):
-        query = f"{query} (-is:suspended OR (is:suspended {include_suspended}))"
-    elif not include_suspended:
-        query += " -is:suspended"
-    return f"{query} {NOT_KNOWN_FLAGS}"
+        return f"{query} (-is:suspended OR (is:suspended {include_suspended}))"
+    return query if include_suspended else query + " -is:suspended"
+
+
+def known_query(decks, include_suspended=False):
+    """The studied cards whose words count known (the sync and Replace): `scope_query`'s, never a red or a green card,
+    suspended or not (`NOT_KNOWN_FLAGS`: the review loop's Ignore and Swap; Kyou-LR, Kotoba-WS2's note b). The decks'
+    counts, note types and sentences keep `scope_query` (a deck of flagged cards is still a deck you study)."""
+    return f"{scope_query(decks, include_suspended)} {NOT_KNOWN_FLAGS}"
 
 
 def counted_suspended(settings):
@@ -668,7 +672,7 @@ def _sync(language, url, decks, fields, include_suspended, full):
     full = bool(full or changed)
     result = SyncResult(mode="full" if full else "delta")
 
-    query = scope_query(decks, include_suspended)
+    query = known_query(decks, include_suspended)
     # A delta asks, in one request, for the studied notes and for those edited since the last sync — an edited
     # card's text is read again (add-only: its new words are appended; a word the edit took out stays known).
     note_ids, edited = ((anki_connect.find_notes(url, query), set()) if full
@@ -1168,7 +1172,7 @@ def replace(language, url, decks, fields, include_suspended=False, dry_run=False
             result.total_known = count_known(language)
             return result
         try:
-            note_ids = anki_connect.find_notes(url, scope_query(decks, include_suspended))
+            note_ids = anki_connect.find_notes(url, known_query(decks, include_suspended))
             notes = anki_connect.notes_info(url, note_ids)
         except AnkiError as e:
             result.error = str(e)

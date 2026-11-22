@@ -146,15 +146,22 @@ def read(language, url, decks, fields, settings):
             new = {m: sorted(found[m] - seen[m]) for m in MOVES}
             move_of = {c: m for m in MOVES for c in new[m]}
             words = known_signal._words_of(url, new[IGNORE] + new[SWAP], fields, language) if move_of else []
+            back = _taken_back(language, url, seen[SWAP] - found[SWAP])     # every Anki read before any write
         except anki_connect.AnkiError as e:     # Anki closed or busy mid-read: the Known words stand, the rest waits
             out["loop_error"] = str(e)
             return out
         sync = str(int(time.time() * 1000))
         cards = state.setdefault("cards", {})
-        # Known after a move of the loop's: the loop's mark cleared (known, and off the Ignore list)
-        moved_words = {r.get("word") for r in cards.values() if not r.get("undone")}
+        # Known after a move of the loop's: the loop's own mark cleared (known, and off the Ignore list) — only while
+        # the word is as a loop move left it (Ignore: "ignore", Swap: "learning"), never a mark made by hand since
+        set_by = {}
+        for r in cards.values():
+            if not r.get("undone") and r.get("move") in MOVES:
+                set_by.setdefault(r.get("word"), set()).add("ignore" if r["move"] == IGNORE else "learning")
         known_words = list(out.get("marked") or ())
-        marks = [(w, None) for w in known_words if w in moved_words]
+        loop_known = [w for w in known_words if w in set_by]
+        now = word_marks.states(language, loop_known) if loop_known else {}
+        marks = [(w, None) for w in loop_known if now.get(w) in set_by[w]]
         marks += [(w, "learning") for w, c, _n in words if move_of.get(c) == SWAP]
         marks += [(w, "ignore") for w, c, _n in words if move_of.get(c) == IGNORE]    # last: Ignore wins
         changes, known_before = [], set()
@@ -169,15 +176,22 @@ def read(language, url, decks, fields, settings):
             if done.error is not None:
                 out["loop_error"] = done.error              # nothing written: read again at the next sync
                 return out
-            changes = [{"word": w, "before": b, "after": a} for w, b, a in done.done]
+            read_back = word_marks.states(language, [w for w, _b, _a in done.done])   # as Undo will read it (a
+            changes = [{"word": w, "before": b, "mark": a, "after": read_back.get(w)}  # Still learning with
+                       for w, b, a in done.done]                                     # nothing turned reads None)
         ignored = sorted({w for w, c, _n in words if move_of.get(c) == IGNORE})
         queued = []
+        try:
+            for w, c, n in words:
+                if move_of.get(c) == SWAP and w not in ignored and swap_queue.add(language, w, c, n, sync) is not None:
+                    queued.append(w)
+            swap_queue.drop_cards(language, back, "taken back")
+        except (swap_queue.Unreadable, RuntimeError) as e:  # the lists stand (recorded below, with their Undo); the
+            out["loop_error"] = str(e)                       # swaps are queued at the next read (`seen` keeps them new)
+            new[SWAP] = [c for c in new[SWAP] if c not in {cc for w, cc, _n in words if w not in queued}]
         for w, c, n in words:
-            if move_of.get(c) == SWAP and w not in ignored and swap_queue.add(language, w, c, n, sync) is not None:
-                queued.append(w)
             cards[str(c)] = {"move": move_of.get(c), "word": w, "note": n, "sync": sync, "at": _now()}
-        _taken_back(language, url, seen[SWAP] - found[SWAP])
-        unknown = sum(1 for c in changes if c["after"] in (IGNORE, "learning")
+        unknown = sum(1 for c in changes if c["mark"] in (IGNORE, "learning")
                       and word_marks._norm(c["word"]) in known_before)     # known words the move rule took out
         payoff = {"sync": sync, "known": len(known_words), "swap": len(set(queued)),
                   "ignored": len({c["word"] for c in changes if c["after"] == IGNORE}), "unknown": unknown}
@@ -189,6 +203,8 @@ def read(language, url, decks, fields, settings):
             del syncs[:-KEEP_SYNCS]
             out["loop"] = payoff
         now_seen = {m: sorted(found[m]) for m in MOVES}
+        if out.get("loop_error"):                           # a swap not queued stays new for the next read
+            now_seen[SWAP] = sorted(set(now_seen[SWAP]) - (set(found[SWAP]) - seen[SWAP] - set(new[SWAP])))
         if moved or words or seen_all.get(profile) != now_seen:
             seen_all[profile] = now_seen
             state["read"] = _now()
@@ -197,22 +213,28 @@ def read(language, url, decks, fields, settings):
 
 
 def _taken_back(language, url, gone):
-    """The swap cards no longer Suspended + Green: those still in Anki were taken back — their waiting entries dropped;
-    a deleted card (cardsInfo has nothing for it) keeps its entry."""
+    """The waiting swap cards gone from the search that the learner took back -> their ids: still in Anki and no longer
+    Suspended + Green (cardsInfo's `queue` -1 and `flags` 3). A deleted card (cardsInfo has nothing for it), or one
+    that only left the search (a leech, Surasura's own tag, another deck) while still Suspended + Green, keeps its
+    entry; a card whose answer lacks either field too."""
     if not gone:
-        return
+        return set()
     try:
         waiting = {s.get("card") for s in swap_queue.waiting(language)}
     except swap_queue.Unreadable as e:
         print(f"The review loop: {e}")
-        return
+        return set()
     ask = sorted(c for c in gone if c in waiting)
     if not ask:
-        return
+        return set()
     from app import anki_connect
-    still = {c.get("cardId") for c in known_signal._chunked(anki_connect.cards_info, url, ask)
-             if isinstance(c, dict) and c.get("cardId") is not None}
-    swap_queue.drop_cards(language, still, "taken back")
+    back = set()
+    for c in known_signal._chunked(anki_connect.cards_info, url, ask):
+        if not isinstance(c, dict) or c.get("cardId") is None or "queue" not in c or "flags" not in c:
+            continue
+        if not (c.get("queue") == -1 and c.get("flags") == 3):
+            back.add(c["cardId"])
+    return back
 
 
 def syncs(language):

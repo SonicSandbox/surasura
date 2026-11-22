@@ -23,19 +23,17 @@ Imported only with Connect's preview on.
 """
 import datetime
 import threading
-import time
 import tkinter as tk
 import webbrowser
 from tkinter import messagebox, ttk
 
+from app.connect.undo import update_waits, wait_for_writer, writer_busy   # the wait on Anki's writer: Qt-free, there
+
 BG, SURFACE, TEXT, ACCENT, SECONDARY, ERROR = "#1e1e1e", "#2d2d2d", "#e0e0e0", "#bb86fc", "#03dac6", "#cf6679"
 DIM = "#aaaaaa"
 WRAP = 520
-WAIT_FOR_WRITER_S = 120         # how long an undo keeps waiting for another program's Anki write (a few batches)
-RETRY_GAP_S = 1.0               # at least this long between two tries while another program writes to Anki
 QUESTION = "Remove all of this episode's Anki cards that aren't studied?"
 WAITING = "Waiting for Anki: another program (Anki Miner?) is writing to it. Your undo goes on once it's done…"
-UPDATE_WAITING = "Surasura is waiting to install an update; try again after it."
 SETTINGS_UNREADABLE = "settings.json can't be read just now; try again."
 
 # Each kind of need's one action: (button, what it does) — "logs" opens the logs folder; "hato" asks hato for its
@@ -141,58 +139,6 @@ def _say(out):
     if isinstance(out, dict) and out.get("skipped"):
         return f"Not done: {out['skipped']}."
     return None
-
-
-def _busy_writer(out):
-    return isinstance(out, Exception) and getattr(out, "code", None) == "busy" and \
-        (getattr(out, "context", None) or {}).get("lock") == "anki-writer"
-
-
-def writer_busy():
-    """Does a live program hold Anki's write lock? A lock file this process can't open is no program: its refusal is
-    said at once. Never raises."""
-    try:
-        from app import locks
-        return locks.in_use("anki-writer") and locks.unopenable("anki-writer") is None
-    except Exception:
-        return False
-
-
-def update_waits():
-    """Is an update waiting to install (this dashboard's "Update now": no Anki write may begin)? Never raises."""
-    try:
-        from app import updater
-        return updater.children_held()
-    except Exception:
-        return False
-
-
-def wait_for_writer(call, on_wait, busy=None, update=None):
-    """On a worker: `call()` (an `undo.act` that writes), tried again while a live program holds Anki's write lock —
-    at least RETRY_GAP_S apart, for up to WAIT_FOR_WRITER_S, `on_wait()` called once, as the wait starts. A refusal no
-    live program explains stops at once: an update waiting to install (UPDATE_WAITING), a lock file that can't be
-    opened (the act's own words). The window's undo and put-back and the switch-off's put-back all wait here."""
-    busy, update = busy or writer_busy, update or update_waits
-    deadline = time.monotonic() + WAIT_FOR_WRITER_S
-    said = False
-    while True:
-        if not said and busy():
-            said = True
-            on_wait()
-        try:
-            return call()
-        except Exception as e:
-            if not _busy_writer(e):
-                raise
-            if update():
-                from app.cli.contract import CliError
-                raise CliError("busy", UPDATE_WAITING, lock="anki-writer", held_by=None) from None
-            if not busy() or time.monotonic() >= deadline:
-                raise
-        if not said:
-            said = True
-            on_wait()
-        time.sleep(RETRY_GAP_S)
 
 
 class ConnectWindow:

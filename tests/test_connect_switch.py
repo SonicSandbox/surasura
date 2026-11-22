@@ -511,9 +511,9 @@ def test_a_put_back_that_fails_keeps_connect_on_and_asks_whether_to_turn_it_off_
 
 def test_the_switch_offs_put_back_waits_for_anki_miner_as_the_window_does(dashboard, monkeypatch):
     """Adversary #2: Anki Miner holding Anki's write lock (18–24 s a batch) makes the put-back wait and try again — the
-    window's own wait (`connect_window.wait_for_writer`), said once — then it's put back and the switch saved off."""
+    window's own wait (`undo.wait_for_writer`), said once — then it's put back and the switch saved off."""
     from app.cli.contract import CliError
-    from app.connect import connect_window, undo
+    from app.connect import undo
     app, lines = _settings_open(dashboard, monkeypatch, connect_enabled=True)
     _shelf(monkeypatch, SHELF)
     answers = [CliError("busy", "Another program is writing to Anki. Try again in a moment.", lock="anki-writer",
@@ -527,9 +527,9 @@ def test_the_switch_offs_put_back_waits_for_anki_miner_as_the_window_does(dashbo
             raise answer
         return answer
     monkeypatch.setattr(undo, "act", act)
-    monkeypatch.setattr(connect_window, "writer_busy", lambda: True)
-    monkeypatch.setattr(connect_window, "update_waits", lambda: False)
-    monkeypatch.setattr(connect_window, "RETRY_GAP_S", 0.05)
+    monkeypatch.setattr(undo, "writer_busy", lambda: True)
+    monkeypatch.setattr(undo, "update_waits", lambda: False)
+    monkeypatch.setattr(undo, "RETRY_GAP_S", 0.05)
     asked = _answers(monkeypatch, True)
     _switch(app, False)
     assert len(asked) == 1 and acts == ["shelf-2026-10-11-a", "shelf-2026-10-11-a"], "it waited and tried again"

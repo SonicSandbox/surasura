@@ -693,3 +693,27 @@ def test_undo_of_an_older_sync_leaves_a_word_a_later_sync_moved_the_same_way(ank
     assert word not in _known("ja")
     answer = review_loop.undo("ja", first.loop["sync"])
     assert answer["kept"] == [word] and word not in _known("ja") and (word, 2) in _waiting("ja")
+
+
+def test_undo_of_an_older_known_move_leaves_the_word_a_later_sync_read_known_again(anki):
+    # why: Known read, taken back to Still learning, then a fresh Known move read by a later sync — undoing the first
+    # sync must not take away the known word the later sync wrote
+    word, other, *_ = WORDS["ja"]
+    anki.add(9, other, suspended=True, tags=["marked"])
+    _sync("ja")
+    known_signal.accept_offer("ja", URL)                              # the first read's offer: only `other`
+    anki.add(1, word, suspended=True, tags=["marked"])
+    _sync("ja")
+    first = [s["id"] for s in review_loop.syncs("ja")]
+    assert first and word in _known("ja")
+    word_marks.apply("ja", [(word, "learning")])
+    anki.set(1, suspended=False)
+    _sync("ja")
+    anki.set(1, suspended=True)                                        # a fresh Known move
+    _sync("ja")
+    assert word in _known("ja")
+    later = [s["id"] for s in review_loop.syncs("ja") if s["id"] not in first]
+    assert later, "the fresh Known move recorded its sync"
+    for sync_id in first:
+        review_loop.undo("ja", sync_id)
+    assert word in _known("ja")

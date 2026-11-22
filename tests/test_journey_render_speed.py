@@ -221,6 +221,22 @@ def test_the_list_csv_keeps_a_word_spelled_like_nothing_or_a_number(tmp_path, ne
     assert jr._records(str(tmp_path / "none.csv")) is None
 
 
+def test_a_blank_line_is_no_row_and_a_count_written_as_nan_is_no_count(tmp_path):
+    # A list ending in two newlines (or a blank line inside) must not become a word with no spelling; a count
+    # cell reading "nan" / "inf" is an empty one, never a crash at int().
+    path = str(tmp_path / "progressive_learning_list.csv")
+    header = ["Sequence", "Source File", "Word", "Reading", "Occurrences (File)", "Context 1", "Src 1"]
+    _write_csv(path, header, [[1, "ep01.srt", "冒険", "ボウケン", "nan", "冒険の始まり", "Show/ep01.srt"], [],
+                              [1, "ep01.srt", "準備", "ジュンビ", "inf", "準備はいい？", "Show/ep01.srt"], []],
+               chr(13) + chr(10))                                  # [] is a blank line
+    rows = jr._records(path)
+    assert [r["Word"] for r in rows] == ["冒険", "準備"]
+    assert jr._num("nan") == 0 and jr._num("inf", 5) == 5
+    out = jr.build("ja", rows, _stats(1), pitch=jr.Pitch("ja", kanjium={}))
+    words = [w for chunk in out.chunks for w in _decode(chunk)["w"]]
+    assert [w[0] for w in words] == ["冒険", "準備"] and all(w[7] == 0 for w in words)
+
+
 def test_the_priority_csv_keeps_only_the_four_columns_its_order_and_owners_need(tmp_path):
     path = str(tmp_path / "priority_learning_list.csv")
     _write_csv(path, ["Word", "Orth", "Forms", "Reading", "Context 1", "Src 1"],
@@ -257,6 +273,31 @@ def test_the_kanjium_copy_is_read_only_for_the_words_unidic_missed(tmp_path, mon
     assert asked == [{"ぬるぽ語"}]                                    # unidic knows 準備: not asked for
     assert pitch.of("ぬるぽ語", "ヌルポゴ") == "k:2,0"
     assert own_dicts.kanjium(str(tmp_path), words={"他"}) == {"他": {"た": "1"}}
+    # The memo keeps unidic's answers only: the copy's pitch is the learner's own data, and results/ goes out with
+    # Send report when its tick is on — so a warm render reads the copy again for the miss, never the memo.
+    path = str(tmp_path / jr.WORD_MEMO)
+    memo = jr.WordMemo(path, *jr.memo_keys("ja"))
+    jr.Pitch("ja").prepare([("準備", "ジュンビ"), ("ぬるぽ語", "ヌルポゴ")], memo=memo)
+    memo.save()
+    held = json.load(open(path, encoding="utf-8"))["p"]
+    assert list(held) == ["準備	ジュンビ"] and "2,0" not in open(path, encoding="utf-8").read()
+    asked.clear()
+    warm = jr.Pitch("ja")
+    warm.prepare([("準備", "ジュンビ"), ("ぬるぽ語", "ヌルポゴ")], memo=jr.WordMemo(path, *jr.memo_keys("ja")))
+    assert asked == [{"ぬるぽ語"}] and warm.of("ぬるぽ語", "ヌルポゴ") == "k:2,0"
+
+
+def test_a_memo_written_while_a_key_could_not_be_read_is_never_served(tmp_path):
+    # memo_keys says "?" when it can't read a part (unidic's file, the table): a memo saved under "?" must not answer
+    # the next render that also can't read it — the part may have changed meanwhile.
+    path = str(tmp_path / jr.WORD_MEMO)
+    first = jr.WordMemo(path, "?", "?")
+    first.add_meaning("準備", "ジュンビ", "準備", '"old"')
+    first.add_pitch({("準備", "ジュンビ"): "0"})
+    first.save()
+    again = jr.WordMemo(path, "?", "?")
+    assert again.meaning("準備", "ジュンビ", "準備") is None and again.pitch_of([("準備", "ジュンビ")]) == {}
+    assert ":%d" % jr.MEMO_FORMAT in jr.memo_keys("ja")[0]          # a change to how a meaning is written: no memo
 
 
 # --- the shipped tables, streamed ------------------------------------------------------------------------------- #

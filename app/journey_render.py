@@ -23,6 +23,7 @@ Not wired yet: J-CUT makes `generate_static_html`'s journey call `render` and `w
 this module, so a 3.0.18 learner's journey is what it was.
 """
 import base64
+import math
 import gzip
 import hashlib
 import json
@@ -36,6 +37,7 @@ SHAPE_MINOR = 1                 # 1.1 (2026-11-22): additive only — the head's
 #                                 settings, `stamp` in ms; a v1 reader reads a 1.1 page as before
 MARKER = "<!--JOURNEY-DATA-->"  # where the page's template takes the data, once
 WORD_MEMO = "journey_words.json"   # in results/, beside the ▶'s memos: `WordMemo`
+MEMO_FORMAT = 1                 # in the memo's keys: bump when a meaning's JSON or a pitch is written another way
 CHUNK_EPISODES = 100
 CHUNK_BYTES = 240_000           # a chunk's JSON closes past this (≈ 60–80 KB gzipped for Japanese sentences)
 AHEAD = 3                       # "its count in the next few episodes": its own and the next two
@@ -96,9 +98,10 @@ def _text(value):
 def _num(value, default=0):
     value = _clean(value)
     try:
-        return float(value) if value is not None else default
+        number = float(value) if value is not None else default
     except (TypeError, ValueError):
         return default
+    return number if math.isfinite(number) else default        # "nan" / "inf" as text: as an empty cell
 
 
 _ENCODE = json.JSONEncoder(ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode   # made once
@@ -245,10 +248,11 @@ class WordMemo:
         try:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
-            if data.get("v") == SHAPE and data.get("g_key") == gloss_key:
+            if data.get("v") == SHAPE and data.get("g_key") == gloss_key and "?" not in gloss_key:
                 self.meanings = data["m"] if isinstance(data.get("m"), dict) else {}
                 self.pinyins = data["y"] if isinstance(data.get("y"), dict) else {}
-            if data.get("v") == SHAPE and data.get("p_key") == pitch_key and isinstance(data.get("p"), dict):
+            if (data.get("v") == SHAPE and data.get("p_key") == pitch_key and "?" not in pitch_key
+                    and isinstance(data.get("p"), dict)):
                 self.pitch = data["p"]
         except Exception:
             pass
@@ -306,6 +310,10 @@ class WordMemo:
             os.replace(tmp, self.path)
         except Exception as e:
             print(f"Warning: could not save the journey's word memo: {e}")
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def memo_keys(language):
@@ -316,7 +324,7 @@ def memo_keys(language):
             from app import gloss_ja_data as module
         else:
             from app import gloss_zh_data as module
-        gloss = f"{language}:{module.REVISION}"
+        gloss = f"{language}:{module.REVISION}:{MEMO_FORMAT}"
     except Exception:
         gloss = "?"
     if language != "ja":
@@ -327,7 +335,7 @@ def memo_keys(language):
         return f"{st.st_size}:{st.st_mtime_ns}"
     try:
         import unidic_lite
-        pitch = "unidic:" + stamp(os.path.join(unidic_lite.DICDIR, "sys.dic"))
+        pitch = f"{MEMO_FORMAT}:unidic:" + stamp(os.path.join(unidic_lite.DICDIR, "sys.dic"))
         from app import own_dicts
         found = own_dicts.kanjium_path()
         pitch += "|kanjium:" + (stamp(found) if found else "none")
@@ -507,6 +515,7 @@ class Pitch:
         self.tagger = tagger
         self.kanjium = kanjium
         self._read_for = None if kanjium is not None else set()   # the words read from the copy (None: all of it)
+        self._copy = kanjium is not None        # a Kanjium copy is there (handed in, or found by `_read`)
         self.memo = {}
 
     def prepare(self, pairs, memo=None):
@@ -535,8 +544,9 @@ class Pitch:
                     self.memo[key] = self._kanjium(*key)
                 except Exception:
                     pass
-        if memo is not None:
-            memo.add_pitch({key: self.memo[key] for key in fresh})
+        if memo is not None:                    # unidic's answers only: a word the learner's copy filled (or missed,
+            held = set(missed) if self._copy else set()     # its read failing) is asked again, never kept
+            memo.add_pitch({key: self.memo[key] for key in fresh if key not in held})
 
     def _read(self, words):
         """Read the copy for the words not read yet (no copy: nothing read, every miss is *No pitch data*)."""
@@ -549,6 +559,7 @@ class Pitch:
         if self.kanjium is None:
             self.kanjium = {}
         if own_dicts.kanjium_path() is not None:
+            self._copy = True
             self.kanjium.update(own_dicts.kanjium(words=words))
         self._read_for |= words
 
@@ -632,13 +643,20 @@ def store_facts(language, data_dir=None, user_files_dir=None):
         cards = {i: len(notes) for i, notes in store.cards_of(order).items() if notes}
         pre = {}
         reader = getattr(store, "prestudied_marks", None)        # J-STORE's reader (SPEC §2.2)
-        if reader is not None:
-            for item, mark in (reader() or {}).items():
+        try:                                                     # a seam that fails is its empty state, alone
+            for item, mark in ((reader() or {}) if reader is not None else {}).items():
                 pre[item] = (mark[0], mark[1]) if isinstance(mark, (list, tuple)) else (mark, None)
+        except Exception as e:
+            pre = {}
+            print(f"Warning: the journey couldn't read what was pre-studied: {e}")
         growth = {}
         grower = getattr(store, "growth_of", None)               # Kura-GS's reader (#585)
-        if grower is not None:
-            growth = grower(order, kinds=("added", "done", "last")) or {}
+        try:
+            if grower is not None:
+                growth = grower(order, kinds=("added", "done", "last")) or {}
+        except Exception as e:
+            growth = {}
+            print(f"Warning: the journey couldn't read the growth snapshots: {e}")
         return StoreFacts(items, works, order, cards, pre, growth, str(epoch or ""))
     except Exception as e:
         print(f"Warning: the journey couldn't read the library store: {e}")
@@ -1059,6 +1077,8 @@ def _records(path, columns=ROW_COLUMNS, contexts=True):
         once = held.setdefault
         out = []
         for line in reader:
+            if not line:                        # a blank line (a list ending in two newlines): no row
+                continue
             if len(line) < width:
                 line += [""] * (width - len(line))
             out.append({name: line[n] if sentence else once(line[n], line[n]) for n, name, sentence in keep})
@@ -1108,9 +1128,8 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
     source_map = gen._load_source_map()
     rels = set()
     for row in rows:
-        for n in range(1, 10):
-            rel = row.get(f"Src {n}")
-            if rel:
+        for column, rel in row.items():
+            if rel and column.startswith("Src "):
                 rels.add(str(rel))
     timed = {rel for rel in rels if isinstance(source_map.get(rel), dict)
              and source_map[rel].get("type") in gen.TIMED_TYPES}

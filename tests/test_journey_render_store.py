@@ -57,6 +57,20 @@ def test_a_store_without_growth_or_pre_studied_readers_draws_neither(monkeypatch
     assert all(e[11] is None and e[12] is None for e in out.head["eps"])
 
 
+def test_a_growth_or_pre_studied_reader_that_fails_is_its_empty_state_alone(monkeypatch):
+    # A seam another lane owns raising must cost only its own part: the episodes keep their ids, titles and order.
+    store = migrated("ja")
+    data_dir, user_files_dir = roots("ja")
+    store.close()
+
+    def broken(*_a, **_k):
+        raise RuntimeError("a snapshot table from a newer version")
+    monkeypatch.setattr(ls.Store, "growth_of", broken, raising=False)
+    monkeypatch.setattr(ls.Store, "prestudied_marks", broken, raising=False)
+    facts = jr.store_facts("ja", data_dir, user_files_dir)
+    assert facts is not None and facts.order and facts.growth == {} and facts.pre == {}
+
+
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_growth_comes_from_the_stores_own_snapshots_per_episode_and_nothing_counted_is_no_bar(language):
     """Kura-GS's snapshots (#585), read through `growth_of`: each episode its own figures, never summed into its

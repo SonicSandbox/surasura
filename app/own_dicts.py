@@ -164,7 +164,7 @@ def lookup(words, root=None):
                 if conn is None:
                     try:
                         conn = open_[dict_id] = _open(path)
-                    except sqlite3.Error:
+                    except (sqlite3.Error, ValueError, OSError):  # a relative or odd path too: no hit
                         open_[dict_id] = False
                         continue
                 if conn is False:

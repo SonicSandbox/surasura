@@ -89,6 +89,14 @@ def test_without_anki_miner_or_with_a_foreign_index_nothing_is_found_quietly(hom
     assert own_dicts.lookup([("冒険", "ボウケン")], root=home) == {}
 
 
+def test_a_dictionary_whose_path_sqlite_cannot_take_is_no_hit_never_an_error(home, monkeypatch):
+    # A relative home (ANKI_MINER_HOME set to "dicts") can't become a file: URI; the lookup must still answer.
+    _chain(home, ("daijirin", True), ("jmdict-english", True))
+    real = own_dicts._open
+    monkeypatch.setattr(own_dicts, "_open", lambda path: real("relative/index.sqlite") if "daijirin" in path else real(path))
+    assert own_dicts.lookup([("冒険", "ボウケン")], root=home) == {("冒険", "ボウケン"): ("JMdict", "adventure")}
+
+
 def test_nothing_is_written_into_anki_miner_s_folder(home):
     _chain(home, ("daijirin", True))
     before = {os.path.join(d, f): os.stat(os.path.join(d, f)).st_mtime_ns for d, _s, fs in os.walk(home) for f in fs}

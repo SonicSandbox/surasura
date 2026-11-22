@@ -86,7 +86,7 @@ def page_value(settings, key):
     if key == "theme":
         return "light" if found in _LIGHTS else "night"
     if key == "source_display":
-        return _OLD_SOURCE.get(found, "icon")
+        return _OLD_SOURCE.get(found, "icon") if isinstance(found, str) else "icon"     # (a hand-edited list)
     if key == SENTENCES:
         if isinstance(found, bool) or not isinstance(found, int):
             return _default(key)
@@ -94,7 +94,7 @@ def page_value(settings, key):
     if key == "journey_keys" and isinstance(found, Mapping):
         return _own_keys(found)
     if key == "journey_first_meeting":
-        return bool(found)
+        return found if isinstance(found, bool) else _default(key)     # a hand-edited "false" is no switch
     return found if found in CHOICES[key] else _default(key)
 
 
@@ -117,7 +117,7 @@ def stored(key, value):
         if not isinstance(value, bool):
             raise ValueError(f"not a switch: {value!r}")
         return value
-    if isinstance(value, bool) or value not in CHOICES[key]:
+    if isinstance(value, bool) or value not in CHOICES[key] or (key == SENTENCES and not isinstance(value, int)):
         raise ValueError(f"not a choice of {key}: {value!r}")
     return _STORED.get(key, {}).get(value, value)
 

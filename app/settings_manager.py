@@ -89,7 +89,7 @@ DEFAULT_SETTINGS = {
     # page — never in a signature (analyzer._NON_ANALYSIS_SETTINGS): *Pitch and tones* "shown" · "hidden" (until F);
     # *Word size* / *Sentence size* "s" · "m" · "l"; *Keys* "qwerty" · "dvorak" · the learner's own {action: key};
     # *Where you'll first meet it* (the sentence you first meet the word in, its own marked line) shown or not. A data
-    # setting, read at Generate: *Meanings* "en" (JMdict / CC-CEDICT) · "yours_en" (yours, then English) · "yours"
+    # setting, the render's (never a run's): *Meanings* "en" (JMdict / CC-CEDICT) · "yours_en" (yours, then English) · "yours"
     # (J-CUT puts it in the render signature with the render that reads it).
     "journey_pitch": "shown",
     "journey_meanings": "en",

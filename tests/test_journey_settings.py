@@ -171,6 +171,7 @@ def test_night_and_light_store_the_previews_own_names_and_icon_name_stores_full(
     ("source_display", "off"), ("journey_pitch", "Shown"), ("journey_word_size", "xl"), ("journey_keys", "azerty"),
     ("journey_keys", {"known": "q", "nope": "x"}), ("journey_keys", {"known": "toolongakeyname"}),
     ("journey_first_meeting", "hidden"), ("journey_first_meeting", 1), ("journey_theme", "night"),
+    ("logic.context.max_contexts", 5.0),        # equal to 5, but the run's range() takes no float
     ("target_language", "zh"), ("logic.automation", False)])
 def test_a_key_or_value_the_page_doesnt_offer_is_refused(key, value):
     with pytest.raises(ValueError):
@@ -181,6 +182,16 @@ def test_your_own_key_map_is_kept_as_you_set_it():
     own = {"known": "j", "ignore": "k", "lookup": ""}
     assert J.stored("journey_keys", own) == own
     assert J.page_value({"journey_keys": own}, "journey_keys") == own
+
+
+def test_a_hand_edited_value_of_the_wrong_kind_reads_as_the_default_and_never_breaks_the_read():
+    """settings.json is the learner's to edit: a list where the page keeps a word, a "false" where it keeps a switch.
+    The page's read (`state`, Settings' rows) must not throw, nor read the string "false" as on."""
+    odd = {"source_display": ["filename"], "journey_first_meeting": "false", "journey_pitch": ["hidden"],
+           "theme": {"name": "Modern Light"}}
+    values = J.page_values(odd)
+    assert values["source_display"] == "icon" and values["journey_first_meeting"] is True
+    assert values["journey_pitch"] == "shown" and values["theme"] == "night"
 
 
 # --- Settings under journey v3 ----------------------------------------------------------------------------------- #

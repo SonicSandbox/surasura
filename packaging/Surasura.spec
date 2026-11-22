@@ -133,6 +133,8 @@ hiddenimports = ['pandas', 'fugashi', 'tkinter', 'ebooklib', 'bs4', 'app.referen
                  'app.anki_connect', 'app.anki_sync', 'app.anki_sync_gui',
                  'app.zh_script', 'app.zh_script_data', 'app.names', 'app.katakana_data', 'app.name_data',
                  'app.jmdict_data', 'app.phrases', 'app.phrase_data', 'app.one_kanji_data']
+# The journey's meanings and kanji (J-DATA, app/journey_render.py), imported inside its functions too
+hiddenimports += ['app.gloss_ja_data', 'app.gloss_zh_data', 'app.kanji_data']
 # Every command app_entry.py dispatches to (S3.1 D17; tests/test_packaging_config.py reads app_entry.py and fails while
 # one is missing here): the window, the dashboard and each helper subcommand the programs start.
 hiddenimports += ['app.analyzer', 'app.epub_importer', 'app.migaku_db_importer_gui', 'app.jiten_db_importer_gui',

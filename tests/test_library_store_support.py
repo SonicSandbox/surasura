@@ -149,7 +149,7 @@ def schema1_store(language, doc):
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("BEGIN")
-        for sql in ls.SCHEMA_SQL + ls.ADDED_TABLES_SQL:
+        for sql in ls.SCHEMA_SQL + tuple(s for s in ls.ADDED_TABLES_SQL if s != ls.GROWTH_SQL):   # (Kura-GS: 3.0.18's)
             conn.execute(sql)
         conn.execute("INSERT INTO roots (id, kind, path, created_at) VALUES (1, 'library', NULL, ?)", (now,))
         conn.executemany("INSERT INTO pieces (id, title, kind, created_at) VALUES (?, ?, ?, ?)",

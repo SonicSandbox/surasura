@@ -126,6 +126,20 @@ def seen(language, gone, store=None, state_of=None, ledger=None, now=None):
             ledger.close()
 
 
+def keep_old(language, store, ledger=None):
+    """Once ever per language (the look's, after the store forgot its gone notes): the deletes from before the loop
+    asked (`_keep_old`)."""
+    from app.connect import ledger as ledger_mod
+    own = ledger is None
+    ledger = ledger or ledger_mod.Ledger()
+    try:
+        ensure(ledger)
+        _keep_old(ledger, language, store)
+    finally:
+        if own:
+            ledger.close()
+
+
 def _states(language):
     """Swap's Known / Ignored tester (the pick's own rule: `swap.states`), or None when it can't be read (every card
     is then asked; an answer is checked again at its press)."""
@@ -228,42 +242,64 @@ def _default_store(language):
 
 def answer(language, note_ids, why, ledger=None, state_of=None, open_store=_default_store, now=None):
     """The learner's answer for these deleted cards (one, or *Same for all*) -> {"done": [(note_id, word)],
-    "skipped": [(note_id, word, why)], "error": text or None}. Each card answered once (a second press finds none)."""
+    "skipped": [(note_id, word, why)], "error": text or None}. Each card is claimed first (its `why` written: a second
+    press, or a second window, finds none), then answered; a card its answer couldn't do is given back (asked again).
+    A word Known or Ignored since the look is never asked again (its `state` set, counted)."""
     if why not in WHYS:
         raise ValueError(f"unknown answer {why!r}")
+    if why == BAD:
+        from app.connect import swap  # noqa: F401  (Swap's maker absent: nothing claimed, the press says it failed)
     from app.connect import ledger as ledger_mod
     own = ledger is None
     ledger = ledger or ledger_mod.Ledger()
     out = {"done": [], "skipped": [], "error": None}
     try:
         ensure(ledger)
-        rows = _rows(ledger.conn, language, note_ids, answered=False)
-        if not rows:
-            return out
         if state_of is None:
             state_of = _states(language) or (lambda _w, _r="": None)
-        asked = []
-        for r in rows:
-            state = state_of(r["word"], r["reading"] or "")
-            if state in (WAS_KNOWN, WAS_IGNORED):
-                out["skipped"].append((r["note_id"], r["word"], REFUSED[state]))
-            else:
-                asked.append(r)
-        undos = _act(language, asked, why, out, open_store)
         at = now or _now()
+        asked = []
         with ledger.transaction():
-            for r in asked:
-                if r["note_id"] not in undos:
+            for r in _rows(ledger.conn, language, note_ids, answered=False):
+                state = state_of(r["word"], r["reading"] or "")
+                if state in (WAS_KNOWN, WAS_IGNORED):
+                    ledger.conn.execute("UPDATE deleted SET state = ? WHERE language = ? AND note_id = ?",
+                                        (state, language, r["note_id"]))
+                    out["skipped"].append((r["note_id"], r["word"], REFUSED[state]))
                     continue
-                ledger.conn.execute("UPDATE deleted SET why = ?, why_at = ?, undo = ? WHERE language = ? AND "
-                                    "note_id = ? AND why IS NULL", (why, at, json.dumps(undos[r["note_id"]],
-                                                                                        ensure_ascii=False),
-                                                                    language, r["note_id"]))
-                out["done"].append((r["note_id"], r["word"]))
+                ledger.conn.execute("UPDATE deleted SET why = ?, why_at = ? WHERE language = ? AND note_id = ? AND "
+                                    "why IS NULL", (why, at, language, r["note_id"]))
+                asked.append(r)
+        undos = {}
+        try:
+            undos = _act(language, asked, why, out, open_store)
+        finally:                    # whatever `_act` did is recorded; a card it didn't do is given back
+            with ledger.transaction():
+                for r in asked:
+                    if r["note_id"] in undos:
+                        ledger.conn.execute("UPDATE deleted SET undo = ? WHERE language = ? AND note_id = ?",
+                                            (json.dumps(undos[r["note_id"]], ensure_ascii=False), language,
+                                             r["note_id"]))
+                        out["done"].append((r["note_id"], r["word"]))
+                    else:
+                        ledger.conn.execute("UPDATE deleted SET why = NULL, why_at = NULL WHERE language = ? AND "
+                                            "note_id = ?", (language, r["note_id"]))
+                        if why == BAD and r["word"] in (swap_state := _swap_state(out, r)):
+                            ledger.conn.execute("UPDATE deleted SET state = ? WHERE language = ? AND note_id = ?",
+                                                (swap_state[r["word"]], language, r["note_id"]))
         return out
     finally:
         if own:
             ledger.close()
+
+
+def _swap_state(out, row):
+    """{word: state} for a Bad card Swap dropped because its word is Known / Ignored now (its own test)."""
+    for note, word, reason in out["skipped"]:
+        if note == row["note_id"]:
+            state = next((s for s in (WAS_KNOWN, WAS_IGNORED) if REFUSED[s] == reason), None)
+            return {word: state} if state else {}
+    return {}
 
 
 def _act(language, rows, why, out, open_store):
@@ -274,7 +310,13 @@ def _act(language, rows, why, out, open_store):
     if why == BAD:
         from app.connect import swap
         for r in rows:
-            got = swap.make_card(language, r["word"], r["reading"] or None, old_note=r["note_id"], by=swap.BY_BAD_CARD)
+            try:
+                got = swap.make_card(language, r["word"], r["reading"] or None, old_note=r["note_id"],
+                                     by=swap.BY_BAD_CARD)
+            except Exception as e:      # this one isn't asked (given back); the ones before it stand, recorded
+                log.warning("Kyou-DW: Swap didn't take the ask for %s", r["word"], exc_info=True)
+                out["skipped"].append((r["note_id"], r["word"], str(e) or type(e).__name__))
+                continue
             if got.get("state") == swap.DROPPED:
                 out["skipped"].append((r["note_id"], r["word"], REFUSED.get(got.get("why"), got.get("why") or "")))
                 continue

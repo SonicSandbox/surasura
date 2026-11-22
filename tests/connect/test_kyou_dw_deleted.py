@@ -16,6 +16,7 @@ suite's KnownWord.json from another source: the Ignore that turns them not known
 """
 import datetime
 import json
+import sqlite3
 
 import pytest
 
@@ -250,6 +251,8 @@ def test_an_answer_for_a_word_known_since_the_delete_is_skipped_and_said(lang, l
     got = deleted.answer(lang, notes[:1], deleted.IGNORE, ledger=ledger, state_of=lambda w, _r="": "known")
     assert got["done"] == [] and got["skipped"] == [(notes[0], word, deleted.REFUSED["known"])]
     assert word_marks.states(lang, [word])[word] is None
+    rec = _asked(lang, ledger)
+    assert rec["asked"] == [] and rec["known"] == 1, "known since: it leaves the card, counted, never asked again"
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
@@ -437,7 +440,31 @@ def test_bad_card_for_a_word_swap_drops_and_an_undo_swap_refuses_are_said(lang, 
     got = deleted.answer(lang, notes[:2], deleted.BAD, ledger=ledger, state_of=_never)
     assert got["done"] == [(notes[1], words[1])]
     assert got["skipped"] == [(notes[0], words[0], deleted.REFUSED["known"])]
-    assert [a["note_id"] for a in _asked(lang, ledger)["asked"]] == [notes[0]]
+    rec = _asked(lang, ledger)
+    assert rec["asked"] == [] and rec["known"] == 1, "Swap's own test says known: it leaves the card, counted"
     fake_swap.undo_why = _Swap.NOT_MADE
     out = deleted.undo(lang, notes[1:2], ledger=ledger)
     assert out["done"] == [] and out["skipped"] == [(notes[1], words[1], _Swap.NOT_MADE)]
+
+
+def test_a_look_that_cannot_remember_its_deletes_marks_nothing_and_looks_again(real_look, monkeypatch):
+    # why: the store forgets a gone note once told; a stamp that failed first (the ledger busy) must leave the
+    # note for the next look, or the learner's delete is never asked
+    from app.connect import runner
+    from tests.connect.test_deleted_cards_every_run import FakeAnki
+    with Ledger() as led:
+        item, notes = _made("ja", led, n=2)
+    steps = runner.Steps({"connect_enabled": True})
+    steps._anki = lambda: FakeAnki(still_there={notes[1]})
+    real_seen = deleted.seen
+
+    def busy(*_a, **_k):
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(deleted, "seen", busy)
+    assert steps.notes_gone("ja") == []
+    with c.store("ja") as s:
+        assert notes[0] in s.cards_of([item])[item], "nothing marked gone"
+    monkeypatch.setattr(deleted, "seen", real_seen)
+    assert steps.notes_gone("ja") == [notes[0]], "asked again in the same run"
+    with Ledger() as led:
+        assert [a["note_id"] for a in deleted.status_of(led.conn, "ja")["asked"]] == [notes[0]]

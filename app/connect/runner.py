@@ -3994,24 +3994,39 @@ class Steps:
             log.warning("Connect's deleted-card check: Anki has none of the %d notes the library holds; nothing "
                         "marked gone", len(ids))
             gone = []
-        elif gone:
+        if gone and not self._ask_why(lang, gone):
+            return []                       # not remembered: nothing marked, asked again next run (Kyou-DW)
+        if gone:
             with self._open(lang) as store:
                 library.notes_gone(store, gone)
         self._gone_looked.add(lang)         # only once the look is done: one that raised is asked again
-        self._ask_why(lang, gone)
+        self._keep_old(lang)
         return gone
 
     def _ask_why(self, lang, gone):
-        """Kyou-DW: the look's gone notes remembered as deleted by you (`deleted.seen`: *Needs you* asks why), and once
-        ever the deletes from before it asked. Never a reason for the look to fail (logged, asked again next run)."""
+        """Kyou-DW: the look's gone notes remembered as deleted by you (`deleted.seen`: *Needs you* asks why), before
+        the store forgets them -> False when they couldn't be (logged: the look marks nothing and asks again next run,
+        so no delete goes unasked)."""
+        try:
+            from app.connect import deleted
+            deleted.seen(lang, gone)
+            return True
+        except Exception:
+            log.warning("Connect couldn't keep the cards you deleted to ask why; it looks again next run",
+                        exc_info=True)
+            return False
+
+    def _keep_old(self, lang):
+        """Kyou-DW: once ever, the deletes from before it asked (`deleted.keep_old`: the store's deleted words).
+        Never a reason for the look to fail (logged; tried again next run)."""
         try:
             from app.connect import deleted
             with self._open(lang) as store:
-                deleted.seen(lang, gone, store)
+                deleted.keep_old(lang, store)
         except (Wait, Needs):
-            pass
+            log.info("Connect's store was busy: the deletes from before it asked are kept next run")
         except Exception:
-            log.warning("Connect couldn't keep the cards you deleted to ask why; it looks again next run", exc_info=True)
+            log.warning("Connect couldn't keep the deletes from before it asked; it tries next run", exc_info=True)
 
     def name_media(self, lang, job, picked, lines):
         """P2.4-4: the batch's clip and picture renamed by the line (`media_names.rename`). The field mapping is this

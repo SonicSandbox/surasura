@@ -135,8 +135,7 @@ def test_the_old_deletes_card_forgets_through_the_writer_and_keep_them_answers_i
     _seed, _win, writer, ny = world(connect=_connect(asked=(), old=OLD))
     entry = next(e for e in ny.entries if e.kind == service.OLD_DELETES)
     assert entry.title == "A card you deleted before Surasura asked why"
-    assert {b.property("action") for b in ny.cards.buttons(entry.key)} == {"dw_forget", "dw_forget_all",
-                                                                           "dw_keep_old"}
+    assert {b.property("action") for b in ny.cards.buttons(entry.key)} == {"dw_forget", "dw_keep_old"},         "one old delete: no Forget all beside its Forget"
     assert ny.cards.card(entry.key).findChild(AboutMark).toolTip() == service.STRINGS["old_deletes_say"]
     button(ny, entry.key, "dw_keep_old").click()
     assert wait_until(lambda: service.OLD_DELETES in service.read_answered("ja"), 5)

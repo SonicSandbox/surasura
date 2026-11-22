@@ -332,7 +332,8 @@ STRINGS = {
     "old_deletes_title_one": "A card you deleted before Surasura asked why",
     "old_deletes_title": "{n:,} cards you deleted before Surasura asked why",
     "old_deletes_say": ("If you deleted some because Surasura cut their words wrong, Forget lets their cards be made "
-                        "again once the cut is fixed. Keep them leaves every one deleted, and this card goes for good."),
+                        "again once the cut is fixed. Keep them leaves every one deleted, and this card goes for "
+                        "good."),
     "tidy_unsaved_say": ("Before deleting, Surasura reads back the copy it keeps of the cards. This copy was missing or "
                          "damaged, so every card stays in Anki. It tries again next time."),
     "why_found": "→ …\\{name} ✓ found", "why_found_own": "→ …\\{name} ✓ found in its own folder ({k} more in your "
@@ -1347,8 +1348,9 @@ def _deleted_entries(connect, seen, answered=frozenset()):
         n = len(lines)
         title = STRINGS["old_deletes_title_one"] if n == 1 else STRINGS["old_deletes_title"].format(n=n)
         out.append(Entry(key=OLD_DELETES, kind=OLD_DELETES, title=title, lines=lines,
-                         actions=("dw_forget_all", "dw_keep_old"), unseen=OLD_DELETES not in seen,
-                         say=STRINGS["old_deletes_say"], data={"words": [o["word"] for o in old]}))
+                         actions=(("dw_forget_all",) if n > 1 else ()) + ("dw_keep_old",),
+                         unseen=OLD_DELETES not in seen, say=STRINGS["old_deletes_say"],
+                         data={"words": [o["word"] for o in old]}))
     return out
 
 

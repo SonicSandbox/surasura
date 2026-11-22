@@ -88,8 +88,13 @@ def cedict_lines(entries):
     return lines
 
 
+DICT_SIZE = 8 << 20         # lzma's window: a reader holds this much while it decompresses (preset 9's 64 MB
+#                             cost the render ~55 MB of its memory budget for 1 % of the size)
+
+
 def _pack(lines):
-    return base64.b64encode(lzma.compress("\n".join(lines).encode("utf-8"), preset=9 | lzma.PRESET_EXTREME)).decode()
+    filters = [{"id": lzma.FILTER_LZMA2, "preset": 9 | lzma.PRESET_EXTREME, "dict_size": DICT_SIZE}]
+    return base64.b64encode(lzma.compress("\n".join(lines).encode("utf-8"), filters=filters)).decode()
 
 
 def _write(path, text):

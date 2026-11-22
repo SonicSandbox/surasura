@@ -103,8 +103,11 @@ def to_text(content):
     return "\n".join(line for line in lines if line)
 
 
+_TO_HIRA = {c: c - 0x60 for c in range(ord("ァ"), ord("ヶ") + 1)}
+
+
 def _hira(text):
-    return "".join(chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c for c in text or "")
+    return (text or "").translate(_TO_HIRA)
 
 
 def _title(conn, dict_id):
@@ -181,17 +184,29 @@ def lookup(words, root=None):
     return {key: memo[key] for key in dict.fromkeys(words) if memo.get(key)}
 
 
-def kanjium(root=None):
-    """The learner's own Kanjium copy -> {word: {hiragana reading: "0,2"}} ({} without one). Anki Miner's `pitch`
-    download, read as it is (`word \\t reading \\t positions`), never written."""
+def kanjium_path(root=None):
+    """The learner's own Kanjium copy (Anki Miner's `pitch` download), or None when there is none."""
     path = os.path.join(root or home(), "pitch", "kanjium-pitch", "source.txt")
+    return path if os.path.isfile(path) else None
+
+
+def kanjium(root=None, words=None):
+    """The learner's own Kanjium copy -> {word: {hiragana reading: "0,2"}} ({} without one), only for `words` when
+    given (a page asks for the words unidic doesn't know). Read as it is (`word \\t reading \\t positions`), never
+    written."""
+    path = kanjium_path(root)
+    if path is None:
+        return {}
     out = {}
     try:
         with open(path, encoding="utf-8-sig", errors="replace") as handle:
             for line in handle:
-                parts = line.rstrip("\r\n").split("\t")
-                if len(parts) >= 3 and parts[0] and parts[2]:
-                    out.setdefault(parts[0], {}).setdefault(_hira(parts[1] or parts[0]), parts[2].strip())
+                word, _tab, rest = line.partition("\t")
+                if not word or (words is not None and word not in words):
+                    continue
+                parts = rest.rstrip("\r\n").split("\t")
+                if len(parts) >= 2 and parts[1]:
+                    out.setdefault(word, {}).setdefault(_hira(parts[0] or word), parts[1].strip())
     except OSError:
         return {}
     return out

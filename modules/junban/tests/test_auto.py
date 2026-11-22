@@ -464,7 +464,7 @@ def test_the_backfill_settles_only_when_it_reached_anki(monkeypatch):
     settled = []
     assert auto._backfill_quietly({}, settled=settled) == "" and settled == [False]
     monkeypatch.setattr(auto.ankiconnect, "probe", lambda url: {"ok": True})
-    monkeypatch.setattr(auto.anki_connect, "patient", lambda action, url: False)
+    monkeypatch.setattr(auto.anki_connect, "patient", lambda action, url, **k: False)   # the one check (timeout, cancel)
     monkeypatch.setattr(backfill, "run_auto", lambda settings: {"ok": True, "written": 0})
     settled = []
     assert auto._backfill_quietly({}, settled=settled) == "" and settled == [True]

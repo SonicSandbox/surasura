@@ -36,8 +36,8 @@ def _mtime(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_every_reader_loads_the_copy_unchanged(language):
-    """The Content Manager's `load_manifest`, `resolve_found_files`, the preview's reader and Reels'
-    loader all read the copy as they read today's manifest."""
+    """The Content Manager's `load_manifest`, `resolve_found_files` and the preview's reader all read the copy as
+    they read today's manifest."""
     from app import analyzer
     data_dir, user_files_dir, doc = library(language)
     write_manifest(user_files_dir, doc)
@@ -53,8 +53,6 @@ def test_every_reader_loads_the_copy_unchanged(language):
     cm._warn_manifest_once = lambda *a, **k: None
     assert cm.load_manifest() == copy
 
-    reels = pytest.importorskip("modules.reels.library")
-    assert reels.load_manifest(language) == copy
     preview = pytest.importorskip("modules.youtube_downloader.preview")
     src = touch(os.path.join(os.environ["SURASURA_TEST_ROOT"], "incoming"), names(language)[30] + " [abcdefghijk].txt")
     with patch.object(preview, "_library_mode", return_value="json"):   # 2.4.0's preview: 2.5's JSON mode

@@ -4,7 +4,7 @@ The flow lives in Junban (`modules/junban/first_touch_gui.py`), imported lazily:
 public repo's checkout among them — shows no button rather than one that does nothing. Shown whether or not
 reordering is switched on: the way back from what Surasura did stays.
 
-Real Tk root, built like tests/test_reels_sunset.py, inside conftest's sandboxed data root.
+Real Tk root, inside conftest's sandboxed data root.
 """
 
 import importlib.util

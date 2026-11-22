@@ -37,8 +37,10 @@ def _found(name):
 
 
 # rows that read a module's own data (its options, its defaults) are checked where the modules are: the local --all;
-# GitHub's checkout has none of them (the page then never shows those rows: `found` leaves them out)
-WITH_MODULES = pytest.mark.skipif(not all(_found(m) for m in catalog.MODULES),
+# GitHub's checkout has none of them (the page then never shows those rows: `found` leaves them out). Koe is shelved
+# (3.0.18): no checkout holds it, and its rows read only the catalog's ctx (`koe_revealed`), so it is not waited for.
+SHELVED = {"modules.koe"}
+WITH_MODULES = pytest.mark.skipif(not all(_found(m) for m in catalog.MODULES if m not in SHELVED),
                                   reason="the optional modules aren't in this checkout (the local --all runs this)")
 
 

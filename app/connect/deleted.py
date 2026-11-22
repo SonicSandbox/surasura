@@ -10,7 +10,8 @@ that asks why — **Known · Ignore · Parsing mistake · Bad card**, one line a
   column). Only the look's deletes are stamped: Tidy's and *Undo this batch*'s are Surasura's own, never asked.
 - **Never asked:** a card whose word was already Known or Ignored when the look saw it gone (kept as `state`
   `known` / `ignored`: WL-6, WL-44), one deleted more than `ASK_DAYS` ago (WL-31: it goes, unanswered), and one whose
-  word has a newer card from Connect (a later note id whose card is still in Anki).
+  word has a newer card from Connect (a later note id whose card may still be in Anki: neither one the
+  look saw gone nor one Surasura's Tidy deleted — a Bad card's new card its Undo took back asks again).
 - **The answers** (`answer`, on the window's worker): Known → the word lists' one writer (`word_marks.apply`, Kyou-LR's
   rules); Ignore → the loop's Ignore (`unknow=True`); Parsing mistake → that Ignore + the card's line into Send report's
   list (`flags.add(source="loop")`, J-FLAGS: shown and untickable before anything is sent); Bad card → Swap's one maker
@@ -195,12 +196,35 @@ def status_of(conn, language, now=None):
             out[state] = n
     rows = conn.execute(
         "SELECT d.note_id, d.word, d.reading, d.sentence, d.item_id, d.gone_at FROM deleted d WHERE d.language = ? "
-        "AND d.state IS NULL AND d.why IS NULL AND d.gone_at >= ? AND NOT EXISTS (SELECT 1 FROM outcomes o JOIN jobs j "
-        "ON j.id = o.job_id WHERE j.language = d.language AND o.word = d.word AND o.outcome = 'made' AND o.note_id > "
-        "d.note_id AND o.note_id NOT IN (SELECT note_id FROM deleted WHERE language = d.language)) "
-        "ORDER BY d.gone_at DESC, d.note_id DESC", (language, since)).fetchall()
+        "AND d.state IS NULL AND d.why IS NULL AND d.gone_at >= ? ORDER BY d.gone_at DESC, d.note_id DESC",
+        (language, since)).fetchall()
+    newer = _newer_cards(conn, language, {r[1] for r in rows}) if rows else {}
     out["asked"] = [{"note_id": r[0], "word": r[1], "reading": r[2], "sentence": r[3] or "", "item_id": r[4],
-                     "gone_at": r[5]} for r in rows]
+                     "gone_at": r[5]} for r in rows if not any(n > r[0] for n in newer.get(r[1], ()))]
+    return out
+
+
+def _newer_cards(conn, language, words):
+    """{word: the note ids Connect made for it that may still be in Anki}: none the look saw gone (`deleted`), none
+    Surasura's own Tidy deleted (`tidies`, done — a Bad card's or a swap's new card its Undo took back among them)."""
+    gone = {int(n) for (n,) in conn.execute("SELECT note_id FROM deleted WHERE language = ?", (language,))}
+    if _has(conn, "tidies"):
+        for (deleted_notes,) in conn.execute("SELECT deleted FROM tidies WHERE language = ? AND state = 'done' AND "
+                                             "deleted IS NOT NULL", (language,)):
+            try:
+                gone.update(int(n) for n in json.loads(deleted_notes) or ())
+            except (TypeError, ValueError):
+                continue
+    words = sorted(words)
+    out = {}
+    for i in range(0, len(words), 500):
+        part = words[i:i + 500]
+        for word, note in conn.execute(
+                "SELECT o.word, o.note_id FROM outcomes o JOIN jobs j ON j.id = o.job_id WHERE j.language = ? AND "
+                f"o.outcome = 'made' AND o.note_id IS NOT NULL AND o.word IN ({','.join('?' * len(part))})",
+                [language] + part):
+            if int(note) not in gone:
+                out.setdefault(word, set()).add(int(note))
     return out
 
 
@@ -370,6 +394,9 @@ def undo(language, note_ids, ledger=None, settings=None):
             for r in marks:
                 u = json.loads(r["undo"] or "{}")
                 if u.get("wrote") and now.get(r["word"]) != u.get("mark"):
+                    if now.get(r["word"]) == u.get("before"):   # put back already: an Undo whose record failed after
+                        back.append((r, u))                     # (a locked ledger) finishes here, never "changed"
+                        continue
                     out["skipped"].append((r["note_id"], r["word"], REFUSED["changed"]))
                     continue
                 if u.get("wrote") and r["word"] not in by_word:
@@ -395,6 +422,8 @@ def undo(language, note_ids, ledger=None, settings=None):
             from app.connect import swap
             u = json.loads(r["undo"] or "{}")
             got = swap.act_undo(settings or {}, language, u.get("swap")) if u.get("swap") is not None else {}
+            if got.get("why") == swap.ALREADY:      # Swap undid it, then this record failed: the retry finishes it
+                got = {}
             if got.get("why"):          # not made yet, studied, Anki closed: Swap's own words, the answer kept
                 out["skipped"].append((r["note_id"], r["word"], got["why"]))
                 continue

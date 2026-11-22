@@ -150,11 +150,14 @@ SHELVED = "shelved"                   # Kyou-SH (PROVISIONAL): cards Connect mad
 TIDIED = "tidied"                     # Kyou-SH2 (PROVISIONAL): Tidy deleted Connect's never-studied cards — said, Undo
 DELETED = "deleted"                   # Kyou-DW (PROVISIONAL): cards you deleted in Anki — asked why, an Undo each
 OLD_DELETES = "old-deletes"           # Kyou-DW (PROVISIONAL): the deletes from before it asked — forget them, once
+SWAPPED = "swapped"                   # Kantan-SL (PROVISIONAL): Swap made a card from another line — said, Undo
+SWAP_WAITS = "swap-waits"             # Kantan-SL (PROVISIONAL): a swap's word has no other line yet — said once
 FOLDER_MIN = 10                 # gone files (of two shows or more) before a folder is one card
 LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
          FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND, AUDIOBOOK_TRANSCRIPT, SETTINGS_FOLDER,
-         BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS, DECK_STRAYS, SHELVED, TIDIED, DELETED, OLD_DELETES)
+         BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS, DECK_STRAYS, SHELVED, TIDIED, DELETED, OLD_DELETES,
+         SWAPPED, SWAP_WAITS)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
 WIRED_LATER = frozenset(("make_cards", "try_again", "change_video"))   # (K1's *Start fresh*: `SourceLooks.fresh`)
@@ -336,6 +339,14 @@ STRINGS = {
                         "good."),
     "tidy_unsaved_say": ("Before deleting, Surasura reads back the copy it keeps of the cards. This copy was missing or "
                          "damaged, so every card stays in Anki. It tries again next time."),
+    # Kantan-SL (PROVISIONAL): Swap, said
+    "swapped_title": "A new card for 「{word}」 from another sentence.",
+    "swapped_say": ("You flagged its old card green: the old card stays suspended in Anki, tagged surasura::swapped. "
+                    "Undo deletes the new card (a copy is kept) and puts the old one back in your reviews."),
+    "swap_waits_title": "No other sentence for 「{word}」 yet.",
+    "swap_waits_title_many": "No other sentence yet for {n:,} words you swapped.",
+    "swap_waits_say": ("Your library says these words in one sentence only, the one on their card. Their new card is "
+                       "made once a new episode or book says them again."),
     "why_found": "→ …\\{name} ✓ found", "why_found_own": "→ …\\{name} ✓ found in its own folder ({k} more in your "
                                                          "video folders)",
     "why_found_named": "→ …\\{name} ✓ found: the one in a folder named like the show",
@@ -514,6 +525,7 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     if unsaved is not None:
         out.append(unsaved)
     out.extend(_deleted_entries(connect, seen, answered) if cards_on and connect else ())     # Kyou-DW: asked why
+    out.extend(_swap_entries(connect, seen, answered) if cards_on and connect else ())    # Kantan-SL: Swap, said
     anki = _anki_entry(connect, seen) if cards_on else None    # Connect may run (it clears the line by itself: A-5)
     if anki is not None:
         out.append(anki)
@@ -1368,6 +1380,29 @@ def _tidy_unsaved_entry(connect, seen, answered=frozenset()):
     title = STRINGS["tidy_unsaved_title_one"] if n == 1 else STRINGS["tidy_unsaved_title"].format(n=n)
     return Entry(key=key, kind=TIDIED, title=title, lines=(), actions=("leave_tidy",), unseen=key not in seen,
                  say=STRINGS["tidy_unsaved_say"], data={"id": int(unsaved["id"]), "cards": n, "unsaved": True})
+def _swap_entries(connect, seen, answered=frozenset()):
+    """Kantan-SL (PROVISIONAL): one card a swap made (Connect's record's `swaps.made`, the newest not undone) — *Undo*
+    is `swap.act_undo` with `data["id"]`, *OK* holds for that swap — and ONE quiet card for every swap whose word has no
+    other line yet (`swaps.waits`; its key names them, so a new one asks again)."""
+    swaps = (connect or {}).get("swaps") or {}
+    out = []
+    for made in swaps.get("made") or ():
+        key = f"{SWAPPED}:{made['id']}:{made.get('at') or ''}"
+        if key in answered:
+            continue
+        out.append(Entry(key=key, kind=SWAPPED, title=STRINGS["swapped_title"].format(word=made.get("word") or ""),
+                         lines=(), actions=("undo_swap", "leave_swap"), unseen=key not in seen,
+                         say=STRINGS["swapped_say"], data={"id": int(made["id"]), "word": made.get("word")}))
+    waits = list(swaps.get("waits") or ())
+    if waits:
+        key = f"{SWAP_WAITS}:" + ",".join(str(w["id"]) for w in waits)
+        if key not in answered:
+            title = (STRINGS["swap_waits_title"].format(word=waits[0].get("word") or "") if len(waits) == 1 else
+                     STRINGS["swap_waits_title_many"].format(n=len(waits)))
+            out.append(Entry(key=key, kind=SWAP_WAITS, title=title, lines=(), actions=("leave_swap_wait",),
+                             unseen=key not in seen, say=STRINGS["swap_waits_say"],
+                             data={"words": [w.get("word") for w in waits]}))
+    return out
 
 
 def badge(entries_):

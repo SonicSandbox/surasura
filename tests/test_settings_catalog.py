@@ -861,14 +861,24 @@ def _credits_before_the_move():
         return None
 
 
+# Lines added to the credits since 2.4, each with the data it credits (a new shipped table must be credited).
+ADDED_SINCE_2_4 = (
+    "• KANJIDIC2 (EDRDG), with JMdict and CC-CEDICT — CC BY-SA 4.0: the journey's English meanings and each kanji's meanings and readings (app/gloss_ja_data.py, app/gloss_zh_data.py, app/kanji_data.py). Those tables are shared under the same licence.\n",
+)
+
+
 def test_the_credits_are_2_4s_text_byte_for_byte_and_the_tk_window_still_reads_them():
     from app import credits, dictionary_data
     import app.main as main_module
     before = _credits_before_the_move()
     if before is None:
         pytest.skip("git history isn't readable here")
-    assert credits.DATA_CREDITS == before
-    assert credits.data_credits() == before.replace("{jmdict}", dictionary_data.JMDICT_CREATED or "unknown")
+    now = credits.DATA_CREDITS
+    for line in ADDED_SINCE_2_4:
+        assert line in now
+        now = now.replace(line, "", 1)
+    assert now == before
+    assert credits.data_credits() == credits.DATA_CREDITS.replace("{jmdict}", dictionary_data.JMDICT_CREATED or "unknown")
     assert main_module.DATA_CREDITS is credits.DATA_CREDITS
     assert main_module.data_credits is credits.data_credits
 

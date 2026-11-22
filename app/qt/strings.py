@@ -1641,6 +1641,10 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "dw_forget": ("Forget", "Forget this delete: its card may be made again once the word is cut right"),
     "dw_forget_all": ("Forget all", "Forget every delete here: their cards may be made again"),
     "dw_keep_old": ("Keep them", "They all stay deleted; this card goes for good"),
+    # Kantan-SL (PROVISIONAL): Swap, said
+    "undo_swap": ("Undo", "Delete the new card (Surasura keeps a copy) and put the old card back in your reviews"),
+    "leave_swap": ("OK", "Keep the new card"),
+    "leave_swap_wait": ("OK", "They keep waiting for another sentence; this asks again for a new one"),
     "open_logs": ("Open the logs folder",
     "Open the folder where Surasura keeps its logs, to look at them or send them"),
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
@@ -1792,6 +1796,10 @@ NEEDS_FORGOT_ONE = "「{word}」 forgotten · its card may be made again"
 NEEDS_FORGOT = "{n} deletes forgotten · their cards may be made again"
 NEEDS_FORGET_REFUSED = "Your library can't be changed just now · try again in a moment"
 NEEDS_OLD_KEPT = "OK · they all stay deleted"
+NEEDS_SWAP_UNDONE = "Undone · the new card is gone and the old one is back in your reviews"     # Kantan-SL (PROVISIONAL)
+NEEDS_SWAP_NOT_UNDONE = "Not undone: {why}"
+NEEDS_SWAP_LEFT = "OK · the new card stays"
+NEEDS_SWAP_WAIT_LEFT = "OK · they wait for another sentence"
 NEEDS_SHOWS_NOT_ADDED = "Nothing was added: your library can't be changed just now · try again in a moment"
 NEEDS_FIRST_CARDS_AUTOMATION_OFF = "automatic actions are off in Settings; turn them on, then ask again"
 NEEDS_ITS_NEW = "{name} joins your library as a new file"

@@ -70,6 +70,10 @@ MINE, LEVEL, ASKED = "mine", "level", "asked"
 # never a job before — queued with that part, by its person and its event (`event_id`), and mined ahead of it
 # (`runner._ordered`); kept below the top 20 while it is in Current (`inbox.keeps`)
 SHOW = "show"
+# Kantan-SL (Swap, the simple version, 3.0.18): one word's new card from another line, the old card's line never
+# (`app/connect/swap.py`): it carries the swap's time as its `asked_at` — the learner's own move, never held by the cap
+# nor dropped off the top 20 — makes no receipt (as a level job), and no ask of the store moves onto it
+SWAP = "swap"
 # P4.1: the asks watermark's meta key, `asks_from:<lang>` (C1 / IK B2: `resume.turned_on` writes it at every off → on)
 ASKS_FROM = "asks_from:"
 # Laptop round 8 #47 (*Stop*): `stop:<job id>` — you asked the job to stop (the window's press, `ask_stop`); `stopped:<job
@@ -204,6 +208,10 @@ _RUNNER_SQL = (
       deleted TEXT NOT NULL,
       kept TEXT NOT NULL,
       finished_at TEXT)""",
+    # Kyou-SH4 (Sonic 2026-11-22: a card you moved into a deck of your own is yours): the deck Surasura last put each
+    # note's cards in — made there by its batch (`end_batch`), moved there by *Move them to X* (`decks.move`) — so
+    # Tidy tells your move from Surasura's own (`tidy.why_kept`). No schema change: an older Surasura ignores it.
+    "CREATE TABLE IF NOT EXISTS homes (note_id INTEGER PRIMARY KEY, deck TEXT NOT NULL)",
 )
 # SCHEMA 3 -> 4: *Needs you*'s own columns (P2.5)
 _NEEDS_COLUMNS = (("seen_at", "TEXT"), ("dismissed_at", "TEXT"), ("fixed_at", "TEXT"))
@@ -251,6 +259,9 @@ LEFT_WHY = {"not_found": "Anki Miner couldn't find it in its line",
             "refused": "Anki refused its card",
             "skipped": "you skipped it"}
 LEFT_OTHER = "Anki Miner made no card for it"      # any other answer it gave
+# Kantan-SD (the sentence dial's Best, PROVISIONAL words): a word of this episode cut from another episode's line
+LEFT_ELSEWHERE = "its card comes from a better sentence elsewhere"
+BEST_SOURCE = "best-sentence"                   # `level.BEST` (level imports the ledger: named here too)
 
 
 def left_of(language, item_ids, db_path=None):
@@ -342,6 +353,37 @@ def listed_of(language, item_ids, db_path=None):
                 for w in words:
                     if isinstance(w, dict) and w.get("word") and isinstance(w.get("listed"), bool):
                         out[item_id][w["word"]] = w["listed"]
+    finally:
+        conn.close()
+    return out
+
+
+def homes_of(note_ids, db_path=None):
+    """{note id: the deck Surasura last put its cards in} (`homes`, Kyou-SH4) for those of `note_ids` with a record,
+    read-only as `listed_of` (no schema written, no write lock): *Move them to X*'s strays (`decks._find`). {} with no
+    ledger or one never set up. Raises TooNew for one from a newer Surasura (its homes unknown here), sqlite3.Error
+    when it can't be read just now."""
+    db_path = db_path or path()
+    ids = sorted({int(n) for n in note_ids})
+    if not ids or not os.path.exists(db_path):
+        return {}
+    from pathlib import Path
+    conn = sqlite3.connect(Path(os.path.abspath(db_path)).as_uri() + "?mode=rw", uri=True, timeout=2.0)
+    out = {}
+    try:
+        conn.execute("PRAGMA query_only=ON")
+        try:
+            schema = conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
+            if schema and str(schema[0]).isdigit() and int(schema[0]) > SCHEMA:
+                raise TooNew(int(schema[0]))
+            for k in range(0, len(ids), 500):
+                chunk = ids[k:k + 500]
+                out.update((int(n), str(d)) for n, d in conn.execute(
+                    f"SELECT note_id, deck FROM homes WHERE note_id IN ({','.join('?' * len(chunk))})", chunk))
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                return {}                              # a ledger never set up, or one from before homes
+            raise
     finally:
         conn.close()
     return out
@@ -474,6 +516,21 @@ class Ledger:
                                 (language, item_id, source, event_id, now, now, store_id, kind))
         return cur.lastrowid
 
+    def queue_swap(self, language, item_id, word, reading, asked_at, store_id=None):
+        """Kantan-SL: a `queued` job of kind `swap` for the item, naming one word ((word, reading); reading "" when the
+        old card doesn't say) -> its id, or None while the item has an open job (one open job per item, N4: the swap
+        is tried again at the next look)."""
+        marks = ",".join("?" * len(OPEN))
+        if self.conn.execute(f"SELECT 1 FROM jobs WHERE language = ? AND item_id = ? AND state IN ({marks}) LIMIT 1",
+                             (language, item_id) + OPEN).fetchone():
+            return None
+        now = _now()
+        cur = self.conn.execute("INSERT INTO jobs (language, item_id, state, source, event_id, created_at, updated_at, "
+                                "kind, words, store_id, asked_at) VALUES (?, ?, 'queued', 'swap', NULL, ?, ?, ?, ?, ?, ?)",
+                                (language, item_id, now, now, SWAP, json.dumps([[str(word), str(reading or "")]],
+                                                                               ensure_ascii=False), store_id, asked_at))
+        return cur.lastrowid
+
     def ever_had_job(self, language, item_id):
         """Michi-EO: has the item had any job, in any state (a show's catch-up queues only a part that never had)? One
         the first run's *Not now* set aside (Kantan-B2b) doesn't count: your *Mine now* on a later part brings it."""
@@ -579,17 +636,19 @@ class Ledger:
     def queue_level(self, language, item_id, words, source="level", store_id=None):
         """A `queued` job of kind `level` for an item already mined, naming only `words` ((word, reading) pairs) ->
         its id. A level job still waiting gains the words (-> its id). Another open job of the item -> None: a first
-        mining not started picks from the list as it is now, so the new words are its already."""
+        mining not started picks from the list as it is now, so the new words are its already. Kantan-SD: a Best
+        sentence's job (`level.BEST`) and a raise's never share one (each keeps its own rules: the watched drop, the
+        unlisted word) -> None."""
         words = sorted({(str(w), str(r)) for w, r in words or ()})
         if not words:
             return None
         marks = ",".join("?" * len(OPEN))
-        row = self.conn.execute(f"SELECT id, kind, state, words FROM jobs WHERE language = ? AND item_id = ? AND "
-                                f"state IN ({marks}) ORDER BY id DESC LIMIT 1", (language, item_id) + OPEN).fetchone()
+        row = self.conn.execute(f"SELECT id, kind, state, words, source FROM jobs WHERE language = ? AND item_id = ? "
+                                f"AND state IN ({marks}) ORDER BY id DESC LIMIT 1", (language, item_id) + OPEN).fetchone()
         now = _now()
         if row is not None:
-            job_id, kind, state, had = row
-            if kind != LEVEL or not self._not_started(job_id):
+            job_id, kind, state, had, was = row
+            if kind != LEVEL or not self._not_started(job_id) or (was == BEST_SOURCE) != (source == BEST_SOURCE):
                 return None
             merged = sorted(set(_words(had)) | set(words))
             self.conn.execute("UPDATE jobs SET words = ?, updated_at = ? WHERE id = ?",
@@ -708,6 +767,8 @@ class Ledger:
         row = self.conn.execute(f"SELECT id FROM jobs WHERE language = ? AND item_id = ? AND state IN ({marks}) "
                                 "ORDER BY id DESC LIMIT 1", (language, item_id) + OPEN).fetchone()
         now = _now()
+        if row is not None and self.conn.execute("SELECT kind FROM jobs WHERE id = ?", (row[0],)).fetchone()[0] == SWAP:
+            return None                 # Kantan-SL: a swap's one word is under way: the ask is read again after it
         if row is not None:
             self.conn.execute("UPDATE jobs SET asked_at = ?, updated_at = ? WHERE id = ?", (asked_at, now, row[0]))
             # laptop round 8 #47 (review A4): *Mine now* after a *Stop* the runner hasn't reached yet — your later
@@ -846,12 +907,45 @@ class Ledger:
                               "VALUES (?, ?, ?, 'running', ?)", (job_id, attempt, run_dir, _now()))
             self.conn.execute("UPDATE jobs SET attempt = ?, updated_at = ? WHERE id = ?", (attempt, _now(), job_id))
 
-    def end_batch(self, job_id, attempt, state, outcomes=(), anki_miner=None):
-        """The batch's end and its words' outcomes, in one transaction (a kill leaves the batch running, or both)."""
+    def end_batch(self, job_id, attempt, state, outcomes=(), anki_miner=None, deck=None):
+        """The batch's end and its words' outcomes, in one transaction (a kill leaves the batch running, or both);
+        `deck`: the deck the batch made its cards in (None: not known — a kill's batch read back by its tag), each
+        made note's home (`homes`), never over one recorded before."""
         with self.transaction():
             self.record_outcomes(job_id, attempt, outcomes)
             self.conn.execute("UPDATE batches SET state = ?, anki_miner = ?, ended_at = ? WHERE job_id = ? AND "
                               "attempt = ?", (state, anki_miner, _now(), job_id, attempt))
+            if deck:
+                self.conn.executemany("INSERT OR IGNORE INTO homes (note_id, deck) VALUES (?, ?)",
+                                      [(int(o["note_id"]), str(deck)) for o in outcomes
+                                       if o.get("outcome") == "made" and o.get("note_id") is not None])
+
+    def set_homes(self, note_ids, deck):
+        """Surasura put `note_ids`' cards in `deck` (*Move them to X*); None takes the record away (its Undo putting
+        it back as it was)."""
+        with self.transaction():
+            if deck is None:
+                self.conn.executemany("DELETE FROM homes WHERE note_id = ?", [(int(n),) for n in note_ids])
+            else:
+                self.conn.executemany("INSERT OR REPLACE INTO homes (note_id, deck) VALUES (?, ?)",
+                                      [(int(n), str(deck)) for n in note_ids])
+
+    def homes(self, note_ids):
+        """{note id: the deck Surasura last put its cards in} for those of `note_ids` it has a record of."""
+        ids, out = sorted({int(n) for n in note_ids}), {}
+        for at in range(0, len(ids), 500):
+            chunk = ids[at:at + 500]
+            out.update((int(n), d) for n, d in self.conn.execute(
+                f"SELECT note_id, deck FROM homes WHERE note_id IN ({','.join('?' * len(chunk))})", chunk))
+        return out
+
+    def carry_homes(self, id_map):
+        """A note Anki gave a new id (an Undo's import) keeps the home of the note it was, inside the caller's
+        transaction."""
+        for old, new in id_map.items():
+            if int(old) != int(new):
+                self.conn.execute("INSERT OR IGNORE INTO homes (note_id, deck) SELECT ?, deck FROM homes "
+                                  "WHERE note_id = ?", (int(new), int(old)))
 
     def record_outcomes(self, job_id, attempt, outcomes):
         """N6 rows, inside the caller's transaction: a later attempt's row replaces an earlier one's, never a word

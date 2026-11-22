@@ -73,7 +73,7 @@ from app import youtube_hold
 from app.connect import fit_check, inbox, level, stopping
 from app.connect.lineup import SPEECH_ASK, SPEECH_FAILED     # Stage B: the speech model's question
 from app.connect.ledger import (ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, OPEN, PREPARE_KINDS, SHOW, STOPPED_REASON,
-                                Ledger)
+                                SWAP, Ledger)
 
 log = logging.getLogger("surasura-cli")
 _clock = time.monotonic          # Haya-LD: the run's and a batch's lengths (bound here: a test's own `time` stays its own)
@@ -802,6 +802,7 @@ def _language(steps, ledger, lang, prepared, parked, out):
         wait = Wait(n.say, look=False)
     if wait is not None:
         return _waiting_all(ledger, lang, parked, out, wait.reason, wait.look)
+    _swap_look(steps, ledger, lang, store_now)     # Kantan-SL: the swap queue's asks become jobs before the rest
     outside = False
     tried = set()
     look = False                # the inbox and the level looked at again before the next job (after a job, or F11)
@@ -843,6 +844,8 @@ def _language(steps, ledger, lang, prepared, parked, out):
         try:
             _job(steps, ledger, lang, job, store_now, set(line), out)
             ended = ledger.job_by_id(job["id"]) or {}
+            if ended.get("kind") == SWAP:
+                _swap_look(steps, ledger, lang, store_now)     # Kantan-SL: its card made -> the swap's record, at once
             if ended.get("state") in ENDED:     # its troubles went, but a step it ended without (Backfill…) stands
                 keep = _skipped_says(ended)
                 if ended.get("kind") == LEVEL:  # Mattias #5: a level raise says nothing of a failed part's words
@@ -883,6 +886,17 @@ def _language(steps, ledger, lang, prepared, parked, out):
         if _stop(steps):
             break
     return outside
+
+
+def _swap_look(steps, ledger, lang, store_now):
+    """Kantan-SL (Swap, the simple version): `swap.look` — the swaps whose job ended recorded, the swap queue's new asks
+    turned into jobs of kind `swap` (each a word's new card from another line, made by the steps every job takes). A
+    look that can't go now is logged and tried at the next one: never a reason for mining to stop."""
+    try:
+        from app.connect import swap
+        swap.look(steps, ledger, lang, store_id=store_now)
+    except Exception:
+        log.warning("Connect's swap look didn't go this time (%s)", lang, exc_info=True)
 
 
 def _after_mining(steps, ledger, lang, out, on_battery=False):
@@ -1175,7 +1189,7 @@ def _job(steps, ledger, lang, job, store_now, line, out):
             ledger.add_gap(lang, [item_id])
         out["dropped"].append(item_id)
         return
-    if droppable and job.get("kind") == LEVEL and not job.get("asked_at") and job.get("source") != level.NEW_FILES:
+    if droppable and job.get("kind") == LEVEL and not job.get("asked_at") and job.get("source") not in level.KEPT:
         ledger.set_state(jid, "dropped", reason=LEVEL_DROPPED)
         out["dropped"].append(item_id)
         return
@@ -1186,6 +1200,7 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         out["dropped"].append(item_id)
         return
     if (droppable and job.get("kind") != ASKED and not job.get("asked_at")
+            and job.get("source") != level.BEST         # Kantan-SD: chosen for the context you remember
             and not (ledger.picked(jid) or {}).get("forced")             # your *Mine anyway* on it too (round 2 B6)
             and getattr(steps, "watched", lambda _l, _j: False)(lang, job)):     # your ask on it is a yes (A1)
         # laptop round 8 #49 (LF4-1 = A): 3.0's rule, `level.WATCHED_GIVES_NO_NEW_CARDS` — no new cards on Connect's
@@ -1367,7 +1382,7 @@ def _line_up(steps, ledger, lang, job, book):
     (SPEECH_NEED: recorded once for the language, the book held by it). AB-Q4's plain line recorded once a book."""
     line_up = getattr(steps, "line_up", None)
     if line_up is None or not book or not book[1]:
-        return None
+        return _best_ai_audio(steps, ledger, lang, job)
     try:
         got = line_up(lang, job, book[1])
     except Wait as w:
@@ -1379,13 +1394,15 @@ def _line_up(steps, ledger, lang, job, book):
             _book_answered(ledger, lang, book[1])     # paired and lining up now: the book asks no more
         raise
     if got and got.get("book_ask"):
+        if job.get("source") == level.BEST:
+            return _best_ai_audio(steps, ledger, lang, job)    # never the book's question: one sentence borrowed
         if _book_question(ledger, lang, got):
             raise Wait(got["book_ask"])
         _mark_ai_audio(ledger, lang, job, got)
         return None
     _book_answered(ledger, lang, book[1])
     if not got:
-        return None
+        return _best_ai_audio(steps, ledger, lang, job)
     if got.get("ask"):
         if ledger.need(lang, SPEECH_NEED, got["ask"], standing=True):
             log.info("Connect: asks for Anki Miner's speech model (%s)", lang)
@@ -1394,7 +1411,7 @@ def _line_up(steps, ledger, lang, job, book):
         ledger.need(lang, PARTIAL_NEED, got["line"], item_id=got["item_id"], standing=True)
     if got.get("lineup") and got.get("item_id") is not None:
         _add_audio_offer(steps, ledger, lang, book[1], got["item_id"])
-    return got.get("lineup")
+    return got.get("lineup") or _best_ai_audio(steps, ledger, lang, job)
 
 
 def _mark_ai_audio(ledger, lang, job, got):
@@ -1404,10 +1421,26 @@ def _mark_ai_audio(ledger, lang, job, got):
     keys = [k for k in dict.fromkeys((key, book_key(epub) if epub else None)) if k]
     if not any(_meta(ledger, f"{BOOK_SAID}{lang}:{k}") == AI_AUDIO for k in keys):
         return
+    _mark_ai_job(ledger, job)
+
+
+def _mark_ai_job(ledger, job):
     mark = f"{AI_JOB}{int(job['id'])}"
     if _meta(ledger, mark) is None:
         with ledger.transaction():
             ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (mark, "1"))
+
+
+def _best_ai_audio(steps, ledger, lang, job):
+    """Kantan-SD 2 (Sonic 2026-11-22): a Best job cut from a book's line with no audiobook lined up — the picker chose
+    it because the AI voice can make its audio (`sentences.heard`) — is mined without audio, its new cards marked for
+    the AI voice (`AI_JOB`, as *Make AI audio* marks a book's part), never asked the book's question. Any other job, or
+    the voice off since: nothing. -> None (mined as the book)."""
+    if job.get("source") == level.BEST:
+        from app.connect import sentences
+        if sentences.ai_voice(steps._settings(lang) if hasattr(steps, "_settings") else {}, lang):
+            _mark_ai_job(ledger, job)
+    return None
 
 
 def _queue_ai_audio(steps, ledger, lang, job, ids):
@@ -1707,16 +1740,19 @@ def _pick(steps, ledger, lang, job, record=True):
         skipped = ledger.skipped_words(lang, got["anki_miner"])       # Michi-RM3: *Skip this word*, any part
         declined |= skipped
     words = [w for w in got.get("words") or [] if (w.get("word"), w.get("reading")) not in declined]
+    words, best = _best(steps, ledger, lang, job, words, got.get("file")) if book is None else (words, [])
     picked = {"words": words, "file": got.get("file"), "subtitle": got.get("subtitle"),
               "video": video, "pairing": fit_check.version(pairing), "profile": got.get("profile"),
               "anki_miner": got.get("anki_miner")}
-    left = _left_out(got, declined, outcomes, skipped)
+    left = _left_out(got, declined, outcomes, skipped, best)
     if left:
         picked["left"] = left                       # Kantan-MA: why a word of it gets no card (`ledger.left_of`)
     if isinstance(pairing, dict) and (pairing.get("verdict") == "transcribed" or (
             pairing.get("producer") == "source" and steps.heard(lang, job))):
         picked["from_audio"] = True                 # Michi-NS (Q5): its subtitle was made from its audio: tagged
         #                                             (Hato-SP: and one another tool made, by its name: `library.heard`)
+    if best:
+        picked["elsewhere"] = best                  # Kantan-SD: words whose card comes from a better sentence elsewhere
     if web is not None:
         picked["online"], picked["names"] = web["site"], web["names"]     # Michi-YT: its Source names the transcript
     if book is not None:
@@ -1741,23 +1777,69 @@ def _pick(steps, ledger, lang, job, record=True):
             ledger.set_state(jid, "filling")
             return "filling"
         # an episode with nothing to make: its receipt (Mado's W2.2 ask: a finished zero-card job writes mined_at)
-        steps.record(lang, job, {}, _now() if job.get("kind") != "level" else None, None)
+        steps.record(lang, job, {}, _now() if job.get("kind") not in (LEVEL, SWAP) else None, None)
         ledger.set_state(jid, "done", reason=NO_WORDS, picked=picked, skipped={"mining": NO_WORDS})
         return None
     ledger.set_state(jid, "fit-check", picked=picked)
     return picked
 
 
+def _best(steps, ledger, lang, job, words, here):
+    """Kantan-SD, the sentence dial's Best (`app/connect/sentences.py`): each picked word whose best sentence is in
+    another episode — strictly better than this one's own line (`sentences.better`), its video there — is cut from
+    there instead: a level job of source `level.BEST` on that episode names it, and it leaves this job's words ->
+    (the words kept, [{word, reading, item_id, text}] moved). Nearest, an ask (*Mine this*, *Mine now*: that episode's
+    own lines), a level job, or any failure: the words as they are (a book or a text never calls it)."""
+    if not words or not here or job.get("asked_at") or job.get("kind") in (ASKED, LEVEL):
+        return words, []
+    try:
+        from app.connect import sentences
+        if sentences.dial_of(steps._settings(lang)) != sentences.BEST:
+            return words, []
+        own = job["item_id"]
+        mines = getattr(steps, "mines", None)
+        found = sentences.choose(lang, [(w["word"], w["reading"]) for w in words], here=here, dial=sentences.BEST,
+                                 reach=lambda item_id: item_id != own and steps.video(lang, {"item_id": item_id})
+                                 is not None, books=bool(mines is not None and mines(lang, "books")))
+    except Exception as e:      # never the mining's fault: the episode's own lines, as Nearest
+        log.info("Connect: Best sentences not read (%s): %s", lang, e)
+        return words, []
+    kept, moved, own_weight = [], [], None
+    try:
+        with ledger.transaction():
+            for w in words:
+                key = (w["word"], w["reading"])
+                choices = found.get(key) or []
+                top = choices[0] if choices else None
+                mine = next((c for c in choices if c.here), None)
+                if mine is None:        # the list keeps no line of this episode: its own line, weighed as its episode
+                    if own_weight is None:
+                        own_weight = sentences.context_of(lang, here)
+                    mine = sentences.Choice(here, own, w.get("line_text"), int(w.get("other_new") or 0),
+                                            round(own_weight + float(w.get("young") or 0), 4), True, True)
+                if (top is None or top.here or top.item_id is None or not sentences.better(top, mine)
+                        or ledger.queue_level(lang, top.item_id, [key], source=level.BEST,
+                                              store_id=job.get("store_id")) is None):
+                    kept.append(w)      # an open job there already picks from the list as it is: it stays here
+                    continue
+                moved.append({"word": key[0], "reading": key[1], "item_id": top.item_id, "text": top.text})
+    except Exception as e:              # the ledger busy: nothing moved (its transaction undone), as Nearest
+        log.info("Connect: Best sentences not kept (%s): %s", lang, e)
+        return words, []
+    return kept, moved
+
+
 # The pick's reasons that are no "not made": the word has its card (Kantan-MA)
 CARDED_REASONS = ("has-card", "in-backlog")
 
 
-def _left_out(got, declined, outcomes, skipped):
+def _left_out(got, declined, outcomes, skipped, elsewhere=()):
     """Kantan-MA (*Mine again* made no card and said nothing): the words of the pick that get no card from it, each
     with why, in plain words — the pick's own reason (`pick.REASONS`: a name, a grammar word, only sung, only near a
     cut), or Anki Miner's earlier answer for it (`ledger.LEFT_WHY`: not found, no definition, skipped …). A word with
-    a card already is no such word. -> [{"word", "reading", "why"}]"""
-    from app.connect.ledger import LEFT_OTHER, LEFT_WHY
+    a card already is no such word; a word Best cuts from another episode's line (`_best`'s moved) says so
+    (`ledger.LEFT_ELSEWHERE`, Kantan-SD). -> [{"word", "reading", "why"}]"""
+    from app.connect.ledger import LEFT_ELSEWHERE, LEFT_OTHER, LEFT_WHY
     out = []
     for w in got.get("words") or ():
         key = (w.get("word"), w.get("reading"))
@@ -1767,6 +1849,7 @@ def _left_out(got, declined, outcomes, skipped):
     for w in got.get("not_offered") or ():
         if isinstance(w, dict) and w.get("reason") not in CARDED_REASONS and w.get("why"):
             out.append({"word": w.get("word"), "reading": w.get("reading"), "why": w["why"]})
+    out.extend({"word": w["word"], "reading": w["reading"], "why": LEFT_ELSEWHERE} for w in elsewhere)
     return out
 
 
@@ -2225,14 +2308,17 @@ def _mine(steps, ledger, lang, job, record=True):
                     got["outcomes"] = _merge(got["outcomes"], steps.by_tag(lang, job, picked, dup), ("duplicate",))
         except Wait as w:
             # Anki went away before the tag check: Anki Miner's own outcomes kept, the rest in doubt (adversary #16)
-            ledger.end_batch(jid, attempt, "uncertain", _enriched(got["outcomes"], by_key), anki_miner=got.get("app"))
+            ledger.end_batch(jid, attempt, "uncertain", _enriched(got["outcomes"], by_key), anki_miner=got.get("app"),
+                             deck=got.get("deck"))
             if got.get("anki_said"):        # Mattias #5 (review r2 B1): Anki's refusal kept, as below
                 _keep_alone(ledger, jid, got["anki_said"], got.get("refused"))
             if got.get("doubt") and not stopped and not paused and got.get("then") is None:
                 _count_failure(ledger, jid)     # (never for a word-at-a-time batch a wait cut short, nor a review)
             raise Wait(w.reason, w.look, "mining") from None
         state = "uncertain" if any(o["outcome"] == "uncertain" for o in got["outcomes"]) else "done"
-        ledger.end_batch(jid, attempt, state, _enriched(got["outcomes"], by_key), anki_miner=got.get("app"))
+        # Kyou-SH4: the deck the batch made its cards in is each card's home (`homes`: Tidy keeps one you moved)
+        ledger.end_batch(jid, attempt, state, _enriched(got["outcomes"], by_key), anki_miner=got.get("app"),
+                         deck=got.get("deck"))
         if got.get("anki_said") and state == "uncertain":    # Mattias #5: Anki refused a card: next, a word at a time
             _keep_alone(ledger, jid, got["anki_said"], got.get("refused"))
         then = got.get("then")              # a word-at-a-time batch a wait cut short: its words not all sent
@@ -2485,7 +2571,7 @@ def _record_made(steps, ledger, lang, job, record):
     if not record:
         return
     try:
-        steps.record(lang, job, _made(ledger, job["id"]), _now() if job.get("kind") != "level" else None, _tag(job))
+        steps.record(lang, job, _made(ledger, job["id"]), _now() if job.get("kind") not in (LEVEL, SWAP) else None, _tag(job))
     except Wait as w:
         raise Wait(w.reason, w.look, "mining") from None
     _through(ledger, lang, "recording")
@@ -3649,6 +3735,10 @@ class Steps:
             item = store.item(job["item_id"]) or {}
             made = library.made_words_all(store)
         lemmas = file_words.get(os.path.basename(item.get("rel_path") or "")) or ()
+        if job.get("source") == level.BEST:
+            # Kantan-SD: a Best job is placed by its own words, never by the other new words of the episode it borrows
+            # a sentence from (often one you've watched)
+            lemmas = {key[0] for key in job.get("words") or ()}
         best = min((place(lemma, None) for lemma in lemmas if lemma not in made), default=OFF_LIST)
         return None if best >= OFF_LIST else best
 
@@ -3778,9 +3868,11 @@ class Steps:
         chosen, need = tidy.candidates(cards, cap, now=now)
         if not chosen:
             return None
+        from app.connect import fields
         done = tidy.run(tidy.AnkiConnectTidy(self.url, wait=0.0 if not now else 10.0), ledger, lang,
                         [c.note for c in chosen],
-                        why=tidy.NOW if now else tidy.AUTO, open_store=lambda: library.open_store(lang), limit=need)
+                        why=tidy.NOW if now else tidy.AUTO, open_store=lambda: library.open_store(lang), limit=need,
+                        ours=fields.surasura_deck(loaded, lang))
         if done["deleted"]:
             self._say(lang, f"{len(done['deleted'])} waiting cards made for you were tidied away (copy kept: tidy "
                             f"{done['id']}).")
@@ -4844,12 +4936,14 @@ class Steps:
                 raise Needs("book-unreadable", BOOK_UNREADABLE.format(title=title, why=e.message)) from None
             if e.kind == "cancelled" and getattr(e, "stopped", False):
                 # #47: you stopped it before its result was written: what reached Anki is found by the job's tag
-                return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True, "stopped": True}
+                return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True, "stopped": True,
+                        "deck": getattr(mapping, "deck", None)}
             if e.kind == "cancelled" and getattr(e, "paused", False):
                 # OPEN 40: a review began before its result was written: read back by the job's tag, as a Stop's
-                return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True, "paused": True}
+                return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True, "paused": True,
+                        "deck": getattr(mapping, "deck", None)}
             if e.kind in ("crashed", "timeout"):
-                return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True}
+                return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True, "deck": getattr(mapping, "deck", None)}
             raise _miner_wait_or_needs(e, self.url) from None
         # in doubt: a crash or a timeout after the run (`error`), or a run Anki Miner itself says failed
         if picked.get("reading"):
@@ -4862,7 +4956,7 @@ class Steps:
                 run.get("failure_is_transient") and not done.get("error") else None)
         return {"outcomes": done.get("outcomes") or [], "app": done.get("app"), "doubt": doubt,
                 "tag_pending": done.get("tag_pending") or [], "stopped": bool(done.get("stopped")), "anki_said": said,
-                "paused": bool(done.get("paused"))}
+                "paused": bool(done.get("paused")), "deck": getattr(mapping, "deck", None)}
 
     def _reviewing(self):
         """OPEN 40: is a review on in Anki now (the one check, `anki_connect.reviewing`, at Connect's own address)?

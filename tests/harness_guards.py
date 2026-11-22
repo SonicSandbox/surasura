@@ -117,6 +117,32 @@ def _folder_state(folder):
     return os.path.isdir(folder), sorted(files)
 
 
+# The checkout's own library (`path_utils.get_user_data_path` with no test root: the source run's fallback) — its
+# `User Files` are the user's (CLAUDE.md §4). A thread that outlived its test, or a child started without the root, read
+# and made it (Minato-TS S3, 2026-11-21: a fresh copy's `User Files/ja`, made with a bundled list). Two levels: each
+# language folder's file names, sizes and times (a user's lists, never a library's files).
+_CHECKOUT_USER_FILES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "User Files")
+
+
+def _user_files_state(folder):
+    """(exists, sorted (relative name, size, mtime_ns) of the files in `folder` and its folders one level down)."""
+    try:
+        top = sorted(os.listdir(folder))
+    except OSError:
+        return os.path.isdir(folder), []
+    files = []
+    for name in top:
+        path = os.path.join(folder, name)
+        inside = [os.path.join(name, n) for n in sorted(os.listdir(path))] if os.path.isdir(path) else [name]
+        for rel in inside:
+            try:
+                st = os.stat(os.path.join(folder, rel))
+            except OSError:
+                continue
+            files.append((rel, st.st_size, st.st_mtime_ns))
+    return True, files
+
+
 @pytest.fixture(autouse=True)
 def _guard_real_local_data():
     """Fail any test that writes the real local data folder (the command line's logs, locks and events, P0.3
@@ -129,9 +155,13 @@ def _guard_real_local_data():
     watched = tuple(dict.fromkeys(_REAL_HOUSEKI_ROOTS + _TRUE_HOUSEKI_ROOTS))
     before = _folder_state(_REAL_LOCAL_DATA)
     roots = [_root_state(root) for root in watched]
+    user_files = _user_files_state(_CHECKOUT_USER_FILES)
     yield
     assert _folder_state(_REAL_LOCAL_DATA) == before, \
         f"a test wrote the local data folder {_REAL_LOCAL_DATA} (reached without the test root): use the test root"
+    assert _user_files_state(_CHECKOUT_USER_FILES) == user_files, (
+        f"a test (or a thread or child that outlived one) changed the checkout's own {_CHECKOUT_USER_FILES} "
+        "(reached without the test root): the user's files — use the test root")
     for root, was in zip(watched, roots):
         made, gone = _changed(was, _root_state(root))
         assert not made and not gone, (

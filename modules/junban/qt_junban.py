@@ -188,9 +188,8 @@ class JunbanWindow(windows.SecondaryWindow):
         saved = self._saved()
         from modules.junban import connect
         self.connect_row = connect.preview_on(saved)
-        self.unlisted_saved = str(saved.get("junban_unlisted") or "").strip().lower()
         self.controls = view.controls_from(saved, self.connect_row)
-        self._last_saved = view.window_keys(self.controls, self.unlisted_saved)
+        self._last_saved = view.window_keys(self.controls)
         self._working = 0                       # reads in flight (the probe, a preview, the restore's question)
         self.highlighted = None                 # a7: the control the phase strip's 順 opened this window at
         self._replan_press = None               # round 8 row 45: a press that asked the planner, until its plan lands
@@ -258,11 +257,10 @@ class JunbanWindow(windows.SecondaryWindow):
 
     def engine_settings(self, with_deselected=True):
         return view.engine_settings(self._saved(), self.controls, self.language,
-                                    self.session.deselected if with_deselected else (), self.unlisted_saved)
+                                    self.session.deselected if with_deselected else ())
 
     def key(self):
-        return view.scope_key(self.language, self.controls, view.replan_on(self._saved(), self.language),
-                              self.unlisted_saved)
+        return view.scope_key(self.language, self.controls, view.replan_on(self._saved(), self.language))
 
     def is_busy(self):
         return bool(self.own_work() or self._put_back_elsewhere())
@@ -331,14 +329,10 @@ class JunbanWindow(windows.SecondaryWindow):
 
         # The three switches, the markers (the order is the list's study order, Settings › Level: Kantan-MO).
         row = QHBoxLayout()
-        self.cb_list_first = _box(self, QCheckBox, qs.JUNBAN_LIST_FIRST, qs.JUNBAN_LIST_FIRST_TIP,
-                                  lambda: self._set("list_first", self.cb_list_first.isChecked()))
+        # Kyou-MO: *List first* and *i+1 first* are gone (the unlocking word always comes first)
         self.cb_phrases = _box(self, QCheckBox, qs.JUNBAN_PHRASES, qs.JUNBAN_PHRASES_TIP,
                                lambda: self._set("phrases", self.cb_phrases.isChecked()))
-        self.cb_ready = _box(self, QCheckBox, qs.JUNBAN_READY_FIRST, qs.JUNBAN_READY_FIRST_TIP,
-                             lambda: self._set("ready_first", self.cb_ready.isChecked()))
-        for b in (self.cb_list_first, self.cb_phrases, self.cb_ready):
-            row.addWidget(b)
+        row.addWidget(self.cb_phrases)
         row.addSpacing(round(16 * f))
         row.addWidget(_label(self, qs.JUNBAN_ONLY))
         self.cb_markers = {}
@@ -413,6 +407,14 @@ class JunbanWindow(windows.SecondaryWindow):
         box.addWidget(self.cb_freqsort)
         row = QHBoxLayout()
         row.addWidget(_label(self.touch_box, qs.JUNBAN_LATER))
+        # Kyou-MO: the one switch for your own cards not on the list (Surasura's are never set aside)
+        self.off_list = QComboBox(self.touch_box)
+        for value in view.unlisted.OFF_LIST:
+            self.off_list.addItem(qs.JUNBAN_OFF_LIST[value], value)
+        self.off_list.setToolTip(qs.JUNBAN_OFF_LIST_TIP)
+        self.off_list.setAccessibleName(qs.JUNBAN_LATER)
+        self.off_list.activated.connect(lambda _i: self._set("off_list", self.off_list.currentData()))
+        row.addWidget(self.off_list)
         self.cb_later = {}
         for name in view.LATER:
             words, tip = qs.JUNBAN_LATER_BOXES[name]
@@ -576,16 +578,15 @@ class JunbanWindow(windows.SecondaryWindow):
     def _paint_controls(self):
         """The controls as `self.controls` says them, signals blocked (a restored control is not a click)."""
         c = self.controls
-        widgets = [self.rb_deck, self.rb_all, self.cb_list_first, self.cb_phrases,
-                   self.cb_ready, self.cb_tag, self.tag_name, self.cb_tag_markers, self.cb_freq, self.freq_box,
-                   self.cb_freqsort, self.deck_box] + list(self.cb_markers.values()) + list(self.cb_later.values())
+        widgets = [self.rb_deck, self.rb_all, self.cb_phrases,
+                   self.cb_tag, self.tag_name, self.cb_tag_markers, self.cb_freq, self.freq_box,
+                   self.cb_freqsort, self.deck_box, self.off_list] + list(self.cb_markers.values()) + list(
+            self.cb_later.values())
         for w in widgets:
             w.blockSignals(True)
         try:
             (self.rb_all if c["scope"] == "all" else self.rb_deck).setChecked(True)
-            self.cb_list_first.setChecked(bool(c["list_first"]))
             self.cb_phrases.setChecked(bool(c["phrases"]))
-            self.cb_ready.setChecked(bool(c["ready_first"]))
             for name, b in self.cb_markers.items():
                 b.setChecked(name in c["only_markers"])
             self.cb_tag.setChecked(bool(c["tag_on"]))
@@ -594,6 +595,7 @@ class JunbanWindow(windows.SecondaryWindow):
             self.cb_freq.setChecked(bool(c["freq_on"]))
             self.freq_box.setEditText(c["freq_field"])
             self.cb_freqsort.setChecked(bool(c["freqsort_on"]))
+            self.off_list.setCurrentIndex(max(0, self.off_list.findData(view.off_list(c))))
             for name, b in self.cb_later.items():
                 b.setChecked(bool(c[f"later_{name}"]))
             self._offer_decks()
@@ -632,6 +634,9 @@ class JunbanWindow(windows.SecondaryWindow):
         if self.btn_touch.toolTip() != tip:
             self.btn_touch.setToolTip(tip)
         self.later_state.setText(qs.JUNBAN_LATER_NONE if none else "")
+        aside = view.off_list(self.controls) == "aside"         # Kyou-MO: flag / suspend only say how it sets aside
+        for b in self.cb_later.values():
+            b.setEnabled(aside)
         tags = ", ".join(view.marker_tag_names(self.controls.get("tag_name")))
         self.cb_tag_markers.setToolTip(qs.JUNBAN_MARKERS_ON_TIP.format(tags=tags))
         self.touch_box.setVisible(self._touch_open)
@@ -672,8 +677,13 @@ class JunbanWindow(windows.SecondaryWindow):
     def _save(self, picked=False):
         """Only what changed since the window last read or saved it (and the pair on a deck pick), through the
         settings service — never on open (IK-13)."""
-        now = view.window_keys(self.controls, self.unlisted_saved)
+        now = view.window_keys(self.controls)
         changes = view.changed_keys(self._last_saved, now)
+        # Kyou-MO: unset, the switch is read from 3.0.17's ticks — a tick changed under *Set aside* pins it as shown,
+        # so the untick never flips it to *Leave*
+        if {"junban_later_flag", "junban_later_suspend"} & set(changes) and not str(
+                self._saved().get("junban_off_list") or "").strip():
+            changes["junban_off_list"] = now["junban_off_list"]
         changes.update(view.pair_keys(self.controls.get("deck"), self.language, windows.language_of(self.shell),
                                       picked))
         if not changes:

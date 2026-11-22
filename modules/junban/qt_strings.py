@@ -29,18 +29,8 @@ JUNBAN_DECK_NAME = "The deck to reorder"
 JUNBAN_DECK_TIP = "Only decks with unsuspended new cards are listed."
 JUNBAN_ALL_DECKS = "All decks"
 JUNBAN_ALL_DECKS_TIP = "Reorder every deck that has unsuspended new cards, as one queue."
-JUNBAN_LIST_FIRST = "List first"
-JUNBAN_LIST_FIRST_TIP = ("Every word on your list comes first, with the phrases you meet as often as its words. The ones "
-                         "it cut off as too rare go after them. Untick to place each where your journey meets it, among "
-                         "the list's words.")
 JUNBAN_PHRASES = "Phrases"
 JUNBAN_PHRASES_TIP = "Common phrase cards (気がつく) are ordered as if on your list."
-JUNBAN_READY_FIRST = "i+1 first"
-JUNBAN_READY_FIRST_TIP = ("A card on your list whose own sentence still has a word from your list that you'd learn after "
-                          "it: that word's card is brought right before it — when that card is i+1 there — so you learn "
-                          "it first. Otherwise the card waits with the cards of more new words. Words too rare for your "
-                          "list never count; a name counts like any word unless Settings' Ignore names is on. Never a "
-                          "chain: a card brought forward brings nothing else.")
 JUNBAN_ONLY = "Only:"
 JUNBAN_MARKER_TIPS = {
     "star": "Only ☆ high leverage: words your journey stars. None ticked: all.",
@@ -74,16 +64,16 @@ JUNBAN_FREQ_FIELD = "The frequency field"
 JUNBAN_FREQ_FIELD_TIP = "Which field holds it. Notes without that field are skipped."
 JUNBAN_FREQSORT = "…and overwrite the '{field}' sort number"
 JUNBAN_FREQSORT_TIP = "Overwrites Anki's sort number in '{field}'. Restore reverts. Off by default."
-JUNBAN_LATER = "Cards not on your list:"
+# Kyou-MO (the mining model; PROVISIONAL words): one switch for YOUR cards not on the list — Surasura's never set aside
+JUNBAN_LATER = "Your cards not on your list:"
 JUNBAN_LATER_NONE = "No action"
+JUNBAN_OFF_LIST = {"leave": "Leave them", "back": "At the back", "aside": "Set aside"}
+JUNBAN_OFF_LIST_TIP = "Leave: after your list. Set aside: at the back, tagged ::later."
 JUNBAN_LATER_BOXES = {
-    "tag": ("Tag", "Adds the tag Surasura::later to the notes of every card placed after your list, so you can find "
-                   "them in Anki's browser. Restore takes it back off."),
-    "flag": ("Flag purple", "Flags every card placed after your list purple. A card you already flagged another colour "
-                            "keeps your flag. Restore puts the old flags back."),
-    "suspend": ("Suspend", "Suspends every card placed after your list, so it leaves your new-card queue — and tags it "
-                           "Surasura::later, so you can always find it again. Restore unsuspends exactly these cards, "
-                           "never ones you suspended yourself."),
+    "flag": ("Flag purple", "Flags every card set aside purple. A card you already flagged another colour keeps your "
+                            "flag. Restore puts the old flags back."),
+    "suspend": ("Suspend", "Suspends every card set aside, so it leaves your new-card queue. Restore unsuspends exactly "
+                           "these cards, never ones you suspended yourself."),
 }
 JUNBAN_MATCH = "Match:"
 JUNBAN_MATCH_CHECKING = "Checking Anki…"
@@ -106,8 +96,8 @@ JUNBAN_TABLE_NAME = "The new order, as Reorder will write it"
 # Kyou-UL (words PROVISIONAL, 2026-11-19): a greyed row is any card your list doesn't place (`junban_view`'s tone: a tier
 # outside `unlisted.PLACED_WITH_LIST`) — a list word waiting for an i+1 sentence and your own cards too, never only
 # "not on your list"
-JUNBAN_TABLE_TIP = ("Greyed rows aren't in your list's order: words below its level, words you know and list words "
-                    "waiting for an i+1 sentence go after it; cards you made yourself go first. "
+JUNBAN_TABLE_TIP = ("Greyed rows aren't in your list's order: words below its level and words you know go after "
+                    "it; cards you made yourself go first. "
                     "Click a word on your list to take it off: it "
                     "goes with the cards not on your list, and whatever you ticked for them applies to it too. Click a "
                     "greyed card to leave it alone: it keeps its order at the back and nothing touches it. Click again "

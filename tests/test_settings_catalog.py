@@ -272,6 +272,7 @@ def test_each_rows_change_writes_its_own_keys_and_nothing_else(language):
         # *Count as known in Anki*'s one rider here: Kantan-B3's marker, beside a pick (the sync's switch rides only
         # with Connect on, `_wanted`)
         riders = {catalog.CHOSEN} if row.id == "known_from_anki" else set()
+        riders |= {"junban_off_list"} if row.id in catalog.ASIDE_TICKS else set()     # Kyou-MO: the switch's pin
         assert set(changes) <= set(row.keys) | riders, f"{row.id} wrote {sorted(changes)}"
         assert (update is not None) == (row.keys[0] in catalog.PER_LANGUAGE), row.id
         for key in changes:
@@ -348,7 +349,9 @@ def test_tablets_write_a_list_in_the_settings_order_or_only_the_bool_keys_that_f
     # several bool keys: a switch each, only its own key written
     flag = catalog.ROW["junban_later_flag"]
     assert catalog.change(flag, {}, "ja", True) == ({"junban_later_flag": True}, None)
-    assert catalog.change(flag, {"junban_later_flag": True}, "ja", False)[0] == {"junban_later_flag": False}
+    # (Kyou-MO: the flag that made an unset switch read *Set aside*, unticked, pins it — never flips it to *Leave*)
+    assert catalog.change(flag, {"junban_later_flag": True}, "ja", False)[0] == {"junban_later_flag": False,
+                                                                                  "junban_off_list": "aside"}
 
 
 @WITH_MODULES
@@ -378,17 +381,18 @@ def test_your_own_cards_is_one_choice_and_their_tag_sits_under_it_never_greyed()
 
 
 @WITH_MODULES
-def test_phrases_and_i_plus_one_first_are_two_switches_for_japanese_not_at_the_back():
-    """Q31: one row of two pills under "First" read as pick one; they work together. Two plain switches, each its own
-    key, hidden for Chinese and with "At the back" (Junban's reorder uses neither there)."""
-    for row_id in ("junban_phrases", "junban_ready_first"):
+def test_phrases_is_a_switch_for_japanese_and_i_plus_one_first_is_no_switch_any_more():
+    """Q31: *Idioms and set phrases* is a plain switch, its own key, hidden for Chinese (Junban's reorder doesn't use
+    it there). Kyou-MO: the unlocking word always comes first — *i+1 first* has no row, and *At the back* (your own
+    cards only now) no longer hides the phrases."""
+    assert "junban_ready_first" not in catalog.ROW and "junban_ready_first" not in S.ROWS
+    for row_id in ("junban_phrases",):
         row = catalog.ROW[row_id]
         assert (row.kind, row.keys, row.group) == ("toggle", (row_id,), None)
         assert catalog.change(row, {row_id: False}, "ja", True) == ({row_id: True}, None)
         assert catalog.change(row, {row_id: True}, "ja", False) == ({row_id: False}, None)
-        for unlisted in ("list_first", "journey"):
+        for unlisted in ("list_first", "journey", "back"):
             assert row_id in _shown({"junban_unlisted": unlisted}, "ja"), (row_id, unlisted)
-        assert row_id not in _shown({"junban_unlisted": "back"}, "ja")
         assert row_id not in _shown({}, "zh")
         assert row_id not in _shown({"enable_junban": False}, "ja")
         # IK-3: Junban's own rule — a marker filter moves only the chosen words, so neither switch is asked then
@@ -396,7 +400,36 @@ def test_phrases_and_i_plus_one_first_are_two_switches_for_japanese_not_at_the_b
         assert row_id not in _shown({"junban_only_markers": ["Reading"]}, "ja")      # hand-edited, read as Junban does
         assert row_id in _shown({"junban_only_markers": ["sparkle"]}, "ja")         # no mark Junban knows: no filter
     assert "junban_first" not in catalog.ROW and "junban_first" not in S.ROWS
-    assert catalog.ROW["junban_ready_first"].label.startswith("i+1 first: ")
+
+
+@WITH_MODULES
+def test_your_own_cards_not_on_the_list_are_one_switch_with_set_asides_two_ticks_under_it():
+    """Kyou-MO (F24): *Cards too rare for your list go* and the three ticks are one row — *Leave them · At the back ·
+    Set aside* — shown as Junban reads the file (3.0.17's keys while it is unset); the flag and suspend ticks show only
+    under *Set aside*, and the tag tick is gone (set aside always tags)."""
+    row = catalog.ROW["junban_off_list"]
+    assert (row.kind, row.keys, row.options, row.group) == ("choice", ("junban_off_list",), ("leave", "back", "aside"),
+                                                            "not_on_list")
+    assert not {"junban_unlisted", "junban_later_tag"} & set(catalog.ROW)
+    assert catalog.value(row, {}, "ja") == "leave"
+    assert catalog.value(row, {"junban_unlisted": "back"}, "ja") == "back"
+    assert catalog.value(row, {"junban_later_suspend": True}, "ja") == "aside"
+    assert catalog.value(row, {"junban_off_list": "leave", "junban_later_suspend": True}, "ja") == "leave"
+    for tick in ("junban_later_flag", "junban_later_suspend"):
+        assert catalog.ROW[tick].sub is True
+        assert tick not in _shown({}, "ja")
+        assert tick in _shown({"junban_off_list": "aside"}, "ja")
+        assert tick in _shown({"junban_later_flag": True}, "ja"), "an old file's set aside shows its ticks"
+        assert tick not in _shown({"junban_off_list": "back", "junban_later_flag": True}, "ja")
+    assert catalog.change(row, {}, "ja", "aside") == ({"junban_off_list": "aside"}, None)
+    # Unset, the switch is read from the old ticks: unticking the flag that made it *Set aside* pins it, so it stays
+    # set aside (never flips to *Leave*); the value shown picked again writes nothing (S19)
+    old = {"junban_later_flag": True}
+    assert catalog.change(row, old, "ja", "aside") == ({}, None)
+    flag = catalog.ROW["junban_later_flag"]
+    assert catalog.change(flag, old, "ja", False) == ({"junban_later_flag": False, "junban_off_list": "aside"}, None)
+    assert catalog.change(flag, dict(old, junban_off_list="aside"), "ja", False) == ({"junban_later_flag": False},
+                                                                                     None)
 
 
 @WITH_MODULES
@@ -408,7 +441,7 @@ def test_the_first_switches_ask_junbans_own_rule_and_hide_when_it_cant_be_asked(
     monkeypatch.setattr(reposition, "first_applies", lambda settings, language: asked.append(language) or False)
     assert "junban_phrases" not in _shown({}, "ja") and asked
     monkeypatch.setitem(sys.modules, "modules.junban.reposition", None)          # an import that fails
-    assert not {"junban_phrases", "junban_ready_first"} & _shown({}, "ja")
+    assert "junban_phrases" not in _shown({}, "ja")
     assert "junban_scope" in _shown({}, "ja")                                    # the rest of Junban's rows stay
 
 

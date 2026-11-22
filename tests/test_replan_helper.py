@@ -68,6 +68,13 @@ def served(lib, monkeypatch):
                 host._proc.wait(30)
             except Exception:
                 host._proc.kill()
+    for host in hosts:                       # no window side's thread outlives its test: its reader, a local host's worker
+        host._thread.join(30)
+        local = host._local
+        worker = getattr(local, "_thread", None)
+        if worker is not None:
+            worker.join(60)
+        assert not host._thread.is_alive() and not (worker is not None and worker.is_alive()),             "a re-plan host's thread outlived its test (it reads the word lists after the test's root is gone)"
     anki.close()
 
 
@@ -126,12 +133,19 @@ def test_the_helper_ends_with_its_window(served):
         host._stopped = True                     # (this side gone: nothing takes the jobs over here)
     host._conn.close()
     assert host._proc.wait(30) == 0
-    # The window's "stop" alone ends it, its pipe still open (the word is the protocol, not the close behind it).
+    # The window's "stop" alone ends it, its pipe still open (the word is the protocol, not the close behind it). This
+    # side is gone first, as `stop` makes it: a side still open takes the jobs over when the helper ends (`_go_local`),
+    # on its reader thread — which outlived the test, read the word lists after its root was gone (the checkout's own
+    # `User Files`, a full run's next test blamed: Minato-TS S3) and made `User Files/ja` in a fresh copy.
     host = _open(hosts)
     assert _wait(lambda: host._conn is not None, 60)
+    with host._lock:
+        host._stopped = True
     host._post(host._conn, {"do": "stop"})
     try:
         assert host._proc.wait(30) == 0
+        assert _wait(lambda: not host._thread.is_alive(), 30), "its reader never ended"
+        assert host._local is None, "this side was stopped: nothing takes the jobs over here"
     finally:
         host.stop()
 

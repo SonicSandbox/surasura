@@ -863,3 +863,30 @@ def test_late_helper_2_finds_it_in_the_first_helpers_root():
     assert writer.flush(5), "the first helper's write is done"
     with open(os.path.join(LATE["root"], "settings.json"), encoding="utf-8") as f:
         assert json.load(f)["setup_seen"] == "3.0", "written in its own test root"
+
+
+# --- The checkout's own User Files (Minato-TS S3, 2026-11-21) ---------------------------------------------------- #
+def test_a_tests_replan_helper_with_no_test_root_refuses_before_it_reads_anything():
+    """A helper child a test starts carries the test root; one that doesn't would resolve the checkout's own library
+    (the source run's fallback, the user's User Files): it refuses at once (exit 3, said), before any connect or read."""
+    env = {k: v for k, v in os.environ.items() if k != "SURASURA_TEST_ROOT"}
+    env["PYTEST_CURRENT_TEST"] = "tests/test_harness_guards.py::the-helper (call)"
+    code = ("import sys; from app import replan_preview; sys.exit(replan_preview.helper_main(['--language', 'ja']))")
+    done = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=120,
+                          cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    assert done.returncode == 3, done.stderr
+    assert "no test root" in done.stderr
+
+
+def test_the_checkout_user_files_state_sees_a_list_made_changed_or_a_language_folder_appear(tmp_path):
+    """The guard's look (`_user_files_state`): a language folder made, a list written into it, a list changed — each
+    is a different state; the same folder looked at twice is the same."""
+    folder = tmp_path / "User Files"
+    none = harness_guards._user_files_state(str(folder))
+    (folder / "ja").mkdir(parents=True)
+    empty = harness_guards._user_files_state(str(folder))
+    (folder / "ja" / "IgnoreList.txt").write_text("須藤\n", encoding="utf-8")
+    one = harness_guards._user_files_state(str(folder))
+    assert none != empty != one and one == harness_guards._user_files_state(str(folder))
+    (folder / "ja" / "IgnoreList.txt").write_text("須藤\n冒険\n", encoding="utf-8")
+    assert harness_guards._user_files_state(str(folder)) != one

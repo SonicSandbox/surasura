@@ -224,7 +224,7 @@ def _junban_panel_save(**changes):
     panel = SimpleNamespace(scope=_Var(s["junban_scope"]), deck=_Var(s["junban_deck"]),
                             _order_value=lambda: s["junban_order"], _unlisted_value=lambda: s["junban_unlisted"],
                             _phrases_value=lambda: s["junban_phrases"],
-                            _ready_first_value=lambda: s["junban_ready_first"],
+                            _ready_first_value=lambda: s.get("junban_ready_first") is True,   # retired (Kyou-MO)
                             _only_marker_values=lambda: tuple(s["junban_only_markers"]),
                             _touchup_settings=lambda: {k: s[k] for k in JUNBAN_TOUCHUPS},
                             _replan_values=lambda: {},      # E3.1's row: saved only once touched

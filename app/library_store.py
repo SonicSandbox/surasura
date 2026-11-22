@@ -4003,9 +4003,9 @@ class Store:
             self._back_in_order(cmd, change, [i for i in moving if rows[i][1] == "graduated" and tier != "graduated"])
             # --- end P4.1 L2 ---
             if tier == "graduated":
-                self.conn.executemany("UPDATE items SET graduated_at = ? WHERE id = ?",
-                                      [(_now(), i) for i in moving])
-                self._snap_done(moving, _now())                  # Kura-GS: what it understood as it finished
+                stamp = _now()      # Kura-GS3 2: one stamp, the date and its snapshot's, so the Undo finds that press's
+                self.conn.executemany("UPDATE items SET graduated_at = ? WHERE id = ?", [(stamp, i) for i in moving])
+                self._snap_done(moving, stamp)                   # Kura-GS: what it understood as it finished
                 # --- W3.2 (IK-L2-3, A2 #28): an arrival to Finished is recorded as already watched (undone with it)
                 came = [i for i in moving if rows[i][1] == "arrivals"]
                 if came:
@@ -7973,6 +7973,11 @@ class Store:
         for it in ok:
             seqs[cur[it["id"]][1]].remove(it["id"])
         info = {it["id"]: it for it in items}
+        # Kura-GS3 2 (Sonic 2026-11-22): the Undo of a move to Finished takes back the 'done' snapshot that press made,
+        # as the Done's does (`_unsnap_done`): dated by the stamp of the Finished date it set — the row unchanged since
+        # (the value check) still holds it — so a Done's or an earlier Finish's snapshot (kept, written once) stays
+        self._unsnap_done([(it["id"], cur[it["id"]][8]) for it in ok if cur[it["id"]][1] == "graduated"
+                           and it["tier"] != "graduated" and cur[it["id"]][8] is not None])
         _walk_back(seqs, items, okset, one)
         self._write_seqs(seqs, ords, okset, lambda i: info[i]["changed_in"])
         cmd.walked.update({i: (info[i]["tier"], info[i]["changed_in"]) for i in okset})

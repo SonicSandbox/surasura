@@ -1113,3 +1113,158 @@ def test_a_first_generate_stopped_after_its_first_write_has_already_begun_the_sn
     assert window._meta()[ls.GROWTH_SINCE] == since
     analyzer.close()
     window.close()
+
+
+# --- Kura-GS3 2: the Undo of a move to Finished takes back the snapshot that press made (Sonic 2026-11-22) ---------- #
+# The same rule as the Done's: a move to Finished undone at once left a 'done' snapshot for a finish that never
+# happened. The Undo of that move now takes back that press's own snapshot — dated by the same stamp as the
+# `graduated_at` it set — inside the undo's write; a later move back out of Finished, a move inside it or a re-watch is
+# never that Undo, and keeps it.
+
+def _show(store, n=3):
+    return [i for i in store.ids("goal") if store.item(i)["parent_folder"]][:n]
+
+
+def _dones(store, ids):
+    return {i: store.growth_of([i]).get(i, {}).get("done") for i in ids}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_undo_of_a_move_to_finished_takes_back_the_snapshots_that_press_made(language):
+    """Finish a show, then its Undo at once: no 'done' left on any of its episodes, each back in its tier with its
+    Finished date taken back, the 'added' and 'last' untouched. Each snapshot was dated by the press's own stamp, the
+    one its `graduated_at` holds."""
+    store = migrated(language)
+    show = _show(store)
+    store.record_growth(_figures(store, show))
+    before = store.growth_of(show, kinds=("added", "last"))
+    tiers = {i: store.item(i)["tier"] for i in show}
+    change = store.finish(show)
+    for i in show:
+        assert store.growth_of([i])[i]["done"]["at"] == store.item(i)["graduated_at"]
+    store.undo(change)
+    assert _dones(store, show) == {i: None for i in show}
+    assert {i: store.item(i)["tier"] for i in show} == tiers
+    assert all(store.item(i)["graduated_at"] is None for i in show)
+    assert store.growth_of(show, kinds=("added", "last")) == before
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_undo_of_a_graduate_and_of_an_arrival_finished_takes_back_their_snapshots(language):
+    """The other two presses that move to Finished: Graduate (the tier change alone, without the Finish toast's
+    options) and an arrival finished at once (recorded watched too, W3.2) — each one's Undo takes back its snapshot,
+    the arrival's watched mark with it."""
+    store = migrated(language)
+    eps = store.ids("soon")[:2]
+    came = store.ids("soon")[2:4]
+    store.record_growth(_figures(store, eps + came))
+    change = store.set_tier(eps, "graduated")
+    assert all(_dones(store, eps).values())
+    store.undo(change)
+    assert _dones(store, eps) == {i: None for i in eps}
+    store.set_tier(came, "arrivals")
+    change = store.finish(came)
+    assert all(_dones(store, came).values()) and all(store.item(i)["watched"] for i in came)
+    store.undo(change)
+    assert _dones(store, came) == {i: None for i in came}
+    assert not any(store.item(i)["watched"] for i in came)
+    assert all(store.item(i)["tier"] == "arrivals" for i in came)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_undo_of_a_finish_keeps_the_snapshot_a_done_before_it_made(language):
+    """An episode Done before the show was finished kept its Done's snapshot (the first): the Finish wrote none of its
+    own for it, so the Finish's Undo leaves that one exactly; its neighbour, its finish undone, loses the Finish's."""
+    store = migrated(language)
+    done_ep, ep = _show(store, 2)
+    store.record_growth(_figures(store, [done_ep, ep]))
+    store.set_watched([done_ep])
+    first = store.growth_of([done_ep])[done_ep]["done"]
+    store.record_growth(_figures(store, [done_ep, ep], base=300))
+    store.undo(store.finish([done_ep, ep]))
+    assert store.growth_of([done_ep])[done_ep]["done"] == first
+    assert _snap(store, ep, "done") is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_move_back_out_of_finished_and_a_second_finishs_undo_keep_the_first_finishs_snapshot(language):
+    """A later move back (*Put back*, its own press) is never the Finish's Undo: the snapshot stays. Finished again,
+    the second Finish keeps the first's (written once), so the second Finish's Undo leaves it exactly; so does the
+    Undo of a later Put back (the episode back in Finished, no snapshot written)."""
+    store = migrated(language)
+    ep = _show(store, 1)[0]
+    store.record_growth(_figures(store, [ep]))
+    store.finish([ep])
+    first = store.growth_of([ep])[ep]["done"]
+    store.put_back_finished([ep])
+    assert store.growth_of([ep])[ep]["done"] == first
+    store.record_growth(_figures(store, [ep], base=300))
+    again = store.finish([ep])
+    assert store.item(ep)["graduated_at"] != first["at"]
+    store.undo(again)
+    assert store.item(ep)["tier"] != "graduated"
+    assert store.growth_of([ep])[ep]["done"] == first
+    store.finish([ep])
+    store.undo(store.put_back_finished([ep]))
+    assert store.item(ep)["tier"] == "graduated" and store.growth_of([ep])[ep]["done"] == first
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_undo_of_a_move_inside_finished_keeps_the_finishs_snapshot(language):
+    """A drag inside Finished (a new place, the same tier) is not a move to Finished: its Undo puts the order back
+    and leaves the snapshot the Finish made, though that one is dated by the item's own Finished date."""
+    store = migrated(language)
+    a, b = _show(store, 2)
+    store.record_growth(_figures(store, [a, b]))
+    store.finish([a, b])
+    want = _dones(store, [a, b])
+    order = store.ids("graduated")
+    change = store.move([a], "graduated", after_id=b)
+    assert change is not None and store.ids("graduated") != order
+    store.undo(change)
+    assert store.ids("graduated") == order
+    assert _dones(store, [a, b]) == want
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_episode_changed_since_the_finish_keeps_its_snapshot_through_the_undo(language):
+    """The Undo leaves an item changed since the move as it is (the value check): it stays in Finished, and so does
+    its snapshot — only the items the Undo takes out of Finished lose theirs."""
+    store = migrated(language)
+    a, b = _show(store, 2)
+    store.record_growth(_figures(store, [a, b]))
+    change = store.finish([a, b])
+    store.move([a], "graduated", after_id=b)                    # a changed since: moved inside Finished
+    want = _snap(store, a, "done")
+    store.undo(change)
+    assert store.item(a)["tier"] == "graduated" and _snap(store, a, "done") == want
+    assert store.item(b)["tier"] != "graduated" and _snap(store, b, "done") is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_undo_of_a_finish_whose_snapshot_cannot_be_taken_back_fails_whole(language):
+    """The snapshot's removal is in the undo's own write: when the database refuses it, nothing of the Undo saves —
+    the episodes stay in Finished with their dates and snapshots (whole or not at all, F1)."""
+    store = migrated(language)
+    show = _show(store, 2)
+    store.record_growth(_figures(store, show))
+    change = store.finish(show)
+    with store._writing():
+        store.conn.execute("CREATE TEMP TRIGGER keep_done BEFORE DELETE ON growth WHEN OLD.kind = 'done' "
+                           "BEGIN SELECT RAISE(ABORT, 'refused'); END")
+    before = list(store.conn.iterdump())
+    with pytest.raises(sqlite3.Error):
+        store.undo(change)
+    assert list(store.conn.iterdump()) == before, "nothing of the Undo saved"
+    assert all(store.item(i)["tier"] == "graduated" for i in show) and all(_dones(store, show).values())
+    with store._writing():
+        store.conn.execute("DROP TRIGGER keep_done")
+    store.undo(change)
+    assert _dones(store, show) == {i: None for i in show}
+    store.close()

@@ -798,9 +798,14 @@ function flagLine(id, k, reasons, note, on) {
 /* each setting redraws only the part it owns (the redraw rule): a look one is CSS, a data one its own part */
 const SET_DRAW = {
   theme: () => applyLook(), word_size: () => applyLook(), sentence_size: () => applyLook(), where_from: () => applyLook(),
-  pitch: () => drawPart("reading"), sentences: () => drawPart("lines"), first_meeting: () => drawPart("lines"), meanings: () => drawDesk(),
+  pitch: () => drawPart("reading"), sentences: () => linesAgain(), first_meeting: () => linesAgain(), meanings: () => drawDesk(),
   keys: () => { drawPart("acts"); drawDesk(); },
 };
+function linesAgain() {                                // fewer lines shown: the chosen one stays among them
+  const id = curWordId(), w = id != null && wordNow(id);
+  if (w) S.line = Math.max(0, Math.min(S.line, shownLines(id, w).ks.length - 1));
+  drawPart("lines");
+}
 function setSetting(k, value) {
   const s = SETTINGS.find((x) => x.k === k);
   SET[k] = value; SET_WAIT[k] = "send";

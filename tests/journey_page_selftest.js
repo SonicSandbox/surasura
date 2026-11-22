@@ -681,8 +681,10 @@
         const w = await at(f);
         ok(`${kind === "first" ? "the first line" : "a later line"} from the first meeting's episode: marked ${MEET}, the lines as the list has them`,
           marked().length === 1 && marked()[0].querySelector(".tx").textContent === w[9][f.m][0] && marked()[0].textContent.includes(MEET) && JSON.stringify(shown()) === JSON.stringify(listed(w)), JSON.stringify(shown()));
+        J.selLine(nOf(w) - 1); await settle();          // the last line chosen: one fewer shows once the marked one hides
         const lines0 = $("#stage [data-r=lines]"), rest0 = ["reading", "acts"].map((r) => $(`#stage [data-r=${r}]`)).concat([$("#stage .wrow")]);
         let r = await press(() => sw("false").click());
+        ok(`Hidden (${kind}): a chosen line is still one of the lines shown, and drawn chosen`, J.S.line < J.shownLines(f.id, w).ks.length && $$("#stage .lines > .ln.sel").length === 1, J.S.line);
         const call = CALLS.filter(([, rt]) => rt === "settings/set").pop();
         ok(`Hidden (${kind}): the marked line goes, the next show in the list's order, nothing marked`, !marked().length && JSON.stringify(shown()) === JSON.stringify(keep(w, f.m)), JSON.stringify(shown()));
         ok(`Hidden (${kind}): written through settings/set, J-SET's key, a switch`, call && call[2].key === "journey_first_meeting" && call[2].value === false, call && JSON.stringify(call[2]));

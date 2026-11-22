@@ -15,7 +15,7 @@ from tkinter import ttk
 import pytest
 
 from app.cli.contract import CliError
-from app.connect import connect_window
+from app.connect import connect_window, undo
 from tests.connect_tk_helpers import Pump, Tips, on_main, tk_root, widgets
 
 RECORD = {
@@ -364,8 +364,8 @@ def test_a_writer_refused_at_once_is_tried_a_second_apart_a_handful_of_times_and
     at least a second apart until its wait runs out — a handful of calls, never thousands, and the waiting line
     posted once (never a flood on the dashboard's queue)."""
     clock = Clock()
-    monkeypatch.setattr(connect_window, "time", clock)
-    monkeypatch.setattr(connect_window, "WAIT_FOR_WRITER_S", 5)
+    monkeypatch.setattr(undo, "time", clock)          # the wait: undo.wait_for_writer
+    monkeypatch.setattr(undo, "WAIT_FOR_WRITER_S", 5)
     calls = []
     w = _bare(_refused(calls))
     with pytest.raises(CliError) as e:
@@ -380,7 +380,7 @@ def test_an_update_waiting_stops_the_undo_at_once_with_its_words(monkeypatch):
     """Adversary #1: the writer refused because an update waits to install — no program will let go, so the undo
     stops at its first refusal and says so."""
     clock = Clock()
-    monkeypatch.setattr(connect_window, "time", clock)
+    monkeypatch.setattr(undo, "time", clock)          # the wait: undo.wait_for_writer
     calls = []
     with pytest.raises(CliError) as e:
         _bare(_refused(calls), busy=False, update=True)._write(None, shelf_run="r-20261010", confirm=True)
@@ -391,7 +391,7 @@ def test_an_update_waiting_stops_the_undo_at_once_with_its_words(monkeypatch):
 def test_a_refusal_no_live_program_explains_stops_at_once(monkeypatch):
     """Adversary #1: refused with nobody holding the lock (a lock file that can't be opened): said at once, no wait."""
     clock = Clock()
-    monkeypatch.setattr(connect_window, "time", clock)
+    monkeypatch.setattr(undo, "time", clock)          # the wait: undo.wait_for_writer
     calls = []
     w = _bare(_refused(calls), busy=False)
     with pytest.raises(CliError) as e:
@@ -404,9 +404,9 @@ def test_writer_busy_is_no_live_program_when_the_lock_file_cant_be_opened(monkey
     from app import locks
     monkeypatch.setattr(locks, "in_use", lambda name, **k: True)
     monkeypatch.setattr(locks, "unopenable", lambda name: "C:/locks/anki-writer.lock")
-    assert connect_window.writer_busy() is False
+    assert undo.writer_busy() is False
     monkeypatch.setattr(locks, "unopenable", lambda name: None)
-    assert connect_window.writer_busy() is True
+    assert undo.writer_busy() is True
 
 
 TWO = dict(RECORD, undo=[

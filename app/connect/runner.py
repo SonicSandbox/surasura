@@ -1779,15 +1779,19 @@ def _best(steps, ledger, lang, job, words, here):
     except Exception as e:      # never the mining's fault: the episode's own lines, as Nearest
         log.info("Connect: Best sentences not read (%s): %s", lang, e)
         return words, []
-    kept, moved = [], []
+    kept, moved, own_weight = [], [], None
     try:
         with ledger.transaction():
             for w in words:
                 key = (w["word"], w["reading"])
                 choices = found.get(key) or []
                 top = choices[0] if choices else None
-                mine = next((c for c in choices if c.here), None) or sentences.Choice(
-                    here, own, w.get("line_text"), int(w.get("other_new") or 0), 0.0, True, True)
+                mine = next((c for c in choices if c.here), None)
+                if mine is None:        # the list keeps no line of this episode: its own line, weighed as its episode
+                    if own_weight is None:
+                        own_weight = sentences.context_of(lang, here)
+                    mine = sentences.Choice(here, own, w.get("line_text"), int(w.get("other_new") or 0), own_weight,
+                                            True, True)
                 if (top is None or top.here or top.item_id is None or not sentences.better(top, mine)
                         or ledger.queue_level(lang, top.item_id, [key], source=level.BEST,
                                               store_id=job.get("store_id")) is None):

@@ -23,10 +23,23 @@ is weight, after both.
 four fifths, eight months ago about a tenth, the episodes just ahead of you about a third to a half, Soon less, Goal
 and New arrivals nothing (`context`: PROVISIONAL numbers).
 
-Reads the token store and its index only (`sentence_corpus.files_holding`, then `collect` over those files): never
-tokenizes the library. Light: nothing written.
+**Where a word's sentences come from** (2026-11-22: Generate is the one source of a word's sentences): Best's
+candidates are the word's row in the list — the pool the last Generate kept for it in the plan file
+(`plan_engine.candidates`: its first sentence, its shortlist of 60, up to 15 lines of what you watched or finished),
+each with the list's own count of its other unknown words. Here they are only put in Best's order by what the moment
+of mining knows (how a line is heard, the dates, the young words, `never`) and checked: a sentence whose file changed
+or left since that Generate (the plan's digest of the file), or whose media can't be cut, is no choice. A word that
+is no row of the list (under its cut-off: *Cards for every new word*; a known word: Swap) — or any word before the
+first Generate — is looked for in the library itself (`sentence_corpus.files_holding`, then `collect` over those
+files), a second pool under the same order (`_rank`). So the cost of a call follows the wanted words and their
+candidates (at most 76 a row), never the library — except for a word with no row, whose search reads every file's
+counts.
+
+Reads the plan file, the library store and the token store only: never tokenizes the library. Light: nothing written.
 """
 import os
+import re
+import unicodedata
 from collections import namedtuple
 from datetime import datetime, timezone
 
@@ -49,10 +62,15 @@ MOST_FILES = 30             # a word's first files only, in context order (a com
 # when the AI voice can make its audio), or not at all
 REAL, AI_VOICE, SILENT = "real", "ai", None
 
+TOP = 8                     # the choices a word gets back at most, best first (the corpus's eight: SENTENCES_PER_WORD)
+YOUNG_LINES = 4             # ...and how many of a row's leading candidates have their young words read (each one is
+#                             a file of the token store decoded; the rest weigh by their context alone)
+
 # One sentence a word can be cut from: its file and item (None: no library item), the text, how many other words in it
 # you don't know, its weight (young words + context), whether it is the episode being mined, whether it is heard at
-# all (`audio`) and whether that is the AI voice's (`ai`)
-Choice = namedtuple("Choice", "file item_id text others weight here audio ai", defaults=(False,))
+# all (`audio`), whether that is the AI voice's (`ai`), and its place among its file's sentences as the token store
+# keeps them (`number`: what a reader finds its cue by; None for a sentence the library search found)
+Choice = namedtuple("Choice", "file item_id text others weight here audio ai number", defaults=(False, None))
 
 
 def dial_of(settings):
@@ -141,11 +159,12 @@ def heard(text, paired, ai):
     return AI_VOICE if ai else SILENT
 
 
-def _library(language, store=None, ai=False):
+def _library(language, store=None, ai=False, only=None):
     """{normalised path: (item id, context, how it is heard, a book or a text)} for the library's items, read once:
     the store's items, their show's dates (`seen_dates`), their own (`watched_dates`), the order ahead
     (`library.ahead`) and the books an audiobook is paired with (`library.paired_books`); `ai`: `heard`'s. {} with no
-    store."""
+    store. `only`: the items of these paths alone ([rel_path], the data folder's, with either slash) — what a reader
+    of a few candidates asks, so its read follows them, not the library."""
     from app.connect import library
     from app.path_utils import get_data_path
     from app import library_store
@@ -164,10 +183,18 @@ def _library(language, store=None, ai=False):
         paired = {os.path.normcase(os.path.abspath(epub)) for epub, _ab, _sha in library.paired_books(store)}
         root = get_data_path(language)
         out = {}
+        query = ("SELECT i.id, i.rel_path, i.tier, i.watched, i.work_id, i.parent_folder, i.source_type, w.media_type "
+                 "FROM items i LEFT JOIN works w ON w.id = i.work_id")
         with store._reading():
-            rows = store.conn.execute("SELECT i.id, i.rel_path, i.tier, i.watched, i.work_id, i.parent_folder, "
-                                      "i.source_type, w.media_type FROM items i LEFT JOIN works w ON w.id = i.work_id"
-                                      ).fetchall()
+            if only is None:
+                rows = store.conn.execute(query).fetchall()
+            else:
+                asked = sorted({form for rel in only for form in (rel.replace("\\", "/"), rel.replace("/", "\\"))})
+                rows = []
+                for at in range(0, len(asked), 500):
+                    batch = asked[at:at + 500]
+                    rows += store.conn.execute(f"{query} WHERE i.rel_path IN ({','.join('?' * len(batch))})",
+                                               batch).fetchall()
         now = datetime.now(timezone.utc)
         for item_id, rel, tier, watched, work, folder, source_type, media in rows:
             show = shows.get(library_store._show_of(item_id, work, folder)) or {}
@@ -184,6 +211,183 @@ def _library(language, store=None, ai=False):
             store.close()
 
 
+def context_of(language, path, store=None):
+    """The context weight of one library file (`context`: 0 for a file outside the store, or with no store) — what
+    the mined episode's own line weighs when the list keeps no line of that episode to say it (the runner's `_best`:
+    a tie stays where it is only when both sides are weighed alike)."""
+    from app.path_utils import get_data_path
+    try:
+        rel = os.path.relpath(path, get_data_path(language)).replace("\\", "/")
+        placed = _library(language, store, False, only=[rel]).get(os.path.normcase(os.path.abspath(path)))
+        return round(placed[1], 4) if placed else 0.0
+    except Exception:
+        return 0.0
+
+
+_KEPT = {}                  # language -> (the plan file's path, time and size, its candidates, {key: its row}): `_listed`
+
+
+def _listed(language):
+    """(the list's candidates — `plan_engine.candidates`: each listed row's pool as the last Generate kept it —,
+    {(word, reading): its row}), read once per version of the plan file; (None, {}) with no readable plan."""
+    from app import analyzer, plan_engine
+    from app.path_utils import get_user_file
+    path = os.path.join(get_user_file("results"), analyzer.PLAN_FILE)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None, {}
+    stamp = (path, st.st_mtime_ns, st.st_size)
+    hit = _KEPT.get(language)
+    if hit is None or hit[0] != stamp:
+        kept = plan_engine.candidates(path, language)
+        rows = {}
+        if kept is not None:
+            rows = {(key[0], key[1] or ""): k for k, key in enumerate(kept.keys) if k in kept.pools}
+        hit = _KEPT[language] = (stamp, kept, rows)
+    return hit[1], hit[2]
+
+
+def _from_list(language, kept, listed, here_key, never, young, files, reach, books, ai, store):
+    """`choose` for the words that are rows of the list (`listed`: {key: its row}) -> {key: [Choice, …]}, at most TOP
+    a word (and the mined episode's own line, when it is a candidate): each row's kept candidates (`_listed`) of a
+    good length, in Best's order (`_rank`, then the list's own), each checked as it is taken — its file as the
+    Generate read it (`files`' digest: its path, time and size; a watched or Finished source by the token store's
+    stamp), its media there (`reach`), never a line of `never`. The young words are read for a row's first
+    YOUNG_LINES of those only (a sentence's known words are the token store's, a file decoded for each): they order
+    a row's best-placed candidates, the rest weigh by context."""
+    from app import plan_rules, token_index, sentence_corpus
+    from app.connect import library
+    from app.path_utils import get_data_path
+    root = get_data_path(language)
+    sentences, sources, n_files = kept.sentences, kept.files, len(kept.files)
+    own = [c[0] for c in kept.cowords]
+    allowed = None if files is None else {os.path.normcase(os.path.abspath(f)) for f in files} | {here_key}
+    lines = {}                  # key -> its candidates' ids, the list's order: the shortlist, the watched, the first
+    for key, k in listed.items():
+        first, pool, _audio = kept.pools[k]
+        seen, line = set(), []
+        for s in list(pool) + ([first] if first >= 0 else []):
+            row = sentences[s] if 0 <= s < len(sentences) else None
+            if (row is None or not row[plan_rules.TEXT] or row[plan_rules.SHORT] or row[plan_rules.LONG]
+                    or row[plan_rules.HASH] in seen):
+                continue        # a length outside the learner's range is no candidate (as the library search's window)
+            seen.add(row[plan_rules.HASH])
+            line.append(s)
+        lines[key] = line
+    placed = {}                 # a source -> (its path as written, its key, its rel_path, its kind, its digest or None)
+    for src in {sentences[s][plan_rules.SRC] for line in lines.values() for s in line}:
+        if src < n_files:
+            rel, _tier, digest, kind = sources[src]
+        else:
+            (rel, kind, _rank_no), digest = kept.finished[src - n_files], None
+        path = rel if os.path.isabs(rel) else os.path.join(root, "") + rel.replace("/", os.sep)
+        placed[src] = (path, os.path.normcase(os.path.abspath(path)), rel, kind, digest)
+    info = dict(_library(language, store, ai, only=[p[2] for p in placed.values() if not os.path.isabs(p[2])]))
+    for path, at, _rel, _kind, _digest in placed.values():
+        if at not in info:              # outside the store (or none): a book or a text by its own extension
+            text = library.text_only({"rel_path": path})
+            info[at] = (None, 0.0, heard(text, False, ai), text)
+    tokens = [None]             # the token store, opened for the first stamp or sentence asked of it
+    stamps, there, reached, read = {}, {}, {}, {}
+
+    def store_of():
+        if tokens[0] is None:
+            tokens[0] = token_index.open_reader(language) or False
+        return tokens[0]
+
+    def as_read(src):
+        """Is the source's file the one the Generate read — there, its time and size the plan's (or, a watched or
+        Finished one's, the token store's)?"""
+        if src not in there:
+            path, at, rel, kind, digest = placed[src]
+            try:
+                st = os.stat(path)
+                if digest is not None:
+                    # (the run signs a file's path as it resolved it: the store's rel_path joined as it is written)
+                    there[src] = any(plan_rules.file_digest([signed, [st.st_mtime, st.st_size], None, None, kinds])
+                                     == digest for signed in dict.fromkeys((os.path.join(root, rel), path))
+                                     for kinds in ((kind, None) if not kind else (kind,)))
+                else:
+                    cache = store_of()
+                    if at not in stamps and cache:
+                        stamps.update(cache.file_stamps([at]))
+                    there[src] = stamps.get(at) == [st.st_mtime, st.st_size]
+            except Exception:
+                there[src] = False
+        return there[src]
+
+    def can_cut(at, item_id):
+        spot = item_id if item_id is not None else at       # a file outside the store: its own answer
+        if spot not in reached:
+            try:
+                reached[spot] = bool(reach(item_id)) if reach is not None and item_id is not None \
+                    else os.path.isfile(at)
+            except Exception:
+                reached[spot] = False
+        return reached[spot]
+
+    def fresh(key, at, number, text):
+        """The young words sentence `number` of the file holds beside `key` (their weights' sum), as the token store
+        keeps it; None when that sentence is no longer `text` there (the file was read again since the Generate)."""
+        if at not in read:
+            cache = store_of()
+            read[at] = cache.file_tokens(at) if cache else []
+        held = read[at]
+        if not (0 <= number < len(held)) or str(held[number][0]).strip() != text:
+            return None
+        return sum(sentence_corpus._young(young, word) for word in {(t[0], t[1]) for t in held[number][1]} - {key})
+
+    out = {}
+    try:
+        for key, line in lines.items():
+            k, banned, found = listed[key], never.get(key), []
+            for position, s in enumerate(line):
+                row = sentences[s]
+                path, at, _rel, _kind, _digest = placed[row[plan_rules.SRC]]
+                item_id, ctx, hear, text_only = info[at]
+                is_here = at == here_key
+                if allowed is not None and at not in allowed:
+                    continue
+                if not is_here and text_only and not (books and (hear is not SILENT or reach is None)):
+                    continue            # a book's line nothing can speak, where media is cut (`choose`'s `unheard`)
+                if same_line(row[plan_rules.TEXT], banned):
+                    continue
+                others = sum(1 for c in row[plan_rules.COWORDS] if own[c] != k)
+                found.append((Choice(path, item_id, row[plan_rules.TEXT], others, round(ctx, 4), is_here,
+                                     hear is not SILENT, hear == AI_VOICE, row[plan_rules.NUMBER]), position, s))
+            found.sort(key=lambda c: _rank(c[0], BEST) + (c[1],))
+            taken, mine = [], None
+            for choice, position, s in found:
+                if len(taken) >= TOP and (mine is not None or not choice.here):
+                    continue            # past the best TOP only the mined episode's own line is still looked for
+                src = sentences[s][plan_rules.SRC]
+                at = placed[src][1]
+                if not as_read(src):
+                    continue
+                if not choice.here and (reach is None or not info[at][3]) and not can_cut(at, choice.item_id):
+                    continue            # a book's line is judged by how it is heard (above), and is there
+                if choice.here:
+                    mine = choice
+                taken.append((choice, position, at))
+            if young and taken:
+                lead = _rank(taken[0][0], BEST)[:2]
+                weighed = []
+                for n, (choice, position, at) in enumerate(taken):
+                    if n < YOUNG_LINES and _rank(choice, BEST)[:2] == lead:
+                        more = fresh(key, at, choice.number, choice.text)
+                        if more is None:
+                            continue    # read again since the Generate: the line may be gone
+                        choice = choice._replace(weight=round(choice.weight + max(0.0, more), 4))
+                    weighed.append((choice, position, at))
+                taken = sorted(weighed, key=lambda c: _rank(c[0], BEST) + (c[1],))
+            out[key] = [choice for choice, _position, _at in taken]
+    finally:
+        if tokens[0]:
+            tokens[0].close()
+    return out
+
+
 def choose(language, keys, *, here=None, dial=None, never=None, young=None, files=None, reach=None, store=None,
            books=True):
     """The sentences each word's card can be cut from -> {(lemma, reading): [Choice, …]}, best first by the dial
@@ -195,7 +399,11 @@ def choose(language, keys, *, here=None, dial=None, never=None, young=None, file
     media can't be cut is no choice; a book's or a text's line isn't asked (`heard`: with a `reach`, one heard by
     nothing is no choice); `books`: can a book's or a text's line be mined at all (Connect: while Anki Miner reads
     books). A sentence of the library outside the learner's length range is not a candidate
-    (the corpus's window), so a word met only in short lines gets [] here and keeps its own episode's line."""
+    (the corpus's window), so a word met only in short lines gets [] here and keeps its own episode's line.
+
+    A word that is a row of the list gets the list's candidates (`_from_list`: the module's docstring) — Best, and
+    Nearest asked with no `here`; at most TOP, and the mined episode's own line; its `Choice.number` says where the
+    sentence stands in its file. Any other word, and Nearest's own lines, are read from the token store."""
     from app import settings_manager, sentence_corpus, analyzer, token_index
     keys = list(dict.fromkeys(tuple(k) for k in keys or ()))
     if not keys:
@@ -204,10 +412,20 @@ def choose(language, keys, *, here=None, dial=None, never=None, young=None, file
     dial = dial if dial in DIALS else dial_of(settings)
     young = young_weights(language) if young is None else dict(young)
     never = {tuple(k): v for k, v in (never or {}).items() if v}
-    if files is None:
-        files = sentence_corpus.library_files(language)
     here_key = os.path.normcase(os.path.abspath(here)) if here else None
     ai = ai_voice(settings, language)
+    out = {key: [] for key in keys}
+    if dial == BEST or not here_key:
+        # The list's candidates first (the module's docstring); a word with no row is looked for in the library below
+        kept, rows = _listed(language)
+        listed = {key: rows[(key[0], key[1] or "")] for key in keys if (key[0], key[1] or "") in rows}
+        if listed:
+            out.update(_from_list(language, kept, listed, here_key, never, young, files, reach, books, ai, store))
+            keys = [key for key in keys if key not in listed]
+            if not keys:
+                return out
+    if files is None:
+        files = sentence_corpus.library_files(language)
     info = dict(_library(language, store, ai))
     norm = [os.path.normcase(os.path.abspath(f)) for f in files or ()]
     if here_key and here_key not in norm:
@@ -234,7 +452,6 @@ def choose(language, keys, *, here=None, dial=None, never=None, young=None, file
         holding = sentence_corpus.files_holding(language, ordered, keys, most=MOST_FILES)
         if here_key and here_key not in holding:
             holding = [here_key] + holding
-    out = {key: [] for key in keys}
     if not holding:
         return out
     analyzer.SANITIZE_JA = (language == "ja")
@@ -291,15 +508,27 @@ def better(choice, than):
     return _rank(choice, BEST)[:3] < _rank(than, BEST)[:3]
 
 
-def _line(text):
-    """A line as `never` compares it: its own characters, spaces and line breaks aside."""
-    return "".join(str(text or "").split())
+# A line by its text — the one rule every reader compares two lines by (the picker's `never`, Swap's old card)
+_TAGS = re.compile(r"<[^>]*>")
+_SOUND = re.compile(r"\[sound:[^\]]*\]")
+_FURIGANA = re.compile(r"\[[^\]]*\]")          # a card's kana in brackets: 漢字[かんじ]
+_MARKS = re.compile(r"[\s　「」『』（）()【】〈〉《》“”\"'‘’…‥・、，,。．.！!？?～〜ー―—–\-:;/]+")
+
+
+def norm_line(text):
+    """A line's text as two lines are compared: a card's markup, its sound tags and its kana in brackets out, NFKC,
+    then spaces, line breaks and punctuation out — so a card's sentence field and the subtitle's line it was cut from
+    are the same line."""
+    text = _SOUND.sub("", str(text or ""))
+    text = _FURIGANA.sub("", _TAGS.sub("", text.replace("&nbsp;", " ")))
+    return _MARKS.sub("", unicodedata.normalize("NFKC", text))
 
 
 def same_line(text, old):
-    """Is `text` one of the lines `old` ({line text}, Swap's old card's sentence) holds — the same characters, or one
-    inside the other (an old card's sentence may hold its line's neighbours too)? Never with nothing in `old`."""
-    line = _line(text)
-    if not line or not old:
+    """Is `text` one of the lines `old` ({line text}, Swap's old card's sentence) holds — the same line
+    (`norm_line`), or one inside the other (an old card's sentence may hold its line's neighbours too)? Two
+    characters at least: an empty line is no line. Never with nothing in `old`."""
+    line = norm_line(text)
+    if len(line) < 2 or not old:
         return False
-    return any(line == was or line in was or (was and was in line) for was in (_line(t) for t in old))
+    return any(len(was) >= 2 and (line == was or line in was or was in line) for was in map(norm_line, old))

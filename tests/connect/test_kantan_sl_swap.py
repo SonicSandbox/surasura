@@ -377,9 +377,9 @@ def test_kyou_dws_bad_card_asks_the_same_maker_for_a_deleted_card(ledger, monkey
 
 def test_the_swap_job_is_never_moved_by_a_store_ask_nor_un_asked_and_waits_for_an_open_job(ledger):
     lang = "ja"
-    job = ledger.queue_swap(lang, 7, "借りる", "", "2026-11-22T01:00:00Z", store_id="s1")
-    assert ledger.ask(lang, 7, "2026-11-22T02:00:00Z") is None        # the ask waits for the swap's one word
-    assert ledger.queue_swap(lang, 7, "返す", "", "2026-11-22T01:00:00Z") is None
+    job = ledger.queue_swap(lang, 7, "借りる", "", "2026-11-20T01:00:00Z", store_id="s1")
+    assert ledger.ask(lang, 7, "2026-11-20T02:00:00Z") is None        # the ask waits for the swap's one word
+    assert ledger.queue_swap(lang, 7, "返す", "", "2026-11-20T01:00:00Z") is None
     assert inbox.keeps(ledger.job_by_id(job)) is True
     inbox._asks(_NoStore(), lang, ledger, {}, [], [], [])          # no store ask holds it: it stays asked
     assert ledger.job_by_id(job)["asked_at"] and ledger.job_by_id(job)["state"] in OPEN
@@ -494,8 +494,8 @@ def test_a_swap_job_writes_its_cards_but_no_receipt_and_an_empty_one_none_either
     steps = SwapSteps(str(tmp_path), {"line": {"ja": [1, 2, 3]}, "queue": {"ja": [3]}})
     with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
         with ledger.transaction():
-            made = ledger.queue_swap("ja", 1, "上層部", "ジョウソウブ", "2026-11-21T10:00:00", store_id="store-1")
-            empty = ledger.queue_swap("ja", 2, "雰囲気", "フンイキ", "2026-11-21T10:00:01", store_id="store-1")
+            made = ledger.queue_swap("ja", 1, "上層部", "ジョウソウブ", "2026-11-19T10:00:00", store_id="store-1")
+            empty = ledger.queue_swap("ja", 2, "雰囲気", "フンイキ", "2026-11-19T10:00:01", store_id="store-1")
         runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=2)
         jobs = {j["id"]: j for j in ledger.jobs("ja")}
     by_item = {item: (cards, receipt) for item, cards, receipt in steps.records}
@@ -577,7 +577,7 @@ def test_a_swap_job_with_no_swap_record_sends_nothing(ledger, monkeypatch):
     # Why: a job of kind swap read as an ordinary pick would mine the episode's whole list, with no receipt.
     from app.connect import ledger as ledger_mod
     with ledger.transaction():
-        job = ledger.queue_swap("ja", 7, "借りる", "", "2026-11-22T01:00:00Z")
+        job = ledger.queue_swap("ja", 7, "借りる", "", "2026-11-20T01:00:00Z")
     swap.ensure(ledger)
     assert ledger_mod.path() and swap.spec_of(job, "ja") == {"word": "", "reading": "", "avoid": [], "line": None}
     read, tokens = _read("ja")

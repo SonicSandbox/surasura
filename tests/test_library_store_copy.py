@@ -86,7 +86,9 @@ def test_the_copy_is_its_manifest_plus_one_key(language):
     lib = copy.pop("surasura_library")
     assert copy == doc
     assert lib["arrivals"] == [] and lib["graduated"] == [] and lib["store_id"] == store.meta()["store_id"]
-    # 3.0 (schema 2): New arrivals on (D30) and the Soon line at NOW's count (Q2-4: nobody's list changes)
+    # 3.0 (schema 2): New arrivals on (D30) and the Soon line at NOW's count (Q2-4: nobody's list changes); 3.0.18:
+    # when the store began the growth snapshots (Kura-GS: a new PC's rebuild keeps what was there before as `prior`)
+    assert lib["meta"].pop(ls.GROWTH_SINCE) == store.meta()[ls.GROWTH_SINCE]
     assert lib["meta"] == {"epoch": 1, "log_seq": 0, "mine_line": 20, "arrivals_on": 1,
                            "soon_line": len(store.ids("now"))}
     assert lib["content_sha"] == ls.content_sha(dict(copy, surasura_library=lib))

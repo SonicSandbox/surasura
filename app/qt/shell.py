@@ -1717,6 +1717,7 @@ class ShellWindow(QMainWindow):
             lst.words_hover.connect(lambda row, ep, rect: self.words.hover(word_peek.PeekHost.scope(row, ep), _at(rect)))
             lst.words_keep.connect(lambda row, ep, rect: self.words.keep(word_peek.PeekHost.scope(row, ep), _at(rect)))
             lst.words_left.connect(self.words.left)
+            lst.delegate.growth = self._growth_of                # Kura-GS: Up next's % hover, its growth line
         # --- W3.1a: the drag, the moves, Done and Undo (`drag.py`), given a writer beside the library ---------------- #
         self.moves = None
         if services.library is not None and services.writer is not None:
@@ -3491,6 +3492,13 @@ class ShellWindow(QMainWindow):
             bridge.run_in_worker(self.services.activated)   # the Tk <FocusIn>: the services keep their throttles
             self._look_for_anki()                           # Kantan-B1 (B3): Anki opened meanwhile?
             self._words_anki()                              # Hover-W: Anki's standing for the word card (throttled)
+
+    def _growth_of(self, item_id):
+        """Kura-GS: an item's growth snapshots from the numbers the rows show (a language switch's new ones), or
+        None."""
+        numbers = getattr(getattr(self.services, "writer", None), "numbers", None)
+        growth = getattr(numbers, "growth", None)
+        return growth(item_id) if growth is not None else None
 
     # --- Hover-W: the word card's provider and its moments -------------------------------------------------------- #
     def _words_provider(self):

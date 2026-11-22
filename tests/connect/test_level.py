@@ -294,3 +294,85 @@ def test_the_inbox_keeps_a_new_files_job_out_of_the_line_but_never_a_raises():
     assert inbox.keeps(new) and inbox.keeps(new, "left_mine_line")
     assert not inbox.keeps(new, "finished") and not inbox.keeps(new, "removed")
     assert not inbox.keeps({"kind": LEVEL, "source": "level"}), "a raise's job from 3.0.17: never kept"
+
+
+def test_a_new_files_mark_left_before_connect_was_switched_off_never_mines_after_it_is_switched_on_again():
+    # why: train 56's keeper F1 — the mark a new-files run left was cleared only by an ordinary look; switched off and
+    # on again, the next look is a first look and returned before taking it, so a later raise read the old mark and
+    # queued a level job for every episode mined since that run (`mined_since`): the re-mine the model retired
+    (a, fa), (b, fb), (d, fd) = _line()
+    files = {fa: ["眼鏡"], fb: ["老婆"], fd: ["眼鏡", "駐車場"]}
+    _check(BEFORE, "run-1", files)
+    _mined_this_run(d)                                   # a new-files run: its mark is left
+    level.forget("ja")                                   # Connect off -> on (the preview's switch)
+    assert _check(BEFORE, "run-2", files)["first"] is True
+    with Ledger() as ledger, ledger.transaction():       # later, ordinary mining (no mark of its own)
+        for item_id in (a, b):
+            job = ledger.queue("ja", item_id, "user", None)
+            ledger.conn.execute("UPDATE jobs SET state = 'done' WHERE id = ?", (job,))
+    out = _check(RAISED, "run-3", files)                 # then a raise
+    assert out["new"] == 3 and out["queued"] == [] and _level_jobs() == []
+
+
+def test_a_new_files_mark_a_look_at_the_same_list_leaves_gives_only_that_runs_episodes():
+    # why: the same F1 by its other path — a look at an unchanged list returns before taking the mark; the next new
+    # list is then a raise, and the mark (a time) would hand it every episode mined since that run, each mined from a
+    # list that already held its words. The mark names its run's episodes, so only those get their new words
+    (a, fa), (b, fb), (d, fd) = _line()
+    files = {fa: ["眼鏡"], fb: ["老婆"], fd: ["眼鏡", "駐車場"]}
+    _check(BEFORE, "run-1", files)
+    _mined_this_run(d)                                   # the new-files run, its Generate wrote no new list
+    assert _check(BEFORE, "run-1", files)["queued"] == []    # the same list: the mark stays
+    with Ledger() as ledger, ledger.transaction():       # later, ordinary mining (no mark of its own)
+        for item_id in (a, b):
+            job = ledger.queue("ja", item_id, "user", None)
+            ledger.conn.execute("UPDATE jobs SET state = 'done' WHERE id = ?", (job,))
+    out = _check(RAISED, "run-2", files)
+    assert out["queued"] == [d], "only the new-files run's own episode"
+
+
+def test_a_mark_left_by_an_older_ledger_is_dropped_never_read_as_every_episode_since():
+    # why: a mark written as a bare time (before it named its episodes) can't tell its run's episodes from later
+    # ones: it is dropped (the words join the study order) rather than mining every episode since
+    (a, fa), (b, fb), (d, fd) = _line()
+    files = {fa: ["眼鏡"], fb: ["老婆"], fd: ["眼鏡", "駐車場"]}
+    _check(BEFORE, "run-1", files)
+    _mined_this_run(a, b, d)
+    with Ledger() as ledger, ledger.transaction():
+        ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('new_files:ja', '2000-01-01T00:00:00Z')")
+    out = _check(RAISED, "run-2", files)
+    assert out["new"] == 3 and out["queued"] == [] and _level_jobs() == []
+    with Ledger() as ledger, ledger.transaction():
+        assert ledger.take_new_files("ja") is None, "taken"
+        for old in ("2000-01-01T00:00:00Z", "7", '{"7": 1}'):
+            ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('new_files:ja', ?)", (old,))
+            assert ledger.take_new_files("ja") is None, old
+            assert ledger.take_new_files("ja") is None, "dropped once read"
+
+
+def test_two_new_files_runs_before_a_new_list_give_both_runs_episodes_their_words():
+    # why: a mark not yet taken (its run's Generate wrote no new list) keeps its episodes when the next new-files run
+    # marks its own: both runs' episodes were mined from a list without their words
+    (a, fa), (b, fb), (d, fd) = _line()
+    files = {fa: ["眼鏡"], fb: ["老婆"], fd: ["眼鏡", "駐車場"]}
+    _check(BEFORE, "run-1", files)
+    _mined_this_run(d)
+    _check(BEFORE, "run-1", files)                       # the same list: the mark stays
+    with Ledger() as ledger, ledger.transaction():
+        ledger.conn.execute("UPDATE jobs SET updated_at = '1999-01-01T00:00:00Z'")   # run 1 ended long before
+    with Ledger() as ledger, ledger.transaction():
+        job = ledger.queue("ja", b, "user", None)
+        ledger.conn.execute("UPDATE jobs SET state = 'done' WHERE id = ?", (job,))
+        ledger.mark_new_files("ja", "2000-01-01T00:00:00Z")       # run 2's own mark
+    assert sorted(_check(RAISED, "run-2", files)["queued"]) == sorted([b, d])
+
+
+def test_a_new_files_mark_left_before_connects_first_look_is_taken_by_that_look():
+    # why: a first look records every word as the list holds it, the new episodes' own words included: a mark left
+    # before it (a new-files run before Connect had looked at any list) gives a later raise nothing
+    (a, fa), (b, fb), (d, fd) = _line()
+    files = {fa: ["眼鏡"], fb: ["老婆"], fd: ["眼鏡", "駐車場"]}
+    _mined_this_run(d)
+    assert _check(BEFORE, "run-1", files)["first"] is True
+    out = _check(RAISED, "run-2", files)
+    assert out["new"] == 3 and out["queued"] == [] and _level_jobs() == []

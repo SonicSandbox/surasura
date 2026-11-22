@@ -64,7 +64,8 @@ class TooBig(Exception):
 
 class Outbox:
     """The zip waiting to be sent: `path`, `nonce`, `sha256`, `size`, `created` (ISO), `language`, `zipped`
-    ({rid: report.json's sha256}), `removed`, `left_out`, `entries` ([(name, size)])."""
+    ({rid: report.json's sha256}), `removed`, `left_out`, `entries` ([(name, size)]), `flags` ({id: changed_ns}: the
+    flagged sentences it holds now) and `flag_lines` (every one What goes shows, ticked or not, each with its `id`)."""
 
     def __init__(self, path, meta):
         self.path = path
@@ -77,6 +78,8 @@ class Outbox:
         self.removed = list(meta.get("removed") or [])
         self.left_out = list(meta.get("left_out") or [])
         self.entries = [tuple(e) for e in meta.get("entries") or []]
+        self.flags = dict(meta.get("flags") or {})
+        self.flag_lines = list(meta.get("flag_lines") or [])
 
     def describe(self):
         """Every file that goes and its size (the scrubbed names, as zipped), then what's left out and why."""
@@ -88,10 +91,11 @@ class Outbox:
 
 class Result:
     """`outcome` (SENT · LIMIT · OFFLINE · BUSY · TOO_BIG · PAUSED · REFUSED), `id` (the report's #ID once sent),
-    `status` (the receiver's HTTP status, when it answered)."""
+    `status` (the receiver's HTTP status, when it answered), `nonce` (the zip's it was about: a zip written again for
+    What goes' ticks has a new one)."""
 
-    def __init__(self, outcome, rid=None, status=None):
-        self.outcome, self.id, self.status = outcome, rid, status
+    def __init__(self, outcome, rid=None, status=None, nonce=None):
+        self.outcome, self.id, self.status, self.nonce = outcome, rid, status, nonce
 
     def __repr__(self):
         return f"Result({self.outcome!r}, {self.id!r}, {self.status!r})"
@@ -229,10 +233,12 @@ def build(language, include_results=True, library=None, root=None, extra=None, n
                 pass
             raise
         was = waiting()                                              # the same reports again: the same nonce, so a
-        same = was is not None and was.zipped == made.zipped and was.removed == made.removed   # sent one keeps its #ID
+        same = (was is not None and was.zipped == made.zipped and was.removed == made.removed   # sent one keeps its #ID
+                and was.flags == made.flags)
         meta = {"nonce": was.nonce if same else secrets.token_hex(16), "sha256": digest, "size": size, "language": language,
                 "created": (now or datetime.datetime.now().astimezone()).isoformat(timespec="seconds"),
-                "zipped": made.zipped, "removed": made.removed, "left_out": made.left_out, "entries": made.entries}
+                "zipped": made.zipped, "removed": made.removed, "left_out": made.left_out, "entries": made.entries,
+                "flags": made.flags, "flag_lines": made.flag_lines}
         try:
             os.remove(meta_path)                                     # (the zip and its record are replaced together)
         except FileNotFoundError:
@@ -240,6 +246,43 @@ def build(language, include_results=True, library=None, root=None, extra=None, n
         os.replace(building, path)
         report._atomic_write(meta_path, report._json_bytes(meta))
         return Outbox(path, meta)
+
+
+def _refit(ob, keep):
+    """(Under _BUSY.) The waiting zip with only the flagged sentences `keep` (ids) of the ones What goes showed: written
+    again when that changes what it holds (`report.rewrite_flagged`; a new nonce, since its bytes are new). -> the
+    Outbox as it now is."""
+    keep = {i for i in keep if any(line.get("id") == i for line in ob.flag_lines)}
+    if keep == set(ob.flags):
+        return ob
+    if not keep and not ob.zipped:                                   # (refused before anything is written)
+        raise ValueError("nothing is ticked to send")
+    with open(ob.path, "rb") as f:                                   # (its other entries are copied as they are:
+        if hashlib.sha256(f.read()).hexdigest() != ob.sha256:        #  only the zip its record names)
+            raise ValueError("the waiting zip changed since it was made")
+    lines = [{k: v for k, v in line.items() if k not in ("id", "changed")} for line in ob.flag_lines
+             if line.get("id") in keep]
+    entries = report.rewrite_flagged(ob.path, ob.language, lines, ob.left_out)
+    with open(ob.path, "rb") as f:
+        body = f.read()
+    meta_path = os.path.join(os.path.dirname(ob.path), OUTBOX_META)
+    with open(meta_path, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+    meta.update(nonce=secrets.token_hex(16), sha256=hashlib.sha256(body).hexdigest(), size=len(body), entries=entries,
+                flags={line["id"]: line.get("changed") for line in ob.flag_lines if line.get("id") in keep})
+    report._atomic_write(meta_path, report._json_bytes(meta))
+    return Outbox(ob.path, meta)
+
+
+def refit(keep, nonce=None):
+    """What goes' ticks (`keep`: the flagged sentences' ids still ticked) onto the waiting zip, so *Open the zip* shows
+    what *Send* would send. `nonce`: the Outbox the page showed. Raises ValueError when nothing (or another zip) is
+    waiting, report.Unsafe. -> the Outbox as it now is (a new nonce when it changed)."""
+    with _BUSY:
+        ob = waiting()
+        if ob is None or (nonce is not None and ob.nonce != nonce):
+            raise ValueError("no report is waiting to be sent" if ob is None else "another report is waiting now")
+        return _refit(ob, keep)
 
 
 def discard(expect=None):
@@ -296,11 +339,12 @@ def _outcome(status):
     return REFUSED
 
 
-def send(name="", url=None, root=None, now=None, nonce=None):
+def send(name="", url=None, root=None, now=None, nonce=None, keep=None):
     """*Send* (the What goes page's) or *Send now*: the waiting zip to the receiver, once. `name`: the Discord name in
     the field as pressed (remembered; empty forgets it); `nonce`: the Outbox the page showed (another one waiting
-    instead is never sent). The 6th send of a day is refused before any request. Raises ValueError when nothing (or
-    another zip) is waiting. -> a Result."""
+    instead is never sent); `keep`: the flagged sentences still ticked there (`_refit` first; None: as it is). The 6th
+    send of a day is refused before any request. Raises ValueError when nothing (or another zip) is waiting, or when
+    nothing is left to send. -> a Result."""
     import requests
     with _BUSY:
         ob = waiting()
@@ -309,7 +353,9 @@ def send(name="", url=None, root=None, now=None, nonce=None):
         name = _clean_name(name)
         remember_name(name)
         if sent_today(now) >= PER_DAY:
-            return Result(LIMIT)
+            return Result(LIMIT, nonce=ob.nonce)
+        if keep is not None:
+            ob = _refit(ob, keep)
         with open(ob.path, "rb") as f:
             body = f.read()
         if hashlib.sha256(body).hexdigest() != ob.sha256:
@@ -318,17 +364,17 @@ def send(name="", url=None, root=None, now=None, nonce=None):
         try:
             got = requests.post(endpoint, data=body, headers=headers(ob, name), timeout=TIMEOUT, allow_redirects=False)
         except requests.RequestException:
-            return _logged(Result(OFFLINE), endpoint)
+            return _logged(Result(OFFLINE, nonce=ob.nonce), endpoint)
         if got.status_code not in (200, 201):
-            return _logged(Result(_outcome(got.status_code), status=got.status_code), endpoint)
+            return _logged(Result(_outcome(got.status_code), status=got.status_code, nonce=ob.nonce), endpoint)
         try:
             rid = got.json().get("id")
         except (ValueError, AttributeError):
             rid = None
         if not isinstance(rid, str) or not _ID.match(rid):
-            return _logged(Result(REFUSED, status=got.status_code), endpoint)
+            return _logged(Result(REFUSED, status=got.status_code, nonce=ob.nonce), endpoint)
         _sent(ob, rid, root, now)
-        return _logged(Result(SENT, rid, got.status_code), endpoint)
+        return _logged(Result(SENT, rid, got.status_code, nonce=ob.nonce), endpoint)
 
 
 def _logged(result, endpoint):
@@ -351,6 +397,13 @@ def _sent(ob, rid, root, now):
     data["day"] = day
     _save_state(data)
     report._clear(root or report.folder(), ob.zipped, ob.removed)
+    if ob.flags:                                                     # the flagged sentences it held: off the list now
+        try:
+            from app.services import flags
+            flags.clear_sent(ob.language, ob.flags)
+        except Exception as e:                                       # (sent all the same: they go with the next one)
+            path_utils.write_app_log(f"Send report: the flagged sentences sent couldn't be taken off the list "
+                                     f"({type(e).__name__})")
     kept = os.path.join(_folder(SENT_DIR), f"{rid}.zip")
     os.replace(ob.path, kept)
     stamp = (now or datetime.datetime.now().astimezone()).timestamp()

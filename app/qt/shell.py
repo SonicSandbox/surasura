@@ -242,14 +242,16 @@ class Services:
             return
         if getattr(self.gentle, "gentle", False):
             self._wake_connect()          # Haya-LD: its next step waited for this Generate (GENERATE_FIRST)
-        if outcome != "current":
-            return
-        resync = getattr(getattr(self.writer, "numbers", None), "resync", None)
-        if resync is not None:
-            try:
-                resync()
-            except Exception as e:
-                applog.log("shell", f"the numbers after a Generate: {e!r}")
+        numbers = getattr(self.writer, "numbers", None)
+        steps = (getattr(numbers, "resync", None),) if outcome == "current" else ()
+        # Kura-GS2: its snapshots are written after its plan (a move between read them early), by a run whose report
+        # failed too: read again at every end
+        for step in steps + (getattr(numbers, "read_growth", None),):
+            if step is not None:
+                try:
+                    step()
+                except Exception as e:
+                    applog.log("shell", f"the numbers after a Generate: {e!r}")
 
     @staticmethod
     def _wake_connect():

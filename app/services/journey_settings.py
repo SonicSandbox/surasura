@@ -17,6 +17,7 @@ reads as hidden (`preview.py`'s check: a value it doesn't know is "off").
 Off until the cut-over (`v3()`): J-CUT turns the door on (`journey_door.ON`), and with it these rows; until then
 Settings shows the old Journey rows and nothing here is called.
 """
+import importlib
 import os
 from collections.abc import Mapping
 
@@ -56,14 +57,16 @@ _OLD_SOURCE = {"off": "icon", "icon": "icon", "filename": "icon_name", "full": "
 
 
 def v3():
-    """Whether journey v3's settings are the ones Settings shows: `ON`, or the door's cut-over switch."""
+    """Whether journey v3's settings are the ones Settings shows: `ON`, or the door's own switch (`enabled()`: its `ON`,
+    or SURASURA_DOOR=1 for a run) — the page and its Settings turn on together."""
     if ON:
         return True
     try:
-        from app.services import journey_door
+        door = importlib.import_module("app.services.journey_door")
     except ImportError:
         return False
-    return bool(getattr(journey_door, "ON", False))
+    enabled = getattr(door, "enabled", None)
+    return bool(enabled() if callable(enabled) else getattr(door, "ON", False))
 
 
 def _get(settings, key, default=None):

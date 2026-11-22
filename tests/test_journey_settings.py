@@ -237,6 +237,17 @@ def test_the_cut_overs_switch_is_the_doors(monkeypatch):
     assert J.v3()
 
 
+def test_the_doors_run_switch_turns_these_rows_on_with_the_page(monkeypatch):
+    """SURASURA_DOOR=1 opens the v3 page for a run (the door's `enabled()`): its Settings are v3 with it, never the
+    old rows beside the new page."""
+    from app.services import journey_door
+    monkeypatch.setattr(journey_door, "ON", False)
+    monkeypatch.delenv(journey_door.ENV, raising=False)
+    assert not J.v3()
+    monkeypatch.setenv(journey_door.ENV, "1")
+    assert J.v3()
+
+
 def test_under_v3_every_setting_is_still_in_exactly_one_row_or_not_shown(v3):
     from tests import test_settings_catalog as T
     T.test_every_installed_placed_setting_is_in_exactly_one_row_or_not_shown()

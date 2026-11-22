@@ -639,6 +639,16 @@ def test_a_misreading_shorter_than_the_word_or_shifted_by_a_dropped_kana_is_stil
     assert (found["how"], found["form"]) == ("near_reading", form)
 
 
+@pytest.mark.parametrize("target, text, form", [
+    ("果物", "くうだものを買った。", "くうだもの"),
+    ("交通", "こおうつうが便利だ。", "こおうつう")])
+def test_a_misreading_with_a_kana_added_inside_its_first_piece_is_still_found_near(target, text, form):
+    """A long vowel slipped in after the first kana breaks the first piece and moves the piece left whole one place
+    right of where the reading holds it: the span's start is looked for before that place too, not only after."""
+    found = _target(_answer(text, targets=[target]))
+    assert (found["how"], found["form"]) == ("near_reading", form)
+
+
 def test_a_reading_found_by_its_text_still_starts_at_a_word_never_inside_one():
     """かお inside なかおやすみ (なか + おやすみ) starts mid-word: not 顔 (the scan finds the reading in the joined
     kana first, then keeps only a find at a word's start)."""

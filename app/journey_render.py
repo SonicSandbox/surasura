@@ -138,8 +138,8 @@ def sentences_of(row, per_word):
     if 0 < per_word <= 50:
         columns = _columns(per_word)
     else:                                       # All (or a hand-edited number past any list): the row's own columns
-        columns = [(f"Context {n}", f"Src {n}") for n in sorted(
-            int(k[8:]) for k in row if k.startswith("Context ") and k[8:].isdigit()) if not per_word or n <= per_word]
+        numbers = {int(k[8:]) for k in row if k.startswith("Context ") and k[8:].isdecimal()}   # "Context 01" is 1
+        columns = [(f"Context {n}", f"Src {n}") for n in sorted(numbers) if n and (not per_word or n <= per_word)]
     found = []
     for context, src in columns:
         text = _text(row.get(context))

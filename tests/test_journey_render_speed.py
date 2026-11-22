@@ -94,6 +94,10 @@ def test_the_sentences_are_the_lists_own_in_its_order_read_in_one_place(language
     assert jr.sentences_of(row, 10 ** 9) == kept and jr.sentences_of(row, 60) == kept     # a hand-edited 10**9: no 10**9 columns
     assert jr.sentences_of(dict(row, **{"Src 1": None}), 1) == [(lines[0], "")]
     assert jr.sentences_of({"Word": row["Word"]}, 0) == [] and jr.sentences_of({}, 3) == []
+    # Odd headers (a hand-made CSV): a Context 0, a Context 01 beside Context 1, a "Context ²" — none adds a line or
+    # stops the render; Context 01 is read as one column, never twice
+    odd = dict(row, **{"Context 0": "零。", "Context 01": lines[0], "Context ²": "二。"})
+    assert jr.sentences_of(odd, 0) == kept
 
 
 def test_the_stamp_is_the_render_time_in_milliseconds():

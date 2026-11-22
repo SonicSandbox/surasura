@@ -505,47 +505,44 @@ def _digits(text):
 
 
 class Pitch:
-    """A word's pitch (SPEC §5.1, ruled r4): unidic-lite's `aType` for a word it knows as one token (a memo by word, so
-    no engine bump); else Kanjium — the learner's own copy (`own_dicts.kanjium`) — else None, *No pitch data*, never
-    平板. Chinese: the tones of its pinyin. `tagger`: the run's fugashi tagger (None: made on first ask)."""
+    """A word's pitch as the card holds it (SPEC §5.1; one rule with the card's, 2026-11-22): the learner's own
+    Kanjium copy (`own_dicts.kanjium`, what Anki Miner fills PitchPosition from) first, then UniDic's `aType` by the
+    card's own fill (`modules/junban/readings.pitch`), else None, *No pitch data*, never 平板. Nothing new is shipped.
+    Chinese: the tones of its pinyin. `tagger`: the run's fugashi tagger (None: made on first ask)."""
 
     def __init__(self, language, tagger=None, kanjium=None):
         self.language = language
         self.tagger = tagger
         self.kanjium = kanjium
         self._read_for = None if kanjium is not None else set()   # the words read from the copy (None: all of it)
-        self._copy = kanjium is not None        # a Kanjium copy is there (handed in, or found by `_read`)
         self.memo = {}
 
     def prepare(self, pairs, memo=None):
-        """Fill the memo for these (word, reading) pairs in one go: a `WordMemo`'s first, then unidic for the rest,
-        then the learner's Kanjium copy read once, only when it exists and only for the words unidic missed (`of` then
-        only reads the memo)."""
+        """Fill the memo for these (word, reading) pairs in one go: UniDic's answers from a `WordMemo`, then UniDic for
+        the rest, then the learner's Kanjium copy read once (only when it exists) over them (`of` then only reads the
+        memo)."""
         if self.language != "ja":
             return
         pairs = list(dict.fromkeys(pairs))
         if memo is not None:
             self.memo.update(memo.pitch_of(pairs))
         fresh = [key for key in pairs if key not in self.memo]
-        missed = []
         for key in fresh:
-            if key not in self.memo:
+            try:
+                self.memo[key] = self._unidic(*key)
+            except Exception:
+                self.memo[key] = None
+        if memo is not None:                    # UniDic's answers only: the learner's copy is never kept in results/
+            memo.add_pitch({key: self.memo[key] for key in fresh})
+        self._read({word for word, _reading in pairs})          # then the copy over them, as the card holds it
+        if self.kanjium:
+            for key in pairs:
                 try:
-                    self.memo[key] = self._unidic(*key)
+                    found = self._kanjium(*key)
                 except Exception:
-                    self.memo[key] = None
-                if self.memo[key] is None:
-                    missed.append(key)
-        if missed:
-            self._read({word for word, _reading in missed})
-            for key in missed:
-                try:
-                    self.memo[key] = self._kanjium(*key)
-                except Exception:
-                    pass
-        if memo is not None:                    # unidic's answers only: a word the learner's copy filled (or missed,
-            held = set(missed) if self._copy else set()     # its read failing) is asked again, never kept
-            memo.add_pitch({key: self.memo[key] for key in fresh if key not in held})
+                    found = None
+                if found:
+                    self.memo[key] = found
 
     def _read(self, words):
         """Read the copy for the words not read yet (no copy: nothing read, every miss is *No pitch data*)."""
@@ -558,27 +555,21 @@ class Pitch:
         if self.kanjium is None:
             self.kanjium = {}
         if own_dicts.kanjium_path() is not None:
-            self._copy = True
             self.kanjium.update(own_dicts.kanjium(words=words))
         self._read_for |= words
 
     def _unidic(self, word, reading):
+        """UniDic's accent by the card's own rule (`modules/junban/readings.pitch`, Backfill's アクセント fill): one
+        dictionary word read as the list reads it — never a name, a cry or a part of a word. One rule for the page and
+        the card; without the module, no UniDic pitch (the copy's, or *No pitch data*)."""
+        try:
+            from modules.junban import readings
+        except Exception:
+            return None
         if self.tagger is None:
             import fugashi
             self.tagger = fugashi.Tagger()
-        nodes = [n for n in self.tagger(word)]
-        if len(nodes) != 1:
-            return None
-        node = nodes[0]
-        if getattr(node, "is_unk", False):
-            return None
-        feature = node.feature
-        accent = getattr(feature, "aType", None)
-        if not accent or accent == "*":
-            return None
-        kana = getattr(feature, "kana", None) or getattr(feature, "pron", None)
-        if reading and kana and _hira(kana) != _hira(reading) and getattr(feature, "lemma", word) != word:
-            return None
+        accent, _why = readings.pitch(word, reading, self.tagger)
         return _digits(accent) or None
 
     def _kanjium(self, word, reading):
@@ -596,14 +587,14 @@ class Pitch:
             tones = "".join(ch for ch in pinyin if ch in "12345")
             return tones or None
         key = (word, reading)
-        if key not in self.memo:
+        if key not in self.memo:                # the learner's copy first, then UniDic: the card's order
             try:
-                value = self._unidic(word, reading)
+                value = self._kanjium(word, reading)
             except Exception:
                 value = None
             if value is None:
                 try:
-                    value = self._kanjium(word, reading)
+                    value = self._unidic(word, reading)
                 except Exception:
                     value = None
             self.memo[key] = value

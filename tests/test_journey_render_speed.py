@@ -255,51 +255,42 @@ def test_no_kanjium_copy_is_never_opened_and_a_miss_is_no_pitch(tmp_path, monkey
     assert pitch.of("ぬるぽ語", "ヌルポゴ") is None and pitch.of("準備", "ジュンビ")
 
 
-def test_the_kanjium_copy_is_read_only_for_the_words_unidic_missed(tmp_path, monkeypatch):
+def test_the_page_holds_the_cards_pitch_the_copy_first_then_the_cards_unidic_rule(tmp_path, monkeypatch):
+    # One rule with the card (Anki Miner fills PitchPosition from Kanjium; Backfill's アクセント fill takes UniDic only
+    # for an empty field, by modules/junban/readings.pitch): where the two disagree the page shows the card's.
     folder = tmp_path / "pitch" / "kanjium-pitch"
     folder.mkdir(parents=True)
-    (folder / "source.txt").write_text("﻿準備\tじゅんび\t1\nぬるぽ語\tヌルポゴ\t(名)2,0\n他\tた\t1\n",
-                                       encoding="utf-8")
+    (folder / "source.txt").write_text("準備\tじゅんび\t(名)3\nぬるぽ語\tヌルポゴ\t(名)2,0\n他\tた\t1\n",
+                                       encoding="utf-8")         # 準備 3 here, UniDic's 1: the copy must win
     monkeypatch.setenv("ANKI_MINER_HOME", str(tmp_path))
-    asked = []
-    real = own_dicts.kanjium
-
-    def spy(root=None, words=None):
-        asked.append(set(words))
-        return real(root, words)
-    monkeypatch.setattr(own_dicts, "kanjium", spy)
+    readings = pytest.importorskip("modules.junban.readings")
     pitch = jr.Pitch("ja")
-    pitch.prepare([("準備", "ジュンビ"), ("ぬるぽ語", "ヌルポゴ")])
-    assert asked == [{"ぬるぽ語"}]                                    # unidic knows 準備: not asked for
-    assert pitch.of("ぬるぽ語", "ヌルポゴ") == "k:2,0"
+    pitch.prepare([("準備", "ジュンビ"), ("ぬるぽ語", "ヌルポゴ"), ("授業", "ジュギョウ"), ("東京", "トウキョウ")])
+    assert pitch.of("準備", "ジュンビ") == "k:3" and pitch.of("ぬるぽ語", "ヌルポゴ") == "k:2,0"
+    card, _why = readings.pitch("授業", "ジュギョウ", pitch.tagger)
+    assert card and pitch.of("授業", "ジュギョウ") == card                # not in the copy: the card's UniDic rule
+    assert pitch.of("東京", "トウキョウ") is None                       # a name: no UniDic pitch, as on the card
     assert own_dicts.kanjium(str(tmp_path), words={"他"}) == {"他": {"た": "1"}}
-    # The memo keeps unidic's answers only: the copy's pitch is the learner's own data, and results/ goes out with
-    # Send report when its tick is on — so a warm render reads the copy again for the miss, never the memo.
+    # The memo keeps UniDic's answers only: the copy is the learner's own data, and results/ goes out with Send
+    # report when its tick is on — a warm render reads the copy again and still shows the card's pitch.
     path = str(tmp_path / jr.WORD_MEMO)
     memo = jr.WordMemo(path, *jr.memo_keys("ja"))
     jr.Pitch("ja").prepare([("準備", "ジュンビ"), ("ぬるぽ語", "ヌルポゴ")], memo=memo)
     memo.save()
-    held = json.load(open(path, encoding="utf-8"))["p"]
-    assert list(held) == ["準備	ジュンビ"] and "2,0" not in open(path, encoding="utf-8").read()
-    asked.clear()
+    assert "k:" not in open(path, encoding="utf-8").read()
     warm = jr.Pitch("ja")
     warm.prepare([("準備", "ジュンビ"), ("ぬるぽ語", "ヌルポゴ")], memo=jr.WordMemo(path, *jr.memo_keys("ja")))
-    assert asked == [{"ぬるぽ語"}] and warm.of("ぬるぽ語", "ヌルポゴ") == "k:2,0"
+    assert warm.of("準備", "ジュンビ") == "k:3" and warm.of("ぬるぽ語", "ヌルポゴ") == "k:2,0"
 
 
-def test_a_memo_written_while_a_key_could_not_be_read_is_never_served(tmp_path):
-    # memo_keys says "?" when it can't read a part (unidic's file, the table): a memo saved under "?" must not answer
-    # the next render that also can't read it — the part may have changed meanwhile.
-    path = str(tmp_path / jr.WORD_MEMO)
-    first = jr.WordMemo(path, "?", "?")
-    first.meaning("準備", "ジュンビ", "準備"), first.pitch_of([("準備", "ジュンビ")])    # asked, so the save keeps them
-    first.add_meaning("準備", "ジュンビ", "準備", '"old"')
-    first.add_pitch({("準備", "ジュンビ"): "0"})
-    first.save()
-    assert json.load(open(path, encoding="utf-8"))["m"]                # written: the next one must still refuse it
-    again = jr.WordMemo(path, "?", "?")
-    assert again.meaning("準備", "ジュンビ", "準備") is None and again.pitch_of([("準備", "ジュンビ")]) == {}
-    assert ":%d" % jr.MEMO_FORMAT in jr.memo_keys("ja")[0]          # a change to how a meaning is written: no memo
+def test_without_junban_a_word_has_only_the_copys_pitch_and_the_page_still_renders(monkeypatch):
+    # Junban is a module: the core render must run without it (no UniDic pitch then, never an error).
+    import sys
+    monkeypatch.setitem(sys.modules, "modules.junban", None)
+    pitch = jr.Pitch("ja", kanjium={})
+    pitch.prepare([("準備", "ジュンビ")])
+    assert pitch.of("準備", "ジュンビ") is None
+    assert jr.build("ja", _rows("ja", 2), _stats(2), pitch=jr.Pitch("ja", kanjium={})).chunks
 
 
 # --- the shipped tables, streamed ------------------------------------------------------------------------------- #

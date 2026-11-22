@@ -295,6 +295,27 @@ def test_a_waiting_clear_of_a_mark_cleared_since_is_stale_and_one_older_than_the
     assert answer["stale"] == [known] and answer["undo_id"] is None and known not in word_marks.marks(lang)
 
 
+def test_a_waiting_mark_on_a_word_that_lost_its_mark_outside_this_surasura_is_stale_only_if_a_list_was_written_since(
+        opened, lang):
+    # the page showed Known and queued Ignore; then something other than this Surasura (an Anki sync, an earlier
+    # window) took the word out of the known words: no change of ours to go by, so any list written after the press
+    # makes it stale (the word has no mark now: either file could have taken it); lists all older than the press: it lands
+    known, name = NEW[lang]
+    word_marks.apply(lang, [(known, "known"), (name, "ignore")])        # (both lists there: a missing one is "now")
+    word_marks.apply(lang, [(known, None)])
+    word_marks._CHANGED[lang].pop(word_marks._norm(known), None)          # (not this Surasura's change)
+    pressed = _ms(time.time_ns()) - 5_000                                 # the lists written after the press
+    answer = _post(opened, "words/mark", {"lang": lang, "marks": [{"word": known, "mark": "ignore", "was": "known",
+                                                                   "at": pressed}]})[1]
+    assert answer["stale"] == [known] and known not in word_marks.marks(lang)
+    older = (pressed - 60_000) * 1_000_000
+    for path in (anki_sync._known_path(lang), word_lists.list_path("ignore", lang)):
+        os.utime(path, ns=(older, older))                                 # both lists last written before it
+    answer = _post(opened, "words/mark", {"lang": lang, "marks": [{"word": known, "mark": "ignore", "was": "known",
+                                                                   "at": pressed}]})[1]
+    assert answer["stale"] == [] and word_marks.marks(lang)[known] == "ignore"
+
+
 def test_a_mark_the_known_words_lock_refuses_is_busy_and_the_page_keeps_it(opened, lang, monkeypatch):
     monkeypatch.setattr(anki_sync, "hold_known_words",
                         lambda language, verb: (None, ("Anki is updating your known words: try again soon.",)))

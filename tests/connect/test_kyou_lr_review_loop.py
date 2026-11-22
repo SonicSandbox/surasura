@@ -573,3 +573,90 @@ def test_a_swap_queue_that_cant_be_read_leaves_the_lists_recorded_and_queues_at_
     os.remove(path)
     _sync("ja")
     assert _waiting("ja") == [(swap, 2)]
+
+
+# --- Still learning through Replace and the Graduated merge -------------------------------------------------------- #
+def _replace(language, dry_run=False):
+    result = anki_sync.replace(language, URL, [DECK], [], include_suspended=False, dry_run=dry_run)
+    assert not result.error, result.error
+    return result
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_replace_keeps_a_still_learning_word_still_learning_until_a_new_card(anki, language):
+    # why (WL ⑦): Replace starts the known words over from Anki — the same card a word was taken back from must not
+    # make it known again there, and the mark must survive the start-over (a later sync holds it back too)
+    word, other, *_ = WORDS[language]
+    anki.add(1, word)
+    anki.add(2, other)
+    _sync(language)
+    assert word_marks.apply(language, [(word, "learning")]).done
+    dry = _replace(language, dry_run=True)
+    assert dry.added == 1 and dry.total_after == 1                      # the numbers its confirmation states
+    _replace(language)
+    assert _known(language) == {other} and word in word_marks.learning(language)
+    _sync(language, full=True)
+    assert word not in _known(language)
+    anki.add(3, word, note=int(time.time() * 1000) + 60_000)          # a new card for it, made after
+    _replace(language)
+    assert word in _known(language) and word not in word_marks.learning(language)
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_new_card_makes_a_still_learning_word_known_while_its_old_studied_card_stays(anki, language):
+    # why: the sync reads each word from the first note naming it — the old card, held back; the new card beside it
+    # (made after the mark) must still make the word known, and its entry names that new card
+    word, *_ = WORDS[language]
+    anki.add(1, word)
+    _sync(language)
+    assert word_marks.apply(language, [(word, "learning")]).done
+    new_note = int(time.time() * 1000) + 60_000
+    anki.add(3, word, note=new_note)
+    _sync(language, full=True)
+    assert word in _known(language)
+    assert [e.get("ankiNoteId") for e in _entries(language) if anki_sync._is_known(e)] == [new_note]
+
+
+def test_replace_keeps_a_past_graduates_word_still_learning(anki):
+    # why (R11): a past Graduate's word is kept by every replacer — but one the learner took back to Still learning
+    # stays not known: kept, never raised or added back known
+    word, other, *_ = WORDS["ja"]
+    anki.add(2, other)
+    _write_graduated("ja", [word])
+    from app import graduated_merge
+    assert graduated_merge.merge("ja")["added"] == 1
+    assert word_marks.apply("ja", [(word, "learning")]).done
+    _replace("ja")
+    assert word not in _known("ja") and word in word_marks.learning("ja")
+    assert any(e.get("source") == anki_sync.GRADUATED_SOURCE for e in _entries("ja"))    # kept, as it was turned
+    path = os.path.join(get_user_files_path("ja"), "KnownWord.json")    # Migaku's and Jiten's replace: the same rule
+    final, _kept, _dropped = anki_sync.replaced_words(path, "ja", [anki_sync._entry(other, None, "ja", "now")])
+    assert {w["dictForm"] for w in final if anki_sync._is_known(w)} == {other}
+    word_marks.apply("ja", [(word, None)])                              # the mark cleared: known again, as it was
+    assert word in _known("ja")
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_graduated_merge_never_raises_a_still_learning_word(anki, language):
+    # why (WL ⑦): the one-time merge raises a listed word's not-known entries to known — never one the learner took
+    # back to Still learning (it is marked a Graduate's word, its status kept); the list's other words are added known
+    word, other, *_ = WORDS[language]
+    anki.add(1, word)
+    _sync(language)
+    assert word_marks.apply(language, [(word, "learning")]).done
+    _write_graduated(language, [word, other])
+    from app import graduated_merge
+    out = graduated_merge.merge(language)
+    assert out["error"] is None and out["raised"] == 0 and out["added"] == 1
+    assert _known(language) == {other} and word in word_marks.learning(language)
+    _sync(language, full=True)
+    assert word not in _known(language)
+    word_marks.apply(language, [(word, None)])
+    assert word in _known(language)
+
+
+def _write_graduated(language, words):
+    path = os.path.join(get_user_files_path(language), "GraduatedList.txt")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(words) + "\n")

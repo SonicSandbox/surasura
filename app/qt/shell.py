@@ -2103,7 +2103,36 @@ class ShellWindow(QMainWindow):
         tray.open()
         if self.arrival_numbers is not None:
             self.arrival_numbers.recheck()
+
+    def show_arrival(self, key, found=None):
+        """(Mado-SH) A search hit on a New arrival: Current, the tray opened — never closed when it is open (the
+        inset's click toggles; a hit only shows) — at the arrival `key` (`ArrivalsTray.seek`: `found(parent, rect_of)`
+        once its row shows). -> False without a tray (Current alone)."""
+        if self.current_tab() != "current":
+            self.show_tab("current")
+        tray = getattr(self, "arrivals_tray", None)
+        if tray is None:
+            return False
+        tray.seek(key, found)
+        if not tray.open_now():
+            self.open_arrivals()
+        return True
     # --- end W3.2 Q1
+
+    # --- W3.2 Q2: Goal's sheet at a title (Mado-SH) ------------------------------------------------------------ #
+    def show_goal(self, work_id, found=None):
+        """(Mado-SH) A search hit on a Goal title: Current, Goal's sheet opened (left open when it is) at the title's
+        tile (`GoalSheet.show_work`), `found(parent, rect_of)` with the tile's place. -> False without the sheet."""
+        if self.current_tab() != "current":
+            self.show_tab("current")
+        sheet = getattr(self, "goal_sheet", None)
+        if sheet is None:
+            return False
+        tile = sheet.show_work(work_id)
+        if tile is not None and found is not None:
+            found(sheet.body, lambda: tile.geometry() if not sip.isdeleted(tile) and tile.isVisible() else None)
+        return True
+    # --- end W3.2 Q2
     # --- W3.2 P0: a language switch: the pages follow that language's library ---------------------------------- #
     def _ask_language(self, language, then):
         """(This thread.) Settings › Language moved: the services follow on a worker (`Services.language_changed`),

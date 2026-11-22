@@ -3998,7 +3998,20 @@ class Steps:
             with self._open(lang) as store:
                 library.notes_gone(store, gone)
         self._gone_looked.add(lang)         # only once the look is done: one that raised is asked again
+        self._ask_why(lang, gone)
         return gone
+
+    def _ask_why(self, lang, gone):
+        """Kyou-DW: the look's gone notes remembered as deleted by you (`deleted.seen`: *Needs you* asks why), and once
+        ever the deletes from before it asked. Never a reason for the look to fail (logged, asked again next run)."""
+        try:
+            from app.connect import deleted
+            with self._open(lang) as store:
+                deleted.seen(lang, gone, store)
+        except (Wait, Needs):
+            pass
+        except Exception:
+            log.warning("Connect couldn't keep the cards you deleted to ask why; it looks again next run", exc_info=True)
 
     def name_media(self, lang, job, picked, lines):
         """P2.4-4: the batch's clip and picture renamed by the line (`media_names.rename`). The field mapping is this

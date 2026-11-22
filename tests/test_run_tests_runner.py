@@ -301,6 +301,156 @@ def test_shard_times_are_merged_into_the_record(tmp_path):
     assert run_tests._read_times(root) == {"tests/test_a.py": 1.5, "tests/test_b.py": 2.25}
 
 
+def _write_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+
+def test_the_tracked_times_pack_a_copy_with_none_of_its_own_and_its_own_win_where_both_have_a_file(tmp_path):
+    """GitHub and a fresh copy have no debug/ times: they pack by tests/test_times.json, not by file size (the slowest
+    of four size-packed shards took 27-38 min against the fastest's 20-26). A copy's own --all times are newer, on its
+    own machine: they win for the files they have; the tracked ones fill the rest."""
+    root = str(tmp_path)
+    _core(root, {"test_store.py": 10, "test_plan.py": 10, "test_kana.py": 90000})
+    _write_json(os.path.join(root, "tests", "test_times.json"),
+                {"tests/test_store.py": 60, "tests/test_plan.py": 50, "tests/test_kana.py": 1})
+    shards = run_tests._shards(root, run_tests._core_files(root), 2)
+    assert ["tests/test_store.py"] in shards, "packed by the tracked times: by size, test_kana (~9 s) would sit alone"
+    _write_json(os.path.join(root, "debug", "test_times.json"), {"tests/test_kana.py": 200})
+    assert run_tests._read_times(root) == {"tests/test_store.py": 60, "tests/test_plan.py": 50,
+                                           "tests/test_kana.py": 200}
+    assert ["tests/test_kana.py"] in run_tests._shards(root, run_tests._core_files(root), 2)
+
+
+def test_a_bad_entry_in_the_times_drops_that_file_alone(tmp_path):
+    """One hand-edited null, string, NaN or negative must not send every shard back to packing by size."""
+    root = str(tmp_path)
+    os.makedirs(os.path.join(root, "tests"))
+    with open(os.path.join(root, "tests", "test_times.json"), "w", encoding="utf-8") as f:
+        f.write('{"tests/test_a.py": null, "tests/test_b.py": "slow", "tests/test_c.py": NaN, "tests/test_d.py": -1,'
+                ' "tests/test_e.py": true, "tests/test_f.py": Infinity, "tests/test_g.py": 12.5, "tests/test_h.py": 3}')
+    assert run_tests._read_times(root) == {"tests/test_g.py": 12.5, "tests/test_h.py": 3.0}
+
+
+def test_save_times_without_git_on_the_path_writes_nothing(tmp_path, monkeypatch, capsys):
+    root = str(tmp_path)
+    _core(root, {"test_store.py": 10})
+    _write_json(os.path.join(root, "debug", "test_times.json"), {"tests/test_store.py": 5.0})
+
+    def no_git(cmd, **kwargs):
+        raise FileNotFoundError(2, "git")
+    monkeypatch.setattr(run_tests.subprocess, "run", no_git)
+    assert run_tests.save_times(root) == 2
+    assert not os.path.exists(os.path.join(root, "tests", "test_times.json"))
+    assert "nothing written" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("broken", ["{not json", "[1, 2]", '{"tests/test_a.py": "slow"}'])
+def test_a_broken_tracked_times_file_packs_by_this_copys_times_or_by_size(tmp_path, broken):
+    root = str(tmp_path)
+    with open(os.path.join(root, "test_times.json"), "w", encoding="utf-8") as f:
+        f.write(broken)
+    os.makedirs(os.path.join(root, "tests"))
+    os.replace(os.path.join(root, "test_times.json"), os.path.join(root, "tests", "test_times.json"))
+    assert run_tests._read_times(root) == {}
+    _write_json(os.path.join(root, "debug", "test_times.json"), {"tests/test_b.py": 2.5})
+    assert run_tests._read_times(root) == {"tests/test_b.py": 2.5}
+
+
+def test_save_times_writes_only_the_core_test_files_git_tracks(tmp_path, capsys):
+    """A real repository. The copy's times also name a local-only suite's file (git-ignored, as tests/parsing/ is), a
+    file deleted since, and a helper: only the tracked core test files reach the tracked file, to a tenth of a second,
+    sorted, with LF line ends (one diff line a file); a core file with no time packs by size."""
+    root = str(tmp_path)
+    _git(root, "init", "-q", "-b", "base")
+    _git(root, "config", "core.autocrlf", "true")
+    _core(root, {"test_store.py": 10, "connect/test_inbox.py": 10, "test_kana.py": 10, "helpers.py": 10,
+                 "parsing/test_cases.py": 10})
+    with open(os.path.join(root, ".gitignore"), "w", encoding="utf-8") as f:
+        f.write("tests/parsing/\ndebug/\n")
+    _git(root, "add", ".gitignore", "tests")
+    _git(root, "commit", "-q", "-m", "base")
+    _write_json(os.path.join(root, "debug", "test_times.json"),
+                {"tests/test_store.py": 61.04, "tests/connect/test_inbox.py": 3.36, "tests/helpers.py": 1.0,
+                 "tests/parsing/test_cases.py": 38.0, "tests/test_gone.py": 4.0})
+    assert run_tests.save_times(root) == 0
+    path = os.path.join(root, "tests", "test_times.json")
+    with open(path, encoding="utf-8") as f:
+        assert json.load(f) == {"tests/connect/test_inbox.py": 3.4, "tests/test_store.py": 61.0}
+    with open(path, "rb") as f:
+        raw = f.read()
+    assert b"\r" not in raw and raw.index(b"connect") < raw.index(b"test_store") and raw.endswith(b"}\n")
+    out = capsys.readouterr().out
+    assert "2 files' times" in out and "1 core file(s) without one" in out and "3 name(s) left out" in out
+    assert b"parsing" not in raw, "a local-only suite's names never go public"
+
+
+def test_save_times_with_no_times_of_its_own_or_no_git_writes_nothing(tmp_path, capsys):
+    """No debug/ times (no --all ran here): the tracked file is left as it is — never rewritten from itself. No git (or
+    not a repository): nothing can say what is tracked, so nothing is written."""
+    root = str(tmp_path / "repo")
+    os.makedirs(root)
+    _git(root, "init", "-q", "-b", "base")
+    _core(root, {"test_store.py": 10})
+    _git(root, "add", "tests")
+    _git(root, "commit", "-q", "-m", "base")
+    assert run_tests.save_times(root) == 2
+    assert not os.path.exists(os.path.join(root, "tests", "test_times.json"))
+    other = str(tmp_path / "plain")
+    _core(other, {"test_store.py": 10})
+    _write_json(os.path.join(other, "debug", "test_times.json"), {"tests/test_store.py": 5.0})
+    assert run_tests.save_times(other) == 2 and not os.path.exists(os.path.join(other, "tests", "test_times.json"))
+    assert capsys.readouterr().out.count("nothing written") == 2
+
+
+def test_save_times_that_cannot_replace_the_file_keeps_the_old_one_and_fails(tmp_path, monkeypatch, capsys):
+    """Windows: an editor or a scanner holding tests/test_times.json fails the move: the old file stays whole, no .tmp
+    is left beside it, and the command says so (exit 2) instead of a traceback."""
+    root = str(tmp_path)
+    _git(root, "init", "-q", "-b", "base")
+    _core(root, {"test_store.py": 10})
+    _git(root, "add", "tests")
+    _git(root, "commit", "-q", "-m", "base")
+    _write_json(os.path.join(root, "tests", "test_times.json"), {"tests/test_store.py": 7.0})
+    _write_json(os.path.join(root, "debug", "test_times.json"), {"tests/test_store.py": 9.0})
+
+    def held(src, dst):
+        raise PermissionError(13, "the file is held open")
+    monkeypatch.setattr(run_tests.os, "replace", held)
+    assert run_tests.save_times(root) == 2
+    with open(os.path.join(root, "tests", "test_times.json"), encoding="utf-8") as f:
+        assert json.load(f) == {"tests/test_store.py": 7.0}
+    assert not os.path.exists(os.path.join(root, "tests", "test_times.json.tmp"))
+    assert "could not be written" in capsys.readouterr().out
+
+
+def test_main_with_save_times_saves_them_and_runs_no_test(monkeypatch):
+    seen = []
+    monkeypatch.setattr(run_tests, "save_times", lambda root: seen.append(root) or 0)
+    monkeypatch.setattr(run_tests.subprocess, "run", lambda *a, **k: pytest.fail("no test run for --save-times"))
+    monkeypatch.setattr(sys, "argv", ["run_tests.py", "--save-times"])
+    with pytest.raises(SystemExit) as exit_:
+        run_tests.main()
+    assert exit_.value.code == 0 and seen == [os.path.dirname(os.path.abspath(run_tests.__file__))]
+
+
+def test_the_tracked_times_file_names_only_test_files_git_would_track():
+    """tests/test_times.json is public: a name git ignores (tests/parsing/ is local only) must never be in it. A file
+    deleted since the last save may linger (it packs nothing); --save-times drops it at the next train."""
+    root = os.path.dirname(os.path.abspath(run_tests.__file__))
+    with open(os.path.join(root, "tests", "test_times.json"), encoding="utf-8") as f:
+        times = json.load(f)
+    assert times and all(isinstance(v, (int, float)) and v >= 0 for v in times.values())
+    assert all(k.startswith("tests/") and os.path.basename(k).startswith("test_") and k.endswith(".py") for k in times)
+    ignored = subprocess.run(["git", "-c", "core.quotepath=false", "check-ignore", "--no-index", "--stdin"], cwd=root,
+                             input="\n".join(times), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             encoding="utf-8")
+    assert ignored.returncode in (0, 1), "git check-ignore itself failed"
+    assert ignored.stdout.split() == []
+    assert not any(k.startswith("tests/parsing/") for k in times)
+
+
 def test_the_core_suite_runs_in_shards_beside_the_module_suites(tmp_path, monkeypatch, capsys):
     """Every shard and every module suite run at the same time; the summary still counts suites (core + modules), so
     'ALL 2 SUITES PASSED' reads as it always has."""
@@ -387,12 +537,20 @@ def test_the_shards_of_a_split_hold_every_core_file_exactly_once(tmp_path):
     assert shards == [run_tests._shard_of(root, f"{i}/3") for i in (1, 2, 3)], "every job packs it the same way"
 
 
-def test_this_checkout_splits_into_four_shards_holding_every_test_file():
-    """The real tests/ folder, as pr.yml splits it. pytest also collects *_test.py by default: none may exist here,
-    or the shards (test_*.py only) would skip it where `pytest tests` ran it."""
+def _pr_shard_count(root):
+    with open(os.path.join(root, ".github", "workflows", "pr.yml"), encoding="utf-8") as f:
+        matrix = f.read().split("\n  shards:\n", 1)[1].split("        shard: [", 1)[1].split("]", 1)[0]
+    return len(matrix.split(","))
+
+
+def test_this_checkout_splits_into_pr_ymls_shards_holding_every_test_file():
+    """The real tests/ folder, as pr.yml splits it (by the tracked times). pytest also collects *_test.py by default:
+    none may exist here, or the shards (test_*.py only) would skip it where `pytest tests` ran it."""
     root = os.path.dirname(os.path.abspath(run_tests.__file__))
     files = run_tests._core_files(root)
-    shards = [run_tests._shard_of(root, f"{i}/4") for i in (1, 2, 3, 4)]
+    count = _pr_shard_count(root)
+    assert count == 8
+    shards = [run_tests._shard_of(root, f"{i}/{count}") for i in range(1, count + 1)]
     assert sorted(sum(shards, [])) == files and all(shards)
     stray = [os.path.join(d, n) for d, _, names in os.walk(os.path.join(root, "tests"))
              for n in names if n.endswith("_test.py") and "__pycache__" not in d]
@@ -462,7 +620,7 @@ def test_pr_yml_runs_every_shard_once_and_one_tests_job_reads_them_all():
     root = os.path.dirname(os.path.abspath(run_tests.__file__))
     with open(os.path.join(root, ".github", "workflows", "pr.yml"), encoding="utf-8") as f:
         text = f.read()
-    shards = text.split("\n  shards:\n", 1)[1].split("\n  tests:\n", 1)[0]
+    shards = text.split("\n  shards:\n", 1)[1].split("\n  modules:\n", 1)[0]
     matrix = shards.split("matrix:\n", 1)[1].split("\n    steps:", 1)[0]
     lines = [line.strip() for line in matrix.splitlines() if line.strip() and not line.strip().startswith("#")]
     assert len(lines) == 1 and lines[0].startswith("shard: ["), "one matrix dimension: the shard"
@@ -471,9 +629,35 @@ def test_pr_yml_runs_every_shard_once_and_one_tests_job_reads_them_all():
     assert "run: python run_tests.py --shard ${{ matrix.shard }}/${{ strategy.job-total }}" in shards
     assert "fail-fast: false" in shards
     tests = text.split("\n  tests:\n", 1)[1].split("\n  unreview:\n", 1)[0]
-    assert "needs: [changes, shards]" in tests
+    assert "needs: [changes, shards, modules]" in tests
     assert "if: ${{ always() && needs.changes.outputs.code != 'false' }}" in tests
-    assert 'test "$SHARDS" = success' in tests and "SHARDS: ${{ needs.shards.result }}" in tests
+    assert 'test "$SHARDS" = success && test "$MODULES" = success' in tests
+    assert "SHARDS: ${{ needs.shards.result }}" in tests and "MODULES: ${{ needs.modules.result }}" in tests
+
+
+def test_pr_yml_runs_every_public_module_suite_with_the_shards_install():
+    """GitHub ran no module suite before 2026-11-21 (Junban's 1,941 tests, YouTube's 459). Every module suite this
+    repository tracks runs in the `modules` job, each in its own pytest process as --all runs it, the second even after
+    a red first; the job installs exactly what the shards install, so a pin moved in one place only shows here."""
+    root = os.path.dirname(os.path.abspath(run_tests.__file__))
+    with open(os.path.join(root, ".github", "workflows", "pr.yml"), encoding="utf-8") as f:
+        text = f.read()
+    shards = text.split("\n  shards:\n", 1)[1].split("\n  modules:\n", 1)[0]
+    modules = text.split("\n  modules:\n", 1)[1].split("\n  tests:\n", 1)[0]
+    tracked = subprocess.run(["git", "-c", "core.quotepath=false", "ls-files", "--", "modules"], cwd=root,
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, encoding="utf-8")
+    assert tracked.returncode == 0, "git ls-files failed"
+    suites = sorted({"/".join(p.split("/")[:3]) for p in tracked.stdout.split()
+                     if len(p.split("/")) > 3 and p.split("/")[2] == "tests"})
+    assert suites == ["modules/junban/tests", "modules/youtube_downloader/tests"]
+    runs = [line.strip() for line in modules.splitlines() if line.strip().startswith("run: python -m pytest")]
+    assert runs == [f"run: python -m pytest {suite} -v -ra -p no:cacheprovider" for suite in suites]
+    assert modules.count("if: ${{ !cancelled() }}") == len(suites) - 1
+    assert "needs: changes" in modules and "if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}" in modules
+
+    def install(job):
+        return job.split("- name: Install (the versions the release is built with)\n", 1)[1].split("- name:", 1)[0]
+    assert install(modules) == install(shards) and "pytest==" in install(shards)
 
 
 @pytest.mark.parametrize("code, words", [(3221225477, "exit 0xC0000005, an access violation"),

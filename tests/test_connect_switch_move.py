@@ -273,7 +273,7 @@ def test_shelved_whose_record_cant_be_read_is_empty(monkeypatch, capsys):
 
 def _anki_busy_then(monkeypatch, answers):
     """`undo.act` answering in turn (an exception raised), Anki's write lock held by a live program meanwhile."""
-    from app.connect import connect_window, undo
+    from app.connect import undo
     acts = []
 
     def act(settings, language, job=None, shelf_run=None, confirm=False):
@@ -283,9 +283,9 @@ def _anki_busy_then(monkeypatch, answers):
             raise answer
         return answer
     monkeypatch.setattr(undo, "act", act)
-    monkeypatch.setattr(connect_window, "writer_busy", lambda: True)
-    monkeypatch.setattr(connect_window, "update_waits", lambda: False)
-    monkeypatch.setattr(connect_window, "RETRY_GAP_S", 0.05)
+    monkeypatch.setattr(undo, "writer_busy", lambda: True)
+    monkeypatch.setattr(undo, "update_waits", lambda: False)
+    monkeypatch.setattr(undo, "RETRY_GAP_S", 0.05)
     return acts
 
 
@@ -319,10 +319,10 @@ def test_put_back_without_a_waiting_callback_logs_the_waiting_line(monkeypatch):
 def test_put_back_returns_the_reason_of_each_restore_point_not_put_back(monkeypatch):
     """A skipped act and a failing one each give their reason (the caller asks "turn it off anyway?" with them); the
     next restore point is still tried."""
-    from app.connect import connect_window, switch
+    from app.connect import switch, undo
     _write_settings('{"target_language": "ja", "connect_enabled": true}')
     acts = _anki_busy_then(monkeypatch, [{"skipped": "Anki isn't open"}, RuntimeError("the deck is gone"), {"back": 2}])
-    monkeypatch.setattr(connect_window, "writer_busy", lambda: False)
+    monkeypatch.setattr(undo, "writer_busy", lambda: False)
     lines = []
     failed = switch.put_back({"ja": (3, ["run-a", "run-b"]), "zh": (2, ["run-c"])}, log=lines.append,
                              waiting=lambda: lines.append("waiting"))

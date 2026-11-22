@@ -234,6 +234,23 @@ def test_a_journey_that_lacks_the_episode_still_ticks_and_the_bar_says_why(lib_w
                       strings.JOURNEY_NOT_YET.format(ep=episode.label))
 
 
+@pytest.mark.parametrize("step, key", [("words", "words"), ("watch", "watch")])
+def test_a_card_shown_before_the_first_view_names_up_next_once_that_view_lands(lib_world, step, key):
+    # FLAKES (Flake-F4; GitHub core 2/8 three times): under load the card was shown before the reader's first view, and
+    # that view's repaint named the presses from the page's view before it — no Up Next — so *Words* opened the
+    # journey on no episode and *Watch* lost its episode. The order is played here by hand, no timing in it
+    win = lib_world
+    _up(win)
+    view = win._guide_view
+    win.show_library(view._replace(rows=()))                     # the page as it is before the first view
+    c = _shown(win, facts(journey_opened=step == "watch"))
+    assert c.card[1] == step and win._up_next() is None
+    win.show_library(view)                                       # the first view with Current's rows
+    _row, ep = win._up_next()
+    assert c.presses[0][0] == key
+    assert c.primary.text() == strings.PATH_PRESS[key][0].format(ep=ep.label)
+
+
 def test_with_no_journey_on_disk_the_press_says_so_and_ticks_nothing(lib_world, monkeypatch):
     win = lib_world
     monkeypatch.setattr(win.services, "open_journey", lambda *file: False)

@@ -56,7 +56,7 @@ class FakeSettings:
 
 class FakeApi:
     """`setup_wizard`'s contract: `should_open`, `preselect`, `writes`, `save`, `finish`, `anki_look`, `first_sync`,
-    `library_rows`, `open_content_manager`, `level_numbers`, `generate`. `writes` follows the contract's table."""
+    `library_rows`, `level_numbers`, `generate`. `writes` follows the contract's table."""
     LATER = {"leave": (False, False, False), "mark": (True, True, False), "aside": (True, False, True)}
 
     def __init__(self, anki=None, rows=(), numbers=None, accepted=True, preselect=None):
@@ -68,7 +68,6 @@ class FakeApi:
         self.pre = preselect
         self.calls = []
         self.synced = []
-        self.content_ends = []
         self.samples = 4
 
     def should_open(self, settings):
@@ -129,11 +128,6 @@ class FakeApi:
     def library_rows(self, settings, language):
         self.calls.append(("library_rows", language))
         return list(self.rows)
-
-    def open_content_manager(self, registry, language, on_end):
-        self.calls.append(("content", language))
-        self.content_ends.append(on_end)
-        return object()
 
     def add_samples(self, language):                       # (W3.2 Q3: page 3's samples, without the Content Manager)
         self.calls.append(("samples", language))
@@ -522,7 +516,6 @@ def test_page_three_offers_a_file_a_folder_and_youtube_and_nothing_else_to_bring
     assert not [t for t in shown if "EPUB" in t or t == strings.ADD_ITEMS["folder"][0]], shown
     assert sum(1 for t in shown if "folder" in t.lower()) == 1, "one folder button, never two"
     assert all(b.toolTip() for b in (page.btn_file, page.btn_pick, page.btn_youtube))
-    assert ("content", "ja") not in api.calls
 
 
 def test_page_three_without_a_library_open_hides_what_cant_act(make):
@@ -782,7 +775,7 @@ def test_samples_are_copied_in_said_and_the_rows_read_again_and_the_line_leaves_
     reads = api.calls.count(("library_rows", "ja"))
     QTest.mouseClick(page.btn_samples, Qt.MouseButton.LeftButton)
     assert wait_until(lambda: wiz.say_line.text() == S.SAMPLES_ADDED_LINE.format(n=4))
-    assert ("samples", "ja") in api.calls and ("content", "ja") not in api.calls
+    assert ("samples", "ja") in api.calls
     assert wait_until(lambda: api.calls.count(("library_rows", "ja")) == reads + 1)
     wiz.skip()
     assert wiz.say_line.isHidden()                                 # page 3's line is page 3's (AD-12)

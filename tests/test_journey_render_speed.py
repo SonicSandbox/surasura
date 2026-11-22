@@ -237,6 +237,18 @@ def test_a_blank_line_is_no_row_and_a_count_written_as_nan_is_no_count(tmp_path)
     assert [w[0] for w in words] == ["冒険", "準備"] and all(w[7] == 0 for w in words)
 
 
+def test_a_whole_number_read_as_a_float_is_written_whole_a_count_and_a_cell_alike():
+    # The analyzer's rows in-process (G11) are pandas' cells: a column with a gap holds 6.0, never 6. A count written
+    # 6.0 is 6 on the page, and a text cell read as a number is its digits ("6", never "6.0"); NaN is empty.
+    assert jr._clean(6.0) == 6 and type(jr._clean(6.0)) is int and jr._clean(2.5) == 2.5
+    assert jr._text(6.0) == "6" and jr._text(float("nan")) == "" and jr._text(2.5) == "2.5"
+    rows = [{"Sequence": 1.0, "Source File": "ep01.srt", "Word": "冒険", "Reading": "ボウケン", "Kana": float("nan"),
+             "Occurrences (File)": 6.0, "Context 1": "冒険の始まり", "Src 1": "Show/ep01.srt"}]
+    out = jr.build("ja", rows, _stats(1), pitch=jr.Pitch("ja", kanjium={}))
+    word = [w for chunk in out.chunks for w in _decode(chunk)["w"]][0]
+    assert word[7] == 6 and type(word[7]) is int and word[3] == ""
+
+
 def test_the_priority_csv_keeps_only_the_four_columns_its_order_and_owners_need(tmp_path):
     path = str(tmp_path / "priority_learning_list.csv")
     _write_csv(path, ["Word", "Orth", "Forms", "Reading", "Context 1", "Src 1"],

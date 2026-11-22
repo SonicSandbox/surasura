@@ -477,7 +477,7 @@ _KANJI = re.compile("[\u3400-\u9fff\uf900-\ufaff\U00020000-\U0002fa1f]")    # is
 
 def known_with(chars, known, ranks=None):
     """{kanji: the learner's most frequent known word holding it}: the known word with the best spoken rank
-    (`reference_data.spoken_ranks`, 0 = unranked, last), then the shortest, then the first in the file."""
+    (`reference_data.spoken_ranks`, 0 = unranked, last), then the shortest, then the first in `known`."""
     ranks = ranks or {}
     best = {}
     for n, term in enumerate(known):
@@ -705,10 +705,15 @@ def stone_pictures():
 
 
 def _pct(snap):
-    counted = snap.get("counted") if snap else None
-    if not counted:
-        return None
-    return round(100.0 * (snap.get("known") or 0) / counted, 1)
+    return _known_pct(snap.get("known") or 0, snap.get("counted")) if snap else None
+
+
+def _known_pct(known, counted):
+    """*% known* as the window shows it (`view_rows.pct_of`: known tokens ÷ counted tokens, one number everywhere),
+    to a tenth; None with nothing counted (never 0 %)."""
+    from app.services.view_rows import pct_of
+    pct = pct_of(known, counted)
+    return None if pct is None else round(pct, 1)
 
 
 def growth_row(snaps):
@@ -781,6 +786,22 @@ Render = namedtuple("Render", "head chunks blobs stones")
 #   head: dict · chunks: [bytes gz] · blobs: {name: bytes gz} · stones: dict
 
 
+def _plan_pcts(plan):
+    """{file name: *% known*} from the plan's per-file `prog` (the tokens known before any file over the tokens
+    counted) — the very count the window's rows read (`moves.Numbers`); None without a plan."""
+    if plan is None:
+        return None
+    try:
+        from app.path_utils import report_name
+        out = {}
+        for f, entry in enumerate(plan.files):
+            prog = plan.per_file[f]["prog"]
+            out.setdefault(report_name(entry[0]), _known_pct(prog[1], prog[0]))
+        return out
+    except Exception:
+        return None
+
+
 def _ahead(plan, names):
     """{episode index: {(Word, Reading): count}} from the plan's per-file counts (`plan_engine.Plan`), for the
     episodes it holds; None without a plan (each word's count ahead is then its count in its own episode)."""
@@ -832,9 +853,6 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
 
     # The episodes, in the study order: the store's (by id) when there is one, else the run's files by name
     stats = [s for s in (stats or ()) if isinstance(s, dict) and s.get("File")]
-    stat_of = {}
-    for s in stats:
-        stat_of.setdefault(s["File"], s)
     shows, show_index, eps, ep_of_name = [], {}, [], {}
 
     def show_of(key, title, kind):
@@ -843,9 +861,12 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
             shows.append([key, title, kind, stone_plan.gem_of(kind if kind in stone_plan._KIND else None)])
         return show_index[key]
 
-    def add_ep(item_id, name, tier, kind, show, watched, cards, missing, pre, growth):
-        stat = stat_of.get(name) or {}
-        coverage = _clean(stat.get("Coverage (%)"))
+    # *% known*: the window's own figure (the plan's count), never the stats file's Coverage (%) — the plan when the
+    # caller hands it in, else the store's 'last' snapshot (the same count, kept by that Generate); else none
+    plan_pcts = _plan_pcts(plan)
+
+    def add_ep(item_id, name, tier, kind, show, watched, cards, missing, pre, growth, last=None):
+        coverage = plan_pcts.get(name) if plan_pcts is not None else _pct(last)
         flags = (1 if watched else 0) | (2 if missing else 0) | (4 if cards else 0)
         ep_of_name.setdefault(name, len(eps))
         eps.append([item_id, name, None, show, tier, kind, coverage, 0, 0, _stone_state(watched, cards), flags,
@@ -866,7 +887,8 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
             pre = facts.pre.get(item_id)
             add_ep(item_id, name, tiers.get(item.get("tier")), kind, show_of(key, _show_name(work, item), kind),
                    item.get("watched"), facts.cards.get(item_id, 0), item.get("availability") == "missing",
-                   [_day(pre[0]) or pre[0], pre[1]] if pre else None, growth_row(facts.growth.get(item_id)))
+                   [_day(pre[0]) or pre[0], pre[1]] if pre else None, growth_row(facts.growth.get(item_id)),
+                   (facts.growth.get(item_id) or {}).get("last"))
     named = {e[1] for e in eps}
     for s in stats:
         if s["File"] not in named:
@@ -1078,18 +1100,24 @@ def _records(path, columns=ROW_COLUMNS, contexts=True):
         return out
 
 
-def _known_terms(language):
-    """The learner's known terms, as KnownWord.json lists them (known, or with a card), in its order; [] when none."""
+def _known_terms(language, script="asis"):
+    """The learner's known words as the list counts them — the known lemmas of its one known-word test
+    (`analyzer.read_known_words`: KnownWord.json's known and carded entries, a sentence read into its words), the very
+    sets the last Generate kept in the token store (`get_cached_known`), read only, never a second rule over the file.
+    Sorted (the hover's last tie-break); [] with no store, or a file changed since that Generate (the next one reads it
+    again: no hover word meanwhile, never a guess)."""
     try:
-        from app.path_utils import get_user_files_path, read_text
-        path = os.path.join(get_user_files_path(language), "KnownWord.json")
-        if not os.path.exists(path):
+        from app import token_index
+        from app.path_utils import get_user_files_path
+        store = token_index.open_reader(language)
+        if store is None:
             return []
-        data = json.loads(read_text(path, language))
-        entries = data.get("words", []) if isinstance(data, dict) else data if isinstance(data, list) else []
-        return [e.get("dictForm") for e in entries
-                if isinstance(e, dict) and (e.get("knownStatus") == "KNOWN" or e.get("hasCard") == 1)
-                and isinstance(e.get("dictForm"), str)]
+        try:
+            known_file = os.path.join(get_user_files_path(language), "KnownWord.json")
+            cached = store.get_cached_known(token_index.known_signature(known_file, script))
+        finally:
+            store.close()
+        return sorted(cached[1]) if cached else []
     except Exception:
         return []
 
@@ -1126,13 +1154,14 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
                 rels.add(str(rel))
     timed = {rel for rel in rels if isinstance(source_map.get(rel), dict)
              and source_map[rel].get("type") in gen.TIMED_TYPES}
+    from app.zh_script import effective
+    script = effective(language, settings.get("zh_script"))
     media, dirs, timer = {}, [], None
     if settings.get("line_player", True) and timed:
         media, dirs = gen._line_media(language, timed, os.path.join(gen.RESULTS_DIR, gen.LINE_MEDIA_MEMO))
         if any(where for where, _why in media.values()):
-            from app.zh_script import effective
             timer = gen.AnchorFinder(cache_path=os.path.join(gen.RESULTS_DIR, gen.LINE_TIMES_MEMO),
-                                     script=effective(language, settings.get("zh_script")), language=language)
+                                     script=script, language=language)
     ranks = {}
     if language == "ja":
         try:
@@ -1145,7 +1174,8 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
         from app import own_dicts
         own = own_dicts.lookup
     memo = WordMemo(os.path.join(gen.RESULTS_DIR, WORD_MEMO), *memo_keys(language))
-    out = build(language, rows, stats, priority, facts, settings, backlog=backlog, known=_known_terms(language),
+    out = build(language, rows, stats, priority, facts, settings, backlog=backlog,
+                known=_known_terms(language, script),
                 ranks=ranks, pitch=Pitch(language, tagger), sources=Sources(language, source_map, None, media, timer),
                 plan=plan, own=own, stamp=stamp, memo=memo)
     out.head["dirs"] = dirs

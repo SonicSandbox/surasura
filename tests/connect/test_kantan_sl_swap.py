@@ -470,3 +470,34 @@ def test_choose_line_takes_the_best_other_line_connect_can_cut_never_the_old_one
     monkeypatch.setattr(sentence_corpus, "best_for", lambda *a, **k: {})
     assert swap.choose_line(lang, word, [old]) == (3, other)
     assert swap.choose_line(lang, word, [old, other]) is None
+
+
+# --------------------------------------------------------------------------- #
+# The runner: a swap job makes no receipt
+# --------------------------------------------------------------------------- #
+def test_a_swap_job_writes_its_cards_but_no_receipt_and_an_empty_one_none_either(tmp_path, monkeypatch):
+    # Why: a receipt (mined_at) says "this episode was mined"; a swap's one word from another line is not that episode's
+    # mining — a receipt there would hide the episode's own words from Connect (as a level job's would).
+    from app.connect import runner
+    from tests.connect.fake_steps import FakeSteps
+
+    class SwapSteps(FakeSteps):
+        def pick(self, lang, job, video):        # a swap job names its one word, as `verbs.pick` reads it for the job
+            if job.get("kind") == SWAP:              # item 2: its only line is the old card's (nothing to make)
+                job = dict(job, kind="level", words=[] if job["item_id"] == 2 else job["words"])
+            return super().pick(lang, job, video)
+
+    monkeypatch.setattr(runner, "_swap_look", lambda *a, **k: None)     # the swap queue isn't this test's
+    steps = SwapSteps(str(tmp_path), {"line": {"ja": [1, 2, 3]}, "queue": {"ja": [3]}})
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        with ledger.transaction():
+            made = ledger.queue_swap("ja", 1, "上層部", "ジョウソウブ", "2026-11-21T10:00:00", store_id="store-1")
+            empty = ledger.queue_swap("ja", 2, "雰囲気", "フンイキ", "2026-11-21T10:00:01", store_id="store-1")
+        runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=2)
+        jobs = {j["id"]: j for j in ledger.jobs("ja")}
+    by_item = {item: (cards, receipt) for item, cards, receipt in steps.records}
+    assert jobs[made]["state"] == "done" and jobs[empty]["state"] == "done", jobs
+    assert set(by_item[1][0]) == {"上層部"}, "the swap's one word is made and written to the store"
+    assert by_item[1][1] is False, "a swap job's cards are written with no receipt"
+    assert by_item[2] == ({}, False), "a swap job with nothing to make writes no receipt either"
+    assert by_item[3][1] is True, "an ordinary job beside them still writes its receipt"

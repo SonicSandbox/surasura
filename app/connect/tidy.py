@@ -196,8 +196,8 @@ class AnkiConnectTidy(undo.AnkiConnectUndo):
         ids, out = sorted({int(c) for c in card_ids}), set()
         for at in range(0, len(ids), CHUNK):
             got = anki_connect.invoke("getReviewsOfCards", self.url, cards=ids[at:at + CHUNK])
-            if not isinstance(got, dict):
-                return None
+            if not isinstance(got, dict) or {str(c) for c in ids[at:at + CHUNK]} - {str(k) for k in got}:
+                return None                 # no answer, or one that leaves out a card asked for: every card kept
             out |= {int(c) for c, lines in got.items() if lines}
         return out
 
@@ -223,7 +223,7 @@ def _done_at(ledger, note_id):
     return undo._epoch(row[0]) if row else None
 
 
-def why_kept(info, cards, made, reviewed, filtered, done_at, shelf, asked=frozenset()):
+def why_kept(info, cards, made, reviewed, filtered, done_at, shelf, asked=frozenset(), yours=frozenset()):
     """**Tidy's guarantee** (Kyou-SH3), every clause in one place: why one note is not Tidy's to take, or None when it
     is. A card is Tidy's only if
     - **Connect made it**: the library's made-words record holds the note (`made`) and Connect's ledger made it
@@ -234,7 +234,8 @@ def why_kept(info, cards, made, reviewed, filtered, done_at, shelf, asked=frozen
       couldn't be read: kept) — a card answered once and reset to new still has its history and is yours — and none
       studied (reps, type);
     - **you never changed it**: not edited or tagged since Connect's last write, flagged, buried, suspended by you
-      (`undo._why_kept`), nor in a filtered deck (`filtered`).
+      (`undo._why_kept`), taken off the old shelf by you (`yours`: put back, or un-suspended in Anki — P2.5-2), nor
+      in a filtered deck (`filtered`).
     `cards` {card id: Anki's card}; `shelf` the old shelf's rows (`undo._shelf_rows`)."""
     note_id = int(info["noteId"])
     if note_id not in made or not done_at:
@@ -247,12 +248,24 @@ def why_kept(info, cards, made, reviewed, filtered, done_at, shelf, asked=frozen
     card_ids = [int(c) for c in info.get("cards") or ()]
     if reviewed is None or any(c in reviewed for c in card_ids):
         return undo.STUDIED
+    if any(c in yours for c in card_ids):
+        return undo.CHANGED
     why = undo._why_kept(info, cards, tag, done_at, shelf)
     if why:
         return why
     if any(c in filtered for c in card_ids):
         return FILTERED
     return None
+
+
+def _back_by_you(ledger):
+    """The cards you took off the old shelf — put back from a restore point, or un-suspended in Anki (`shelf.YOURS`,
+    P2.5-2: never shelved again) -> a set. Un-suspending a card is your choice to study it: never Tidy's."""
+    if not ledger.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'shelf'").fetchone():
+        return set()
+    from app.connect import shelf
+    shelf.ensure(ledger)
+    return {int(r[0]) for r in ledger.conn.execute("SELECT card_id FROM shelf WHERE back_by IN (?, ?)", shelf.YOURS)}
 
 
 def asked_for(ledger, language, note_ids):
@@ -275,9 +288,10 @@ def check(anki, ledger, note_ids, made, asked=frozenset()):
     for at in range(0, len(card_ids), CHUNK):
         filtered |= set(anki.find_cards("deck:filtered cid:" + ",".join(map(str, card_ids[at:at + CHUNK]))) or ())
     shelf = undo._shelf_rows(ledger)
+    yours = _back_by_you(ledger)
     go, kept = [], []
     for note_id in [int(n) for n in dict.fromkeys(note_ids) if int(n) in infos]:     # in the order asked: lowest first
-        why = why_kept(infos[note_id], cards, made, reviewed, filtered, _done_at(ledger, note_id), shelf, asked)
+        why = why_kept(infos[note_id], cards, made, reviewed, filtered, _done_at(ledger, note_id), shelf, asked, yours)
         if why:
             kept.append([note_id, why])
         else:
@@ -392,7 +406,11 @@ def run(anki, ledger, language, note_ids, why=AUTO, open_store=None, limit=None)
             raise
         # read once more just before the delete: a card you answered or changed while Anki exported stays (its card
         # back home); the package may hold it too, and Undo leaves a note Anki still has as it is
-        still, late, _i, _c = check(anki, ledger, go, made_ids, asked)
+        still, late, now_infos, _c = check(anki, ledger, go, made_ids, asked)
+        grew = [n for n in still if {str(c) for c in now_infos[n].get("cards") or ()} != set(notes[str(n)]["cards"])]
+        if grew:                        # a card Anki made for the note since the backup isn't in the copy: kept
+            still = [n for n in still if n not in grew]
+            late += [[n, undo.CHANGED] for n in grew]
         if late:
             _cards_home(anki, tidy_id, {k: v for k, v in notes.items() if int(k) in {int(n) for n, _w in late}})
             kept += late

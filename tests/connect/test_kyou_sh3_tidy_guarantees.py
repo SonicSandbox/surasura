@@ -417,3 +417,70 @@ def test_the_card_says_deleted_with_a_copy_kept_never_set_aside_and_the_help_say
     assert "down to your limit" in needs.STRINGS["tidied_say"]
     from app.qt import settings_strings as S
     assert "down to your limit" in S.ROWS["connect_tidy"][1]
+
+
+# --------------------------------------------------------------------------- #
+# The refuters' holds (Kyou-SH3 2): the shelf's comeback, a reply that leaves a card out, a card made mid-tidy
+# --------------------------------------------------------------------------- #
+def _iso(epoch):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+
+
+@pytest.mark.parametrize("back_by, yours", [(shelf.BACK_IN_ANKI, True), (shelf.BACK_BY_YOU, True),
+                                            (shelf.BACK_BY_SURASURA, False)])
+def test_a_card_you_took_off_the_old_shelf_is_yours_and_the_swap_ins_is_not(ledger, back_by, yours):
+    # why: a card the old shelf suspended and you un-suspended in Anki (or put back from a restore point) is one you
+    # chose to study — never shelved again (P2.5-2), so never Tidy's; un-suspending moves the card, not the note's
+    # mod, and the shelf's own tag write hides inside its grace, so only the shelf's `back_by` says it was you
+    item, tag, done_at = _mined(ledger, "ja")
+    anki = _anki("ja", tag, done_at)
+    shelf.ensure(ledger)
+    with ledger.transaction():
+        ledger.conn.execute("INSERT INTO shelf (card_id, note_id, language, run, why, shelved_at, back_at, back_by, "
+                            "mod_shelved, mod_back) VALUES (1040, 104, 'ja', 'r-1', 'cap', ?, ?, ?, ?, ?)",
+                            (_iso(done_at + 60), _iso(done_at + 120), back_by, done_at, done_at + 60))
+    anki.notes_[104]["mod"] = done_at + 120         # the shelf's tag taken off as the card came back
+    done = tidy.run(anki, ledger, "ja", [104, 105], why=tidy.NOW, open_store=_opener("ja"))
+    if yours:
+        assert 104 in anki.notes_ and [k for k in done["kept"] if k[0] == 104] == [[104, undo.CHANGED]]
+        assert done["deleted"] == [105]
+    else:
+        assert sorted(done["deleted"]) == [104, 105], "the swap-in's comeback is Surasura's: the card is still Tidy's"
+
+
+@pytest.mark.parametrize("reply", [{"1040": []}, {}, [], None])
+def test_a_review_log_reply_that_leaves_out_a_card_keeps_every_card(monkeypatch, reply):
+    # why: never deleted unread — AnkiConnect answers every card asked for (an empty list = no history); a reply
+    # missing one can't say that card was never reviewed
+    from app import anki_connect
+    monkeypatch.setattr(anki_connect, "invoke", lambda action, url, **kw: reply)
+    assert tidy.AnkiConnectTidy("http://127.0.0.1:8765").reviewed([1040, 1050]) is None
+
+
+def test_a_review_log_reply_for_every_card_says_which_have_lines(monkeypatch):
+    from app import anki_connect
+    monkeypatch.setattr(anki_connect, "invoke",
+                        lambda action, url, **kw: {str(c_): ([{"id": 1, "ease": 3}] if c_ == 1050 else [])
+                                                   for c_ in kw["cards"]})
+    assert tidy.AnkiConnectTidy("http://127.0.0.1:8765").reviewed([1040, 1050]) == {1050}
+
+
+@pytest.mark.parametrize("lang, note", [("ja", 104), ("zh", 106)])
+def test_a_card_anki_made_for_a_note_after_its_backup_keeps_the_note(ledger, lang, note):
+    # why: the copy holds the cards the note had at the backup; a card Anki makes for it after (a template added to
+    # the note type mid-tidy) isn't in the copy, so deleting the note would lose it — the note stays, its cards home
+    item, tag, done_at = _mined(ledger, lang)
+    anki = _anki(lang, tag, done_at)
+    others = [n for n in (104, 105, 106) if n != note]
+
+    def a_card_more(folder, path):
+        cid = note * 10 + 1
+        anki.cards_[cid] = {"flags": 0, "reps": 0, "type": 0, "queue": 0, "cardId": cid, "note": note, "ord": 1,
+                            "deckName": DECK}
+        anki.notes_[note]["cards"].append(cid)
+    _damaging(anki, a_card_more)
+    done = tidy.run(anki, ledger, lang, [note] + others, why=tidy.NOW, open_store=_opener(lang))
+    assert note in anki.notes_ and note not in done["deleted"]
+    assert [k for k in done["kept"] if k[0] == note] == [[note, undo.CHANGED]]
+    assert anki.cards_[note * 10]["deckName"] == DECK, "its card back home from the tidy's deck"
+    assert sorted(done["deleted"]) == sorted(others)

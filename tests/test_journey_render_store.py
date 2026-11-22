@@ -55,3 +55,22 @@ def test_a_store_without_growth_or_pre_studied_readers_draws_neither(monkeypatch
     assert facts.growth == {} and facts.pre == {}
     out = jr.build("ja", [], [], facts=facts, pitch=jr.Pitch("ja", kanjium={}))
     assert all(e[11] is None and e[12] is None for e in out.head["eps"])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_growth_comes_from_the_stores_own_snapshots_per_episode_and_nothing_counted_is_no_bar(language):
+    """Kura-GS's snapshots (#585), read through `growth_of`: each episode its own figures, never summed into its
+    show; a file with no words (0 of 0) has no bar, not 0 %."""
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    ids = [i for i, _tier in store.scheduled_ids()]
+    feed = {row["id"]: row for row in store.read_feed()["items"]}
+    first, second = feed[ids[0]]["rel_path"], feed[ids[1]]["rel_path"]
+    store.record_growth({first: (60, 100, 25), second: (0, 0, 0)})
+    store.close()
+    facts = jr.store_facts(language, data_dir, user_files_dir)
+    out = jr.build(language, [], [], facts=facts, pitch=jr.Pitch(language, kanjium={}))
+    growth = {e[0]: e[12] for e in out.head["eps"]}
+    assert growth[ids[0]][:2] == [60.0, 25] and growth[ids[0]][7] == 25   # added = last: the first Generate's
+    assert growth[ids[1]] is None
+    assert all(len(show) == 4 for show in out.head["shows"])               # a show carries no "+N" of its own

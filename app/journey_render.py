@@ -32,6 +32,8 @@ import time
 from collections import namedtuple
 
 SHAPE = 1                       # the shape's version (SHAPE.md); a change is a NOTE to the page first
+SHAPE_MINOR = 1                 # 1.1 (2026-11-22): additive only — the head's `minor`, a source's item id, the seven
+#                                 settings, `stamp` in ms; a v1 reader reads a 1.1 page as before
 MARKER = "<!--JOURNEY-DATA-->"  # where the page's template takes the data, once
 WORD_MEMO = "journey_words.json"   # in results/, beside the ▶'s memos: `WordMemo`
 CHUNK_EPISODES = 100
@@ -51,6 +53,19 @@ POS_WORDS = {"n": "noun", "pn": "pronoun", "adv": "adverb", "adv-to": "adverb (�
              "vk": "kuru verb", "vz": "zuru verb", "v1": "ichidan verb", "v1-s": "ichidan verb",
              "vi": "intransitive", "vt": "transitive", "n-suf": "noun (suffix)", "n-pref": "noun (prefix)",
              "n-adv": "adverbial noun", "n-t": "noun (temporal)"}
+
+# The page's seven setting rows (SPEC §1.4) as the head carries them: {head name: (settings key, choices, default)}.
+# Sentences per word is `logic.context.max_contexts`; the other keys are PROVISIONAL names until J-SET adds them to
+# DEFAULT_SETTINGS (rename them here, nowhere else). A value outside its choices is the default.
+PAGE_SETTINGS = {
+    "meanings": ("journey_meanings", MEANINGS, "en"),
+    "pitch": ("journey_pitch", ("shown", "hidden"), "shown"),
+    "source": ("journey_source", ("icon", "icon_name", "hover"), "icon"),
+    "word_size": ("journey_word_size", ("s", "m", "l"), "m"),
+    "sentence_size": ("journey_sentence_size", ("s", "m", "l"), "m"),
+    "theme": ("journey_theme", ("night", "light"), "night"),
+    "keys": ("journey_keys", ("qwerty", "dvorak"), "qwerty"),      # or the learner's own map {action: key}
+}
 
 _Ep = namedtuple("_Ep", "watched cards status missing removed in_top")
 StoreFacts = namedtuple("StoreFacts", "items works order cards pre growth library")
@@ -103,6 +118,19 @@ _TO_HIRA = {c: c - 0x60 for c in range(ord("ァ"), ord("ヶ") + 1)}
 
 def _hira(text):
     return (text or "").translate(_TO_HIRA)
+
+
+def page_settings(settings, per_word):
+    """The head's `settings`: every row of SPEC §1.4 with its value at this render, the default when unset."""
+    out = {"sentences": per_word}
+    for name, (key, choices, default) in PAGE_SETTINGS.items():
+        value = settings.get(key, default)
+        if name == "keys" and isinstance(value, dict):
+            value = {str(k): str(v) for k, v in value.items() if isinstance(k, str) and isinstance(v, str)} or default
+        elif value not in choices:
+            value = default
+        out[name] = value
+    return out
 
 
 def _day(stamp):
@@ -359,8 +387,10 @@ class Meanings:
         for word, reading, orth in words:
             if memo is None or memo.meaning(word, reading, orth) is None:
                 wanted.update(k for k in (word, orth) if k)
-            elif self.language == "zh":
-                wanted.update(k for k in (word, orth) if k and memo.pinyin(k) is None)
+            elif self.language == "zh":                 # as `build` asks: the word's pinyin, then its orth's
+                first = memo.pinyin(word) if word else ""
+                if first is None or (not first and orth and memo.pinyin(orth) is None):
+                    wanted.update(k for k in (word, orth) if k)
         self._index = self._load(wanted) if wanted else {}
 
     def _entries(self, key):
@@ -678,7 +708,8 @@ def growth_row(snaps):
     absent), or None with no snapshot at all (OPEN 43: never a made-up figure)."""
     if not snaps:
         return None
-    added, done, last = snaps.get("added"), snaps.get("done"), snaps.get("last")
+    added, done, last = (snap if snap and snap.get("counted") else None    # "0 of 0" (a file with no words): no bar
+                         for snap in (snaps.get("added"), snaps.get("done"), snaps.get("last")))
     if not added and not done:
         return None
     return [_pct(added), added.get("unknown") if added else None, _day(added.get("at")) if added else None,
@@ -701,6 +732,7 @@ class Sources:
         self.media = media or {}
         self.timer = timer
         self.titles = {}                        # {file name: its shown name}: the head's, so each is made once
+        self.items = {}                         # {rel path: the store's item id}: a line id's first half
         self._rows = {}
 
     def row(self, rel):
@@ -721,7 +753,8 @@ class Sources:
             title = self.titles.get(name)
             if title is None:
                 title = self.titles[name] = shown_name(name)
-            found = self._rows[rel] = [title, kind, self.ep_of.get(name, -1), play, link]
+            found = self._rows[rel] = [title, kind, self.ep_of.get(name, -1), play, link,
+                                       self.items.get(rel.replace("\\", "/"))]
         return found
 
     def times(self, rel, sentence):
@@ -783,9 +816,8 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
         per_word = max(1, int(context.get("max_contexts", 3)))
     except (TypeError, ValueError):
         per_word = 3
-    meanings_mode = settings.get("journey_meanings", "en")
-    if meanings_mode not in MEANINGS:
-        meanings_mode = "en"
+    shown_settings = page_settings(settings, per_word)
+    meanings_mode = shown_settings["meanings"]
     thresholds = logic.get("priority_markers") if isinstance(logic.get("priority_markers"), dict) else {}
     from app.path_utils import infer_source_type, report_name
     from app.services import stone_plan
@@ -879,6 +911,8 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
         sources.ep_of = ep_of_name              # each source's episode, as this head numbers them
     for e in eps:
         sources.titles.setdefault(e[1], e[2])
+    if facts is not None and not sources.items:
+        sources.items = {item["rel_path"]: item_id for item_id, item in facts.items.items() if item.get("rel_path")}
 
     # The chunks: at most CHUNK_EPISODES episodes or CHUNK_BYTES of JSON; one episode alone past it is split. Each
     # word is written as JSON once; a chunk is its words' JSON joined.
@@ -992,8 +1026,9 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
                 freq.append(wid)
                 word_id.pop((_text(row.get("Word")), _text(row.get("Reading"))))
     library = facts.library if facts is not None and facts.library else ""
-    head = {"v": SHAPE, "lang": language, "stamp": str(stamp if stamp is not None else time.time_ns()),
-            "library": library, "settings": {"sentences": per_word, "meanings": meanings_mode},
+    head = {"v": SHAPE, "minor": SHAPE_MINOR, "lang": language,
+            "stamp": str(stamp if stamp is not None else time.time_ns() // 1_000_000),
+            "library": library, "settings": shown_settings,
             "shows": shows, "eps": eps, "finished": [], "orders": {"freq": freq if freq is not None else []},
             "chunks": ranges, "dirs": [], "blobs": sorted(blobs),
             "counts": {"eps": len(eps), "words": len(words), "shows": len(shows),

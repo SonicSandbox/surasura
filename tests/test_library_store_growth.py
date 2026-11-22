@@ -117,19 +117,18 @@ def test_a_store_that_never_began_the_snapshots_begins_them_at_its_first_generat
 # --- ✓ Done and Finished ------------------------------------------------------------------------------------------ #
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_done_keeps_the_newest_generates_figures_once_through_undo_un_done_and_a_re_watch(language):
+def test_a_done_keeps_the_newest_generates_figures_once_through_an_un_done_and_a_re_watch(language):
     """✓ Done keeps what the newest Generate counted of the episode then as its 'done'. Later Generates move 'last'
-    only; Undo, an un-Done and a second Done (a re-watch) never rewrite it: it is what he understood the first time."""
+    only; an un-Done and a second Done (a re-watch) never rewrite it: it is what he understood the first time. (The
+    Undo of the press itself takes it back: Kura-GS3's tests below.)"""
     store = migrated(language)
     ep, other = store.ids("now")[:2]
     store.record_growth(_figures(store, [ep, other]))
     then = _snap(store, ep, "last")
-    change = store.set_watched([ep])
+    store.set_watched([ep])
     assert _snap(store, ep, "done") == then
     assert _snap(store, other, "done") is None, "only the marked episode"
     store.record_growth(_figures(store, [ep, other], base=300))
-    store.undo(change)
-    store.set_watched([ep])
     store.set_watched([ep], False)
     store.set_watched([ep])
     assert _snap(store, ep, "done") == then
@@ -821,7 +820,7 @@ def test_a_generate_killed_between_chunks_leaves_a_part_and_the_next_generate_wr
 SLOW = ("import os, sys, json, time\n"
         "from contextlib import contextmanager\n"
         "from app import library_store as ls\n"
-        "ls.GROWTH_CHUNK = 300\n"
+        "ls.GROWTH_CHUNK = 200\n"
         "store = ls.open_store(%(language)r, %(data)r, %(user)r, role='analyzer')\n"
         "figs = json.load(open(%(figs)r, encoding='utf-8'))\n"
         "real = ls.Store._writing\n"
@@ -844,19 +843,19 @@ SLOW = ("import os, sys, json, time\n"
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_done_in_the_window_during_the_generates_write_waits_one_chunk_not_the_whole_set(language, tmp_path):
-    """The Generate's process writes its snapshots (four writes, each slowed to ~0.4 s as on a slow disk); the window
-    marks an episode ✓ Done once the first write is in. Its save gets in between two writes: it waits at most about
-    one write, never the whole set, and the Generate still had writes to go when it was done. The 'done' it kept is
-    that episode's figures whole, or none yet (its 'last' not written yet) — never a part."""
+    """The Generate's process writes its snapshots (six writes, each slowed to ~0.3 s as on a slow disk); the window
+    marks two episodes ✓ Done once the first write is in. Its save gets in between two writes: it waits a write or two
+    at most (a busy PC may miss one pause), never the five still to go, and the Generate still had writes to go when
+    it was done. Each 'done' it kept is whole: the episode of the first write has this Generate's figures, the one of
+    the last write none yet (its 'last' not written) — never a part."""
     window = big_store(language, 1200)
     figs = _spread(window)
-    rel = list(figs)[700]
-    target = _by_id(window, {rel: figs[rel]})
-    (target, want), = target.items()
+    ids = _by_id(window, figs)
+    early, late = list(ids)[50], list(ids)[1150]
     path, flag = tmp_path / "figs.json", str(tmp_path / "first-write")
     path.write_text(json.dumps(figs, ensure_ascii=False), encoding="utf-8")
     data, user = roots(language)
-    slow = 0.4
+    slow = 0.3
     script = SLOW % dict(language=language, data=data, user=user, figs=str(path), flag=flag, slow=slow)
     gen = subprocess.Popen([sys.executable, "-c", script], env=subprocess_env(), cwd=REPO,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -866,17 +865,22 @@ def test_a_done_in_the_window_during_the_generates_write_waits_one_chunk_not_the
             time.sleep(0.001)
         assert os.path.exists(flag), "the Generate's first write never came"
         t0 = time.monotonic()
-        window.set_watched([target])
+        window.set_watched([early, late])
         waited = time.monotonic() - t0
         lasts_then = len(_lasts(window))
     finally:
-        out, err = gen.communicate(timeout=120)
-    assert gen.returncode == 0 and out.strip() == "4", err
-    assert waited < slow + 0.3, f"the Done waited {waited:.3f} s (one write is ~{slow} s)"
+        try:
+            out, err = gen.communicate(timeout=120)
+        except subprocess.TimeoutExpired:
+            gen.kill()
+            raise
+    assert gen.returncode == 0 and out.strip() == "6", err
+    assert waited < 2 * slow + 0.25, f"the Done waited {waited:.3f} s (a write is ~{slow} s; five were to go)"
     assert lasts_then < len(figs), "the Done saved while the Generate still had writes to go"
     assert len(_lasts(window)) == len(figs)
-    done = _snap(window, target, "done")
-    assert done is None or done == want, done
+    assert window.item(early)["watched"] and window.item(late)["watched"]
+    assert _snap(window, early, "done") == ids[early], "the first write's figures, whole"
+    assert _snap(window, late, "done") is None, "its 'last' came after the Done"
     window.close()
 
 
@@ -899,7 +903,7 @@ def test_fewer_items_than_a_chunk_are_one_write_as_before(language, monkeypatch)
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_an_empty_library_writes_no_snapshot_and_takes_no_lock(language, monkeypatch):
+def test_an_empty_library_writes_no_snapshot_and_makes_no_write(language, monkeypatch):
     """A library with no items: nothing a Generate counted is held, so nothing is written — no write at all, no
     snapshot, no `growth_since` stamped by it."""
     window = big_store(language, 0)
@@ -913,3 +917,151 @@ def test_an_empty_library_writes_no_snapshot_and_takes_no_lock(language, monkeyp
     assert window.growth_of(kinds=("added", "last", "done")) == {}
     analyzer.close()
     window.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_reset_or_rebuild_between_the_chunks_ends_the_write_and_never_files_old_ids_in_the_new_library(
+        language, monkeypatch):
+    """The Generate read the old library's ids; a *Start a fresh library* or a rebuild between two writes gives the
+    store another epoch (or store id), and its ids then name other files. The rest of the set is never written: the
+    write that sees the new epoch ends it (`join_same_shows` reads its rows again in each command for the same
+    reason). The epoch is moved here as the reset's fresh meta moves it (`_fresh_meta(…, epoch + 1, …)`)."""
+    monkeypatch.setattr(ls, "GROWTH_CHUNK", 300, raising=False)
+    window = big_store(language, 1200)
+    analyzer = ls.open_store(language, *roots(language), role="analyzer")
+    figs = _spread(analyzer)
+
+    def reset(n):
+        if n == 1:
+            with window._writing():
+                window._set_meta({"epoch": int(window._meta()["epoch"]) + 1})
+    writes = _watch_writes(monkeypatch, analyzer, after=reset)
+    made = analyzer.record_growth(figs)
+    assert made == 300, "the first write's 'added' only"
+    assert len(window.growth_of(kinds=("added", "last"))) == 300
+    assert len(writes) == 2, "the second write saw the new epoch and wrote nothing"
+    assert writes[1][1] == 0
+    analyzer.close()
+    window.close()
+
+
+# --- Kura-GS3: the Undo of a ✓ Done takes back the snapshot that press made (Sonic 2026-11-22, OPEN 58a) ----------- #
+# A Done pressed by mistake and undone at once left a 'done' snapshot for a watch that never happened. The Undo of the
+# press (the toast's, right after it) now takes back that press's own snapshot — dated by the same stamp as its
+# `watched_at` — inside the undo's write; an un-Done or a re-watch later is never an Undo, and keeps it.
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_undo_of_a_done_takes_back_the_snapshot_that_press_made(language):
+    """Done, then its Undo at once: no 'done' left, the mark and its date back as they were, the 'added' and 'last'
+    untouched; the other episode marked in the same press loses its own too."""
+    store = migrated(language)
+    ep, other = store.ids("now")[:2]
+    store.record_growth(_figures(store, [ep, other]))
+    before = store.growth_of([ep, other], kinds=("added", "last"))
+    change = store.set_watched([ep, other])
+    assert _snap(store, ep, "done") and _snap(store, other, "done")
+    store.undo(change)
+    assert _snap(store, ep, "done") is None and _snap(store, other, "done") is None
+    assert not store.item(ep)["watched"] and store.item(ep)["watched_at"] is None
+    assert store.growth_of([ep, other], kinds=("added", "last")) == before
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_done_undone_then_done_again_later_keeps_one_snapshot_with_the_later_figures(language):
+    """Done by mistake and undone; a Generate later counts the episode again; then the real Done: one 'done', this
+    Done's figures (the later count), dated at it."""
+    store = migrated(language)
+    ep = store.ids("now")[0]
+    store.record_growth(_figures(store, [ep]))
+    store.undo(store.set_watched([ep]))
+    later = _figures(store, [ep], base=300)
+    store.record_growth(later)
+    store.set_watched([ep])
+    rows = store.conn.execute("SELECT COUNT(*) FROM growth WHERE item_id = ? AND kind = 'done'", (ep,)).fetchone()[0]
+    assert rows == 1
+    assert _snap(store, ep, "done") == later[_rel(store, ep)]
+    assert store.growth_of([ep])[ep]["done"]["at"] == store.item(ep)["watched_at"]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_done_yesterday_and_an_un_done_today_keeps_yesterdays_snapshot(language):
+    """An un-Done (the mark taken off later, its own press) is not the Done's Undo: yesterday's snapshot stays — and
+    the Undo of that un-Done (the mark back) keeps it too, still yesterday's."""
+    store = migrated(language)
+    ep = store.ids("now")[0]
+    store.record_growth(_figures(store, [ep]))
+    store.set_watched([ep])
+    yesterday = "2026-11-21T09:30:00.000000Z"
+    with store._writing():                                      # the Done was yesterday
+        store.conn.execute("UPDATE items SET watched_at = ? WHERE id = ?", (yesterday, ep))
+        store.conn.execute("UPDATE growth SET at = ? WHERE item_id = ? AND kind = 'done'", (yesterday, ep))
+    want = _snap(store, ep, "done")
+    store.record_growth(_figures(store, [ep], base=300))
+    un_done = store.set_watched([ep], False)
+    assert _snap(store, ep, "done") == want
+    store.undo(un_done)
+    assert store.item(ep)["watched"] and _snap(store, ep, "done") == want
+    assert store.growth_of([ep])[ep]["done"]["at"] == yesterday
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_undo_of_a_re_watch_keeps_the_first_watchs_snapshot(language):
+    """Only the press's own snapshot goes: a re-watch (Done, un-Done, Done again) wrote none of its own — the first
+    Done's was kept — so the re-watch's Undo leaves the first one exactly."""
+    store = migrated(language)
+    ep = store.ids("now")[0]
+    store.record_growth(_figures(store, [ep]))
+    store.set_watched([ep])
+    first = store.growth_of([ep])[ep]["done"]
+    store.set_watched([ep], False)
+    store.record_growth(_figures(store, [ep], base=300))
+    again = store.set_watched([ep])
+    assert store.item(ep)["watched_at"] != first["at"]
+    store.undo(again)
+    assert not store.item(ep)["watched"]
+    assert store.growth_of([ep])[ep]["done"] == first
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_undo_of_a_done_that_kept_no_snapshot_removes_nothing(language):
+    """A file the Generate counted no words of keeps no figure (Kura-GS2), so its Done kept no 'done': the Undo has
+    nothing to take back and goes through as before; the episode beside it, counted, loses only its own."""
+    store = migrated(language)
+    empty, ep = store.ids("now")[:2]
+    figs = _figures(store, [ep])
+    figs[_rel(store, empty)] = (0, 0, 0)
+    store.record_growth(figs)
+    change = store.set_watched([empty, ep])
+    assert _snap(store, empty, "done") is None and _snap(store, ep, "done")
+    store.undo(change)
+    assert not store.item(empty)["watched"] and not store.item(ep)["watched"]
+    got = store.growth_of([empty, ep], kinds=("added", "last", "done"))
+    assert empty not in got and set(got[ep]) == {"added", "last"}
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_undo_whose_snapshot_cannot_be_taken_back_fails_whole(language):
+    """The snapshot's removal is in the undo's own write: when the database refuses it, nothing of the Undo saves —
+    the mark, its date and the snapshot all stay as the Done left them (whole or not at all, F1)."""
+    store = migrated(language)
+    ep = store.ids("now")[0]
+    store.record_growth(_figures(store, [ep]))
+    change = store.set_watched([ep])
+    with store._writing():
+        store.conn.execute("CREATE TEMP TRIGGER keep_done BEFORE DELETE ON growth WHEN OLD.kind = 'done' "
+                           "BEGIN SELECT RAISE(ABORT, 'refused'); END")
+    before = list(store.conn.iterdump())
+    with pytest.raises(sqlite3.Error):
+        store.undo(change)
+    assert list(store.conn.iterdump()) == before, "nothing of the Undo saved"
+    assert store.item(ep)["watched"] and _snap(store, ep, "done")
+    with store._writing():
+        store.conn.execute("DROP TRIGGER keep_done")
+    store.undo(change)
+    assert _snap(store, ep, "done") is None
+    store.close()

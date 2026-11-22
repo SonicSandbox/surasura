@@ -6,16 +6,27 @@ kept apart, each in the file it already lives in.
   A Replace from Anki keeps it, as it keeps a past Graduate's word (`anki_sync.kept_graduated`).
 - **Ignore** — not a word to learn (a name, a noise, a mis-parse): a line of `User Files/<lang>/IgnoreList.txt`, so it
   leaves your list but is never one of your known words.
+- **Still learning** (`"learning"`, the review loop's way back, Kyou-LR; NOTES WL ⑦ / WL-22) — a word you had as known
+  that you don't know yet: this module's Known entry goes, and every other source's known entry of it (an Anki card the
+  sync read, a Known move) is **kept, turned not known** — `knownStatus` "LEARNING", `hasCard` 0, and what it was under
+  `notKnown` (with the time, `ms`) — so every reader, older versions too, reads it as not known, and clearing the mark
+  (None, or Known) puts those entries back as they were. The known-words sync never reads it known again from a note
+  made before the mark (`anki_sync._sync`: a note's id is its creation time): only a new card for it, or a fresh Known
+  move on its card (`app/connect/known_signal.py`), makes it known again.
 
-    apply(language, marks)      [(word, mark)], mark "known" · "ignore" · None (clears what this module marked)
+    apply(language, marks)      [(word, mark)], mark "known" · "ignore" · "learning" · None (clears what this module
+                                marked); `unknow=True` (the review loop's Ignore move): an Ignore also turns another
+                                source's known entries not known, as Still learning does
                                 -> a `Marked`; one write of each file that changes, in the order given (the last
                                 mark of a word wins); pushed on the language's undo stack (`Marked.undo_id`)
     undo(language, undo_id)     that write (else the last) put back as it was -> a `Marked` (`done` empty: none)
     marks(language)             {word: "known" | "ignore"}: what is marked now (our known entries, the Ignore list)
-    left_out(language)          the words the window's numbers leave out at once (`Numbers.leave_out`): marks' words
+    learning(language)          the words Still learning now (entries turned not known, none of the word known)
+    left_out(language)         the words the window's numbers leave out at once (`Numbers.leave_out`): marks' words
 
 A word known some other way (Anki, an import) is known already: Known writes nothing for it, and clearing never takes
-another source's entry. Ignore and Known are one or the other: marking one clears this module's other.
+another source's entry (Still learning turns it not known, never takes it out). Ignore and Known are one or the other:
+marking one clears this module's other.
 
 Every write follows the word lists' rules (`app/services/word_lists.py`, CLAUDE.md §4): KnownWord.json's lock held for
 the read-modify-write (one hold covers both files), each file read again under it, a file no encoding reads whole never
@@ -28,13 +39,17 @@ Qt-free and Tk-free: every call blocks on the files — the window calls it on a
 import itertools
 import os
 import threading
+import time
 import unicodedata
 from dataclasses import dataclass, field
 
 from app import anki_sync
 from app.services import word_lists
 
-MARKS = ("known", "ignore")
+MARKS = ("known", "ignore", "learning")
+NOT_KNOWN = "notKnown"              # on an entry turned not known (Still learning): what it was, when ("at", "ms")
+NOT_KNOWN_STATUS = "LEARNING"       # Migaku's own word for it: every reader's rule (`anki_sync._is_known`) reads it
+                                    # not known, `hasCard` 0 too
 MARKED_SOURCE = anki_sync.MARKED_SOURCE     # a KnownWord.json entry marked known here ("Surasura")
 VERB = "Marking words"
 UNDO_DEPTH = 40
@@ -62,6 +77,11 @@ def _ours(entry):
     return isinstance(entry, dict) and entry.get("source") == MARKED_SOURCE and anki_sync._is_known(entry)
 
 
+def _turned(entry):
+    """An entry Still learning turned not known (and nothing has made it known since)."""
+    return isinstance(entry, dict) and isinstance(entry.get(NOT_KNOWN), dict) and not anki_sync._is_known(entry)
+
+
 def clean(marks):
     """[(word, mark)] with every word trimmed and checked (a blank, a comment or an over-long word dropped, a mark not
     known to this module refused) -> the list, in order. ValueError for a mark that isn't one."""
@@ -76,8 +96,9 @@ def clean(marks):
     return out
 
 
-def apply(language, marks, undoable=True):
-    """Each word marked as asked (see the module docstring) -> a `Marked`."""
+def apply(language, marks, undoable=True, unknow=False):
+    """Each word marked as asked (see the module docstring) -> a `Marked`. `unknow`: an Ignore turns another source's
+    known entries of the word not known too (the review loop's Ignore move: an ignored word is no known word)."""
     try:
         wanted = clean(marks)
     except ValueError as e:
@@ -90,7 +111,7 @@ def apply(language, marks, undoable=True):
         result.error, result.busy = refused[0], True
         return result
     try:
-        _apply_held(language, wanted, result)
+        _apply_held(language, wanted, result, unknow)
     finally:
         if held is not None:
             held.release()
@@ -148,6 +169,35 @@ def marks(language):
     return out
 
 
+def learning(language):
+    """The words Still learning now: every word with an entry turned not known and no known entry (none for a file
+    that can't be read), as its entry spells it."""
+    try:
+        _data, words = anki_sync._read_known_file(language)
+    except anki_sync._KnownFileError:
+        return set()
+    words = [e for e in words or () if isinstance(e, dict)]
+    known = anki_sync._known_keys(words)
+    return {str(e.get("dictForm") or "").strip() for e in words
+            if _turned(e) and _norm(e.get("dictForm")) not in known and str(e.get("dictForm") or "").strip()}
+
+
+def states(language, words):
+    """{word: "known" | "ignore" | "learning" | None} for `words`, as `apply` reads each before it marks it."""
+    marked = marks(language)
+    ours = {_norm(w) for w, m in marked.items() if m == "known"}
+    turned = {_norm(w) for w in learning(language)}
+    out = {}
+    for word in words:
+        if _norm(word) in ours:
+            out[word] = "known"
+        elif marked.get(word_lists._term(word, language)) == "ignore":
+            out[word] = "ignore"
+        else:
+            out[word] = "learning" if _norm(word) in turned else None
+    return out
+
+
 def left_out(language, since_ns=None):
     """The words marked here that the window's numbers leave out at once: every mark's word (`marks`). `since_ns`: a
     plan's time — neither file written since, the plan's Generate read them all and there is nothing to leave out (the
@@ -164,7 +214,7 @@ def left_out(language, since_ns=None):
 
 
 # --- the write, the lock held ------------------------------------------------------------------------------------ #
-def _apply_held(language, wanted, result):
+def _apply_held(language, wanted, result, unknow=False):
     try:
         data, words = anki_sync._read_known_file(language)
     except anki_sync._KnownFileError as e:
@@ -182,6 +232,8 @@ def _apply_held(language, wanted, result):
     words = list(words or [])
     known_any = anki_sync._known_keys(words)
     ours = {_norm(e.get("dictForm")) for e in words if _ours(e)}
+    others = {_norm(e.get("dictForm")) for e in words if anki_sync._is_known(e) and not _ours(e)}
+    turned = {_norm(e.get("dictForm")) for e in words if _turned(e)}
     listed = {word_lists._term(w, language) for w in ignore.words()}
 
     def state(word):
@@ -189,17 +241,22 @@ def _apply_held(language, wanted, result):
             return "known"
         if word_lists._term(word, language) in listed:
             return "ignore"
+        if _norm(word) in turned and _norm(word) not in known_any:
+            return "learning"
         return None
 
     last = {}
     for word, mark in wanted:                       # the last mark of a word wins; each word once, in first order
         last[word] = mark
     add_known, drop_known, add_ignore, drop_ignore = [], set(), [], set()
+    flip, unflip = set(), set()                     # keys whose other sources' entries turn not known / are put back
     for word, mark in last.items():
         before = state(word)
         if before == mark:
             continue
         key, term = _norm(word), word_lists._term(word, language)
+        if mark == "learning" and before is None and key not in others:
+            continue                                # not known at all: nothing to turn back
         if before == "known":
             drop_known.add(key)
             ours.discard(key)
@@ -207,8 +264,18 @@ def _apply_held(language, wanted, result):
         elif before == "ignore":
             drop_ignore.add(term)
             listed.discard(term)
+        known_elsewhere = key in known_any          # before any entry is put back: Known then writes its own
+        if mark == "learning" or (mark == "ignore" and unknow):
+            if key in others:
+                flip.add(key)
+                known_any.discard(key)
+            unflip.discard(key)
+        elif mark in ("known", None) and key in turned:
+            unflip.add(key)                         # what Still learning turned is put back as it was
+            flip.discard(key)
+            known_any.add(key)
         if mark == "known":
-            if key not in known_any:                # known some other way already: nothing to write for it
+            if not known_elsewhere:                 # known some other way already: nothing to write for it
                 add_known.append(word)
                 known_any.add(key)
             ours.add(key)
@@ -219,7 +286,7 @@ def _apply_held(language, wanted, result):
         result.done.append((word, before, mark))
     if not result.done:
         return
-    known_changed = bool(add_known or drop_known)
+    known_changed = bool(add_known or drop_known or flip or unflip)
     ignore_changed = bool(add_ignore or drop_ignore)
     # Backups first, both: a copy that fails writes nothing at all.
     for path, changed in ((anki_sync._known_path(language), known_changed), (ignore_path, ignore_changed)):
@@ -247,7 +314,7 @@ def _apply_held(language, wanted, result):
             result.done = []
             result.error = f"Nothing was changed: your known words could not be read ({e})."
             return
-        if not _write_known(language, data, words, add_known, drop_known, result):
+        if not _write_known(language, data, words, add_known, drop_known, result, flip, unflip):
             return
     if ignore_changed:
         if drop_ignore:
@@ -282,11 +349,35 @@ def _put_back(language, path, raw):
     anki_sync.follow_known_write(language, before_sig)
 
 
-def _write_known(language, data, words, add_known, drop_known, result):
+def _turn(entry, now, ms):
+    """`entry` turned not known (Still learning), what it was kept under NOT_KNOWN."""
+    was = {k: entry[k] for k in ("knownStatus", "hasCard") if k in entry}
+    return dict(entry, knownStatus=NOT_KNOWN_STATUS, hasCard=0, **{NOT_KNOWN: {"at": now, "ms": ms, "was": was}})
+
+
+def _put(entry):
+    """A turned entry put back as it was."""
+    was = (entry.get(NOT_KNOWN) or {}).get("was")
+    out = {k: v for k, v in entry.items() if k not in (NOT_KNOWN, "knownStatus", "hasCard")}
+    out.update(was if isinstance(was, dict) and was else {"knownStatus": "KNOWN"})
+    return out
+
+
+def _write_known(language, data, words, add_known, drop_known, result, flip=(), unflip=()):
     path = anki_sync._known_path(language)
     before_sig = anki_sync.known_signature(path)
-    kept = [e for e in words if not (_ours(e) and _norm(e.get("dictForm")) in drop_known)]
     now = anki_sync._now_iso()
+    ms = int(time.time() * 1000)
+    kept = []
+    for e in words:
+        key = _norm(e.get("dictForm")) if isinstance(e, dict) else None
+        if _ours(e) and key in drop_known:
+            continue
+        if key in flip and anki_sync._is_known(e):
+            e = _turn(e, now, ms)
+        elif key in unflip and _turned(e):
+            e = _put(e)
+        kept.append(e)
     for word in add_known:
         entry = anki_sync._entry(word, None, language, now)
         entry.update(hasCard=0, source=MARKED_SOURCE)
@@ -305,7 +396,7 @@ def _write_known(language, data, words, add_known, drop_known, result):
         result.done = []
         result.error = f"Nothing was changed: your known words could not be written ({e})."
         return False
-    if not drop_known:                              # only adds: the sync's view holds (an entry taken out: a full sync
-        anki_sync.follow_known_write(language, before_sig)   # next, so a word Anki studied meanwhile comes back)
+    if not drop_known and not flip:                 # only adds: the sync's view holds (an entry taken out or turned: a
+        anki_sync.follow_known_write(language, before_sig)   # full sync next, so a word Anki studied meanwhile comes back)
     return True
 

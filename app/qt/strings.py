@@ -405,6 +405,12 @@ NEEDS_UPDATE_TITLE = "Install the update"
 NEEDS_UPDATE_LINE = "Surasura v{version} is ready to install"
 NEEDS_UPDATE_FAILED_TITLE = "The update didn't finish"
 UPDATED = "Updated to v{version} ✓"
+# The review loop's payoff (Kyou-LR; the WL mocks' 03-payoff-toast; PROVISIONAL): after a known-words sync that read
+# your moves in Anki — ✓ Known · ⇄ Swap · ✕ Ignore — once, with Undo (that sync's moves; your cards stay as they are)
+LOOP_PAYOFF = "From your phone: {known} known · {swap} to swap · {ignored} ignored"
+LOOP_PAYOFF_TIP = "Saved in Surasura: delete known and ignored cards in Anki freely."
+LOOP_UNDONE = "Put back: your phone's moves are undone"
+LOOP_UNDO_FAILED = "Couldn't undo your phone's moves just now."
 
 # Closing while an Anki write runs (E20: it finishes its batch first, and a line says so) — the bar's one line, and
 # the reason a job asked for meanwhile waits.

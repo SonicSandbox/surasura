@@ -632,6 +632,7 @@ class Plan:
     def __init__(self):
         self.entries, self.left_out, self.reports, self.removed = [], [], [], []
         self.unchecked, self.flagged = [], []          # (written by the zip: what it kept unchecked, the guard's hits)
+        self.flags, self.flag_lines = {}, []           # the flagged sentences in it: {id: changed_ns}, as shown
 
     def add(self, name, source=None, data=None, rid=None, scrubbed=False):
         self.entries.append(Entry(name, source, data, rid, scrubbed))
@@ -704,6 +705,35 @@ def _results_entries(plan):
     plan.entries += entries
 
 
+FLAGGED = "journey/flagged.json"
+
+
+def _flagged_entry(plan, language):
+    """The flagged sentences (journey v3 SPEC §4: `app/services/flags.py`), when the list holds any: one entry, and
+    what What goes shows of each line (`plan.flag_lines`, its id and `changed` beside it)."""
+    try:
+        from app.services import flags
+        got = flags.for_report(language)
+        if got:
+            plan.add(FLAGGED, data=flags.entry_bytes(language, [line for _, _, line in got]))
+    except Exception as e:                                         # help, never a reason to fail the report
+        plan.left_out.append(f"{FLAGGED}: couldn't be read ({type(e).__name__})")
+        return
+    plan.flags = {rid: changed for rid, changed, _ in got}
+    plan.flag_lines = [(rid, changed, line) for rid, changed, line in got]     # (scrubbed, then named, by `plan`)
+
+
+def _scrubbed(obj, ident):
+    """Every string in `obj` (dicts, lists) through the scrub."""
+    if isinstance(obj, str):
+        return ident.scrub(obj)
+    if isinstance(obj, dict):
+        return {k: _scrubbed(v, ident) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_scrubbed(v, ident) for v in obj]
+    return obj
+
+
 def plan(language, include_results=True, library=None, root=None, extra=None, results_why=None):
     """Every file the zip will hold, worked out without writing anything (but the reports folder, made when missing).
     `library`: the window's counts and folder list (`{counts, sources, state}`) as it shows them; `results_why`: why
@@ -746,6 +776,7 @@ def plan(language, include_results=True, library=None, root=None, extra=None, re
         else:
             p.add(name, data=data)
     p.add("library/summary.json", data=_json_bytes(library or {"library": "none open"}))
+    _flagged_entry(p, language)
     if include_results:
         _results_entries(p)
     else:
@@ -756,6 +787,8 @@ def plan(language, include_results=True, library=None, root=None, extra=None, re
     for e in p.entries:
         e.name = scrubbing.name(e.name, ident)
     p.left_out = [ident.scrub(x) for x in p.left_out]
+    p.flag_lines = [dict(_scrubbed(line, ident), id=rid, changed=changed)   # (What goes shows them as the zip
+                    for rid, changed, line in p.flag_lines]                     # ... holds them; their ids as kept)
     return p
 
 
@@ -926,7 +959,7 @@ def make_zip(dest, language, include_results=True, library=None, root=None, extr
     so). -> the zip's path."""
     root = root or folder()
     p = plan(language, include_results, library, root, extra)
-    if not p.reports:
+    if not p.reports and not p.flags:
         raise ValueError("there are no saved reports to send")
     os.makedirs(dest, exist_ok=True)
     final = zip_name(dest, now)
@@ -946,10 +979,12 @@ def make_zip(dest, language, include_results=True, library=None, root=None, extr
 
 class Sendable:
     """A zip `make_send_zip` wrote: `path`, `zipped` ({rid: report.json's original sha256}, for `_clear` once it is
-    sent), `removed` (the removed reports it clears), `left_out` (its list's lines), `entries` ([(name, size)])."""
+    sent), `removed` (the removed reports it clears), `left_out` (its list's lines), `entries` ([(name, size)]),
+    `flags` ({id: changed_ns}: the flagged sentences it holds) and `flag_lines` (each as it holds it, for What goes)."""
 
-    def __init__(self, path, zipped, removed, left_out, entries):
+    def __init__(self, path, zipped, removed, left_out, entries, flags=None, flag_lines=None):
         self.path, self.zipped, self.removed, self.left_out, self.entries = path, zipped, removed, left_out, entries
+        self.flags, self.flag_lines = dict(flags or {}), list(flag_lines or [])
 
 
 def make_send_zip(path, language, include_results=True, library=None, root=None, extra=None, tail=None,
@@ -959,7 +994,7 @@ def make_send_zip(path, language, include_results=True, library=None, root=None,
     `zipped`). `step(done, total)`: told before each file is read (`_write`). -> a Sendable."""
     root = root or folder()
     p = plan(language, include_results, library, root, extra, results_why)
-    if not p.reports:
+    if not p.reports and not p.flags:                              # (flagged sentences alone are a report too)
         raise ValueError("there are no saved reports to send")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     part = path + PART
@@ -972,7 +1007,56 @@ def make_send_zip(path, language, include_results=True, library=None, root=None,
         except OSError:
             pass
         raise
-    return Sendable(path, zipped, list(p.removed), list(p.left_out), [(e.name, e.size) for e in p.entries])
+    return Sendable(path, zipped, list(p.removed), list(p.left_out), [(e.name, e.size) for e in p.entries], p.flags,
+                    p.flag_lines)
+
+
+def rewrite_flagged(path, language, lines, left_out):
+    """Send report's zip at `path` again, its flagged sentences only `lines` (What goes' ticked ones, as it shows them;
+    none: the entry left out): every other entry copied as it is, this one through `_entry_bytes`, MANIFEST written
+    again (`left_out`: its list), read back whole, then the guard — a hit raises Unsafe and leaves the zip as it was.
+    -> [(name, size)] as it now holds them."""
+    import hashlib
+    ident = scrubbing.identity()
+    p, hashes = Plan(), {}
+    p.left_out = list(left_out)
+    part = path + PART
+    try:
+        with zipfile.ZipFile(path) as old, zipfile.ZipFile(part, "x", zipfile.ZIP_DEFLATED) as z:
+            names = [i.filename for i in old.infolist() if i.filename != "MANIFEST.txt"]
+            if FLAGGED not in names:
+                names.append(FLAGGED)
+            for name in names:
+                if name == FLAGGED:
+                    if not lines:
+                        continue
+                    from app.services import flags
+                    data, _note = _entry_bytes(Entry(name, data=b""), flags.entry_bytes(language, lines), language,
+                                               True, ident)
+                    if data is None:
+                        raise OSError(f"{FLAGGED} couldn't be written as text")
+                else:
+                    data = old.read(name)
+                p.add(name, data=data)
+                hashes[name] = hashlib.sha256(data).hexdigest()
+                z.writestr(name, data)
+            z.writestr("MANIFEST.txt", ident.scrub(_manifest(p, hashes).decode("utf-8")).encode("utf-8"))
+        with zipfile.ZipFile(part) as z:
+            if z.testzip() is not None or set(z.namelist()) != set(hashes) | {"MANIFEST.txt"}:
+                raise OSError("the zip didn't read back whole")
+        hits = scrubbing.leaks(part, ident, language)
+        if hits:
+            path_utils.write_app_log(f"report: the scrub's check found what may name you in {len(hits)} file(s) of "
+                                     f"the zip to send: {', '.join(hits)}")
+            raise Unsafe(hits)
+        os.replace(part, path)
+    except BaseException:
+        try:
+            os.remove(part)
+        except OSError:
+            pass
+        raise
+    return [(e.name, e.size) for e in p.entries]
 
 
 def _unchanged(path, digest):

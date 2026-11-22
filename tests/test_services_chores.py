@@ -335,16 +335,18 @@ def test_the_indexer_command_is_the_scripts_from_source():
 
 # --- Koe --------------------------------------------------------------------------------------------------------- #
 def test_koe_absent_the_chores_still_run(monkeypatch, timers_on):
-    """RD-S10: the module removed — started, focus, close all run."""
+    """RD-S10: the module removed — started, focus, close all run, and nothing automatic writes settings.json."""
     monkeypatch.setitem(sys.modules, "modules.koe", None)
     timers = _Timers()
-    chores, registry, _p = _make(_Settings(enable_koe=True), timers=timers)
+    settings = _Settings(enable_koe=True)
+    chores, registry, _p = _make(settings, timers=timers)
     chores.started()
     chores.activated()
     chores.koe_changed()
     assert chores.worker.idle(5)
     assert len(timers) == 6, ("the indexer, the store's helper, Connect's notice, the warm-up, hato's daily update, the "
                               "helper's debounce")
+    assert settings.writes == [], "nothing automatic writes settings.json"
     chores.close()
 
 

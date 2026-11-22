@@ -71,9 +71,10 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   show's *remove*, set aside) — *236 cards made for you are set aside.* · *Put back* (`connect/switch.put_back`: each restore point
   still holding cards) · *Leave them* (answered until the shelf takes more); only while Cards made for you is on.
 - **Tidy** (Kyou-SH2, PROVISIONAL): ONE card after Tidy deleted cards Connect made that you never studied (by itself past
-  1.5 × your limit, or your *Tidy now*; Connect's record's `tidied`, the newest not undone) — *12 set-aside cards
-  tidied.* · *Undo* (`connect/tidy.act_undo`: the backup put back, byte for byte) · *OK* (answered: this tidy; the next
-  asks again); only while Cards made for you is on.
+  1.5 × your limit, or your *Tidy now*; Connect's record's `tidied`, the newest not undone) — *12 unstudied cards
+  deleted, a copy kept.* · *Undo* (`connect/tidy.act_undo`: the backup put back, byte for byte) · *OK* (answered: this
+  tidy; the next asks again); only while Cards made for you is on. Kyou-SH3: a tidy whose backup didn't read back
+  (`tidy_unsaved`: nothing deleted) is ONE card too — *Nothing deleted: …* · *OK*.
 - **setup's first cards** (SRC S1 + D1, Sonic ✅ 2026-10-16): setup's first scan of the folders the shows and books are in
   logs nothing, so Connect makes no card for them by itself; once its sort screen put some in the mine line
   (`setup_wizard.sorted_offer`, Mado-O), it offers ONE line (`offer`, kept in the seen file): *Make cards for your first 20 episodes?* · *Not now* — either answer takes it off for good.
@@ -308,12 +309,18 @@ STRINGS = {
     "shelved_say": ("Surasura suspended them in Anki (tagged surasura::shelf) when your card cap was full. It no longer "
                     "does that by itself. One comes back by itself when its word comes up."),
     # Kyou-SH2 (PROVISIONAL): Tidy, said
-    "tidied_title": "{n:,} set-aside cards tidied.",
-    "tidied_title_one": "A set-aside card tidied.",
+    # Kyou-SH3 (PROVISIONAL): deleted with a copy kept — never "set aside" (that is the old shelf's suspended cards)
+    "tidied_title": "{n:,} unstudied cards deleted, a copy kept.",
+    "tidied_title_one": "An unstudied card deleted, a copy kept.",
     "tidied_say": ("More cards waited than 1.5 × your limit, so Surasura deleted the ones it made that you never "
-                   "studied, lowest in your study order first. A copy is kept: Undo puts them back."),
+                   "studied, down to your limit, lowest in your study order first. A copy is kept: Undo puts them "
+                   "back."),
     "tidied_say_now": ("You pressed Tidy now: Surasura deleted the cards it made past your limit that you never "
                        "studied. A copy is kept: Undo puts them back."),
+    "tidy_unsaved_title": "Nothing deleted: the copy of {n:,} cards didn't save.",
+    "tidy_unsaved_title_one": "Nothing deleted: the copy of a card didn't save.",
+    "tidy_unsaved_say": ("Before deleting, Surasura reads back the copy it keeps of the cards. This copy was missing or "
+                         "damaged, so every card stays in Anki. It tries again next time."),
     "why_found": "→ …\\{name} ✓ found", "why_found_own": "→ …\\{name} ✓ found in its own folder ({k} more in your "
                                                          "video folders)",
     "why_found_named": "→ …\\{name} ✓ found: the one in a folder named like the show",
@@ -488,6 +495,9 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     tidied = _tidy_entry(connect, seen, answered) if cards_on and connect else None     # Kyou-SH2: Tidy, said
     if tidied is not None:
         out.append(tidied)
+    unsaved = _tidy_unsaved_entry(connect, seen, answered) if cards_on and connect else None    # Kyou-SH3
+    if unsaved is not None:
+        out.append(unsaved)
     anki = _anki_entry(connect, seen) if cards_on else None    # Connect may run (it clears the line by itself: A-5)
     if anki is not None:
         out.append(anki)
@@ -1273,6 +1283,22 @@ def _tidy_entry(connect, seen, answered=frozenset()):
     say = STRINGS["tidied_say_now"] if tidied.get("why") == "now" else STRINGS["tidied_say"]
     return Entry(key=key, kind=TIDIED, title=title, lines=(), actions=("undo_tidy", "leave_tidy"),
                  unseen=key not in seen, say=say, data={"id": int(tidied["id"]), "cards": n})
+
+
+def _tidy_unsaved_entry(connect, seen, answered=frozenset()):
+    """Kyou-SH3 (PROVISIONAL, F4): ONE card when Tidy's backup didn't read back — Connect's record's `tidy_unsaved`
+    (`status._tidy_unsaved`: nothing was deleted, every card home). Nothing to undo: *OK* only (answered: this
+    tidy)."""
+    unsaved = (connect or {}).get("tidy_unsaved") or {}
+    n = int(unsaved.get("cards") or 0)
+    if n <= 0 or not unsaved.get("id"):
+        return None
+    key = f"{TIDIED}:unsaved:{unsaved['id']}:{unsaved.get('at') or ''}"
+    if key in answered:
+        return None
+    title = STRINGS["tidy_unsaved_title_one"] if n == 1 else STRINGS["tidy_unsaved_title"].format(n=n)
+    return Entry(key=key, kind=TIDIED, title=title, lines=(), actions=("leave_tidy",), unseen=key not in seen,
+                 say=STRINGS["tidy_unsaved_say"], data={"id": int(unsaved["id"]), "cards": n, "unsaved": True})
 
 
 def badge(entries_):

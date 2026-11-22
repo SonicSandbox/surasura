@@ -140,10 +140,12 @@ def test_the_setup_record_is_kept_with_the_automation_off(monkeypatch):
 @pytest.mark.parametrize("name,settings,on", STATES, ids=IDS)
 def test_known_from_anki_reads_nothing_unless_both_on(monkeypatch, name, settings, on):
     from app import anki_sync
+    from app.connect import review_loop
     loaded = dict(settings, known_from_anki=["suspended"])
     assert known_signal.signal(loaded) == (["suspended"] if on else [])
     read = []
-    monkeypatch.setattr(known_signal, "read", lambda *a: read.append(a) or {"marked": 0})
+    # the sync's entry point is the review loop's reader (Kyou-LR), which runs the Known reading first
+    monkeypatch.setattr(review_loop, "read", lambda *a: read.append(a) or {"marked": 0})
     out = anki_sync.read_known_signal("ja", URL, ["日本語"], ["Word"], loaded)
     assert (out, len(read)) == (({"marked": 0}, 1) if on else (None, 0))
 

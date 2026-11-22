@@ -2764,6 +2764,11 @@ class Numbers:
         whole."""
         return self._growth.get(item_id)
 
+    def read_growth(self):
+        """(Any thread.) Kura-GS2: the snapshots read again on the worker — at a Generate's end: it writes them after
+        its plan, so a move between the two read them before they were there."""
+        self.worker.put(self._read_growth)
+
     def _read_growth(self):
         """(The worker.) The 'added' snapshots, after a plan read: queued behind it, so the rows' figures never wait."""
         try:

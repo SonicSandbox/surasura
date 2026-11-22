@@ -261,6 +261,145 @@ def save_times(project_root):
     return 0
 
 
+# --- --local-only: what GitHub's pull request run cannot see (Minato-GH, 2026-11-22) ------------------------------- #
+# A train's pull request runs the public core suite and the public module suites on GitHub, on the merge commit (the
+# tree that lands). `--local-only` runs the rest of an --all and nothing more: the core test files the public repo
+# doesn't track (the local-only parsing suite), the suites of the private modules installed here, and every tracked core
+# test file that names a private folder (on GitHub such a file takes the module-absent path). The set is derived on
+# every run, never kept by hand: the private folders are the module and test folders the private repo
+# (<top folder>.priv.git, as `git priv` finds it) tracks, and the module folders here that the public repo tracks no
+# file of. A private folder the private repo tracks but this checkout lacks is named, never skipped quietly.
+# tests/test_run_tests_runner.py proves the two halves hold every file of --all between them (the cover check), and
+# that no tracked core file importing a private module is left out of the set (the import check).
+
+PRIVATE_TOPS = ("modules", "tests")      # the private repo's code folders: modules/<name>/ and tests/<name>/
+_SEP = r"""(?:[./\\]+|["']\s*,\s*["'])"""  # modules/x, modules.x, modules\x (or \\x), "modules", "x"
+
+
+def _names_folder(folder):
+    """A pattern for a source naming `folder` ("modules/<name>"): as a path, a dotted module, os.path.join's parts, or
+    `from modules import <name>` (on one line, or in brackets over several)."""
+    top, name = (re.escape(part) for part in folder.split("/"))
+    return re.compile(rf"\b{top}{_SEP}{name}\b|\bfrom\s+{top}\s+import\s+(?:\([^)]*?|[^\n]*?)\b{name}\b")
+
+
+def _private_folders(project_root, public):
+    """(here, missing): the private folders ("modules/<name>", "tests/<name>") this checkout holds, and those the
+    private repo tracks that it lacks. `public`: the public repo's files. None when the private repo is here but git
+    can't read it (never read as "it tracks nothing")."""
+    shared = {"/".join(p.split("/")[:2]) for p in public if p.count("/") >= 2}
+    listed = []
+    if os.path.isdir(project_root + ".priv.git"):
+        try:
+            out = _run(["git", "-c", "core.quotepath=false", f"--git-dir={project_root}.priv.git", "ls-files", "-z",
+                        "--", *PRIVATE_TOPS], cwd=project_root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        except OSError:
+            return None
+        if out.returncode != 0:
+            return None
+        listed = out.stdout.decode("utf-8", "replace").split("\0")
+    folders = {"/".join(p.split("/")[:2]) for p in listed if p.count("/") >= 2}
+    top = os.path.join(project_root, "modules")
+    on_disk = {f"modules/{name}" for name in (os.listdir(top) if os.path.isdir(top) else ())
+               if os.path.isdir(os.path.join(top, name)) and name != "__pycache__"
+               and any(entry != "__pycache__" for entry in os.listdir(os.path.join(top, name)))}   # (a left-over: none)
+    folders = (folders | on_disk) - shared
+    here = sorted(f for f in folders if os.path.isdir(os.path.join(project_root, f)))
+    return here, sorted(folders - set(here))
+
+
+def local_only(project_root):
+    """--local-only's part of an --all: {"core": {file: why}, "suites": [module suites], "missing": [private folders not
+    here], "private_repo": bool}; None when git can't list the public repo's files, or the private repo's."""
+    try:
+        public = _public_files(project_root)
+    except OSError:                                          # no git on PATH
+        public = None
+    if not public:
+        return None
+    folders = _private_folders(project_root, public)
+    if folders is None:
+        return None
+    here, missing = folders
+    names = [(folder, folder.split("/")[1], _names_folder(folder)) for folder in here]
+    core, all_core = {}, _core_files(project_root)
+    for path in all_core:
+        if path not in public:
+            folder = "/".join(path.split("/")[:2])
+            core[path] = f"in {folder}/, which the public repo doesn't track" if folder in here else \
+                "not tracked by the public repo"
+    # What a tracked file of tests/ names (read once; the pattern only where the name is in the text at all): a test
+    # file for itself; a conftest for every test file under its folder; a helper for every test file that imports it,
+    # and every test file under a conftest that imports it.
+    texts = {}
+    for path in (p for p in public if p.startswith("tests/") and p.endswith(".py")):
+        try:
+            texts[path] = _text(project_root, path)
+        except OSError:
+            continue
+    named = {}
+    for path in sorted(texts, key=lambda p: (not os.path.basename(p).startswith("test_"), p)):    # test files first
+        hits = [folder for folder, name, pattern in names if name in texts[path] and pattern.search(texts[path])]
+        if hits:
+            named[path] = hits
+    tracked_core = [p for p in all_core if p in texts]
+    for path, hits in named.items():
+        base = os.path.basename(path)
+        if base.startswith("test_"):
+            users = [path] if path in tracked_core else []
+        elif base == "conftest.py":
+            users = [p for p in tracked_core if p.startswith(path[:-len(base)])]
+        else:
+            stem = base[:-3]
+            word = re.escape(stem)
+            uses = re.compile(rf"\b(?:import|from)\s+(?:[\w.]*\.)?{word}\b|\bimport\s+[^\n]*\b{word}\b")
+            importers = [p for p in texts if p != path and stem in texts[p] and uses.search(texts[p])]
+            users = [p for p in importers if p in tracked_core]
+            for conftest in (p for p in importers if os.path.basename(p) == "conftest.py"):
+                users += [p for p in tracked_core if p.startswith(conftest[:-len("conftest.py")])]
+        for user in users:
+            why = f"names {', '.join(hits)}" + ("" if user == path else f" (through {path})")
+            core.setdefault(user, why)
+    suites = [f"{folder}/tests" for folder in here
+              if folder.startswith("modules/") and os.path.isdir(os.path.join(project_root, folder, "tests"))]
+    gone = [f"{folder}/tests" for folder in here
+            if folder.startswith("modules/") and f"{folder}/tests" not in suites]
+    return {"core": dict(sorted(core.items())), "suites": suites, "missing": missing + gone,
+            "private_repo": os.path.isdir(project_root + ".priv.git")}
+
+
+def _local_only_summary(part):
+    """The set's size, by part: said on every --local-only run."""
+    untracked = sum(1 for why in part["core"].values() if not why.startswith("names "))
+    lines = [f"Local-only set: {len(part['core'])} core test file(s) ({untracked} the public repo doesn't track, "
+             f"{len(part['core']) - untracked} naming a private folder) + {len(part['suites'])} private module "
+             f"suite(s){': ' + ', '.join(part['suites']) if part['suites'] else ''}"]
+    if part["missing"]:
+        lines.append(f"  NOT HERE (a private folder this checkout lacks, or a private module without its tests/): "
+                     f"{', '.join(part['missing'])}")
+    if not part["private_repo"]:
+        lines.append("  no private repo beside this checkout (<top folder>.priv.git): a private module it lacks can't "
+                     "be named")
+    return "\n".join(lines)
+
+
+def run_local_only(project_root, listing=False):
+    """`--local-only`: the local-only set (local_only()), run as --all runs its part. 0 when all passed; 2 when git
+    can't list the public repo's files (nothing run)."""
+    part = local_only(project_root)
+    if part is None:
+        print("--local-only: git can't list the public repo's files here, or the private repo's: nothing was run.")
+        return 2
+    print(_local_only_summary(part), flush=True)
+    if listing:
+        for path, why in part["core"].items():
+            print(f"  {path}  ({why})")
+        for suite in part["suites"]:
+            print(f"  {suite}  (a private module's suite)")
+        return 0
+    return run_all(project_root, only=part)
+
+
 def _run_shard(project_root, label, files, times_path):
     """Run one core shard (its files, in one pytest process) to the end. Returns (label, exit code, output, seconds)."""
     started = time.perf_counter()
@@ -354,25 +493,31 @@ def _last_line(output):
     return lines[-1] if lines else "(no output)"
 
 
-def run_all(project_root):
+def run_all(project_root, only=None):
     """Run every suite at once, each in its own process (the core suite in shards). Returns 0 only if every suite
-    passed."""
+    passed. `only`: --local-only's part (local_only()): its core files and module suites alone, run the same way."""
     # A suite's output can hold characters this console can't print; escape them, don't crash.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="backslashreplace")
-    suites = _suites(project_root)
-    files = _core_files(project_root)
+    suites = _suites(project_root) if only is None else (["tests"] if only["core"] else []) + only["suites"]
+    files = _core_files(project_root) if only is None else list(only["core"])
     cpus = os.cpu_count()
     chosen = os.environ.get("SURASURA_TEST_SHARDS", "").strip().isdigit()
     idle = None if chosen or len(files) < 2 else _idle_cpus(cpus)        # half a second, spent only when it counts
     count = min(_shard_count(_free_memory_mb(), cpus, idle), len(files)) if len(files) > 1 else 1
-    shards = _shards(project_root, files, count) if count > 1 else []
-    jobs = [(f"tests [{i}/{len(shards)}]", shard) for i, shard in enumerate(shards, 1)] or [("tests", None)]
-    jobs += [(suite, None) for suite in suites[1:]]
+    # A part's core files always go as shards (one at least): never `pytest tests`, the whole core suite.
+    shards = _shards(project_root, files, count) if count > 1 or (only is not None and files) else []
+    jobs = [(f"tests [{i}/{len(shards)}]", shard) for i, shard in enumerate(shards, 1)] or \
+        ([("tests", None)] if "tests" in suites else [])
+    jobs += [(suite, None) for suite in suites if suite != "tests"]
 
     print("\n" + "="*60)
-    print("   SURASURA TEST SUITE RUNNER  (--all: every suite at once)")
+    print("   SURASURA TEST SUITE RUNNER  " + ("(--all: every suite at once)" if only is None else
+                                             "(--local-only: what GitHub's pull request run can't run)"))
     print("="*60 + "\n")
+    if not jobs:
+        print("Nothing to run: no local-only test file and no private module suite here.")
+        return 0
     split = f" (the core suite in {len(shards)} shards)" if shards else ""
     print(f"Running {len(suites)} suites in parallel{split}: {', '.join(suites)}\n", flush=True)
 
@@ -867,6 +1012,12 @@ GUARDS = {
     "tests/test_list_reader.py::test_no_list_reader_goes_around_the_shared_one": ("app/", "modules/"),
     "tests/test_packaging_config.py": ("app/", "modules/", "packaging/", "app_entry.py", "package_app.py"),
     "tests/test_profile_parts.py::test_every_place_the_code_names_a_data_root_is_counted_here": ("app/", "modules/"),
+    ("tests/test_run_tests_runner.py::"
+     "test_githubs_run_and_the_local_only_run_hold_every_file_of_all_between_them"): ("tests/", "modules/", ".github/",
+                                                                                      "run_tests.py"),
+    ("tests/test_run_tests_runner.py::"
+     "test_no_tracked_core_test_file_imports_a_private_module_outside_the_local_only_set"): ("tests/", "modules/",
+                                                                                             "run_tests.py"),
     ("tests/test_scrub.py::"
      "test_every_short_hash_in_the_app_is_an_install_key_identity_knows_or_hashes_no_install"): ("app/", "modules/"),
     ("tests/test_services_phase.py::"
@@ -1268,7 +1419,7 @@ def run_touched_callers(project_root, base="origin/3.0-dev", listing=False):
 
 
 FLAGS = ("--all", "--shard", "--stress", "--stress-changed", "--guards", "--touched-callers", "--list", "--save-times",
-         "--help", "-h")                                                       # main's (a value follows some)
+         "--local-only", "--help", "-h")                                                       # main's (a value follows some)
 
 
 def _value_after(args, flag):
@@ -1294,7 +1445,10 @@ def main():
     `python run_tests.py --guards`  runs every whole-repo guard test (GUARDS), under the read audit: before every push.
     `python run_tests.py --touched-callers [BASE]`  a lane's touched run: the test files that reach what the branch
         changed since BASE (origin/3.0-dev) and the area's guards, under the read audit (no test reads an ignored file).
-    `--list` with any of the three: prints what it would run, and runs nothing.
+    `python run_tests.py --local-only`  what GitHub's pull request run can't run, and nothing it can: the core test
+        files the public repo doesn't track, the private module suites, the tracked core files that name a private
+        folder (a train's local gate beside its pull request's GitHub run). Prints the set's size first.
+    `--list` with any of the four: prints what it would run, and runs nothing.
     `python run_tests.py --save-times`  writes tests/test_times.json (the times GitHub's shards pack by) from this
         copy's last --all: a train's, after its green --all. Runs no test.
     `python run_tests.py --help`  prints this and runs nothing; so does a flag it doesn't know (exit 2).
@@ -1312,8 +1466,10 @@ def main():
     # 1. Setup environment
     project_root = os.path.dirname(os.path.abspath(__file__))
     listing = "--list" in args
-    if listing and not any(a.split("=", 1)[0] in ("--stress-changed", "--touched-callers", "--guards") for a in args):
-        print("run_tests.py: --list goes with --touched-callers, --stress-changed or --guards: nothing was run.\n")
+    if listing and not any(a.split("=", 1)[0] in ("--stress-changed", "--touched-callers", "--guards", "--local-only")
+                           for a in args):
+        print("run_tests.py: --list goes with --touched-callers, --stress-changed, --guards or --local-only: nothing was "
+              "run.\n")
         print(textwrap.dedent("    " + main.__doc__.strip()))
         sys.exit(2)                    # (alone, or with --all / --shard, it started the whole core run: train 53's keeper)
     for flag, run in (("--stress-changed", lambda v: run_stress_changed(project_root, v or "origin/3.0-dev",
@@ -1321,6 +1477,7 @@ def main():
                       ("--touched-callers", lambda v: run_touched_callers(project_root, v or "origin/3.0-dev",
                                                                           listing=listing)),
                       ("--guards", lambda v: run_guards(project_root, listing=listing)),
+                      ("--local-only", lambda v: run_local_only(project_root, listing=listing)),
                       ("--stress", lambda v: run_stress(project_root, int(v) if v and v.isdigit() else 1))):
         if flag in args or any(a.startswith(flag + "=") for a in args):
             try:

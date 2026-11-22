@@ -405,6 +405,12 @@ NEEDS_UPDATE_TITLE = "Install the update"
 NEEDS_UPDATE_LINE = "Surasura v{version} is ready to install"
 NEEDS_UPDATE_FAILED_TITLE = "The update didn't finish"
 UPDATED = "Updated to v{version} ✓"
+# The review loop's payoff (Kyou-LR; the WL mocks' 03-payoff-toast; PROVISIONAL): after a known-words sync that read
+# your moves in Anki — ✓ Known · ⇄ Swap · ✕ Ignore — once, with Undo (that sync's moves; your cards stay as they are)
+LOOP_PAYOFF = "From your phone: {known} known · {swap} to swap · {ignored} ignored"
+LOOP_PAYOFF_TIP = "Saved in Surasura: delete known and ignored cards in Anki freely."
+LOOP_UNDONE = "Put back: your phone's moves are undone"
+LOOP_UNDO_FAILED = "Couldn't undo your phone's moves just now."
 
 # Closing while an Anki write runs (E20: it finishes its batch first, and a line says so) — the bar's one line, and
 # the reason a job asked for meanwhile waits.
@@ -1743,6 +1749,9 @@ NEEDS_TIDY_BACK = "Put back · {n} cards are in Anki again"                    #
 NEEDS_TIDY_BACK_ONE = "Put back · the card is in Anki again"
 NEEDS_TIDY_NOT_BACK = "Not put back: {why}"
 NEEDS_TIDY_LEFT = "OK · they stay deleted; a word made again if it climbs back"
+NEEDS_TIDY_SKIPPED = " · {k} left out: their words have new cards"           # Kyou-SH3 (PROVISIONAL, F5)
+NEEDS_TIDY_SKIPPED_ONE = " · 1 left out: its word has a new card"
+NEEDS_TIDY_UNSAVED_LEFT = "OK · nothing was deleted"                           # Kyou-SH3 (PROVISIONAL, F4)
 NEEDS_SHOWS_NOT_ADDED = "Nothing was added: your library can't be changed just now · try again in a moment"
 NEEDS_FIRST_CARDS_AUTOMATION_OFF = "automatic actions are off in Settings; turn them on, then ask again"
 NEEDS_ITS_NEW = "{name} joins your library as a new file"

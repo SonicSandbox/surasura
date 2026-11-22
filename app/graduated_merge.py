@@ -12,6 +12,8 @@ The rules, each a way the user's known words could be damaged otherwise (CLAUDE.
   * a KnownWord.json that can't be read strictly is never written (nor is the list moved);
   * a dated, byte-verified copy of KnownWord.json is kept before the write (`path_utils.backup_to_trash`), and a
     backup that fails writes nothing;
+  * a word the learner took back to Still learning (an entry `anki_sync._turned`, none of it known) is never raised:
+    its turned entries only take the Graduates' mark (Kyou-LR);
   * a word the file already holds as known, or as IGNORED (the user's choice, under any other entry too), is left
     alone — it only takes the Graduates' mark (`anki_sync.GRADUATED_MARK`: its known entries, or, dismissed, its
     IGNORED ones; the status kept, so an IGNORED one is ignored day to day; a replacer keeps it known, AD-1); nothing
@@ -143,6 +145,12 @@ def _merge_held(language, words, result):
             entry = _entry(word, language, now)
             by_key[key] = [entry]
             new.append(entry)
+        elif any(anki_sync._turned(e) for e in entries) and not any(anki_sync._is_known(e) for e in entries):
+            result["present"] += 1
+            # Still learning (Kyou-LR): the learner took it back, so it is never raised — only marked a Graduate's
+            # word, its status kept (clearing the mark puts it back known, the mark with it)
+            mark += [e for e in entries if anki_sync._turned(e) and e.get(anki_sync.GRADUATED_MARK) is not True
+                     and all(e is not m for m in mark)]
         elif any(e.get("knownStatus") == "IGNORED" or anki_sync._is_known(e) for e in entries):
             result["present"] += 1
             # A replacer keeps it known (AD-1): its known entries take the mark — known from another source, a

@@ -6,17 +6,24 @@ finds them and, on the learner's press, moves them (lean, PROVISIONAL):
 
 - `strays(settings, language)` (read-only, a worker): this language's cards Connect made (the store's `made_words`, so
   never another language's, nor a card the learner mined by hand) that are in another deck than `fields.surasura_deck`
-  — never one in a filtered deck (a Custom Study session: Anki puts it back itself). Kept `KEEP_S` a deck, so
+  — never one in a filtered deck (a Custom Study session: Anki puts it back itself), nor one you moved out of its home
+  (Kyou-SH4, PROVISIONAL: `_find`; the move moves the same cards it counts). Kept `KEEP_S` a deck, so
   *Needs you*'s refreshes don't ask Anki each time (a move or its Undo asks again at once).
 - `move(settings, language, deck, …)`: *Move them to <deck>* — under the Anki-writing lock, never while you review:
   read again, a snapshot of each card's deck written first (Connect's folder, `deck-moves/`), `changeDeck`, read
   back. A card keeps its reviews and its due; only its deck changes. Anki stopping mid-way still offers the Undo.
 - `move_back(settings, snapshot_id, …)`: its Undo — each card still in Surasura's deck back to the deck it came from,
   while Anki has that deck (one deleted since is never made again: its cards stay).
+- Kyou-SH4: a move is Surasura's, never the learner's — each moved note's home (Connect's ledger, `homes`: the deck
+  Surasura last put it in, where Tidy tells your move from its own) is `deck` after it; the snapshot keeps the homes
+  before, and the Undo puts them back for the cards it moves back. A record that can't be read or written is logged,
+  never a reason to stop: the cards stay in the deck Surasura shows, home by itself. (The homes `_find` reads to
+  leave out the cards you filed are another matter: unreadable, no card is shown and nothing moves.)
 
 `getDecks` names each card's deck without rendering it (`cardsInfo` would render every card's two sides).
 """
 import json
+import logging
 import os
 import threading
 import time
@@ -28,6 +35,7 @@ FOLDER = "deck-moves"
 
 _KEPT = {}                              # (language, deck) -> (at, answer)
 _KEEPING = threading.Lock()
+log = logging.getLogger("surasura-cli")
 
 
 def _term(deck):
@@ -57,12 +65,27 @@ def _decks_of(url, cards):
 
 
 def _find(url, notes, deck):
-    """{deck: [card ids]} of `notes`' cards outside `deck` (and its subdecks), none in a filtered deck."""
+    """{deck: [card ids]} of `notes`' cards outside `deck` (and its subdecks), none in a filtered deck — and none you
+    moved (Kyou-SH4): a note with a home on record (`homes`) counts only its cards still in that home (Surasura put
+    them there); one elsewhere, a subdeck of it included, is yours. No record (made before 2026-11-18, in Anki
+    Miner's own deck): counted, as before. `strays` counts and `move` moves the same cards. Homes that can't be read
+    raise (Kyou-SH4's lens): no card shown, nothing moved — never a card you filed counted or moved on a guess."""
     from app import anki_connect
-    cards = []
-    for start in range(0, len(notes), CHUNK):
-        cards += anki_connect.find_cards(url, _ids_query(notes[start:start + CHUNK], deck))
-    return _decks_of(url, sorted(set(cards))) if cards else {}
+    from app.connect.ledger import homes_of
+    homes = homes_of(notes)
+    groups = {}
+    for n in notes:
+        home = homes.get(int(n))
+        groups.setdefault(str(home).casefold() if home else None, []).append(n)
+    out = {}
+    for home, ids in groups.items():
+        cards = []
+        for start in range(0, len(ids), CHUNK):
+            cards += anki_connect.find_cards(url, _ids_query(ids[start:start + CHUNK], deck))
+        for d, got in (_decks_of(url, sorted(set(cards))) if cards else {}).items():
+            if home is None or d.casefold() == home:
+                out.setdefault(d, []).extend(got)
+    return out
 
 
 def strays(settings, language):
@@ -129,6 +152,52 @@ def _change(url, cards, deck):
         anki_connect.invoke("changeDeck", url, cards=cards[start:start + CHUNK], deck=deck)
 
 
+def _notes(url, cards):
+    """The notes of `cards` (`cardsToNotes`), sorted."""
+    from app import anki_connect
+    out = set()
+    for start in range(0, len(cards), CHUNK):
+        out |= {int(n) for n in anki_connect.invoke("cardsToNotes", url, cards=cards[start:start + CHUNK]) or ()}
+    return sorted(out)
+
+
+def _homes_before(url, cards):
+    """{note id (str): its home before the move, or None} for the snapshot; {} when it can't be read (the Undo then
+    leaves each record as the move wrote it: Tidy keeps those cards, never takes one)."""
+    try:
+        from app.connect.ledger import Ledger, path
+        notes = _notes(url, cards)
+        if not os.path.exists(path()):
+            return {str(n): None for n in notes}
+        with Ledger() as book:
+            had = book.homes(notes)
+        return {str(n): had.get(n) for n in notes}
+    except Exception:
+        log.warning("Couldn't read the moved cards' homes", exc_info=True)
+        return {}
+
+
+def _set_homes(url, cards, home):
+    """`cards`' notes recorded at `home` — a deck, or {note id (str): deck or None} (the Undo's). Never raises."""
+    try:
+        from app.connect.ledger import Ledger, path
+        if not cards or not os.path.exists(path()):
+            return
+        notes = _notes(url, cards)
+        by_deck = {}
+        for n in notes:
+            if isinstance(home, dict):
+                if str(n) in home:
+                    by_deck.setdefault(home[str(n)], []).append(n)
+            else:
+                by_deck.setdefault(home, []).append(n)
+        with Ledger() as book:
+            for deck, ids in by_deck.items():
+                book.set_homes(ids, deck)
+    except Exception:
+        log.warning("Couldn't record the moved cards' homes", exc_info=True)
+
+
 def move(settings, language, deck=None, wait=0.0, cancel=None, on_wait=None):
     """*Move them to <deck>* -> {"ok", "say", "moved", "deck", "id"} (`id`: the snapshot its Undo names, whenever
     anything may have moved: a move Anki stopped answering in the middle of is undone the same way). `deck`: the deck
@@ -154,10 +223,13 @@ def move(settings, language, deck=None, wait=0.0, cancel=None, on_wait=None):
                 return {"ok": True, "say": NONE_LEFT.format(deck=ours), "moved": 0, "deck": ours, "id": None}
             name = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{time.time_ns() % 10 ** 9}"
             _write(os.path.join(_folder(), f"{name}.json"),
-                   {"language": language, "deck": ours, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "from": found})
+                   {"language": language, "deck": ours, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "from": found,
+                    "homes": _homes_before(url, cards)})
             snapshot = name                 # from here on, whatever happens, its Undo is offered
             _change(url, cards, ours)
-            moved = len(_decks_of(url, cards).get(ours) or ())
+            there = sorted(_decks_of(url, cards).get(ours) or ())
+            moved = len(there)
+            _set_homes(url, there, ours)    # Surasura's move: their home is its deck now (Tidy's, never yours)
         if moved != len(cards):
             say = SOME_MOVED.format(n=moved, k=len(cards), deck=ours)
         else:
@@ -189,21 +261,26 @@ def move_back(settings, snapshot, wait=0.0, cancel=None, on_wait=None):
         return {"ok": False, "say": f"{NOT_UNDONE} {e}"}
     if held is None:
         return {"ok": False, "say": problem}
-    back, gone = 0, 0
+    back, gone, went = 0, 0, []
     try:
         from app import anki_connect
         with held:
             here = set(_decks_of(url, sorted(c for ids in came.values() for c in ids)).get(deck) or ())
             have = set(anki_connect.deck_names(url))
-            for home, ids in came.items():
-                still = [c for c in ids if c in here]
-                if home not in have:
-                    gone += len(still)
-                    continue
-                for start in range(0, len(still), CHUNK):     # counted a chunk at a time (PART_UNDONE)
-                    part = still[start:start + CHUNK]
-                    _change(url, part, home)
-                    back += len(part)
+            try:
+                for home, ids in came.items():
+                    still = [c for c in ids if c in here]
+                    if home not in have:
+                        gone += len(still)
+                        continue
+                    for start in range(0, len(still), CHUNK):     # counted a chunk at a time (PART_UNDONE)
+                        part = still[start:start + CHUNK]
+                        _change(url, part, home)
+                        back += len(part)
+                        went += part
+            finally:                    # the cards that went back: their homes as they were before the move
+                if went:                # (a snapshot without them: no record, as before homes — Tidy keeps them)
+                    _set_homes(url, went, record.get("homes") or None)
     except Exception as e:
         return {"ok": False, "say": PART_UNDONE.format(n=back, why=e) if back else f"{NOT_UNDONE} {e}", "back": back}
     finally:

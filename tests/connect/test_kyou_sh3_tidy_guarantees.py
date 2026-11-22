@@ -153,7 +153,8 @@ def _info(note_id=104, tag="surasura::connect::t-1", mod=1000):
 
 
 def _card(note_id=104, **values):
-    return {note_id * 10: dict({"cardId": note_id * 10, "reps": 0, "type": 0, "queue": 0, "flags": 0}, **values)}
+    return {note_id * 10: dict({"cardId": note_id * 10, "reps": 0, "type": 0, "queue": 0, "flags": 0,
+                                "deckName": DECK}, **values)}
 
 
 @pytest.mark.parametrize("clause, args, said", [
@@ -172,7 +173,7 @@ def _card(note_id=104, **values):
 def test_the_guarantee_is_one_function_and_every_clause_keeps_the_card(clause, args, said):
     # mutants on `why_kept`: each clause alone keeps the card; with none of them it is Tidy's to take
     base = dict(info=_info(), cards=_card(), made={104}, reviewed=set(), filtered=set(), done_at=1000, shelf={},
-                asked=frozenset())
+                asked=frozenset(), home=DECK)       # Kyou-SH4: in the deck Surasura made it in
     assert tidy.why_kept(**base) is None, "Connect's own, never reviewed, never changed: Tidy's"
     assert tidy.why_kept(**dict(base, **args)) == said, clause
 

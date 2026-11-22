@@ -1128,3 +1128,46 @@ def test_homographs_with_no_reading_and_no_telling_row_fall_back_to_the_library_
     got = sentences.choose("ja", [key], dial=sentences.BEST, young={}, never={key: {old}} if old else None)
     assert got == {key: []} and asked == ["ja"], "the library search, as for a word with no row"
     assert sentences.choose("ja", [KYOU], dial=sentences.BEST, young={})[KYOU], "a key with its reading: its row"
+    other = ("今日", "ケフ")                        # a reading the list has no row for: another word, never a guess
+    asked.clear()
+    assert sentences.choose("ja", [other], dial=sentences.BEST, young={}, never={other: {KYOU_LINES[1]}}) ==         {other: []} and asked == ["ja"]
+
+
+def test_a_key_with_no_reading_weighs_young_words_as_its_row_does_never_its_own_word(monkeypatch):
+    # Why: matched to its row, a word with no reading must be ranked exactly as the row's own key is — the word itself
+    # is never one of the young words a sentence practises (its own weight would lift every line it is in).
+    from app import sentence_corpus as sc
+    from app.path_utils import get_user_file
+    known = sorted({"明日", "今日", "から", "に", "出掛ける", "出かける", "よう", "う"})
+    first, second = _sd_write("ja", "第01話.txt", [EASY]), _sd_write("ja", "第02話.txt", [TODAY])
+    user_files = os.path.join(get_user_file("User Files"), "ja")
+    os.makedirs(user_files, exist_ok=True)
+    with open(os.path.join(user_files, "KnownWord.json"), "w", encoding="utf-8") as f:
+        json.dump({"words": [{"dictForm": w, "knownStatus": "KNOWN"} for w in known]}, f, ensure_ascii=False)
+    sc.build("ja", os.path.join(os.environ["SURASURA_TEST_ROOT"], "corpus-ja.zip"), progress=lambda message: None)
+    info = {os.path.normcase(os.path.abspath(p)): (n, 0.0, sentences.REAL, False)
+            for n, p in enumerate((first, second), 1)}
+    monkeypatch.setattr(sentences, "_library", lambda language, store=None, ai=False, only=None: info)
+    key = next((t[0], t[1]) for _t, tokens in analyzer.JapaneseTokenizer().tokenize_sentences(EASY)
+               for t in tokens if t[0] == "冒険")
+    assert key[1], "the row's key has its reading"
+    _sd_plan("ja", [first, second], {key: [(0, 0, EASY, 0), (1, 0, TODAY, 0)]})
+    for asked in (key, (key[0], "")):
+        got = sentences.choose("ja", [asked], dial=sentences.BEST, young={"冒険": 1.0})[asked]
+        assert [(ch.text, ch.weight) for ch in got] == [(EASY, 0.0), (TODAY, 0.0)], asked
+
+
+def test_a_new_generates_plan_is_matched_by_its_own_rows_never_the_last_plans(placed, monkeypatch):
+    # Why: the lemma's row is looked up in an index of the plan's rows; a new Generate numbers its rows anew, and an
+    # index left from the last plan would hand the word another word's sentences.
+    here, there = _sd_write("ja", "第01話.srt", [HARD]), _sd_write("ja", "第02話.srt", ["……", EASY])
+    _sd_place(placed, here, 1)
+    _sd_place(placed, there, 2)
+    _no_library_search(monkeypatch)
+    key = (BOUKEN[0], "")
+    _sd_plan("ja", [here, there], {BOUKEN: [(0, 0, HARD, 3), (1, 1, EASY, 0)]})
+    assert [ch.text for ch in sentences.choose("ja", [key], dial=sentences.BEST, young={})[key]] == [EASY, HARD]
+    today = _sd_write("ja", "第03話.srt", [TODAY])
+    _sd_place(placed, today, 3)
+    _sd_plan("ja", [here, there, today], {KYOU: [(2, 0, TODAY, 0)], BOUKEN: [(0, 0, HARD, 3)]})    # 冒険: row 1 now
+    assert [ch.text for ch in sentences.choose("ja", [key], dial=sentences.BEST, young={})[key]] == [HARD]

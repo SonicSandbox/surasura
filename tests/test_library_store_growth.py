@@ -1065,3 +1065,21 @@ def test_an_undo_whose_snapshot_cannot_be_taken_back_fails_whole(language):
     store.undo(change)
     assert _snap(store, ep, "done") is None
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_generates_writing_by_turns_never_set_an_items_last_back(language, monkeypatch):
+    """Two Generates whose chunked writes take turns (a batch run beside the window's, say): the one that read and
+    stamped its figures earlier writes after the newer one — its older 'last' never replaces the newer: 'last' is
+    the newest Generate's. An item the newer one did not count still takes the older one's."""
+    store = migrated(language)
+    ep, other = store.ids("now")[:2]
+    newer = _figures(store, [ep], base=300)
+    store.record_growth(newer)
+    older_at = "2000-01-01T00:00:00.000000Z"                   # the older Generate's stamp, from before the newer's
+    monkeypatch.setattr(ls, "_now", lambda: older_at)
+    older = _figures(store, [ep, other], base=100)
+    store.record_growth(older)
+    assert _snap(store, ep, "last") == newer[_rel(store, ep)]
+    assert _snap(store, other, "last") == older[_rel(store, other)]
+    store.close()

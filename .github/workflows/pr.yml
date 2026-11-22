@@ -114,7 +114,7 @@ jobs:
       - name: The folders the tests expect
         shell: bash
         run: mkdir -p data/ja data/zh "User Files"
-      - name: The AI voice (no model, no GPU, no network: its downloads, server and Anki are faked)
+      - name: The AI voice (no model, GPU or network; its downloads, server and Anki are faked)
         env:
           PYTHONIOENCODING: utf-8
           TMP: ${{ runner.temp }}

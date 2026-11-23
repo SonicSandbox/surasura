@@ -5339,6 +5339,7 @@ def settings_signature(settings, language):
         "connect_backlog_cap",          # how many cards Connect keeps waiting (P2.4): never what a run counts
         "known_from_anki",              # P2.4: what it adds lands in KnownWord.json (known_sig), not as a key
         "known_from_anki_chosen",       # Kantan-B3: whether those states are the learner's pick, never a run
+        "sentence_length_chosen",       # E-LENGTH: whether *Length* is the learner's pick; the pair is hashed
         "loop_ignore_flag",             # Mado-LT: the loop's Ignore / Swap flags: what they move is in the lists
         "loop_swap_flag",
         "connect_video_folders",        # P2.5: where Connect looks for a moved video, never what a run counts
@@ -8101,6 +8102,9 @@ def main():
             # by key as the plan's are). Never fails the run: without it a reader takes today's path.
             try:
                 _signed.update((os.path.abspath(entry[0]), entry) for entry in (_sig_parts or {}).get("files") or ())
+                _listed_at = {}             # each row's place in the list just written (progressive_rows' order)
+                for _place, _row in enumerate(progressive_rows):
+                    _listed_at.setdefault((_row["Word"], _row["Reading"]), _place)
                 _table_size = _table.finish(
                     row_keys, lambda w: row_of.get(_phrase_row_of.get(w) if isinstance(w, int) else w),
                     lambda lr: plan_rules.clauses_or(_atom(lr), _view.known_when(lr, _atom)),
@@ -8108,6 +8112,7 @@ def main():
                     lambda index: row_of.get(_phrase_row_of.get(index)),
                     [[s["path"], s["type"], _source_digest(s)] for s in source_list],
                     {"engine": engine_id(), "run_signature": _run_sig, "language": language},
+                    places=[_listed_at.get(key, -1) for key in row_keys],
                 ).write(os.path.join(RESULTS_DIR, sentence_table.TABLE_FILE))
                 print(f"Saved the sentence table ({_table_size:,} bytes, {len(_table):,} lines offered).")
             except Exception as e:

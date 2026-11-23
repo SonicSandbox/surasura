@@ -366,12 +366,12 @@ def test_a_rows_lines_come_in_file_then_place_order(tmp_path):
 # --------------------------------------------------------------------------- #
 # 4. Generate writes it (level 1): the walk's lines, beside today's plan
 # --------------------------------------------------------------------------- #
-def _generate_at(language, level, force=True):
+def _generate_at(language, level, force=True, extra=(), seed="0"):
     from tests.test_services_progress import _analyzer
-    env = {"SURASURA_SENTENCE_TABLE": str(level), "PYTHONHASHSEED": "0"}
+    env = {"SURASURA_SENTENCE_TABLE": str(level), "PYTHONHASHSEED": seed}
     if force:
         env["SURASURA_FORCE_RUN"] = "1"
-    proc = _analyzer(language, env=env)
+    proc = _analyzer(language, *extra, env=env)
     assert proc.returncode == 0, proc.stdout.decode("utf-8", "replace")[-3000:]
     return proc.stdout.decode("utf-8", "replace")
 
@@ -414,10 +414,14 @@ def test_at_level_1_every_kept_sentence_of_the_plan_is_a_line_of_the_table(langu
 @pytest.mark.parametrize("language", ["ja", "zh"])
 def test_at_level_1_every_other_file_in_results_is_the_same_bytes_as_at_0(language, monkeypatch):
     # why: release 1 leaves the list and the journey on today's rule — the table is written beside them and nothing
-    # else may move (the walk's offers to the table take nothing from the shortlists)
+    # else may move (the walk's offers to the table take nothing from the shortlists). *Length* is the learner's own
+    # pick here: its default follows the level (settings_manager.sentence_length_default), which is E-LENGTH's to test
     from tests import services_helpers as h
     monkeypatch.delenv("SURASURA_SENTENCE_TABLE", raising=False)
     _seed(language)
+    h.write_settings({"target_language": language, "anki_connect_url": "http://127.0.0.1:9",
+                      "sentence_length_chosen": True,
+                      "logic": {"context": {"min_chars": 10, "preferred_max_chars": 50}}})
     found = []
     for level in (0, 1):
         _generate_at(language, level)
@@ -672,3 +676,88 @@ def test_a_name_before_da_is_what_the_sentence_is_about():
     # why: 犯人はケンだ — a name followed by だ / です counts, as one followed by a particle does
     _text, tokens, words = _line("ja", 12, people=("ケン",))
     assert words.of_word(_key(tokens, "犯人"))[0] == 1            # ケン
+
+
+# --------------------------------------------------------------------------- #
+# 6. Each row's place in the list (format 3): the reader knows what is taught before a word without an order
+# --------------------------------------------------------------------------- #
+def test_places_are_kept_by_row_and_a_row_off_the_list_is_minus_one(tmp_path):
+    # why: the score's reader takes "taught before this word" from the table alone when no order is passed (SPEC
+    # § 5: an order is passed only after a move) — each row's place must come back as Generate gave it
+    lib = _Library(_sentences("ja"))
+    n = len(lib.keys)
+    places = [(n - 1 - k) if k % 3 else -1 for k in range(n)]      # a list order of its own; every third row off it
+    packer = lib.packer()
+    table = st.open_table(_write(packer.finish(
+        lib.keys, lib.row.get, lib.clauses, lambda key: lib.row.get(key, -1), lambda key: key, lambda index: None,
+        [["show/0.srt", "subtitle", None]], {"engine": "e47", "run_signature": "sig", "language": "ja"},
+        places=places), tmp_path))
+    assert table is not None and table.head["v"] == st.VERSION >= 3
+    assert table.places() == places
+
+
+def test_without_places_every_row_is_off_the_list_and_an_empty_library_has_none(tmp_path):
+    # why: a caller that has no list (a made table) must still write a table a reader can open; no rows, no places
+    lib = _Library(_sentences("zh"))
+    assert st.open_table(_write(lib.finish(lib.packer(), "zh"), tmp_path)).places() == [-1] * len(lib.keys)
+    empty = _Library([])
+    assert st.open_table(_write(empty.finish(empty.packer()), tmp_path, "empty.bin")).places() == []
+
+
+def test_places_of_another_length_than_the_rows_are_refused(tmp_path):
+    # why: a place list off by one would give every later row its neighbour's place; refused, the run's write fails
+    # and is logged (the analyzer's try), and the reader takes today's path
+    lib = _Library(_sentences("ja"))
+    with pytest.raises(ValueError):
+        lib.packer().finish(lib.keys, lib.row.get, lib.clauses, lambda key: lib.row.get(key, -1), lambda key: key,
+                            lambda index: None, [], {"engine": "e47", "run_signature": "sig", "language": "ja"},
+                            places=list(range(len(lib.keys) - 1)))
+
+
+def _list_order(results):
+    import csv
+    with open(os.path.join(results, "progressive_learning_list.csv"), encoding="utf-8-sig", newline="") as f:
+        return [(r["Word"], r["Reading"], r["Score"]) for r in csv.DictReader(f)]
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_at_level_1_each_rows_place_is_its_place_in_the_list_generate_wrote(language, monkeypatch):
+    # why: "taught before" is the list's own order, ties included — two words of the same score keep the order the
+    # list shows them in, never one the reader works out again
+    monkeypatch.delenv("SURASURA_SENTENCE_TABLE", raising=False)
+    results = _seed(language)
+    _generate_at(language, 1)
+    table = st.open_table(os.path.join(results, st.TABLE_FILE), language=language)
+    listed = _list_order(results)
+    assert len(listed) >= 5
+    assert any(a[2] == b[2] for a, b in zip(listed, listed[1:])), "ties in the list: the test reaches them"
+    places, keys = table.places(), table.head["keys"]
+    assert len(places) == len(keys)
+    at = {tuple(k): p for k, p in zip(keys, places)}
+    assert [at[(w, r)] for w, r, _s in listed] == list(range(len(listed)))
+    assert sorted(p for p in places if p >= 0) == list(range(len(listed)))   # every other row: -1
+
+
+def test_at_level_1_a_generate_with_an_empty_list_writes_no_places(monkeypatch):
+    # why: a library whose every word falls under the list's floor writes a table with no rows — and no places
+    monkeypatch.delenv("SURASURA_SENTENCE_TABLE", raising=False)
+    results = _seed("ja")
+    _generate_at("ja", 1, extra=("--min-freq=100000",))
+    table = st.open_table(os.path.join(results, st.TABLE_FILE), language="ja")
+    assert table is not None and table.places() == [-1] * len(table.head["keys"])
+    assert table.head["rows"] == []
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_at_level_1_generate_writes_the_same_table_whatever_the_hash_seed(language, monkeypatch):
+    # why: the places come from the list, the rows from word_stats: neither may move with the process's seed
+    monkeypatch.delenv("SURASURA_SENTENCE_TABLE", raising=False)
+    results = _seed(language)
+    path, blobs = os.path.join(results, st.TABLE_FILE), []
+    for seed in ("1", "2"):
+        if os.path.exists(path):
+            os.remove(path)                 # each run's own table, never the one before
+        assert "Saved the sentence table" in _generate_at(language, 1, seed=seed)
+        blobs.append(open(path, "rb").read())
+    assert blobs[0] == blobs[1]
+    assert max(st.open_table(path).places()) >= 0

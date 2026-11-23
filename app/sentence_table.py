@@ -14,11 +14,11 @@ What is kept for a line (one row of the table is a line and its word):
   the set phrases in it, as their rows · how many words besides the word it says · where the word starts.
 
 The file: MAGIC, three little-endian 4-byte lengths, the head (zlib JSON: the format's version, the engine, the run's
-signature, the language, every list row's (word, reading), the rows that have lines and each one's sizes — the head
-is the index), the sources (zlib JSON: [rel, kind, digest]), the formulas (zlib, four int32 arrays), then one zlib
-block a row: its lines' columns one after another, lines in (file, place) order. Little-endian always; the head's
-keys in a fixed order; one compression level; no time, path of this PC or process id inside: the same run writes
-the same bytes, packed as the walk goes or at the end.
+signature, the language, every list row's (word, reading) and its place in the list, the rows that have lines and
+each one's sizes — the head is the index), the sources (zlib JSON: [rel, kind, digest]), the formulas (zlib, four
+int32 arrays), then one zlib block a row: its lines' columns one after another, lines in (file, place) order.
+Little-endian always; the head's keys in a fixed order; one compression level; no time, path of this PC or process id
+inside: the same run writes the same bytes, packed as the walk goes or at the end.
 
 The walk's side is `Packer`: lines are appended as the files are read, words, co-words and phrases by whatever key
 the walk holds them by; `finish` resolves the keys (rows, formulas numbered by key) only at the end, so one file's
@@ -38,7 +38,7 @@ import numpy as np
 
 TABLE_FILE = "sentences.bin"
 MAGIC = b"SURATBL\n"
-VERSION = 2                     # 2: the two word numbers counted (1 wrote them as 0)
+VERSION = 3                     # 3: each row's place in the list · 2: the two word numbers counted (1 wrote 0)
 LEVEL = 3                       # zlib: 0.44 s for 7.01 MB at 20,000 files (lighter 7.42 MB, harder 1.15 s: SPEC § 8.2)
 
 OVER = 1 << 2                   # marks: over *Never longer than* (a file's first sentence of the word; never chosen)
@@ -224,13 +224,16 @@ class Packer:
         self.nphr.append(len(phrases))
         self.phr.extend(phrases)
 
-    def finish(self, keys, row_of, clauses_of, own_row, key_order, phrase_row, sources, head):
+    def finish(self, keys, row_of, clauses_of, own_row, key_order, phrase_row, sources, head, places=None):
         """-> the Table. `keys`: every list row's (word, reading), by row · `row_of(word key)` -> its row or None
         (not a row: its lines are dropped) · `clauses_of(co-word key)` -> its formula (`plan_rules` clauses; TRUE:
         known from the start, left out) · `own_row(co-word key)` -> its own row or -1 · `key_order(co-word key)`:
         the order co-words are numbered in (the plan's `_coword_key`) · `phrase_row(phrase)` -> its row or None ·
-        `sources`: [[rel, kind, digest]] · `head`: {engine, run_signature, language}."""
+        `sources`: [[rel, kind, digest]] · `head`: {engine, run_signature, language} · `places`: each row's place in
+        the list Generate wrote (the study order: 0 first), -1 off it; none given: every row -1."""
         from app import plan_rules
+        if places is not None and len(places) != len(keys):
+            raise ValueError(f"{len(places)} places for {len(keys)} rows")
         n_ids = len(self._keys)
         rows = np.full(n_ids, -1, np.int64)
         for p, key in enumerate(self._keys):
@@ -286,6 +289,7 @@ class Packer:
         bounds = np.append(starts, len(line_row)).tolist()
         t.head = {"v": VERSION, "engine": head["engine"], "run_signature": head["run_signature"],
                   "language": head["language"], "keys": [[k[0], k[1]] for k in keys],
+                  "places": [-1] * len(keys) if places is None else [int(p) for p in places],
                   "rows": with_lines.tolist(), "lines": np.diff(bounds).tolist()}
         t._sources = [list(s) for s in sources]
         t._form = _pack_formulas(formulas)
@@ -415,6 +419,12 @@ class Table:
         phr = np.frombuffer(data, "<i4", phrs, at + 4 * cows)
         return cols, cow, phr
 
+    def places(self):
+        """Each row's place in the list this Generate wrote (by row, as `head['keys']`; -1: not on it) — what is taught
+        before a word when the caller passes no order. A move's redraw rewrites the list, never the table: after a
+        move the caller passes the order (SPEC § 5)."""
+        return self.head["places"]
+
     def rows(self):
         """{(word, reading): row} for the rows that have lines."""
         keys = self.head["keys"]
@@ -444,7 +454,7 @@ def open_table(path, language=None, engine=None, run_signature=None):
         for k, n, lines, cows, phrs in zip(head["rows"], head["sizes"], head["lines"], head["cows"], head["phrs"]):
             t._blocks[k] = (off, n, lines, cows, phrs)
             off += n
-        if off != size or len(head["rows"]) != len(head["sizes"]):
+        if off != size or len(head["rows"]) != len(head["sizes"]) or len(head["places"]) != len(head["keys"]):
             return None                         # half-written, or more than one table's bytes
         return t
     except (OSError, ValueError, KeyError, TypeError, AttributeError, struct.error, zlib.error):

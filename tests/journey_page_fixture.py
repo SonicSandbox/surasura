@@ -50,6 +50,23 @@ def _ja_vocab():
             forms = [x for x in (row.get("Forms") or "").split("|") if x and x != row["Word"]]
             out.append((row["Word"], "" if row["Orth"] == row["Word"] else row["Orth"], _hira(row["Reading"] or ""),
                         "", forms, lines))
+    return out + _ja_met_forms()
+
+
+def _ja_met_forms(n=3):
+    """The first `n` words of the analyzer's output met only in an inflected form (下りる in 下りろ): their lines hold a
+    Forms entry, never the word, as the render keeps them (J-FIX 2: search finds a word by a form it was met in)."""
+    out = []
+    with open(os.path.join(RES, "ja", "expected_output.csv"), encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            lines = [s for s in (row.get(f"Context {i}") for i in (1, 2, 3)) if s]
+            forms = [x for x in (row.get("Forms") or "").split("|") if x and x != row["Word"]]
+            if any(row["Word"] in s for s in lines):
+                continue
+            met = [s for s in lines if any(x in s for x in forms)]
+            if met and len(out) < n:
+                out.append((row["Word"], "" if row["Orth"] == row["Word"] else row["Orth"],
+                            _hira(row["Reading"] or ""), "", forms, met))
     return out
 
 

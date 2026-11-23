@@ -4,11 +4,12 @@ module keeps its `qt_strings.py`, until Settings' table (`settings_strings.py`) 
 — never *Blacklist* (merged into the Ignore list) nor *left out* as a word's state."""
 
 WORD_LISTS_NAME = "Your words"
-WORD_LISTS_TIP = "Words you ignore and words you know stay off your list.\n• Paste text to pick."
+WORD_LISTS_TIP = "Words you know and words you ignore stay off your list.\n• Paste text to pick."
 
-WORD_LISTS_KINDS = (("ignore", "Ignore", "Words you never want on your list: IgnoreList.txt"),
-                    ("known", "Known", "Words you marked known in Surasura: they count as known\n"
-                                       "• Kept in your known words file, KnownWord.json"))
+# Mado-LT 4 (words PROVISIONAL): Known first — every word you know, newest first — then Ignore
+WORD_LISTS_KINDS = (("known", "Known", "Every word you know, newest first: from Anki, marked in Surasura or imported\n"
+                                       "• Kept in your known words file, KnownWord.json"),
+                    ("ignore", "Ignore", "Words you never want on your list: IgnoreList.txt"))
 WORD_LISTS_KINDS_NAME = "Which list"
 
 WORD_LISTS_SEARCH = "Search the words"
@@ -18,6 +19,20 @@ WORD_LISTS_COUNT_ONE = "1 word"
 WORD_LISTS_COUNT_SHOWN = "{shown} of {n} words"
 WORD_LISTS_LIST_NAME = "The words on this list"
 WORD_LISTS_LIST_TIP = "These words stay off your list, never counted unknown.\n• ✕ or Delete removes."
+WORD_LISTS_LIST_TIPS = {"known": "The words you know, newest first.\n• Click ✓ or Delete: still learning.",
+                        "ignore": WORD_LISTS_LIST_TIP}
+# a Known tab's row: the word, its reading (none for a word written in kana), where it came from; its ✓ or ○
+WORD_LISTS_KNOWN_ROW = "{word}   {reading}   · {origin}"
+WORD_LISTS_KNOWN_ROW_BARE = "{word}   · {origin}"
+WORD_LISTS_ORIGINS = {"anki": "Anki card", "surasura": "marked in Surasura", "imported": "imported"}
+WORD_LISTS_KNOWN_MARK = {"known": "✓", "learning": "○"}
+WORD_LISTS_KNOWN_MARK_INK = {"known": "accent", "learning": "accent-2"}      # the word card's ✓ and ○ (violet)
+WORD_LISTS_ROW_KNOWN_SINCE = "{word}: known since {date}\n• Click ✓: still learning"
+WORD_LISTS_ROW_KNOWN_UNDATED = "{word}: known (no date kept)\n• Click ✓: still learning"
+WORD_LISTS_ROW_LEARNING = "{word}: still learning\n• Click ○: known again"
+WORD_LISTS_STILL_LEARNING = "{word}: still learning · its ○ puts it back"
+WORD_LISTS_KNOWN_AGAIN = "{word}: known again"
+WORD_LISTS_UNCHANGED = "{word} was already that way"
 WORD_LISTS_ROW_LIST = "{word}\n• ✕ takes it off the list"
 WORD_LISTS_ROW_KNOWN = ("{word}: ignored in your known words file (KnownWord.json)\n"
                         "• ✕ takes it off there, after asking")

@@ -116,6 +116,6 @@ def _line(steps, lang, line_id):
             raise
     steps.subtitle = subtitle
     picked = swap._resolve_line_id(steps, lang, line_id)
-    if picked is None and any(busy):
+    if any(busy):
         raise door.RouteError(BUSY, "busy")
     return picked

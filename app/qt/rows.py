@@ -29,6 +29,7 @@ icon), *Mine this* (Mine), *No video*'s *Link…* — asks too (`mine_requested`
 by the window) it asks nothing and its tip says why.
 """
 import bisect
+import calendar
 import math
 import os
 import re
@@ -539,9 +540,31 @@ def paint_sheen(p, r, alpha):
     p.fillRect(r, QBrush(grad))
 
 
+def pre_day(stamp):
+    """J-STONES: the store's UTC stamp of a pre-studied mark as the learner's own day, *21 Nov*; one that can't be read
+    as it is."""
+    try:
+        at = time.localtime(calendar.timegm(time.strptime(str(stamp)[:19], "%Y-%m-%dT%H:%M:%S")))
+    except (ValueError, OverflowError):
+        return str(stamp)
+    return f"{at.tm_mday} {calendar.month_abbr[at.tm_mon]}"
+
+
+def pre_names(labels):
+    """J-STONES: a cut group's, the ore's or a Finished row's hover — the pre-studied files inside it, by name (the
+    first ROWS_STONE_PRE_SHOWN, then …); "" when none is."""
+    if not labels:
+        return ""
+    shown = strings.ROWS_STONE_PRE_JOIN.join(labels[:strings.ROWS_STONE_PRE_SHOWN])
+    more = strings.ROWS_STONE_PRE_MORE if len(labels) > strings.ROWS_STONE_PRE_SHOWN else ""
+    return strings.ROWS_STONE_PRE_NAMES.format(names=shown + more)
+
+
 def stone_tip(ep, state, leaves):
     """A stone's tip, the string's and an opened row's alike (W-1): when a mark takes its words off the list
-    (`leaves`: `view_rows.mark_moves_list`), the line that says so."""
+    (`leaves`: `view_rows.mark_moves_list`), the line that says so; a file pre-studied, the day it was (J-STONES)."""
+    if stone_plan.is_pre(ep):
+        state += strings.ROWS_STONE_PRE.format(date=pre_day(ep.prestudied))
     if leaves:
         state += strings.ROWS_STONE_LEAVES
     return strings.ROWS_STONE_TIP.format(label=ep.label, state=state, action=strings.ROWS_STONE_ACTION[ep.watched])
@@ -550,6 +573,8 @@ def stone_tip(ep, state, leaves):
 def stone_state(ep):
     """A stone's state in its tip's words, the string's and an opened row's alike (Kura-NT: *nothing new* for a file
     mined with nothing new to make, never "0 cards in Anki": `stone_plan.tip_state`)."""
+    if ep.cards == 1 and stone_plan.tip_state(ep) == "raw":
+        return strings.ROWS_STONE_STATE_ONE                   # J-STONES: *1 card*, never *1 cards*
     return strings.ROWS_STONE_STATE[stone_plan.tip_state(ep)].format(n=ep.cards)
 
 
@@ -1113,6 +1138,13 @@ def _same_face(old, new, kind):
     return all(a is b or a == b for name, a, b in zip(fields, old, new) if name not in unshown)
 
 
+def finished_pre(row):
+    """J-STONES (journey v3 SPEC §2.4): the labels of a Finished row's pre-studied files, in order — the sparkle at its
+    cover's shoulder and the hover naming them; () when none was (a Finished row draws no string of its own). Made once
+    with the row (`view_rows.Row.prestudied`, a field its pixmap shows: `_same_face` sees it change)."""
+    return getattr(row, "prestudied", None) or ()
+
+
 class RowDelegate(QStyledItemDelegate):
     def __init__(self, view):
         super().__init__(view)
@@ -1541,13 +1573,31 @@ class RowDelegate(QStyledItemDelegate):
             return ("group", gem, item.n)
         return ("ore", gem, stones.size_bucket(item.n), item.mined_step, 1 if item.cut_points else 0)
 
+    @staticmethod
+    def _pre_what(item, what):
+        """J-STONES: the add a pre-studied plan item draws over its picture `what` (`_stone_what`'s), as the sheet
+        names it — None when nothing in it was pre-studied."""
+        if not item.pre:
+            return None
+        if item.kind == "stone":
+            return ("pre", item.state, what[3], what[4])
+        if item.kind == "tier":
+            return ("pre", "group", item.n)
+        return ("pre", "ore") + what[2:]
+
     def _stone_parts(self, row, plan, room, mid, big=False):
         """The single stones of a string, as parts: a click on one is a Done for its file (S12; list-r14m's hit areas
         26 × 30)."""
         out = []
         lay = stone_plan.layout(plan, room.width(), 1.0)
         for item, x in zip(plan.items, lay.xs):
-            if item.kind != "stone" or room.left() + x > room.right():
+            if room.left() + x > room.right():
+                continue
+            if item.kind != "stone":                 # J-STONES: a cut group or the ore with pre-studied files inside
+                if item.pre:                         # names them on hover; a click opens the row, as its slab's
+                    w = stone_plan.TIER_W[item.n] if item.kind == "tier" else stone_plan.ORE_W
+                    out.append(("pre", QRect(round(room.left() + x - w / 2), round(mid - 15), round(w), 30),
+                                pre_names(item.pre), None))
                 continue
             ep = row.episodes[item.index]
             state = stone_state(ep)
@@ -1638,6 +1688,11 @@ class RowDelegate(QStyledItemDelegate):
                 x0 = self.lead(kind, row_line.left())[2]
                 out.append(("studying", QRect(x0, row_line.center().y(), self._studying_w(), round(19 * f) + 4),
                             strings.ROWS_STUDYING_TIP, None))
+            pre = finished_pre(payload)              # J-STONES: its cover's sparkle names the pre-studied files
+            if pre:
+                _n, cx, _t = self.lead(kind, row_line.left())
+                cw, ch = round(theme.SIZES["row-cover-w"] * f), round(theme.SIZES["row-cover-h"] * f)
+                out.append(("pre", QRect(cx, row_line.center().y() - ch // 2, cw, ch), pre_names(pre), None))
             # --- W3.2 Q4: Put back and ⋯ in the actions' column (shown on hover and keyboard focus alike)
             back, more = self.finished_acts(cols["acts"])
             out.append(("put-back", back, strings.FIN_PUT_BACK_TIP, None))
@@ -2288,6 +2343,9 @@ class RowDelegate(QStyledItemDelegate):
                 p.setOpacity(rl("dim"))
             sheet.draw(p, at, what)
             p.setOpacity(1.0)
+            pre = self._pre_what(item, what)              # J-STONES: pre-studied's add, at full strength (the
+            if pre is not None:                           # learner's own mark: never dimmed with its stone)
+                sheet.draw(p, at, pre)
             if single and (item.missing or item.removed):
                 below = sheet.rect_of(what, at).bottom() + 2.5
                 p.setPen(Qt.PenStyle.NoPen)
@@ -2374,9 +2432,13 @@ class RowDelegate(QStyledItemDelegate):
         body = QRect(rect.left(), rect.top(), rect.width(), rect.height() - theme.SPACING["list-gap"] -
                      self._lines_h(lines))
         local = QRect(0, 0, body.width(), body.height())
+        pre = kind == FINISHED and bool(finished_pre(payload))
+        sheet = stones.get(dpr, style.current()[1]) if pre else None
         pix = self._sprite(kind, payload, body.size(), dpr, hovered,
-                           lambda q: self._paint_row(q, kind, payload, local, hovered, dpr),
-                           to=None if p is None else (p, body.topLeft()))
+                           lambda q: self._paint_row(q, kind, payload, local, hovered, dpr, sheet),
+                           to=None if p is None else (p, body.topLeft()),
+                           extra=(sheet is not None,) if pre else None)   # J-STONES: its sparkle (painted before the
+        #                                                                   sheet: let go when it lands, `drop_unsheeted`)
         return pix, body
 
     def _paint_open_row(self, p, row, slab, rect, lines, fade, focused, dpr):
@@ -2618,7 +2680,7 @@ class RowDelegate(QStyledItemDelegate):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(QRectF(r).adjusted(1, 1, -1, -1), radius, radius)
 
-    def _paint_row(self, p, kind, row, body, hovered, dpr):
+    def _paint_row(self, p, kind, row, body, hovered, dpr, sheet=None):
         """A Finished row (today's layout, C-scope §2.3, painted by the same delegate as Current's): its cover, its title
         over its one line, its date, and only Mining… / ✓ N of the statuses."""
         f = fz()
@@ -2633,6 +2695,8 @@ class RowDelegate(QStyledItemDelegate):
         cw, ch = round(theme.SIZES["row-cover-w"] * f), round(theme.SIZES["row-cover-h"] * f)
         crect = QRect(x, line_r.center().y() - ch // 2, cw, ch)
         self._paint_cover(p, row.cover_title, crect, dpr, ref=row.cover)                         # W3.2 Q6
+        if sheet is not None and kind == FINISHED and finished_pre(row):     # J-STONES: pre-studied, at its shoulder
+            sheet.draw(p, QPointF(crect.right() - 1, crect.top() + 1), ("pre", "spark"))
         x = title_x
         cols = self.columns(line_r, kind)
         text_w = cols["text_right"] - x
@@ -2731,17 +2795,21 @@ class RowDelegate(QStyledItemDelegate):
             w, h = r.width(), r.height()
             if isinstance(ep, view_rows.Fold):       # --- a8: its line wears its run's last stone (cut)
                 item = stone_plan._stone(row.episodes[ep.end], ep.end, row.key, False)
+                # J-STONES: a fold is a run of watched parts: its stone carries the add when any part in it does
+                item = item._replace(pre=any(stone_plan.is_pre(e) for e in row.episodes[ep.start:ep.end + 1]))
                 what, shown = self._stone_what(item, plan.gem), self.view.fold_open(ep)
-                out.append((r, ep, lambda q, fold=ep, w=w, h=h, stone=(what, item.dim, False), shown=shown:
+                pre = self._pre_what(item, what)
+                out.append((r, ep, lambda q, fold=ep, w=w, h=h, stone=(what, item.dim, False, pre), shown=shown:
                             self._paint_fold(q, QRect(0, 0, w, h), fold, shown, dpr, stone, sheet),
-                            (ep.id, hero, "fold", what, shown), (sheet is not None,)))
+                            (ep.id, hero, "fold", what, shown, pre), (sheet is not None,)))
                 continue
             big = i == plan.next
             item = stone_plan._stone(ep, i, row.key, big)
             what = self._stone_what(item, plan.gem)
-            stone = (what, item.dim, big)
+            pre = self._pre_what(item, what)         # J-STONES: its add, keyed with its picture
+            stone = (what, item.dim, big, pre)
             out.append((r, ep, lambda q, ep=ep, w=w, h=h, stone=stone: self._paint_episode(
-                q, QRect(0, 0, w, h), ep, dpr, audio, stone, sheet), (ep.id, hero, audio, what, item.dim),
+                q, QRect(0, 0, w, h), ep, dpr, audio, stone, sheet), (ep.id, hero, audio, what, item.dim, pre),
                 (sheet is not None,)))
         return out
 
@@ -2863,15 +2931,19 @@ class RowDelegate(QStyledItemDelegate):
                                                                 side, side), c("ink-dim"))
 
     def _paint_tick(self, p, tick, watched, stone=None, sheet=None):
-        """An episode line's stone (`stone`: what, dim, big — the sheet's), or until the sheet is there its tick."""
+        """An episode line's stone (`stone`: what, dim, big, the pre-studied add or None — the sheet's), or until the
+        sheet is there its tick."""
         if stone is not None and sheet is not None:
-            what, dim, big = stone
+            what, dim, big = stone[:3]
+            pre = stone[3] if len(stone) > 3 else None
             at = QPointF(tick.center())
             p.save()
             if dim:
                 p.setOpacity(rl("dim"))
             sheet.draw(p, at, what)
             p.restore()
+            if pre is not None:                          # J-STONES: the add, never dimmed (as on the string)
+                sheet.draw(p, at, pre)
             if big:
                 sheet.draw(p, at, ("ring", what[4]))
         elif watched:
@@ -4759,6 +4831,9 @@ class RowsView(QListView):
                 self.play_requested.emit(payload)
         elif name in ("open", "title", "audio", "pct"):     # a5-2: the 🎧 before a title is the title's; Kantan-B1:
             self.toggle(idx)                                # ... the % only adds its hover over the card's own click
+        elif name == "pre":                 # J-STONES: a hover only (the window gives no press for it, D5): a click
+            if entries[row][0] == ROW:      # does what it did there before — a Current row's slab opens it; Up Next's
+                self.toggle(idx)            # string and a Finished cover, nothing
         else:
             self._act(idx, part)
 

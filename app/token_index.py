@@ -666,6 +666,9 @@ def _rebuilt_text(sentences, names=None):
 # --------------------------------------------------------------------------- #
 # The store
 # --------------------------------------------------------------------------- #
+READINGS_CHUNK = 500                # lemmas per query of `Store.readings` (SQLite's own limit is 32766)
+
+
 class Store:
     _evidence = _EVIDENCE       # the name tables' evidence, as this store's columns can say it (`open_reader`)
 
@@ -1610,6 +1613,21 @@ class Store:
         """One file's name record (counted or kept), or None: not held, or not a Japanese store."""
         row = self.conn.execute("SELECT names FROM files WHERE path=?", (_norm(path),)).fetchone()
         return _decode_counts(row[0]) if row and row[0] else None
+
+    def readings(self, lemmas):
+        """{lemma: the reading the library uses it with most} for each of `lemmas` the aggregate holds with a reading
+        (Mado-LT 4: *Your words* shows it for a known word whose entry names none — the sync writes `secondary` "").
+        Read by the aggregate's own key (lemma first), a chunk of `READINGS_CHUNK` lemmas a query."""
+        best, out = {}, {}
+        lemmas = list(dict.fromkeys(lemma for lemma in lemmas if lemma))
+        for at in range(0, len(lemmas), READINGS_CHUNK):
+            chunk = lemmas[at:at + READINGS_CHUNK]
+            rows = self.conn.execute("SELECT lemma, reading, count FROM aggregate WHERE lemma IN (%s)"
+                                     % ",".join("?" * len(chunk)), chunk)
+            for lemma, reading, n in rows:
+                if reading and (n or 0) > best.get(lemma, -1):
+                    best[lemma], out[lemma] = n or 0, reading
+        return out
 
     # -- read layer (known/ignore filter WITHOUT re-tokenizing) -------------- #
     def word_counts(self):

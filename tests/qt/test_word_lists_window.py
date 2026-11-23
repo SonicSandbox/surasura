@@ -82,9 +82,14 @@ def _text(path):
             time.sleep(0.01)
 
 
-def _open(main):
+def _open(main, kind="ignore"):
+    """The window on `kind`'s tab. Mado-LT 4: it opens on Known (every word you know); these tests are the Ignore
+    list's unless they say otherwise, so they show its tab first."""
     w = windows.show(main, "word-lists", WordListsWindow)
     assert wait_until(lambda: w.entries is not None)
+    if kind != w.kind:
+        w.show_kind(kind)
+        assert wait_until(lambda: w.entries is not None)
     return w
 
 
@@ -109,8 +114,8 @@ def _chips(w):
 def test_every_control_is_wired_tipped_and_named(main):
     w = _open(main)
     assert w.windowTitle() == "Your words — Surasura"
-    assert [b.text() for b in w.kind_buttons.values()] == ["Ignore", "Known"]      # Kotoba-WS2: Known · Ignore
-    assert w.kind_buttons["ignore"].isChecked() and not w.kind_buttons["known"].isChecked()
+    assert [b.text() for b in w.kind_buttons.values()] == ["Known", "Ignore"]      # Mado-LT 4: Known first
+    assert w.kind_buttons["ignore"].isChecked() and not w.kind_buttons["known"].isChecked()     # (`_open`'s pick)
     for field in (w.search, w.add_field, w.text, w.list, w.chips, w.kinds):
         assert field.accessibleName()
     for tipped in (w.list, w.chips, w.add_field):
@@ -273,7 +278,8 @@ def test_a_known_words_row_is_taken_off_only_after_the_question(main, calls, kno
     assert [c for c in calls if c[0] == "remove"] == [] and _ignored(known_file, "良い")
     card.yes.click()
     # Waited on through the window (its read after the write), never by opening the file while it is replaced.
-    assert wait_until(lambda: not w.busy() and w.entries is not None and ("良い", "known") not in w.entries)
+    assert wait_until(lambda: not w.busy() and w.entries is not None and ("良い", "known") not in
+                      [entry[:2] for entry in w.entries])
     assert [c for c in calls if c[0] == "remove"] == [("remove", ("ignore", "ja", ["良い"], "known"), False)]
     assert not _ignored(known_file, "良い")
 

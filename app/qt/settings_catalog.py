@@ -304,7 +304,10 @@ ROWS = (
     _row("junban_order_all", "anki", "choice", ("junban_order_all",), options=(False, True), group="in_anki",
          when=_all(_CONNECT, _JUNBAN)),
     _row("junban_own_tag", "anki", "text", ("junban_own_tag",), sub=True, when=_all(_CONNECT, _JUNBAN)),
-    _row("anki_sync_delay_min", "anki", "choice", ("anki_sync_delay_min",), adv=True, group="anki"),
+    # Mado-LT 4: a list, not three side by side — its longest words, and a held fourth (順's *5 minutes after*), set
+    # side by side at Large text were wider than a small window's page: opening the fold widened the page past its
+    # view (its right edge cut off) and laid and painted it all again
+    _row("anki_sync_delay_min", "anki", "select", ("anki_sync_delay_min",), adv=True, group="anki"),
     _row("automation", "anki", "toggle", ("logic.automation",), adv=True),
     _row("journey_settle_s", "anki", "number", ("journey_settle_s",), adv=True, bounds=(0, None)),
     _row("journey_settle_battery_s", "anki", "number", ("journey_settle_battery_s",), adv=True, bounds=(0, None)),

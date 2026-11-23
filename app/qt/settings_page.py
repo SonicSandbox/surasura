@@ -315,9 +315,15 @@ class Slab(QWidget):
         box.addWidget(self.about)
         self.about.setVisible(False)
         self.main = QWidget(self)
+        # (Mado-LT 5) its rows' container and *More options*' paint nothing, as the column: resized (a row's height
+        # changed: a folder list's second line gone), only what moved repaints — never the rows above in view
+        self.main.setAttribute(Qt.WidgetAttribute.WA_StaticContents, True)
         self.main_box = QVBoxLayout(self.main)
         self.main_box.setContentsMargins(0, 0, 0, 0)
         self.main_box.setSpacing(0)
+        self.main_box.addStretch(1)                    # (rows go in before it: `place`) — and below: the slack a box laid
+        #                                                out inside its old height goes to a stretch, never to a row
+        #                                                (Mado-LT 5: one row's height changed moved every row above it)
         box.addWidget(self.main)
         self.more_row = QWidget(self)
         more = QHBoxLayout(self.more_row)
@@ -333,6 +339,7 @@ class Slab(QWidget):
         self.more_row.setVisible(False)
         self.adv = QWidget(self)
         self.adv.setObjectName("settingsadv")
+        self.adv.setAttribute(Qt.WidgetAttribute.WA_StaticContents, True)          # (as `main`, above)
         adv = QVBoxLayout(self.adv)
         adv.setContentsMargins(0, 0, 0, 0)
         adv.setSpacing(0)
@@ -341,7 +348,9 @@ class Slab(QWidget):
         self.adv_box.setContentsMargins(0, 0, 0, 0)
         self.adv_box.setSpacing(0)
         adv.addLayout(self.adv_box)
+        adv.addStretch(1)
         box.addWidget(self.adv)
+        box.addStretch(1)
         self.adv.setVisible(False)
         self.placed = {"main": [], "adv": []}          # catalog index of each widget placed, per container
         self._fold = None

@@ -704,11 +704,25 @@ def _with_aside(counted, items):
     return out
 
 
-def _stone_state(watched, cards):
+_NOTHING_NEW = namedtuple("_Status", "kind")("nothing")    # Connect's *Nothing new to mine* (`feed.NOTHING`), as a status
+
+
+def nothing_new(language, path=None):
+    """The items Connect mined with nothing new to make (`status.nothing`, Kura-NT) as a set — the rail draws them as
+    the window does; empty with no Connect, no ledger or one that can't be read."""
+    try:
+        from app.connect import status
+        return set(status.nothing(language, path))
+    except Exception:
+        return set()
+
+
+def _stone_state(watched, cards, nothing=False):
     """The episode's stone — the seam J-STONES fills: `stone_plan.state_of` once it is public (one rule, never a copy),
-    `stone_plan.tip_state` until then (cut · raw · nothing · rock)."""
+    `stone_plan.tip_state` until then (cut · raw · nothing · rock). `nothing`: Connect mined it with nothing new to make
+    (`nothing_new`), the status the window's rows hand the same rule."""
     from app.services import stone_plan
-    ep = _Ep(bool(watched), cards, None, False, False, True)
+    ep = _Ep(bool(watched), cards, _NOTHING_NEW if nothing else None, False, False, True)
     state_of = getattr(stone_plan, "state_of", None)
     return state_of(ep) if state_of is not None else stone_plan.tip_state(ep)
 
@@ -769,6 +783,8 @@ class Sources:
         self.titles = {}                        # {file name: its shown name}: the head's, so each is made once
         self.items = {}                         # {rel path: the store's item id}: a line id's first half
         self._rows = {}
+        self.saved = False                      # the timer's memo written with every answer (`prepare`); a line
+                                                # asked of the timer after it sets this back
 
     def row(self, rel):
         found = self._rows.get(rel)
@@ -792,10 +808,61 @@ class Sources:
                                        self.items.get(rel.replace("\\", "/"))]
         return found
 
+    def prepare(self, texts, rels):
+        """Each ▶ line's answer, the page's lines in its order (`texts[i]` said in `rels[i]`; "" no source): [the timer's
+        memo answer [anchor, start, end], or None where nothing plays] — one memo lookup a line, so `build` reads the
+        list rather than asking again (at 20,000 files a lookup costs ~3 µs: a second one was a slower warm render).
+        A line the memo lacks is asked of the line reader a file at a time, and that file's lines let go before the
+        next (J-TIMES: holding every subtitle's `cues.Timeline` to the render's end was 78 MB at 20,000 files); the
+        folder listings the freshness check reads go once every file is checked (31 MB of entries). The same calls
+        `times` makes, so the same answers and the same memo."""
+        hits = [None] * len(texts)
+        timer = self.timer
+        # AnchorFinder's own (static_html_generator, J-CUT's file: a `forget` there once it is theirs): each file's
+        # memo entry, its lines, and the folder listings
+        entry_of = getattr(timer, "_entry", None)
+        if entry_of is None:
+            return hits
+        media, smap = self.media, self.map
+        answers_of, missing = {}, {}
+        for i, rel in enumerate(rels):
+            if not rel:
+                continue
+            answers = answers_of.get(rel)
+            if answers is None:
+                answers = answers_of[rel] = entry_of((smap.get(rel) or {}).get("abs") or rel)["a"]                     if (media.get(rel) or ("",))[0] else False
+            if answers is False:
+                continue
+            hit = answers.get(texts[i])
+            if isinstance(hit, list) and len(hit) == 3:
+                hits[i] = hit
+            else:
+                missing.setdefault(rel, []).append(i)
+        listings = getattr(timer, "_dirs", None)
+        if listings is not None:
+            listings.clear()                    # every file is checked: a later one lists its folder again
+        kept = getattr(timer, "_timelines", None)
+        for rel, lines in missing.items():
+            answers = answers_of[rel]
+            for i in lines:
+                self.times(rel, texts[i])       # the line reader's answer, kept in `answers`
+                hit = answers.get(texts[i])
+                hits[i] = hit if isinstance(hit, list) and len(hit) == 3 else None
+            if kept is not None:
+                kept.pop((smap.get(rel) or {}).get("abs") or rel, None)
+        # Written now, before the meanings and the pitch, rather than at the render's end: its one string (10 MB at
+        # 20,000 files) was the first render's peak there. The same memo — `build` asks nothing more.
+        save = getattr(timer, "save_memo", None)
+        if save is not None:
+            save()
+            self.saved = True
+        return hits
+
     def times(self, rel, sentence):
         if self.timer is None or not (self.media.get(rel) or ("",))[0]:
             return None, None
         meta = self.map.get(rel) or {}
+        self.saved = False                      # a line `prepare` didn't ask: the memo is written again at the end
         try:
             return self.timer.times(meta.get("abs") or rel, sentence)
         except Exception:
@@ -853,13 +920,14 @@ def _ahead(plan, names):
 
 
 def build(language, rows, stats=(), priority=None, facts=None, settings=None, *, backlog=(), known=(), ranks=None,
-          pitch=None, sources=None, plan=None, own=None, stamp=None, memo=None):
+          pitch=None, sources=None, plan=None, own=None, stamp=None, memo=None, nothing=()):
     """The page's data (`Render`) from a Generate's outputs, every input given (`render` gathers them):
     `rows` the progressive list's records in order, `stats` file_statistics.json's entries in order, `priority` the
     priority list's records (*Most frequent first*; None: no such order), `facts` `store_facts`' (None: no store),
     `backlog` the Anki backlog's keys, `known` the learner's known terms, `pitch` a `Pitch`, `sources` a `Sources`,
     `plan` the plan file (the count ahead), `own` a callable [(word, reading)] -> {key: (title, text)} (Yours),
-    `memo` a `WordMemo` (the meanings and pitch looked up last time; None: everything looked up)."""
+    `memo` a `WordMemo` (the meanings and pitch looked up last time; None: everything looked up), `nothing` the
+    items Connect mined with nothing new to make (`nothing_new`: their stones)."""
     settings = settings or {}
     logic = settings.get("logic") if isinstance(settings.get("logic"), dict) else {}
     shown_settings = page_settings(settings)
@@ -887,8 +955,8 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
         coverage = plan_pcts.get(name) if plan_pcts is not None else _pct(last)
         flags = (1 if watched else 0) | (2 if missing else 0) | (4 if cards else 0)
         ep_of_name.setdefault(name, len(eps))
-        eps.append([item_id, name, None, show, tier, kind, coverage, 0, 0, _stone_state(watched, cards), flags,
-                    pre, growth])
+        eps.append([item_id, name, None, show, tier, kind, coverage, 0, 0,
+                    _stone_state(watched, cards, item_id is not None and item_id in nothing), flags, pre, growth])
 
     if facts is not None:
         from app import library_store
@@ -941,6 +1009,24 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
             words.append((e, row))
         ep[7] = len(words) - ep[8]
 
+    sources = sources or Sources(language)
+    if not sources.ep_of:
+        sources.ep_of = ep_of_name              # each source's episode, as this head numbers them
+    # Every word's lines, read once: [text] and [its source] side by side (a tuple a line held to the loop below was
+    # 6 MB at 20,000 files), and each word's first line in them
+    texts, rels, first = [], [], []
+    for _e, row in words:
+        first.append(len(texts))
+        for text, rel in sentences_of(row, per_word):
+            texts.append(text)
+            rels.append(rel)
+    first.append(len(texts))
+    # The ▶ times before the meanings and the pitch: the heap the subtitles' reading grew is theirs to reuse
+    try:
+        hits = sources.prepare(texts, rels) or [None] * len(texts)
+    except Exception:
+        hits = [None] * len(texts)              # `times` then asks line by line
+
     meanings = Meanings(language, memo)
     if words:
         try:
@@ -954,9 +1040,6 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
         pitch.prepare([(_text(row.get("Word")), _text(row.get("Reading"))) for _e, row in words], memo)
     except Exception:
         pass                                    # `of` then asks word by word
-    sources = sources or Sources(language)
-    if not sources.ep_of:
-        sources.ep_of = ep_of_name              # each source's episode, as this head numbers them
     for e in eps:
         sources.titles.setdefault(e[1], e[2])
     if facts is not None and not sources.items:
@@ -1002,8 +1085,11 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
         if language == "zh" and meanings is not None:
             pinyin = meanings.pinyin(word) or meanings.pinyin(orth)
             reading = reading or pinyin
-        found_lines = [(text, rel) + (sources.times(rel, text) if rel else (None, None))
-                       for text, rel in sentences_of(row, per_word)]
+        found_lines = []
+        for i in range(first[wid], first[wid + 1]):
+            text, rel, hit = texts[i], rels[i], hits[i]
+            found_lines.append((text, rel) + ((hit[1], hit[2]) if hit is not None else
+                                              sources.times(rel, text) if rel else (None, None)))
         marks = marks_of(row, thresholds) | (8 if in_anki(row, keys, owners, language) else 0)
         here = ahead.get(e, {}).get(key) if ahead else None
         count = int(_num(row.get("Occurrences (File)"))) if here is None else sum(
@@ -1187,12 +1273,13 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
         from app import own_dicts
         return own_dicts.lookup(keys)
     memo = WordMemo(os.path.join(gen.RESULTS_DIR, WORD_MEMO), *memo_keys(language))
+    sources = Sources(language, source_map, None, media, timer)
     out = build(language, rows, stats, priority, facts, settings, backlog=backlog,
                 known=_known_terms(language, script),
-                ranks=ranks, pitch=Pitch(language, tagger), sources=Sources(language, source_map, None, media, timer),
-                plan=plan, own=own, stamp=stamp, memo=memo)
+                ranks=ranks, pitch=Pitch(language, tagger), sources=sources,
+                plan=plan, own=own, stamp=stamp, memo=memo, nothing=nothing_new(language))
     out.head["dirs"] = dirs
-    if timer is not None:
+    if timer is not None and not sources.saved:
         timer.save_memo()
     memo.save()
     if not out.head.get("library"):

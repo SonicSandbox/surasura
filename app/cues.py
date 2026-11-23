@@ -174,17 +174,18 @@ def _ass(content, language):
     return out
 
 
-def read(path, language="ja"):
+def read(path, language="ja", clues=True):
     """The cues of the subtitle at `path` (.srt, .ass, .ssa), in the file's order: Cues. Read through
     `path_utils.read_text` (a BOM names the encoding, CRLF and LF alike); a file that isn't a subtitle, or holds no
-    line in the language's script, has none."""
+    line in the language's script, has none. `clues=False`: without the file's own name clues (`Cues.clues` None) —
+    for a reader of the times alone (`timeline`), which never tokenizes."""
     lower = str(path).lower()
     cues = Cues()
     if not lower.endswith(SUBTITLES):
         return cues
     content = read_text(path, language)
     srt = lower.endswith(".srt")
-    if srt and language == "ja":
+    if srt and language == "ja" and clues:
         from app import names
         cues.clues = names.file_clues(content)      # as extract_text reads them: the words are the token store's
     if not srt:                             # read as a Generate reads it: TV captions cleaned (ENGINE_REVISION 31)
@@ -463,7 +464,7 @@ def timeline(path, language="ja", script="asis"):
     timestamps, sound cues, groups in parentheses: `analyzer.strip_text_conventions`). Anything else has none (every `line`
     is None)."""
     if str(path).lower().endswith(SUBTITLES):
-        cues = read(path, language)
+        cues = read(path, language, clues=False)
         text, starts = _text(cues, language)
         return Timeline(cues, text, starts, script, language)
     cues, text, starts = _transcript(path, language)

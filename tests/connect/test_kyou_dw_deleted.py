@@ -189,6 +189,24 @@ def test_the_learners_own_card_and_one_seen_twice_are_stamped_once_or_not_at_all
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
+@pytest.mark.parametrize("state", ["writing", "done"])
+def test_a_card_surasuras_tidy_deleted_is_never_stamped_even_before_the_store_heard(lang, state, ledger):
+    # why: Tidy deletes in Anki first and tells the store after (`tidy.finish`); a look in between (a *Tidy now* while
+    # Connect runs, or a store write that failed) sees the note gone — it is Surasura's own delete, never the learner's,
+    # so it is never asked about (only another language's tidy leaves this one's notes to the look)
+    from app.connect import tidy
+    _item, notes = _made(lang, ledger)
+    ledger.conn.execute(tidy._SQL)
+    other = "zh" if lang == "ja" else "ja"
+    with ledger.transaction():
+        for language, note in ((lang, notes[0]), (other, notes[1])):
+            ledger.conn.execute("INSERT INTO tidies (language, at, why, state, folder, notes, made) VALUES "
+                                "(?, ?, 'auto', ?, '', ?, '[]')", (language, "2026-11-22T10:00:00Z", state,
+                                                                   json.dumps({str(note): {"cards": {}}})))
+    assert _gone(lang, ledger, notes[:2]) == 1
+    assert [a["note_id"] for a in _asked(lang, ledger)["asked"]] == [notes[1]]
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
 def test_an_unanswered_card_goes_after_two_weeks(lang, ledger):
     # why: WL-31 — it never nags: unanswered after ASK_DAYS it leaves the page by itself
     _item, notes = _made(lang, ledger)

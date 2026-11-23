@@ -7,7 +7,8 @@ that asks why — **Known · Ignore · Parsing mistake · Bad card**, one line a
 - **The record is Connect's own** (no new log): the made card's outcome in the ledger (`outcomes`: its word, reading,
   sentence, line and note) is read for what the card showed; the look's stamp and your answer sit beside it by note id
   in the same ledger (table `deleted`; `outcomes` itself is written by `INSERT OR REPLACE`, which would drop an added
-  column). Only the look's deletes are stamped: Tidy's and *Undo this batch*'s are Surasura's own, never asked.
+  column). Only the look's deletes are stamped: Tidy's and *Undo this batch*'s are Surasura's own, never asked
+  (a note a tidy holds is skipped even before Tidy told the store: `_tidied`).
 - **Never asked:** a card whose word was already Known or Ignored when the look saw it gone (kept as `state`
   `known` / `ignored`: WL-6, WL-44), one deleted more than `ASK_DAYS` ago (WL-31: it goes, unanswered), and one whose
   word has a newer card from Connect (a later note id whose card may still be in Anki: neither one the
@@ -98,7 +99,8 @@ def seen(language, gone, store=None, state_of=None, ledger=None, now=None):
         ensure(ledger)
         at = now or _now()
         rows = []
-        for note in sorted({int(n) for n in gone or ()}):
+        tidied = _tidied(ledger.conn, language)
+        for note in sorted({int(n) for n in gone or ()} - tidied):
             made = _made(ledger.conn, language, note)
             if made is not None:
                 rows.append((note,) + tuple(made))
@@ -125,6 +127,23 @@ def seen(language, gone, store=None, state_of=None, ledger=None, now=None):
     finally:
         if own:
             ledger.close()
+
+
+def _tidied(conn, language):
+    """The notes Surasura's own Tidy took (or is taking) out of Anki for `language` — a tidy writing, done, or being
+    undone (`tidies.notes`): a look that sees one gone before Tidy told the store (a *Tidy now* while Connect runs, a
+    store write that failed) never takes it for the learner's delete. A tidy undone gave its notes back: a later delete
+    of one is the learner's."""
+    if not _has(conn, "tidies"):
+        return set()
+    out = set()
+    for (notes,) in conn.execute("SELECT notes FROM tidies WHERE language = ? AND state IN ('writing', 'done', "
+                                 "'restoring')", (language,)):
+        try:
+            out.update(int(n) for n in json.loads(notes or "{}"))
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def keep_old(language, store, ledger=None):

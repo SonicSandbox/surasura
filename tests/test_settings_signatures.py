@@ -21,6 +21,7 @@ import copy
 import json
 import os
 import queue
+import re
 import shutil
 import threading
 from types import SimpleNamespace
@@ -442,6 +443,10 @@ def test_a_file_with_its_defaults_written_out_generates_byte_identical_output(li
         for name in sorted(os.listdir(results)):
             with open(os.path.join(results, name), "rb") as f:
                 written[name] = f.read()
+        # The v3 journey's head names its render time (`stamp`, ms since the epoch): the rest of the page byte for byte
+        if "reading_list_static.html" in written:
+            written["reading_list_static.html"] = re.sub(rb'"stamp":"\d+"', b'"stamp":""',
+                                                         written["reading_list_static.html"], count=1)
         outputs.append(written)
 
     first, second = outputs
@@ -855,7 +860,8 @@ FLIPS = {"theme": "Modern Light", "strategy": "coverage", "target_language": "zh
          "logic.sentence_boundaries.ja": "。｡．！？!?\n…",
          "logic.sentence_boundaries.zh": "。｡！？!?\n；",
          "anki_sync_decks": {"ja": ["日本語::Mining"]}, "anki_sync_fields": {"ja": ["Expression"]},
-         "study_order": "priority"}
+         "study_order": "priority",
+         "journey_meanings": "yours_en"}       # a value the page offers ("enx" reads as the default, English)
 
 
 def _flip(path, value):

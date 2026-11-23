@@ -62,10 +62,14 @@ def ARGS(language):
 
 
 def _as_the_child(monkeypatch, root):
-    """This process reads the data folders the child Generate wrote (its token store: the recorded signature)."""
+    """This process reads the data folders the child Generate wrote — its token store above all (the recorded
+    signature): the child keeps it under `<root>/index` (SURASURA_TEST_ROOT), where conftest's `_isolate_token_store`
+    points this process elsewhere, so it is pointed back, as `test_journey_stones_quiet` does."""
+    from app import token_index
     env = child_env(root)
     for key in ("APPDATA", "LOCALAPPDATA"):
         monkeypatch.setenv(key, env[key])
+    monkeypatch.setattr(token_index, "store_path_for", lambda lang: os.path.join(root, "index", f"token_store_{lang}.db"))
 
 
 @pytest.fixture(autouse=True)

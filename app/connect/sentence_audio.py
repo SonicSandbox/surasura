@@ -268,12 +268,15 @@ def _keep(anki, names, keep_dir):
     return kept
 
 
-def replace(anki, ledger, note_id, new, was, media=None, keep_dir=None, tag=None, by="swap", verb=VERB, extra=()):
+def replace(anki, ledger, note_id, new, was, media=None, keep_dir=None, tag=None, by="swap", verb=VERB, extra=(),
+            on_record=None):
     """The replace mode (the docstring above) -> {"id" (None when nothing was written), "filled": [note id] or [],
     "skipped": {note id: why}}. `new` {field: value}; `was` {field: the value it must still hold}, one per field of
     `new`; `media` {name: a file on disk} stored under that name (Anki's own answer is the name written); `keep_dir`:
     where the replaced media are copied first; `extra`: more tags put on with `tag` (FS-1: the first-episode tag),
-    each only when the note hasn't it — those, recorded, are the ones its Undo takes off. Raises Reviewing, the
+    each only when the note hasn't it — those, recorded, are the ones its Undo takes off; `on_record(id)`: called with
+    the record's id once it is written, before Anki is touched (the caller keeps it: a kill or an error anywhere after
+    leaves a record it can settle). Raises Reviewing, the
     writer's Busy, AnkiConnect's errors, OSError (a copy that didn't read back), ValueError (a field of `new` with no
     `was`)."""
     n = int(note_id)
@@ -305,6 +308,8 @@ def replace(anki, ledger, note_id, new, was, media=None, keep_dir=None, tag=None
                "was": {str(n): {f: str(was[f] or "") for f in new}}, "media": sorted(stored_new), "kept": kept,
                "keep_dir": os.path.join(keep_dir, rid) if kept else None, "state": WRITING}
         _write_record(ledger, rid, rec, new=True)             # before Anki: a kill after a write is undone as any
+        if on_record is not None:
+            on_record(rid)
         try:
             value = dict(new)
             for name, path in sorted(stored_new.items()):

@@ -649,10 +649,15 @@ def test_the_swap_jobs_record_holds_the_card_under_its_new_episode_alone():
         rows = {(i, w): json.loads(n) for i, w, n in s.conn.execute("SELECT item_id, word, note_ids FROM made_words")}
         assert rows[(first, word)] == [] and rows[(second, word)] == [900]
         assert word in library.made_words_all(s) and s.item(first).get("mined_at") == receipt
+        made_at = s.conn.execute("SELECT made_at FROM made_words WHERE item_id = ? AND word = ?",
+                                 (first, word)).fetchone()[0]
         library.record_batch(s, first, {word: [900]}, None, batch=None, moved=[900])
         assert shelf.made_notes(s)[900] == (first, word)
         rows = {(i, w): json.loads(n) for i, w, n in s.conn.execute("SELECT item_id, word, note_ids FROM made_words")}
         assert rows[(second, word)] == [] and rows[(first, word)] == [900]
+        # refuter R10: the move back keeps the word's first date (the words list orders by it): no card was made
+        assert s.conn.execute("SELECT made_at FROM made_words WHERE item_id = ? AND word = ?",
+                              (first, word)).fetchone()[0] == made_at == "2026-11-20T09:00:00Z"
 
 
 def test_an_undone_in_place_swap_moves_its_record_back_to_the_line_it_shows(ledger, tmp_path, monkeypatch):
@@ -786,6 +791,29 @@ def test_a_write_stopped_after_ankis_update_is_settled_when_tried_again_never_ca
     assert swap.undo(anki, ledger, lang, row["id"])["undone"]
     assert _value(anki, "Sentence") == old.replace(word, f"<b>{word}</b>")
     assert anki.media["sl-old.mp3"] == b"ID3 old clip"
+
+
+def test_the_swap_names_its_write_before_anki_is_touched_so_a_kill_anywhere_after_is_settled(
+        ledger, tmp_path, monkeypatch):
+    """Refuter R1: the swap kept the record's id only when `replace` raised or returned — a kill of the app after
+    Anki's update (or the record's last write failing) left the row without it, and the retry read the card's new
+    sentence as a hand edit: a new card, the half write undoable by nobody. Now the row names the record the moment
+    it is written, before Anki is touched."""
+    lang = "ja"
+    anki = _card(Anki(), lang)
+    _made_by_connect(ledger, lang)
+    _entry, row = _to_job(ledger, lang, anki, monkeypatch)
+    seen = []
+    real_update = anki.update
+
+    def update(nid, values):
+        seen.append(_row(ledger, row["id"])["wrote"])
+        return real_update(nid, values)
+    monkeypatch.setattr(anki, "update", update)
+    assert swap.write_in_place(anki, ledger, row, _rendered(tmp_path, lang), MAPPING, str(tmp_path / "kept")) == \
+        (swap.IN_PLACE, 900)
+    wrote = _row(ledger, row["id"])["wrote"]
+    assert seen == [wrote] and wrote
 
 
 def test_an_undo_stopped_after_its_write_finishes_when_pressed_again(ledger, tmp_path, monkeypatch):

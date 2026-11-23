@@ -681,7 +681,8 @@ def record_batch(store, item_id, made, mined_at, batch=None, moved=()):
     written again, and a level job's batch with nothing new takes no write at all (S19). The store rings its bell
     after the commit (L3.2, `_writing`): nothing to ring here. `moved` (FS-1, the full Swap): notes whose sentence is
     now this item's line (a card rewritten in place) — taken out of every other item's made words in the same write,
-    each row kept (its word stays made, G1.3-4; no receipt changes): one note, one item."""
+    each row kept (its word stays made, G1.3-4; no receipt changes): one note, one item. A row that gains only moved
+    notes keeps its `made_at` (no card was made: an Undo's move back never dates the word to now)."""
     from app import library_store
     moved = {int(n) for n in moved or ()}
     if mined_at is None and not moved and _recorded(store, item_id, made):
@@ -691,14 +692,15 @@ def record_batch(store, item_id, made, mined_at, batch=None, moved=()):
         for sql in library_store.ADDED_TABLES_SQL:
             store.conn.execute(sql)
         for word, note_ids in (made or {}).items():
-            row = store.conn.execute("SELECT note_ids FROM made_words WHERE item_id = ? AND word = ?",
+            row = store.conn.execute("SELECT note_ids, made_at FROM made_words WHERE item_id = ? AND word = ?",
                                      (item_id, word)).fetchone()
             had = list(json.loads(row[0])) if row else []
             ids = had + [n for n in note_ids if n not in had]
             if row is not None and ids == had:
                 continue                        # nothing new for this word: its row as it is
+            when = row[1] if row is not None and row[1] and {int(n) for n in ids if n not in had} <= moved else at
             store.conn.execute("INSERT OR REPLACE INTO made_words (item_id, word, note_ids, made_at, batch) "
-                               "VALUES (?, ?, ?, ?, ?)", (item_id, word, json.dumps(ids), at, batch))
+                               "VALUES (?, ?, ?, ?, ?)", (item_id, word, json.dumps(ids), when, batch))
             cmd.touch()
         if moved:
             for other, word, ids in store.conn.execute("SELECT item_id, word, note_ids FROM made_words WHERE item_id "

@@ -25,6 +25,34 @@ from tests.connect.fake_steps import WORDS, FakeSteps
 from tests.connect.test_anki_miner import batch, words  # noqa: F401  (fixtures)
 
 
+# --- Flake-F5 probe (a draft PR's only; never landed): each mine call's length and its poll slices ----------------- #
+_F5 = []
+
+
+@pytest.fixture(autouse=True)
+def _f5_probe(monkeypatch, request):
+    import warnings
+    from app.connect import stopping
+    real_wait = stopping.wait
+
+    def wait(proc, timeout, on_poll=None, *a, **k):
+        polls, started = [0], time.perf_counter()
+        inner = on_poll
+        if inner is not None:
+            def on_poll():
+                polls[0] += 1
+                return inner()
+        try:
+            return real_wait(proc, timeout, on_poll, *a, **k)
+        finally:
+            _F5.append((round(time.perf_counter() - started, 4), polls[0], k.get("every")))
+    monkeypatch.setattr(stopping, "wait", wait)
+    _F5.clear()
+    yield
+    warnings.warn(f"F5 probe {request.node.name}: calls (seconds, polls, every) {_F5}; anki_miner {id(anki_miner)} "
+                  f"stopping {id(stopping)} sys.modules' {id(__import__('sys').modules['app.connect.anki_miner'])}")
+
+
 @pytest.fixture
 def ledger(tmp_path):
     with Ledger(str(tmp_path / "ledger.sqlite")) as led:
@@ -79,7 +107,7 @@ def test_no_review_is_the_call_as_before(batch, fake_miner, words, monkeypatch):
     monkeypatch.setattr(anki_miner, "PAUSE_LOOK_S", 0.0)
     looks = []
     done = batch(should_stop=lambda: False, should_pause=lambda: looks.append(1) or False)
-    assert looks, "the review was looked at while the call ran"
+    assert looks, f"the review was looked at while the call ran (F5 probe: {_F5})"
     assert done["paused"] is False and done["stopped"] is False
     assert all(o["outcome"] == "made" for o in done["outcomes"])
 

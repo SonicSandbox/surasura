@@ -29,6 +29,7 @@ numpy is imported here only (it arrives with pandas); the cost of a line is E-SC
 """
 import json
 import os
+import re
 import struct
 import zlib
 from array import array
@@ -37,12 +38,144 @@ import numpy as np
 
 TABLE_FILE = "sentences.bin"
 MAGIC = b"SURATBL\n"
-VERSION = 1
+VERSION = 2                     # 2: the two word numbers counted (1 wrote them as 0)
 LEVEL = 3                       # zlib: 0.44 s for 7.01 MB at 20,000 files (lighter 7.42 MB, harder 1.15 s: SPEC § 8.2)
 
 OVER = 1 << 2                   # marks: over *Never longer than* (a file's first sentence of the word; never chosen)
 STARTS_PAST = 255               # where the word starts: 255 = at or past 255 characters
 _SEP = (",", ":")
+
+# "Words besides the word" (SPEC § 3.2, decision 9b): the line's content words that are not the word — a place or a
+# thing counts, a person the line is about counts (a particle or だ / です follows the name), a person's name said as
+# a call does not (it stands free: the line's end, a mark after it, or a word with no particle). The token store keeps
+# no part of speech, so grammar is told by its base form, from these fixed lists (general Japanese and jieba's own
+# table, never a user's library: the build script says how); a person's name is one of the library's names, the
+# lemmas Ignore names reads (`names.name_words`).
+# --- grammar words: scripts/build_sentence_words.py writes this block ---
+_JA_PARTICLES = (  # ja particles (UniDic 助詞): 73
+    "い え か かし かしら から が きり くらい け けれど けん こそ さ さえ し しか しき しも じゃん すけ すら ずつ ぜ ぞ たって たら たり だけ だに ちょ って つつ て てん "
+    "で でも と とか とて とも ど どころ な ながら など なんぞ なんて に にて ね ねん の のう のみ のん は ば ばい ばかり へ べい ほど まで も もの や やら よ より わ を "
+    "をば"
+)
+_JA_SUFFIXES = (  # ja suffixes (接尾辞): 179
+    "がかる がてら がり がる ごと さん しな たん だらけ ちゃん っこ っこい っぺ っ子 つ ばむ ぽい めく やん 並み 丼 乍ら 亭 付き 令 位 作 個 児 共 兼ねる 冊 冠 刊 制 剤 "
+    "勝ち 勢 化 匹 医 卒 博 史 合い 同士 向き 向け 吹き 員 問 器 団 圏 園 型 堂 塗れ 士 大 婦 学 官 宛て 室 寄り 尽くし 屋 展 師 帳 干し 庫 建て 弱 張り 強 弾き 性 "
+    "択 持ち 振り 捲り 掛かり 掛け 揚げ 撃 擬き 放し 教 料 族 易い 書 書き 末 材 来 枚 架 校 業 権 歳 歴 殿 毎 氏 気触れ 沿い 派 流 浪 済み 渓 温 滴 漬け 灯 炒め "
+    "焼き 煮 犯 状 生 産 用 界 病 症 痛 発 的 省 眼 研 砲 祭 科 立 等 系 紀 級 絡み 置き 羽 腫 臭 菜 葬 蒸し 行き 製 観 記 証 誌 調 費 越し 路 軒 込み 進 遍 "
+    "過ぎ 達 野 長 限 隊 隻 集 難い 電 類 飼い 館"
+)
+_JA_GRAMMAR = (  # ja other grammar: auxiliaries, prefixes, interjections, conjunctions: 220
+    "ああ ああん あい あう あかん あちゃ あっ あの あは あはは あばよ あら あれ あん あー あーと いいえ いえ いけ いざ いや いやはや いー うい うう ううん うお うふふ うふん "
+    "うむ うわ うん うんと うー えい ええ えっ えへ えー えーと おい おお おおい おっ おっと おや おら おー き きゃあ ぎゃあ くう くそ けえ けり こら ごとし さあ させる さて "
+    "さようなら さらば ざます しい しめる じ じゃ すん ず ずら せる そして その そら それ た たい たがる たげる たる だ ちまう ちゃう ちゃる つう てく てらっしゃる てる です "
+    "とく とる どい どれ なあ ない なり なんだ なんちゃって ぬ ねえ はあ はい はっ はは ははは はる はん はーん ひい ひえ ひゃあ ひょう ふう ふふ ふふふ ふふん ふむ ふん へい "
+    "へえ へん べし ほい ほう ほえ ほっ ほな ほほう ほら ほれ まい ます まー む もしもし やあ やい やがる やす やった やれ やんや よいしょ よう よし よっしゃ よる らし らしい "
+    "らむ られる り れる わあ わあい わっしょい んす んっ んー 一大 不 且つ 両 乃至 亜 今日は 今晩は 但し 全 再 初めまして 副 即ち 及び 反 各 向 否 否々 唯 多 好 小 当 御 "
+    "御早う 或いは 扠 新 最 有 有り難う 未 殺 汚 活 準 無 然う然う 然し 然も 相 突 第 約 素 細 終 総 義 老 聖 若しくは 計 誤 超 静 非 飛 高"
+)
+_JA_HELPERS = (  # ja helping verbs (非自立可能): grammar right after て / で: 66
+    "いらっしゃる さす そびれる 上げる 下さる 交わす 仕舞う 付く 付ける 出す 出来る 切る 切れる 去る 参る 合う 呉れる 回る 始める 尽くす 居る 得る 御座る 忘れる 慣れる 成る 抜く "
+    "抜ける 捲る 掛かる 掛ける 損なう 有る 来たる 来る 果たす 果てる 欲しい 渡る 為さる 為る 無い 熟す 直す 終える 終わる 給う 続く 続ける 置く 致す 良い 行く 見せる 見る 貰う "
+    "込む 通す 遅れる 遊ばす 過ぎる 遣る 間違う 間違える 頂く 願う"
+)
+_ZH_GRAMMAR = (  # zh: jieba's particles, prepositions, conjunctions, interjections: 148
+    "不仅 不但 不免 不如 不是 不管 不论 不过 与 与其 与此同时 为 为了 么 之 之所以 也好 了 于 于是 从 从此 从而 以 以为 以便 以及 以外 似的 但 但是 何况 依据 依照 倘若 "
+    "关于 再说 凭 即使 即便 及 及其 及时 反而 另一方面 另外 只不过 只怕 只是 只有 只要 可以 可是 同 同时 向 吗 否则 吧 呀 呢 呵 和 哩 啦 嗯 嘛 因 因为 因此 因而 在 在内 "
+    "地 如果 如此 对 对于 尽管 并 并且 并非 得 总是 或 或是 或者 所 所以 所说 把 按 按照 据 接着 无论 既 既有 既然 替 来看 来说 根 根据 此后 此外 此时 比 然 然后 然而 "
+    "用 由 由于 由此 的 的话 着 等 等等 经过 给 而 而且 而已 而是 而言 自 自从 至 至于 般 般的 若 虽然 被 要是 跟 过 还是 还要 通过 针 针对 除 除了 随着 顺"
+)
+# --- end of the block ---
+_TITLES = frozenset(("さん", "君", "くん", "ちゃん", "様", "さま", "氏", "博士", "先生", "夫人", "殿", "卿", "警部", "刑事",
+                     "捜査官", "大佐", "中佐", "少佐", "大尉", "中尉", "少尉", "将軍", "提督", "艦長", "船長", "議員", "大統領",
+                     "長官", "教授", "王", "女王", "王子", "姫", "軍曹", "保安官", "隊長", "達", "たち", "ら"))   # after a name
+_COPULA = frozenset(("だ", "です"))
+_AFTER_TE = frozenset(("て", "で", "って", "ちゃ", "じゃ"))
+_NAME_LINKS = frozenset(("・", "･", "＝", "="))     # フランク・ライアン: one name
+_NUMERALS = frozenset("〇一二三四五六七八九十百千万億兆")
+_KATAKANA = re.compile(r"[\u30a0-\u30ff]+")
+_LISTS = {}
+
+
+def _lists(language):
+    """(every grammar word, the particles, the helping verbs, the suffixes) by base form, built once a language."""
+    found = _LISTS.get(language)
+    if found is None:
+        if language == "ja":
+            particles, suffixes = frozenset(_JA_PARTICLES.split()), frozenset(_JA_SUFFIXES.split())
+            found = (particles | suffixes | frozenset(_JA_GRAMMAR.split()), particles, frozenset(_JA_HELPERS.split()),
+                     suffixes | _TITLES)
+        else:
+            try:
+                from app.cedict_data import interjections
+                said = frozenset(interjections())
+            except Exception:
+                said = frozenset()
+            found = (frozenset(_ZH_GRAMMAR.split()) | said, frozenset(), frozenset(), frozenset())
+        _LISTS[language] = found
+    return found
+
+
+class LineWords:
+    """One line's two numbers for each word in it: how many words besides the word it says, and where the word starts
+    (in characters). Made once a line, from the token store's tokens (lemma, reading, surface, spelling) and its text;
+    `people`: the library's people's names (lemmas). A name of several pieces (フランク・ライアン, linked by ・ or =)
+    is one name, held by its first piece — and the word itself when the word is one of its pieces."""
+    __slots__ = ("keys", "at", "head", "counted", "total")
+
+    def __init__(self, tokens, text, language, people=frozenset()):
+        grammar, particles, helpers, titles = _lists(language)
+        n, pos = len(tokens), 0
+        self.keys, self.at, ends = [], [], []
+        for lemma, reading, surface, _orth in tokens:
+            a = text.find(surface, pos)
+            if a < 0:
+                a = pos
+            self.keys.append((lemma, reading))
+            self.at.append(a)
+            pos = a + len(surface)
+            ends.append(pos)
+        at = self.at
+
+        def gap(i):                             # the text between token i - 1 and token i
+            return text[ends[i - 1]:at[i]]
+
+        def named(i):
+            return tokens[i][0] in people or _KATAKANA.fullmatch(tokens[i][2]) is not None
+
+        head = self.head = list(range(n))
+        for i in range(1, n):
+            if gap(i) in _NAME_LINKS and named(i - 1) and named(i):
+                head[i] = head[i - 1]
+        counted = [False] * n
+        for i, (lemma, _r, surface, _o) in enumerate(tokens):
+            if head[i] != i or lemma in grammar or not any(ch.isalpha() for ch in surface):
+                continue                        # a later piece of a name (counted once, at its first) · grammar · a mark
+            if lemma in helpers and i and not gap(i) and tokens[i - 1][2] in _AFTER_TE and tokens[i - 1][0] in particles:
+                continue                        # a helping verb: 見ている, 来てくれる
+            if len(surface) == 1 and at[i] and (text[at[i] - 1].isdigit() or text[at[i] - 1] in _NUMERALS):
+                continue                        # a counter after its number (the number is no token): 三人, ２０分
+            j = i + 1
+            while j < n and head[j] == i:
+                j += 1
+            if any(tokens[k][0] in people for k in range(i, j)):
+                while j < n and (tokens[j][0] in people or tokens[j][0] in titles) and not gap(j).strip():
+                    j += 1                      # its title (ルーサー警部), or more of the name
+                if not (j < n and not gap(j).strip() and (tokens[j][0] in particles or tokens[j][0] in _COPULA)):
+                    continue                    # a call: the line's end, a mark, or a word with no particle after it
+            counted[i] = True
+        self.counted, self.total = counted, sum(counted)
+
+    def _own(self, indices):
+        return sum(self.counted[h] for h in {self.head[i] for i in indices})
+
+    def of_word(self, key):
+        """(words besides the word `key`, where it first starts)."""
+        mine = [i for i, k in enumerate(self.keys) if k == key]
+        return self.total - self._own(mine), self.at[mine[0]] if mine else 0
+
+    def of_span(self, a, b):
+        """(words besides the set phrase on tokens a..b-1, where it starts)."""
+        return self.total - self._own(range(a, min(b, len(self.keys)))), self.at[a] if a < len(self.at) else 0
 
 # One block's columns, in the order written: (name, little-endian dtype). `src` is written as the step from the line
 # before (mostly 0) and read back whole.

@@ -38,7 +38,7 @@ import numpy as np
 
 TABLE_FILE = "sentences.bin"
 MAGIC = b"SURATBL\n"
-VERSION = 1
+VERSION = 2                     # 2: the two word numbers counted (1 wrote them as 0)
 LEVEL = 3                       # zlib: 0.44 s for 7.01 MB at 20,000 files (lighter 7.42 MB, harder 1.15 s: SPEC § 8.2)
 
 OVER = 1 << 2                   # marks: over *Never longer than* (a file's first sentence of the word; never chosen)

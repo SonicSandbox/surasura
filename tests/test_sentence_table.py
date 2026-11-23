@@ -326,15 +326,15 @@ def test_a_damaged_or_half_written_table_reads_as_none(tmp_path, damage):
     assert st.open_table(path) is None
 
 
-@pytest.mark.parametrize("asked", [{"language": "zh"}, {"engine": "e46"}, {"run_signature": "other"}, {"version": 2}])
+@pytest.mark.parametrize("asked", [{"language": "zh"}, {"engine": "e46"}, {"run_signature": "other"}, {"version": 1}])
 def test_another_version_engine_language_or_run_reads_as_none(tmp_path, monkeypatch, asked):
     # why: a table from another format, engine, language or run is not this library's: no table
     lib = _Library(_sentences("ja"))
-    asked = dict(asked)
+    asked, version = dict(asked), st.VERSION
     if "version" in asked:
-        monkeypatch.setattr(st, "VERSION", asked.pop("version"))
+        monkeypatch.setattr(st, "VERSION", version + asked.pop("version"))     # written by the next format
     path = _write(lib.finish(lib.packer()), tmp_path)
-    monkeypatch.setattr(st, "VERSION", 1)
+    monkeypatch.setattr(st, "VERSION", version)
     assert st.open_table(path, **dict({"language": "ja", "engine": "e47", "run_signature": "sig"}, **asked)) is None
     if asked:
         assert st.open_table(path) is not None, "asked nothing, the same version: read"

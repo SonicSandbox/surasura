@@ -3,7 +3,8 @@ transport `app/door.py`). Two presses on the page, one maker: both ask Swap's `s
 learner pressed (SPEC row 11: no second card maker), and Connect's next look makes the card as it makes every one.
 
 - `swap/queue` {lang, word, line_id} — ⇄ on a word that has a card: a new card for it from this line (the simple
-  Swap: a new card; the old one stays in your reviews as you left it, and gains Swap's tag once the new one is made).
+  Swap: a new card; one out, one in — once the new one is made, Swap suspends and tags the old one, and its Undo puts
+  it back as it was: `swap.JOURNEY_TAKES_OLD`, the one place that turns, PROVISIONAL).
   The old card is the newest one Connect made for the word that may still be in Anki (`deleted._newer_cards`); a card
   of your own Connect didn't make is none (its line isn't known to Swap, so it isn't avoided or tagged).
 - `card/make` {lang, word, line_id} — *Add now* on a word with no card: its card from this line. Pinned as every

@@ -350,10 +350,11 @@ class WordListsWindow(SecondaryWindow):
         if before[1] == "known":
             after, fn, args = "learning", services.mark_words, (language, [(word, "learning")])
         elif word in self.cleared:
-            after, fn, args = "known", services.undo_marks, (language, self.cleared[word])
+            after, fn, args = "known", _known_again, (services, language, word, self.cleared[word])
         else:
             after, fn, args = "known", services.mark_words, (language, [(word, "known")])
         self._set_row(at, (word, after) + tuple(before[2:]))
+        self._asked += 1                                  # (a read on its way answers what was before: dropped)
         self.begin_write()
         if qpress.run(None, "words:learning", fn, *args, win=self,
                       then=lambda result: self._row_marked(language, word, before, after, result),
@@ -364,7 +365,10 @@ class WordListsWindow(SecondaryWindow):
 
     def _row_marked(self, language, word, before, after, result):
         """The ✓'s write answered: the row kept (and its Undo held) or put back with why."""
-        error = str(result) if isinstance(result, (str, Exception)) else result.error
+        if isinstance(result, (str, Exception)):          # (a break with no words still says what broke)
+            error = str(result) or type(result).__name__
+        else:
+            error = result.error
         done = not error and any(d[0] == word for d in result.done)
         if error or not done:
             line = s.WORD_LISTS_WRITE_FAILED.format(why=error or s.WORD_LISTS_UNCHANGED.format(word=word))
@@ -378,9 +382,11 @@ class WordListsWindow(SecondaryWindow):
         if language != self.language or self.kind != word_lists.KNOWN:
             return                                        # another list or language shown now: its read is the truth
         at = self._row_of(word)
-        if error or not done:
+        if error:
             if at is not None:
-                self._set_row(at, before)                 # refused, or nothing changed: the row as it was
+                self._set_row(at, before)                 # refused: the row as it was
+        elif not done:
+            self.cleared.pop(word, None)                  # nothing changed: the word was already as the row now says
         elif after == "learning":
             self.cleared[word] = result.undo_id
         else:
@@ -588,6 +594,15 @@ def _item(word, source, reading=None, origin=None, created=None):
     item.setData(text, Qt.ItemDataRole.AccessibleTextRole)
     item.setEditable(False)
     return item
+
+
+def _known_again(services, language, word, undo_id):
+    """(on the worker) ○ on a word made Still learning here: that write undone — or, when it is gone from the Undo
+    stack (the main window's Undo took it, or later writes pushed it out), the word marked Known."""
+    result = services.undo_marks(language, undo_id)
+    if not result.error and not any(d[0] == word for d in result.done):
+        result = services.mark_words(language, [(word, "known")])
+    return result
 
 
 def _date(ms):

@@ -196,6 +196,60 @@ def test_a_refused_write_puts_the_row_back_and_says_why(main, monkeypatch):
     assert w.status.text() == "Nothing was changed: KnownWord.json is held by another program"
 
 
+def test_a_circle_whose_undo_is_gone_marks_the_word_known(main, monkeypatch):
+    """(Mado-LT 5) ✓ here, then the main window's Undo takes that write (or later writes push it off the stack): the
+    ○'s Undo finds nothing — the word is marked Known instead, the row ✓, its held Undo dropped; never "was already
+    that way" over a ○ that stays."""
+    _write("ja", JA)
+    w = _open(main)
+    _click_mark(w, "看板")
+    assert wait_until(lambda: not w.busy() and "看板" in w.cleared)
+    assert not word_marks.undo("ja", w.cleared["看板"]).error                 # the main window's Undo took it
+    assert "看板" not in word_marks.learning("ja")
+    assert not word_marks.apply("ja", [("看板", "learning")]).error           # and the word Still learning again
+    _click_mark(w, "看板")
+    assert wait_until(lambda: not w.busy() and w.status.text() == "看板: known again")
+    assert dict(_shown(w))["看板"] == "known" and "看板" not in w.cleared
+    assert "看板" not in word_marks.learning("ja")
+
+
+def test_a_read_on_its_way_never_paints_over_a_check_just_pressed(main, monkeypatch):
+    """(Mado-LT 5) A read that left before ✓ (the one after an Add, a window shown again) answers with the file as it
+    was: dropped, so the row keeps its ○ — not ✓ over a word now Still learning."""
+    import threading
+    _write("ja", JA)
+    w = _open(main)
+    gate, real, answered = threading.Event(), word_lists.read, []
+
+    def slow(kind, language):
+        listing = real(kind, language)
+        gate.wait(5)
+        answered.append(True)
+        return listing
+    monkeypatch.setattr(word_lists, "read", slow)
+    w.read()
+    _click_mark(w, "灯台")
+    assert wait_until(lambda: not w.busy() and "灯台" in w.cleared)
+    gate.set()
+    assert wait_until(lambda: answered)
+    wait_until(lambda: False, 0.3)                                          # (its answer delivered to the window)
+    assert dict(_shown(w))["灯台"] == "learning"
+
+
+def test_a_break_with_no_words_still_ends_the_write_and_says_so(main, monkeypatch):
+    """(Mado-LT 5) A worker that raises with an empty message (`RuntimeError()`): the row put back, the window free
+    again and the line names what broke — never stuck greyed."""
+    _write("ja", JA)
+    w = _open(main)
+
+    def broken(language, marks):
+        raise RuntimeError()
+    monkeypatch.setattr(main.services, "mark_words", broken)
+    _click_mark(w, "灯台")
+    assert wait_until(lambda: not w.busy() and "RuntimeError" in w.status.text())
+    assert dict(_shown(w))["灯台"] == "known"
+
+
 def test_a_write_that_breaks_puts_the_row_back_too(main, monkeypatch):
     _write("ja", JA)
     w = _open(main)

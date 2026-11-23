@@ -102,6 +102,17 @@ def test_migakus_millisecond_dates_and_the_syncs_iso_dates_sort_together():
     assert _known()[-1].created is None
 
 
+def test_a_date_windows_cannot_place_is_no_date_and_never_empties_the_tab():
+    """(Mado-LT 5) A hand-edited or broken `created` — year 1 or 9999, which Windows' clock can't turn into a time —
+    reads as no date: the word listed with the undated ones, the rest of the tab untouched (one bad entry once threw
+    out of the read and the tab showed nothing)."""
+    _write("ja", [_entry("冒険", created="2026-01-05T10:00:00"), _entry("宝", created="0001-01-01T00:00:00"),
+                  _entry("灯台", created=0)])
+    rows = _known()
+    assert [e.word for e in rows] == ["冒険", "灯台", "宝"]                   # undated: newest in the file first
+    assert rows[1].created is None and rows[2].created is None
+
+
 # --- Still learning ------------------------------------------------------------------------------------------- #
 def test_a_word_still_learning_stays_on_the_known_tab_as_learning_until_it_is_known_again():
     """Kyou-LR's rule (`word_marks` "learning"): the Anki entry is kept, turned not known — the Known tab shows the

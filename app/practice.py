@@ -123,7 +123,7 @@ def _created_ms(value):
     if isinstance(value, str) and value.strip():
         try:
             return datetime.fromisoformat(value.strip()).timestamp() * 1000
-        except ValueError:
+        except (ValueError, OSError, OverflowError):     # (a year Windows' clock can't place: 0001, 9999)
             return None
     return None
 

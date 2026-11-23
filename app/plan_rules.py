@@ -9,6 +9,7 @@ import base64
 import bisect
 import hashlib
 import json
+import os
 import re
 import sys
 import unicodedata
@@ -306,6 +307,29 @@ def progressive_pass(files, known, lemmas, lemma_of, keep, rank, target_coverage
             known.add(row[0])
             lemmas.add(lemma_of(row[0]))
         yield rows, round((baseline / total * 100) if total > 0 else 0, 2), total
+
+
+# --------------------------------------------------------------------------------------------------------------- #
+# The sentence table (the sentence choice): one switch for the whole build
+# --------------------------------------------------------------------------------------------------------------- #
+# 0 off: Generate writes no table, every reader takes today's path, every file in results/ the same bytes as before.
+# 1 release 1: Generate writes the table beside today's tables; the card, Swap and Bad card ask the score.
+# 2 release 2: Generate writes the table alone; the list, the journey and the word card read it too.
+# Code asks `SENTENCE_TABLE >= 1` or `>= 2`, nothing finer. A flip is one commit: this number and the analyzer's
+# ENGINE_REVISION together (without the bump an unchanged library would reuse its old run and never get a table).
+# A child process (a Generate is one) takes it from SURASURA_SENTENCE_TABLE=0|1|2, read here once, at import: the
+# test harness's way to run a level; any other value is the tree's.
+SENTENCE_TABLE_LEVELS = (0, 1, 2)
+SENTENCE_TABLE = 0
+
+
+def sentence_table_level(environ=None, default=SENTENCE_TABLE):
+    """The switch's level for a process: SURASURA_SENTENCE_TABLE when it names a level, else `default` (the tree's)."""
+    raw = (os.environ if environ is None else environ).get("SURASURA_SENTENCE_TABLE", "").strip()
+    return int(raw) if raw in {str(level) for level in SENTENCE_TABLE_LEVELS} else default
+
+
+SENTENCE_TABLE = sentence_table_level()
 
 
 # --------------------------------------------------------------------------------------------------------------- #

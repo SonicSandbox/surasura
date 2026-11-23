@@ -250,8 +250,9 @@ ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway",
            "move_cards", "leave_cards",                                                  # Michi-DK
            "put_back_shelf", "leave_shelf",                                              # Kyou-SH
            "undo_tidy", "leave_tidy",                                                    # Kyou-SH2
-           "dw_all_known", "dw_all_ignore", "dw_all_parsing", "dw_all_bad", "dw_leave",  # Kyou-DW: the whole card
-           "dw_forget_all", "dw_keep_old",
+           "dw_all_known", "dw_all_ignore", "dw_all_bad", "dw_leave",  # Kyou-DW: the whole card (All parsing
+           "dw_forget_all", "dw_keep_old",                             # mistakes only asks its follow-up: Kyou-DW 3)
+           "dw_all_word_wrong", "dw_all_only_line",
            "undo_swap", "leave_swap", "leave_swap_wait")                                 # Kantan-SL
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "generate_again",
                      "pick_audiobook",
@@ -259,7 +260,8 @@ PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "sa
                      "make_from_audio", "find_with_hato", "find_with_hato_zh",     # Michi-NS: each a long ask
                      "add_audio",                                                  # Kura-AB3 A2: Anki written
                      "change_video",                                               # Kantan-B5: a picker's start
-                     "dw_known", "dw_ignore", "dw_parsing", "dw_bad", "dw_forget")  # Kyou-DW: a line's own answer
+                     "dw_known", "dw_ignore", "dw_bad", "dw_forget",    # Kyou-DW: a line's own answer (Parsing
+                     "dw_word_wrong", "dw_only_line")                  # mistake only asks its follow-up: Kyou-DW 3)
 # Kyou-DW: the cards whose line stands behind a ? beside the title (the Qt guide: no visible line under a title)
 ABOUT_KINDS = frozenset((service.DELETED, service.OLD_DELETES))
 
@@ -478,6 +480,8 @@ class NeedsCards(QWidget):
         self.addon(card, box, e)
         by_line = dict(zip((ln.key for ln in e.lines), results or ())) if results else {}
         shown = FOLDER_LINES_SHOWN if e.kind in (service.FILES_FOLDER, service.LIBRARY_GONE) else LINES_SHOWN
+        if e.kind == service.DELETED:               # Kyou-DW 3: a follow-up line never pushes a card's line out
+            shown += sum(1 for ln in e.lines if ln.key.startswith(service.DELETED_HOW))
         for ln in e.lines[:shown]:
             row = QHBoxLayout()
             row.setSpacing(round(8 * f))
@@ -890,6 +894,9 @@ class NeedsYou(QObject):
         self._landed = {}                        # A4A-11: key -> the first gather that reads its write (from it on
         #                                          the seen file alone says whether it is hidden)
         self._seen_jobs = collections.deque()    # A4A-8: the page's seen-file writes, one after another as pressed
+        self._dw_asking = set()                  # Kyou-DW 3: the deleted cards whose Parsing mistake asks its follow-up
+        #                                          (note ids; a card's own key: the whole card), kept while
+        #                                          the window is open: no time-out, never answered for the learner
         self.last_menu = None
         reader = getattr(win.services, "library", None)
         opener = getattr(reader, "opener", None)
@@ -1109,6 +1116,7 @@ class NeedsYou(QObject):
         library = self._library()
         emptied = self._emptied()
         gone_judged = gone_folders if self._gone_judged else None     # never pruned by a summary that judged none
+        asking = frozenset(self._dw_asking)
         log_path = getattr(getattr(self.win.services, "controller", None), "log_path", None)
         generate_log = log_path() if callable(log_path) else None      # Kantan-B1: a failed Generate's hover
 
@@ -1142,7 +1150,8 @@ class NeedsYou(QObject):
                                   miner_update=service.miner_update(view),    # Michi-U: Anki Miner out of date
                                   no_subs=service.no_subs_offer(view, settings),   # Michi-NS: videos, no subtitle
                                   strays=service.deck_strays(lang, settings),      # Michi-DK: outside its deck
-                                  generate_log=generate_log)                  # Kantan-B1: its path, in the hover
+                                  generate_log=generate_log,                  # Kantan-B1: its path, in the hover
+                                  asking=asking)                              # Kyou-DW 3: Parsing mistake's ask
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
 
@@ -2585,7 +2594,8 @@ class NeedsYou(QObject):
     def _deleted_answer(self, name, entry, line, why):
         from app.connect import deleted
         lang, read_settings = self.language, self.read_settings
-        notes = [line.number] if line is not None else list((entry.data or {}).get("notes") or ())
+        whole = line is None or line.number is None     # Same for all (its follow-up's line has no card of its own)
+        notes = list((entry.data or {}).get("notes") or ()) if whole else [line.number]
 
         def answer_it():
             got = deleted.answer(lang, notes, why)
@@ -2603,6 +2613,9 @@ class NeedsYou(QObject):
                 self._say(said)
                 return
             back = [n for n, _w in got["done"]]
+            self._dw_asking.difference_update(back)
+            if whole:
+                self._dw_asking.discard(entry.key)
 
             def undo_it():
                 out = deleted.undo(lang, back, settings=read_settings() or {})
@@ -2613,7 +2626,7 @@ class NeedsYou(QObject):
                 self._say(deleted_undone_said(out))
                 self.refresh()
             self.win.toasts.show(said, undo=lambda: bridge.run_in_worker(undo_it, then=undone, failed=self._failed))
-        self._press(name, entry, answer_it, then=done, line=line, goes=line is None)
+        self._press(name, entry, answer_it, then=done, line=line, goes=whole)
 
     def _do_dw_known(self, entry, line):
         self._deleted_answer("dw_known", entry, line, "known")
@@ -2621,8 +2634,26 @@ class NeedsYou(QObject):
     def _do_dw_ignore(self, entry, line):
         self._deleted_answer("dw_ignore", entry, line, "ignore")
 
+    # Kyou-DW 3 (PROVISIONAL): Parsing mistake answers nothing yet — it asks one more thing, in one more line under
+    # its card's line (*All parsing mistakes*: once, first on the card): The word is wrong · Only in this sentence
+    def _ask_how(self, what):
+        self._dw_asking.add(what)
+        self.refresh()
+
     def _do_dw_parsing(self, entry, line):
-        self._deleted_answer("dw_parsing", entry, line, "parsing")
+        self._ask_how(line.number)
+
+    def _do_dw_word_wrong(self, entry, line):
+        self._deleted_answer("dw_word_wrong", entry, line, "parsing")
+
+    def _do_dw_only_line(self, entry, line):
+        self._deleted_answer("dw_only_line", entry, line, "line")
+
+    def _do_dw_all_word_wrong(self, entry, line):
+        self._deleted_answer("dw_all_word_wrong", entry, line, "parsing")
+
+    def _do_dw_all_only_line(self, entry, line):
+        self._deleted_answer("dw_all_only_line", entry, line, "line")
 
     def _do_dw_bad(self, entry, line):
         self._deleted_answer("dw_bad", entry, line, "bad")
@@ -2634,7 +2665,7 @@ class NeedsYou(QObject):
         self._deleted_answer("dw_all_ignore", entry, None, "ignore")
 
     def _do_dw_all_parsing(self, entry, _line):
-        self._deleted_answer("dw_all_parsing", entry, None, "parsing")
+        self._ask_how(entry.key)                    # this card's set of cards: one that changes since asks again
 
     def _do_dw_all_bad(self, entry, _line):
         self._deleted_answer("dw_all_bad", entry, None, "bad")

@@ -2701,6 +2701,14 @@ def _name_media_at_end(steps, ledger, lang, job):
         log.warning("Connect couldn't rename the media of a job that ended", exc_info=True)
 
 
+def _rewritten(ledger, job):
+    """FS-1: the notes a swap job rewrote in place (`swap.rewritten`), [] for every other job."""
+    if job.get("kind") != SWAP:
+        return []
+    from app.connect import swap
+    return swap.rewritten(ledger, job["id"])
+
+
 def _made(ledger, jid):
     """{word: [note id, …]} of the job's made outcomes."""
     made = {}
@@ -2716,7 +2724,9 @@ def _record_made(steps, ledger, lang, job, record):
     if not record:
         return
     try:
-        steps.record(lang, job, _made(ledger, job["id"]), _now() if job.get("kind") not in (LEVEL, SWAP) else None, _tag(job))
+        moved = _rewritten(ledger, job)         # FS-1: a card rewritten in place is this item's alone now
+        steps.record(lang, job, _made(ledger, job["id"]), _now() if job.get("kind") not in (LEVEL, SWAP) else None,
+                     _tag(job), **({"moved": moved} if moved else {}))
     except Wait as w:
         raise Wait(w.reason, w.look, "mining") from None
     _through(ledger, lang, "recording")
@@ -2887,8 +2897,9 @@ def _fill(steps, ledger, lang, job):
     if pending:                             # the names' tag, before anything else touches the notes (adversary #7)
         steps.tag_names(lang, pending)
         ledger.set_state(jid, "filling", tag_pending=None)
+    rewritten = [n for n in _rewritten(ledger, job) if n in set(ids)]
     try:
-        steps.fill(lang, job, ids)
+        steps.fill(lang, job, ids, **({"rewritten": rewritten} if rewritten else {}))
     except Wait as w:
         raise Wait(w.reason, w.look, "filling") from None
     except Skip as s:
@@ -3532,14 +3543,15 @@ class Steps:
             self._video_index = made
         return made[lang]
 
-    def record(self, lang, job, made, mined_at, batch):
+    def record(self, lang, job, made, mined_at, batch, moved=()):
         """The mining's one store write (receipt + made words): a busy store is looked at again, one that can't be
-        written is Needs you — the job never goes on without its record (G1.3-4 reads it)."""
+        written is Needs you — the job never goes on without its record (G1.3-4 reads it). `moved`: a swap job's
+        cards rewritten in place, taken out of the item they were first made from (`record_batch`)."""
         from app import library_store
         from app.connect import library
         with self._open(lang) as store:
             try:
-                library.record_batch(store, job["item_id"], made, mined_at, batch)
+                library.record_batch(store, job["item_id"], made, mined_at, batch, moved=moved)
             except library_store.StoreBusy:
                 raise Wait(LIBRARY_BUSY) from None
             except library_store.StoreReadOnly:
@@ -4280,11 +4292,7 @@ class Steps:
         fields = getattr(self._job_mapping(job), "fields", None) or self._export_fields(lang, job)
         if not lines or not fields:
             return None
-        pairing = self.pairing(lang, job) or {}
-        key = pairing.get("content_key")
-        if not key:
-            with self._open(lang) as store:
-                key = (store.item(job["item_id"]) or {}).get("rel_key") or f"item-{job['item_id']}"
+        key = self._media_key(lang, job)
         try:
             return media_names.rename(media_names.AnkiConnectMedia(self.url), lines, key, fields.get("audio"),
                                       None if audio else fields.get("picture"))    # the clip renamed (review AB-4)
@@ -4296,6 +4304,14 @@ class Steps:
             raise Wait(ANKI_SLOW, resume="mining") from None
         except anki_connect.AnkiError as e:
             raise _anki_wait(self.url, "mining", e) from None
+
+    def _media_key(self, lang, job):
+        """The episode's key its media are named by (`media_names`): hato's `content_key`, else the item's own."""
+        key = (self.pairing(lang, job) or {}).get("content_key")
+        if not key:
+            with self._open(lang) as store:
+                key = (store.item(job["item_id"]) or {}).get("rel_key") or f"item-{job['item_id']}"
+        return key
 
     def _job_mapping(self, job):
         """The field mapping this run's `mine` set — only for the job it mined; another job (resumed with nothing left
@@ -5108,11 +5124,17 @@ class Steps:
             swap.fall_back(ledger, row, None)       # Anki Miner didn't find the word on that line: a new card
             return None
         from app import anki_connect, locks
-        from app.cli.verbs import _connect_folder
-        from app.connect import sentence_audio
+        from app.connect import media_names, sentence_audio
+        if not picked.get("reading"):           # a book's line has no clip; an audio episode's cover is shared (Z-16)
+            values, named = media_names.by_line(
+                rendered.get("fields"), {os.path.basename(p): p for p in rendered.get("files") or ()},
+                self._media_key(lang, job), word.get("line_start"), word.get("line_end"), word.get("line_text"),
+                mapping.fields.get("audio"), None if anki_miner.is_audio(picked.get("video")) else
+                mapping.fields.get("picture"))
+            rendered = dict(rendered, fields=values, named=named)  # named now: the rename after leaves it (its Undo)
         try:
             kind, said = swap.write_in_place(swap.AnkiSwap(self.url), ledger, row, rendered, mapping,
-                                             os.path.join(_connect_folder(), "swap-kept"))
+                                             swap.kept_folder())
         except sentence_audio.Reviewing:
             raise Wait(REVIEWING, True, "mining") from None
         except locks.Busy as e:
@@ -5266,13 +5288,14 @@ class Steps:
         except anki_connect.AnkiError as e:
             raise _anki_wait(self.url, "mining", e) from None
 
-    def fill(self, lang, job, note_ids):
+    def fill(self, lang, job, note_ids, rewritten=()):
         from app.cli import verbs
         from app.cli.contract import CliError
         from app.connect import runfile
-        # the job's tag beside its notes: the source field (K40) is read from its run folder (adversary P2.4-A #8)
+        # the job's tag beside its notes: the source field (K40) is read from its run folder (adversary P2.4-A #8);
+        # `rewritten` (FS-1): cards a swap rewrote in place — their ふりがな filled studied or not (`run_named`)
         ns = SimpleNamespace(lang=lang, wait=WAIT_S, notes=",".join(str(n) for n in note_ids),
-                             tag=runfile.job_tag(_tag(job)), dry_run=False)
+                             tag=runfile.job_tag(_tag(job)), dry_run=False, rewritten=list(rewritten or ()))
         try:
             out = verbs.backfill(ns)
         except CliError as e:

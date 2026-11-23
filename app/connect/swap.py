@@ -73,6 +73,8 @@ HAND_EDITED = "its sentence was changed by hand: a new card instead"     # decis
 NOT_CONNECTS = "Surasura didn't make that card: a new card instead"     # decision 6
 NO_RENDER = "Update Anki Miner to keep the same card: a new card instead"      # decision 12
 NOT_APPLIED = "Close the card in Anki's editor: Surasura rewrites it after."
+TOO_OLD = "That swap is too old to undo: its old clip and picture were kept 30 days."     # decision 7
+KEPT_DIR = "swap-kept"          # in Connect's folder: an in-place swap's old media, one folder a write (decision 7)
 # The sentence side (SCOPE § 1): the only roles an in-place swap writes — everything else of the note is the word's or
 # the learner's and is never written (an allow-list: a role not here is never touched)
 SENTENCE_SIDE = ("sentence", "audio", "picture")
@@ -423,6 +425,7 @@ def look(steps, ledger, language, store_id=None, anki=None, files=None):
                                                ).fetchone():
         return out                          # nothing ever asked: an idle look writes nothing (S19)
     ensure(ledger)
+    _purge_kept()
     anki = anki if anki is not None else _anki(steps)
     _follow(ledger, language, entries)
     for row in _rows(ledger, "language = ? AND state = ?", (language, QUEUED)):
@@ -456,6 +459,25 @@ def look(steps, ledger, language, store_id=None, anki=None, files=None):
         _follow(ledger, language, _entries(language))  # a swap taken back while its job ran: never tagged
     _tag_waiting(ledger, language, anki, flag=_swap_flag)
     return out
+
+
+def kept_folder():
+    """Where an in-place swap keeps the old clip and picture it replaced (`sentence_audio.replace`'s `keep_dir`)."""
+    from app.cli.verbs import _connect_folder
+    return os.path.join(_connect_folder(), KEPT_DIR)
+
+
+def _purge_kept():
+    """Decision 7: the kept copies go 30 days after they were written (the trash clock's rule and its one purge,
+    `path_utils.cleanup_trash_async`, by each file's time: a copy is written, never moved, so its clock starts then);
+    an Undo past it is refused (`TOO_OLD`). Never raises."""
+    try:
+        folder = kept_folder()
+        if os.path.isdir(folder):
+            from app import path_utils
+            path_utils.cleanup_trash_async(folder)
+    except Exception:
+        log.info("Swap: the kept copies weren't looked at this time", exc_info=True)
 
 
 def _swap_flag():
@@ -687,6 +709,7 @@ def write_in_place(anki, ledger, row, rendered, mapping, keep_dir):
     new = new_fields(info, rendered.get("fields") or {}, mapping)
     have = _values(info)
     files = {os.path.basename(p): p for p in rendered.get("files") or ()}
+    files.update(rendered.get("named") or {})          # the line's names (`media_names.by_line`): what is stored
     media = {m: files[m] for v in new.values() for m in sentence_audio.media_in(v) if m in files}
     got = sentence_audio.replace(writer, ledger, note, new, {f: have[f] for f in new}, media=media,
                                  keep_dir=keep_dir, tag=SWAP_TAG, by=BY_SWAP, verb=VERB)
@@ -860,7 +883,7 @@ def undo(anki, ledger, language, swap_id, open_store=None, ours=None, flag=GREEN
     if entry is not None and entry.get("state") == swap_queue.WAITING:
         _queue_made(language, row["ref"], row["new_note"])  # the queue's made write had failed: it takes it first
     if row.get("kind") == IN_PLACE:
-        return _undo_in_place(anki, ledger, language, row, entry)
+        return _undo_in_place(anki, ledger, language, row, entry, open_store)
     others = _rows(ledger, "language = ? AND new_note = ? AND state = ? AND id != ?",
                    (language, row["new_note"], MADE, row["id"]))
     gone = not any(isinstance(n, dict) and n.get("noteId") for n in anki.notes([int(row["new_note"])]) or ())
@@ -891,13 +914,14 @@ def undo(anki, ledger, language, swap_id, open_store=None, ours=None, flag=GREEN
     return {"undone": True, "word": row["word"]}
 
 
-def _undo_in_place(anki, ledger, language, row, entry):
+def _undo_in_place(anki, ledger, language, row, entry, open_store=None):
     """An in-place swap undone: the field writer's record put back (`sentence_audio.undo`: every old value, the old
     clip and picture stored again, the tag off — only while every field still holds what the swap wrote, else
     `CHANGED` and nothing changes); the swap job's made outcome for the card marked `undone` (the card's line is its
     old one again for the deleted-card look and Swap's own avoid list); the card left in your reviews (decision 8);
     then the queue's entry `undone` with the ledger's row in one step (a retry after the queue's write failed finds the
-    record undone already and only finishes)."""
+    record undone already and only finishes); last, the store's made words: the card back under the item its line is
+    from again (`_store_back`). A kept copy past its 30 days: `TOO_OLD`, nothing changes."""
     from app.connect import sentence_audio
     writer = anki.field_writer() if hasattr(anki, "field_writer") else anki
     rec = sentence_audio.record(ledger, row["wrote"]) if row.get("wrote") else None
@@ -905,6 +929,8 @@ def _undo_in_place(anki, ledger, language, row, entry):
         raise tidy.Refused(GONE)
     if rec.get("state") != sentence_audio.UNDONE:
         got = sentence_audio.undo(writer, ledger, row["wrote"], verb=VERB)
+        if got.get("refused") == sentence_audio.TOO_OLD:
+            raise tidy.Refused(TOO_OLD)
         if got.get("kept") or not got.get("emptied"):
             raise tidy.Refused(CHANGED)
     with ledger.transaction():
@@ -913,7 +939,43 @@ def _undo_in_place(anki, ledger, language, row, entry):
                             "'made'", (int(row["job_id"]), int(row["new_note"])))
         if entry is not None and swap_queue.undone(language, str(row["ref"])) is None:
             raise RuntimeError(f"the swap queue's entry {row['ref']} isn't made: nothing was undone there")
+    _store_back(ledger, row, open_store)
     return {"undone": True, "word": row["word"], "kind": IN_PLACE}
+
+
+def rewritten(ledger, job_id):
+    """The notes a swap job rewrote in place (its in-place swaps' old cards, written) -> [note id]: the runner records
+    them under the job's item alone (`library.record_batch`'s `moved`) and hands them to Backfill as cards whose
+    sentence is new (`run_named`'s `rewritten`: a studied card's ふりがな refilled)."""
+    if not ledger.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'swaps'").fetchone():
+        return []
+    ensure(ledger)
+    return sorted({int(r[0]) for r in ledger.conn.execute(
+        "SELECT old_note FROM swaps WHERE job_id = ? AND kind = ? AND wrote IS NOT NULL AND old_note IS NOT NULL",
+        (int(job_id), IN_PLACE))})
+
+
+def _store_back(ledger, row, open_store):
+    """An undone in-place swap's card recorded under the item of the line it shows again (the note's newest made
+    outcome left, its first job's or an earlier swap's) and out of the swap job's (`library.record_batch`'s `moved`).
+    Tidiness of the record (the word stays made either way, G1.3-4): a store that can't be written now is logged."""
+    if open_store is None:
+        return
+    got = ledger.conn.execute("SELECT j.item_id, o.word FROM outcomes o JOIN jobs j ON j.id = o.job_id WHERE "
+                              "o.note_id = ? AND o.outcome = 'made' ORDER BY o.job_id DESC LIMIT 1",
+                              (int(row["new_note"]),)).fetchone()
+    if got is None or got[0] is None:
+        return
+    try:
+        from app.connect import library
+        store = open_store()
+        if store is None:
+            return
+        with store:
+            library.record_batch(store, int(got[0]), {got[1]: [int(row["new_note"])]}, None, None,
+                                 moved=[int(row["new_note"])])
+    except Exception:
+        log.warning("Swap: the library's record of an undone swap's card wasn't moved back", exc_info=True)
 
 
 def _entry(language, row):

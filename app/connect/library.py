@@ -670,7 +670,7 @@ def store_id(store):
 # --------------------------------------------------------------------------- #
 # P2.4: Connect's one store write per batch (S-R-6, G1.1-10)
 # --------------------------------------------------------------------------- #
-def record_batch(store, item_id, made, mined_at, batch=None):
+def record_batch(store, item_id, made, mined_at, batch=None, moved=()):
     """A batch's receipt (N8, `mined_at`) and its made-words record (N15: `{word: [note id, …]}`) in **one short
     write**, as role `connect`'s command: the made-words table made inside the write before its rows (Kura's N15 note:
     `ADDED_TABLES_SQL`, no schema step), then the receipt joins the same transaction. A word recorded again gains its
@@ -679,9 +679,12 @@ def record_batch(store, item_id, made, mined_at, batch=None):
     can't be written. A word written moves `state_version` (P2.4 row 11, L3.3: a level job's batch has no receipt to
     move it, and the copy and the window read the step); a word whose note ids are all recorded already is not
     written again, and a level job's batch with nothing new takes no write at all (S19). The store rings its bell
-    after the commit (L3.2, `_writing`): nothing to ring here."""
+    after the commit (L3.2, `_writing`): nothing to ring here. `moved` (FS-1, the full Swap): notes whose sentence is
+    now this item's line (a card rewritten in place) — taken out of every other item's made words in the same write,
+    each row kept (its word stays made, G1.3-4; no receipt changes): one note, one item."""
     from app import library_store
-    if mined_at is None and _recorded(store, item_id, made):
+    moved = {int(n) for n in moved or ()}
+    if mined_at is None and not moved and _recorded(store, item_id, made):
         return                                  # a level job's batch with nothing new: no write lock taken (S19)
     at = mined_at or library_store._now()
     with store._command("receipt", by=READER) as cmd:
@@ -697,6 +700,15 @@ def record_batch(store, item_id, made, mined_at, batch=None):
             store.conn.execute("INSERT OR REPLACE INTO made_words (item_id, word, note_ids, made_at, batch) "
                                "VALUES (?, ?, ?, ?, ?)", (item_id, word, json.dumps(ids), at, batch))
             cmd.touch()
+        if moved:
+            for other, word, ids in store.conn.execute("SELECT item_id, word, note_ids FROM made_words WHERE item_id "
+                                                       "!= ?", (item_id,)).fetchall():
+                had = library_store._json_list(ids)
+                left = [n for n in had if not (str(n).lstrip("-").isdigit() and int(n) in moved)]
+                if left != had:
+                    store.conn.execute("UPDATE made_words SET note_ids = ? WHERE item_id = ? AND word = ?",
+                                       (json.dumps(left), other, word))
+                    cmd.touch()
         if mined_at is not None:                # a level job's batch keeps the item's first receipt
             store.receipt(item_id, mined_at)
 

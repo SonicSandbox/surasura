@@ -32,7 +32,8 @@ exactly its value in `was`** (what the caller read when it decided; anything els
 media `was` names and `new` doesn't are copied into `keep_dir` and read back by sha1 BEFORE the record, removed from
 Anki after the write only when no note names them; `undo` then puts every old value back — only while every field
 still holds what was written — stores a kept file again, takes `tag` off unless the note had it, and deletes each new
-file no note names. A write Anki didn't keep (a note open in its editor) is read back: `NOT_APPLIED`, nothing undone
+file no note names; once a kept copy is gone (the caller purges its folder 30 days on, the trash clock's rule) it is
+refused, `TOO_OLD`, and nothing is written. A write Anki didn't keep (a note open in its editor) is read back: `NOT_APPLIED`, nothing undone
 needed. Fill-only-empty stays every other caller's mode (Piyo's, the AI voice's).
 
 Light: the standard library; Anki through the adapter handed in (`AnkiConnectNotes`; tests hand a fake).
@@ -56,6 +57,7 @@ GONE, NO_FIELD, HAS_AUDIO, NO_CLIP = ("not in Anki", "its note type has no {fiel
 HAS_TEXT, NO_TEXT = "its {field} has something in it already", "nothing to write"     # `texts` (Piyo-TR)
 REPLACE = "replace"                   # a record's `mode` for `replace` (FS-1): the old values kept, put back by Undo
 CHANGED, NOT_APPLIED = "changed since it was read", "Anki didn't take the change (is the card open in its editor?)"
+TOO_OLD = "its kept clip and picture are gone (kept 30 days)"    # a `replace` record past its copies' purge (FS-1)
 _MEDIA = (re.compile(r"\[sound:([^\]]+)\]"), re.compile(r"<img[^>]*?\bsrc=[\"']([^\"']+)[\"']", re.I))
 
 
@@ -380,6 +382,9 @@ def undo(anki, ledger, rid, verb=VERB):
         if rec is None or rec.get("state") == UNDONE:
             return {"emptied": [], "kept": {}, "deleted": [], "refused": "nothing to undo"}
         if rec.get("mode") == REPLACE:
+            if any(not os.path.isfile(os.path.join(rec.get("keep_dir") or "", os.path.basename(name)))
+                   for name in rec.get("kept") or {}):
+                return {"emptied": [], "kept": {}, "deleted": [], "refused": TOO_OLD}  # nothing put back by halves
             emptied, kept, deleted = _undo_replace(anki, rec)
             if emptied:
                 _write_record(ledger, rid, dict(rec, state=UNDONE, undone_at=time.strftime(

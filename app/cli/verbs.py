@@ -1100,7 +1100,8 @@ def backfill(args):
     session = filling.Session(fill_settings)
     try:
         report = filling.run_named(fill_settings, session, ids, source=source, dry_run=args.dry_run, run_id=run_id,
-                                   wait=args.wait or 0.0, verb="surasura-cli backfill")
+                                   wait=args.wait or 0.0, verb="surasura-cli backfill",
+                                   **({"rewritten": args.rewritten} if getattr(args, "rewritten", None) else {}))
     finally:
         session.close()
     if report.get("reviewing") or (report.get("busy") and _reviewing(report)):

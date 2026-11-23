@@ -22,10 +22,13 @@ simple Swap's fake plus the field writer's calls; Anki Miner's `render` answers 
 import base64
 import json
 import os
+import time
 
 import pytest
 
-from app.connect import anki_miner, deleted, fields, runner, sentence_audio, swap, swap_queue, tidy
+from app import path_utils
+from app.connect import (anki_miner, deleted, fields, library, media_names, runner, sentence_audio, shelf, swap,
+                         swap_queue, tidy, undo)
 from app.connect.ledger import SWAP
 from tests.connect.test_kantan_sl_swap import CASES, Anki as SwapAnki, Steps, _lists, _queued, _row, ledger  # noqa: F401
 
@@ -58,6 +61,7 @@ class Anki(SwapAnki):
             return
         for k, v in values.items():
             self.notes_[int(nid)]["fields"][k]["value"] = v
+        self.notes_[int(nid)]["mod"] = int(time.time())         # Anki's own: a note written is a note changed
 
     def tag(self, ids, tag, on=True):
         (self.add_tags if on else self.remove_tags)(ids, tag)
@@ -389,3 +393,201 @@ def test_render_line_reads_render_rows_and_needs_render(tmp_path, monkeypatch):
 
 def test_the_field_writers_adapter_is_swaps_for_its_in_place_write():
     assert isinstance(swap.AnkiSwap("http://127.0.0.1:8765").field_writer(), sentence_audio.AnkiConnectNotes)
+
+
+# --------------------------------------------------------------------------- #
+# The gates session's five gaps (FS-1 G, 2026-11-23)
+# --------------------------------------------------------------------------- #
+def _swapped(ledger, lang, tmp_path, monkeypatch):
+    """The whole in-place round up to *made* (the first test's) -> (anki, the first job, the swap's row)."""
+    anki = _card(Anki(), lang)
+    first_job = _made_by_connect(ledger, lang)
+    _entry, row = _to_job(ledger, lang, anki, monkeypatch)
+    kind, _note = swap.write_in_place(anki, ledger, row, _rendered(tmp_path, lang), MAPPING, swap.kept_folder())
+    assert kind == swap.IN_PLACE
+    _job_made(ledger, swap.in_place_row(ledger, row["job_id"]), 900)
+    swap.look(Steps(), ledger, lang, anki=anki, files=5)
+    return anki, first_job, _row(ledger, row["id"])
+
+
+class _Now:
+    """`path_utils.cleanup_trash_async`'s thread, run at once: the purge's result read right after the look."""
+
+    def __init__(self, target, daemon=None):
+        self.target = target
+
+    def start(self):
+        self.target()
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_the_kept_clip_and_picture_go_30_days_on_and_undo_then_says_too_old(ledger, lang, tmp_path, monkeypatch):
+    """Decision 7: the old clip and picture an in-place swap removed from Anki are kept on disk 30 days (the trash
+    clock's rule and its one purge), then Undo says *too old to undo* and writes nothing — never half an Undo (the old
+    sentence with no clip to play). 29 days on they are still there. Costs if wrong: copies kept for ever, or an Undo
+    that puts the old sentence back over a clip that is gone."""
+    monkeypatch.setattr(swap, "kept_folder", lambda: str(tmp_path / "swap-kept"))
+    monkeypatch.setattr(path_utils.threading, "Thread", _Now)
+    anki, _first, row = _swapped(ledger, lang, tmp_path, monkeypatch)
+    kept = [os.path.join(r, f) for r, _d, files in os.walk(tmp_path / "swap-kept") for f in files]
+    assert sorted(os.path.basename(k) for k in kept) == ["sl-old.mp3", "sl-old.webp"]
+
+    def age(days):
+        then = time.time() - days * 24 * 60 * 60
+        for path in kept:
+            os.utime(path, (then, then))
+    age(29)
+    swap.look(Steps(), ledger, lang, anki=anki, files=5)
+    assert all(os.path.isfile(k) for k in kept)
+    age(31)
+    swap.look(Steps(), ledger, lang, anki=anki, files=5)
+    assert not any(os.path.exists(k) for k in kept)
+    with pytest.raises(tidy.Refused) as e:
+        swap.undo(anki, ledger, lang, row["id"])
+    assert e.value.say == swap.TOO_OLD
+    word, _old, other = CASES[lang]
+    assert _value(anki, "Sentence") == other.replace(word, f"<b>{word}</b>")       # nothing put back by halves
+    assert _row(ledger, row["id"])["state"] == swap.MADE
+
+
+def test_undo_this_batch_never_deletes_a_card_a_swap_rewrote_in_place(ledger, tmp_path, monkeypatch):
+    """*Undo this batch* deletes a batch's untouched new cards. A card rewritten in place is the learner's card from
+    its FIRST job (it still carries that job's tag) — here a journey ⇄ on a card never studied, the one case the
+    review check doesn't keep. Its first job's Undo keeps it (changed since: the swap wrote it), and the swap job's
+    keeps it (it never carries the swap job's tag). Costs if wrong: the learner's card deleted."""
+    lang = "ja"
+    monkeypatch.setattr(swap, "kept_folder", lambda: str(tmp_path / "swap-kept"))
+    anki = _card(Anki(), lang, reps=0)
+    anki.cards_[9000].update(queue=0, type=0, flags=0)                # new, in reviews: the page's ⇄
+    first = _made_by_connect(ledger, lang)
+    an_hour_ago = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600))
+    ledger.conn.execute("UPDATE jobs SET updated_at = ? WHERE id = ?", (an_hour_ago, first))
+    from app.connect import runfile
+    anki.notes_[900]["tags"] = [runfile.job_tag(ledger.job_by_id(first)["tag"]), SHOW_TAG]   # the first job's own
+    got = swap.make_card(lang, CASES[lang][0], old_note=900, old_card=9000, by=swap.BY_JOURNEY, ledger=ledger,
+                         wake=False, state_of=lambda w, r: None)
+    monkeypatch.setattr(swap, "choose_line", lambda *a, **k: (7, CASES[lang][2]))
+    swap.look(Steps(), ledger, lang, anki=anki, files=5)
+    row = _row(ledger, got["id"])
+    assert row["kind"] == swap.IN_PLACE
+    assert swap.write_in_place(anki, ledger, row, _rendered(tmp_path, lang), MAPPING, swap.kept_folder())[0] == \
+        swap.IN_PLACE
+    _job_made(ledger, swap.in_place_row(ledger, row["job_id"]), 900)
+    first_plan = undo.plan(anki, ledger, first)
+    assert first_plan["delete"] == [] and first_plan["keep"] == [[900, CASES[lang][0], undo.CHANGED]]
+    swap_plan = undo.plan(anki, ledger, row["job_id"])
+    assert swap_plan["delete"] == [] and swap_plan["keep"] == [[900, row["word"], undo.NOT_ITS_TAG]]
+
+
+def test_the_swap_jobs_record_holds_the_card_under_its_new_episode_alone():
+    """The store's made words (N15): a card rewritten in place shows the swap's line now, so the swap job's record puts
+    it under that item and takes it out of its first item's — one note, one item (the shelf's finished-show check, Add
+    audio's book and the translations read a note's item) — while the word stays made there (G1.3-4: never made
+    again; the first item's receipt untouched). Undo moves it back (`swap._store_back`'s call). Costs if wrong: a card
+    whose sentence is now from a show you watch shelved as a finished show's, or given another book's audio."""
+    from tests import connect_helpers as c
+    word = CASES["ja"][0]
+    c.library()
+    with c.store() as s:
+        first, second = s.ids("now")[:2]
+        library.record_batch(s, first, {word: [900], "見る": [901]}, "2026-11-20T09:00:00Z", batch="a")
+        receipt = s.item(first).get("mined_at")
+        library.record_batch(s, second, {word: [900]}, None, batch="b", moved=[900])
+        assert shelf.made_notes(s)[900] == (second, word) and shelf.made_notes(s)[901] == (first, "見る")
+        rows = {(i, w): json.loads(n) for i, w, n in s.conn.execute("SELECT item_id, word, note_ids FROM made_words")}
+        assert rows[(first, word)] == [] and rows[(second, word)] == [900]
+        assert word in library.made_words_all(s) and s.item(first).get("mined_at") == receipt
+        library.record_batch(s, first, {word: [900]}, None, batch=None, moved=[900])
+        assert shelf.made_notes(s)[900] == (first, word)
+        rows = {(i, w): json.loads(n) for i, w, n in s.conn.execute("SELECT item_id, word, note_ids FROM made_words")}
+        assert rows[(second, word)] == [] and rows[(first, word)] == [900]
+
+
+def test_an_undone_in_place_swap_moves_its_record_back_to_the_line_it_shows(ledger, tmp_path, monkeypatch):
+    """`_store_back`: after the Undo the card's newest made outcome is its first job's again, so the store's record goes
+    back to that job's item — the store asked once, the note taken out of the swap job's item."""
+    lang = "ja"
+    monkeypatch.setattr(swap, "kept_folder", lambda: str(tmp_path / "swap-kept"))
+    anki, first, row = _swapped(ledger, lang, tmp_path, monkeypatch)
+    calls = []
+
+    class Store:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    monkeypatch.setattr(library, "record_batch", lambda *a, **k: calls.append((a[1:], k)))
+    assert swap.undo(anki, ledger, lang, row["id"], open_store=Store)["undone"]
+    assert calls == [((ledger.job_by_id(first)["item_id"], {CASES[lang][0]: [900]}, None, None), {"moved": [900]})]
+
+
+def test_the_runner_hands_a_rewritten_card_to_the_record_and_to_backfill(ledger, tmp_path, monkeypatch):
+    """The swap job's record and Backfill's fill name the card it rewrote (`swap.rewritten`): the record moves it
+    (above), Backfill fills its new line's ふりがな though it is studied (Junban's own test). The first job: neither."""
+    lang = "ja"
+    monkeypatch.setattr(swap, "kept_folder", lambda: str(tmp_path / "swap-kept"))
+    _anki, first, row = _swapped(ledger, lang, tmp_path, monkeypatch)
+    job = ledger.job_by_id(row["job_id"])
+    assert runner._rewritten(ledger, job) == [900] and runner._rewritten(ledger, ledger.job_by_id(first)) == []
+    seen = {}
+
+    class S:
+        def record(self, lang_, job_, made, mined_at, batch, moved=()):
+            seen["record"] = (made, mined_at, list(moved))
+
+        def fill(self, lang_, job_, ids, rewritten=()):
+            seen["fill"] = (list(ids), list(rewritten))
+    monkeypatch.setattr(runner, "_through", lambda *a: None)
+    monkeypatch.setattr(runner, "_blocked", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_circle_paused", lambda *a: False)
+    monkeypatch.setattr(runner, "_queue_ai_audio", lambda *a: None)
+    monkeypatch.setattr(ledger, "undo_record", lambda jid: [900])
+    runner._record_made(S(), ledger, lang, job, True)
+    runner._fill(S(), ledger, lang, job)
+    assert seen == {"record": ({row["word"]: [900]}, None, [900]), "fill": ([900], [900])}
+
+
+def test_the_swapped_cards_media_are_named_by_the_line_before_the_write_so_its_undo_still_works(
+        ledger, tmp_path, monkeypatch):
+    """Connect names every card's clip and picture by its line after mining (`media_names.rename`, `sl-…`). An
+    in-place write is undone only while the card holds exactly what it wrote — so a rename after the write made every
+    in-place Undo refuse. The swap's step names render's files by the line BEFORE the write (`media_names.by_line`,
+    the same names): the rename after finds nothing to do, and Undo works. No line start: render's names kept."""
+    lang = "ja"
+    word, old, other = CASES[lang]
+    monkeypatch.setattr(swap, "kept_folder", lambda: str(tmp_path / "swap-kept"))
+    anki = _card(Anki(), lang)
+    _made_by_connect(ledger, lang)
+    _entry, row = _to_job(ledger, lang, anki, monkeypatch)
+    rendered = _rendered(tmp_path, lang)
+    from app.cli import verbs
+    monkeypatch.setattr(anki_miner, "find", lambda loaded: "am.exe")
+    monkeypatch.setattr(anki_miner, "render_line", lambda *a, **k: {(word, ""): rendered})
+    monkeypatch.setattr(verbs, "_anki_miner_setup", lambda *a, **k: ({}, "p1", MAPPING))
+    monkeypatch.setattr(swap, "AnkiSwap", lambda url: anki)
+    steps = runner.Steps({"connect_enabled": True})
+    monkeypatch.setattr(steps, "run_dir", lambda job: str(tmp_path / "run"))
+    monkeypatch.setattr(steps, "_anki_miner_held", lambda l: {})
+    monkeypatch.setattr(steps, "_settings", lambda l: {})
+    monkeypatch.setattr(steps, "show", lambda l, j: None)
+    monkeypatch.setattr(steps, "_media_key", lambda l, j: "toshokan-05")
+    picked = {"video": "Toshokan - 05.mkv", "subtitle": "Toshokan - 05.ass"}
+    words = [{"word": word, "reading": "", "line_start": 190.0, "line_end": 193.5, "line_text": other}]
+    job = ledger.job_by_id(row["job_id"])
+    done = steps.swap_in_place(lang, job, picked, words, 1, ledger, swap.in_place_row(ledger, row["job_id"]))
+    assert done["in_place"] and done["outcomes"][0]["note_id"] == 900
+    clip = media_names.line_name("toshokan-05", 190.0, 193.5, media_names.fingerprint(other), ".mp3")
+    assert _value(anki, "SentenceAudio") == f"[sound:{clip}]" and clip in anki.media
+    assert _value(anki, "Picture").startswith('<img src="sl-') and "am-clip.mp3" not in anki.media
+    from tests.connect.test_media_names import FakeMedia
+    media = FakeMedia([anki.notes_[900]], anki.media)
+    assert media_names.rename(media, [(900, 190.0, 193.5, other)], "toshokan-05", "SentenceAudio", "Picture") == \
+        {"renamed": 0, "stored": 0, "reused": 0, "deleted": 0}
+    _job_made(ledger, swap.in_place_row(ledger, row["job_id"]), 900)
+    swap.look(Steps(), ledger, lang, anki=anki, files=5)
+    assert swap.undo(anki, ledger, lang, row["id"])["undone"]
+    assert _value(anki, "Sentence") == old.replace(word, f"<b>{word}</b>")
+    values, named = media_names.by_line(rendered["fields"], {"am-clip.mp3": "x"}, "k", None, None, other,
+                                        "SentenceAudio", "Picture")
+    assert values == rendered["fields"] and named == {"am-clip.mp3": "x"}

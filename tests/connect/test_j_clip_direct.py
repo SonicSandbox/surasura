@@ -447,14 +447,19 @@ def _press(ep, cue, wait):
     return got.get("path") or got.get("refused"), got["took"]
 
 
-@pytest.mark.parametrize("lang", ["ja", "zh"])
-def test_a_press_whose_ffmpeg_hangs_still_plays_through_media_within_its_time(episode, fake_miner, monkeypatch, lang):
+@pytest.mark.parametrize("lang, hangs", [("ja", "ffmpeg"), ("zh", "ffprobe")])
+def test_a_press_whose_tool_hangs_still_plays_through_media_within_its_time(episode, fake_miner, monkeypatch, lang,
+                                                                           hangs):
     # the direct cut stops once only MEDIA_KEEP_S is left, so `media` still cuts the line before the press's time ends
     ep = episode(lang)
     _limits(monkeypatch)
     monkeypatch.setattr(clips, "_binaries", lambda miner: ("ffmpeg.exe", "ffprobe.exe"))
-    monkeypatch.setattr(clips, "_stream", lambda *a, **k: 1)
-    monkeypatch.setattr(clips, "command", lambda *a: HANG)
+    if hangs == "ffmpeg":
+        monkeypatch.setattr(clips, "_stream", lambda *a, **k: 1)
+        monkeypatch.setattr(clips, "command", lambda *a: HANG)
+    else:                                                               # the file's ffprobe never answers
+        real = clips._run
+        monkeypatch.setattr(clips, "_run", lambda cmd, *a, **k: real(HANG, *a, **k))
     cue = ep["lines"][1]
     path, took = _press(ep, cue, 8)
     assert isinstance(path, str) and cue.text in open(path, encoding="utf-8").read()     # media's clip of that line
@@ -484,6 +489,23 @@ def test_media_gets_only_what_is_left_of_the_press_and_too_little_says_so_withou
     refused, took = _press(ep, cue, 8)
     assert isinstance(refused, clips.Refused) and refused.message == clips.TOO_SLOW, refused
     assert took < clips.PRESS_S + 0.5 and len(asked) == 1
+
+
+def test_an_export_cut_short_by_a_press_time_is_asked_again_at_the_next_press(episode, monkeypatch):
+    # (one that failed with its whole SETTINGS_TIMEOUT is not asked again for SETTINGS_RETRY_S: the test above)
+    ep = episode("ja")
+    asked = []
+
+    def slow(path, lang, out, profile=None, timeout=None):
+        asked.append(timeout)
+        raise anki_miner.AnkiMinerError("timeout", "no answer")
+    monkeypatch.setattr(anki_miner, "settings_export", slow)
+    assert clips._settings(ep["miner"], "ja", until=time.monotonic() + 1.0) is None
+    assert 0 < asked[0] <= 1.0                                          # never past the press's time
+    assert clips._settings(ep["miner"], "ja", until=time.monotonic() - 1) is None and len(asked) == 1   # none left
+    assert clips._settings(ep["miner"], "ja") is None
+    assert asked[1:] == [clips.SETTINGS_TIMEOUT]                        # asked again, its whole time: now remembered
+    assert clips._settings(ep["miner"], "ja") is None and len(asked) == 2
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])

@@ -176,6 +176,9 @@ def build(lang="ja", n_eps=40, seed=7, words_per_ep=None, sentences=3, meanings=
                 g[4], g[5], g[6] = e[6], g[7], "2026-11-01"
             e[12] = g
     total = w
+    # sources the browser can't play (J-CLIP): the first episode with words is an .mkv, so ▶ on its lines asks clip/cut,
+    # and so is the next one (some of its words' lines come from it: an ahead ask must leave them out)
+    clip_ep = next((k for k, e in enumerate(eps) if e[7] >= 3), None)
     # the chunks: ≤100 episodes, or ~240 KB of JSON
     chunks, parts = [], []
     meanings, kanji = {}, {}
@@ -200,7 +203,8 @@ def build(lang="ja", n_eps=40, seed=7, words_per_ep=None, sentences=3, meanings=
                 key = (src_ep, j == 2)
                 if key not in cur["srcmap"]:
                     se = eps[src_ep]
-                    play = f"0/{se[1].split('/')[-1].rsplit('.', 1)[0]}.mp3" if src_ep % 3 == 0 else ""
+                    base = se[1].split('/')[-1].rsplit('.', 1)[0]
+                    play = f"0/{base}.mkv" if clip_ep is not None and src_ep in (clip_ep, clip_ep + 1) else (f"0/{base}.mp3" if src_ep % 3 == 0 else "")
                     cur["srcmap"][key] = len(cur["src"])
                     # SHAPE 1.1: the row's store item (here its episode's id; every 7th row a file the store doesn't hold)
                     cur["src"].append([se[2], se[5], src_ep, play, "", None if src_ep % 7 == 6 else se[0]])

@@ -1634,12 +1634,22 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     # Kyou-DW (PROVISIONAL): a deleted card asks why (WL-35's four chips); the old deletes, once
     "dw_known": ("Known", "You know this word: it counts as known"),
     "dw_ignore": ("Ignore", "Not a word to learn: it goes on your Ignore list"),
-    "dw_parsing": ("Parsing mistake", "Surasura cut this word wrong: it's ignored, and the sentence goes in Send "
-                                      "report's list for us (you see it before anything is sent)"),
+    "dw_parsing": ("Parsing mistake", "Surasura cut this word wrong: it asks one more thing, the word or only this "
+                                      "sentence"),
     "dw_bad": ("Bad card", "The word is fine, the card wasn't: a new card from another sentence"),
     "dw_all_known": ("All known", "Every card here: you know their words"),
     "dw_all_ignore": ("Ignore all", "Every card here: not words to learn"),
-    "dw_all_parsing": ("All parsing mistakes", "Every card here: cut wrong; their sentences go in Send report's list"),
+    "dw_all_parsing": ("All parsing mistakes", "Every card here: cut wrong; it asks one more thing, for all of them"),
+    # Kyou-DW 3 (PROVISIONAL): Parsing mistake's follow-up — either way the sentence goes in Send report's list and is
+    # never used again; only *Only in this sentence* mines the word again
+    "dw_word_wrong": ("The word is wrong", "It's no word at all: it's ignored and never mined again; the sentence goes "
+                                           "in Send report's list for us"),
+    "dw_only_line": ("Only in this sentence", "The word is real, this sentence read it wrong: a new card from another "
+                                              "sentence; this one goes in Send report's list and is never used again"),
+    "dw_all_word_wrong": ("The words are wrong", "Every card here: no words at all; ignored, never mined again, their "
+                                                 "sentences in Send report's list"),
+    "dw_all_only_line": ("Only in these sentences", "Every card here: real words read wrong; new cards from other "
+                                                    "sentences, these in Send report's list and never used again"),
     "dw_all_bad": ("All bad cards", "Every card here: a new card for each word from another sentence"),
     "dw_leave": ("Leave them", "They stay deleted and are never made again; this card goes"),
     "dw_forget": ("Forget", "Forget this delete: its card may be made again once the word is cut right"),
@@ -1781,12 +1791,14 @@ NEEDS_DELETED_DONE_ONE = {
     "ignore": "「{word}」 is ignored",
     "parsing": "「{word}」 is ignored · its sentence is in Send report's list",
     "bad": "A new card for 「{word}」 from another sentence is on its way",
+    "line": "A new card for 「{word}」 from another sentence is on its way · this one is in Send report's list",
 }
 NEEDS_DELETED_DONE = {
     "known": "{n} words are known",
     "ignore": "{n} words are ignored",
     "parsing": "{n} words are ignored · their sentences are in Send report's list",
     "bad": "New cards for {n} words from other sentences are on their way",
+    "line": "New cards for {n} words from other sentences are on their way · these are in Send report's list",
 }
 NEEDS_DELETED_NONE = "nothing to change"
 NEEDS_DELETED_NOT = "Nothing changed: {why}"

@@ -13,7 +13,8 @@ learner pressed (SPEC row 11: no second card maker), and Connect's next look mak
 Both refuse in plain words, nothing recorded, when: Connect is off (no one would make it), the line isn't one a card
 can be cut from (no item or start time: a book's line, a line the page names by a hash), the line isn't in its file
 now, it is the old card's own line, the word is Known or Ignored now (Swap's own rule), or (*Add now*) Connect has a
-card for the word already. A second press for a word whose ask is still open answers that ask (`already`), never a
+card for the word already. The library store busy with another save just now is told apart from a line gone (`busy`:
+press again; `_line`). A second press for a word whose ask is still open answers that ask (`already`), never a
 second card. Not queued on the page (SPEC §3.5: an action that needs the app), so `at` is not read.
 
 Inert until the journey v3 page ships (J-CUT): the door doesn't listen before then (`journey_door.ON`), so nothing
@@ -31,6 +32,7 @@ LINE_MAX = 40                   # `<item>:<ms>` is far shorter: a longer id is n
 OFF = "Cards made for you is off: turn it on in Connect, then press again."
 NO_LINE = "Surasura can't make a card from that line (it has no time in its file)."
 GONE = "Surasura can't find that line in its file now: the journey may be older than your library."
+BUSY = "Surasura's library is busy just now: press again in a moment."
 SAME = "That's the line your card already has: pick another one."
 HAS_CARD = "This word has a card already: ⇄ gives it another sentence."
 KNOWN = "「{}」 is known now: no card is made."
@@ -65,7 +67,7 @@ def _ask(body, journey):
     settings = settings_manager.load_settings()
     if not settings_manager.connect_on(settings):
         raise door.RouteError(OFF, "off")
-    picked = swap._resolve_line_id(runner.Steps(settings), lang, line_id)
+    picked = _line(runner.Steps(settings), lang, line_id)
     if picked is None:
         raise door.RouteError(GONE, "gone")
     try:
@@ -92,3 +94,28 @@ def _ask(body, journey):
     if got["state"] == swap.DROPPED:
         raise door.RouteError((IGNORED if got["why"] == "ignored" else KNOWN).format(word), got["why"] or "refused")
     return got
+
+
+def _line(steps, lang, line_id):
+    """The line pressed -> (item id, its text), None when it is gone — or the door's *busy* (as the other routes say
+    it: `kind` "busy") when the library store couldn't be read just now. Swap's `_resolve_line_id` reads every failure
+    as a line gone, so its one store read (`steps.subtitle`) is watched here: a store busy past its own wait (Connect's
+    `Wait(LIBRARY_BUSY)` at the open, SQLite's "locked" in the read) is no line gone (J-FIX)."""
+    from app import door
+    from app.connect import runner, swap
+    read, busy = steps.subtitle, []
+
+    def subtitle(language, job):
+        try:
+            return read(language, job)
+        except runner.Wait as e:
+            busy.append(e.reason == runner.LIBRARY_BUSY)
+            raise
+        except sqlite3.OperationalError as e:
+            busy.append("locked" in str(e).lower() or "busy" in str(e).lower())
+            raise
+    steps.subtitle = subtitle
+    picked = swap._resolve_line_id(steps, lang, line_id)
+    if any(busy):
+        raise door.RouteError(BUSY, "busy")
+    return picked

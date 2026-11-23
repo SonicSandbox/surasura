@@ -499,3 +499,99 @@ def test_hello_shows_a_broken_owner_so_its_press_says_so(opened, monkeypatch):
     answer = _post(opened, "hello", {"lang": "ja"})[1]
     assert "line/flag" in answer["routes"] and opened.logged
     assert _post(opened, "line/flag", {"lang": "ja"})[1]["kind"] == "crashed"
+
+
+# --- J-FIX 2: the old page's ignores carried over, never over a word known by any source -------------------------- #
+def _known_through_anki(language):
+    """Two words the real sample holds as known with no mark of this module (an Anki card read by the sync), and one
+    word not known (ja: an UNKNOWN entry of it): what a learner's KnownWord.json has after a sync."""
+    _data, words = anki_sync._read_known_file(language)
+    known = [e["dictForm"] for e in words if anki_sync._is_known(e) and e.get("source") != word_marks.MARKED_SOURCE
+             and e.get("dictForm") and word_lists._term(e["dictForm"], language) == e["dictForm"]]
+    unknown = [e["dictForm"] for e in words if not anki_sync._is_known(e) and e.get("dictForm")
+               and e["dictForm"] not in known]
+    assert len(known) >= 2, "the sample holds Anki-known words"
+    return known[0], known[1], unknown[0] if unknown else "熊猫"     # (zh's sample: every entry known; a word not in it)
+
+
+def test_a_carried_ignore_of_a_word_known_through_anki_or_marked_known_is_skipped_and_counted_as_skipped(opened, lang):
+    # the old journey page's ignores are carried with "unless_known": an old ignore must never undo what the learner
+    # knows — a word Known through Anki (KnownWord.json's other entries, not in `state`'s marks) or marked Known here
+    anki_a, anki_b, not_known = _known_through_anki(lang)
+    mine, name = NEW[lang]
+    word_marks.apply(lang, [(mine, "known")])
+    known_before = open(anki_sync._known_path(lang), "rb").read()
+    at = _ms(time.time_ns()) + 1_000
+    answer = _post(opened, "words/mark", {"lang": lang, "unless_known": True, "marks": [
+        {"word": anki_a, "mark": "ignore", "was": "", "at": at},
+        {"word": name, "mark": "ignore", "was": "", "at": at},
+        {"word": f" {anki_b} ", "mark": "ignore", "was": "", "at": at},     # as the route reads a word: trimmed
+        {"word": mine, "mark": "ignore", "was": "", "at": at},
+        {"word": not_known, "mark": "ignore", "was": "", "at": at}]})[1]
+    assert answer["ok"] is True and answer["stale"] == []
+    assert answer["skipped"] == [anki_a, f" {anki_b} ", mine]       # each as the page sent it: the page draws them
+    assert answer["done"] == 2                                      # the words actually added: the toast's number
+    marks = word_marks.marks(lang)
+    assert marks[name] == "ignore" and marks[not_known] == "ignore" and marks[mine] == "known"
+    assert anki_a not in marks and anki_b not in marks              # never on the Ignore list
+    ignore = open(word_lists.list_path("ignore", lang), "rb").read().decode("utf-8")
+    assert anki_a not in ignore.splitlines() and anki_b not in ignore.splitlines()
+    assert open(anki_sync._known_path(lang), "rb").read() == known_before   # the known words untouched
+    # the carry's Undo takes back what it added, nothing else
+    assert _post(opened, "words/undo", {"lang": lang, "undo_id": answer["undo_id"]})[1]["done"] == 2
+    assert name not in word_marks.marks(lang) and word_marks.marks(lang)[mine] == "known"
+
+
+def test_a_carry_whose_every_word_is_known_writes_nothing_and_says_none_added(opened, lang):
+    anki_a, anki_b, _not_known = _known_through_anki(lang)
+    before = {p: open(p, "rb").read() for p in (anki_sync._known_path(lang), word_lists.list_path("ignore", lang))}
+    answer = _post(opened, "words/mark", {"lang": lang, "unless_known": True, "marks": [
+        {"word": anki_a, "mark": "ignore", "was": ""}, {"word": anki_b, "mark": "ignore", "was": ""}]})[1]
+    assert answer == {"ok": True, "done": 0, "undo_id": None, "stale": [], "skipped": [anki_a, anki_b]}
+    assert {p: open(p, "rb").read() for p in before} == before and opened.services.heard == []
+
+
+def test_an_ordinary_ignore_press_on_a_word_known_through_anki_lands_as_before_and_says_nothing_skipped(opened, lang):
+    # the guard is the carry's to ask for: ⊘ pressed on the page (no "unless_known") behaves exactly as today
+    anki_a, _anki_b, _not_known = _known_through_anki(lang)
+    for off in ({}, {"unless_known": False}):
+        word_marks._UNDO.clear()
+        answer = _post(opened, "words/mark", dict({"lang": lang, "marks": [{"word": anki_a, "mark": "ignore"}]},
+                                                  **off))[1]
+        assert answer["ok"] is True and answer["done"] == (1 if not off else 0) and "skipped" not in answer
+        assert word_marks.marks(lang)[anki_a] == "ignore"
+
+
+def test_an_unless_known_the_route_cant_read_is_refused_and_nothing_is_written(opened, lang):
+    before = word_marks.marks(lang)
+    for bad in ("yes", 1, [True]):
+        answer = _post(opened, "words/mark", {"lang": lang, "unless_known": bad,
+                                              "marks": [{"word": NEW[lang][1], "mark": "ignore"}]})[1]
+        assert answer["ok"] is False and answer["kind"] == "refused"
+    assert word_marks.marks(lang) == before and opened.services.heard == []
+
+
+def test_an_unless_known_of_null_is_off_as_an_ordinary_press_sends_it(opened, lang):
+    # null is no ask: a client that sends the key empty gets the ordinary press, never a refusal
+    anki_a, _anki_b, _not_known = _known_through_anki(lang)
+    answer = _post(opened, "words/mark", {"lang": lang, "unless_known": None,
+                                          "marks": [{"word": anki_a, "mark": "ignore"}]})[1]
+    assert answer["ok"] is True and answer["done"] == 1 and "skipped" not in answer
+
+
+def test_a_carry_whose_known_words_cant_be_read_writes_nothing_and_says_so(opened, lang, monkeypatch):
+    # the guard fails closed: a known-words file that can't be read at the check (a moment's lock, a half-written
+    # copy) never lets the batch through unchecked, even if the write's own read would then succeed
+    anki_a, _anki_b, _not_known = _known_through_anki(lang)
+    before = word_marks.marks(lang)
+    real, calls = anki_sync._read_known_file, []
+    def once(language, path=None):
+        calls.append(language)
+        if len(calls) == 1:
+            raise anki_sync._KnownFileError("Your known words couldn't be read just now.")
+        return real(language, path)
+    monkeypatch.setattr(anki_sync, "_read_known_file", once)
+    answer = _post(opened, "words/mark", {"lang": lang, "unless_known": True,
+                                          "marks": [{"word": anki_a, "mark": "ignore"}]})[1]
+    assert answer["ok"] is False and answer["kind"] == "failed"       # not "refused": the page tries again later
+    assert len(calls) == 1 and word_marks.marks(lang) == before and opened.services.heard == []

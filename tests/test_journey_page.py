@@ -86,13 +86,28 @@ def test_no_network_but_the_door_on_127_0_0_1():
 def test_local_storage_holds_only_the_waiting_queue_and_the_view():
     page = _read(PAGE)
     keys = re.findall(r"localStorage\.setItem\((\w+),", page)
-    assert set(keys) == {"QKEY", "VIEW_KEY"}, keys
+    assert set(keys) == {"QKEY", "VIEW_KEY", "OLD_DONE"}, keys       # OLD_DONE: the carry-over's done-mark (below)
     assert f"const QKEY = `{QUEUE_KEY}`;" in page and f"const VIEW_KEY = `{VIEW_KEY}`;" in page
     view = re.search(r"localStorage\.setItem\(VIEW_KEY, JSON\.stringify\(\{(.*?)\}\)\)", page).group(1)
     fields = set(re.findall(r"(\w+):", view))
     assert fields <= VIEW_FIELDS, fields - VIEW_FIELDS          # no mark, stone, flag or setting in the view
     for path in (RAIL_JS, RAIL_CSS):
         assert "localStorage" not in _read(path) and "sessionStorage" not in _read(path), path   # a rail keeps nothing
+
+
+def test_the_old_pages_ignores_are_the_one_thing_read_from_the_browser_and_go_through_the_ignore_route():
+    # J-FIX (Sonic's answer to SPEC §9 item 1): nothing of the old journey page's is read from the browser but its
+    # ignored words, once, sent through the ⊘ press's own route (no second writer); the old ✓ Completed marks are
+    # dropped on purpose, and nothing of the learner's is deleted (the old key is read, never written or removed)
+    page = _read(PAGE)
+    assert "const OLD_IGNORES = `surasura_ignored_words_${LANG}`;" in page      # the old page's key, per language
+    assert set(re.findall(r"localStorage\.getItem\((\w+)", page)) == {"QKEY", "VIEW_KEY", "OLD_IGNORES", "OLD_DONE"}
+    assert set(re.findall(r"localStorage\.removeItem\((\w+)", page)) == {"QKEY"}
+    assert "surasura_completed" not in page                                     # the old ✓ Completed marks: dropped
+    carry = re.search(r"async function carryOldIgnores\(\) \{(.*?)\n\}", page, re.S).group(1)
+    assert 'doorCall("words/mark"' in carry and 'mark: "ignore"' in carry
+    from app.services import word_marks
+    assert int(re.search(r"const OLD_BATCH = (\d+);", page).group(1)) <= word_marks.DOOR_MOST   # what one call takes
 
 
 def test_the_stepper_rail_never_reads_a_chunk_or_calls_the_door():
@@ -226,6 +241,22 @@ def test_the_first_meeting_line_is_marked_and_its_switch_redraws_only_those_line
     assert not fails, fails
     reached = next(name for name, _g, _d in res["out"] if name.startswith("the kinds of word checked"))
     assert kinds <= set(reached.split(": ", 1)[1].split()), reached
+
+
+@needs_edge
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_the_old_pages_ignores_are_carried_once_and_only_those_surasura_lacks(tmp_path, lang):
+    # J-FIX: a learner's ignores kept only by the old journey page must not vanish at the update. The self-checks'
+    # `carry` group: only the old words Surasura has neither Known nor Ignored, through ⊘'s route, in batches of the
+    # route's most, once; nothing while Surasura is closed; an empty or malformed key sends nothing; 5,000 old words
+    # in a few calls with no long task; one line with Undo; the old key never touched
+    import journey_page_run as runner
+    path = runner.page_file(str(tmp_path), lang, 2000)
+    res, errs = runner.run(path, "only=carry")
+    assert res and not errs, errs
+    fails = [(name, detail) for name, good, detail in res["out"] if not good]
+    assert not fails, fails
+    assert res["total"] >= 15                           # the group ran to its end
 
 
 @needs_edge

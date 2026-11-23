@@ -17,7 +17,11 @@ audiobook's reach) is as a book with no audiobook. What each test holds:
   * lined up: a line the line-up says is heard and its card is cut from that cue (`lineup.split`); a line it doesn't
     say gets no promise — the AI voice's or none; *Keep them together* and a C grade → silent;
   * a library with no book at all → no read beyond today's one;
-  * a watched mark with no date (made before the store kept dates), its show with none → seen "earlier".
+  * a watched mark with no date (made before the store kept dates), its show with none → seen "earlier";
+  * (review) where media is cut, a lined-up book's line its line-up never says is no choice (`choose`, line by line);
+    a line is said exactly where the cut finds its cue (`place`'s rule: no line over two short cues or across a seam);
+    the audiobook's own timed subtitle, lined up, is read line by line; a state.json not as written promises nothing
+    and fails no read; a line-up redone is read again.
 
 Real data: the suite's EPUB built from `Test Resources/<lang>/context_test.txt`, 芥川「蜘蛛の糸」 as 2.x split it.
 """
@@ -26,6 +30,7 @@ import os
 import pytest
 
 from app.connect import library, lineup, sentences
+from tests.connect.test_kantan_sd_dial import no_store  # noqa: F401
 from tests.connect.test_lineup import LINE_UP_311, _record_miner, _srt_of, no_child_left  # noqa: F401
 from tests.connect.test_split_txt_books import _pick, split  # noqa: F401
 from tests.test_audiobook_items import _audio_folder, _audio_items, _epub, _fit, _lines, _record, \
@@ -212,3 +217,108 @@ def test_a_watched_mark_with_no_date_is_seen_earlier_and_a_dated_or_unwatched_on
         dated = weights()
         assert dated[second] > 0.9, "a dated mark: today's weight, as before"
         assert dated[first] == dated[second], "its show's date now (the borrowed date: unchanged, Sonic's call)"
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_where_media_is_cut_a_lined_up_books_line_it_never_says_is_no_choice(no_store, monkeypatch, lang):
+    # why (review, 2026-11-23): `choose` left a book's file out by the file's answer alone (`unheard`), and a lined-up
+    # book's file answers its `Reach` — so a line its line-up never says (a chapter outside the audiobook's reach) went
+    # in as Best's choice with no audio while the AI voice was off; it is left out line by line, as `_from_list` does
+    from tests.connect.test_kantan_sd_dial import EASY, HARD, TODAY, _key, _lemmas
+    from tests.connect.test_kantan_sd_dial import _library as _indexed
+    from tests.connect.test_kantan_sd_dial import _place
+    easy, today, hard = (EASY, TODAY, HARD) if lang == "ja" else ("他接到电话了。", "我接到电话了。",
+                                                                  "那个陌生人打来的电话很奇怪。")
+    lemma = "冒険" if lang == "ja" else "电话"
+    here, book, other = _indexed(lang, {"第01話.txt": [hard], "本.txt": [easy], "第02話.txt": [today]},
+                                 known=(_lemmas(easy, lang) | _lemmas(today, lang)) - {lemma})
+    key = _key(easy, lemma, lang)
+    _place(no_store, here, 1)
+    _place(no_store, other, 3, ctx=0.0)
+
+    def best(said, ai):
+        monkeypatch.setattr(sentences, "ai_voice", lambda settings, language: ai)
+        texts = [lineup.clean(easy)] if said else [lineup.clean(hard), lineup.clean(today)]
+        heads = {t[:lineup.MIN_CHARS]: {t} for t in texts if len(t) >= lineup.MIN_CHARS}
+        _place(no_store, book, 2, ctx=0.9, hear=lineup.Reach(frozenset(texts), "\n".join(texts), heads), text=True)
+        return {c.item_id: c for c in sentences.choose(lang, [key], here=here, dial=sentences.BEST,
+                                                       files=[here, book, other], young={},
+                                                       reach=lambda item_id: item_id != 1)[key]}
+    heard = best(True, False)[2]
+    assert heard.audio and not heard.ai, "a line its line-up says: the narrator's clip"
+    assert 2 not in best(False, False), "a line it never says, the voice off: no choice where media is cut"
+    voiced = best(False, True)[2]
+    assert voiced.audio and voiced.ai, "...the AI voice's while it is on"
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_line_is_said_exactly_where_the_cut_finds_its_cue(language, no_child_left):  # noqa: F811
+    # why (review, 2026-11-23): `said` looked for the line in the cues joined end to end — a line over two short cues,
+    # or across two cues' seam, was promised a clip `place` never cuts, and a line holding a cue plus words the
+    # narrator skipped was refused one it does cut. Now it is `place`'s own rule for a line, checked against the cut
+    book = _books(language)
+    lines = [lineup.clean(ln) for ln in _lines(language)]
+    whole = "".join(lines)
+    assert len(whole) >= 40
+    a, b, c, d, e = whole[:5], whole[5:10], whole[10:18], whole[18:24], whole[24:36]
+    skipped = lines[-1]
+    _lined(book, [a, b, "xxxx" + c, d + "yyyy", e])         # two short cues, three long ones (MIN_CHARS 8+)
+    with book["store"]:
+        found = _heard(book["store"], language)[_parts(book["store"], book["epub"])[0]]
+    assert isinstance(found, lineup.Reach)
+    state = lineup.read(book["key"])
+    cases = {a + b: False,              # over two short cues: no cue the cut can take
+             c[2:] + d[:3]: False,      # across two cues' seam, holding neither: the same
+             c[1:7]: False,             # under MIN_CHARS and not a cue of its own
+             e + skipped: True,         # a long cue and words the narrator skipped: cut from that cue
+             a: True,                   # a cue of its own, however short
+             "xx" + c: True}            # MIN_CHARS or longer, inside one cue
+    for line, want in cases.items():
+        assert lineup.said(found, line) is want, line
+        groups, rest = lineup.split([{"line_text": line, "surface": line[:2]}], state)
+        assert bool(groups) is want and (rest == []) is want, ("the cut agrees", line)
+
+
+def test_its_own_timed_subtitle_lined_up_is_read_line_by_line(monkeypatch):
+    # why (review): the audiobook's own subtitle (one file, Hon found it the book's) was answered "heard" before its
+    # line-up was read — every line promised a clip; lined up (`lineup.own`), it is a `Reach` like any other
+    from app import audiobooks
+    book = _books("ja")
+    lines = _lines("ja")
+    monkeypatch.setattr(audiobooks, "transcript_use", lambda rec: audiobooks.TIMING)
+    rec = dict(_record(book["store"], book["audio"]), files=[os.path.abspath(book["files"][0])])
+    assert lineup.reach(rec) is True, "not lined up yet: the part's job lines it up first"
+    srt = os.path.join(lineup.folder(book["key"]), "own.srt")
+    os.makedirs(os.path.dirname(srt), exist_ok=True)
+    with open(srt, "w", encoding="utf-8") as f:
+        f.write(_srt_of(lines[:3]))
+    lineup.write(book["key"], lineup.own(book["key"], book["files"][0], srt))
+    found = lineup.reach(rec)
+    assert isinstance(found, lineup.Reach) and lineup.said(found, lines[1]) and not lineup.said(found, lines[7])
+    book["store"].close()
+
+
+def test_a_line_ups_state_not_as_written_is_no_clip_and_never_a_failed_read():
+    # why (review): `_library` is on every mine's path — one book's state.json edited by hand (or half copied) must
+    # not take down the whole read; its chapters are promised nothing
+    book = _books("ja")
+    lineup.write(book["key"], {"status": lineup.DONE, "grade": "A", "files": ["01.srt"]})
+    with book["store"]:
+        mine = _parts(book["store"], book["epub"])
+        hear = _heard(book["store"], "ja")
+    assert {hear[i] for i in mine} == {sentences.SILENT}
+    assert hear[book["audio"]] == sentences.REAL, "the rest of the library read as ever"
+
+
+def test_a_line_up_redone_is_read_again():
+    # why (review): the cues are kept by the state's own files and their stamps — a line-up redone (another file,
+    # a new subtitle) is read again, never answered from the old one
+    book = _books("ja")
+    lines = _lines("ja")
+    _lined(book, lines[:3])
+    with book["store"]:
+        part = _parts(book["store"], book["epub"])[0]
+        assert lineup.said(_heard(book["store"], "ja")[part], lines[1])
+        _lined(book, lines[5:8])
+        found = _heard(book["store"], "ja")[part]
+    assert lineup.said(found, lines[6]) and not lineup.said(found, lines[1])

@@ -416,10 +416,11 @@ def place(line_text, spelling, found, unit=None):
     return None
 
 
-# Kyou-PB: what a paired book's usable line-up says — its cues' clean texts (`lines`) and the same joined in the book's
-# order (`said`: a sentence said over cues in a row) — read by the sentence dial's `heard` (`reach`, `said`)
-Reach = namedtuple("Reach", "lines said")
-_REACH = {}             # key -> (its state's and subtitles' stamps, its Reach): a book's cues read once while unchanged
+# Kyou-PB: what a paired book's usable line-up says, by `place`'s own rule for a line — its cues' clean texts (`lines`:
+# a line that is a cue), the same apart (`said`: a line inside one cue; the separator is never a letter, so a line never
+# spans two) and its long cues by their first MIN_CHARS (`heads`: a line holding one) — read by the sentence dial's `heard`
+Reach = namedtuple("Reach", "lines said heads")
+_REACH = {}             # key -> (its state's files and their stamps, its Reach): a book's cues read once while unchanged
 
 
 def _stamps(paths):
@@ -428,7 +429,7 @@ def _stamps(paths):
         try:
             st = os.stat(p)
             out.append((p, st.st_size, st.st_mtime_ns))
-        except OSError:
+        except (OSError, ValueError):
             out.append((p, None, None))
     return tuple(out)
 
@@ -437,9 +438,10 @@ def reach(audiobook):
     """Kyou-PB: can a paired book's line-up give its lines the narrator's clip? `audiobook`: the audiobook's record
     (its `book`, `files`, `lineup` mark, `transcript`) -> None (no: its audio away — a source offline, a file gone —,
     *Keep them together*, nothing lined up, a line-up graded C or D, given up after TRIES, *Not now* to the speech
-    model), True (not lined up yet — the part's job lines it up first —, or its own timed subtitle: Hon found it the
-    book's), or a `Reach` (lined up, usable: a line gets a clip only where the line-up says it, `said`). The line-up's
-    own exits that the record and the disk answer (`runner.Steps.lineable`'s; Anki Miner is never asked). Read only."""
+    model), a `Reach` (lined up, usable — its own timed subtitle's line-up too: a line gets a clip only where the
+    line-up says it, `said`), or True (not lined up yet — the part's job lines it up first —, or its own timed subtitle
+    that Hon found the book's, not lined up yet). The line-up's own exits that the record and the disk answer
+    (`runner.Steps.lineable`'s; Anki Miner is never asked). Read only."""
     from app import audiobooks
     files = [f for f in audiobook.get("files") or () if isinstance(f, str) and f]
     book = audiobook.get("book") if isinstance(audiobook.get("book"), dict) else {}
@@ -449,33 +451,44 @@ def reach(audiobook):
     mark = audiobook.get("lineup") if isinstance(audiobook.get("lineup"), dict) else {}
     if mark.get("key") == key and mark.get("status") == "kept":
         return None
-    if len(files) == 1 and audiobooks.transcript_use(audiobook) == audiobooks.TIMING:
-        return True
-    if key is None or (mark.get("key") == key and mark.get("status") == "none"):
+    timing = len(files) == 1 and audiobooks.transcript_use(audiobook) == audiobooks.TIMING
+    if not timing and (key is None or (mark.get("key") == key and mark.get("status") == "none")):
         return None
-    path = os.path.join(folder(key), STATE)
-    state = read(key)
+    state = read(key) if key is not None else {}
     status = state.get("status")
-    if status == DONE:
+    if status == DONE and (usable(state) or not timing):
         if not usable(state):
             return None
-        stamp = _stamps([path] + [f.get("subtitle_file") or "" for f in state.get("files") or ()] + files)
+        held = [f for f in state.get("files") or () if isinstance(f, dict)]
+        stamp = (repr(held), _stamps([str(f.get(k) or "") for f in held for k in ("audio_file", "subtitle_file")]))
         kept = _REACH.get(key)
         if kept is None or kept[0] != stamp:
             texts = [c.text for c in cues(state) if c.text]
-            kept = _REACH[key] = (stamp, Reach(frozenset(texts), "".join(texts)) if texts else None)
+            heads = {}
+            for t in texts:
+                if len(t) >= MIN_CHARS:
+                    heads.setdefault(t[:MIN_CHARS], set()).add(t)
+            kept = _REACH[key] = (stamp, Reach(frozenset(texts), "\n".join(texts), heads) if texts else None)
         return kept[1]
+    if timing:
+        return True
     if status == NONE or (status in (FAILED, NO_MODEL) and (state.get("tries") or 0) >= TRIES):
         return None
     return None if answer() == "no" else True
 
 
 def said(found, line_text):
-    """Kyou-PB: does the usable line-up `found` (a `Reach`) say the book's line `line_text` — a cue of its own, or
-    (MIN_CHARS or longer) inside its cues as the book says them in a row? A line it doesn't say gets no clip (`place`
-    finds no cue for it): a chapter outside the audiobook's reach, a passage the narrator skipped."""
+    """Kyou-PB: does the usable line-up `found` (a `Reach`) say the book's line `line_text`, by `place`'s rule for a
+    line — a cue of its own, inside one cue (MIN_CHARS or longer), or holding a cue MIN_CHARS or longer? A line it
+    doesn't say gets no clip (`place` finds no cue for it): a chapter outside the audiobook's reach, a passage the
+    narrator skipped. (Which cue of a line holds the card's word is the cut's own question, `place`'s.)"""
     want = clean(line_text)
-    return bool(want) and (want in found.lines or (len(want) >= MIN_CHARS and want in found.said))
+    if not want:
+        return False
+    if want in found.lines or (len(want) >= MIN_CHARS and want in found.said):
+        return True
+    return any(want.startswith(t, i) for i in range(len(want) - MIN_CHARS + 1)
+               for t in found.heads.get(want[i:i + MIN_CHARS], ()))
 
 
 def split(words, state):

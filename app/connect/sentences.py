@@ -224,7 +224,10 @@ def _library(language, store=None, ai=False, only=None):
             key = os.path.normcase(os.path.abspath(path))
             book = paired.get(item_id) if text else None
             if book is not None and book[0] not in reach:
-                reach[book[0]] = lineup.reach(book[2])
+                try:
+                    reach[book[0]] = lineup.reach(book[2])
+                except Exception:   # a line-up's state not as written (by hand, a half copy): no clip promised
+                    reach[book[0]] = None
             got = reach.get(book[0]) if book is not None else None
             hear = got if isinstance(got, lineup.Reach) else heard(text, got is not None, ai)
             out[key] = (item_id, context(seen, place.get(item_id), tier, now), hear, text)
@@ -399,14 +402,14 @@ def _from_list(language, kept, listed, here_key, never, young, files, reach, boo
                 row = sentences[s]
                 path, at, _rel, _kind, _digest = placed[row[plan_rules.SRC]]
                 item_id, ctx, hear, text_only = info[at]
-                hear = _heard_line(hear, row[plan_rules.TEXT], ai)
                 is_here = at == here_key
                 if allowed is not None and at not in allowed:
                     continue
-                if not is_here and text_only and not (books and (hear is not SILENT or reach is None)):
-                    continue            # a book's line nothing can speak, where media is cut (`choose`'s `unheard`)
                 if same_line(row[plan_rules.TEXT], banned):
                     continue
+                hear = _heard_line(hear, row[plan_rules.TEXT], ai)
+                if not is_here and text_only and not (books and (hear is not SILENT or reach is None)):
+                    continue            # a book's line nothing can speak, where media is cut (`choose`'s `unheard`)
                 others = sum(1 for c in row[plan_rules.COWORDS] if own[c] != k)
                 found.append((Choice(path, item_id, row[plan_rules.TEXT], others, round(ctx, 4), is_here,
                                      hear is not SILENT, hear == AI_VOICE, row[plan_rules.NUMBER]), position, s))
@@ -549,6 +552,8 @@ def choose(language, keys, *, here=None, dial=None, never=None, young=None, file
             item_id, ctx, hear, text_only = info[path]
             hear = _heard_line(hear, text, ai)
             is_here = path == here_key
+            if not is_here and text_only and not (books and (hear is not SILENT or reach is None)):
+                continue                # a lined-up book's line its line-up never says (`_heard_line`): `unheard`'s
             if not is_here and (reach is None or not text_only) and not can_cut(path, item_id):
                 continue                # a book's line is judged by how it is heard (`unheard`), and is there
             found.append((Choice(path, item_id, text, rank[0], round(ctx + max(0.0, -rank[2]), 4), is_here,

@@ -46,6 +46,7 @@ log = logging.getLogger("surasura-cli")
 
 SWAP_TAG = "surasura::swapped"
 BY_SWAP, BY_BAD_CARD = "swap", "bad card"
+BY_JOURNEY, BY_ADD_NOW = "journey", "add now"   # the journey page's ⇄ and *Add now* (`door_routes`): the line pressed
 ASKED, QUEUED, MADE, WAITS, DROPPED, UNDONE = "asked", "queued", "made", "waits", "dropped", "undone"
 TRIES = 3                       # episodes tried before an ask waits (each cut no card: its lines were the old card's)
 RETRY_S = 6 * 3600              # a waiting ask is looked at again this long after, or when the library has more files
@@ -102,6 +103,28 @@ def new_cards(ledger, language, note_ids):
     return frozenset(int(n) for (n,) in ledger.conn.execute(
         "SELECT DISTINCT new_note FROM swaps WHERE language = ? AND state = ? AND new_note IS NOT NULL",
         (language, MADE)) if int(n) in ids)
+
+
+def asked_first(language, db_path=None):
+    """The new notes of the made *Add now* asks (journey v3 D3: `BY_ADD_NOW`, the journey's pick for a word with no
+    card), in the order they were asked (the swaps' `id`), each once -> [note id]: Junban's order puts their cards
+    first (`modules/junban`, `plan(asked=)`). An undone ask is none. Read-only (never makes or writes Connect's
+    ledger); [] with no ledger or before any swap was asked; raises sqlite3.Error when it can't be read just now."""
+    import sqlite3
+    from pathlib import Path
+    from app.connect import ledger as ledger_mod
+    db_path = db_path or ledger_mod.path()
+    if not os.path.exists(db_path):
+        return []
+    conn = sqlite3.connect(Path(os.path.abspath(db_path)).as_uri() + "?mode=ro", uri=True, timeout=5.0)
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'swaps'").fetchone():
+            return []
+        rows = conn.execute("SELECT new_note FROM swaps WHERE language = ? AND by = ? AND state = ? AND new_note IS "
+                            "NOT NULL ORDER BY id", (language, BY_ADD_NOW, MADE)).fetchall()
+    finally:
+        conn.close()
+    return list(dict.fromkeys(int(n) for (n,) in rows))
 
 
 def _rows(ledger, where, params=()):

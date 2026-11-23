@@ -66,6 +66,10 @@ Placement = namedtuple("Placement",
 #: weaves a click exactly as the run; None for every other card, and for every card while nothing is woven.
 Placement = namedtuple("Placement", Placement._fields + ("weave",),
                        defaults=tuple(Placement._field_defaults.values()) + (None,))
+#: `asked` (Kyou-AF, journey v3 D3) is the card's place among the cards the learner asked for from the journey (*Add
+#: now*: `plan`'s `asked`, 0 the first asked), so `replan` keeps them first; None for every other card.
+Placement = namedtuple("Placement", Placement._fields + ("asked",),
+                       defaults=tuple(Placement._field_defaults.values()) + (None,))
 
 # Junban_Backlog_Spec §5.4, as the user's answers shaped it (§11, §12 item 8): the list's own words
 # first, in the journey's order — "anything that IS in our list should come first" (2026-09-23) —
@@ -81,6 +85,8 @@ TIERS["yours"] = -1
 # your own under *At the back* / *Set aside* — in the order they had (an empty sort: then `due`), behind every card
 # placed by its sentence and still ahead of the words you already know (D3: known last).
 TIERS["back"] = 4.5
+# Kyou-AF (journey v3 D3): an asked card's reason in the preview, ahead of the one its tier gives (Tidy's words, `tidy.ASKED`)
+ASKED_WHY = "you asked for it"
 
 
 def _exact_int(value):
@@ -95,7 +101,7 @@ def _exact_int(value):
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def plan(cards, rank_of, exclude=None, number=None, pins=None, out=None, weave=None, width=None):
+def plan(cards, rank_of, exclude=None, number=None, pins=None, out=None, weave=None, width=None, asked=None):
     """Work out the new queue positions.
 
     `cards` is `[{"card_id", "due", "type", "queue", "word", "deck"}]` — one dict per card in scope,
@@ -162,6 +168,12 @@ def plan(cards, rank_of, exclude=None, number=None, pins=None, out=None, weave=N
     plan as before, row for row. `width` (Kyou-B, side by side's 2): only the first `width` groups that can take a turn
     take one each round — a group with nothing left (or, while another has list words, no list word left) hands its
     turn to the next, so two titles keep taking turns while two have cards; None: every group at once.
+
+    `asked` (Kyou-AF, journey v3 D3: *Add now*, a card the learner asked for from the journey): `[card_id, …]` in the
+    order they were asked (`swap.asked_first`, its notes' cards). Those still new go ahead of everything, the pins
+    included, in that order — the same stable lift as a pin's, one step ahead of it, so nothing else moves relative
+    to anything else; never woven, never taken out. A studied or deleted one isn't in `cards`, so it is no longer
+    special; one the user clicked off stays where the click left it. None or empty: the plan as before, row for row.
 
     Returns `(writes, stats)`:
 
@@ -275,15 +287,25 @@ def plan(cards, rank_of, exclude=None, number=None, pins=None, out=None, weave=N
         first = [entry for entry in ordered if entry[3]["card_id"] in lift]
         first.sort(key=lambda entry: lift[entry[3]["card_id"]])     # stable: the planned order inside
         ordered = first + [entry for entry in ordered if entry[3]["card_id"] not in lift]
+    # --- Kyou-AF (journey v3 D3): the cards you asked for from the journey, ahead of the pins, in the order asked ---
+    asked_at = {}
+    for card_id in asked or ():
+        if _exact_int(card_id) and card_id not in excluded:
+            asked_at.setdefault(card_id, len(asked_at))
+    if asked_at:
+        first = [entry for entry in ordered if entry[3]["card_id"] in asked_at]
+        first.sort(key=lambda entry: asked_at[entry[3]["card_id"]])     # the order asked (a note's cards by id)
+        ordered = first + [entry for entry in ordered if entry[3]["card_id"] not in asked_at]
+    # --- end Kyou-AF
     # --- Kyou-A: the weave — the groups' cards in turns, after the pins (and yours), before everything else ---
     weave_of = _groups(weave)
     woven = 0
     if weave_of:
-        skip = set(lift) | excluded | {card_id for card_id in (out or ()) if _exact_int(card_id)}
-        ordered, woven, side_picks = _weave(ordered, weave_of, len(weave), set(lift), skip, width)
+        skip = set(lift) | set(asked_at) | excluded | {card_id for card_id in (out or ()) if _exact_int(card_id)}
+        ordered, woven, side_picks = _weave(ordered, weave_of, len(weave), set(lift) | set(asked_at), skip, width)
     # --- end Kyou-A
     # --- P4.1 L2: *Take its new cards out* — after every other card, the planned order kept among them ---
-    gone = {card_id for card_id in (out or ()) if _exact_int(card_id)} - set(lift) - excluded
+    gone = {card_id for card_id in (out or ()) if _exact_int(card_id)} - set(lift) - set(asked_at) - excluded
     if gone:
         ordered = ([entry for entry in ordered if entry[3]["card_id"] not in gone]
                    + [entry for entry in ordered if entry[3]["card_id"] in gone])
@@ -310,6 +332,8 @@ def plan(cards, rank_of, exclude=None, number=None, pins=None, out=None, weave=N
             writes.append((card["card_id"], new_due))
         # Only a placed card has a reason; a deselected one is "your choice", not its old tier's.
         why = (card.get("why") or (f"list #{rank + 1:,}" if tier == "list" else tier)) if tier else ""
+        if card["card_id"] in asked_at:     # Kyou-AF: the preview says why it is first (`replan` takes it off again)
+            why = ASKED_WHY + (f" · {why}" if why else "")
         order.append(Placement(position=new_due,
                                card_id=card["card_id"],
                                due=card["due"],
@@ -327,7 +351,8 @@ def plan(cards, rank_of, exclude=None, number=None, pins=None, out=None, weave=N
                                out=True if card["card_id"] in gone else None,
                                weave=((weave_of[card["card_id"]], _weave_word(card), card.get("needs"),
                                        card.get("waits"), card.get("impact"), width)
-                                      if card["card_id"] in weave_of else None)))
+                                      if card["card_id"] in weave_of else None),
+                               asked=asked_at.get(card["card_id"])))
 
     # "yours" only when a card is (Connect's preview), "back" only when one goes there (Kyou-MO)
     tiers = {name: 0 for name in TIERS if name not in ("yours", "back")}
@@ -362,6 +387,9 @@ def plan(cards, rank_of, exclude=None, number=None, pins=None, out=None, weave=N
         stats["pinned"] = sum(1 for row in order if row.card_id in lift)
     if gone:
         stats["out"] = sum(1 for row in order if row.out)     # P4.1 L2: only when something is out
+    lifted = sum(1 for row in order if row.asked is not None)
+    if lifted:
+        stats["asked"] = lifted                               # Kyou-AF: only when an asked card is in scope
     if weave_of:
         stats["woven"] = woven                                # Kyou-A: only while something is woven
         stats["side_picks"] = side_picks                      # Kyou-C: each group's cards the weave could take
@@ -515,6 +543,14 @@ def _weave(ordered, weave_of, groups, lift, skip, width=None):
 # --- end Kyou-A
 
 
+def _own_why(row):
+    """A row's reason without Kyou-AF's "you asked for it" (`plan` puts it back while the card is still asked)."""
+    why = row.why
+    if getattr(row, "asked", None) is not None and isinstance(why, str) and why.startswith(ASKED_WHY):
+        why = why[len(ASKED_WHY):].removeprefix(" · ") or None
+    return why
+
+
 def _groups(pins):
     """`{card_id: group index}` for `plan`'s `pins` — the first (oldest) group claiming a card keeps
     it. A clicked-off card stays a member (never "not on your list") but isn't lifted (`plan`).
@@ -529,7 +565,7 @@ def _groups(pins):
     return group_of
 
 
-def replan(order, exclude=None, number=None, pins=None, out=None, weave=None, width=None):
+def replan(order, exclude=None, number=None, pins=None, out=None, weave=None, width=None, asked=None):
     """Re-decide an order that has already been planned, with `exclude` taken out of the run.
 
     WP-O. The panel needs the new order the instant a row is deselected, and it cannot read Anki
@@ -551,6 +587,9 @@ def replan(order, exclude=None, number=None, pins=None, out=None, weave=None, wi
             if row.pinned is not None:
                 groups.setdefault(row.pinned, []).append(row.card_id)
         pins = [groups[index] for index in sorted(groups)]
+    if asked is None:                   # Kyou-AF: the asked cards stay first after a click, in the order asked
+        asked = [row.card_id for row in sorted((row for row in rows if getattr(row, "asked", None) is not None),
+                                               key=lambda row: row.asked)]
     if out is None:                     # P4.1 L2: the taken-out cards stay last after a click, as the run places them
         out = {row.card_id for row in rows if getattr(row, "out", None)}
     if weave is None:                   # Kyou-A: the run's groups, from the rows themselves (`Placement.weave`)
@@ -568,7 +607,7 @@ def replan(order, exclude=None, number=None, pins=None, out=None, weave=None, wi
     # does not rank has only them, and without them it would fall to the back on the first click.
     cards = [{"card_id": row.card_id, "due": row.due, "type": 0, "queue": 0,
               "word": row.word, "deck": row.deck, "note": row.note_id,
-              "tier": row.tier, "sort": row.sort, "why": row.why,
+              "tier": row.tier, "sort": row.sort, "why": _own_why(row),
               "fallback": row.fallback, "suggestion": row.suggestion,
               **({"weave_word": row.weave[1], "needs": row.weave[2], "waits": row.weave[3], "impact": row.weave[4]}
                  if getattr(row, "weave", None) is not None else {})} for row in rows]
@@ -576,7 +615,8 @@ def replan(order, exclude=None, number=None, pins=None, out=None, weave=None, wi
     # every row that carries it or in none of them, so this cannot disagree with the real index.
     rank_of = {row.word: row.rank for row in rows
                if row.rank is not None and isinstance(row.word, str) and row.word}
-    return plan(cards, rank_of, exclude=exclude, number=number, pins=pins, out=out, weave=weave, width=width)
+    return plan(cards, rank_of, exclude=exclude, number=number, pins=pins, out=out, weave=weave, width=width,
+                asked=asked)
 
 
 def with_answers(order, ticked):

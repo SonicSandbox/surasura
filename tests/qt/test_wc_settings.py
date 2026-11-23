@@ -158,8 +158,7 @@ def test_r1_r4_more_options_lays_the_page_out_once_and_repaints_nothing_above_it
     from app.qt import settings_catalog as catalog
     bar = wc.rect_in_window(page.scroll.verticalScrollBar())
     # Mado-LT (3.0.18): the first fold was Known words' (one row, *Count as known in Anki*, now the ✓ Known move card in
-    # the open). Measured as before: the first fold of one row. (The next first fold, Anki & mining's ten, repaints
-    # above its button on the base too: a waste finding handed to the lead, not this test's.)
+    # the open). Measured as before: the first fold of one row. (Anki & mining's ten: the test after this one.)
     section = next(s for s, slab in page.slabs.items() if not slab.more_row.isHidden() and s not in page.folds()
                    and len([r for r in catalog.rows(s) if r.adv and r.id in page.rows]) == 1)
     more = _in_view(page, page.slabs[section].more)
@@ -176,6 +175,31 @@ def test_r1_r4_more_options_lays_the_page_out_once_and_repaints_nothing_above_it
     finally:
         if section in page.folds():
             page.fold(section)
+        wc.settle()
+
+
+def test_r1_r4_anki_and_minings_more_options_repaints_nothing_above_its_button(page):
+    """The same rule on Anki & mining's fold, the page's longest. Mado-LT 4: it repainted above its button — its *Sync
+    Anki after tomorrow's cards change* set its three choices side by side, wider than the page's view, so opening the
+    fold widened the whole page (every row laid and painted again, its right edge cut off). Measured on Windows' own
+    fonts it happened at Large text with a held fourth choice (`test_settings_page_fixes`); the suite's wider font shows
+    it with the three. The row is a list now: never wider than its longest choice."""
+    bar = wc.rect_in_window(page.scroll.verticalScrollBar())
+    more = _in_view(page, page.slabs["anki"].more)
+    assert "anki" not in page.folds()
+    unit = wc.one_pass(page.body, page)
+    try:
+        for _ in range(2):                                                 # open, then close: both measured
+            top = wc.rect_in_window(more).top()
+            below = QRect(0, top, page.width(), page.height() - top)
+            with wc.measure(page) as w:
+                page.fold("anki")
+            assert w.paints_outside_rect(below, bar) == [], w.report()
+            assert w.hints <= unit * wc.PASS_SLACK, (unit, w.report())
+            assert w.created == 0 and w.deleted == 0, w.report()
+    finally:
+        if "anki" in page.folds():
+            page.fold("anki")
         wc.settle()
 
 

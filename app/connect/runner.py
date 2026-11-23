@@ -1916,13 +1916,13 @@ BACK_HOME = ("not_found", "media_failed")
 def _back_home(picked, outcomes):
     """Kantan-SD 6 (PROVISIONAL): a word cut from another episode's line that got no card there for a reason of that
     line or its file — `BACK_HOME`, or the episode's video or subtitle couldn't be read (`run_error`: its run never
-    began) — goes back to its own line (`_own_lines`), its outcome `not_attempted`: the job's next batch makes what
+    began; never CANCELLED: a Stop or a review (OPEN 40) says nothing about the line, its words wait there) — goes back to its own line (`_own_lines`), its outcome `not_attempted`: the job's next batch makes what
     Nearest would have, and only what fails there too is named *Not made from this episode*. As they are: a word
     merged into another's card (`filter`), a duplicate, no definition, Anki's own refusal, a word in doubt — its own
     line would answer the same, or its card may be there -> the keys put back."""
     lost = {(o["word"], o["reading"]) for o in outcomes
             if (o["outcome"] in BACK_HOME and not o.get("filter"))
-            or (o["outcome"] == "not_attempted" and o.get("run_error"))}
+            or (o["outcome"] == "not_attempted" and o.get("run_error") and o["run_error"] != "CANCELLED")}
     back = set(_own_lines(picked, lambda w: (w["word"], w["reading"]) in lost)) if lost else set()
     for o in outcomes:
         if (o["word"], o["reading"]) in back:

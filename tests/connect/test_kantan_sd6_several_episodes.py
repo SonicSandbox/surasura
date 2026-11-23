@@ -308,3 +308,20 @@ def test_a_call_that_ended_in_doubt_leaves_every_episodes_words_to_be_read_back_
                                 [_w("迷宮", "メイキュウ", 5.0), _w("冒険", "ボウケン", 3.0, 4)], 1)
     assert [o["outcome"] for o in got["outcomes"]] == ["uncertain", "uncertain"]
     assert got["doubt"] is True and bool(got.get("stopped")) is stopped
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_review_while_the_other_episode_waits_keeps_its_words_on_that_episodes_line(call, fake_miner, tmp_path,
+                                                                                      lang):
+    # why (the merge with OPEN 40): a review in Anki cancels the call as a Stop does, and the episode still waiting its
+    # turn answers CANCELLED for each of its words. A cancel says nothing about that line: read as "its file couldn't
+    # be read", every review during a mine sent those words back to their own lines — Best's sentence lost each time
+    fake_miner.plan(app=APP, features=["word-from-line"], cancel_runs={"job-1-1-s1": 0})
+    own_done = tmp_path / "runs" / "job-1" / "job-1-1" / "result-1.json"
+    done, words, theirs = call(lang, should_stop=lambda: False, should_pause=lambda: own_done.exists())
+    assert done["paused"] is True and done["stopped"] is False
+    assert _outcomes(done) == ["made"] * len(words) + ["not_attempted"] * len(theirs)
+    picked = {"words": [dict(w, own=dict(w)) for w in words] + [dict(w, own=dict(w), **{"from": 4}) for w in theirs],
+              "sources": {"4": {"video": "第04話.mkv"}}}
+    assert runner._back_home(picked, done["outcomes"]) == set(), "paused, not refused: nothing goes home"
+    assert all(w.get("from") == 4 for w in picked["words"][len(words):]) and "sources" in picked

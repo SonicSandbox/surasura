@@ -185,6 +185,32 @@ def paired_books(store):
     return out
 
 
+def paired_parts(store):
+    """Kyou-PB: every item that is a part of a book an audiobook is paired with (`paired_books`' records: sure or
+    answered) -> {item id: (the book's path — its EPUB, or a split book's joined `.txt` —, the audiobook's item id,
+    its record)}. The parts by the store's one rule for the items an audiobook reads (`Store._audiobook_parts`: the
+    EPUB's live parts `<epub>#<n>`, a split book's picked parts, else the part the pairing named) — a book held as
+    chapters has no item at its EPUB's own path. Each book once (its first audiobook, as `audiobook_of_book`). One
+    read of the records, one of each paired book's parts: never a read an item; no audiobook, no second read."""
+    from app import library_store
+    out, seen = {}, set()
+    with store._reading():
+        rows = store._audiobook_rows()
+        for _k, item_id, rec in sorted(rows, key=lambda r: r[1]):
+            ab = rec.get("audiobook") or {}
+            book = ab.get("book")
+            epub = book.get("epub") if isinstance(book, dict) else None
+            if not isinstance(epub, str) or not epub:
+                continue
+            key = library_store.path_key(os.path.abspath(epub))
+            if key in seen:
+                continue
+            seen.add(key)
+            for part in store._audiobook_parts(book) - {item_id}:
+                out.setdefault(part, (os.path.abspath(epub), item_id, ab))
+    return out
+
+
 def split_book(store, item_id, language):
     """Kura-TX B1 (PROVISIONAL): the joined `.txt` of the book 2.x split into `.txt` parts that the item is a part of
     (`Store.split_book`'s rule, then `join_book`) -> its path, or None. Holds the store only for its read: call

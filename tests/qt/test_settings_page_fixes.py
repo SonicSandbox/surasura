@@ -164,7 +164,10 @@ def test_at_text_size_large_no_control_runs_past_the_page_and_narrow_rows_stack(
     page._settle()
     widest = max(v.minimumSizeHint().width() for v in page.rows.values() if v.isVisibleTo(page))
     m = page.body.layout().contentsMargins()
-    width = page.nav_panel.width() + 1 + m.left() + m.right() + widest + extra + 4
+    # (+ the scroll bar's width, Mado-LT 5: the view is the page less the nav and the bar — the old widest row, the
+    # sync choices side by side, asked ~50 px more than the body needed, which hid the bar's 10)
+    bar = page.scroll.verticalScrollBar().sizeHint().width()
+    width = page.nav_panel.width() + 1 + m.left() + m.right() + widest + bar + extra + 4
     page.resize(width, 620)
     QApplication.processEvents()
     page._settle()

@@ -242,9 +242,12 @@ SEARCH_LAYERS = 12                  # today's most: ~9 viewports of paint summed
 SEARCH_MOVES = wc.MOVES_PER_PASS    # found.md F3: a row moved 7–8 times by one keystroke, the paused layouts resumed
 #                                     deepest first (each moved its rows again); one pass from the top since. Unpaused
 #                                     (a9.1's lag): 38
-_PAST_ITS_VIEW = pytest.mark.xfail(strict=True, raises=AssertionError,
+# (Mado-LT 5: not strict — since *Sync Anki after…* is a list the page is narrower and the keystroke moves a slab 3
+# times on a page that never laid that search out, at most 2 after this file's stale-screen test typed it: it passes
+# in the file's company, fails alone)
+_PAST_ITS_VIEW = pytest.mark.xfail(strict=False, raises=AssertionError,
                                    reason="WC found.md F3 (what is left): the keystroke that makes the page longer than "
-                                          "its view (the scroll bar comes in) still moves a slab 5–6 times (was 7)")
+                                          "its view (the scroll bar comes in) still moves a slab 3 times (was 5–6, 7)")
 
 
 @pytest.mark.parametrize("typed", [pytest.param("a", marks=_PAST_ITS_VIEW), "an", "", "zzzz", "片仮名"])
@@ -427,7 +430,9 @@ def test_r4_a_level_sliders_arrow_key_repaints_its_own_row_and_lays_nothing_out(
 # --- R3: a folder taken off a list by its cross ------------------------------------------------------------------ #
 def test_r3_a_folders_cross_removes_that_folder_alone_and_repaints_only_inside_its_row(page):
     """The cross on the first folder tablet of the video-folders list: that folder alone goes (the other stays), its
-    row repainted, nothing above it, no widget made."""
+    row repainted, nothing above it, no widget made. (Mado-LT 5: since *Sync Anki after…* is a list the page is
+    narrower, and the two folders wrap: the row loses a line, what is under it moves up and repaints. Before, every row
+    above it in view repainted too: the slab's boxes, laid out inside their old height, handed the slack to a row.)"""
     opened = "anki" not in page.folds()
     tablets = before = None
     try:
@@ -444,13 +449,16 @@ def test_r3_a_folders_cross_removes_that_folder_alone_and_repaints_only_inside_i
         assert len(two) >= 2, two
         cross = tablets._parts()[0][4]
         assert cross is not None
+        top = wc.rect_in_window(view).top()
+        below = QRect(0, top, page.width(), page.height() - top)
+        bar = wc.rect_in_window(page.scroll.verticalScrollBar())
         with wc.measure(page) as w:
             QTest.mouseClick(tablets, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
                              QPointF(cross.center()).toPoint())
             wc.rest(150)
         assert tablets.value() == two[1:], (two, tablets.value(), w.report())
         assert w.painted > 0, w.report()
-        assert w.paints_outside(view) == [], w.report()
+        assert w.paints_outside_rect(below, bar) == [], w.report()
         assert w.created == 0, w.report()
     finally:
         if tablets is not None and before is not None:

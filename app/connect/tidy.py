@@ -12,7 +12,8 @@ overflow); ROLES.md: Tidy keeps Anki uncluttered and never deletes without a bac
   library's made-words record holds the note and Connect's ledger made it — its `surasura::connect::` tag alone never
   is: you can add a tag), it has no review history at all (Anki's review log: a card answered once and reset to new is
   yours), you never changed it (edited, tagged, flagged, buried, suspended, in a filtered deck: `undo._why_kept`) and
-  you never asked for it (*Add now*, journey v3 D3: `asked_for`, the seam). Never a pinned show's or an episode you
+  you never asked for it (`asked_for`: a swap's new card, your ⇄ — never past the cap either; *Add now*, journey v3
+  D3, once built). Never a pinned show's or an episode you
   asked for either (the runner's `mine`). Each read again under Anki's write lock, automatic and *Tidy now* alike.
 - **A backup first, byte for byte:** the notes and cards as Anki describes them (`notes.json`), their clip and
   picture files (`media/`, with each file's sha1), and an Anki package of exactly those notes, scheduling included
@@ -59,7 +60,7 @@ FILTERED = "it's in a filtered deck"
 MOVED = "you moved it to a deck of your own"   # Kyou-SH4: not in the deck Surasura last put it in (`homes`)
 NO_HOME = "Surasura has no record of the deck it put it in"     # made before homes were recorded: kept in doubt
 NOT_MADE = "Surasura didn't make it"         # the guarantee's first clause: the made-words record, never a tag alone
-ASKED = "you asked for it"                  # journey v3 D3's *Add now* (not built yet: `asked_for`)
+ASKED = "you asked for it"                  # a swap's new card (`asked_for`); journey v3 D3's *Add now* once built
 
 Reviewing = undo.Reviewing
 
@@ -233,7 +234,7 @@ def why_kept(info, cards, made, reviewed, filtered, done_at, shelf, asked=frozen
     - **Connect made it**: the library's made-words record holds the note (`made`) and Connect's ledger made it
       (`done_at`, when its job ended) — its `surasura::connect::` tag alone never is: you can add a tag (it must
       still carry one: a tag you took off is a change);
-    - **you never asked for it** (`asked`: journey v3 D3's *Add now* — not built yet, `asked_for` is the seam);
+    - **you never asked for it** (`asked`, `asked_for`: a swap's new card; journey v3 D3's *Add now* once built);
     - **it was never reviewed**: no line in Anki's review log for any of its cards (`reviewed`; None = the log
       couldn't be read: kept) — a card answered once and reset to new still has its history and is yours — and none
       studied (reps, type);
@@ -281,10 +282,17 @@ def _back_by_you(ledger):
     return {int(r[0]) for r in ledger.conn.execute("SELECT card_id FROM shelf WHERE back_by IN (?, ?)", shelf.YOURS)}
 
 
-def asked_for(ledger, language, note_ids):
-    """The notes of `note_ids` you asked for (journey v3 D3's *Add now*: a card you asked for is never Tidy's) ->
-    frozenset. *Add now* isn't built yet: none. The seam `why_kept` reads; *Add now* fills it from its own record."""
-    return frozenset()
+def asked_for(ledger, language, note_ids, why=None):
+    """The notes of `note_ids` you asked for -> frozenset: a card you asked for is never Tidy's, studied or not, past
+    the cap or not (`why_kept`'s ASKED). A swap's new card is one (your ⇄ — Suspend + Green flag — asked for it, as it
+    is never held by the cap: OPEN 56 f / g, PROVISIONAL), read from Swap's own record (`swap.new_cards`), but not in
+    the swap's own Undo (`why` "swap"), which takes back the card it made. Journey v3 D3's *Add now* fills it from its
+    own record once built."""
+    from app.connect import swap
+    asked = set()
+    if why != swap.BY_SWAP:
+        asked |= swap.new_cards(ledger, language, note_ids)
+    return frozenset(asked)
 
 
 def check(anki, ledger, note_ids, made, asked=frozenset(), ours=frozenset(), tidying=frozenset()):
@@ -382,7 +390,7 @@ def run(anki, ledger, language, note_ids, why=AUTO, open_store=None, limit=None,
         for pending in pending_tidies(ledger, language):      # a kill's half-way tidy first, under this lock
             finish(anki, ledger, pending, open_store)
         made_ids = _made_notes(open_store, ids)             # the guarantee's first clause: the library's record
-        asked = asked_for(ledger, language, ids)
+        asked = asked_for(ledger, language, ids, why)
         go, kept, infos, cards = [], [], {}, {}
         for at in range(0, len(ids), CHUNK):
             if len(go) >= limit:

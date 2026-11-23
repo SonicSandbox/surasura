@@ -650,7 +650,7 @@ def occurrences(cues, tokens, language, is_known, skip_single=True, phrase_set=N
 
 def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None, carded_source="anki",
          ignore_names=False, send_grammar=True, skip_single=True, phrase_set=None, readable=None, unsure=(),
-         sentence_length=None, view=None, young=None, never=None):
+         sentence_length=None, view=None, young=None, never=None, swap=None):
     """The words of one subtitle to make cards from, and why the rest of its new words aren't sent:
     {"words": [...], "not_offered": [...]} (row 1.3.3's shapes). `is_known((lemma, reading))`: known or ignored, by the
     analyzer's rule; `readable(key)`: a word read through known words (`analyzer.LearningView`), no new word in a line.
@@ -673,7 +673,12 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
     The sentence dial (Kantan-SD, `app/connect/sentences.py`): `young` ({lemma: weight}, `sentences.young_weights`)
     breaks the last tie toward the line whose card also holds words you are still learning, the younger the more —
     after every other rule; `never` ({key: {line text}}: Swap's old card's sentence) is a line the word is never cut
-    from again — a word with no other line is not sent (`only-line`)."""
+    from again — a word with no other line is not sent (`only-line`).
+
+    `swap` (Kantan-SL, Swap's simple version: `app/connect/swap.py`): {"word", "reading" ("" for any), "avoid": [line
+    texts], "line": a line text or None} — only that word is sent, whatever the mode, the list or its old card (it has
+    one: that's the card being swapped); its `avoid` lines join `never` for it (the picker's one rule,
+    `sentences.same_line`); from `line` when the episode says it there (the learner's pick), else as any word."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
     found, new_in = occurrences(cues, tokens, language, is_known, skip_single, phrase_set, readable, ignore_names,
@@ -779,8 +784,17 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
         held = set().union(*(lemmas_in.get(c, ()) for c in span(o.cue))) - {o.key[0]}
         return sum(young.get(lemma, 0) for lemma in held)
 
+    wanted = None
+    if swap and swap.get("line"):
+        wanted = lambda o: sentences.same_line(line_of(o.cue), [swap["line"]])                # noqa: E731
     candidates = []
     for key, uses in by_key.items():
+        if swap:
+            if key[0] == swap["word"] and (not swap.get("reading") or key[1] == swap["reading"]) and not is_known(key):
+                candidates.append(key)
+                if swap.get("avoid"):
+                    never[key] = set(never.get(key) or ()) | set(swap["avoid"])
+            continue
         phrase = uses[0].phrase
         if is_known(key) or (phrase and key not in listed):
             continue
@@ -803,7 +817,7 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
         elif not send_grammar and (first.phrase.grammar if first.phrase else (
                 first.token.node is not None and first.token.node.feature.pos1 in GRAMMAR)):
             reason = "grammar"      # a grammar word, or a grammar expression's row (かもしれない: phrases.Phrase.grammar)
-        if reason is None:
+        if reason is None and not swap:
             spellings = {first.front, key[0], first.orth, first.surface}
             spellings |= {anki_match.fold_kana(s) for s in spellings if s} if language == "ja" else set()
             if not carded.isdisjoint(spellings):
@@ -818,7 +832,7 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             reason = "unsure"
         elif reason is None and not other:
             reason = "only-line"
-        usable = other
+        usable = ([o for o in other if wanted(o)] or other) if wanted else other
         if reason is not None:
             not_offered.append({"word": key[0], "reading": key[1], "orth": first.orth, "reason": reason,
                                 "why": REASONS[reason]})

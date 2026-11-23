@@ -288,6 +288,12 @@ const SETTINGS = [
 const SET = {};
 const HS = Object.assign({}, HEAD.settings);           // SHAPE 1.1's names → the page's (key names PROVISIONAL until J-SET)
 const SZ = { s: 0, m: 1, l: 2 };
+/* ⌕ (D15 kept it): Japanese only (Nadeshiko holds Japanese sentences), shown unless Settings' switch is off
+   (`lookup`: word_search_enabled; a head without it: shown, as before), opening the kind of sentences chosen
+   (`lookup_category`: word_search_category, one of the four, else All: nothing else reaches the URL) */
+const LOOK_KINDS = ["all", "anime", "liveaction", "youtube"];
+const lookOn = () => LANG === "ja" && HS.lookup !== false;
+const lookQuery = () => { const k = HS.lookup_category; return LOOK_KINDS.includes(k) && k !== "all" ? `?category=${encodeURIComponent(k)}` : ""; };
 if (HS.source != null && HS.where_from == null) HS.where_from = HS.source;
 if (HS.theme != null && HS.theme !== "night" && HS.theme !== "light") HS.theme = /light/i.test(String(HS.theme)) ? "light" : "night";   // the old looks: Modern Light → Light, the rest → Night (Zen Mode: J-SET's Q6)
 const okSet = (s, v) => v != null && (s.k === "keys" && typeof v === "object" || (typeof s.def !== "boolean" || typeof v === "boolean") && s.opts.some((o) => String(o[0]) === String(v)));   // the learner's own key map is an object; a switch only a switch ("false" is none)
@@ -434,11 +440,13 @@ function blob(name) {
 }
 const blobNow = (name) => BLOBS[name + "!"] || null;
 
-/* the search index: word / spelling / readings of every word, built a chunk at a time */
+/* the search index: word / spelling / readings / the forms it was met in (the Forms column) of every word, built a
+   chunk at a time; each key folded as the query is (`fold`: the old page's rule, J-FIX 2) */
 const SIDX = [], SMETA = [];                           // chunk -> each word's search keys · [shown, reading, ep]
+const fold = (s) => kana(String(s || "").normalize("NFKC")).toLowerCase();   // full / half width as one, katakana as hiragana
 function indexChunk(c, d) {
   if (SIDX[c]) return;
-  SIDX[c] = d.w.map((w) => `${w[0]}\u0001${w[1]}\u0001${kana(w[2])}\u0001${w[3]}\u0001${w[2]}`.toLowerCase());
+  SIDX[c] = d.w.map((w) => fold([w[0], w[1], w[2], w[3], ...(Array.isArray(w[4]) ? w[4] : [])].join("\u0001")));
   SMETA[c] = d.w.map((w) => [w[1] || w[0], kana(w[3] || w[2]), w[5]]);
 }
 const smeta = (id) => { const c = chunkOfWord(id); return SMETA[c] ? SMETA[c][id - CH[c][0]] : null; };
@@ -510,7 +518,7 @@ const DOOR = (function () {
   }
   return door && door.port && door.token ? door : null;
 })();
-const D = { state: DOOR ? "unknown" : "unopened", routes: null, library: null, sending: false, heard: 0, notyet: new Set() };   // heard: hellos answered
+const D = { state: DOOR ? "unknown" : "unopened", routes: null, library: null, sending: false, carrying: false, heard: 0, notyet: new Set() };   // heard: hellos answered
 async function doorCall(route, body, ms) {
   if (window.__J_FAKE_DOOR) return window.__J_FAKE_DOOR(route, body || {});
   if (!DOOR) return { ok: false, offline: true, why: "unopened" };
@@ -654,7 +662,64 @@ async function hello() {
     const changed = await readState();
     await flushQueue();
     if (changed || had !== JSON.stringify(routes)) { drawWord(); rail.update("all"); }   // only what the answers changed
+    await carryOldIgnores();
   } finally { D.heard++; }
+}
+/* The old journey page's ignores, carried over once (Sonic's answer to SPEC §9 item 1; J-FIX). That page kept its
+   ignored words only in this browser, under OLD_IGNORES; they never reached Surasura's lists. Nothing else is read
+   from the browser (its ✓ Completed marks are dropped on purpose). With the door on: Surasura's marks read whole (state,
+   no `since`), the old words it has neither Known nor Ignored sent through ⊘'s own route, OLD_BATCH a call, each an
+   Ignore over no mark at the time of that read (the stale rule skips a word changed since); then OLD_DONE, so it never
+   runs again. The old key is never written or removed. Surasura closed, busy or failing: nothing marked done, it is
+   tried at a later hello (the words already carried are Ignored by then, so they are never sent twice). The route is
+   asked `unless_known`: a word known by any source (an Anki card's too, which `state` never shows) is skipped, never
+   Ignored (J-FIX 2: an old ignore never undoes what the learner knows); the toast counts the words it added. Undo takes
+   back every call's own write; OLD_DONE stays (PROVISIONAL: the learner said no to those words). */
+const OLD_IGNORES = `surasura_ignored_words_${LANG}`;
+const OLD_DONE = `surasura_journey_old_ignores_${LANG}`;
+const OLD_BATCH = 500;                                  // the route's most a call (word_marks.DOOR_MOST)
+async function carryOldIgnores() {
+  let old = null;
+  try { if (localStorage.getItem(OLD_DONE)) return; old = JSON.parse(localStorage.getItem(OLD_IGNORES) || "null"); } catch (e) { return; }
+  if (!Array.isArray(old) || !old.length || D.carrying || !live() || !built("words/mark")) return;
+  if (D.library && HEAD.library && D.library !== HEAD.library) return;     // another library's Surasura (D31)
+  D.carrying = true;
+  try {
+    const at = Date.now(), a = await doorCall("state", { since: null }, 6000);
+    if (!a || !a.ok || !a.marks || typeof a.marks !== "object") return;
+    const words = [], seen = new Set();
+    for (const x of old) {
+      const w = typeof x === "string" ? x.trim() : "";
+      const key = w.normalize("NFKC");                    // as the route reads a word: one write a word
+      if (!w || w.length > 64 || key.length > 64 || w.startsWith("#") || /[\r\n]/.test(w) || seen.has(key)) continue;   // no word of a list (word_marks.clean)
+      seen.add(key);
+      if (!Object.hasOwn(a.marks, w) && !MARK.has(w) && !MWAIT.has(w)) words.push(w);   // Known, Ignored or pressed here: left as is
+    }
+    const added = [], undos = [];
+    let all = true, n = 0;
+    for (let k = 0; k < words.length && all; k += OLD_BATCH) {
+      const batch = words.slice(k, k + OLD_BATCH);
+      const r = await doorCall("words/mark", { unless_known: true, marks: batch.map((word) => ({ word, mark: "ignore", was: "", at })) });   // never over a word known by any source (Anki's too: J-FIX 2)
+      if (!r || !r.ok) { all = !!r && r.kind === "refused"; continue; }   // unreadable: let go; else a later hello
+      const left = new Set([...(r.stale || []), ...(r.skipped || [])]);
+      for (const w of batch) if (!left.has(w)) { added.push(w); if (!MWAIT.has(w)) MARK.set(w, "ignore"); }   // a press since is what's drawn
+      if (r.undo_id != null) undos.push(r.undo_id);
+      n += Number.isInteger(r.done) ? r.done : 0;           // the words Surasura actually added
+    }
+    if (all) { try { localStorage.setItem(OLD_DONE, String(Date.now())); } catch (e) {} }
+    if (!added.length) return;
+    redrawMarks();
+    if (!n) return;
+    toast(`⊘ ${n.toLocaleString("en")} ${n === 1 ? "word" : "words"} from your old journey page added to your Ignore list`, () => undoOldIgnores(added, undos));
+  } finally { D.carrying = false; }
+}
+async function undoOldIgnores(added, undos) {               // newest write first, as each Undo puts its own back
+  for (const id of undos.slice().reverse()) {
+    const a = await doorCall("words/undo", { undo_id: id });
+    if (!a || !a.ok) { toast(a && a.error || "Surasura is closed: that Undo can't be kept."); await readState(); redrawMarks(); return; }
+  }
+  for (const w of added) if (MARK.get(w) === "ignore" && !MWAIT.has(w)) MARK.delete(w);
+  redrawMarks();
 }
 const sinceMs = () => { const n = Number(HEAD.stamp); return isFinite(n) && n > 0 ? (HEAD.minor >= 1 ? n : Math.floor(n / 1e6)) : null; };   // 1.1: ms; v1: ns
 async function readState() {                              // true when an answer changed something on the page
@@ -909,7 +974,7 @@ function actsPart(w) {
   const b = (a, label, tipOn, tipOff) => `<button class="btn ${m === a ? "lit " + a + " " + mw : ""}" data-act="${a}" data-tip="${m === a ? tipOn : tipOff}${kt(a)}${m === a && mw === "queued" ? "\n" + waitWord() : ""}">${label} <span class="kc">${esc(keyOf(a))}</span></button>`;
   const route = (w[6] & 8) ? "swap/queue" : "card/make";
   const pick = SWAP_SHOWN && built(route) ? `<button class="btn" data-act="pick" data-tip="${(w[6] & 8) ? "⇄ Make its card from the chosen sentence instead" : "Add now: make its card from the chosen sentence, first in your order"}${kt("pick")}">⇄ <span class="kc">${esc(keyOf("pick"))}</span></button>` : "";
-  const look = LANG === "ja" ? `<a class="ib" href="https://nadeshiko.co/en/search/${encodeURIComponent(w[0])}" target="_blank" rel="noopener noreferrer" aria-label="Look the word up" data-tip="⌕ Look it up in your browser${kt("lookup")}">⌕</a>` : "";
+  const look = lookOn() ? `<a class="ib" href="https://nadeshiko.co/en/search/${encodeURIComponent(w[0])}${lookQuery()}" target="_blank" rel="noopener noreferrer" aria-label="Look the word up" data-tip="⌕ Look it up in your browser${kt("lookup")}">⌕</a>` : "";
   return `<div class="actw" data-r="acts" data-w="${esc(w[0])}"><div class="acts">${b("known", "✓ Known", "Known: press again to clear it", "Known: off your list")}${b("ignore", "⊘ Ignore", "Ignored: press again to clear it", "Ignore: never study it")}${pick}</div>${look}</div>`;
 }
 /* the header counts only the lines shown (PROVISIONAL, J-FIX): it is inside the lines' part, so a setting that
@@ -1208,7 +1273,7 @@ function drawSetRow(k) {                                // the settings sheet: o
   if (el && s) { const html = setRowHtml(s); if (el.outerHTML !== html) el.outerHTML = html; }
 }
 function openKeys(arm) {
-  const rows = ACTIONS.filter(([a]) => a !== "pick" || SWAP_SHOWN).map(([a, t]) => `<div class="krow"><span class="kn">${esc(t)}</span><button class="kc ${arm === a ? "arm" : ""}" data-bind="${a}" aria-label="Move ${esc(t)}" data-tip="Click, then press the new key">${esc(arm === a ? "…" : (keyOf(a) || "not set"))}</button></div>`).join("");
+  const rows = ACTIONS.filter(([a]) => (a !== "pick" || SWAP_SHOWN) && (a !== "lookup" || lookOn())).map(([a, t]) => `<div class="krow"><span class="kn">${esc(t)}</span><button class="kc ${arm === a ? "arm" : ""}" data-bind="${a}" aria-label="Move ${esc(t)}" data-tip="Click, then press the new key">${esc(arm === a ? "…" : (keyOf(a) || "not set"))}</button></div>`).join("");
   sheet("keys-sheet", `<h3>Keys</h3><h5>Left hand</h5>${rows}<h5>Right hand</h5><ul><li>↓ / Space next word · ↑ the word before · ← → lines · Enter ▶ the line</li><li>PgUp / PgDn (‹ ›) episodes · / search · ⌫ back after a jump · Esc close</li><li>Shift is never taken: it is Yomitan's.</li></ul><div class="counts">Preset: <span class="seg"><button data-preset="qwerty">QWERTY</button><button data-preset="dvorak">Dvorak</button></span></div>`);
 }
 let ARM = null;
@@ -1276,9 +1341,9 @@ function buildSearch() {
 }
 let RES = [], RESI = 0;
 async function search(q) {
-  q = kana(q.trim()).toLowerCase();
+  q = fold(q).trim();
   const box = $("res");
-  if (!q) { box.classList.add("hide"); return; }
+  if (!q) { RES = []; box.classList.add("hide"); return; }      // (Enter then jumps nowhere)
   await buildSearch();
   RES = [];
   for (let c = 0; c < SIDX.length && RES.length < 40; c++) {
@@ -1378,6 +1443,7 @@ function toggleMeaning() { S.open.meaning = !S.open.meaning; if (S.open.meaning)
 function toggleFocus(on) { S.focus = on == null ? !S.focus : on; document.body.classList.toggle("focus", S.focus); $("b-focus").classList.toggle("on", S.focus); saveSoon(); }
 function toggleList() { S.list = !S.list; $("b-list").classList.toggle("on", S.list); $("b-list").dataset.tip = S.list ? "Word view: one word at a time" : "List view: the episode's words as cards"; drawWord(); saveSoon(); }
 document.addEventListener("keydown", (e) => {
+  if (e.isComposing || e.keyCode === 229) return;     // the IME's own Enter / Esc: never the page's (J-FIX 2)
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   const inField = e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA");
   if (ARM) { e.preventDefault(); if (e.key !== "Escape" && e.key.length === 1 && !e.shiftKey) { const a = ARM; ARM = null; bindKey(a, e.key.toLowerCase()); openKeys(); } else { ARM = null; openKeys(); } return; }
@@ -1498,7 +1564,7 @@ function afterFirstWord() {
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && D.state !== "unopened") hello(); });
   if (window.JSELFTEST && /[?&]selftest=/.test(location.search)) setTimeout(() => window.JSELFTEST(window.__J), 50);
 }
-window.__J = { S, page, rail: () => rail, TIMES, D, MARK, MWAIT, PRE, FLAGGED, QUEUE: () => QUEUE, SET, SET_WAIT, SETTINGS, KEYS: () => KEYS, ACTIONS, PRESETS,
+window.__J = { S, page, rail: () => rail, TIMES, D, HS, MARK, MWAIT, PRE, FLAGGED, QUEUE: () => QUEUE, SET, SET_WAIT, SETTINGS, KEYS: () => KEYS, ACTIONS, PRESETS,
   RC, go, step, epStep, markWord, pickLine, selLine, srcOf, shownLines, drawPart, drawDesk, redrawMarks, prestudied, setSetting, setFilter, setOrder, toggleFocus, toggleList, search, jumpTo, hello, readState, flushQueue, drawWord,
   openSettings, openKeys, openFlag, flagLine, closeLayer, doAction, curWordId, wordNow, seq, loadEp, epReady, blob, blobNow, kanjiTip, lineId, stoneSvg, setDoor, mediaUrl,
   CHUNKS, SIDX, buildSearch, tipText, nextEp, listScrolled, D14_MS, SWAP_SHOWN };

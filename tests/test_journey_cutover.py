@@ -304,6 +304,11 @@ def test_a_generate_writes_the_counts_table_beside_the_plan_and_its_counts_are_t
     assert want == ahead
     assert any(ahead.values()), "some listed word is counted"
     assert journey_render._plan_pcts(table) == journey_render._plan_pcts(streamed)
+    # what a page asks (`build`: each word in its episode and the next two) is counted alone, the same numbers
+    wanted = {0: {next(iter(listed))}, 1: set(listed), len(names) - 1: set(list(listed)[:3])}
+    asked = journey_render._ahead(table, names, wanted)
+    assert asked == {e: {k: n for k, n in whole.get(e, {}).items() if k in wanted[e]} for e in wanted if e in whole}
+    assert asked == journey_render._ahead(streamed, names, wanted)
     # only the listed rows (the plan's tables keep every word met)
     assert sorted(map(tuple, table.keys)) == sorted(listed) and len(table.keys) <= len(streamed.keys)
     # and the page the reuse path draws from the stream (the table gone: a Generate before this build) is this one
@@ -335,9 +340,9 @@ def test_the_journey_reads_the_counts_table_of_this_run_else_the_plans_stream(tm
         pass
     got = analyzer._journey_plan(args, "run-1", results)
     assert streamed == [] and got.keys == [["猫", "ネコ"], ["鳥", "トリ"]]
-    assert got.files == [["A/ep01.srt"], ["A/ep02.srt"]]
+    assert list(got.files) == [["ep01.srt"], ["ep02.srt"]], "each file's report name: all the journey reads of it"
     # 犬 was never listed: not in the table; 猫's uses in A/ep02 are a phrase's (ph) and summed as `_ahead` sums them
-    assert [line["main"] for line in got.per_file] == [[0, 3, 1, 1], [0, 1, 1, 2]]
+    assert [list(line["main"]) for line in got.per_file] == [[0, 3, 1, 1], [0, 1, 1, 2]]
     assert [tuple(line["prog"][:2]) for line in got.per_file] == [(40, 30), (20, 18)]
     assert analyzer._journey_plan(args, "run-2", results) is None and len(streamed) == 1, "another run's: the stream"
     (tmp_path / plan_engine.COUNTS_FILE).write_text('{"counts": 1, "run_signature": "run-1", "keys": [', "utf-8")

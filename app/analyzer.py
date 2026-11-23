@@ -211,7 +211,7 @@ ENSURE_AUDIO_EXAMPLE = False
 #     keeps for it, and the list as many Context / Src columns as its widest row (plan_rules.context_limit /
 #     context_columns; the plan's re-pick the same) — 0 wrote no column before. Only a list with 0 changes; no
 #     tokenizing changed: SCHEMA_VERSION stays 28. 3.0.19.
-# 48: a Generate writes the journey's counts beside its plan (results/plan_counts.json, `plan_engine.CountsTable`: the
+# 48: a Generate writes the journey's counts beside its plan (results/plan_counts.bin, `plan_engine.CountsTable`: the
 #     listed rows' uses in each file and each file's known / counted tokens, from the lines that write the plan), which
 #     the journey reads instead of the plan's tables (J-CUT, the lead's ruling). The plan and the lists are unchanged;
 #     SCHEMA_VERSION stays 28. 3.0.19.

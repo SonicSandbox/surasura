@@ -872,25 +872,9 @@ Render = namedtuple("Render", "head chunks blobs stones")
 #   head: dict · chunks: [bytes gz] · blobs: {name: bytes gz} · stones: dict
 
 
-def _plan_pcts(plan):
-    """{file name: *% known*} from the plan's per-file `prog` (the tokens known before any file over the tokens
-    counted) — the very count the window's rows read (`moves.Numbers`); None without a plan."""
-    if plan is None:
-        return None
-    try:
-        from app.path_utils import report_name
-        out = {}
-        for f, entry in enumerate(plan.files):
-            prog = plan.per_file[f]["prog"]
-            out.setdefault(report_name(entry[0]), _known_pct(prog[1], prog[0]))
-        return out
-    except Exception:
-        return None
-
-
-def _ahead(plan, names):
-    """{episode index: {(Word, Reading): count}} from the plan's per-file counts (`plan_engine.Plan`), for the
-    episodes it holds; None without a plan (each word's count ahead is then its count in its own episode)."""
+def _plan_files(plan):
+    """{file name: its index in the plan} (a name's first file), what `_plan_pcts` and `_ahead` look a page's episode
+    up by; None without a plan."""
     if plan is None:
         return None
     try:
@@ -898,19 +882,57 @@ def _ahead(plan, names):
         by_name = {}
         for f, entry in enumerate(plan.files):
             by_name.setdefault(report_name(entry[0]), f)
-        pairs = [(k[0], k[1]) for k in plan.keys]     # one tuple a key, not one an entry (1.16M at 20,000 files: 36 MB)
+        return by_name
+    except Exception:
+        return None
+
+
+def _plan_pcts(plan, by_name=None):
+    """{file name: *% known*} from the plan's per-file `prog` (the tokens known before any file over the tokens
+    counted) — the very count the window's rows read (`moves.Numbers`); None without a plan. `by_name`: `_plan_files`'
+    (made here when not handed in)."""
+    if plan is None:
+        return None
+    try:
+        by_name = _plan_files(plan) if by_name is None else by_name
+        progs = getattr(plan.per_file, "prog", None)     # the counts table's (`plan_engine.read_counts`): no line made
+        out = {}
+        for name, f in by_name.items():
+            prog = progs(f) if progs is not None else plan.per_file[f]["prog"]
+            out[name] = _known_pct(prog[1], prog[0])
+        return out
+    except Exception:
+        return None
+
+
+def _ahead(plan, names, wanted=None, by_name=None):
+    """{episode index: {(Word, Reading): count}} from the plan's per-file counts (`plan_engine.Plan`, `Counts`), for the
+    episodes it holds; None without a plan (each word's count ahead is then its count in its own episode). `wanted`
+    ({episode index: {(Word, Reading)}}: what the page asks, each word in its episode and the next AHEAD - 1) counts
+    only those — at 20,000 files every episode's every word was 25 MB of dicts for the 930 counts a page reads.
+    `by_name`: `_plan_files`' (made here when not handed in)."""
+    if plan is None:
+        return None
+    try:
+        by_name = _plan_files(plan) if by_name is None else by_name
+        if wanted is None:
+            pairs = [(k[0], k[1]) for k in plan.keys]     # one tuple a key, not one an entry (1.16M at 20,000 files)
+        else:
+            asked = set().union(*wanted.values())
+            pairs = [(k[0], k[1]) if (k[0], k[1]) in asked else None for k in plan.keys]
         out = {}
         for e, name in enumerate(names):
             f = by_name.get(name)
-            if f is None:
+            if f is None or (wanted is not None and e not in wanted):
                 continue
             line = plan.per_file[f]
             counts = {}
             for table in (line["main"], line["ph"]):
                 for k, n in zip(table[0::2], table[1::2]):
                     key = pairs[k]
-                    counts[key] = counts.get(key, 0) + n
-            out[e] = counts
+                    if key is not None:
+                        counts[key] = counts.get(key, 0) + n
+            out[e] = counts if wanted is None else {key: n for key, n in counts.items() if key in wanted[e]}
         return out
     except Exception:
         return None
@@ -946,7 +968,8 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
 
     # *% known*: the window's own figure (the plan's count), never the stats file's Coverage (%) — the plan when the
     # caller hands it in, else the store's 'last' snapshot (the same count, kept by that Generate); else none
-    plan_pcts = _plan_pcts(plan)
+    plan_files = _plan_files(plan)
+    plan_pcts = _plan_pcts(plan, plan_files) if plan_files is not None else None
 
     def add_ep(item_id, name, tier, kind, show, watched, cards, missing, pre, growth, last=None):
         coverage = plan_pcts.get(name) if plan_pcts is not None else _pct(last)
@@ -991,7 +1014,6 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
             kind = infer_source_type(name)
             add_ep(None, name, None, kind, show_of(f"n{name}", name, kind), False, 0, False, None, None)
             eps[-1][2] = shown_name(name)
-    ahead = _ahead(plan, [e[1] for e in eps])
     owners = anki_owners(priority if priority is not None else (rows or ()), language) if backlog else {}
     keys = set(backlog or ())
     seen, words, word_rows, word_id = set(), [], [], {}
@@ -1005,6 +1027,15 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
             word_id[key] = len(words)
             words.append((e, row))
         ep[7] = len(words) - ep[8]
+    # The count ahead, only for what the page reads: each word in its own episode and the next AHEAD - 1
+    wanted = {}
+    for e, row in words:
+        key = (_text(row.get("Word")), _text(row.get("Reading")))
+        for d in range(AHEAD):
+            wanted.setdefault(e + d, set()).add(key)
+    ahead = _ahead(plan, [e[1] for e in eps], wanted, plan_files) if plan_files is not None else None
+    del plan_files
+    del wanted
 
     sources = sources or Sources(language)
     if not sources.ep_of:

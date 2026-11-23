@@ -241,7 +241,7 @@ def output_hashes(root):
     out = {}
     spellings = [s.encode("utf-8") for s in _root_spellings(root)]
     # The run signature hashes the root's path: written as <STAMP> where an output carries it (the journey's counts,
-    # plan_counts.json, name the plan they were written with)
+    # plan_counts.bin, name the plan they were written with)
     try:
         with open(os.path.join(results, "run_signature.txt"), "rb") as f:
             stamp = f.read().strip()

@@ -339,10 +339,11 @@ def test_a_generate_writes_the_counts_table_beside_the_plan_and_its_counts_are_t
 def test_the_counts_table_is_held_lean_for_the_renders_peak_and_reads_back_the_same(tmp_path):
     # J-CUT 5's gate: the 20,000-file first render held the read table through its peak (the ▶'s first build comes
     # after the count): 30,399 keys as lists of two strings were 7.3 MB of it. Held packed (one string and offsets) and
-    # the uses 16-bit when every one fits, it reads back as the lists `counts` gives; a count past 16 bits keeps 32.
+    # the uses 16-bit when every one fits (65,535 the last that does), it reads back as the lists `counts` gives; a count
+    # past 16 bits keeps 32.
     from app import plan_engine
     keys = [["猫", "ネコ"], ["犬", "イヌ"], ["𠮷野家", "ヨシノヤ"], ["", ""]]       # a character past the BMP, an empty key
-    for big, code in ((5, "H"), (70000, "i")):
+    for big, code in ((5, "H"), (40000, "H"), (65535, "H"), (65536, "i"), (70000, "i")):
         table = plan_engine.CountsTable()
         table.start(keys, [["row"]] * 4, [["A/ep01.srt", "now"], ["B/第02話.srt", "now"], ["ep03.ass", "soon"]])
         table.add([0, 3, 2, big], [], [40, 30])
@@ -603,6 +604,8 @@ def test_the_lookups_switch_and_category_reach_the_page_and_re_render_it(languag
     assert (off["lookup"], off["lookup_category"]) == (False, "anime")
     odd = head(word_search_enabled="false", word_search_category="podcast")
     assert (odd["lookup"], odd["lookup_category"]) == (True, "all"), "a hand-edited value reads as the default"
+    assert head(word_search_enabled=0, word_search_category=["anime"])["lookup"] is True, "0 is no switch either"
+    assert head(word_search_category=["anime"])["lookup_category"] == "all"
     plain = _sig(language)
     assert _sig(language, word_search_enabled=False) != plain, "⌕ off re-renders the page"
     assert _sig(language, word_search_category="anime") != plain, "a category re-renders the page"
@@ -624,11 +627,12 @@ def test_the_learners_own_dictionaries_re_render_only_while_yours_is_asked(tmp_p
     home = str(tmp_path / "anki_miner")
     monkeypatch.setenv("ANKI_MINER_HOME", home)
     path = _anki_miner(home)
-    english, yours = _sig(), _sig(journey_meanings="yours")
+    english, yours, yours_en = _sig(), _sig(journey_meanings="yours"), _sig(journey_meanings="yours_en")
     with open(path, "ab") as f:
         f.write("更新".encode("utf-8"))              # a dictionary updated in Anki Miner
     os.utime(path, ns=(os.stat(path).st_atime_ns, os.stat(path).st_mtime_ns + 10_000_000))
     assert _sig(journey_meanings="yours") != yours
+    assert _sig(journey_meanings="yours_en") != yours_en, "Yours, then English: your dictionaries are read first"
     assert _sig() == english, "with English, the learner's dictionaries are never read"
 
 

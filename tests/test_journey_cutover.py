@@ -252,9 +252,11 @@ def test_the_plans_count_tables_read_alone_are_the_whole_loads_and_a_damaged_or_
     assert light.files == [[entry[0]] for entry in whole.files] and len(light.files) > 1
     assert light.per_file == [{k: line[k] for k in ("main", "ph", "prog")} for line in whole.per_file]
     assert any(line["main"] for line in light.per_file)
-    # unzipped 64 bytes at a time: every line, the ones it skips unread among them, stands across a piece's end
-    monkeypatch.setattr(plan_engine, "_PIECE", 64)
-    assert plan_engine.counts(path) == light
+    # unzipped 1 or 64 bytes at a time: every line, the ones it skips unread among them, stands across a piece's end
+    # (at 1, a piece's end falls in a line's first bytes too, before they tell whether it is read)
+    for piece in (1, 64):
+        monkeypatch.setattr(plan_engine, "_PIECE", piece)
+        assert plan_engine.counts(path) == light, piece
     with open(path, "rb") as f:
         data = f.read()
     cut = tmp_path / "cut.json.gz"

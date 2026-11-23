@@ -54,8 +54,10 @@ def analyzer_args(settings, language=None, headless=False, opens=True):
     if settings.get("only_i_plus_one", False):
         args.append('--only-i-plus-one')
 
-    args.append(f'--context-min={context.get("min_chars", 10)}')
-    args.append(f'--context-max={context.get("preferred_max_chars", 50)}')
+    from app.settings_manager import sentence_length_default     # *Length*'s one default (E-LENGTH)
+    low, high = sentence_length_default()
+    args.append(f'--context-min={context.get("min_chars", low)}')
+    args.append(f'--context-max={context.get("preferred_max_chars", high)}')
 
     max_c = context.get("max_contexts", 3)
     if max_c != 3:

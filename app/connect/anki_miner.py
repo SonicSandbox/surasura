@@ -773,15 +773,16 @@ def check(path, language, profile=None):
     return _result(api(path, args))
 
 
-def settings_export(path, language, out, profile=None):
+def settings_export(path, language, out, profile=None, timeout=QUICK_TIMEOUT):
     """The export `--api settings-export` writes, read back and put in place at `out`. Row 56: Anki Miner writes it
     under a temporary name beside `out`, replaced in only once it is whole and read — an export ended mid-write (a
-    press, a timeout, a crash) leaves the last whole one at `out`, never half of one, and its part is removed."""
+    press, a timeout, a crash) leaves the last whole one at `out`, never half of one, and its part is removed.
+    `timeout`: the journey's ▶ waits less (`clips.SETTINGS_TIMEOUT`)."""
     root, ext = os.path.splitext(out)
     part = f"{root}.{os.getpid()}.part{ext}"        # the extension kept: Anki Miner writes the JSON file it is named
     args = ["settings-export", "--language", language, "--out", part] + (["--profile", profile] if profile else [])
     try:
-        _result(api(path, args))
+        _result(api(path, args, timeout=timeout))
         try:
             with open(part, encoding="utf-8") as f:
                 export = json.load(f)

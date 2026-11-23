@@ -248,6 +248,10 @@ DEFAULT_SETTINGS = {
     # two flags never count as known, suspended or not. Never in a signature: what they move is in the word lists.
     "loop_ignore_flag": 1,
     "loop_swap_flag": 3,
+    # FS-1 (the full Swap, 3.1; Sonic 2026-11-23, decision 1): what Swap does with a flagged card — True: *Same card,
+    # new sentence* (rewritten in place, its reviews kept), False: *A new card*. Read through `swap.in_place_on`, when
+    # a swap's job is made. Never in a signature: it decides how a card is written, never what a run counts.
+    "swap_in_place": True,
     "logic": {
         # D29 (3.0): the automation's switch. Off stops exactly three things: the re-order host (Anki re-ordered as
         # you move, with its AnkiWeb sync), the journey keeper's background Generate and AutoJunban's re-order. The

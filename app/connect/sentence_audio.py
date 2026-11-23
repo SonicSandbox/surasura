@@ -25,12 +25,23 @@ batch across note types is still one call and one Undo). One writer for every fi
 - **Out:** {"id", "filled": [note ids], "skipped": {note id: why}}. Anki's sync is owed by the caller (its session's
   rule, `anki_sync_rule`).
 
+**Its one replace mode** (FS-1, the full Swap: a card's sentence side rewritten in place) — `replace(anki, ledger,
+note_id, new, was, media=, keep_dir=, tag=, by=)`: the fields of `new` written over **only while each still holds
+exactly its value in `was`** (what the caller read when it decided; anything else, a space too, refuses the whole note:
+`CHANGED`), the same lock, review checks and one record before Anki (`mode` `replace`, the old values in `was`). The
+media `was` names and `new` doesn't are copied into `keep_dir` and read back by sha1 BEFORE the record, removed from
+Anki after the write only when no note names them; `undo` then puts every old value back — only while every field
+still holds what was written — stores a kept file again, takes `tag` off unless the note had it, and deletes each new
+file no note names. A write Anki didn't keep (a note open in its editor) is read back: `NOT_APPLIED`, nothing undone
+needed. Fill-only-empty stays every other caller's mode (Piyo's, the AI voice's).
+
 Light: the standard library; Anki through the adapter handed in (`AnkiConnectNotes`; tests hand a fake).
 """
 import base64
 import hashlib
 import json
 import os
+import re
 import time
 import uuid
 
@@ -43,6 +54,9 @@ WRITING, DONE, UNDONE = "writing", "done", "undone"
 GONE, NO_FIELD, HAS_AUDIO, NO_CLIP = ("not in Anki", "its note type has no {field} field",
                                       "it has sentence audio already", "its clip isn't on this computer")
 HAS_TEXT, NO_TEXT = "its {field} has something in it already", "nothing to write"     # `texts` (Piyo-TR)
+REPLACE = "replace"                   # a record's `mode` for `replace` (FS-1): the old values kept, put back by Undo
+CHANGED, NOT_APPLIED = "changed since it was read", "Anki didn't take the change (is the card open in its editor?)"
+_MEDIA = (re.compile(r"\[sound:([^\]]+)\]"), re.compile(r"<img[^>]*?\bsrc=[\"']([^\"']+)[\"']", re.I))
 
 
 class Reviewing(Exception):
@@ -87,6 +101,12 @@ class AnkiConnectNotes:
     def delete_media(self, name):
         from app import anki_connect
         anki_connect.invoke("deleteMediaFile", self.url, filename=name)
+
+    def read_media(self, name):
+        """A media file's bytes, or None when Anki has no such file (`replace` keeps a copy of what it replaces)."""
+        from app import anki_connect
+        got = anki_connect.invoke("retrieveMediaFile", self.url, filename=name)
+        return base64.b64decode(got) if isinstance(got, str) and got else None
 
 
 def sound(name):
@@ -217,10 +237,136 @@ def fill(anki, ledger, clips, field=FIELD, tag=TAG, by="connect", texts=None, ve
     return {"id": rid, "filled": sorted(todo), "skipped": skipped}
 
 
+def media_in(value):
+    """The media file names a field's value plays or shows (`[sound:…]`, `<img src=…>`), in order, each once."""
+    out = []
+    for pattern in _MEDIA:
+        out += [m for m in pattern.findall(str(value or "")) if m not in out]
+    return out
+
+
+def _keep(anki, names, keep_dir):
+    """Each media file of `names` Anki has, copied into `keep_dir` and read back -> {name: sha1}; a copy that doesn't
+    read back the same raises OSError (nothing is written to Anki then). A name Anki has no file for: not kept."""
+    kept = {}
+    for name in names:
+        data = anki.read_media(name)
+        if not data:
+            continue
+        os.makedirs(keep_dir, exist_ok=True)
+        path = os.path.join(keep_dir, os.path.basename(name))
+        with open(path, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        with open(path, "rb") as f:
+            if hashlib.sha1(f.read()).hexdigest() != hashlib.sha1(data).hexdigest():
+                raise OSError(f"the copy of {name} didn't read back the same")
+        kept[name] = hashlib.sha1(data).hexdigest()
+    return kept
+
+
+def replace(anki, ledger, note_id, new, was, media=None, keep_dir=None, tag=None, by="swap", verb=VERB):
+    """The replace mode (the docstring above) -> {"id" (None when nothing was written), "filled": [note id] or [],
+    "skipped": {note id: why}}. `new` {field: value}; `was` {field: the value it must still hold}, one per field of
+    `new`; `media` {name: a file on disk} stored under that name (Anki's own answer is the name written); `keep_dir`:
+    where the replaced media are copied first. Raises Reviewing, the writer's Busy, AnkiConnect's errors, OSError
+    (a copy that didn't read back), ValueError (a field of `new` with no `was`)."""
+    n = int(note_id)
+    if set(new) - set(was):
+        raise ValueError("replace needs each field's old value")
+    if anki.reviewing():
+        raise Reviewing()
+    with anki.writer(verb):
+        if anki.reviewing():
+            raise Reviewing()
+        note = _by_id(anki.notes([n])).get(n)                 # read again under the lock: only what was read
+        if note is None:
+            return {"id": None, "filled": [], "skipped": {n: GONE}}
+        fields = note.get("fields") or {}
+        for field in new:
+            if field not in fields:
+                return {"id": None, "filled": [], "skipped": {n: NO_FIELD.format(field=field)}}
+            if str((fields[field] or {}).get("value") or "") != str(was[field] or ""):
+                return {"id": None, "filled": [], "skipped": {n: CHANGED}}
+        stored_new = {name: path for name, path in (media or {}).items() if os.path.isfile(path)}
+        gone = [m for f in new for m in media_in(was[f]) if m not in {x for v in new.values() for x in media_in(v)}]
+        rid = f"{time.time_ns()}-{uuid.uuid4().hex[:8]}"
+        kept = _keep(anki, gone, os.path.join(keep_dir, rid)) if keep_dir and gone else {}
+        had = any(str(t).lower() == str(tag or "").lower() for t in note.get("tags") or ())
+        rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "mode": REPLACE, "field": None,
+               "tag": tag, "had_tag": had, "by": by, "notes": {str(n): dict(new)},
+               "was": {str(n): {f: str(was[f] or "") for f in new}}, "media": sorted(stored_new), "kept": kept,
+               "keep_dir": os.path.join(keep_dir, rid) if kept else None, "state": WRITING}
+        _write_record(ledger, rid, rec, new=True)             # before Anki: a kill after a write is undone as any
+        try:
+            value = dict(new)
+            for name, path in sorted(stored_new.items()):
+                with open(path, "rb") as f:
+                    got = anki.store(name, base64.b64encode(f.read()).decode("ascii"))
+                if isinstance(got, str) and got and got != name:     # Anki's name for it is the one written
+                    value = {f: v.replace(name, got) for f, v in value.items()}
+                    rec = dict(rec, notes={str(n): value}, media=sorted(set(rec["media"]) - {name} | {got}))
+                    _write_record(ledger, rid, rec)
+            if anki.reviewing():
+                raise Reviewing()                             # you started reviewing meanwhile: asked again
+            anki.update(n, value)
+            now = (_by_id(anki.notes([n])).get(n) or {}).get("fields") or {}
+            if any(str((now.get(f) or {}).get("value") or "") != v for f, v in value.items()):
+                _write_record(ledger, rid, dict(rec, state=UNDONE, not_applied=True))
+                return {"id": None, "filled": [], "skipped": {n: NOT_APPLIED}}
+            if tag and not had:
+                anki.tag([n], tag)
+            for name in kept:
+                if not anki.users(name):                      # an old file no other note names goes (a copy kept)
+                    anki.delete_media(name)
+        except BaseException as e:
+            e.sentence_audio_id = rid
+            raise
+        _write_record(ledger, rid, dict(rec, state=DONE))
+    return {"id": rid, "filled": [n], "skipped": {}}
+
+
+def _undo_replace(anki, rec):
+    """`undo` of a `replace` record, under the caller's lock -> (emptied, kept, deleted): every old value back only
+    while every field still holds what was written; a kept file stored again (Anki's name for it put in the values)."""
+    emptied, kept, deleted = [], {}, []
+    wrote = {int(n): v for n, v in (rec.get("notes") or {}).items()}
+    info = _by_id(anki.notes(sorted(wrote)))
+    for n, value in sorted(wrote.items()):
+        note = info.get(n)
+        if note is None:
+            kept[n] = GONE
+            continue
+        fields = note.get("fields") or {}
+        if any(str((fields.get(f) or {}).get("value") or "") != v for f, v in value.items()):
+            kept[n] = "changed since"
+            continue
+        old = dict((rec.get("was") or {}).get(str(n)) or {})
+        for name in rec.get("kept") or {}:
+            path = os.path.join(rec.get("keep_dir") or "", os.path.basename(name))
+            with open(path, "rb") as f:
+                got = anki.store(name, base64.b64encode(f.read()).decode("ascii"))
+            if isinstance(got, str) and got and got != name:
+                old = {f: v.replace(name, got) for f, v in old.items()}
+        anki.update(n, old)
+        emptied.append(n)
+        if rec.get("tag") and not rec.get("had_tag"):
+            anki.tag([n], rec["tag"], on=False)
+    if emptied:
+        for name in rec.get("media") or ():
+            if not anki.users(name):
+                anki.delete_media(name)
+                deleted.append(name)
+    return emptied, kept, deleted
+
+
 def undo(anki, ledger, rid, verb=VERB):
     """A `fill`'s one Undo -> {"emptied": [note ids], "kept": {note id: why}, "deleted": [clip names]}: the field
     emptied only where it still holds what was written, the tag off those notes, then each clip no note names any
-    more. A record already undone, or none: nothing written ({"emptied": [], …, "refused": why})."""
+    more. A `replace` record: the old values put back instead (`_undo_replace`); one whose note changed since is
+    kept, its record left as it was (an Undo after you put the swap's text back works). A record already undone, or
+    none: nothing written ({"emptied": [], …, "refused": why})."""
     rec = record(ledger, rid)
     if rec is None or rec.get("state") == UNDONE:
         return {"emptied": [], "kept": {}, "deleted": [], "refused": "nothing to undo"}
@@ -233,6 +379,12 @@ def undo(anki, ledger, rid, verb=VERB):
         rec = record(ledger, rid)                             # read again under the lock: two Undos, one runs (r2 N4)
         if rec is None or rec.get("state") == UNDONE:
             return {"emptied": [], "kept": {}, "deleted": [], "refused": "nothing to undo"}
+        if rec.get("mode") == REPLACE:
+            emptied, kept, deleted = _undo_replace(anki, rec)
+            if emptied:
+                _write_record(ledger, rid, dict(rec, state=UNDONE, undone_at=time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
+            return {"emptied": emptied, "kept": kept, "deleted": deleted}
         wrote = {int(n): v for n, v in (rec.get("notes") or {}).items()}
         fields = {int(n): f for n, f in (rec.get("fields") or {}).items()}      # a batch across note types
         info = _by_id(anki.notes(sorted(wrote)))

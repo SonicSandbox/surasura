@@ -531,7 +531,7 @@ def test_a_counter_after_its_number_is_grammar():
 
 
 def test_a_person_the_line_is_about_and_a_place_count_but_a_call_does_not():
-    # why: the rule the picks were counted with — ケン followed by は is part of what is said, ロンドン is a place;
+    # why: the count's rule for people — ケン followed by は is part of what is said, ロンドン is a place;
     # a name standing free at the end, or before a comma, is a call
     _text, tokens, words = _line("ja", 4, people=("ケン",))
     assert words.of_word(_key(tokens, "住ん"))[0] == 2            # ケン ロンドン

@@ -323,15 +323,17 @@ def _reading(loaded, lang):
 
 def _sentence_length(loaded):
     """The learner's *Length* and *Never longer than* for example sentences (logic.context min_chars /
-    preferred_max_chars / max_chars, the analyzer's own fallbacks 10 / 50 / 150) as a book's pick reads them -> (min,
-    preferred max, cap); a value that isn't a whole number ≥ 0 is its default, a max below the min the min, a cap of 0
-    none. Based on the approach in #372 by Mattias."""
+    preferred_max_chars / max_chars; fall-backs *Length*'s default, `settings_manager.sentence_length_default`, and
+    150) as a book's pick reads them -> (min, preferred max, cap); a value that isn't a whole number ≥ 0 is its default,
+    a max below the min the min, a cap of 0 none. Based on the approach in #372 by Mattias."""
     context = ((loaded or {}).get("logic") or {}).get("context") or {}
 
     def number(key, default):
         value = context.get(key, default)
         return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else default
-    low, high, cap = number("min_chars", 10), number("preferred_max_chars", 50), number("max_chars", 150)
+    from app.settings_manager import sentence_length_default     # *Length*'s one default (E-LENGTH)
+    low, high = sentence_length_default()
+    low, high, cap = number("min_chars", low), number("preferred_max_chars", high), number("max_chars", 150)
     high = max(low, high)
     return low, high, max(high, cap) if cap else 0
 

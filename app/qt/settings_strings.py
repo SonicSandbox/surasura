@@ -9,6 +9,7 @@ numbers (N5). `app/qt/settings_catalog.py` names each row's strings by its row i
 from app import ankiconnect_addon as _addon         # AnkiConnect missing: the one set of words (alpha 8)
 from app.practice import NAME as PRACTICE_NAME       # the practice chat's name (A6): one place, app/practice.py
 from app.anki_words import SOURCES as ANKI_SOURCES  # Piyo's sources from Anki (Piyo-AK): one table, app/anki_words.py
+from app.plan_rules import SENTENCE_TABLE           # E-LENGTH: *Length*'s words once the sentence table is on
 
 # --- the page ----------------------------------------------------------------------------------------------------- #
 SEARCH_PLACEHOLDER = "Search settings"
@@ -607,8 +608,12 @@ ROWS = {
                  "speech settings voice key"),
 
     # Sentences
-    "sentence_length": ("Length", "Shorter or longer ones are still used, just later",
-                        "Preferred length for example sentences", "length chars sentence"),
+    # E-LENGTH (PROVISIONAL, the sentence choice's spec § 9 A4): once the sentence table is on, *Length* is the length
+    # a learner likes best — its ? one line, nothing under the label
+    "sentence_length": (("Length", "The sentence length you like best. Others are still used, a little later.",
+                         "The sentence length you like best", "length chars sentence") if SENTENCE_TABLE >= 1 else
+                        ("Length", "Shorter or longer ones are still used, just later",
+                         "Preferred length for example sentences", "length chars sentence")),
     "max_contexts": ("Up to", "", "Most example sentences per word", "max sentences per word"),
     "ensure_audio_example": ("Always include one with audio", "",
                              "A word always gets one video example, so you can hear it.", "audio example video"),

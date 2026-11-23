@@ -178,7 +178,7 @@ def _kept_on(language):
     store, ids, names = _library(language)
     store.set_library_options(keep_watched=True)
     first, said = _generate(root, language)
-    assert REUSED not in said and _stones(first) == {}
+    assert REUSED not in said and (first is None or _stones(first) == {}), "a full Generate (the old page: no stone)"
     return store, ids, names, root, first
 
 

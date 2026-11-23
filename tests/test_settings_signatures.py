@@ -636,25 +636,35 @@ def test_rarity_or_coverage_reaches_the_run_through_its_args(library):
 
 
 # === 4. The report's own settings ================================================================================== #
-@pytest.mark.parametrize("path, value", [
-    ("logic.inline_completed_files", True),
-    ("logic.hide_audio_button", True),
-    ("logic.chunk_size", 100),
-    ("logic.priority_markers.priority_threshold", 0.6),
-    ("logic.priority_markers.priority_min", 5),
-    ("logic.priority_markers.lopsided_threshold", 0.9),
+@pytest.mark.parametrize("path, value, v3_reads", [
+    ("logic.inline_completed_files", True, False),
+    ("logic.hide_audio_button", True, False),
+    ("logic.chunk_size", 100, False),
+    ("logic.priority_markers.priority_threshold", 0.6, True),
+    ("logic.priority_markers.priority_min", 5, True),
+    ("logic.priority_markers.lopsided_threshold", 0.9, True),
 ])
-def test_report_only_logic_settings_re_render_and_never_re_analyze(library, path, value):
+def test_report_only_logic_settings_re_render_and_never_re_analyze(library, monkeypatch, path, value, v3_reads):
     """"Show 'Target Met' inline", "Hide Audio Button", the page size and the ✦ / ⚖ thresholds: the templates read them
     from the logic block the report embeds, and no run reads them. Changing one re-renders the report (about 3 s) —
-    never a full analysis (about 13 s on a large library)."""
-    _write({"target_language": "ja"})
-    before = {lang: _signatures(lang) for lang in LANGUAGES}
-    _write(_with(path, value))
-    for lang in LANGUAGES:
-        run, render = _signatures(lang)
-        assert run == before[lang][0], f"{lang}: no new analysis"
-        assert render != before[lang][1], f"{lang}: a new report"
+    never a full analysis (about 13 s on a large library). Since the v3 cut-over (J-CUT) the journey's render reads only
+    the thresholds (its ✦ / ⚖ marks): the old page's three re-render it only before the cut (SURASURA_DOOR=0; Zen keeps
+    the old list too) and draw nothing on v3 (the Redraw rule)."""
+    for door in ("0", None):
+        if door:
+            monkeypatch.setenv("SURASURA_DOOR", door)
+        else:
+            monkeypatch.delenv("SURASURA_DOOR", raising=False)
+        _write({"target_language": "ja"})
+        before = {lang: _signatures(lang) for lang in LANGUAGES}
+        _write(_with(path, value))
+        for lang in LANGUAGES:
+            run, render = _signatures(lang)
+            assert run == before[lang][0], f"{lang}: no new analysis"
+            if door or v3_reads:
+                assert render != before[lang][1], f"{lang}: a new report"
+            else:
+                assert render == before[lang][1], f"{lang}: nothing on the v3 page reads it"
 
 
 # === 5. Each language's own settings =============================================================================== #
@@ -695,9 +705,11 @@ def test_the_chinese_run_signature_ignores_japanese_only_switches(library):
 
 
 # === 6. Speech's port ============================================================================================== #
-def test_koe_port_re_renders_only_while_speech_is_on(library):
+def test_koe_port_re_renders_only_while_speech_is_on(library, monkeypatch):
     """The report embeds Speech's port to reach its helper — only while Speech is on. Then a new port is a new report;
-    with Speech off, the report holds no port and nothing changes. Never a new analysis."""
+    with Speech off, the report holds no port and nothing changes. Never a new analysis. The old page's (before the v3
+    cut-over: SURASURA_DOOR=0; Zen's too): the v3 page has no Speech (SPEC § 7)."""
+    monkeypatch.setenv("SURASURA_DOOR", "0")
     _write({"target_language": "ja", "koe_port": 8787})
     off = _signatures("ja")
     _write({"target_language": "ja", "koe_port": 8790})

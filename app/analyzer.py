@@ -4454,6 +4454,25 @@ def _plan_json(obj):
 _PLAN_HEADER = [None]          # (key, header): one tuple, so two threads never pair one file's key with another's header
 
 
+def _journey_plan(args, run_signature, results_dir=None):
+    """The plan file as the v3 journey reads it — each word's count ahead and each episode's *% known*
+    (`journey_render._ahead`, `_plan_pcts`): one source every piece reads (J-CUT, the lead's ruling), read after it is
+    written, so a Generate, its reuse and a redraw draw the same page. results/'s plan, numbers only (`pools=False`),
+    when it is whole and written by the run `run_signature` names; None for Zen, before the cut-over, or without such a
+    plan (the render then counts each word in its own episode). Never raises."""
+    if not run_signature or args.theme in ZEN_THEMES:
+        return None
+    from app.services import journey_settings
+    if not journey_settings.v3():
+        return None
+    from app import plan_engine
+    try:
+        plan = plan_engine.load(os.path.join(results_dir or RESULTS_DIR, PLAN_FILE), pools=False, trusted=True)
+    except Exception:
+        return None
+    return plan if plan.header.get("run_signature") == run_signature else None
+
+
 def _plan_is_this_runs(run_signature, results_dir=None):
     """Is results/'s plan file whole and written by the run `run_signature` names? The reuse gate's question (E1.2-1;
     on the 3.0 line always, 2.x while the fast re-plan's preview is on): a plan lost or damaged gets a full run."""
@@ -4614,7 +4633,8 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
             rendering = time.time()
             drawn = static_html_generator.generate_static_html(
                 theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
-                open_browser=not args.no_open, language=language, marks=marks, found=found_files)
+                open_browser=not args.no_open, language=language, marks=marks, found=found_files,
+                plan=plan)                  # the Generate's plan, the journey's figures (`_journey_plan`'s source)
             report_failed = not _report_written(_html, rendering)
             try:
                 store.set_meta("last_render_sig", signed_render(args, drawn, not report_failed, made))
@@ -5507,6 +5527,30 @@ def compute_render_signature(args, marks=None, made=_READ_NOW):
         _s = {}
     _logic = _s.get("logic") if isinstance(_s.get("logic"), dict) else {}
     _markers = _logic.get("priority_markers")
+    _language = getattr(args, "language", "ja")
+    # Anki's labels (WP-B8, F-6), read by both pages: the switch, and only while it is on, the backlog, Junban's answers
+    # and Connect's record
+    _backlog_on = bool(_s.get("anki_backlog_on_generate", True))
+    _anki = [_backlog_on,
+             _backlog_fingerprint(_language) if _backlog_on else None,
+             _backlog_fingerprint(_language, "junban_pairs.json") if _backlog_on else None,
+             (_made_fingerprint(_language) if made is _READ_NOW else made) if _backlog_on else None]
+    _markers = {k: v for k, v in _markers.items() if k != "_comment"} if isinstance(_markers, dict) else _markers
+    if args.theme not in ZEN_THEMES:
+        # Journey v3 (J-CUT): only what its render reads. Its looks (the theme, the source's display and J-SET's) are
+        # applied in the page and read back through the door, and the old page's options (words a day, ⌕'s switch and
+        # category, the study order's tab, Speech, the page size, its two switches, its templates) are read by no part
+        # of it, so a change of one draws nothing (the Redraw rule). A saved Zen look keeps the list below: Zen in or
+        # out re-renders. Read through `journey_settings.v3()`, never by importing the generator (pandas: the fast
+        # paths' cost); before the cut-over (or with SURASURA_DOOR=0) the old page's list, as it was.
+        from app.services import journey_settings as _journey_settings
+        if _journey_settings.v3():
+            _parts = ["journey v3", bool(_s.get("line_player", True)), *_anki, _markers]
+            _stones = _stones_fingerprint(_language, marks)
+            if _stones:
+                _parts.append(_stones)
+            _parts.append(_journey_fingerprint(_language, _s))
+            return json.dumps(_parts)
     _parts = [
         args.theme,
         int(args.zen_limit or 0),
@@ -5531,17 +5575,11 @@ def compute_render_signature(args, marks=None, made=_READ_NOW):
         # "Label backlogged Anki words" (Junban_Backlog_Spec WP-B8): the switch, and — only while it
         # is on — the backlog file the Anki sync keeps. Both are INJECTED, so a sync costs one
         # re-render on the next Generate, never a re-analysis (§3 I3).
-        bool(_s.get("anki_backlog_on_generate", True)),
-        _backlog_fingerprint(getattr(args, "language", "ja"))
-        if _s.get("anki_backlog_on_generate", True) else None,
         # …and the answers to Junban's "Same word as one on your list?": a "yes" labels its word too
-        # (Anki_Match_Consistency_Scope.md item 1).
-        _backlog_fingerprint(getattr(args, "language", "ja"), "junban_pairs.json")
-        if _s.get("anki_backlog_on_generate", True) else None,
-        # …and Connect's record of the cards it made (F-6): a card is labelled on the row Connect made it for
-        # (static_html_generator._connect_rows, Japanese only), so a card made or deleted re-renders
-        (_made_fingerprint(getattr(args, "language", "ja")) if made is _READ_NOW else made)
-        if _s.get("anki_backlog_on_generate", True) else None,
+        # (Anki_Match_Consistency_Scope.md item 1), and Connect's record of the cards it made (F-6): a card is labelled
+        # on the row Connect made it for (static_html_generator._connect_rows, Japanese only), so a card made or
+        # deleted re-renders (`_anki`, above)
+        *_anki,
         # The report's own logic keys, which the templates read from the logic block they embed
         # (globalLogic): "Show 'Target Met' inline", "Hide Audio Button", the page size and the ✦ / ⚖
         # thresholds. No run reads them, so compute_run_signature leaves them out: changing one
@@ -5550,7 +5588,7 @@ def compute_render_signature(args, marks=None, made=_READ_NOW):
         bool(_logic.get("inline_completed_files", False)),
         bool(_logic.get("hide_audio_button", False)),
         _logic.get("chunk_size", 50),
-        {k: v for k, v in _markers.items() if k != "_comment"} if isinstance(_markers, dict) else _markers,
+        _markers,
         # Speech's port: the report embeds it to reach the helper, but only while Speech is on.
         _s.get("koe_port") if _s.get("enable_koe", False) else None,
         # The templates themselves. Without this a template-only change (a new report tab, a CSS
@@ -5563,15 +5601,9 @@ def compute_render_signature(args, marks=None, made=_READ_NOW):
     # while a stone is on the list, so a library with none keeps the signature it had. Zen (the generator's choice of
     # template) shows no journey: no part, never read.
     if args.theme not in ZEN_THEMES:
-        _stones = _stones_fingerprint(getattr(args, "language", "ja"), marks)
+        _stones = _stones_fingerprint(_language, marks)
         if _stones:
             _parts.append(_stones)
-        # Journey v3 (J-CUT): what its page reads that no part above holds — `_journey_fingerprint`. Before the cut-over
-        # (or with SURASURA_DOOR=0) no part: the old page's signature as it was. The generator's own switch
-        # (`static_html_generator.journey_v3`), read without importing the generator (pandas: the fast paths' cost).
-        from app.services import journey_settings as _journey_settings
-        if _journey_settings.v3():
-            _parts.append(_journey_fingerprint(getattr(args, "language", "ja"), _s))
     return json.dumps(_parts)
 
 
@@ -6210,7 +6242,8 @@ def main():
                     _rendering = time.time()
                     _drawn = static_html_generator.generate_static_html(
                         theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
-                        open_browser=not args.no_open, language=language, marks=_marks)
+                        open_browser=not args.no_open, language=language, marks=_marks,
+                        plan=_journey_plan(args, read_run_stamp(RESULTS_DIR)))     # the plan checked just above
                     _report_failed = not _report_written(_html, _rendering)
                     try:
                         _store.set_meta("last_render_sig", signed_render(args, _drawn, not _report_failed, _made))
@@ -8008,29 +8041,8 @@ def main():
     # this Generate's (J-CUT). Past this step a cancel waits for the run's end.
     record_analysed(language, _library, data_dir, user_files_dir,
                     growth=lambda: _growth_figures(data_dir, found_files, file_growth))
-    _drawn = None               # the journey's stones the report was drawn from (`signed_render`)
-    _made = None                # Connect's record as read before it was drawn (F-6; a report not written signs "")
-    if args.static:
-        try:
-            try:
-                from app import static_html_generator
-            except ImportError:
-                import static_html_generator
-
-            print("\n---------------------------------------------------")
-            print("Generating Static HTML...")
-            _rendering = time.time()
-            _made = _made_fingerprint(language)          # F-6: read before the report is drawn, signed with it
-            _drawn = static_html_generator.generate_static_html(
-                theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
-                open_browser=not args.no_open, language=language,
-                tagger=tokenizer.tagger if language == "ja" else None)     # J-CUT: the journey's pitch, no 2nd tagger
-            _report_failed = not _report_written(os.path.join(RESULTS_DIR, "reading_list_static.html"), _rendering)
-        except Exception as e:
-            print(f"Error: Could not generate static HTML: {e}")
-            _report_failed = True
-
-    # The plan file (E1.1 01), last: every output exists, and the stamp below comes only after it. Never fails the run.
+    # The plan file (E1.1 01): every output but the journey exists (it is drawn from the plan, below), and the stamp
+    # comes only after both. Never fails the run.
     # Q4-3: a band Automatic chose that differs from the one remembered is remembered now, and the run is stamped (and
     # its plan written) with it — the parts the next check will read — so a band change never costs a second Generate.
     try:
@@ -8073,6 +8085,31 @@ def main():
             print(f"Saved the plan file ({_plan_size:,} bytes).")
         except Exception as e:
             print(f"Warning: could not write the plan file ({e}); the last one is left as it was.")
+
+    _drawn = None               # the journey's stones the report was drawn from (`signed_render`)
+    _made = None                # Connect's record as read before it was drawn (F-6; a report not written signs "")
+    # The journey, after the plan file (J-CUT, the lead's ruling): it reads its figures from the plan just written
+    # (`_journey_plan`), as the redraw and the reuse path read the same file
+    if args.static:
+        try:
+            try:
+                from app import static_html_generator
+            except ImportError:
+                import static_html_generator
+
+            print("\n---------------------------------------------------")
+            print("Generating Static HTML...")
+            _rendering = time.time()
+            _made = _made_fingerprint(language)          # F-6: read before the report is drawn, signed with it
+            _drawn = static_html_generator.generate_static_html(
+                theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
+                open_browser=not args.no_open, language=language,
+                tagger=tokenizer.tagger if language == "ja" else None,     # J-CUT: the journey's pitch, no 2nd tagger
+                plan=_journey_plan(args, _run_sig))      # the plan written just above, if it was
+            _report_failed = not _report_written(os.path.join(RESULTS_DIR, "reading_list_static.html"), _rendering)
+        except Exception as e:
+            print(f"Error: Could not generate static HTML: {e}")
+            _report_failed = True
 
     # All outputs are now written — record the run-signature so an identical re-run can skip
     # entirely next time (and the presentation fingerprint, signed with the stones the report was

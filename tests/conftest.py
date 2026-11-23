@@ -213,6 +213,15 @@ def _no_tools_entry_from_the_shell(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_learners_anki_miner(tmp_path_factory, monkeypatch):
+    """Never the learner's own Anki Miner folder (~/.anki_miner): since the journey v3 cut-over (J-CUT) every Generate's
+    render and the render signature read its dictionaries and Kanjium copy (`own_dicts`), so a test would read this
+    PC's — and sign with it. An Anki Miner home that doesn't exist, for this test and every process it starts; a test
+    that needs one sets its own (`monkeypatch.setenv("ANKI_MINER_HOME", …)`)."""
+    monkeypatch.setenv("ANKI_MINER_HOME", str(tmp_path_factory.getbasetemp() / "no-anki-miner"))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_token_store(tmp_path_factory, monkeypatch):
     """Point the SQLite token store at a fresh temp dir per test, so analyzer runs never write to
     the real %APPDATA% store (and tests never couple through a shared DB)."""

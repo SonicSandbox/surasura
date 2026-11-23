@@ -38,9 +38,10 @@ from tests.test_services_replan_host import fired, gate  # noqa: F401 (fixtures)
 
 # --- the window's hook ---------------------------------------------------------------------------------------------- #
 @pytest.mark.parametrize("keys, told", [
-    (["theme"], 1),                                   # the theme row
-    (["logic.hide_audio_button"], 1),                 # a Journey switch (a logic key)
-    (["source_display", "zen_limit"], 1),             # two at once: one look
+    (["journey_meanings"], 1),                        # the one row the v3 render reads (Meanings)
+    (["line_player", "anki_backlog_on_generate"], 1), # two at once: one re-render
+    (["theme"], 0),                                   # a look the v3 page applies itself (J-CUT: the Redraw rule)
+    (["source_display", "zen_limit"], 0),             # the old page's (and a saved Zen look's): nothing on v3 reads it
     (["open_app_mode"], 0),                           # how it opens, read at the open: nothing to draw
     (["exclude_single"], 0),                          # an analysis key: the Generate button's mark says so
 ])
@@ -108,23 +109,37 @@ def _halves(settings, language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_theme_change_re_renders_the_journey_by_itself_and_re_analyses_nothing(language, themed, gate, fired):
+def test_a_look_change_draws_nothing_and_a_saved_zen_look_in_or_out_re_renders_only(language, themed, gate, fired):
+    # J-CUT (the Redraw rule): the v3 page applies its look itself, so moving between two looks moves no signature and
+    # writes no page; Zen (a saved look: Settings no longer offers it) is its own page, so Zen in or out re-renders —
+    # and re-analyses nothing. (The window's hook tells the keeper nothing for `theme`, placed neither: the press
+    # re-renders, the next test; here the keeper is told directly.)
     store, _ids, _names, root, _first = _kept_on(language)
     w = themed(language)
     settings = w.replan._settings
     assert _halves(settings.get(), language) == (True, True)
     settings.values["theme"] = "Modern Light"
-    assert _halves(settings.get(), language) == (True, False), "the analysis current, the report not"
+    assert _halves(settings.get(), language) == (True, True), "a look the page applies itself: nothing to draw"
+    settings.values["theme"] = "Zen Mode"
+    assert _halves(settings.get(), language) == (True, False), "Zen in: the analysis current, the report not"
     w.replan.report_changed()
     assert fired.done(w.keeper)
     assert w.keeper.asked == 1 and h.until(lambda: w.launches.count() == 1, seconds=5), "one quiet run asked"
     said, html = _run(root, w.launches.runs[0])
     assert REUSED in said and RE_RENDER in said, "a re-render only"
-    assert _page_theme(html) == "light"              # the v3 page's head: its look, in the page's words
+    assert _page_theme(html) is None and "zen" in html.lower(), "Zen's own page"
+    assert _halves(settings.get(), language) == (True, True)
+    settings.values["theme"] = "Modern Light"
+    assert _halves(settings.get(), language) == (True, False), "Zen out: the v3 page again"
+    w.replan.report_changed()
+    assert fired.done(w.keeper)
+    assert h.until(lambda: w.launches.count() == 2, seconds=5)
+    said, html = _run(root, w.launches.runs[1])
+    assert REUSED in said and RE_RENDER in said and _page_theme(html) == "light"
     assert _halves(settings.get(), language) == (True, True)
     w.replan.report_changed()                         # the same setting again: nothing left to draw
     assert fired.done(w.keeper)
-    assert w.keeper.asked == 1 and w.launches.count() == 1
+    assert w.launches.count() == 2
     store.close()
 
 
@@ -146,8 +161,8 @@ def test_journey_opens_after_a_re_render_when_only_a_report_setting_changed_and_
     w = themed(language)
     settings = w.replan._settings
     settings.values["logic"] = {"automation": False}  # D29 off: the keeper runs nothing, so the press is the one
-    settings.values["source_display"] = "full"
-    settings.values["theme"] = "Midnight (Vibrant)"
+    settings.values["line_player"] = False            # a setting the v3 render reads (▶): a re-render
+    settings.values["theme"] = "Midnight (Vibrant)"   # (a look: drawn with it, never a reason to draw)
     opened = []
     t = _press(w, settings, opened)
     assert h.until(lambda: w.launches.count() == 1, seconds=20), "the press asked a run"

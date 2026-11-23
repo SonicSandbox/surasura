@@ -40,7 +40,7 @@ from collections.abc import Mapping
 
 from app import settings_manager
 from app.connect import settings_values
-from app.connect.known_signal import NOT_KNOWN_FLAGS
+from app.connect import known_signal, review_loop
 from app.qt import settings_strings as S
 from app.services import tools_found
 
@@ -219,6 +219,22 @@ def _needs_miner(settings, language, ctx):
     return "looked" in ctx and not _connect_switch(settings, language, ctx)
 
 
+# --- the review loop's moves (Mado-LT) ------------------------------------------------------------------------------ #
+MOVE_FLAGS = tuple(range(1, 8))             # Anki's flags 1 … 7 (red, orange, green, blue, pink, turquoise, purple)
+MOVE_ROWS = ("known_from_anki", "loop_swap_flag", "loop_ignore_flag")     # the three move cards, in order
+
+
+def taken_flags(row, settings):
+    """The picks `row` can't take now: the flags the other moves hold (as the reader reads them, `move_flags`) —
+    Known's as its terms ("flag:3"), Swap's and Ignore's as numbers."""
+    flags = review_loop.move_flags(settings)
+    known = set(known_signal.terms(settings))
+    if row.id == "known_from_anki":
+        return {f"flag:{n}" for n in flags.values()}
+    other = flags[review_loop.IGNORE if row.id == "loop_swap_flag" else review_loop.SWAP]
+    return {other} | {int(t[5:]) for t in known if t.startswith("flag:")}
+
+
 # --- the rows ------------------------------------------------------------------------------------------------------ #
 def _row(id_, section, kind, keys=(), options=None, adv=False, group=None, sub=False, when=None, door=(), reaches=(),
          target=None, bounds=None):
@@ -243,12 +259,6 @@ ROWS = (
     _row("anki_auto_generate", "known", "toggle", ("anki_auto_generate",), sub=True, when=_road("anki")),
     _row("known_import", "known", "door", sub=True, when=_road("import"), door=("migaku", "jiten", "apkg_known")),
     _row("words_to_leave_out", "known", "door", door=("word-lists",)),
-    # Kotoba-WS2 (Sonic 2026-11-19): *Count suspended cards as known* folded in — one row, one key, always shown: with
-    # Make cards for me and Automation on, Connect's signal reads every card in the picked states (new ones too); off,
-    # the known-words sync reads the studied ones (`anki_sync.counted_suspended`). Red and green are never picks: they
-    # are the review loop's Ignore and Swap (WL-46 / 46b), never Known
-    _row("known_from_anki", "known", "tablets", ("known_from_anki",), adv=True,
-         group="counts_as_known", options=tuple(term for term, _label in settings_values.KNOWN_PICKS)),
 
     # Anki & mining
     _row("anki_connection", "anki", "status"),
@@ -267,6 +277,17 @@ ROWS = (
     _row("connect_backlog_cap", "anki", "number", ("connect_backlog_cap",), when=_CONNECT, bounds=(0, 5000)),
     _row("connect_tidy", "anki", "action", sub=True, when=_CONNECT),        # Kyou-SH2: *Tidy now* (PROVISIONAL)
     _row("connect_trust_timing", "anki", "toggle", ("connect_trust_timing",), when=_CONNECT),
+    # Mado-LT (3.0.18; WL mock 04, PROVISIONAL words): *Your daily loop* — the three moves, one formula each: the move =
+    # what you do to its card in Anki. Known is *Count as known in Anki* (Kotoba-WS2: *Count suspended cards as known*
+    # folded in; one key, always shown — with Make cards for me and Automation on, Connect's signal reads every card in
+    # the picked states, off the known-words sync reads the studied ones, `anki_sync.counted_suspended`), moved here
+    # from Known words' More options (one home). Swap and Ignore: a suspended card's flag, read only while Connect is
+    # on (`anki_sync.read_known_signal`); a flag one move holds is never another's pick (`options`), and the reader
+    # decides what a clash means (`review_loop.move_flags`)
+    _row("known_from_anki", "anki", "tablets", ("known_from_anki",), group="loop",
+         options=tuple(term for term, _label in settings_values.KNOWN)),
+    _row("loop_swap_flag", "anki", "select", ("loop_swap_flag",), options=MOVE_FLAGS, when=_CONNECT),
+    _row("loop_ignore_flag", "anki", "select", ("loop_ignore_flag",), options=MOVE_FLAGS, when=_CONNECT),
     # Kantan-B2 (PROVISIONAL): the words whose cards you deleted in Anki, never made again — each with *Allow again*
     _row("unmined_words", "anki", "door", when=_CONNECT, door=("unmined-words",)),
     # Michi-T1 (Sonic 2026-11-17; PROVISIONAL words): every episode's audio heard before its cards, under More options
@@ -672,7 +693,7 @@ def help_line(row, settings, language):
             line = S.KNOWN_FLAGS.format(flags=" + ".join(names.get(t, t) for t in flags))
         elif len(picked) > 1:
             line = S.KNOWN_ALL_OF.format(states=" + ".join(names.get(t, t) for t in picked))
-        if held & set(NOT_KNOWN_FLAGS):                  # Kotoba-WS2: red / green picked before: they count no card
+        if held & set(known_signal.not_known_flags(settings)):  # the loop's Ignore / Swap flag: it counts no card
             line = S.KNOWN_RED_GREEN
         if line:
             return line
@@ -716,6 +737,9 @@ def options(row, settings, language):
     if row.id == "anki_sync_delay_min":
         return tuple((v, label, "") for label, v in settings_values.sync_choices(value_of(settings, row.keys[0])))
     labels, lines = S.OPTIONS.get(row.id, {}), S.OPTION_LINES.get(row.id, {})
+    if row.id in MOVE_ROWS:                     # Mado-LT: a flag another move holds is never this one's pick
+        taken = taken_flags(row, settings)
+        return tuple((v, labels.get(v, str(v)), lines.get(v, "")) for v in (row.options or ()) if v not in taken)
     if row.id == "connect_clip_cuts":           # Michi-LP: Automatic names what it picks on this PC now
         from app.connect import power
         labels = dict(labels, auto=S.CLIP_CUTS_AUTO.format(n=power.clip_cuts()))
@@ -793,7 +817,11 @@ def reachable():
 
 # Kantan-T: a row whose line reads more than its own keys and reaches — *Which cards*' deck follows 順's recorded pair
 # (`setup_wizard.junban_deck`: a deck recorded for the other language is no deck here)
-LINE_READS = {"junban_scope": ("junban_replan_deck", "junban_replan_language")}
+LINE_READS = {"junban_scope": ("junban_replan_deck", "junban_replan_language"),
+              # Mado-LT: the moves' picks leave out each other's flags (`options`), Known's line names a clash
+              "known_from_anki": ("loop_ignore_flag", "loop_swap_flag"),
+              "loop_swap_flag": ("loop_ignore_flag", "known_from_anki"),
+              "loop_ignore_flag": ("loop_swap_flag", "known_from_anki")}
 
 
 def lines_for(keys):

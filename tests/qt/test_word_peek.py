@@ -449,3 +449,160 @@ def test_kotoba_k_keep_marked_keeps_only_the_marked_words_and_adds_new_ones():
     assert [w.label for w in got.new] == ["紳士", "鉄砲", "西洋"] and got.n_new == 2
     assert [(g.title, [w.label for w in g.words]) for g in got.before] == [("喫茶店の朝", ["遠慮"])]
 
+
+
+# --- Mado-LT (3.0.18): an In Anki word's lit ✓ → Still learning, with the toast's Undo ------------------------------ #
+# Real words: 注文の多い料理店's 看板 / 扉 / 戸口 in a Japanese learner's Anki; 招牌 / 门口 / 习惯 in a Chinese one's.
+ANKI_JA = ("看板", "扉", "戸口")
+ANKI_ZH = ("招牌", "门口", "习惯")
+
+
+def _anki(words, leech_first=False):
+    return tuple(TW.AnkiWord(w, leech_first and i == 0, 0, True, 2) for i, w in enumerate(words))
+
+
+class Toasts:
+    """The window's toast for the card (`PeekHost.toast`): records each (message, undo)."""
+
+    def __init__(self):
+        self.shown = []
+
+    def __call__(self, message, undo):
+        self.shown.append((message, undo))
+
+
+def _kept_in_anki(peek, words=ANKI_JA, new=NEW, states=None, error=None):
+    win, lst, i, provider = peek
+    provider.kw = dict(new=list(new), anki=_anki(words) if isinstance(words, tuple) and isinstance(words[0], str)
+                       else words)
+    toasts = Toasts()
+    asked = []
+
+    def read(ws):
+        asked.append(list(ws))
+        return dict(states or {})
+    win.words.states, win.words.toast = (read if states is not None else None), toasts
+    win, card, marks, said, provider = _kept_with_marks(peek, error)
+    return win, card, marks, said, toasts, asked
+
+
+def test_mado_lt_an_in_anki_words_check_shows_lit_and_a_click_makes_it_still_learning_with_the_toasts_undo(peek):
+    """WL ⑦: a word in Anki is known through Anki, so its ✓ shows lit; a click on it is *Still learning* — painted with
+    the press (○ after it), written as the loop's mark, said in the toast whose Undo puts it back as it was."""
+    from app.qt import strings
+    win, card, marks, _said, toasts, _asked = _kept_in_anki(peek)
+    sign = _word_item(card, "看板")
+    assert word_peek.anki_word(sign.word) and word_peek.markable(sign.word)
+    assert card.lit(sign.word) == "known"                                # known through Anki: lit before any click
+    card.clicked(_pair(card, sign, "known"))
+    assert card.marked == {"看板": "learning"} and card.lit(sign.word) is None     # painted before the write
+    assert strings.WORDS_MARK_GLYPH["learning"] == "○"
+    assert wait_until(lambda: marks.calls == [[("看板", "learning")]] and toasts.shown, 3)
+    message, undo = toasts.shown[0]
+    assert message == strings.WORDS_STILL_LEARNING.format(word="看板")
+    undo()                                                              # the toast's Undo: that write, by its id
+    assert wait_until(lambda: marks.undos == 1, 3) and marks.undo_ids == [1]
+    assert wait_until(lambda: "看板" not in card.marked, 3)
+    assert card.lit(_word_item(card, "看板").word) == "known"            # ✓ lit again
+
+
+def test_mado_lt_still_learning_on_a_chinese_learners_card_reads_the_same(peek):
+    """The card decides nothing per language: a Chinese learner's In Anki word reads lit and goes Still learning as a
+    Japanese one does (the toast joins two words with 、 as the card names them)."""
+    from app.qt import strings
+    win, card, marks, _said, toasts, _asked = _kept_in_anki(peek, words=ANKI_ZH, new=("红烧肉", "饺子", "火锅"))
+    for w in ("招牌", "门口"):
+        card.clicked(_pair(card, _word_item(card, w), "known"))
+    assert card.marked == {"招牌": "learning", "门口": "learning"}
+    assert wait_until(lambda: len(marks.calls) == 2 and len(toasts.shown) == 2, 3)
+    assert marks.calls == [[("招牌", "learning")], [("门口", "learning")]]
+    assert toasts.shown[-1][0] == strings.WORDS_STILL_LEARNING.format(word="门口")
+    assert card.lit(_word_item(card, "习惯").word) == "known"            # the one not clicked: still lit
+
+
+def test_mado_lt_a_still_learning_write_that_fails_puts_the_check_back_and_says_why(peek):
+    from app.qt import strings
+    why = "Your known words are being updated by Anki."
+    win, card, marks, said, toasts, _asked = _kept_in_anki(peek, error=why)
+    card.clicked(_pair(card, _word_item(card, "扉"), "known"))
+    assert card.marked == {"扉": "learning"}
+    assert wait_until(lambda: said, 3) and card.marked == {}
+    assert card.lit(_word_item(card, "扉").word) == "known"              # ✓ lit again
+    assert said == [strings.WORDS_MARK_FAILED.format(why=why)] and toasts.shown == []    # no toast for what failed
+
+
+def test_mado_lt_a_word_still_learning_from_before_reads_unlit_and_its_check_makes_it_known_again(peek):
+    """What each In Anki word is now is read once when the card is kept (`word_marks.states`): one made Still learning
+    on an earlier card shows its ✓ unlit; a click on it is known through Anki again — the loop's mark cleared (None),
+    never a second "known" mark of the window's own."""
+    win, card, marks, _said, toasts, asked = _kept_in_anki(peek, states={"戸口": "learning", "扉": None})
+    assert wait_until(lambda: asked and card.anki_states == {"戸口": "learning"}, 3)
+    assert asked == [list(ANKI_JA)]                                       # one read, of the card's In Anki words
+    assert card.lit(_word_item(card, "戸口").word) is None
+    assert card.lit(_word_item(card, "扉").word) == "known"
+    card.clicked(_pair(card, _word_item(card, "戸口"), "known"))
+    assert card.marked == {"戸口": "known"}
+    assert wait_until(lambda: marks.calls == [[("戸口", None)]], 3)
+    assert toasts.shown == []                                            # only Still learning has a toast
+    assert win.words._writes.idle(5)
+    QApplication.processEvents()
+    assert asked == [list(ANKI_JA)]                                       # the words asked again: never read twice
+
+
+def test_mado_lt_anki_closed_shows_no_pair_and_the_hover_card_marks_nothing(peek):
+    """Anki absent (the card's *In Anki* says Anki didn't answer): no In Anki word to mark, nothing read; and the hover
+    card (not kept) never shows a pair on an In Anki word."""
+    win, card, marks, _said, toasts, asked = _kept_in_anki(peek, words="closed", states={})
+    assert card.card.anki == "closed"
+    assert not [it for it in card.sheet.items if it.word is not None and word_peek.anki_word(it.word)]
+    QApplication.processEvents()
+    assert asked == [] and marks.calls == [] and toasts.shown == []
+    card.hide()
+    win, lst, i, provider = peek
+    provider.kw = dict(new=list(NEW), anki=_anki(ANKI_JA))
+    _rest_on(lst, i)
+    card = win.words.card
+    assert wait_until(lambda: card.isVisible() and not card.kept and card.card.anki, 3)
+    card.hovered(_word_item(card, "看板"))
+    assert card.hot_item is None and card.pair_at(QPoint(0, 0)) is None
+
+
+def test_mado_lt_the_windows_toast_says_still_learning_with_its_undo_and_hover(peek):
+    """The shell's seam: Still learning is said in the window's usual toast, its Undo there, its hover the line that
+    says how long Surasura keeps it."""
+    from app.qt import strings
+    win, _lst, _i, _provider = peek
+    undone = []
+    win._card_toast(strings.WORDS_STILL_LEARNING.format(word="看板"), lambda: undone.append(1))
+    assert win.toasts.text == "看板: still learning"
+    assert win.toasts.card.toolTip() == strings.WORDS_STILL_LEARNING_TIP
+
+
+def test_mado_lt_a_card_closed_and_kept_again_reads_its_in_anki_words_again(peek):
+    """A review's finding: the read was keyed to the row alone, so a card closed and kept again (its words reset with
+    the close) skipped it — a word Still learning showed its ✓ lit, and a click wrote Still learning twice. Each keep
+    reads them again; the words asked again after a mark never do."""
+    win, card, marks, _said, toasts, asked = _kept_in_anki(peek, states={"看板": "learning"})
+    assert wait_until(lambda: card.anki_states == {"看板": "learning"}, 3)
+    card.close()
+    assert wait_until(lambda: not card.isVisible(), 3)
+    _win, lst, i, _provider = peek
+    QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=_new_part(lst, i)[1].center())
+    assert wait_until(lambda: card.kept and card.card is not None and len(asked) == 2, 3)
+    assert wait_until(lambda: card.anki_states == {"看板": "learning"}, 3)
+    assert card.lit(_word_item(card, "看板").word) is None
+
+
+def test_mado_lt_a_kept_cards_in_anki_words_leave_room_for_their_mark(peek):
+    """The 150 % capture showed 看板○扉: the In Anki words flow a word gap apart, and the ○ (drawn after a word) ran into
+    the next one. Kept, each leaves its mark's room before the next word, and a struggling word's badge after it."""
+    from app.qt import strings
+    win, card, marks, _said, toasts, _asked = _kept_in_anki(peek, words=_anki(ANKI_JA, leech_first=True))
+    words = [it for it in card.sheet.items if it.word is not None and word_peek.anki_word(it.word)]
+    room = max(word_peek._adv(g, "badge") for g in strings.WORDS_MARK_GLYPH.values())
+    badge = next(it for it in card.sheet.items if it.text == strings.WORDS_LEECH)
+    leech = next(it for it in words if it.text == ANKI_JA[0])
+    assert badge.rect.left() >= leech.rect.right() + room                 # the badge after the mark's room
+    young = [it for it in words if it.text != ANKI_JA[0]]
+    a, b = young[0], young[1]
+    assert a.rect.top() == b.rect.top() and b.rect.left() >= a.rect.right() + room

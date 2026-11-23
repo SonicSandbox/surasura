@@ -555,12 +555,18 @@ def test_search_reads_japanese_words_and_opens_a_fold_where_a_row_matches_then_r
     assert page.folds() == {"level"}
     page.search.edit.setText("例文")                       # a label in Japanese: Backfill's fills
     assert page.rows["backfill_sentence"].isVisibleTo(page)
-    page.search.edit.setText("suspended")                 # Known words' + row, its fold closed by the user
-    assert page.rows["known_from_anki"].isVisibleTo(page)    # the one *What counts as known* row (Kotoba-WS2)
+    # Mado-LT (3.0.18): *Count as known in Anki* moved out of Known words' More options to Anki & mining's *Your daily
+    # loop* (the ✓ Known move card, in the open: one home, the old place retired), so the fold this search opens is
+    # now Anki & mining's, by *More video folders*' old words — the rule pinned is the same: a match opens the fold
+    page.search.edit.setText("suspended")                 # the ✓ Known move card still answers its old words
+    assert page.rows["known_from_anki"].isVisibleTo(page)    # the one *Count as known* row (Kotoba-WS2, Mado-LT)
+    assert page.rows["known_from_anki"].parent() is page.slabs["anki"].main
     assert "anki_sync_include_suspended" not in page.rows
-    assert page.slabs["known"].adv.isVisibleTo(page)
+    page.search.edit.setText("where videos")              # Anki & mining's More options row, its fold closed
+    assert page.rows["connect_video_folders"].isVisibleTo(page)
+    assert page.slabs["anki"].adv.isVisibleTo(page)
     page.search.edit.setText("")
-    assert not page.slabs["known"].adv.isVisibleTo(page)  # closed again: as the user left it
+    assert not page.slabs["anki"].adv.isVisibleTo(page)   # closed again: as the user left it
     assert page.slabs["level"].adv.isVisibleTo(page) and page.folds() == {"level"}
     assert page.rows["names_katakana"].group.isVisibleTo(page)
 

@@ -1711,7 +1711,8 @@ class ShellWindow(QMainWindow):
             self.words = word_peek.PeekHost(central, self._words_provider, lambda: current.view_model,
                                             tooltips=self.tooltips, router=self.router,
                                             open_journey=self._words_journey, mark=self._card_mark,
-                                            undo=self._card_undo, say=self.say)
+                                            undo=self._card_undo, say=self.say, states=self._card_states,
+                                            toast=self._card_toast)
             lst = current.list
 
             def _at(rect):
@@ -3458,7 +3459,7 @@ class ShellWindow(QMainWindow):
             return windows.launch(self, opener) if opener is not None else self.say(strings.GUIDE_NOT_HERE)
         if key == "yours":
             return self.pick_your_cards(control)
-        places = {"automation": "settings:automation",
+        places = {"automation": "settings:automation", "loop": "settings:known_from_anki",
                   "audiobook": "tab:current@audiobook", "hato": "settings:hato", "piyo": "settings:practice_ai"}
         if key in places:
             return self.guide_show_me(places[key])
@@ -3608,6 +3609,15 @@ class ShellWindow(QMainWindow):
     def _card_undo(self, undo_id):
         """(A worker: *I know all of these*'s Undo — that batch's own, `undo_id`.) -> the `Marked`."""
         return self.services.undo_marks(self.language, undo_id)
+
+    def _card_states(self, words):
+        """(A worker: Mado-LT, the kept word card's In Anki words.) What each is now -> {word: mark or None}."""
+        from app.services import word_marks
+        return word_marks.states(self.language, words)
+
+    def _card_toast(self, message, undo):
+        """Mado-LT: the word card's Still learning, said in the window's toast with its *Undo*."""
+        self.toasts.show(message, undo=undo, tip=strings.WORDS_STILL_LEARNING_TIP)
 
     def _words_journey(self, control, episode):
         """*Open in the journey ↗* on the kept card: the journey's one press, on its button, at that title."""

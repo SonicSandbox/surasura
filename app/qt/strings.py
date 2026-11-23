@@ -655,7 +655,11 @@ WORDS_EPISODE_TITLE = "{title} · {ep}"
 WORDS_MENU = "Its words"
 WORDS_MENU_TIP = "The words you'll meet in it, kept open"
 # Kotoba-K: Known / Ignore on the kept card (leans PROVISIONAL)
-WORDS_MARK_GLYPH = {"known": "✓", "ignore": "⊘"}
+WORDS_MARK_GLYPH = {"known": "✓", "ignore": "⊘", "learning": "○"}     # Mado-LT: ○ Still learning (violet, accent-2)
+# Mado-LT (WL ⑦, PROVISIONAL): an In Anki word's lit ✓ cleared — the toast, its Undo the write's own
+WORDS_STILL_LEARNING = "{word}: still learning"
+WORDS_LEARNING_TIP = "Known through Anki\n• Click: still learning — you don't really know it yet"
+WORDS_STILL_LEARNING_TIP = "Surasura keeps it still learning until you Suspend + Mark its card again"
 WORDS_MARK_TIP = {"known": "Known: you know it\n• Leaves your list as known · click again to undo",
                   "ignore": "Ignore: not a word to learn (a name, a noise)\n• Leaves your list, never known · click "
                             "again to undo"}
@@ -2381,6 +2385,7 @@ PATH_WHEN = {            # id -> when a step applies (its ? while it can't yet)
     "cards": "Once a show is in your library",
     "junban": "Once Anki is connected and has your cards",
     "backfill": "Once you have cards in Anki",
+    "loop": "Once your cards are in Anki and synced",
     "yours": "Once your first cards are made",
     "audiobook": "Once a book is in Current",
     "hato": "Once a new episode waits for its subtitles",
@@ -2394,6 +2399,9 @@ PATH_STEPS = {           # id -> (title, the line behind its ?)
     "junban": ("Put Anki's new cards in your order", "順 orders them by how often your shows use each word."),
     "backfill": ("Let your cards show how each word is used",
                  "Your cards can carry the word's usual patterns (パターン) and more lines from your shows (例文)."),
+    # Mado-LT (WL-9, PROVISIONAL words): the ? line is the loop's sheet — one line, the moves by what you do
+    "loop": ("Tell Surasura from your phone", "In Anki, suspend a card and mark it, or flag it: Surasura follows at the "
+             "next sync. Once synced, delete freely."),
     "yours": ("Pick which words get a card", "Which words Anki Miner makes cards from: its choice in Settings."),
     "audiobook": ("Line up a book with its audiobook",
     "Its cards get the narrator's voice: the book's ⋯ → Its audiobook…"),
@@ -2417,6 +2425,7 @@ PATH_PRESS = {
     "junban": ("Preview my deck", "順's window: today's order beside yours, before anything moves\n• Click: open it"),
     "junban-again": ("See what it did", "順's window: its last run, with Undo\n• Click: open it"),
     "backfill": ("Preview", "Backfill's window: what it would fill, before anything is written\n• Click: open it"),
+    "loop": ("See your moves", "What Suspend + Mark and each flag mean\n• Click: its place in Settings"),
     "yours": ("Pick your cards", "Which words get a card\n• Click: its choice in Settings"),
     "audiobook": ("Go to your book", "On Current: the book's ⋯ → Its audiobook…\n• Click: go there"),
     "hato": ("Set up hato", "hato finds subtitles on your yes\n• Click: its place in Settings"),
@@ -2428,6 +2437,7 @@ PATH_DO_TIPS = {         # a step's *Do it* in the panel -> what its press does
     "cards": "Makes the top episode's cards (or sets Anki Miner up first)\n• Click: do it",
     "junban": "Opens 順's window: your deck's order, before anything moves\n• Click: open it",
     "backfill": "Opens Backfill's window: what it would fill, before anything is written\n• Click: open it",
+    "loop": "What Suspend + Mark and each flag mean\n• Click: its place in Settings",
     "yours": "Which words get a card\n• Click: its choice in Settings",
     "audiobook": "On Current: the book's ⋯ → Its audiobook…\n• Click: go there",
     "hato": "hato finds subtitles on your yes\n• Click: its place in Settings",

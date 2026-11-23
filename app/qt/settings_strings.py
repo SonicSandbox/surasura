@@ -170,7 +170,7 @@ SHOW_ME_NAME = "{need}: {show}"                                 # *Show me*, for
 
 # --- the group names inside a section ------------------------------------------------------------------------------ #
 GROUPS = {
-    "counts_as_known": "What counts as known", "from_library": "Cards from your library",
+    "loop": "Your daily loop", "from_library": "Cards from your library",
     "in_anki": "Cards already in Anki", "anki": "Anki", "names": "Names", "words_phrases": "Words and phrases",
     "houseki": "Houseki tools", "not_on_list": "Cards not on your list", "beta": "Beta",
 }
@@ -233,11 +233,22 @@ ROWS = {
                        "Off: half your cores, stays quick. On: all cores, faster.", "cores speed faster cpu"),
     # Kantan-B3 (Sonic 2026-11-18): the default is Suspended + Marked — a plain suspend often means "a bad sentence,
     # I still want the word" (the ? line, ≤ 12 words: PROVISIONAL)
-    "known_from_anki": ("Count as known in Anki",
-                        "Default: Suspended + Marked. A plain suspend (a bad sentence) never counts",
+    # Mado-LT (3.0.18, WL mock 04; PROVISIONAL words): the loop's three move cards — the move, then what you do to its
+    # card in Anki (the control); the ? line says what happens at the next sync. Known keeps *Count as known in Anki*'s
+    # key and its search words (it moved here from Known words' More options)
+    "known_from_anki": ("✓ Known",
+                        "Default: Suspended + Marked. A plain suspend never counts; once synced, delete freely",
                         "A card in every state you pick turns its word known.",     # Kotoba-WS2: ≤ 12 words (rule 8)
-                        "known from anki suspended marked flag count suspended cards as known include suspended "
-                        "studied then suspended"),
+                        "known from anki suspended marked flag count as known in anki count suspended cards as known "
+                        "include suspended studied then suspended review loop daily loop move phone"),
+    "loop_swap_flag": ("⇄ Swap",
+                       "At the next sync Surasura makes the word a new card from a better sentence",
+                       "Suspend a card with this flag: a different sentence, please.",
+                       "swap different sentence better sentence flag green review loop daily loop move phone"),
+    "loop_ignore_flag": ("✕ Ignore",
+                         "At the next sync its word goes on your Ignore list; once synced, delete freely",
+                         "Suspend a card with this flag: not a word to learn.",
+                         "ignore flag red not a word name noise review loop daily loop move phone ignored"),
 
     # Anki & mining
     "anki_connection": ("Connection", "Through the free AnkiConnect add-on", "Whether Surasura reaches Anki now",
@@ -683,7 +694,7 @@ ROWS = {
 KNOWN_ALL_OF = "Counts only cards that are {states}, all at once"
 KNOWN_FLAGS = "A card has one flag at a time: {flags} counts no card"           # two flags picked (A7S-7)
 # Kotoba-WS2: a pick saved before holds red or green, which never count (the review loop's Ignore and Swap)
-KNOWN_RED_GREEN = "A red or green flag never counts as known: pick again"          # Kotoba-WS2 (PROVISIONAL)
+KNOWN_RED_GREEN = "Your Swap and Ignore flags never count as known: pick again"          # Kotoba-WS2 (PROVISIONAL)
 
 # Backfill's fills by name (`junban_backfill_fills`' values): its four switches, and Your setup's line
 FILLS = {"patterns": "パターン", "sentence": "例文", "furigana": "ふりがな", "pitch": "アクセント"}
@@ -698,6 +709,11 @@ OPTIONS = {
                         "flag:2": "Flag 2 (Orange)", "flag:3": "Flag 3 (Green)", "flag:4": "Flag 4 (Blue)",
                         "flag:5": "Flag 5 (Pink)", "flag:6": "Flag 6 (Turquoise)", "flag:7": "Flag 7 (Purple)"},
     "junban_scope": {"deck": "This deck", "all": "All decks"},
+    # Mado-LT: a move's flag, said as the move is (one formula: what you do to the card)
+    "loop_swap_flag": {n: f"Suspend + {colour} flag" for n, colour in enumerate(
+        ("Red", "Orange", "Green", "Blue", "Pink", "Turquoise", "Purple"), 1)},
+    "loop_ignore_flag": {n: f"Suspend + {colour} flag" for n, colour in enumerate(
+        ("Red", "Orange", "Green", "Blue", "Pink", "Turquoise", "Purple"), 1)},
     "study_order": {"content": "As I’ll meet it", "priority": "By leverage"},
     "connect_sentence_dial": {"best": "Best", "nearest": "Nearest"},
     "split_books_by": {"chapters": "Chapters", "even": "Even parts"},

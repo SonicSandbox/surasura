@@ -14,14 +14,16 @@ each word found a chip to keep or drop — a new word kept, one already known or
 list shown and fixed — then *Add N words*. A chip adds the word's `Word` (the lemma), shown by its spelling. Every read
 and write is `app/services/word_lists.py`'s, on a worker; the window decides nothing. After an add or a ✕ only the rows
 that changed are inserted or removed (S19); every row is made again only for a list or language switch, or a read
-that changed many rows.
+that changed many rows. A row is made only when the view asks for it (`_Words`, Mado-LT 6): 10,000 known words open,
+answer a search and take a ✓ in steps under the Qt guide's 4 ms.
 """
+import bisect
 import functools
 import re
 import time
 
-from PyQt6.QtCore import QEvent, QRect, QSortFilterProxyModel, Qt
-from PyQt6.QtGui import QPalette, QStandardItem, QStandardItemModel
+from PyQt6.QtCore import QAbstractListModel, QEvent, QModelIndex, QRect, QSortFilterProxyModel, Qt
+from PyQt6.QtGui import QPalette
 from PyQt6.QtWidgets import (QAbstractItemView, QButtonGroup, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget,
                              QListWidgetItem, QPlainTextEdit, QPushButton, QStyledItemDelegate, QWidget)
 
@@ -39,6 +41,9 @@ FIND = Qt.ItemDataRole.UserRole + 2                       # what the search look
 KNOWN_ROW = Qt.ItemDataRole.UserRole + 3                  # True on a Known tab's row (its mark ✓ / ○, never ✕)
 _SPLIT = re.compile(r"[\s,、，]+")                          # the Add field's words
 _REBUILD_OVER = 100                                       # rows changed by one read past which every row is made again
+_FACE = {Qt.ItemDataRole.DisplayRole: 0, Qt.ItemDataRole.AccessibleTextRole: 0, Qt.ItemDataRole.ToolTipRole: 1,
+         FIND: 2}                                         # the roles `_face` answers: its text, tip and search text
+_ROLES = frozenset(_FACE) | {WORD, SOURCE, KNOWN_ROW}     # every role a row answers
 
 
 class _RemoveDelegate(QStyledItemDelegate):
@@ -89,6 +94,96 @@ class _RemoveDelegate(QStyledItemDelegate):
             self.on_remove(index)
             return True
         return super().editorEvent(event, model, option, index)
+
+
+class _Words(QAbstractListModel):
+    """The list's rows, each made from its entry only when the view asks for it — no item per word (Mado-LT 6: 10,020
+    known words were 10,020 items made in one ~130 ms step on the window's thread). It shows the search's rows itself:
+    `finds` (each entry's search text, casefolded, made with the read on the worker) scanned on a keystroke, `rows` the
+    entries shown (None: every one) — a Qt filter would ask `data()` of every row, here in Python (~14 ms a keystroke
+    at 10,000)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.entries = []                                 # every entry, in order (tuples: word, source, reading, …)
+        self.finds = []                                   # each entry's search text, casefolded
+        self.needle = ""                                  # the search, casefolded ("": none)
+        self.rows = None                                  # the places in `entries` shown, in order (None: every one)
+
+    def rowCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self.entries if self.rows is None else self.rows)
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if role not in _ROLES:                            # (half a row's paint asks roles no row holds: none made)
+            return None
+        row = index.row()
+        if not index.isValid() or row >= (len(self.entries) if self.rows is None else len(self.rows)):
+            return None
+        entry = self.entries[row if self.rows is None else self.rows[row]]
+        if role == WORD:
+            return entry[0]
+        if role == SOURCE:
+            return entry[1]
+        if role == KNOWN_ROW:
+            return len(entry) > 3 and entry[3] is not None
+        return _face(*entry)[_FACE[role]]
+
+    def flags(self, index):
+        return (Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable) if index.isValid() else Qt.ItemFlag.NoItemFlags
+
+    def _matching(self, start, finds):
+        return [start + i for i, find in enumerate(finds) if self.needle in find]
+
+    def fill(self, entries, finds):
+        """Every row made again: the list as read (a list or language switch, a read that changed many rows)."""
+        self.beginResetModel()
+        self.entries, self.finds = list(entries), list(finds)
+        self.rows = self._matching(0, self.finds) if self.needle else None
+        self.endResetModel()
+
+    def search(self, text):
+        """The rows whose search text holds `text`, in any case ("": every row): one scan of the search texts."""
+        needle = text.casefold()
+        if needle != self.needle:
+            self.beginResetModel()
+            self.needle = needle
+            self.rows = self._matching(0, self.finds) if needle else None
+            self.endResetModel()
+
+    def splice(self, start, end, entries, finds):
+        """Entries [start, end) replaced by `entries` (their search texts `finds`): only the rows of those removed, and
+        the new ones inserted where the search shows them (S19)."""
+        if self.rows is None:
+            if end > start:
+                self.beginRemoveRows(QModelIndex(), start, end - 1)
+                del self.entries[start:end], self.finds[start:end]
+                self.endRemoveRows()
+            if entries:
+                self.beginInsertRows(QModelIndex(), start, start + len(entries) - 1)
+                self.entries[start:start], self.finds[start:start] = entries, finds
+                self.endInsertRows()
+            return
+        a, b = bisect.bisect_left(self.rows, start), bisect.bisect_left(self.rows, end)
+        if b > a:
+            self.beginRemoveRows(QModelIndex(), a, b - 1)
+            del self.rows[a:b]
+            self.endRemoveRows()
+        self.entries[start:end], self.finds[start:end] = entries, finds   # (the rows shown: the same entries, moved)
+        shift = len(entries) - (end - start)
+        if shift:
+            self.rows[a:] = [r + shift for r in self.rows[a:]]
+        new = self._matching(start, finds)
+        if new:
+            self.beginInsertRows(QModelIndex(), a, a + len(new) - 1)
+            self.rows[a:a] = new
+            self.endInsertRows()
+
+    def set_entry(self, at, entry):
+        """Entry `at` is `entry` (its search text unchanged: a ✓'s mark): its row alone painted again, when shown."""
+        self.entries[at] = entry
+        row = at if self.rows is None else bisect.bisect_left(self.rows, at)
+        if self.rows is None or (row < len(self.rows) and self.rows[row] == at):
+            self.dataChanged.emit(self.index(row, 0), self.index(row, 0))
 
 
 class _WordsView(QListView):
@@ -152,11 +247,11 @@ class WordListsWindow(SecondaryWindow):
         row.addWidget(self.count)
         self.body.addLayout(row)
 
-        self.model = QStandardItemModel(self)
+        self.model = _Words(self)                         # every entry; it shows the search's rows itself
+        # A Qt proxy in front of it, never filtering: the view lays out every row by asking `index()` of each, which a
+        # Python model answers through Python (~20 ms at 10,000 rows); the proxy answers from its own table, in C++.
         self.shown = QSortFilterProxyModel(self)
         self.shown.setSourceModel(self.model)
-        self.shown.setFilterRole(FIND)
-        self.shown.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.list = _WordsView(self, self._remove_index)
         self.list.setModel(self.shown)
         self.list.setObjectName("windowlist")
@@ -223,16 +318,17 @@ class WordListsWindow(SecondaryWindow):
         asked, kind, language = self._asked, self.kind, self.language
         if self.entries is None:
             self.say(s.WORD_LISTS_READING)
-        bridge.run_in_worker(word_lists.read, kind, language,
-                             then=self.alive(lambda listing: self._show(asked, listing, then_say)),
+        bridge.run_in_worker(_read, kind, language,
+                             then=self.alive(lambda got: self._show(asked, got[0], then_say, got[1:])),
                              failed=self.alive(lambda info: self.say(s.WORD_LISTS_READ_FAILED.format(why=info[0]))))
 
-    def _show(self, asked, listing, line=None):
+    def _show(self, asked, listing, line=None, made=None):
+        """`made`: the entries as tuples and their search texts, made with the read on the worker (`_read`)."""
         if asked != self._asked:
             return                                        # read for a list or a language the window has left
-        entries = [tuple(e) for e in listing.entries]
+        entries, finds = made or _made(listing)
         if entries != self.entries:                       # touched only when the words changed (S19)
-            self._update_rows(entries)
+            self._update_rows(entries, finds)
             self.entries = entries
             self.list_paints += 1
         self._count()
@@ -243,10 +339,11 @@ class WordListsWindow(SecondaryWindow):
             lines.append(s.WORD_LISTS_EMPTY)
         self.say(" · ".join(lines))
 
-    def _update_rows(self, entries):
-        """The model brought to `entries` from `self.entries` (the rows it holds): the run of rows that differs, past
-        the common start and end, removed and the new ones inserted — an add's rows, a ✕'s row. Every row made again
-        for a first read (a list or language switch) or a read that changed more than `_REBUILD_OVER` rows."""
+    def _update_rows(self, entries, finds):
+        """The model brought to `entries` (their search texts `finds`) from `self.entries` (the rows it holds): the run
+        of rows that differs, past the common start and end, removed and the new ones inserted — an add's rows, a ✕'s
+        row. Every row made again for a first read (a list or language switch) or a read that changed more than
+        `_REBUILD_OVER` rows."""
         old = self.entries
         if old is not None:
             start, n = 0, min(len(old), len(entries))
@@ -257,24 +354,19 @@ class WordListsWindow(SecondaryWindow):
                 end_old -= 1
                 end_new -= 1
             if (end_old - start) + (end_new - start) <= _REBUILD_OVER:
-                if end_old > start:
-                    self.model.removeRows(start, end_old - start)
-                for i in range(start, end_new):
-                    self.model.insertRow(i, _item(*entries[i]))
+                self.model.splice(start, end_old, entries[start:end_new], finds[start:end_new])
                 return
-        self.model.clear()
-        for entry in entries:
-            self.model.appendRow(_item(*entry))
+        self.model.fill(entries, finds)
 
     def _count(self):
-        n, shown = self.model.rowCount(), self.shown.rowCount()
+        n, shown = len(self.model.entries), self.model.rowCount()
         text = (s.WORD_LISTS_COUNT_SHOWN.format(shown=shown, n=n) if shown != n
                 else s.WORD_LISTS_COUNT_ONE if n == 1 else s.WORD_LISTS_COUNT.format(n=n))
         if self.count.text() != text:
             self.count.setText(text)
 
     def _filter(self, text):
-        self.shown.setFilterFixedString(text.strip())
+        self.model.search(text.strip())
         self._count()
 
     def show_kind(self, kind):
@@ -287,7 +379,7 @@ class WordListsWindow(SecondaryWindow):
         self.kind = kind
         self.list.setToolTip(s.WORD_LISTS_LIST_TIPS[kind])
         self.entries = None
-        self.model.clear()
+        self.model.fill([], [])
         self._count()
         self.read()
         if self.candidates is not None:                   # the chips' marks name the list: asked again for this one
@@ -298,7 +390,7 @@ class WordListsWindow(SecondaryWindow):
         self._stop_paste()
         self.cleared = {}
         self.entries = None
-        self.model.clear()
+        self.model.fill([], [])
         self._clear_chips()
         self.read()
 
@@ -401,14 +493,10 @@ class WordListsWindow(SecondaryWindow):
         return None
 
     def _set_row(self, at, entry):
-        """Row `at` shows `entry`: that row alone painted again (S19)."""
+        """Entry `at` is `entry`: its row alone painted again (S19)."""
         entry = tuple(entry)
         self.entries[at] = entry
-        item, fresh = self.model.item(at), _item(*entry)
-        for role in (Qt.ItemDataRole.DisplayRole, SOURCE, Qt.ItemDataRole.ToolTipRole,
-                     Qt.ItemDataRole.AccessibleTextRole):
-            if item.data(role) != fresh.data(role):
-                item.setData(fresh.data(role), role)
+        self.model.set_entry(at, entry)
 
     def add_typed(self):
         words = [w for w in _SPLIT.split(self.add_field.text()) if w]
@@ -564,15 +652,36 @@ class WordListsWindow(SecondaryWindow):
         self.add_kept_button.setVisible(False)
 
 
-def _item(word, source, reading=None, origin=None, created=None):
-    """A row of the list: the word, marked by where it is held, with its tip. A Known tab's row (`origin` given): the
-    word, its reading and where it came from; its tip says since when it is known (or that it is Still learning)."""
-    find = word
+def _read(kind, language):
+    """(on the worker) The list read, its entries as tuples and each one's search text: none made on the window's
+    thread."""
+    listing = word_lists.read(kind, language)
+    return (listing,) + _made(listing)
+
+
+def _made(listing):
+    entries = [tuple(e) for e in listing.entries]
+    return entries, [_find(*e).casefold() for e in entries]
+
+
+def _shown_reading(word, reading):
+    return reading if reading and _hira(reading) != _hira(word) else ""          # (a word in kana: its own reading)
+
+
+def _find(word, source=None, reading=None, origin=None, created=None):
+    """What the search looks in: the word, and a known word's reading as its row shows it."""
+    shown = _shown_reading(word, reading) if origin is not None else ""
+    return f"{word} {shown}" if shown else word
+
+
+def _face(word, source, reading=None, origin=None, created=None):
+    """A row of the list, as the view asks for it: (text, tip, search text) — the word, marked by where it is held,
+    with its tip. A Known tab's row (`origin` given): the word, its reading and where it came from; its tip says since
+    when it is known (or that it is Still learning)."""
     if origin is not None:
-        shown = reading if reading and _hira(reading) != _hira(word) else ""     # (a word in kana: its own reading)
+        shown = _shown_reading(word, reading)
         text = (s.WORD_LISTS_KNOWN_ROW if shown else s.WORD_LISTS_KNOWN_ROW_BARE).format(
             word=word, reading=shown, origin=s.WORD_LISTS_ORIGINS[origin])
-        find = f"{word} {shown}" if shown else word
         if source == "learning":
             tip = s.WORD_LISTS_ROW_LEARNING
         elif created:
@@ -585,15 +694,7 @@ def _item(word, source, reading=None, origin=None, created=None):
         text, tip = s.WORD_LISTS_MARK_NAMES.format(word=word), s.WORD_LISTS_ROW_NAMES
     else:
         text, tip = word, s.WORD_LISTS_ROW_LIST
-    item = QStandardItem(text)
-    item.setData(word, WORD)
-    item.setData(source, SOURCE)
-    item.setData(find, FIND)
-    item.setData(origin is not None, KNOWN_ROW)
-    item.setData(tip.format(word=word), Qt.ItemDataRole.ToolTipRole)
-    item.setData(text, Qt.ItemDataRole.AccessibleTextRole)
-    item.setEditable(False)
-    return item
+    return text, tip.format(word=word), _find(word, source, reading, origin)
 
 
 def _known_again(services, language, word, undo_id):

@@ -15,6 +15,7 @@ import pytest
 pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication
 
 from app import anki_sync, path_utils
 from app.qt import windows
@@ -118,10 +119,9 @@ def test_each_rows_mark_is_a_lit_check_or_a_violet_circle_never_the_ignore_tabs_
         assert delegate.mark_colour(QStyleOptionViewItem(), index) == style.qcolor(style.colours()[ink])
     assert w.shown.index(_row(w, "看板"), 0).data(Qt.ItemDataRole.ToolTipRole) == \
         "看板: still learning\n• Click ○: known again"
-    from PyQt6.QtGui import QStandardItemModel                              # (Mado-LT 5) an Ignore tab's row: ✕
-    from app.qt.word_lists_window import _item
-    ignore = QStandardItemModel()
-    ignore.appendRow(_item("冒険", "list"))
+    from app.qt.word_lists_window import _Words                             # (Mado-LT 5) an Ignore tab's row: ✕
+    ignore = _Words()
+    ignore.fill([("冒険", "list")], ["冒険"])
     assert delegate.mark_glyph(ignore.index(0, 0)) == s.WORD_LISTS_REMOVE_MARK
 
 
@@ -329,3 +329,131 @@ def test_eleven_thousand_known_words_open_as_one_list(main, ja_resources_dir):
     assert w.model.rowCount() == 10020 and w.count.text() == "10020 words"
     assert w.list.uniformItemSizes()
     assert w.list.indexWidget(w.shown.index(0, 0)) is None
+
+
+# --- ten thousand words, every step under 4 ms (Mado-LT 6) ------------------------------------------------------ #
+# The machine's own speed for the 4 ms (the Qt guide § 4: no step on the window's thread over 4 ms): the idea of
+# Flake-F6's `tests/qt/test_guide.py::_speed` (its PR not landed yet: copied, not imported) — a fixed piece of the
+# same kind of work, timed by the same clock, the least of 5; REF_DESKTOP_MS its reading on the desktop the 4 ms is set
+# on. A slower machine reads it slower by the same ratio, and only then is the budget scaled (never below 4 ms).
+REF_TEXT = "この本は、毎日少しずつ読むことで、知らない言葉が自然に覚えられるように作られています。 " * 6
+REF_DESKTOP_MS = 3.16
+
+
+def _budget(own_ms):
+    from PyQt6.QtWidgets import QLabel
+    label = QLabel(REF_TEXT)
+    label.setWordWrap(True)
+    label.ensurePolished()
+    best = None
+    for _ in range(5):
+        t0 = own_ms()
+        for width in range(200, 420, 11):
+            label.heightForWidth(width)
+        took = own_ms() - t0
+        best = took if best is None else min(best, took)
+    label.deleteLater()
+    return 4.0 * max(1.0, best / REF_DESKTOP_MS)
+
+
+def _step(own_ms, fn, *args):
+    t0 = own_ms()
+    fn(*args)
+    return own_ms() - t0
+
+
+def _after(w, own_ms):
+    """The steps the event loop runs after a change, each timed alone on the window's thread's own clock: the window's
+    layout (a line shown or hidden, the count's width), the view's delayed layout of its rows (it asks `index()` of
+    every row) and the next paint (the rows in view: `data()` of those only). Then anything else posted, untimed."""
+    from PyQt6.QtCore import QEvent
+    steps = [_step(own_ms, QApplication.sendPostedEvents, None, QEvent.Type.LayoutRequest.value),
+             _step(own_ms, w.list.doItemsLayout), _step(own_ms, w.list.viewport().repaint)]
+    QApplication.processEvents()
+    return steps
+
+
+def test_ten_thousand_known_words_open_search_and_mark_in_steps_under_4_ms(main, ja_resources_dir, monkeypatch):
+    """A learner with a few years of Anki knows this many words: the Known tab on the Migaku export (11,582 entries,
+    10,020 known) opens, answers a search keystroke and shows a ✓'s ○ each in steps under the Qt guide's 4 ms on the
+    window's thread (its own CPU time: never the time a worker or another process took meanwhile) — the rows made as
+    they come into view, never one item per word in the answer's step (~150 ms before)."""
+    from tests.qt.test_guide import _own_ms
+    own_ms = _own_ms()
+    budget = _budget(own_ms)
+    steps = {"open": [], "keystroke": [], "press": []}
+    moment = ["open"]
+    real_show, real_marked = WordListsWindow._show, WordListsWindow._row_marked
+
+    def timed(real):
+        def step(self, *a, **k):
+            t0 = own_ms()
+            try:
+                return real(self, *a, **k)
+            finally:
+                steps[moment[0]].append(own_ms() - t0)
+        return step
+    monkeypatch.setattr(WordListsWindow, "_show", timed(real_show))
+    monkeypatch.setattr(WordListsWindow, "_row_marked", timed(real_marked))
+    shutil.copyfile(os.path.join(ja_resources_dir, "KnownWord.json"), _write("ja", []))
+    w = _open(main)
+    assert w.model.rowCount() == 10020 and len(steps["open"]) == 1          # the answer's own step, timed
+    steps["open"] += _after(w, own_ms)
+    finds = [w.shown.index(i, 0).data(FIND).casefold() for i in range(10020)]
+
+    moment[0] = "keystroke"
+    for text in ("ち", "ちょ", "", "灯", "zz"):                              # narrowing, cleared, a kanji, nothing
+        steps["keystroke"].append(_step(own_ms, w.search.setText, text))
+        steps["keystroke"] += _after(w, own_ms)
+        assert w.shown.rowCount() == sum(text in find for find in finds)  # every word it holds, and only those
+    assert w.count.text() == "0 of 10020 words"
+    w.search.clear()
+
+    moment[0] = "press"
+    word = w.shown.index(5000, 0).data(WORD)                               # a row deep in the list
+    w.list.scrollTo(w.shown.index(5000, 0))
+    _after(w, own_ms)                                                      # (the scroll's own: not the press)
+    steps["press"].append(_step(own_ms, w.mark_known_row, word))
+    assert w.shown.index(5000, 0).data(SOURCE) == "learning"               # its ○ at once
+    steps["press"] += _after(w, own_ms)                                    # (its marks greyed: not now)
+    assert wait_until(lambda: not w.busy() and word in w.cleared, 30)      # the answer's step timed …
+    steps["press"] += _after(w, own_ms)                                    # … and the marks back
+    worst = {name: round(max(took), 2) for name, took in steps.items()}
+    print("Mado-LT 6 worst step, ms:", worst, "budget", round(budget, 2),
+          {name: [round(took, 2) for took in took_all] for name, took_all in steps.items()})
+    assert all(took < budget for took in worst.values()), (worst, budget)
+
+
+def test_a_check_pressed_mid_search_paints_its_own_row_and_one_hidden_by_the_next_keystroke_still_lands(main):
+    """(Mado-LT 6: the window's own model shows the search's rows.) ✓ on a row the search shows: its ○ at once, that
+    row alone changed; a keystroke that hides it before the answer: nothing painted for it, and the search cleared
+    shows its ○ where it was — the order kept."""
+    _write("ja", JA)
+    w = _open(main)
+    w.search.setText("提")
+    assert _shown(w) == [("提灯", "known")]                                      # the list's second word, shown first
+    seen = _changes(w)
+    _click_mark(w, "提灯")
+    assert _shown(w) == [("提灯", "learning")]                                   # at once
+    assert seen["rows"] == 0 and {r for pair in seen["data"] for r in pair} == {0}
+    w.search.setText("灯台")                                                     # 提灯 hidden before the answer
+    assert _shown(w) == [("灯台", "known")]
+    assert wait_until(lambda: not w.busy() and "提灯" in w.cleared)
+    assert _shown(w) == [("灯台", "known")]
+    w.search.clear()
+    assert _shown(w) == [("灯台", "known"), ("提灯", "learning"), ("看板", "known"), ("コツン", "known")]
+    assert w.count.text() == "4 words"
+
+
+def test_the_search_typed_on_one_tab_still_narrows_the_other_tabs_rows(main):
+    """(Mado-LT 6) The search stays typed when the tab changes: the other list's rows, made again, are narrowed by it
+    at once — never every row under a search that says otherwise."""
+    _write("ja", JA)
+    with open(word_lists.list_path("ignore", "ja"), "w", encoding="utf-8") as f:
+        f.write("冒険\n灯油\n毎日\n")
+    w = _open(main)
+    w.search.setText("灯")
+    assert [word for word, _s in _shown(w)] == ["灯台", "提灯"]
+    w.show_kind("ignore")
+    assert wait_until(lambda: w.entries is not None and not w.busy())
+    assert _shown(w) == [("灯油", "list")] and w.count.text() == "1 of 3 words"

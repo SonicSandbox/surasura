@@ -61,7 +61,7 @@ def _bytes(path):
 
 
 def _model_rows(w):
-    return [(w.model.item(i).data(WORD), w.model.item(i).data(SOURCE)) for i in range(w.model.rowCount())]
+    return [(w.model.index(i, 0).data(WORD), w.model.index(i, 0).data(SOURCE)) for i in range(w.model.rowCount())]
 
 
 def _signals(w):

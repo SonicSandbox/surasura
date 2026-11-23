@@ -14,6 +14,9 @@ import tempfile
 import time
 import urllib.parse
 
+PORT_WAIT_S = 15      # Edge's start to its DevTools port (as the 150 looks of 0.1 s before): a start that hangs fails
+PAGE_WAIT_S = 10      # the port to a page listed (the 50 looks before: 5 s and more): never hangs a test
+
 CANDIDATES = (
     os.environ.get("SURASURA_EDGE") or "",
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
@@ -104,20 +107,47 @@ class Edge:
         if not self.path:
             raise RuntimeError("Edge isn't installed")
         self.profile = tempfile.mkdtemp(prefix="j-page-edge-")
+        self.proc = None
+        try:
+            self._launch(width, height, scale)
+            self._start(width, height, scale)
+        except BaseException:
+            self.close()                                 # a failed start leaves no Edge and no profile behind
+            raise
+
+    def _launch(self, width, height, scale):
         self.proc = subprocess.Popen(
             [self.path, "--headless=new", "--remote-debugging-port=0", "--user-data-dir=" + self.profile,
              f"--window-size={width},{height}", f"--force-device-scale-factor={scale}", "--no-first-run",
              "--disable-extensions", "--disable-background-networking", "--disable-component-update", "--disable-sync",
              "--enable-precise-memory-info", "--js-flags=--expose-gc", "--allow-file-access-from-files", "about:blank"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def _port(self):
+        """Edge's DevTools port, from the profile's DevToolsActivePort ("<port>\\n<browser path>") once Edge has
+        written it whole. Edge still holds the file a moment after its bytes are there, and Windows refuses a reader
+        then (PermissionError: GitHub, 2026-11-22, three reds); a read before its newline would take part of the port.
+        So it waits for the file to open with both lines, as it waits for the file to be there."""
         port_file = os.path.join(self.profile, "DevToolsActivePort")
-        for _ in range(150):
-            if os.path.exists(port_file) and os.path.getsize(port_file):
-                break
-            time.sleep(0.1)
-        port = int(open(port_file).read().split()[0])
+        end = time.monotonic() + PORT_WAIT_S
+        while time.monotonic() < end:
+            try:
+                with open(port_file, encoding="ascii") as f:
+                    lines = f.read().split("\n")
+                if len(lines) >= 2 and lines[0].strip().isdigit() and lines[1].strip():
+                    return int(lines[0])
+            except (FileNotFoundError, PermissionError):
+                pass
+            if self.proc.poll() is not None:
+                raise RuntimeError(f"Edge ended before it wrote its DevTools port (exit {self.proc.poll()})")
+            time.sleep(0.05)
+        raise RuntimeError(f"Edge wrote no DevTools port in {PORT_WAIT_S} s")
+
+    def _start(self, width, height, scale):
+        port = self._port()
         tabs = []
-        for _ in range(50):
+        end = time.monotonic() + PAGE_WAIT_S
+        while time.monotonic() < end:
             try:
                 with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
                     s.sendall(f"GET /json HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode("ascii"))
@@ -135,11 +165,13 @@ class Edge:
                 tabs = json.loads(raw.split(b"\r\n\r\n", 1)[1])
                 if any(t.get("type") == "page" for t in tabs):
                     break
-            except (OSError, ValueError):
+            except (OSError, ValueError, IndexError):       # (closed before its header: Edge still starting)
                 pass
             time.sleep(0.1)
-        tab = [t for t in tabs if t.get("type") == "page"][0]
-        self.ws = _Socket(tab["webSocketDebuggerUrl"])
+        pages = [t for t in tabs if t.get("type") == "page"]
+        if not pages:
+            raise RuntimeError(f"Edge listed no page in {PAGE_WAIT_S} s")
+        self.ws = _Socket(pages[0]["webSocketDebuggerUrl"])
         self.n = 0
         self.events = []
         self.call("Page.enable")
@@ -209,13 +241,15 @@ class Edge:
 
     def close(self):
         try:
-            self.ws.close()
+            if getattr(self, "ws", None):                # (a start that failed before its socket has none)
+                self.ws.close()
         finally:
-            self.proc.kill()
-            try:
-                self.proc.wait(10)
-            except subprocess.TimeoutExpired:
-                pass
+            if self.proc is not None:                    # (a launch that failed has no process)
+                self.proc.kill()
+                try:
+                    self.proc.wait(10)
+                except subprocess.TimeoutExpired:
+                    pass
             shutil.rmtree(self.profile, ignore_errors=True)
 
     def __enter__(self):

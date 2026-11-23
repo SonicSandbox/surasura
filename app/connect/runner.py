@@ -5132,9 +5132,10 @@ class Steps:
                 mapping.fields.get("audio"), None if anki_miner.is_audio(picked.get("video")) else
                 mapping.fields.get("picture"))
             rendered = dict(rendered, fields=values, named=named)  # named now: the rename after leaves it (its Undo)
+        learned = swap.learned_tag(ledger, row["old_note"], lambda: self._open(lang))     # decision 15
         try:
             kind, said = swap.write_in_place(swap.AnkiSwap(self.url), ledger, row, rendered, mapping,
-                                             swap.kept_folder())
+                                             swap.kept_folder(), learned=learned)
         except sentence_audio.Reviewing:
             raise Wait(REVIEWING, True, "mining") from None
         except locks.Busy as e:

@@ -49,6 +49,7 @@ from app.connect import sentences, swap_queue, tidy
 log = logging.getLogger("surasura-cli")
 
 SWAP_TAG = "surasura::swapped"
+LEARNED_PREFIX = "surasura::learned::"  # FS-1, decision 15: the episode a card was first made from (`learned_tag`)
 BY_SWAP, BY_BAD_CARD = "swap", "bad card"
 BY_JOURNEY, BY_ADD_NOW = "journey", "add now"   # the journey page's ⇄ and *Add now* (`door_routes`): the line pressed
 JOURNEY_TAKES_OLD = True        # a journey ⇄ is one out, one in: its old card suspended once the new one is made (the
@@ -66,7 +67,7 @@ NOT_MADE = "That swap's card isn't made yet."
 KEPT = "The new card stays: you've studied or changed it."
 # FS-1 (the full Swap, 3.1; SCOPE.md § 8, Sonic 2026-11-23): a swap's kind, decided when its job is made (`_kind_of`)
 IN_PLACE, NEW_CARD = "in place", "new card"
-SETTING = "swap_in_place"       # settings.json: True (the default) = *Same card, new sentence*; False = *A new card*
+SETTING = "swap_in_place"       # settings.json: True = *Same card, new sentence*; False (the default until FS-2) = *A new card*
 MARK = "（前の文）"               # before a kept translation of the old line, until Piyo writes the new one's (decision 2)
 CHANGED = "This card changed since the swap: nothing was undone."
 HAND_EDITED = "its sentence was changed by hand: a new card instead"     # decision 5 (the row's why, said once)
@@ -595,12 +596,13 @@ def _start(steps, ledger, language, row, store_id, anki, out, count=None, state_
 
 
 def in_place_on(settings=None):
-    """The learner's *Swap gives a card a better sentence* (`SETTING`): True = *Same card, new sentence* (the default,
-    decision 1), False = *A new card*. Anything but False reads as the default."""
+    """The learner's *Swap gives a card a better sentence* (`SETTING`): True = *Same card, new sentence*, False = *A new
+    card* — the default until FS-2 lands its Settings row (the lead, 2026-11-23; FS-2's last commit makes decision 1's
+    True the default). Anything but True reads as the default: off."""
     if settings is None:
         from app import settings_manager
         settings = settings_manager.load_settings()
-    return (settings or {}).get(SETTING) is not False
+    return (settings or {}).get(SETTING) is True
 
 
 def _sentence_of(info):
@@ -695,12 +697,60 @@ def new_fields(info, rendered, mapping):
     return out
 
 
-def write_in_place(anki, ledger, row, rendered, mapping, keep_dir):
+def learned_tag(ledger, note, open_store):
+    """Decision 15 (*it keeps what it came from*: the episode you learned it from) -> the tag naming the episode a card
+    was first made from — `surasura::learned::<show>::s<season>e<episode>` (PROVISIONAL), lowercase: the show as its
+    `Surasura::from::` tag names it (`runfile.show_slug`), the episode as Connect places it in its show
+    (`library.part_of`, `s01e02`); an item with no place in a show (a book, a channel's video): `…::<show>` alone, its
+    file's name when it has no show — or None when the ledger or the store can't say (no tag, never a wrong one)."""
+    got = ledger.conn.execute("SELECT j.item_id FROM outcomes o JOIN jobs j ON j.id = o.job_id WHERE o.note_id = ? "
+                              "AND o.outcome = 'made' ORDER BY o.job_id, o.rowid LIMIT 1", (int(note),)).fetchone()
+    if got is None or got[0] is None or open_store is None:
+        return None
+    from app.connect import library, runfile
+    try:
+        store = open_store()
+        if store is None:
+            return None
+        with store:
+            item = store.item(int(got[0]))
+            if item is None:
+                return None
+            title = library.show_title(store, int(got[0]))
+            place = library.part_of(store, int(got[0]), item.get("rel_path"))
+    except Exception:
+        log.info("Swap: the episode a card was first made from couldn't be read", exc_info=True)
+        return None
+    name = title or os.path.splitext(os.path.basename(str(item.get("rel_path") or "")))[0]
+    show = runfile.show_slug(name).lower()
+    if not show:
+        return None
+    if not place:
+        return LEARNED_PREFIX + show
+    season, number = place
+    number = f"{int(number):02d}" if float(number).is_integer() else str(number)
+    return f"{LEARNED_PREFIX}{show}::s{int(season):02d}e{number}"
+
+
+def _first_in_place(ledger, row, info):
+    """Is this the card's first in-place swap (decision 15's tag written then, never changed after)? No other in-place
+    swap of the note standing, and no `LEARNED_PREFIX` tag on it (one its Undo took off is written again; one the
+    learner took off stays off)."""
+    if any(str(t).lower().startswith(LEARNED_PREFIX) for t in info.get("tags") or ()):
+        return False
+    return not ledger.conn.execute("SELECT 1 FROM swaps WHERE old_note = ? AND kind = ? AND wrote IS NOT NULL AND "
+                                   "state != ? AND id != ?",
+                                   (int(row["old_note"]), IN_PLACE, UNDONE, int(row["id"]))).fetchone()
+
+
+def write_in_place(anki, ledger, row, rendered, mapping, keep_dir, learned=None):
     """The in-place swap's one write (the field writer's replace mode, `sentence_audio.replace`): the old card's
     sentence side rewritten from `render`'s note (`rendered` {"fields", "files"}), only while each field still holds
     what was read here, its old media kept in `keep_dir` first, tagged `SWAP_TAG` -> (IN_PLACE, the note id), or
     (NEW_CARD, why) when the card can't be rewritten (gone, its sentence changed by hand since the look), or (None,
-    NOT_APPLIED) when Anki didn't keep the write (the note open in its editor: tried again)."""
+    NOT_APPLIED) when Anki didn't keep the write (the note open in its editor: tried again). `learned`: the card's
+    first-episode tag (`learned_tag`), put on with the write at its first in-place swap only, and taken off by that
+    swap's Undo (the writer's record holds it); the learner's own tags are never touched."""
     from app.connect import sentence_audio
     note = int(row["old_note"])
     writer = anki.field_writer() if hasattr(anki, "field_writer") else anki
@@ -721,9 +771,10 @@ def write_in_place(anki, ledger, row, rendered, mapping, keep_dir):
     if not str(new.get(mapping.fields.get("sentence")) or "").strip() or             any(m not in files or not os.path.isfile(files[m]) for m in named):
         return NEW_CARD, None                   # render gave no sentence, or a clip it didn't hand over: never written
     media = {m: files[m] for m in named}
+    first = (learned,) if learned and _first_in_place(ledger, row, info) else ()
     try:
         got = sentence_audio.replace(writer, ledger, note, new, {f: have[f] for f in new}, media=media,
-                                     keep_dir=keep_dir, tag=SWAP_TAG, by=BY_SWAP, verb=VERB)
+                                     keep_dir=keep_dir, tag=SWAP_TAG, by=BY_SWAP, verb=VERB, extra=first)
     except BaseException as e:
         if getattr(e, "sentence_audio_id", None):
             _set(ledger, row["id"], wrote=e.sentence_audio_id)     # its record: settled when it is tried again

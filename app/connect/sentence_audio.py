@@ -268,12 +268,14 @@ def _keep(anki, names, keep_dir):
     return kept
 
 
-def replace(anki, ledger, note_id, new, was, media=None, keep_dir=None, tag=None, by="swap", verb=VERB):
+def replace(anki, ledger, note_id, new, was, media=None, keep_dir=None, tag=None, by="swap", verb=VERB, extra=()):
     """The replace mode (the docstring above) -> {"id" (None when nothing was written), "filled": [note id] or [],
     "skipped": {note id: why}}. `new` {field: value}; `was` {field: the value it must still hold}, one per field of
     `new`; `media` {name: a file on disk} stored under that name (Anki's own answer is the name written); `keep_dir`:
-    where the replaced media are copied first. Raises Reviewing, the writer's Busy, AnkiConnect's errors, OSError
-    (a copy that didn't read back), ValueError (a field of `new` with no `was`)."""
+    where the replaced media are copied first; `extra`: more tags put on with `tag` (FS-1: the first-episode tag),
+    each only when the note hasn't it — those, recorded, are the ones its Undo takes off. Raises Reviewing, the
+    writer's Busy, AnkiConnect's errors, OSError (a copy that didn't read back), ValueError (a field of `new` with no
+    `was`)."""
     n = int(note_id)
     if set(new) - set(was):
         raise ValueError("replace needs each field's old value")
@@ -296,8 +298,10 @@ def replace(anki, ledger, note_id, new, was, media=None, keep_dir=None, tag=None
         rid = f"{time.time_ns()}-{uuid.uuid4().hex[:8]}"
         kept = _keep(anki, gone, os.path.join(keep_dir, rid)) if keep_dir and gone else {}
         had = any(str(t).lower() == str(tag or "").lower() for t in note.get("tags") or ())
+        on = {str(t).lower() for t in note.get("tags") or ()}
         rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "mode": REPLACE, "field": None,
-               "tag": tag, "had_tag": had, "by": by, "notes": {str(n): dict(new)},
+               "tag": tag, "had_tag": had, "extra": [t for t in extra or () if t and t.lower() not in on],
+               "by": by, "notes": {str(n): dict(new)},
                "was": {str(n): {f: str(was[f] or "") for f in new}}, "media": sorted(stored_new), "kept": kept,
                "keep_dir": os.path.join(keep_dir, rid) if kept else None, "state": WRITING}
         _write_record(ledger, rid, rec, new=True)             # before Anki: a kill after a write is undone as any
@@ -322,6 +326,8 @@ def replace(anki, ledger, note_id, new, was, media=None, keep_dir=None, tag=None
                 return {"id": None, "filled": [], "skipped": {n: NOT_APPLIED}}
             if tag and not had:
                 anki.tag([n], tag)
+            for t in rec["extra"]:
+                anki.tag([n], t)
             for name in kept:
                 if not anki.users(name):                      # an old file no other note names goes (a copy kept)
                     anki.delete_media(name)
@@ -365,8 +371,7 @@ def _undo_replace(anki, rec):
         old = dict((rec.get("was") or {}).get(str(n)) or {})
         if old and all(str((fields.get(f) or {}).get("value") or "") == v for f, v in old.items()):
             emptied.append(n)                                 # put back already (an Undo stopped after its write)
-            if rec.get("tag") and not rec.get("had_tag"):
-                anki.tag([n], rec["tag"], on=False)
+            _tags_off(anki, n, rec)
             continue
         if any(str((fields.get(f) or {}).get("value") or "") != v for f, v in value.items()):
             kept[n] = "changed since"
@@ -379,14 +384,21 @@ def _undo_replace(anki, rec):
                 old = {f: v.replace(name, got) for f, v in old.items()}
         anki.update(n, old)
         emptied.append(n)
-        if rec.get("tag") and not rec.get("had_tag"):
-            anki.tag([n], rec["tag"], on=False)
+        _tags_off(anki, n, rec)
     if emptied:
         for name in rec.get("media") or ():
             if not anki.users(name):
                 anki.delete_media(name)
                 deleted.append(name)
     return emptied, kept, deleted
+
+
+def _tags_off(anki, n, rec):
+    """A `replace` record's tags off its note on Undo: `tag` unless the note had it, and each `extra` it put on."""
+    if rec.get("tag") and not rec.get("had_tag"):
+        anki.tag([n], rec["tag"], on=False)
+    for t in rec.get("extra") or ():
+        anki.tag([n], t, on=False)
 
 
 def undo(anki, ledger, rid, verb=VERB):

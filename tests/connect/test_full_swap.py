@@ -1,6 +1,7 @@
 """FS-1, the full Swap (Connect; SCOPE.md § 8 — Sonic's decisions 1–15, 2026-11-23): a flagged card gets its new
 sentence IN PLACE — the same note and cards, so its reviews, interval and due date stay — behind `swap_in_place`
-(default on: *Same card, new sentence*).
+(off in the tree until FS-2 lands its Settings row, the lead 2026-11-23: these tests turn it on, but the one that
+holds the default off — with it, every swap is the simple Swap, as before FS-1).
 
 What each test holds still:
 - **the kind** (decided when the swap's job is made, decision 10): in place only for the loop's flag or the journey's
@@ -13,7 +14,9 @@ What each test holds still:
 - **Undo:** every old value and the old media back, the card left in reviews; refused after a hand edit; twice:
   nothing more; the ledger's line of the card back to the old one (decision 15: *sentence from now*);
 - **decision 15:** the card keeps its first job's tag and show tag (*first learned from*), and the ledger's newest
-  made outcome of the note is its line now.
+  made outcome of the note is its line now; its first in-place swap adds the episode it was first made from
+  (`surasura::learned::<show>::s01e02`), never changed after, taken off by that swap's Undo — the learner's tags
+  untouched.
 What a wrong answer costs: a card that loses its reviews (the reason to swap), a learner's edit overwritten, a word's
 side rewritten, an old clip lost for good, or an Undo that writes over the learner's own work.
 Real Japanese and Chinese lines from tests/Test Resources (the simple Swap's CASES); the ledger is real; Anki is the
@@ -38,6 +41,7 @@ MAPPING = fields.Mapping("日本語::Mining", "Lapis", {
     "word": "Word", "sentence": "Sentence", "audio": "SentenceAudio", "picture": "Picture",
     "sentence_furigana": "SentenceFurigana", "source": "MiscInfo", "pitch_position": "PitchPosition"},
     "Word", "Sentence", "MiscInfo", None, None)
+IN_PLACE_ON = swap.in_place_on          # the real switch (the autouse fixture below turns the setting on)
 
 
 class Anki(SwapAnki):
@@ -137,6 +141,10 @@ def _value(anki, field, note=900):
 @pytest.fixture(autouse=True)
 def _flag(monkeypatch):
     monkeypatch.setattr(swap, "_swap_flag", lambda: 3)       # the learner's Swap flag: green (the default)
+    # *Same card, new sentence* on (the learner's pick: off in the tree until FS-2's row); a test that hands its own
+    # settings reads them
+    monkeypatch.setattr(swap, "in_place_on", lambda settings=None: IN_PLACE_ON(
+        {swap.SETTING: True} if settings is None else settings))
 
 
 # --------------------------------------------------------------------------- #
@@ -197,6 +205,110 @@ def test_a_flagged_connect_card_gets_its_new_sentence_in_place_keeps_its_reviews
     assert twice.value.say == swap.ALREADY
 
 
+class _Store:
+    """The library store as `learned_tag` reads it: an item's file, its show's title and its record."""
+
+    def __init__(self, rel_path, title=None, record=None):
+        self.rel_path, self.title, self.record = rel_path, title, record or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def item(self, item_id):
+        return {"id": item_id, "rel_path": self.rel_path}
+
+    def _show_record(self, item_id):
+        return self.record
+
+
+@pytest.fixture
+def _titles(monkeypatch):
+    monkeypatch.setattr(library, "show_title", lambda store, item_id: store.title)
+
+
+@pytest.mark.parametrize("store, tag", [
+    (_Store("Toshokan/Toshokan - 02.mkv", "Toshokan"), "surasura::learned::toshokan::s01e02"),
+    (_Store("ゆるキャン△/Season 02/ゆるキャン△ S02E03.mkv", "ゆるキャン△ SEASON２"),
+     "surasura::learned::ゆるキャン△_season２::s02e03"),
+    (_Store("hato/abc.mkv", "Hibike! Euphonium 3", {"show": {"season": 3, "episode": 4}}),
+     "surasura::learned::hibike!_euphonium_3::s03e04"),      # hato's record names the place: it wins
+    (_Store("甄嬛传/甄嬛传 第05集.mp4", "甄嬛传"), "surasura::learned::甄嬛传::s01e05"),
+    (_Store("三体.epub"), "surasura::learned::三体"),           # a book: no place in a show, no show — its name
+    (_Store("Toshokan/Toshokan - 12.5.mkv", "Toshokan", {"show": {"episode": 12.5}}),
+     "surasura::learned::toshokan::s01e12.5"),
+])
+def test_the_first_episode_tag_names_the_show_and_episode_as_connect_names_them(ledger, _titles, store, tag):
+    """Decision 15's tag (PROVISIONAL): the show in its `Surasura::from::` form, lowercase, the episode as Connect
+    places it in its show — from the item the card was FIRST made from (the note's first made outcome), never the
+    swap's."""
+    _made_by_connect(ledger, "ja")
+    swap_job = ledger.queue("ja", 8, "user", None, store_id="s1")
+    ledger.end_batch(swap_job, 1, "done", [{"word": "w", "reading": "", "outcome": "made", "note_id": 900,
+                                            "sentence": "新しい行"}], deck=MAPPING.deck)
+    seen = []
+
+    def open_store():
+        seen.append(1)
+        return store
+    assert swap.learned_tag(ledger, 900, open_store) == tag
+    assert seen == [1]
+
+
+def test_the_first_episode_tag_is_none_when_nothing_can_say_it(ledger, _titles):
+    assert swap.learned_tag(ledger, 900, lambda: _Store("a.mkv", "A")) is None      # no card made of that note
+    _made_by_connect(ledger, "ja")
+    assert swap.learned_tag(ledger, 900, None) is None
+
+    def busy():
+        raise runner.Wait(runner.LIBRARY_BUSY)
+    assert swap.learned_tag(ledger, 900, busy) is None                  # the store busy: no tag, never a wrong one
+    assert swap.learned_tag(ledger, 900, lambda: _Store("", None)) is None
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_the_first_in_place_swap_adds_the_first_episode_tag_once_and_its_undo_takes_it_off(
+        ledger, lang, tmp_path, monkeypatch):
+    learned = "surasura::learned::toshokan::s01e02"
+    anki = _card(Anki(), lang)
+    anki.notes_[900]["tags"].append("my_own")
+    _made_by_connect(ledger, lang)
+    _entry, row = _to_job(ledger, lang, anki, monkeypatch)
+    assert swap.write_in_place(anki, ledger, row, _rendered(tmp_path, lang), MAPPING, str(tmp_path / "kept"),
+                               learned=learned) == (swap.IN_PLACE, 900)
+    assert set(anki.notes_[900]["tags"]) == {FIRST_TAG, SHOW_TAG, "my_own", swap.SWAP_TAG, learned}
+    row = _row(ledger, row["id"])
+    # never changed after: a later in-place swap of the card finds the first standing (and the tag on)
+    later = dict(row, id=row["id"] + 1000)
+    assert not swap._first_in_place(ledger, later, anki.notes_[900])
+    assert not swap._first_in_place(ledger, later, {"tags": []})          # the first swap stands
+    assert not swap._first_in_place(ledger, row, anki.notes_[900])        # the tag on: never a second one
+    _job_made(ledger, swap.in_place_row(ledger, row["job_id"]), 900)
+    swap.look(Steps(), ledger, lang, anki=anki, files=5)
+    swap.undo(anki, ledger, lang, row["id"])
+    assert set(anki.notes_[900]["tags"]) == {FIRST_TAG, SHOW_TAG, "my_own"}   # the learner's tags untouched
+    assert swap._first_in_place(ledger, later, anki.notes_[900])           # undone: the next swap is the first
+
+
+def test_a_card_already_holding_a_first_episode_tag_keeps_it_and_its_undo_leaves_it(ledger, tmp_path, monkeypatch):
+    """The tag is written once: a card that has one (its first swap's, kept by the learner after a hand fix, or one
+    the learner wrote) gets no second, and this swap's Undo never takes off what it didn't put on."""
+    anki = _card(Anki(), "ja")
+    anki.notes_[900]["tags"].append("surasura::learned::toshokan::s01e01")
+    _made_by_connect(ledger, "ja")
+    _entry, row = _to_job(ledger, "ja", anki, monkeypatch)
+    swap.write_in_place(anki, ledger, row, _rendered(tmp_path, "ja"), MAPPING, str(tmp_path / "kept"),
+                        learned="surasura::learned::toshokan::s01e02")
+    tags = [t for t in anki.notes_[900]["tags"] if t.startswith(swap.LEARNED_PREFIX)]
+    assert tags == ["surasura::learned::toshokan::s01e01"]
+    _job_made(ledger, swap.in_place_row(ledger, row["job_id"]), 900)
+    swap.look(Steps(), ledger, "ja", anki=anki, files=5)
+    swap.undo(anki, ledger, "ja", row["id"])
+    assert "surasura::learned::toshokan::s01e01" in anki.notes_[900]["tags"]
+
+
 def test_a_journey_swap_in_place_never_takes_the_card_out_of_reviews(ledger, tmp_path, monkeypatch):
     lang = "ja"
     anki = _card(Anki(), lang)
@@ -252,12 +364,50 @@ def test_a_swap_waiting_when_the_setting_is_switched_follows_it_when_its_job_is_
     _made_by_connect(ledger, "ja")
     swap.make_card("ja", CASES["ja"][0], old_note=900, old_card=9000, ledger=ledger, wake=False,
                    state_of=lambda w, r: None)
-    assert swap.in_place_on({"swap_in_place": True}) and not swap.in_place_on({"swap_in_place": False})
-    assert swap.in_place_on({}) and swap.in_place_on({"swap_in_place": "no"})      # anything else: the default
+    assert IN_PLACE_ON({"swap_in_place": True}) and not IN_PLACE_ON({"swap_in_place": False})
+    assert not IN_PLACE_ON({}) and not IN_PLACE_ON({"swap_in_place": "yes"})       # anything else: the default, off
     monkeypatch.setattr(swap, "in_place_on", lambda settings=None: False)
     monkeypatch.setattr(swap, "choose_line", lambda *a, **k: (7, CASES["ja"][2]))
     swap.look(Steps(), ledger, "ja", anki=anki, files=5)
     assert swap._rows(ledger, "language = ?", ("ja",))[-1]["kind"] == swap.NEW_CARD
+
+
+def test_with_the_default_off_every_swap_is_the_simple_swap_as_before(ledger, tmp_path, monkeypatch):
+    """The lead, 2026-11-23: `swap_in_place` is off in the tree until FS-2 lands its Settings row, so this lands
+    inert. With the settings as shipped, a flagged card Connect made — the one card the full Swap rewrites — gets
+    the simple Swap's new card: its job mines (nothing rendered, nothing written over), nothing is handed to the
+    record or to Backfill as rewritten, and the old card keeps every field and tag but the simple Swap's own."""
+    from app import settings_manager
+    monkeypatch.setattr(swap, "in_place_on", IN_PLACE_ON)
+    assert settings_manager.DEFAULT_SETTINGS[swap.SETTING] is False and IN_PLACE_ON() is False
+    anki = _card(Anki(), "ja")
+    anki.notes_[900]["tags"].append("my_own")
+    fields_before = {k: dict(v) for k, v in anki.notes_[900]["fields"].items()}
+    _made_by_connect(ledger, "ja")
+    _entry, row = _to_job(ledger, "ja", anki, monkeypatch)
+    assert (row["kind"], row["kind_why"]) == (swap.NEW_CARD, None)
+    assert swap.in_place_row(ledger, row["job_id"]) is None
+    job = ledger.job_by_id(row["job_id"])
+    calls = []
+
+    class S:
+        def swap_in_place(self, *a):
+            calls.append("in place")
+
+        def mine(self, *a):
+            calls.append("mine")
+            return {"outcomes": []}
+    monkeypatch.setattr(runner, "_part_read", lambda *a: {})
+    runner._mine_batch(S(), ledger, "ja", job, {}, [], 1)
+    assert calls == ["mine"]
+    _job_made(ledger, row, 901)                                     # the simple Swap's new card
+    assert runner._rewritten(ledger, job) == [] and swap.rewritten(ledger, row["job_id"]) == []
+    swap.look(Steps(), ledger, "ja", anki=anki, files=5)
+    row = _row(ledger, row["id"])
+    assert (row["state"], row["new_note"], row["kind"], row["wrote"]) == (swap.MADE, 901, swap.NEW_CARD, None)
+    assert anki.notes_[900]["fields"] == fields_before
+    assert set(anki.notes_[900]["tags"]) == {FIRST_TAG, SHOW_TAG, "my_own", swap.SWAP_TAG}
+    assert not any(op[0] in ("update", "store", "delete_media") for op in anki.log)
 
 
 def test_anki_unreadable_at_the_look_decides_nothing(ledger, monkeypatch):

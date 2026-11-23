@@ -19,6 +19,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
+from PyQt6.QtCore import QRect  # noqa: E402
 from app.qt import rows, stones, strings, style  # noqa: E402
 from app.services import stone_plan  # noqa: E402
 from tests.qt.conftest import wait_until  # noqa: E402
@@ -62,6 +63,11 @@ def _blits(monkeypatch):
 def _looks(lst):
     """The rows the last refresh rebuilt that paint differently (the view repaints these only: `RowsView.set_entries`)."""
     return [n for n in lst.model().changed if lst.model().looks_different(n)]
+
+
+def _at(lst, key):
+    """(entry index, row) of the row `key` on the list now."""
+    return next((n, e[1]) for n, e in enumerate(lst.model().entries) if getattr(e[1], "key", None) == key)
 
 
 def _settle(lst):
@@ -163,6 +169,29 @@ def test_an_episode_past_the_twelve_lights_the_ore_and_its_hover_names_it(window
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_cut_group_lights_its_sparkle_once_and_its_hover_names_them(window, monkeypatch, language):
+    """Two files inside a cut group of the watched past (no stone of their own): the group carries the sparkle — blitted
+    once, over its picture — and its hover names them in order. (A long show's first twelve watched makes the group.)"""
+    seed, win = window(language, files=2000)
+    lst = current(win)
+    i, row, _ore = _row_with(lst, "ore")
+    eps = row.episodes[:2]
+    lst.scrollTo(lst.model().index(i, 0))
+    drawn = _blits(monkeypatch)
+    seed.library.commit(items=[{"id": e.id, "watched": 1} for e in row.episodes[:stone_plan.BLOCK]] +
+                        [{"id": e.id, "watched": 1, "prestudied_at": STAMP} for e in eps])
+    assert wait_until(lambda: _at(lst, row.key)[1] is not row)
+    i, marked = _at(lst, row.key)
+    lit = [it for it in stone_plan.plan_of(marked).items if it.kind == "tier" and it.start == 0]
+    assert len(lit) == 1, "its first twelve, a cut group"
+    assert [it.pre for it in lit] == [tuple(e.label for e in eps)]
+    lst.viewport().repaint()
+    assert drawn.count(("pre", "group", lit[0].n)) == 1, drawn
+    tips = [tip for name, _r, tip, _p in _parts(lst, i) if name == "pre"]
+    assert strings.ROWS_STONE_PRE_NAMES.format(names=" · ".join(e.label for e in eps)) in tips
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_whole_show_pre_studied_lights_every_stone_and_the_string_never_moves(window, language):
     """Every file of a show marked: each stone in play carries the add, the ore names the rest — and the string is laid
     out exactly as before (the add hangs outside each stone's box: nothing moves, the title column neither)."""
@@ -206,11 +235,14 @@ def test_a_finished_work_pre_studied_lights_its_row_alone_and_its_hover_names_th
     win.show_tab("finished")                                  # a hidden list paints nothing: Finished on screen
     _settle(fin)
     renders = fin.delegate.renders
+    drawn = _blits(monkeypatch)
     seed.library.commit(items=[{"id": e.id, "prestudied_at": STAMP} for e in eps])
     assert wait_until(lambda: fin.model().entries[i][1] is not row)
     assert _looks(fin) == [i], "that Finished row alone looks different"
     _settle(fin)
     assert fin.delegate.renders == renders + 1, "its picture painted once, no other row's"
+    assert drawn.count(("pre", "spark")) == 1, "the sparkle on its cover, once"
+    drawn.clear()
     assert rows.finished_pre(fin.model().entries[i][1]) == tuple(e.label for e in eps)
     tips = [tip for name, _r, tip, _p in _parts(fin, i) if name == "pre"]
     assert tips == [strings.ROWS_STONE_PRE_NAMES.format(names=" · ".join(e.label for e in eps))]
@@ -223,4 +255,108 @@ def test_a_finished_work_pre_studied_lights_its_row_alone_and_its_hover_names_th
     _settle(fin)
     assert fin.delegate.paints > paints, "the row is painted again"
     assert fin.delegate.renders == renders + 1, "from its picture before the mark, still kept: nothing drawn afresh"
+    assert ("pre", "spark") not in drawn
     assert [name for name, *_ in _parts(fin, i) if name == "pre"] == []
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_faded_stone_keeps_its_add_at_full_strength(window, monkeypatch, language):
+    """A stone faded far down the string (it won't mine itself) that was pre-studied: the stone is drawn faded, its add
+    at full strength — the learner's own mark is never dimmed with it (PROVISIONAL, For Sonic 1)."""
+    seed, win = window(language, files=2000)
+    lst = current(win)
+    found = next(((i, row, it) for i, (k, row, _l) in enumerate(lst.model().entries) if k == rows.ROW
+                  for it in stone_plan.plan_of(row).items if it.kind == "stone" and it.dim), None)
+    assert found is not None, "the 2,000-file seed has a faded stone in play"
+    i, row, item = found
+    ep = row.episodes[item.index]
+    lst.scrollTo(lst.model().index(i, 0))                    # on screen: its row is drawn afresh once marked
+    drawn = []
+    real = stones.Sheet.draw
+    monkeypatch.setattr(stones.Sheet, "draw", lambda self, p, at, what: drawn.append((what, p.opacity())) or
+                        real(self, p, at, what))
+    seed.library.commit(items=[{"id": ep.id, "prestudied_at": STAMP}])
+    assert wait_until(lambda: lst.model().entries[i][1] is not row)
+    lst.viewport().repaint()
+    pres = [(w, o) for w, o in drawn if w[0] == "pre" and w[1:3] == (item.state, item.variant % stones.VARIANTS)]
+    assert pres and all(o == 1.0 for _w, o in pres), pres
+    faded = [o for w, o in drawn if w[0] == "stone" and w[1] == item.state and w[3] == item.variant % stones.VARIANTS]
+    assert faded and min(faded) < 1.0, "its stone is drawn faded"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_finished_repaint_from_kept_pictures_walks_no_files(window, monkeypatch, language):
+    """Scrolling Finished repaints its rows from their kept pictures: what a row shows of pre-studied is made once with
+    the row (`Row.prestudied`), never by walking its files at each paint (before: every file of every Finished row on
+    screen, at each repaint — a 100-episode show 100 calls a frame)."""
+    seed, win = window(language)
+    fin = win.page_widgets["finished"].list
+    i, row = next((i, e[1]) for i, e in enumerate(fin.model().entries) if e[0] == rows.FINISHED)
+    seed.library.commit(items=[{"id": e.id, "prestudied_at": STAMP} for e in row.episodes[:2]])
+    assert wait_until(lambda: fin.model().entries[i][1] is not row)
+    win.show_tab("finished")
+    _settle(fin)
+    renders, paints = fin.delegate.renders, fin.delegate.paints
+    asked = []
+    real = stone_plan.is_pre
+    monkeypatch.setattr(stone_plan, "is_pre", lambda ep: asked.append(ep) or real(ep))
+    fin.viewport().repaint()
+    assert fin.delegate.paints > paints and fin.delegate.renders == renders, "from the kept pictures"
+    assert asked == [], f"{len(asked)} files walked by one repaint"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_finished_row_painted_before_the_sheet_gets_its_sparkle_when_it_lands(window, monkeypatch, language):
+    """The stones' sheet is built on a worker: a pre-studied Finished row painted before it lands is drawn without its
+    sparkle, and that picture is let go when the sheet lands — the next paint draws the sparkle (never a cover left
+    bare until the row changes)."""
+    seed, win = window(language)
+    fin = win.page_widgets["finished"].list
+    i, row = next((i, e[1]) for i, e in enumerate(fin.model().entries) if e[0] == rows.FINISHED)
+    win.show_tab("finished")
+    _settle(fin)
+    real_get = stones.get
+    with monkeypatch.context() as building:
+        building.setattr(stones, "get", lambda *a, **k: None)                # the sheet still being built
+        seed.library.commit(items=[{"id": e.id, "prestudied_at": STAMP} for e in row.episodes[:2]])
+        assert wait_until(lambda: fin.model().entries[i][1] is not row)
+        _settle(fin)
+    assert stones.get is real_get
+    drawn = _blits(monkeypatch)
+    dpr = fin.viewport().devicePixelRatioF()
+    assert fin.delegate.drop_unsheeted(dpr), "the bare picture is let go when the sheet lands"
+    fin.viewport().repaint()
+    assert drawn.count(("pre", "spark")) == 1
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_click_on_a_sparkle_does_what_a_click_there_did_before(window, monkeypatch, language):
+    """The sparkle's hover is a hover only (the window gives no press for pre-studied, D5): on a Current row a click on
+    the marked ore opens the row, as its slab did; on Up Next's card, where a click on its string's group or ore does
+    nothing, a marked one does nothing either (the seed's Up Next is short: the click is handed a sparkle there)."""
+    from tests.qt.test_drag import press, release
+    seed, win = window(language, files=2000)
+    lst = current(win)
+    i, row, ore = _row_with(lst, "ore")
+    seed.library.commit(items=[{"id": row.episodes[ore.start].id, "prestudied_at": STAMP}])
+    assert wait_until(lambda: _at(lst, row.key)[1] is not row)
+    i, _r = _at(lst, row.key)
+    lst.scrollTo(lst.model().index(i, 0))
+    pres = [pt for pt in _parts(lst, i) if pt[0] == "pre"]
+    assert len(pres) == 1
+    at = pres[0][1].center()
+    assert lst.part_at(at)[1][0] == "pre"
+    press(lst, at)
+    release(lst, at)
+    assert lst.model().open_key == row.key, "a Current row opens, as its slab's click did"
+    lst.toggle(lst.model().index(_at(lst, row.key)[0], 0))
+    assert lst.model().open_key is None
+    h = next(n for n, e in enumerate(lst.model().entries) if e[0] == rows.HERO)
+    idx = lst.model().index(h, 0)
+    rect = lst.visualRect(idx)
+    at = rect.center()
+    part = ("pre", QRect(at.x() - 10, at.y() - 10, 20, 20), strings.ROWS_STONE_PRE_NAMES.format(names="#1"), None)
+    monkeypatch.setattr(lst, "part_at", lambda pos: (idx, part))
+    press(lst, at)
+    release(lst, at)
+    assert lst.model().open_key is None, "Up Next's card stays as it was"

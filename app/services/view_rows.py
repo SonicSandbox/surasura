@@ -269,6 +269,9 @@ Episode = namedtuple("Episode", Episode._fields + ("prestudied",),
                      defaults=tuple(Episode._field_defaults.values()) + (None,))
 Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("level", "string"),
                  defaults=tuple(Row._field_defaults.values())[:-1] + (None, None))
+# --- J-STONES: `prestudied`, the labels of the row's pre-studied files in order, made once as the row is (a Finished
+# row's cover sparkle and hover read it at each paint: never a walk of its files there); () in a cache from before
+Row = namedtuple("Row", Row._fields + ("prestudied",), defaults=tuple(Row._field_defaults.values()) + ((),))
 Arrival = namedtuple("Arrival", Arrival._fields + ("audio",), defaults=tuple(Arrival._field_defaults.values()) + ("",))
 
 
@@ -1682,7 +1685,8 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
                cards_out=any(it.get("in_learning_order", 1) == 0 for it in piece),     # --- W3.2 Q4
                audio=audio,                                                            # a5-2
                n_top=0 if finished else sum(1 for e in eps if counts_toward_top(e, tier, keep)),   # 3.0.1 item 12
-               elsewhere=away, level=level)                                            # Michi-CK2
+               elsewhere=away, level=level,                                            # Michi-CK2
+               prestudied=tuple(e.label for e in eps if e.prestudied))                 # J-STONES
 
 
 class RowCache:
@@ -2790,7 +2794,8 @@ def _row_from(data):
     r = r._replace(status=st, mark=mk, episodes=eps, chips=chips,
                    new_faded=bool(r.new_faded),                    # U-1 (U-A4): a cache from before held None there
                    cover=CoverRef(*r.cover) if r.cover else None,                  # W3.2 Q6
-                   works=tuple(r.works or ()))                                     # LM11b G1
+                   works=tuple(r.works or ()),                                     # LM11b G1
+                   prestudied=tuple(r.prestudied or ()))                           # J-STONES (JSON: a list)
     plan = stone_plan.plan(r.episodes, r.next_index, r.media, r.key, r.source == "hato")     # planned again, not kept
     return r._replace(string=(plan, max(stone_plan.tightest(plan), stone_plan.ahead(plan))))
 

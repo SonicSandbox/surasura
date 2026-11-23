@@ -1135,15 +1135,14 @@ def _same_face(old, new, kind):
     fields = getattr(new, "_fields", None)
     if unshown is None or fields is None or type(old) is not type(new):
         return False
-    if kind == FINISHED and finished_pre(old) != finished_pre(new):      # J-STONES: its sparkle is painted
-        return False
     return all(a is b or a == b for name, a, b in zip(fields, old, new) if name not in unshown)
 
 
 def finished_pre(row):
     """J-STONES (journey v3 SPEC §2.4): the labels of a Finished row's pre-studied files, in order — the sparkle at its
-    cover's shoulder and the hover naming them; () when none was (a Finished row draws no string of its own)."""
-    return tuple(e.label for e in getattr(row, "episodes", ()) or () if stone_plan.is_pre(e))
+    cover's shoulder and the hover naming them; () when none was (a Finished row draws no string of its own). Made once
+    with the row (`view_rows.Row.prestudied`, a field its pixmap shows: `_same_face` sees it change)."""
+    return getattr(row, "prestudied", None) or ()
 
 
 class RowDelegate(QStyledItemDelegate):
@@ -2433,11 +2432,13 @@ class RowDelegate(QStyledItemDelegate):
         body = QRect(rect.left(), rect.top(), rect.width(), rect.height() - theme.SPACING["list-gap"] -
                      self._lines_h(lines))
         local = QRect(0, 0, body.width(), body.height())
-        sheet = stones.get(dpr, style.current()[1]) if kind == FINISHED and finished_pre(payload) else None
+        pre = kind == FINISHED and bool(finished_pre(payload))
+        sheet = stones.get(dpr, style.current()[1]) if pre else None
         pix = self._sprite(kind, payload, body.size(), dpr, hovered,
                            lambda q: self._paint_row(q, kind, payload, local, hovered, dpr, sheet),
                            to=None if p is None else (p, body.topLeft()),
-                           extra=(sheet is not None,) if sheet is not None else None)     # J-STONES: its sparkle
+                           extra=(sheet is not None,) if pre else None)   # J-STONES: its sparkle (painted before the
+        #                                                                   sheet: let go when it lands, `drop_unsheeted`)
         return pix, body
 
     def _paint_open_row(self, p, row, slab, rect, lines, fade, focused, dpr):
@@ -4828,9 +4829,11 @@ class RowsView(QListView):
         if name == "play" and payload is not None:
             if payload.can_play:
                 self.play_requested.emit(payload)
-        elif name in ("open", "title", "audio", "pct", "pre"):  # a5-2: the 🎧 before a title is the title's;
-            self.toggle(idx)                # Kantan-B1: the % only adds its hover over the card's own click; J-STONES:
-            #                                 a group's pre-studied hover too (the window gives no press for it, D5)
+        elif name in ("open", "title", "audio", "pct"):     # a5-2: the 🎧 before a title is the title's; Kantan-B1:
+            self.toggle(idx)                                # ... the % only adds its hover over the card's own click
+        elif name == "pre":                 # J-STONES: a hover only (the window gives no press for it, D5): a click
+            if entries[row][0] == ROW:      # does what it did there before — a Current row's slab opens it; Up Next's
+                self.toggle(idx)            # string and a Finished cover, nothing
         else:
             self._act(idx, part)
 

@@ -506,6 +506,8 @@ def test_state_of_is_the_strings_own_rule_for_every_file():
         assert sp.state_of(f) == sp._stone(f, 0, "k", False).state
     assert [sp.state_of(f) for f in files[:4]] == ["cut", "raw", "rock", "cut"]
     assert [sp.state_of(f) for f in marked[:3]] == ["cut", "raw", "rock"]
+    if nothing is not None:                  # Kura-NT: mined with nothing new to make looks mined (Sonic's lean a)
+        assert sp.state_of(files[4]) == ("raw" if sp.NOTHING_LOOKS_MINED else "rock") == sp.state_of(marked[4])
 
 
 def test_the_journey_asks_the_same_rule():

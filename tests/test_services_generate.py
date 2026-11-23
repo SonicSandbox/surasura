@@ -145,14 +145,15 @@ def test_a_request_during_a_run_runs_exactly_once_after_it(monkeypatch):
 
 
 def test_a_cancel_while_reading_files_stops_the_run_itself_and_leaves_the_last_journeys_files(monkeypatch):
-    """The run stops itself at its next file (the cancel file): the other 12 outputs byte for byte as they were; the stamp
+    """The run stops itself at its next file (the cancel file): the other 14 outputs byte for byte as they were; the stamp
     the analyzer dropped as it started stays gone, so the journey is stale and the next Generate runs it again."""
     h.seed_library("ja", copies=40)
     controller = GenerateController(JobRegistry(), settle=0)
     controller.request("ja", settings=_settings())
     assert _settled(controller) and controller.state().state == G.CURRENT
     before = _outputs(skip=("run_signature.txt",))
-    assert len(before) == 12
+    # 12, and since the journey v3 cut-over (J-CUT) the page's counts (plan_counts.bin) and its word memo
+    assert len(before) == 14 and {"plan_counts.bin", "journey_words.json"} <= set(before), sorted(before)
 
     monkeypatch.setenv("SURASURA_FORCE_RUN", "1")
     run = controller.request("ja", settings=_settings())

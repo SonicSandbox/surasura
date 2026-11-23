@@ -4382,7 +4382,7 @@ def plan_lines(run):
     counted = [0] * len(keys)
     table = run.get("counts")           # J-CUT: the journey's counts, from these very lines (`plan_engine.CountsTable`)
     if table is not None:
-        table.start(keys, rows, files)
+        table.start(keys, rows, [report_name(entry[0]) for entry in files])
     for f, (file_path, _label, _weight, _type) in enumerate(found_files):
         uses, unusual, phrase_unusual, row_firsts = plan_files[f]
         # [k, its first sentence here (an id in `sentences`), …] for the listed rows met here

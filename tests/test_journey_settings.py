@@ -49,11 +49,12 @@ def _bytes(path):
 @pytest.fixture
 def v3():
     """Settings as the cut-over shows them, put back after (the import-time variant is the one before it)."""
+    on, was = J.ON, catalog._V3        # put back as they were: since the cut-over (J-CUT) the import-time rows are v3's
     J.ON = True
     catalog.use_v3(True)
     yield
-    J.ON = False
-    catalog.use_v3(False)
+    J.ON = on
+    catalog.use_v3(was)
 
 
 @pytest.fixture

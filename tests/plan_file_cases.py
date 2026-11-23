@@ -204,6 +204,10 @@ def child_env(root):
                LOCALAPPDATA=os.path.join(root, "localappdata"), PYTHONIOENCODING="utf-8", PYTHONHASHSEED="0",
                PYTHONPATH=REPO + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""))
     env.pop("SURASURA_DEBUG_WORD_STATS", None)
+    # Never this PC's Anki Miner (~/.anki_miner): the v3 page reads its dictionaries and Kanjium copy. conftest's guard
+    # sets one per test, but a module's `runs` is made before it, and --record runs with no guard at all (J-CUT G2:
+    # the Japanese pages' hashes were recorded with this PC's, and GitHub, which has none, wrote other pages).
+    env.setdefault("ANKI_MINER_HOME", os.path.join(root, "no-anki-miner"))
     return env
 
 
@@ -260,6 +264,8 @@ def output_hashes(root):
                 data = data.replace(stamp, b"<STAMP>")
             if name == "reading_list_static.html":     # the v3 page's head names its render time (`stamp`, ms)
                 data = re.sub(rb'"stamp":"\d+"', b'"stamp":""', data, count=1)
+            if name == "journey_words.json":           # the memo's pitch key names unidic's file by size and time:
+                data = re.sub(rb'"p_key":"[^"]*"', b'"p_key":""', data, count=1)   # this install's, not the run's
             out[os.path.relpath(path, results).replace("\\", "/")] = hashlib.sha256(data).hexdigest()
     return dict(sorted(out.items()))
 

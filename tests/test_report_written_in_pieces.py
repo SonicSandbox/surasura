@@ -10,6 +10,7 @@ from functools import reduce
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 from app import static_html_generator as gen
 
@@ -73,7 +74,8 @@ def _results(tmp_path):
     return results
 
 
-def test_the_written_report_is_the_one_string_byte_for_byte(tmp_path):
+@pytest.mark.usefixtures("journey_pre_cut")        # the old renderer's write (Zen's, the preview's): theme "default"
+def test_the_written_report_is_the_one_string_byte_for_byte(tmp_path):   # writes the v3 page since the cut-over
     """End to end: the file generate_static_html writes holds exactly the one string the pieces join to (the favicon
     and the logo made in it, newlines written as the platform writes them), and the data piece is plain ASCII — the
     string that never meets the sources' emoji."""

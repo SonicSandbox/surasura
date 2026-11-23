@@ -345,7 +345,7 @@ def test_the_counts_table_is_held_lean_for_the_renders_peak_and_reads_back_the_s
     keys = [["猫", "ネコ"], ["犬", "イヌ"], ["𠮷野家", "ヨシノヤ"], ["", ""]]       # a character past the BMP, an empty key
     for big, code in ((5, "H"), (40000, "H"), (65535, "H"), (65536, "i"), (70000, "i")):
         table = plan_engine.CountsTable()
-        table.start(keys, [["row"]] * 4, [["A/ep01.srt", "now"], ["B/第02話.srt", "now"], ["ep03.ass", "soon"]])
+        table.start(keys, [["row"]] * 4, ["ep01.srt", "第02話.srt", "ep03.ass"])
         table.add([0, 3, 2, big], [], [40, 30])
         table.add([], [], [0, 0])
         table.add([3, 1, 1, 2], [], [20, 18])
@@ -375,7 +375,7 @@ def test_the_journey_reads_the_counts_table_of_this_run_else_the_plans_stream(tm
     results = str(tmp_path)
     table = plan_engine.CountsTable()
     table.start([["猫", "ネコ"], ["犬", "イヌ"], ["鳥", "トリ"]], [["row"], None, ["row"]],
-                [["A/ep01.srt", "now"], ["A/ep02.srt", "now"]])
+                ["ep01.srt", "ep02.srt"])
     table.add([0, 3, 1, 5], [2, 1], [40, 30])
     table.add([1, 2], [0, 1, 2, 2], [20, 18])
     assert table.write(results, "run-1")

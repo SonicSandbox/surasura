@@ -283,7 +283,7 @@ def test_a_scroll_not_made_by_the_page_lets_the_held_reveal_go(qapp):
     assert bar.maximum() > 200
     # a late relayout's clamp (one event-loop turn) ignores any scroll: wait it out, or a loaded run sees it
     assert wait_until(lambda: not getattr(page, "_clamp", False), 5)
-    page._revealed = page.rows["max_contexts"]               # a reveal held while the build goes on
+    page._revealed = page.rows["sentences_per_word"]         # a reveal held while the build goes on
     bar.setValue(120)                                         # as Tab's ensureWidgetVisible does: not the page's own
     assert page._revealed is None
     assert store.calls == []
@@ -296,7 +296,7 @@ def test_a_relayouts_clamp_keeps_the_held_reveal_and_a_scroll_right_after_it_let
     bar = page.scroll.verticalScrollBar()
     top = bar.maximum()
     bar.setValue(top)
-    marker = page.rows["max_contexts"]
+    marker = page.rows["sentences_per_word"]                  # (max_contexts' row since the journey v3 cut-over)
     page._revealed = marker
     bar.setRange(0, top - 100)                                # a shorter page: Qt clamps the value, nobody scrolled
     assert bar.value() == top - 100 and page._revealed is marker
@@ -318,7 +318,7 @@ def test_the_pages_own_scrolls_keep_the_held_reveal(qapp):
 def test_hold_keeps_the_reader_in_place_when_a_row_above_grows(qapp):
     page, store = make_page(ALL_ON, "ja")
     bar = page.scroll.verticalScrollBar()
-    target = page.rows["max_contexts"]
+    target = page.rows["sentences_per_word"]                  # (max_contexts' row since the journey v3 cut-over)
     bar.setValue(page._y_in_body(target) - 50)
     page._settle()
     vp = page.scroll.viewport()

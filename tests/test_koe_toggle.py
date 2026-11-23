@@ -15,6 +15,8 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app import settings_manager
 
 
@@ -80,6 +82,9 @@ class TestReportEmbedsNothingWithoutTheModule(unittest.TestCase):
             self.assertIn("127.0.0.1", markup)
 
 
+# The old page's signature: speaking left the journey with it (D15) — the v3 page has no Speech, so the old renderer's
+# list is what this guards (it still draws the YouTube preview and Zen): pinned before the cut-over (J-CUT)
+@pytest.mark.usefixtures("journey_pre_cut")
 class TestSpeechIsPartOfThePresentationFingerprint(unittest.TestCase):
     """Speech state is INJECTED into the report, so toggling it has to force a re-render.
 

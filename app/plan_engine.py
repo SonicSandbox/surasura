@@ -449,15 +449,15 @@ class CountsTable:
         self._renumber, self.keys, self.files = {}, [], []
         self.uses, self.at, self.total, self.baseline = array("i"), array("i", [0]), array("i"), array("i")
 
-    def start(self, keys, rows, files):
-        """The plan's keys, its rows (None: not listed) and its files ([rel path, …]), before its first file's line."""
+    def start(self, keys, rows, names):
+        """The plan's keys, its rows (None: not listed) and its files' report names (`path_utils.report_name`, all the
+        journey reads of a file's path: the caller's, so the engine stays pure), before its first file's line."""
         self.__init__()
         for k, row in enumerate(rows):
             if row is not None:
                 self._renumber[k] = len(self.keys)
                 self.keys.append([keys[k][0], keys[k][1]])
-        from app.path_utils import report_name
-        self.files = [report_name(entry[0]) for entry in files]     # all the journey reads of a file's path
+        self.files = list(names)
 
     def add(self, main, phrases, prog):
         """One file's line as the plan has it ([k, uses, …] twice, its `prog`), in the plan's order."""

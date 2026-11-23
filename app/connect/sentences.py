@@ -300,6 +300,30 @@ def _row_of(language, kept, rows, key, old=None):
     return held[0] if len(held) == 1 else None
 
 
+def files_saying(language, words):
+    """How many files the last Generate kept sentences of each word from -> {(lemma, reading): n}, for each (lemma,
+    reading, line) of `words` that is a row of the list (`_listed`, `_row_of`): the files of the row's kept pool, the
+    file holding `line` (`same_line`) left out — the files other than that one line's. A word with no row, or no
+    readable plan, is left out. Reads the plan's candidates only (as `choose`), never the library (Kyou-DW 3: which
+    answer a deleted card's follow-up offers first)."""
+    from app import plan_rules
+    kept, rows = _listed(language)
+    out = {}
+    if kept is None:
+        return out
+    for lemma, reading, line in words:
+        key = (lemma, reading or "")
+        k = _row_of(language, kept, rows, key, {line} if line else None)
+        if k is None:
+            continue
+        first, pool, audio = kept.pools[k]
+        said = [kept.sentences[s] for s in dict.fromkeys([first] + list(pool) + list(audio))
+                if 0 <= s < len(kept.sentences)]
+        own = {row[plan_rules.SRC] for row in said if line and same_line(row[plan_rules.TEXT], {line})}
+        out[key] = len({row[plan_rules.SRC] for row in said} - own)
+    return out
+
+
 def _from_list(language, kept, listed, here_key, never, young, files, reach, books, ai, store, window):
     """`choose` for the words that are rows of the list (`listed`: {key: its row}) -> {key: [Choice, …]}, at most TOP
     a word (and the mined episode's own line, when it is a candidate): each row's kept candidates (`_listed`) of a

@@ -129,8 +129,8 @@
        way to `offline` (SPEC §3.5); a route not yet built drops the group that is only that route */
     const OFFLINE = MODE !== "on";
     const CONTRACT = Q.get("rail") === "contract";      // another rail plugged in: the page's own groups + `contract`
-    const SKIP = new Set(CONTRACT ? ["word", "marks", "pre", "picker", "door", "queue", "player", "flag", "settings", "meet", "list", "focus", "search", "notyet", "a11y", "offline", "layout"]
-      : OFFLINE ? ["marks", "pre", "flag", "door", "queue", "settings", "meet", "contract"] : ["offline", "contract"]);
+    const SKIP = new Set(CONTRACT ? ["word", "marks", "pre", "picker", "door", "queue", "player", "flag", "settings", "meet", "carry", "list", "focus", "search", "lookup", "notyet", "a11y", "offline", "layout"]
+      : OFFLINE ? ["marks", "pre", "flag", "door", "queue", "settings", "meet", "carry", "contract"] : ["offline", "contract"]);
     if (NOTYET.has("episode/prestudied")) SKIP.add("pre");
     if (NOTYET.has("line/flag")) SKIP.add("flag");
     const group = (g) => { const on = only.size ? only.has(g) : !SKIP.has(g); if (on) GROUPS.push([performance.now(), g]); return on; };
@@ -245,6 +245,7 @@
       await goWord(E, 0);
       key(keyName("ignore")); await settle();
       ok("Ignore (W): marked ignore, next word", J.MARK.get(w0) === "ignore" && J.S.wi === 1);
+      ok("an ordinary press never asks the carry-over's guard (`unless_known`: as before J-FIX 2)", CALLS.filter(([, rt]) => rt === "words/mark").every(([, , b]) => !("unless_known" in b)));
       await goWord(E, 0);
       key(keyName("ignore")); await settle();
       ok("the same press again clears it (mark '')", !J.MARK.has(w0) && CALLS.filter(([, rt]) => rt === "words/mark").pop()[2].marks[0].mark === "");
@@ -763,6 +764,99 @@
       J.closeLayer();
     }
 
+    /* ---- the old page's ignores, carried over once (J-FIX; Sonic's answer to SPEC §9 item 1): the old journey page
+       kept its ignored words only in this browser (`surasura_ignored_words_<lang>`). At a hello with the door on, the
+       ones not Known or Ignored in Surasura already go through ⊘'s own route, in batches, once; the old key is never
+       touched, nothing else of the browser's is read. ---- */
+    if (group("carry")) {
+      const OLD = `surasura_ignored_words_${H.lang}`, DONE = `surasura_journey_old_ignores_${H.lang}`;
+      const words = [];                                  // real words of the first episodes (30: the 5,000 case's too)
+      for (const i of epsWith(1).slice(0, 60)) { if (words.length >= 30) break; await J.loadEp(i); for (const id of J.seq(i) || []) { const w = J.wordNow(id)[0]; if (!words.includes(w)) words.push(w); } }
+      await goWord(E, 0);
+      const shownWord = J.wordNow(J.curWordId())[0];
+      const [known, ignored, ...rest] = words.filter((w) => w !== shownWord), mine = rest.slice(0, 3);   // never the shown word: its row stays
+      const marksNow = { [known]: "known", [ignored]: "ignore" };
+      window.__J_DOOR_HOOK = (route, body) => route === "state" && body.since === null ? { ok: true, at: Date.now(), marks: marksNow } : null;
+      const marksSent = (n0) => CALLS.slice(n0).filter(([, rt]) => rt === "words/mark");
+      const sentWords = (n0) => marksSent(n0).flatMap(([, , b]) => b.marks.map((m) => m.word));
+      const seed = (v) => { localStorage.removeItem(DONE); localStorage.setItem(OLD, v); };
+      const oldValue = JSON.stringify([mine[0], known, ignored, 42, null, "", "  ", mine[1], mine[0], "借".repeat(65), ` ${mine[2]} `,
+        "#" + mine[0], mine[1] + "\n" + mine[2], "㍿".repeat(20)]);   // no word of a list (word_marks.clean): a comment, a line break, 80 once NFKC'd
+      ok("carry: the five words the checks need", mine.length === 3, words.length);
+      seed(oldValue);
+      let n0 = CALLS.length;
+      const r = await press(() => J.hello());
+      const sent = marksSent(n0);
+      ok("carried: one call through ⊘'s route, only the old words Surasura doesn't have Known or Ignored, each once, trimmed",
+        sent.length === 1 && JSON.stringify(sentWords(n0)) === JSON.stringify(mine), JSON.stringify(sentWords(n0)));
+      ok("carried: each an Ignore over no mark (`was` \"\") with the time of the read, so the stale rule skips a word changed since",
+        sent.length === 1 && sent[0][2].marks.every((m) => m.mark === "ignore" && m.was === "" && typeof m.at === "number"), sent[0] && JSON.stringify(sent[0][2].marks[0]));
+      ok("carried: the route asked never to Ignore a word known by any source (`unless_known`: Anki's known words too)", sent.length === 1 && sent[0][2].unless_known === true);
+      ok("carried: Surasura's marks read whole first (state with no `since`), through the existing route", CALLS.slice(n0).some(([, rt, b]) => rt === "state" && b.since === null));
+      ok("carried: the done-mark written, the old key left exactly as it was", localStorage.getItem(DONE) && localStorage.getItem(OLD) === oldValue, localStorage.getItem(DONE));
+      ok("carried: the page shows them Ignored", mine.every((w) => J.MARK.get(w) === "ignore") && J.MARK.get(known) !== "ignore");
+      const tl = $("#toast");
+      ok("carried: one line, how many, with Undo (PROVISIONAL)", !tl.classList.contains("hide") && /\b3 words from your old journey page/.test(tl.textContent) && /Ignore list/.test(tl.textContent) && tl.querySelector("button"), tl.textContent);
+      budget(ok, "the old ignores carried: only the three rows whose mark changed, and the toast", r, ["rail-words", "toast"], { "rail-words": 3 });
+      n0 = CALLS.length;
+      await J.hello(); await settle();
+      ok("never again: a later hello sends nothing", !marksSent(n0).length);
+      n0 = CALLS.length;
+      tl.querySelector("button").click(); await settle(8);
+      const undos = CALLS.slice(n0).filter(([, rt]) => rt === "words/undo");
+      ok("Undo: the carry's own write taken back through the route's Undo (its undo id)", undos.length === 1 && /^s\.\d+$/.test(undos[0][2].undo_id), JSON.stringify(undos.map((u) => u[2])));
+      ok("Undo: the words un-ignored on the page; the done-mark stays (the carry-over never comes back — PROVISIONAL)", mine.every((w) => !J.MARK.has(w)) && !!localStorage.getItem(DONE));
+      for (const [name, v] of [["empty", "[]"], ["malformed", "{not json"], ["not a list", '{"a": 1}']]) {
+        seed(v); n0 = CALLS.length;
+        await J.hello(); await settle();
+        ok(`a key ${name}: nothing sent, no error`, !marksSent(n0).length);
+      }
+      seed(JSON.stringify(mine)); n0 = CALLS.length;
+      window.__J_DOOR_MODE = "off";
+      await J.hello(); await settle();
+      ok("Surasura closed: nothing sent, no done-mark (it waits for a later load)", !marksSent(n0).length && !localStorage.getItem(DONE));
+      window.__J_DOOR_MODE = null;
+      await J.hello(); await settle();
+      ok("…and the next hello with the door on carries them", JSON.stringify(sentWords(n0)) === JSON.stringify(mine) && !!localStorage.getItem(DONE));
+      {                                                  // the word lists busy with another program: tried again later
+        seed(JSON.stringify(mine)); mine.forEach((w) => J.MARK.delete(w));
+        const hook = window.__J_DOOR_HOOK;
+        window.__J_DOOR_HOOK = (route, body) => route === "words/mark" ? { ok: false, kind: "busy", error: "Your word lists are busy." } : hook(route, body);
+        n0 = CALLS.length;
+        await J.hello(); await settle();
+        ok("the Ignore route answering busy: no done-mark, nothing shown Ignored (a later hello tries again)", marksSent(n0).length === 1 && !localStorage.getItem(DONE) && mine.every((w) => !J.MARK.has(w)));
+        window.__J_DOOR_HOOK = hook;
+        n0 = CALLS.length;
+        await J.hello(); await settle();
+        ok("…and the next hello carries them", JSON.stringify(sentWords(n0)) === JSON.stringify(mine) && !!localStorage.getItem(DONE));
+      }
+      {                                                  // a word known through Anki (never in `state`): the route skips it
+        seed(JSON.stringify(mine)); mine.forEach((w) => J.MARK.delete(w));
+        const hook = window.__J_DOOR_HOOK;
+        window.__J_DOOR_HOOK = (route, body) => route === "words/mark" ? { ok: true, done: body.marks.length - 2, undo_id: "s." + (900 + body.marks.length), stale: [], skipped: [mine[1]] } : hook(route, body);
+        n0 = CALLS.length;
+        await J.hello(); await settle();
+        ok("a skipped word (Known through Anki) is never shown Ignored; the rest are", J.MARK.get(mine[0]) === "ignore" && !J.MARK.has(mine[1]) && J.MARK.get(mine[2]) === "ignore" && !!localStorage.getItem(DONE));
+        ok("…and the toast counts the words Surasura actually added (one skipped, one it already had: 1 of 3)", /\b1 word from your old journey page/.test($("#toast").textContent), $("#toast").textContent);
+        seed(JSON.stringify([mine[1]])); n0 = CALLS.length;
+        window.__J_DOOR_HOOK = (route, body) => route === "words/mark" ? { ok: true, done: 0, undo_id: null, stale: [], skipped: body.marks.map((m) => m.word) } : hook(route, body);
+        const t0 = $("#toast").textContent;
+        await J.hello(); await settle();
+        ok("every old word known: nothing said, nothing shown Ignored, done", marksSent(n0).length === 1 && !J.MARK.has(mine[1]) && !!localStorage.getItem(DONE) && ($("#toast").classList.contains("hide") || $("#toast").textContent === t0));
+        window.__J_DOOR_HOOK = hook;
+      }
+      const many = [];                                   // 5,000 old words (real ones, joined two and three at a time)
+      for (let a = 0; a < words.length && many.length < 5000; a++) for (let b = 0; b < words.length && many.length < 5000; b++) for (let c = 0; c < words.length && many.length < 5000; c++) if (a !== b && b !== c) many.push(words[a] + words[b] + words[c]);
+      seed(JSON.stringify(many)); n0 = CALLS.length;
+      const l0 = LONG.length, t1 = performance.now();
+      await J.hello(); await settle(8);
+      const big = marksSent(n0);
+      ok(`${many.length.toLocaleString("en")} old words: a few calls of at most 500, every word once`, many.length === 5000 && big.length <= 10 && big.every(([, , b]) => b.marks.length <= 500) && new Set(sentWords(n0)).size === 5000, `${big.length} calls`);
+      ok(`${many.length.toLocaleString("en")} old words: the page stays responsive (no long task)`, LONG.slice(l0).every(([, d]) => d <= 50), JSON.stringify(LONG.slice(l0)) + ` ${(performance.now() - t1).toFixed(0)} ms`);
+      window.__J_DOOR_HOOK = null;
+      localStorage.removeItem(OLD);
+    }
+
     /* ---- List view, Focus, search ---- */
     if (group("list")) {
       await goWord(E, 0);
@@ -806,6 +900,70 @@
       ok("a search result jumps to its word's episode", J.S.ep === far);
       key("Backspace"); await settle();
       ok("⌫ goes back after a jump", J.S.ep === from);
+      {                                                  // the box emptied (or only spaces): Enter jumps nowhere
+        const qe = $("#q"), at0 = J.S.ep, wi0 = J.S.wi;
+        await J.search(qtxt); qe.value = "　 "; await J.search(qe.value);
+        qe.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); await settle();
+        ok("an emptied search box: Enter jumps nowhere (the hidden results are gone)", J.S.ep === at0 && J.S.wi === wi0 && $("#res").classList.contains("hide"));
+        qe.value = "";
+      }
+      /* J-FIX 2: what the old page's search held (test_report_search.py), ported. Its rule (rsNorm): NFKC, katakana as
+         hiragana, lower case — on the query and on every key, a word's met forms (the Forms column) among them */
+      await J.buildSearch();
+      const sn = (x) => { x = String(x || "").normalize("NFKC"); if (H.lang === "ja") x = x.replace(/[\u30a1-\u30f6]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60)); return x.toLowerCase(); };
+      const every = []; for (const [, d] of J.CHUNKS) d.w.forEach((x, j) => every.push([d.w0 + j, x]));
+      const keysOf = (x) => [x[0], x[1], x[2], x[3]].map(sn);
+      const hits = (q) => { const n = sn(q), o = new Set(); for (const [, x] of every) if (keysOf(x).some((k) => k.includes(n)) || (x[4] || []).some((f) => sn(f).includes(n))) o.add(x[0]); return o.size; };   // distinct words (the fixture repeats its words)
+      const finds = async (q, x) => { await J.search(q); return $$(".res .ri b").some((b) => b.textContent === (x[1] || x[0])); };
+      const few = (pred) => { const tried = new Set(); for (const e of every) { const f = pred(e); if (!f || tried.has(f)) continue; tried.add(f); if (hits(f) <= 2) return [e[1], f]; } return null; };   // one the 40 results can't crowd out
+      if (H.lang === "ja") {
+        const byForm = few(([, x]) => (x[4] || []).find((f) => f.length >= 2 && !keysOf(x).some((k) => k.includes(sn(f)))));
+        ok("search finds a word by an inflected form it was met in (not a part of its spelling or reading)", byForm && await finds(byForm[1], byForm[0]), byForm ? `${byForm[1]} → ${byForm[0][0]}` : "no such word in the fixture");
+      }
+      const HALF = {};                                   // full-width katakana -> its half-width spelling (ｶﾞ for ガ)
+      for (let c = 0xff66; c <= 0xff9d; c++) { const h = String.fromCharCode(c); HALF[h.normalize("NFKC")] = h; for (const m of ["\uff9e", "\uff9f"]) { const v = (h + m).normalize("NFKC"); if (v.length === 1) HALF[v] = h + m; } }
+      const half = (x) => [...x].map((c) => HALF[c] || c).join(""), full = (x) => x.replace(/[!-~]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0xfee0));
+      const kata = H.lang === "ja" && few(([, x]) => /^[\u30a1-\u30fa\u30fc]{2,}$/.test(x[0]) && x[0]);
+      if (H.lang === "ja") ok("width: a half-width katakana query finds its word", kata && half(kata[1]) !== kata[1] && await finds(half(kata[1]), kata[0]), kata ? `${half(kata[1])} → ${kata[1]}` : "no katakana word in the fixture");
+      const latin = few(([, x]) => /[a-z]{2}/i.test(x[2]) && x[2].split(" ")[0]);   // zh: a pinyin syllable (ja readings are kana)
+      if (H.lang === "zh") ok("width: a full-width upper-case query finds its word (ＮＩÚ → niú)", latin && full(latin[1].toUpperCase()) !== latin[1] && await finds(full(latin[1].toUpperCase()), latin[0]), latin ? `${full(latin[1].toUpperCase())} → ${latin[0][0]}` : "no pinyin in the fixture");
+      const qb = $("#q"); qb.focus(); qb.value = qtxt; await J.search(qtxt); await settle();
+      const ep0 = J.S.ep;
+      qb.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, isComposing: true })); await settle();
+      ok("the IME owns Enter while composing: no jump, the box keeps its word", J.S.ep === ep0 && qb.value === qtxt && !$("#res").classList.contains("hide"));
+      qb.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, isComposing: true })); await settle();
+      ok("the IME owns Esc while composing: the box keeps its word and its results", qb.value === qtxt && !$("#res").classList.contains("hide"));
+      qb.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await settle();
+      ok("…and Esc once the composition is done clears the box", qb.value === "" && $("#res").classList.contains("hide"));
+      const keyTime = async (q) => { let best = Infinity; for (let k = 0; k < 3; k++) { const t2 = performance.now(); await J.search(q); best = Math.min(best, performance.now() - t2); } return best; };   // the index built: best of 3 (warm)
+      SPEED.searchKey = await keyTime(qtxt);
+      SPEED.searchMiss = await keyTime(H.lang === "ja" ? "ゟゟ" : "龘龘");     // no word matches: every key read (the worst keystroke)
+      ok(`a search keystroke ≤ ${N > 5000 ? 50 : 16} ms (the index built; one that matches nothing reads every key)`, Math.max(SPEED.searchKey, SPEED.searchMiss) <= (N > 5000 ? 50 : 16), `${SPEED.searchKey.toFixed(1)} ms · no match ${SPEED.searchMiss.toFixed(1)} ms`);
+      const rk = await press(() => J.search(qtxt));
+      budget(ok, "a search keystroke", rk, ["top"]);
+      $("#res").classList.add("hide"); qb.value = ""; qb.blur();
+    }
+
+    /* ---- ⌕ honours its Settings switch and category (test_word_search_button.py, ported; D15 kept it) ---- */
+    if (group("lookup")) {
+      await goWord(E, 0);
+      const look = () => $('#stage a[aria-label="Look the word up"]'), w = J.wordNow(J.curWordId());
+      const base = `https://nadeshiko.co/en/search/${encodeURIComponent(w[0])}`, hs = J.HS || {};
+      const keysListed = () => { J.openKeys(); const on = $$("#keys-sheet .krow .kn").some((el) => /Look the word up/.test(el.textContent)); J.closeLayer(); return on; };
+      if (H.lang === "zh") ok("zh: no ⌕ (Nadeshiko holds Japanese sentences only), its key not listed", !look() && !keysListed());
+      else {
+        ok("⌕ shown by default (no switch in the head: as before), its URL plain for All", look() && look().getAttribute("href") === base && keysListed(), look() && look().getAttribute("href"));
+        hs.lookup_category = "anime"; J.drawWord(); await settle();
+        ok("⌕ opens the chosen kind of sentences (?category=anime)", look() && look().getAttribute("href") === base + "?category=anime", look() && look().getAttribute("href"));
+        hs.lookup_category = "\"><img src=x>"; J.drawWord(); await settle();
+        ok("⌕: a category it doesn't know is All (never put into the URL)", look() && look().getAttribute("href") === base, look() && look().getAttribute("href"));
+        hs.lookup = false; J.drawWord(); await settle();
+        let opened = 0; const real = HTMLAnchorElement.prototype.click; HTMLAnchorElement.prototype.click = function () { opened++; };
+        key(keyName("lookup")); await settle();
+        HTMLAnchorElement.prototype.click = real;
+        ok("⌕ switched off: no button, its key does nothing and is not listed", !look() && !opened && !keysListed());
+        hs.lookup = undefined; hs.lookup_category = undefined; J.drawWord(); await settle();
+      }
     }
 
     /* ---- not yet built: what hides (SPEC §3.2, §6) ---- */

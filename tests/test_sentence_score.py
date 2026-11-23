@@ -648,3 +648,22 @@ def test_an_empty_ask_and_an_empty_table(tmp_path):
     empty = Table(FEST, [], [])
     assert SS.choose("ja", [], moment=lib.moment(), length=LENGTH, table=empty) == {}
     assert SS.choose("ja", FEST, moment=lib.moment(), length=LENGTH, table=empty) == {FEST[0]: []}
+
+
+def test_a_table_damaged_inside_its_blocks_reads_as_none_never_an_exception(tmp_path):
+    # the head read, a block that won't unpack: the caller takes today's path (CLAUDE.md § 6, fail gracefully)
+    lib = Library(tmp_path)
+    tab = _fest(lib, [("ep01", [FESTIVAL])])
+
+    def broken(rows):
+        raise ValueError("a damaged block")
+    tab.take = broken
+    assert SS.choose("ja", FEST, moment=lib.moment(), length=LENGTH, table=tab, shown=tab.shown()) is None
+
+
+def test_an_order_handed_in_with_no_reading_finds_its_row():
+    # rows with no reading; after a move the caller names them (lemma, None): the same rows as (lemma, "")
+    tab = Table([("文化祭", ""), ("準備", "")], [("show/ep01.srt", "subtitle", None)],
+                [L(0, 0, 3, PREPARE, "文化祭", cow=(0, 1))], ((0, ((0,),)), (1, ((1,),))))
+    assert one(tab) == pytest.approx(1.0)                                 # 準備 below 文化祭: new
+    assert one(tab, order={("準備", None): 0, ("文化祭", None): 1}) == pytest.approx(0.0)

@@ -240,6 +240,7 @@ def _moment_arrays(tab, moment, order, root):
         placed[rows] = BIG
     else:
         placed = np.full(rows + 1, BIG, np.int64)
+        order = {(key[0], key[1] or ""): place for key, place in order.items()}
         for k, (lemma, reading) in enumerate(keys):
             at = order.get((lemma, reading or ""))
             if at is not None:
@@ -324,6 +325,14 @@ def choose(language, keys, *, n=1, moment, length, never=None, order=None, only=
         tab = None
     if tab is None:
         return None
+    try:
+        return _choose(tab, language, keys, n, moment, length, never, order, only, heard_first, clean_only, shown,
+                       whole)
+    except Exception:
+        return None             # a table damaged inside its blocks, a moment it can't read: the caller's own path
+
+
+def _choose(tab, language, keys, n, moment, length, never, order, only, heard_first, clean_only, shown, whole):
     keys = list(dict.fromkeys(tuple(k) for k in keys or ()))
     exact, by_lemma = _key_rows(tab.keys)
     asked = {key: k for key in keys for k in [_row_of(key, exact, by_lemma)] if k is not None}
@@ -438,7 +447,7 @@ def choose(language, keys, *, n=1, moment, length, never=None, order=None, only=
                     # (the co-words' youngest is in the cost already: only a younger one moves it)
                     line_cost = old - r.young * max(0.0, held_young - float(co_young[i]))
                 seen = files[src][5]
-                heard_one = heard_one or seen.heard is not SILENT
+                heard_one = heard_one or _HEARD_CODE.get(seen.heard, 2) != 2
                 taken.append((round(line_cost, _RANK_DIGITS), int(tie[src]), number, len(taken),
                               Line(files[src][0], seen.item_id, text, round(line_cost, 4), int(others[i]),
                                    int(chars_a[i]), round(float(arrays["ctx"][src]) * (r.unwatched if seen.show_only
@@ -446,13 +455,16 @@ def choose(language, keys, *, n=1, moment, length, never=None, order=None, only=
                                    seen.heard, number)))
             lead = sorted(taken[:YOUNG_LINES]) if young_of else taken[:YOUNG_LINES]
             ordered = [t[-1] for t in lead + taken[YOUNG_LINES:]]
-            if heard_first and ordered and ordered[0].heard is SILENT:
-                first = next((line for line in ordered if line.heard is not SILENT), None)
+            if heard_first and ordered and _HEARD_CODE.get(ordered[0].heard, 2) == 2:
+                first = next((line for line in ordered if _HEARD_CODE.get(line.heard, 2) != 2), None)
                 if first is not None:
                     ordered = [first] + [line for line in ordered if line is not first]
             out[key] = ordered[:n]
     finally:
         if tokens[0]:
-            tokens[0].close()
+            try:
+                tokens[0].close()
+            except Exception:
+                pass
     return out
 

@@ -7,7 +7,9 @@ What these prove:
   - the lines that take the rule's corners (a token the text doesn't hold, a helping verb after て, a counter after
     its number, a person with a title, a call, a name link) agree too;
   - the table packed from real lines is the same bytes as before the speed work (its content pinned: the head, the
-    sources, the formulas and every block, decompressed — so a zlib of another build can't move it);
+    sources, the formulas and every block, decompressed — so a zlib of another build can't move it). The lines are the
+    real files as tokenized when the pin was taken (`sentence_table_lines.json`): a change to the parsing, or a PC
+    whose dictionary splits a line otherwise, never moves the pin;
   - a line offered for several words keeps each word's own numbers and co-words, and the finish lets go of the packed
     lines (another line can still be added after it) and works in little more memory than the lines themselves.
 
@@ -179,10 +181,18 @@ PINNED = {"ja": "bc918e6d781de5bc56622ae4acec772a4d4dccbccefc44604146fed1ab562c3
           "zh": "5988eb87850ebfbdc0bf8d1f75e474e647e69c8b908c467712d09f58bcf970ec"}
 
 
-def test_the_table_packed_from_real_lines_is_the_same_bytes_as_before_the_speed_work(real, tmp_path):
+def _frozen(language):
+    """The real files' lines as tokenized when the pin was taken: [(text, tokens)]."""
+    with open(os.path.join(RESOURCES, language, "sentence_table_lines.json"), encoding="utf-8") as f:
+        return [(text, [tuple(t) for t in tokens]) for text, tokens in json.load(f)]
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_table_packed_from_real_lines_is_the_same_bytes_as_before_the_speed_work(language, tmp_path):
     # why: the speed work changes how the lines are held and put together, never what the table says; a reader
     # (the card's pick, Swap) must read exactly what it read before
-    language, lines = real
+    lines = _frozen(language)
+    assert len(lines) > 100
     _p, table = _pack(language, lines)
     path = str(tmp_path / st.TABLE_FILE)
     table.write(path)

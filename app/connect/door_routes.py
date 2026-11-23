@@ -26,6 +26,7 @@ log = logging.getLogger("surasura-cli")
 
 LANGS = ("ja", "zh")
 WORD_MAX = 64                   # a word longer than this isn't one the page sends: refused, never written
+LINE_MAX = 40                   # `<item>:<ms>` is far shorter: a longer id is no line (and never a 4300-digit int())
 
 OFF = "Cards made for you is off: turn it on in Connect, then press again."
 NO_LINE = "Surasura can't make a card from that line (it has no time in its file)."
@@ -56,10 +57,10 @@ def _ask(body, journey):
     from app import door, settings_manager
     from app.connect import deleted, ledger as ledger_mod, runner, sentences, swap
     lang, word, line_id = body.get("lang"), body.get("word"), body.get("line_id")
-    if lang not in LANGS or not isinstance(word, str) or not word.strip() or len(word) > WORD_MAX:
+    word = word.strip() if isinstance(word, str) else ""
+    if lang not in LANGS or not word or len(word) > WORD_MAX:
         raise door.RouteError(NOT_READ, "refused")
-    word = word.strip()
-    if not isinstance(line_id, str) or swap._parse_line_id(line_id) is None:
+    if not isinstance(line_id, str) or len(line_id) > LINE_MAX or swap._parse_line_id(line_id) is None:
         raise door.RouteError(NO_LINE, "refused")
     settings = settings_manager.load_settings()
     if not settings_manager.connect_on(settings):

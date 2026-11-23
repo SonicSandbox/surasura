@@ -276,6 +276,53 @@ def test_with_two_cards_ruled_the_journey_swap_leaves_the_old_card_in_reviews(le
     assert not [e for e in anki.log if e[0] in ("suspend", "unsuspend", "set_flag")]
 
 
+def test_a_look_that_takes_the_old_card_while_undo_runs_is_put_back_by_that_undo(ledger, monkeypatch):
+    # Anki was busy at the look that made it (untagged, nothing taken); the press's Undo deletes the new card, and a
+    # look takes the writer in the gap before Undo's own: Undo reads what that look took, under its lock
+    anki = JourneyAnki()
+    anki.busy = True
+    swap_id, anki = _made_journey_swap(ledger, "ja", [{"reps": 3, "type": 2, "queue": 2}], anki=anki)
+    assert _row(ledger, swap_id)["took"] is None and anki.cards_[9000]["queue"] == 2
+    anki.busy = False
+    run = tidy.run
+
+    def then_a_look(*a, **k):
+        got = run(*a, **k)
+        swap._tag_waiting(ledger, "ja", anki)
+        return got
+
+    monkeypatch.setattr(tidy, "run", then_a_look)
+    swap.undo(anki, ledger, "ja", swap_id, open_store=lambda: library.open_store("ja"))
+    assert anki.deleted == [950] and anki.cards_[9000]["queue"] == 2
+
+
+def test_a_loop_swap_undone_while_a_journey_swap_holds_the_old_card_leaves_it_out_until_that_one_is_undone(ledger):
+    # the journey ⇄ took the card out; the loop's swap of the same card (its twin: the same new card) is undone first
+    swap_id, anki = _made_journey_swap(ledger, "ja", [{"reps": 3, "type": 2, "queue": 2}])
+    loop = swap.make_card("ja", CASES["ja"][0], old_note=900, old_card=9000, ledger=ledger, wake=False)
+    swap._set(ledger, loop["id"], state=swap.MADE, new_note=950, tagged=1)
+    swap.undo(anki, ledger, "ja", loop["id"], open_store=lambda: library.open_store("ja"))
+    assert anki.cards_[9000]["queue"] == -1 and anki.deleted == []          # one out while the journey's card stands
+    swap.undo(anki, ledger, "ja", swap_id, open_store=lambda: library.open_store("ja"))
+    assert anki.deleted == [950] and anki.cards_[9000]["queue"] == 2
+
+
+def test_a_line_id_too_long_to_be_a_line_or_a_padded_word_is_answered_in_words(ledger):
+    lang, (word, _old, other) = "ja", CASES["ja"]
+    item = _library(lang)
+    assert _refused("card/make", lang, word, "1:" + "9" * 5000).message == door_routes.NO_LINE
+    got = _press("card/make", lang, " " * 70 + word, _line(lang, item, other)[0])        # the word, its spaces off
+    assert got["asked"] and _row(ledger, got["id"])["word"] == word
+
+
+def test_a_ledger_from_before_the_ruling_gains_the_record_of_what_a_press_took(ledger):
+    # a 3.0.18 ledger's swaps table has no `took`: without it every journey ⇄'s look would fail its write, untagged
+    ledger.conn.execute(swap._SQL.replace(",\n  took TEXT)", ")"))
+    assert "took" not in {r[1] for r in ledger.conn.execute("PRAGMA table_info(swaps)")}
+    swap_id, anki = _made_journey_swap(ledger, "ja", [{"reps": 3, "type": 2, "queue": 2}])
+    assert _row(ledger, swap_id)["took"] == "[9000]" and anki.cards_[9000]["queue"] == -1
+
+
 def test_hello_lists_both_routes_so_the_page_shows_swap_and_add_now():
     routes = journey_door.hello({"lang": "ja"}, journey_door.App())["routes"]
     assert {"swap/queue", "card/make"} <= set(routes)

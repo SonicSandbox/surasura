@@ -368,8 +368,9 @@ ANKI_WRITERS = {
                                               "never while reviewing"),
     ("app/connect/swap.py", "_take_old"): ("Swap", _SWAP, "a journey ⇄'s old card suspended once its new card is made "
                                            "(only the cards in reviews, recorded first), under _tag_waiting's writer"),
-    ("app/connect/swap.py", "_old_back"): ("Swap", _SWAP, "Undo: only the old card the swap suspended and flagged, back "
-                                           "in reviews, its tag off unless the note's other card is still swapped"),
+    ("app/connect/swap.py", "_old_back"): ("Swap", _SWAP, "Undo: only the old card the swap suspended and flagged (a "
+                                           "journey ⇄: the cards its press took, no flag), back in reviews unless a "
+                                           "journey ⇄ still holds it, its tag off unless the note is still swapped"),
     ("app/connect/sentence_audio.py", "AnkiConnectNotes.tag"): (
         "the one sentence-field writer (Add audio, the AI audio, Piyo's translations)",
         "Backfill: fills fields of existing cards; Piyo: writes cards only when asked",

@@ -467,13 +467,18 @@ def kept_folder():
     return os.path.join(_connect_folder(), KEPT_DIR)
 
 
+_PURGED = {}                    # kept_folder() -> when this process last purged it (`_purge_kept`)
+PURGE_EVERY_S = 12 * 60 * 60
+
+
 def _purge_kept():
     """Decision 7: the kept copies go 30 days after they were written (the trash clock's rule and its one purge,
     `path_utils.cleanup_trash_async`, by each file's time: a copy is written, never moved, so its clock starts then);
     an Undo past it is refused (`TOO_OLD`). Never raises."""
     try:
         folder = kept_folder()
-        if os.path.isdir(folder):
+        if os.path.isdir(folder) and time.time() - _PURGED.get(folder, 0) >= PURGE_EVERY_S:
+            _PURGED[folder] = time.time()           # a 30-day clock needs no look every few minutes
             from app import path_utils
             path_utils.cleanup_trash_async(folder)
     except Exception:
@@ -699,6 +704,8 @@ def write_in_place(anki, ledger, row, rendered, mapping, keep_dir):
     from app.connect import sentence_audio
     note = int(row["old_note"])
     writer = anki.field_writer() if hasattr(anki, "field_writer") else anki
+    if row.get("wrote"):
+        sentence_audio.settle(writer, ledger, row["wrote"])     # a write a kill or an error stopped: put back first
     info = next((n for n in writer.notes([note]) or () if isinstance(n, dict) and n.get("noteId")), None)
     if info is None:
         return NEW_CARD, None
@@ -710,9 +717,17 @@ def write_in_place(anki, ledger, row, rendered, mapping, keep_dir):
     have = _values(info)
     files = {os.path.basename(p): p for p in rendered.get("files") or ()}
     files.update(rendered.get("named") or {})          # the line's names (`media_names.by_line`): what is stored
-    media = {m: files[m] for v in new.values() for m in sentence_audio.media_in(v) if m in files}
-    got = sentence_audio.replace(writer, ledger, note, new, {f: have[f] for f in new}, media=media,
-                                 keep_dir=keep_dir, tag=SWAP_TAG, by=BY_SWAP, verb=VERB)
+    named = [m for v in new.values() for m in sentence_audio.media_in(v)]
+    if not str(new.get(mapping.fields.get("sentence")) or "").strip() or             any(m not in files or not os.path.isfile(files[m]) for m in named):
+        return NEW_CARD, None                   # render gave no sentence, or a clip it didn't hand over: never written
+    media = {m: files[m] for m in named}
+    try:
+        got = sentence_audio.replace(writer, ledger, note, new, {f: have[f] for f in new}, media=media,
+                                     keep_dir=keep_dir, tag=SWAP_TAG, by=BY_SWAP, verb=VERB)
+    except BaseException as e:
+        if getattr(e, "sentence_audio_id", None):
+            _set(ledger, row["id"], wrote=e.sentence_audio_id)     # its record: settled when it is tried again
+        raise
     if got.get("id"):
         _set(ledger, row["id"], wrote=got["id"])    # tagged with its fields; `_tag_waiting` puts it back in reviews
         return IN_PLACE, note
@@ -744,7 +759,8 @@ def _finish(ledger, language, row, out, state_of=None, anki=None):
             if _same_word(r, row) and lines is not None and not sentences.same_line(row.get("line") or "", lines):
                 twins.append(r)
         for r in twins:
-            own = {"kind_why": row.get("kind_why"), "wrote": row.get("wrote")} if r["id"] == row["id"] else {}
+            own = {"kind_why": row.get("kind_why")} if r["id"] == row["id"] else {}
+            own["wrote"] = row.get("wrote")             # a twin of an in-place swap (the same card): one write, one Undo
             _set(ledger, r["id"], state=MADE, why=None, new_note=note, job_id=row["job_id"], item_id=row["item_id"],
                  line=row["line"], kind=row.get("kind"), **own)
             _queue_made(language, r["ref"], note)
@@ -781,10 +797,13 @@ def _tag_waiting(ledger, language, anki, flag=None):
             notes = sorted({int(r["old_note"]) for r in rows if r.get("old_note")})
             infos = [n for n in anki.notes(notes) if isinstance(n, dict) and n.get("noteId")] if notes else []
             have = {int(n["noteId"]) for n in infos}
+            back_flag = None
             for r in rows:
                 if r.get("kind") == IN_PLACE:
                     if r.get("by") == BY_SWAP and r.get("old_note") and int(r["old_note"]) in have:
-                        _old_back(anki, r, keep_tag=True, flag=flag() if callable(flag) else GREEN)
+                        if back_flag is None:
+                            back_flag = flag() if callable(flag) else GREEN
+                        _old_back(anki, r, keep_tag=True, flag=back_flag)
                     continue
                 if r.get("by") == BY_JOURNEY and JOURNEY_TAKES_OLD:
                     _take_old(anki, ledger, r, infos)
@@ -951,8 +970,8 @@ def rewritten(ledger, job_id):
         return []
     ensure(ledger)
     return sorted({int(r[0]) for r in ledger.conn.execute(
-        "SELECT old_note FROM swaps WHERE job_id = ? AND kind = ? AND wrote IS NOT NULL AND old_note IS NOT NULL",
-        (int(job_id), IN_PLACE))})
+        "SELECT old_note FROM swaps WHERE job_id = ? AND kind = ? AND wrote IS NOT NULL AND old_note IS NOT NULL AND "
+        "state != ?", (int(job_id), IN_PLACE, UNDONE))})
 
 
 def _store_back(ledger, row, open_store):
@@ -961,7 +980,7 @@ def _store_back(ledger, row, open_store):
     Tidiness of the record (the word stays made either way, G1.3-4): a store that can't be written now is logged."""
     if open_store is None:
         return
-    got = ledger.conn.execute("SELECT j.item_id, o.word FROM outcomes o JOIN jobs j ON j.id = o.job_id WHERE "
+    got = ledger.conn.execute("SELECT j.item_id, o.word, j.id FROM outcomes o JOIN jobs j ON j.id = o.job_id WHERE "
                               "o.note_id = ? AND o.outcome = 'made' ORDER BY o.job_id DESC LIMIT 1",
                               (int(row["new_note"]),)).fetchone()
     if got is None or got[0] is None:
@@ -972,8 +991,8 @@ def _store_back(ledger, row, open_store):
         if store is None:
             return
         with store:
-            library.record_batch(store, int(got[0]), {got[1]: [int(row["new_note"])]}, None, None,
-                                 moved=[int(row["new_note"])])
+            library.record_batch(store, int(got[0]), {got[1]: [int(row["new_note"])]}, None, ledger.tag_id(got[2]),
+                                 moved=[int(row["new_note"])])      # that job's batch, as its record named it
     except Exception:
         log.warning("Swap: the library's record of an undone swap's card wasn't moved back", exc_info=True)
 

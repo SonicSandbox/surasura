@@ -315,6 +315,9 @@ def replace(anki, ledger, note_id, new, was, media=None, keep_dir=None, tag=None
             anki.update(n, value)
             now = (_by_id(anki.notes([n])).get(n) or {}).get("fields") or {}
             if any(str((now.get(f) or {}).get("value") or "") != v for f, v in value.items()):
+                for name in rec["media"]:                     # stored for a write Anki didn't keep: none left behind
+                    if not anki.users(name):
+                        anki.delete_media(name)
                 _write_record(ledger, rid, dict(rec, state=UNDONE, not_applied=True))
                 return {"id": None, "filled": [], "skipped": {n: NOT_APPLIED}}
             if tag and not had:
@@ -329,6 +332,24 @@ def replace(anki, ledger, note_id, new, was, media=None, keep_dir=None, tag=None
     return {"id": rid, "filled": [n], "skipped": {}}
 
 
+def settle(anki, ledger, rid, verb=VERB):
+    """A `replace` record a kill or an error left `writing` (its note maybe written, maybe not) put right before the
+    same write is tried again: undone as any (`undo`: every old value back where the note holds the write), then
+    closed `undone`, each new file no note names deleted -> True when it was one to settle."""
+    rec = record(ledger, rid)
+    if rec is None or rec.get("mode") != REPLACE or rec.get("state") != WRITING:
+        return False
+    undo(anki, ledger, rid, verb=verb)
+    rec = record(ledger, rid)
+    if rec is not None and rec.get("state") != UNDONE:
+        with anki.writer(verb):
+            for name in rec.get("media") or ():
+                if not anki.users(name):
+                    anki.delete_media(name)
+            _write_record(ledger, rid, dict(rec, state=UNDONE, settled=True))
+    return True
+
+
 def _undo_replace(anki, rec):
     """`undo` of a `replace` record, under the caller's lock -> (emptied, kept, deleted): every old value back only
     while every field still holds what was written; a kept file stored again (Anki's name for it put in the values)."""
@@ -341,10 +362,15 @@ def _undo_replace(anki, rec):
             kept[n] = GONE
             continue
         fields = note.get("fields") or {}
+        old = dict((rec.get("was") or {}).get(str(n)) or {})
+        if old and all(str((fields.get(f) or {}).get("value") or "") == v for f, v in old.items()):
+            emptied.append(n)                                 # put back already (an Undo stopped after its write)
+            if rec.get("tag") and not rec.get("had_tag"):
+                anki.tag([n], rec["tag"], on=False)
+            continue
         if any(str((fields.get(f) or {}).get("value") or "") != v for f, v in value.items()):
             kept[n] = "changed since"
             continue
-        old = dict((rec.get("was") or {}).get(str(n)) or {})
         for name in rec.get("kept") or {}:
             path = os.path.join(rec.get("keep_dir") or "", os.path.basename(name))
             with open(path, "rb") as f:

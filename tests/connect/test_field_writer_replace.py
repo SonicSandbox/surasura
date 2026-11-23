@@ -143,7 +143,8 @@ def test_a_note_open_in_ankis_editor_keeps_its_fields_and_offers_no_undo(tmp_pat
 
 def test_a_write_killed_half_way_leaves_its_record_and_its_undo_still_works(tmp_path, ledger):
     """Anki stopped answering at the fields: the record (written first) is left `writing`, and its Undo puts back what
-    was read — here nothing changed in Anki, so the fields hold the old values: kept, never a wrong write."""
+    was read — here nothing changed in Anki, so the fields hold the old values already: nothing written, the record
+    closed (FS-1 G: a note holding its old values counts as put back — an Undo or a retry finishes, never refused)."""
     anki = Anki()
     _card(anki, 1, _sentences()[3])
     anki.fail_on_update = 1
@@ -152,8 +153,13 @@ def test_a_write_killed_half_way_leaves_its_record_and_its_undo_still_works(tmp_
         sa.replace(anki, ledger, 1, new, _was(anki, 1, new), keep_dir=str(tmp_path / "kept"))
     assert sa.pending(ledger) == [e.value.sentence_audio_id]
     anki.fail_on_update = None
-    assert sa.undo(anki, ledger, e.value.sentence_audio_id)["kept"] == {1: "changed since"}
+    updates = len([c for c in anki.log if c[0] == "update"]) if hasattr(anki, "log") else None
+    got = sa.undo(anki, ledger, e.value.sentence_audio_id)
+    assert (got["emptied"], got["kept"]) == ([1], {})
+    assert sa.record(ledger, e.value.sentence_audio_id)["state"] == sa.UNDONE and sa.pending(ledger) == []
     assert anki.value(1, "Sentence") == _sentences()[3]
+    if updates is not None:
+        assert len([c for c in anki.log if c[0] == "update"]) == updates         # nothing written to put it back
 
 
 def test_a_tag_the_learner_had_already_stays_after_undo(tmp_path, ledger):

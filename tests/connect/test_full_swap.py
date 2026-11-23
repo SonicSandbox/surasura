@@ -428,6 +428,8 @@ def test_the_kept_clip_and_picture_go_30_days_on_and_undo_then_says_too_old(ledg
     that puts the old sentence back over a clip that is gone."""
     monkeypatch.setattr(swap, "kept_folder", lambda: str(tmp_path / "swap-kept"))
     monkeypatch.setattr(path_utils.threading, "Thread", _Now)
+    monkeypatch.setattr(swap, "PURGE_EVERY_S", 0)          # the look's own pace (twice a day) is the next test's
+    monkeypatch.setattr(swap, "_PURGED", {})
     anki, _first, row = _swapped(ledger, lang, tmp_path, monkeypatch)
     kept = [os.path.join(r, f) for r, _d, files in os.walk(tmp_path / "swap-kept") for f in files]
     assert sorted(os.path.basename(k) for k in kept) == ["sl-old.mp3", "sl-old.webp"]
@@ -519,7 +521,8 @@ def test_an_undone_in_place_swap_moves_its_record_back_to_the_line_it_shows(ledg
             return False
     monkeypatch.setattr(library, "record_batch", lambda *a, **k: calls.append((a[1:], k)))
     assert swap.undo(anki, ledger, lang, row["id"], open_store=Store)["undone"]
-    assert calls == [((ledger.job_by_id(first)["item_id"], {CASES[lang][0]: [900]}, None, None), {"moved": [900]})]
+    assert calls == [((ledger.job_by_id(first)["item_id"], {CASES[lang][0]: [900]}, None, ledger.tag_id(first)),
+                      {"moved": [900]})]                              # the first job's batch, as its record named it
 
 
 def test_the_runner_hands_a_rewritten_card_to_the_record_and_to_backfill(ledger, tmp_path, monkeypatch):
@@ -591,3 +594,116 @@ def test_the_swapped_cards_media_are_named_by_the_line_before_the_write_so_its_u
     values, named = media_names.by_line(rendered["fields"], {"am-clip.mp3": "x"}, "k", None, None, other,
                                         "SentenceAudio", "Picture")
     assert values == rendered["fields"] and named == {"am-clip.mp3": "x"}
+
+
+# --------------------------------------------------------------------------- #
+# The review's fixes (FS-1 G, 2026-11-23: Haiku lenses + own read)
+# --------------------------------------------------------------------------- #
+def test_a_write_stopped_after_ankis_update_is_settled_when_tried_again_never_called_a_hand_edit(
+        ledger, tmp_path, monkeypatch):
+    """The note written, then Anki failing on the tag: the record stays `writing`. Before: the retry read the card's
+    new sentence as a hand edit and made a new card, the half write never undoable. Now the swap keeps the record's
+    id, the retry puts the half write back first (`sentence_audio.settle`) and writes again: one in-place swap, its
+    Undo whole."""
+    from app import anki_connect
+    lang = "ja"
+    word, old, other = CASES[lang]
+    monkeypatch.setattr(swap, "kept_folder", lambda: str(tmp_path / "swap-kept"))
+    anki = _card(Anki(), lang)
+    _made_by_connect(ledger, lang)
+    _entry, row = _to_job(ledger, lang, anki, monkeypatch)
+    real_tag = anki.tag
+    fail = {"once": True}
+
+    def tag(ids, t, on=True):
+        if fail.pop("once", False):
+            raise anki_connect.AnkiError("Anki stopped answering")
+        return real_tag(ids, t, on)
+    monkeypatch.setattr(anki, "tag", tag)
+    with pytest.raises(anki_connect.AnkiError):
+        swap.write_in_place(anki, ledger, row, _rendered(tmp_path, lang), MAPPING, swap.kept_folder())
+    assert _value(anki, "Sentence") == other.replace(word, f"<b>{word}</b>")      # the half write
+    row = swap.in_place_row(ledger, row["job_id"])
+    first = row["wrote"]
+    assert sentence_audio.record(ledger, first)["state"] == sentence_audio.WRITING
+    assert swap.write_in_place(anki, ledger, row, _rendered(tmp_path, lang), MAPPING, swap.kept_folder()) == \
+        (swap.IN_PLACE, 900)
+    assert sentence_audio.record(ledger, first)["state"] == sentence_audio.UNDONE
+    row = swap.in_place_row(ledger, row["job_id"])
+    assert row["wrote"] != first and swap.SWAP_TAG in anki.notes_[900]["tags"]
+    _job_made(ledger, row, 900)
+    swap.look(Steps(), ledger, lang, anki=anki, files=5)
+    assert swap.undo(anki, ledger, lang, row["id"])["undone"]
+    assert _value(anki, "Sentence") == old.replace(word, f"<b>{word}</b>")
+    assert anki.media["sl-old.mp3"] == b"ID3 old clip"
+
+
+def test_an_undo_stopped_after_its_write_finishes_when_pressed_again(ledger, tmp_path, monkeypatch):
+    """Undo's write landed, then Anki failed taking the tag off: before, every later Undo read the card as changed
+    since and refused for good. A card already holding its old values now counts as put back: the second press
+    finishes (the tag off, the swap undone)."""
+    from app import anki_connect
+    lang = "ja"
+    word, old, _other = CASES[lang]
+    monkeypatch.setattr(swap, "kept_folder", lambda: str(tmp_path / "swap-kept"))
+    anki, _first, row = _swapped(ledger, lang, tmp_path, monkeypatch)
+    real_tag = anki.tag
+    fail = {"once": True}
+
+    def tag(ids, t, on=True):
+        if not on and fail.pop("once", False):
+            raise anki_connect.AnkiError("Anki stopped answering")
+        return real_tag(ids, t, on)
+    monkeypatch.setattr(anki, "tag", tag)
+    with pytest.raises(anki_connect.AnkiError):
+        swap.undo(anki, ledger, lang, row["id"])
+    assert _value(anki, "Sentence") == old.replace(word, f"<b>{word}</b>")
+    assert swap.undo(anki, ledger, lang, row["id"])["undone"]
+    assert swap.SWAP_TAG not in anki.notes_[900]["tags"] and _row(ledger, row["id"])["state"] == swap.UNDONE
+
+
+def test_a_write_anki_did_not_keep_leaves_no_new_clip_behind(ledger, tmp_path, monkeypatch):
+    """The card open in Anki's editor: the write isn't kept (`NOT_APPLIED`, tried again later) — and the clip and
+    picture it stored first are deleted again, none left in Anki's media folder with no card naming them."""
+    lang = "ja"
+    monkeypatch.setattr(swap, "kept_folder", lambda: str(tmp_path / "swap-kept"))
+    anki = _card(Anki(), lang)
+    _made_by_connect(ledger, lang)
+    _entry, row = _to_job(ledger, lang, anki, monkeypatch)
+    anki.editor_open.add(900)
+    assert swap.write_in_place(anki, ledger, row, _rendered(tmp_path, lang), MAPPING, swap.kept_folder()) == \
+        (None, swap.NOT_APPLIED)
+    assert "am-clip.mp3" not in anki.media and "am-pic.webp" not in anki.media
+    assert anki.media["sl-old.mp3"] == b"ID3 old clip"
+
+
+@pytest.mark.parametrize("broken", ["no sentence", "a clip it didn't hand over"])
+def test_a_render_with_no_sentence_or_a_missing_clip_is_never_written(ledger, tmp_path, monkeypatch, broken):
+    """Render's note with an empty sentence, or naming a clip whose file it didn't hand over: never written over the
+    learner's card (its sentence blanked, or pointed at a clip that isn't there) — a new card instead."""
+    lang = "ja"
+    word, old, _other = CASES[lang]
+    monkeypatch.setattr(swap, "kept_folder", lambda: str(tmp_path / "swap-kept"))
+    anki = _card(Anki(), lang)
+    _made_by_connect(ledger, lang)
+    _entry, row = _to_job(ledger, lang, anki, monkeypatch)
+    rendered = _rendered(tmp_path, lang)
+    if broken == "no sentence":
+        rendered["fields"]["Sentence"] = ""
+    else:
+        rendered["files"] = rendered["files"][1:]
+    assert swap.write_in_place(anki, ledger, row, rendered, MAPPING, swap.kept_folder()) == (swap.NEW_CARD, None)
+    assert _value(anki, "Sentence") == old.replace(word, f"<b>{word}</b>") and not swap.in_place_row(ledger, row["job_id"])["wrote"]
+
+
+def test_the_kept_copies_are_looked_at_twice_a_day_never_every_look(tmp_path, monkeypatch):
+    """A 30-day clock needs no purge every few minutes: one per process each 12 hours (a thread a look, before)."""
+    folder = tmp_path / "swap-kept"
+    folder.mkdir()
+    calls = []
+    monkeypatch.setattr(swap, "kept_folder", lambda: str(folder))
+    monkeypatch.setattr(swap, "_PURGED", {})
+    monkeypatch.setattr(path_utils, "cleanup_trash_async", lambda path: calls.append(path))
+    swap._purge_kept()
+    swap._purge_kept()
+    assert calls == [str(folder)]

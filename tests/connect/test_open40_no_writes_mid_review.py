@@ -74,11 +74,22 @@ def test_your_stop_wins_over_a_review(batch, fake_miner, words, monkeypatch):  #
     assert done["stopped"] is True and done["paused"] is False
 
 
-def test_no_review_is_the_call_as_before(batch, fake_miner, words, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(anki_miner, "POLL_S", 0.05)
+@pytest.mark.parametrize("poll_s", [0.05, 1.0])
+def test_no_review_is_the_call_as_before(batch, fake_miner, words, monkeypatch, tmp_path, poll_s):  # noqa: F811
+    # FLAKES (Flake-F5): the fake's mine call is a Python start (70-80 ms here) and a look comes only at a poll, after a
+    # POLL_S slice: a runner that started it faster ended the call inside the first slice, no look at all. The fake
+    # answers once a look happened (`until`, as `cancel_at` holds a Stop's call), at the default POLL_S too
+    monkeypatch.setattr(anki_miner, "POLL_S", poll_s)
     monkeypatch.setattr(anki_miner, "PAUSE_LOOK_S", 0.0)
+    looked = tmp_path / "looked"
+    fake_miner.plan(until={"mine": str(looked)})
     looks = []
-    done = batch(should_stop=lambda: False, should_pause=lambda: looks.append(1) or False)
+
+    def look():
+        looks.append(1)
+        looked.touch()
+        return False
+    done = batch(should_stop=lambda: False, should_pause=look)
     assert looks, "the review was looked at while the call ran"
     assert done["paused"] is False and done["stopped"] is False
     assert all(o["outcome"] == "made" for o in done["outcomes"])

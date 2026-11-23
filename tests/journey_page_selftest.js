@@ -129,8 +129,8 @@
        way to `offline` (SPEC §3.5); a route not yet built drops the group that is only that route */
     const OFFLINE = MODE !== "on";
     const CONTRACT = Q.get("rail") === "contract";      // another rail plugged in: the page's own groups + `contract`
-    const SKIP = new Set(CONTRACT ? ["word", "marks", "pre", "picker", "door", "queue", "player", "flag", "settings", "list", "focus", "search", "notyet", "a11y", "offline", "layout"]
-      : OFFLINE ? ["marks", "pre", "flag", "door", "queue", "settings", "contract"] : ["offline", "contract"]);
+    const SKIP = new Set(CONTRACT ? ["word", "marks", "pre", "picker", "door", "queue", "player", "flag", "settings", "meet", "list", "focus", "search", "notyet", "a11y", "offline", "layout"]
+      : OFFLINE ? ["marks", "pre", "flag", "door", "queue", "settings", "meet", "contract"] : ["offline", "contract"]);
     if (NOTYET.has("episode/prestudied")) SKIP.add("pre");
     if (NOTYET.has("line/flag")) SKIP.add("flag");
     const group = (g) => { const on = only.size ? only.has(g) : !SKIP.has(g); if (on) GROUPS.push([performance.now(), g]); return on; };
@@ -603,7 +603,7 @@
     if (group("settings")) {
       await goWord(E, 0);
       J.openSettings(); await settle();
-      ok("the page's settings: one row per setting (word size and sentence size are two: SPEC §1.4 as corrected)", $$("#set-sheet .srow").length === J.SETTINGS.length && J.SETTINGS.length === 8, $$("#set-sheet .srow").length);
+      ok("the page's settings: one row per setting (word size and sentence size are two: SPEC §1.4 as corrected)", $$("#set-sheet .srow").length === J.SETTINGS.length && J.SETTINGS.length === 9, $$("#set-sheet .srow").length);
       ok("each row's ? shows bullets", (() => { $("#set-sheet [data-shelp]").click(); return $$("#shelp li").length > 0; })());
       let r = await press(() => $('#set-sheet .srow[data-set="theme"] [data-val="\\"light\\""]').click());
       ok("Theme › Light: the page turns light", document.documentElement.dataset.theme === "light");
@@ -644,6 +644,116 @@
         budget(ok, "a setting: meanings", r, ["meaning", "more", "desk", "layer"]);
         J.setSetting("meanings", "en"); await settle();
       }
+      J.closeLayer();
+    }
+
+    /* ---- the first-meeting line (SPEC § Sentences are the list's): of the lines shown, the one from the episode the
+       word is first met in is marked; its switch hides it and the next lines show, in the list's order. The page
+       adds no line and moves none: what each check expects is worked out here from the word's own lines. ---- */
+    if (group("meet")) {
+      const MEET = "Where you'll first meet it";
+      ok("Where you'll first meet it: Shown unless the head holds a switch that is off (a hand-edited value is no switch)", J.SET.first_meeting === (H.settings.first_meeting !== false), JSON.stringify(H.settings.first_meeting));
+      if (J.SET.first_meeting !== true) { J.setSetting("first_meeting", true); await settle(); }
+      const nOf = (w) => { const n = Number(J.SET.sentences) || 0; return n > 0 ? Math.min(n, w[9].length) : w[9].length; };
+      const meetOf = (id, w) => { for (let k = 0; k < nOf(w); k++) { const s = J.srcOf(id, w[9][k][1]); if (s && s[2] === w[5]) return k; } return -1; };
+      const carded = (w) => (w[6] & 8) === 8;
+      const found = {};                                  // the kinds of word the checks need, the first of each
+      for (const i of epsWith(1).slice(0, 60)) {
+        await J.loadEp(i);
+        (J.seq(i) || []).forEach((id, wi) => {
+          const w = J.wordNow(id), m = meetOf(id, w), one = w[9].length === 1;
+          const kind = m < 0 ? "none" : one ? (carded(w) ? null : "only") : carded(w) ? (m === 0 ? "card" : null) : m === 0 ? "first" : "later";
+          if (kind && !found[kind]) found[kind] = { i, wi, id, m };
+        });
+      }
+      const at = async (f) => { await goWord(f.i, f.wi); return J.wordNow(J.curWordId()); };
+      const shown = () => $$("#stage .lines > .ln").map((el) => el.querySelector(".tx").textContent);
+      const marked = () => $$("#stage .lines > .ln.fm");
+      const keep = (w, hide) => { const o = []; for (let k = 0; k < w[9].length && o.length < nOf(w); k++) if (k !== hide) o.push(w[9][k][0]); return o; };
+      const listed = (w) => w[9].slice(0, nOf(w)).map((ln) => ln[0]);
+      const sw = (v) => $(`#set-sheet .srow[data-set="first_meeting"] [data-val="${v}"]`);
+      J.openSettings(); await settle();
+      const row = $('#set-sheet .srow[data-set="first_meeting"]');
+      ok("its row in the page's settings: J-SET's words, Shown · Hidden, Shown lit", row && row.textContent.includes(MEET) && $$('#set-sheet .srow[data-set="first_meeting"] [data-val]').length === 2 && sw("true").classList.contains("on"), row && row.textContent);
+      for (const kind of ["first", "later"]) {
+        const f = found[kind];
+        if (!f) continue;
+        const w = await at(f);
+        ok(`${kind === "first" ? "the first line" : "a later line"} from the first meeting's episode: marked ${MEET}, the lines as the list has them`,
+          marked().length === 1 && marked()[0].querySelector(".tx").textContent === w[9][f.m][0] && marked()[0].textContent.includes(MEET) && JSON.stringify(shown()) === JSON.stringify(listed(w)), JSON.stringify(shown()));
+        J.selLine(nOf(w) - 1); await settle();          // the last line chosen: one fewer shows once the marked one hides
+        const lines0 = $("#stage [data-r=lines]"), rest0 = ["reading", "acts"].map((r) => $(`#stage [data-r=${r}]`)).concat([$("#stage .wrow")]);
+        let r = await press(() => sw("false").click());
+        ok(`Hidden (${kind}): a chosen line is still one of the lines shown, and drawn chosen`, J.S.line < J.shownLines(f.id, w).ks.length && $$("#stage .lines > .ln.sel").length === 1, J.S.line);
+        const call = CALLS.filter(([, rt]) => rt === "settings/set").pop();
+        ok(`Hidden (${kind}): the marked line goes, the next show in the list's order, nothing marked`, !marked().length && JSON.stringify(shown()) === JSON.stringify(keep(w, f.m)), JSON.stringify(shown()));
+        ok(`Hidden (${kind}): written through settings/set, J-SET's key, a switch`, call && call[2].key === "journey_first_meeting" && call[2].value === false, call && JSON.stringify(call[2]));
+        ok(`Hidden (${kind}): only the word's lines redrawn (the rest of the word pane is the same nodes)`, !lines0.isConnected && rest0.every((el) => el && el.isConnected));
+        budget(ok, `a setting: where you'll first meet it (${kind})`, r, ["word", "lines", "layer"]);
+        if (kind === "first" && $('#stage [data-act="pick"]')) {
+          const n0 = CALLS.length;
+          J.closeLayer(); J.selLine(0); key("Enter"); await settle();      // (a key with a sheet open is the sheet's)
+          const pc = CALLS.slice(n0).find(([, rt]) => rt === "swap/queue" || rt === "card/make");
+          J.openSettings(); await settle();
+          ok("Hidden: Enter on the first line shown picks that line, not the hidden one", pc && pc[2].line_id === J.lineId(w[9][1], J.srcOf(f.id, w[9][1][1])), pc && pc[2].line_id);
+        }
+        r = await press(() => sw("true").click());
+        ok(`Shown again (${kind}): the same lines, the mark back`, marked().length === 1 && JSON.stringify(shown()) === JSON.stringify(listed(w)));
+        budget(ok, `a setting: where you'll first meet it, back (${kind})`, r, ["word", "lines", "layer"]);
+      }
+      if (found.later) {                                 // fewer lines shown than the word has: its first meeting not among them
+        const w = await at(found.later), was = J.SET.sentences;
+        J.setSetting("sentences", found.later.m); await settle();
+        await press(() => sw("false").click());
+        const more = $("#stage .lines .more");
+        ok("Sentences per word below the first meeting's line: nothing marked or hidden, '+N more' counts every line not shown", !marked().length && JSON.stringify(shown()) === JSON.stringify(w[9].slice(0, found.later.m).map((ln) => ln[0])) && more && more.textContent.includes(`+${w[9].length - found.later.m} more`), more && more.textContent);
+        await press(() => sw("true").click());
+        J.setSetting("sentences", was); await settle();
+      }
+      if (found.none) {
+        const w = await at(found.none);
+        const lines0 = $("#stage [data-r=lines]");
+        const r = await press(() => sw("false").click());
+        ok("a word whose first meeting isn't among the lines shown: no mark, Hidden changes nothing, its lines not redrawn", !marked().length && lines0.isConnected && JSON.stringify(shown()) === JSON.stringify(listed(w)));
+        budget(ok, "a setting: where you'll first meet it, on a word with no such line", r, ["layer"]);
+        await press(() => sw("true").click());
+      }
+      if (found.card) {                                  // PROVISIONAL (J-PAGE 5): the card's sentence never hides
+        const w = await at(found.card);
+        await press(() => sw("false").click());
+        ok("Hidden, a word with a card whose first line is its first meeting: that line stays, On your card, unmarked", !marked().length && JSON.stringify(shown()) === JSON.stringify(listed(w)) && /On your card/i.test($("#stage .lines > .ln").textContent));
+        await press(() => sw("true").click());
+        ok("Shown: the card's line carries both", marked().length === 1 && /On your card/i.test(marked()[0].textContent) && marked()[0].textContent.includes(MEET));
+      }
+      if (found.only) {                                  // PROVISIONAL (J-PAGE 5): a word never left without a sentence
+        const w = await at(found.only);
+        await press(() => sw("false").click());
+        ok("Hidden, a word with one line, its first meeting: the line stays, unmarked", !marked().length && JSON.stringify(shown()) === JSON.stringify(listed(w)));
+        await press(() => sw("true").click());
+      }
+      {                                                  // List: only the cards whose word has a first-meeting line shown
+        const f = found.first || found.later || found.only;
+        if (f) {
+          await goWord(f.i, 0); J.closeLayer(); J.toggleList(); await settle();
+          const cards = $$("#stage .lc"), ids = J.seq(f.i);
+          const before = cards.map((c) => c.querySelector("[data-r=lines]"));
+          const want = cards.map((c) => { const id = ids[Number(c.dataset.k)], w = J.wordNow(id), m = meetOf(id, w); return m >= 0; });
+          const r = await press(() => J.setSetting("first_meeting", false));
+          const got = before.map((el) => !el.isConnected);
+          ok("List, Hidden: only the cards whose word has its first-meeting line shown are redrawn", want.some(Boolean) && JSON.stringify(got) === JSON.stringify(want), JSON.stringify([want, got]));
+          budget(ok, "a setting: where you'll first meet it, in List", r, ["word", "lines"]);
+          J.setSetting("first_meeting", true); await settle();
+          J.toggleList(); await settle();
+          J.openSettings(); await settle();
+        }
+      }
+      {                                                  // a state read: a hand-edited "false" in settings.json is no switch
+        window.__J_DOOR_HOOK = (route) => route === "state" ? { ok: true, at: Date.now(), settings: { journey_first_meeting: "false" } } : null;
+        await J.readState(); await settle();
+        window.__J_DOOR_HOOK = null;
+        ok("a state read with a value that is no switch keeps Shown", J.SET.first_meeting === true, JSON.stringify(J.SET.first_meeting));
+      }
+      ok("the kinds of word checked: " + Object.keys(found).sort().join(" "), true);
       J.closeLayer();
     }
 

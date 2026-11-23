@@ -70,6 +70,10 @@ MINE, LEVEL, ASKED = "mine", "level", "asked"
 # never a job before — queued with that part, by its person and its event (`event_id`), and mined ahead of it
 # (`runner._ordered`); kept below the top 20 while it is in Current (`inbox.keeps`)
 SHOW = "show"
+# Kantan-SL (Swap, the simple version, 3.0.18): one word's new card from another line, the old card's line never
+# (`app/connect/swap.py`): it carries the swap's time as its `asked_at` — the learner's own move, never held by the cap
+# nor dropped off the top 20 — makes no receipt (as a level job), and no ask of the store moves onto it
+SWAP = "swap"
 # P4.1: the asks watermark's meta key, `asks_from:<lang>` (C1 / IK B2: `resume.turned_on` writes it at every off → on)
 ASKS_FROM = "asks_from:"
 # Laptop round 8 #47 (*Stop*): `stop:<job id>` — you asked the job to stop (the window's press, `ask_stop`); `stopped:<job
@@ -512,6 +516,21 @@ class Ledger:
                                 (language, item_id, source, event_id, now, now, store_id, kind))
         return cur.lastrowid
 
+    def queue_swap(self, language, item_id, word, reading, asked_at, store_id=None):
+        """Kantan-SL: a `queued` job of kind `swap` for the item, naming one word ((word, reading); reading "" when the
+        old card doesn't say) -> its id, or None while the item has an open job (one open job per item, N4: the swap
+        is tried again at the next look)."""
+        marks = ",".join("?" * len(OPEN))
+        if self.conn.execute(f"SELECT 1 FROM jobs WHERE language = ? AND item_id = ? AND state IN ({marks}) LIMIT 1",
+                             (language, item_id) + OPEN).fetchone():
+            return None
+        now = _now()
+        cur = self.conn.execute("INSERT INTO jobs (language, item_id, state, source, event_id, created_at, updated_at, "
+                                "kind, words, store_id, asked_at) VALUES (?, ?, 'queued', 'swap', NULL, ?, ?, ?, ?, ?, ?)",
+                                (language, item_id, now, now, SWAP, json.dumps([[str(word), str(reading or "")]],
+                                                                               ensure_ascii=False), store_id, asked_at))
+        return cur.lastrowid
+
     def ever_had_job(self, language, item_id):
         """Michi-EO: has the item had any job, in any state (a show's catch-up queues only a part that never had)? One
         the first run's *Not now* set aside (Kantan-B2b) doesn't count: your *Mine now* on a later part brings it."""
@@ -748,6 +767,8 @@ class Ledger:
         row = self.conn.execute(f"SELECT id FROM jobs WHERE language = ? AND item_id = ? AND state IN ({marks}) "
                                 "ORDER BY id DESC LIMIT 1", (language, item_id) + OPEN).fetchone()
         now = _now()
+        if row is not None and self.conn.execute("SELECT kind FROM jobs WHERE id = ?", (row[0],)).fetchone()[0] == SWAP:
+            return None                 # Kantan-SL: a swap's one word is under way: the ask is read again after it
         if row is not None:
             self.conn.execute("UPDATE jobs SET asked_at = ?, updated_at = ? WHERE id = ?", (asked_at, now, row[0]))
             # laptop round 8 #47 (review A4): *Mine now* after a *Stop* the runner hasn't reached yet — your later

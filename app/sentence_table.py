@@ -78,11 +78,11 @@ _JA_HELPERS = (  # ja helping verbs (非自立可能): grammar right after て /
     "抜ける 捲る 掛かる 掛ける 損なう 有る 来たる 来る 果たす 果てる 欲しい 渡る 為さる 為る 無い 熟す 直す 終える 終わる 給う 続く 続ける 置く 致す 良い 行く 見せる 見る 貰う "
     "込む 通す 遅れる 遊ばす 過ぎる 遣る 間違う 間違える 頂く 願う"
 )
-_ZH_GRAMMAR = (  # zh: jieba's particles, prepositions, conjunctions, interjections: 148
+_ZH_GRAMMAR = (  # zh: jieba's particles, prepositions, conjunctions, interjections: 149
     "不仅 不但 不免 不如 不是 不管 不论 不过 与 与其 与此同时 为 为了 么 之 之所以 也好 了 于 于是 从 从此 从而 以 以为 以便 以及 以外 似的 但 但是 何况 依据 依照 倘若 "
     "关于 再说 凭 即使 即便 及 及其 及时 反而 另一方面 另外 只不过 只怕 只是 只有 只要 可以 可是 同 同时 向 吗 否则 吧 呀 呢 呵 和 哩 啦 嗯 嘛 因 因为 因此 因而 在 在内 "
-    "地 如果 如此 对 对于 尽管 并 并且 并非 得 总是 或 或是 或者 所 所以 所说 把 按 按照 据 接着 无论 既 既有 既然 替 来看 来说 根 根据 此后 此外 此时 比 然 然后 然而 "
-    "用 由 由于 由此 的 的话 着 等 等等 经过 给 而 而且 而已 而是 而言 自 自从 至 至于 般 般的 若 虽然 被 要是 跟 过 还是 还要 通过 针 针对 除 除了 随着 顺"
+    "地 如果 如此 对 对于 尽管 并 并且 并非 得 总是 或 或是 或者 所 所以 所说 把 按 按照 据 接着 无论 既 既有 既然 是 替 来看 来说 根 根据 此后 此外 此时 比 然 然后 "
+    "然而 用 由 由于 由此 的 的话 着 等 等等 经过 给 而 而且 而已 而是 而言 自 自从 至 至于 般 般的 若 虽然 被 要是 跟 过 还是 还要 通过 针 针对 除 除了 随着 顺"
 )
 # --- end of the block ---
 _TITLES = frozenset(("さん", "君", "くん", "ちゃん", "様", "さま", "氏", "博士", "先生", "夫人", "殿", "卿", "警部", "刑事",
@@ -128,11 +128,12 @@ class LineWords:
         self.keys, self.at, ends = [], [], []
         for lemma, reading, surface, _orth in tokens:
             a = text.find(surface, pos)
-            if a < 0:
-                a = pos
+            if a >= 0:
+                pos = a + len(surface)
+            else:
+                a = pos                         # a token the line's text doesn't hold (a quote mark cut off): here
             self.keys.append((lemma, reading))
             self.at.append(a)
-            pos = a + len(surface)
             ends.append(pos)
         at = self.at
 
@@ -446,5 +447,5 @@ def open_table(path, language=None, engine=None, run_signature=None):
         if off != size or len(head["rows"]) != len(head["sizes"]):
             return None                         # half-written, or more than one table's bytes
         return t
-    except (OSError, ValueError, KeyError, TypeError, struct.error, zlib.error):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, struct.error, zlib.error):
         return None

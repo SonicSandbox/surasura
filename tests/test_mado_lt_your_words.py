@@ -195,13 +195,16 @@ def test_the_stores_readings_are_asked_a_chunk_at_a_time_and_pick_the_most_used(
     reading never picked, a lemma it doesn't hold absent."""
     monkeypatch.setattr(token_index, "READINGS_CHUNK", 2)
     _store("ja", [("看板", "カンバン", 12), ("看板", "カンパン", 1), ("提灯", "チョウチン", 3), ("宝", "タカラ", 9),
-                  ("冒険", "", 4), ("冒険", "ボウケン", 2)])
+                  ("冒険", "", 4), ("冒険", "ボウケン", 2),
+                  # (Mado-LT 5) the most-used reading after another, put in and sorted: picked by its count, never
+                  # by the first row the query returns
+                  ("上手", "ウワテ", 1), ("上手", "ジョウズ", 7)])
     store = token_index.open_reader("ja")
     try:
-        found = store.readings(["看板", "提灯", "宝", "冒険", "灯台", "看板", ""])
+        found = store.readings(["看板", "提灯", "宝", "冒険", "灯台", "看板", "", "上手"])
     finally:
         store.close()
-    assert found == {"看板": "カンバン", "提灯": "チョウチン", "宝": "タカラ", "冒険": "ボウケン"}
+    assert found == {"看板": "カンバン", "提灯": "チョウチン", "宝": "タカラ", "冒険": "ボウケン", "上手": "ジョウズ"}
 
 
 def test_the_ignore_tabs_entries_still_name_only_the_word_and_where_it_is_held():

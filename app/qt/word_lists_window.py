@@ -61,6 +61,11 @@ class _RemoveDelegate(QStyledItemDelegate):
             return style.qcolor(style.colours()[s.WORD_LISTS_KNOWN_MARK_INK[source]])
         return option.palette.color(QPalette.ColorRole.Text)
 
+    def mark_glyph(self, index):
+        """The mark painted: ✓ or ○ on a Known tab's row (its word known, or Still learning), ✕ on any other."""
+        glyph = s.WORD_LISTS_KNOWN_MARK.get(index.data(SOURCE)) if index.data(KNOWN_ROW) else None
+        return glyph or s.WORD_LISTS_REMOVE_MARK
+
     def initStyleOption(self, option, index):
         super().initStyleOption(option, index)
         option.text = scrub.shown(option.text)             # (Report a problem's picture: a name in a list scrubbed)
@@ -75,8 +80,7 @@ class _RemoveDelegate(QStyledItemDelegate):
             return
         painter.save()
         painter.setPen(self.mark_colour(option, index))
-        glyph = s.WORD_LISTS_KNOWN_MARK.get(index.data(SOURCE)) if index.data(KNOWN_ROW) else None
-        painter.drawText(self.mark_rect(option), Qt.AlignmentFlag.AlignCenter, glyph or s.WORD_LISTS_REMOVE_MARK)
+        painter.drawText(self.mark_rect(option), Qt.AlignmentFlag.AlignCenter, self.mark_glyph(index))
         painter.restore()
 
     def editorEvent(self, event, model, option, index):

@@ -112,12 +112,17 @@ def test_each_rows_mark_is_a_lit_check_or_a_violet_circle_never_the_ignore_tabs_
     for word, ink in (("灯台", "accent"), ("看板", "accent-2")):
         index = w.shown.index(_row(w, word), 0)
         assert index.data(KNOWN_ROW) is True
-        assert s.WORD_LISTS_KNOWN_MARK[index.data(SOURCE)] == {"accent": "✓", "accent-2": "○"}[ink]
+        assert delegate.mark_glyph(index) == {"accent": "✓", "accent-2": "○"}[ink]
         from PyQt6.QtWidgets import QStyleOptionViewItem
         from app.qt import style
         assert delegate.mark_colour(QStyleOptionViewItem(), index) == style.qcolor(style.colours()[ink])
     assert w.shown.index(_row(w, "看板"), 0).data(Qt.ItemDataRole.ToolTipRole) == \
         "看板: still learning\n• Click ○: known again"
+    from PyQt6.QtGui import QStandardItemModel                              # (Mado-LT 5) an Ignore tab's row: ✕
+    from app.qt.word_lists_window import _item
+    ignore = QStandardItemModel()
+    ignore.appendRow(_item("冒険", "list"))
+    assert delegate.mark_glyph(ignore.index(0, 0)) == s.WORD_LISTS_REMOVE_MARK
 
 
 # --- ✓ → Still learning, ○ → back ------------------------------------------------------------------------------- #
@@ -225,6 +230,29 @@ def test_a_click_while_a_write_runs_does_nothing(main, monkeypatch):
 
 
 # --- the other language, and a big list ------------------------------------------------------------------------- #
+def test_a_language_change_drops_the_circles_undo_held_for_the_other_language(main, monkeypatch):
+    """(Mado-LT 5) ✓ on 看板 in Japanese holds that write's Undo for its ○; the main window turned to Chinese, where
+    看板 is Still learning from before, its ○ marks it Known in Chinese — never the Japanese write's Undo."""
+    _write("ja", JA)
+    _write("zh", [_entry("看板", None, "2026-11-19T10:00:00", "kàn bǎn", language="zh")])
+    assert not word_marks.apply("zh", [("看板", "learning")]).error
+    w = _open(main)
+    _click_mark(w, "看板")
+    assert wait_until(lambda: not w.busy() and "看板" in w.cleared)
+    calls = []
+    real_mark = main.services.mark_words
+    monkeypatch.setattr(main.services, "undo_marks", lambda language, undo_id=None: calls.append(("undo", language)))
+    monkeypatch.setattr(main.services, "mark_words",
+                        lambda language, marks: calls.append(("mark", language, list(marks))) or real_mark(language, marks))
+    main.services.settings.set({"target_language": "zh"})
+    assert wait_until(lambda: w.language == "zh" and w.entries is not None and w.model.rowCount() == 1)
+    assert w.cleared == {} and dict(_shown(w))["看板"] == "learning"
+    _click_mark(w, "看板")
+    assert wait_until(lambda: not w.busy() and calls)
+    assert calls == [("mark", "zh", [("看板", "known")])]
+    assert "看板" in word_marks.learning("ja")                              # the Japanese write left as it was
+
+
 def test_a_chinese_learners_known_tab_shows_pinyin_and_writes_only_chinese(main, zh_resources_dir):
     shutil.copyfile(os.path.join(zh_resources_dir, "KnownWords.json"), _write("zh", []))
     _write("ja", JA)

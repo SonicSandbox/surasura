@@ -1257,7 +1257,9 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
     script = effective(language, settings.get("zh_script"))
     media, dirs, timer = {}, [], None
     if settings.get("line_player", True) and timed:
-        media, dirs = gen._line_media(language, timed, os.path.join(gen.RESULTS_DIR, gen.LINE_MEDIA_MEMO))
+        from app.connect.runner import VIDEO_EXTENSIONS     # the one cutter's videos: the page cuts their lines (J-CLIP)
+        media, dirs = gen._line_media(language, timed, os.path.join(gen.RESULTS_DIR, gen.LINE_MEDIA_MEMO),
+                                      cut_kinds=VIDEO_EXTENSIONS)
         if any(where for where, _why in media.values()):
             timer = gen.AnchorFinder(cache_path=os.path.join(gen.RESULTS_DIR, gen.LINE_TIMES_MEMO),
                                      script=script, language=language)

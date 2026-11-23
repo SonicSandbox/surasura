@@ -136,6 +136,7 @@
     const group = (g) => { const on = only.size ? only.has(g) : !SKIP.has(g); if (on) GROUPS.push([performance.now(), g]); return on; };
     const groupAt = (t) => { let g = "start"; for (const [t0, name] of GROUPS) if (t0 <= t) g = name; return g; };
     const $ = (s) => document.querySelector(s), $$ = (s) => [...document.querySelectorAll(s)];
+    const headCount = () => { const h = $$("#stage .sh").find((el) => /Sentences/.test(el.textContent)), m = h && /Sentences · (\d+)/.exec(h.textContent); return m ? Number(m[1]) : null; };   // the word's header, "Sentences · N"
     const key = (k, o) => document.dispatchEvent(new KeyboardEvent("keydown", Object.assign({ key: k, bubbles: true }, o || {})));
     const page = J.page, N = page.count();
     const H = page.head;
@@ -626,6 +627,7 @@
       J.setSetting("pitch", "shown"); await settle();
       r = await press(() => J.setSetting("sentences", 1));
       ok("Sentences per word › 1: one line, '+N more' says where the rest are", $$("#stage .lines > .ln").length === 1);
+      ok("Sentences per word › 1: the header counts the one line shown (J-FIX, PROVISIONAL)", headCount() === 1, headCount());
       budget(ok, "a setting: sentences per word", r, ["word", "lines", "layer"]);
       J.setSetting("sentences", H.settings.sentences || 3); await settle();
       r = await press(() => J.setSetting("word_size", "l"));
@@ -669,6 +671,7 @@
       const at = async (f) => { await goWord(f.i, f.wi); return J.wordNow(J.curWordId()); };
       const shown = () => $$("#stage .lines > .ln").map((el) => el.querySelector(".tx").textContent);
       const marked = () => $$("#stage .lines > .ln.fm");
+      const counted = (what) => ok(`${what}: the header counts only the lines shown (J-FIX, PROVISIONAL)`, headCount() === shown().length, JSON.stringify([headCount(), shown().length]));
       const keep = (w, hide) => { const o = []; for (let k = 0; k < w[9].length && o.length < nOf(w); k++) if (k !== hide) o.push(w[9][k][0]); return o; };
       const listed = (w) => w[9].slice(0, nOf(w)).map((ln) => ln[0]);
       const sw = (v) => $(`#set-sheet .srow[data-set="first_meeting"] [data-val="${v}"]`);
@@ -689,6 +692,7 @@
         ok(`Hidden (${kind}): the marked line goes, the next show in the list's order, nothing marked`, !marked().length && JSON.stringify(shown()) === JSON.stringify(keep(w, f.m)), JSON.stringify(shown()));
         ok(`Hidden (${kind}): written through settings/set, J-SET's key, a switch`, call && call[2].key === "journey_first_meeting" && call[2].value === false, call && JSON.stringify(call[2]));
         ok(`Hidden (${kind}): only the word's lines redrawn (the rest of the word pane is the same nodes)`, !lines0.isConnected && rest0.every((el) => el && el.isConnected));
+        counted(`Hidden (${kind})`);
         budget(ok, `a setting: where you'll first meet it (${kind})`, r, ["word", "lines", "layer"]);
         if (kind === "first" && $('#stage [data-act="pick"]')) {
           const n0 = CALLS.length;
@@ -699,6 +703,7 @@
         }
         r = await press(() => sw("true").click());
         ok(`Shown again (${kind}): the same lines, the mark back`, marked().length === 1 && JSON.stringify(shown()) === JSON.stringify(listed(w)));
+        counted(`Shown again (${kind})`);
         budget(ok, `a setting: where you'll first meet it, back (${kind})`, r, ["word", "lines", "layer"]);
       }
       if (found.later) {                                 // fewer lines shown than the word has: its first meeting not among them
@@ -707,6 +712,7 @@
         await press(() => sw("false").click());
         const more = $("#stage .lines .more");
         ok("Sentences per word below the first meeting's line: nothing marked or hidden, '+N more' counts every line not shown", !marked().length && JSON.stringify(shown()) === JSON.stringify(w[9].slice(0, found.later.m).map((ln) => ln[0])) && more && more.textContent.includes(`+${w[9].length - found.later.m} more`), more && more.textContent);
+        counted("Sentences per word below the first meeting's line");
         await press(() => sw("true").click());
         J.setSetting("sentences", was); await settle();
       }

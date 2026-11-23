@@ -90,7 +90,7 @@ def test_add_to_a_utf16_list_writes_utf16_with_its_one_bom():
     path = _put(old)
     word_lists.add("ignore", "ja", ["準備"])
     assert _bytes(path) == old + "準備\r\n".encode("utf-16-le")
-    assert word_lists.read("ignore", "ja").entries[-1] == ("準備", "list")
+    assert word_lists.read("ignore", "ja").entries[-1][:2] == ("準備", "list")
 
 
 def test_add_to_a_cp932_list_writes_cp932():
@@ -299,8 +299,8 @@ def test_read_gives_the_lines_as_written_in_order_comments_and_blanks_left_out()
     _put(LF_LIST.encode("utf-8"))
     listing = word_lists.read("ignore", "ja")
     assert listing.error is None
-    assert listing.entries == [("冒険", "list"), ("食べる - to eat", "list"), ("毎日", "list"),
-                               ("ストレート", "list")]
+    assert [e[:2] for e in listing.entries] == [("冒険", "list"), ("食べる - to eat", "list"), ("毎日", "list"),
+                                                ("ストレート", "list")]                # (+ Mado-LT 4's None fields)
 
 
 @pytest.fixture
@@ -320,10 +320,16 @@ def _known_entries(path):
 def test_the_ignore_list_shows_knownword_ignored_entries_and_the_known_tab_doesnt(known_file):
     _put("冒険\n".encode("utf-8"))
     entries = word_lists.read("ignore", "ja").entries
-    assert entries[0] == ("冒険", "list")
+    assert entries[0][:2] == ("冒険", "list")
     known = [e.word for e in entries if e.source == "known"]
     assert known[:3] == ["を", "は", "に"] and "良い" in known and len(known) == len(set(known))
-    assert all(e.source == "list" for e in word_lists.read("known", "ja").entries)
+    known_tab = word_lists.read("known", "ja").entries            # Mado-LT 4: every known word, never an IGNORED one
+    with open(known_file, encoding="utf-8") as f:
+        held = [e for e in json.load(f)["words"] if isinstance(e, dict)]
+    only_ignored = ({e["dictForm"] for e in held if e.get("knownStatus") == "IGNORED"}
+                    - {e["dictForm"] for e in held if anki_sync._is_known(e)})
+    assert only_ignored and all(e.source in ("known", "learning") for e in known_tab)
+    assert not only_ignored & {e.word for e in known_tab}
 
 
 def test_removing_a_knownword_entry_takes_only_its_ignored_entries(known_file):

@@ -564,8 +564,34 @@ def test_an_ordinary_ignore_press_on_a_word_known_through_anki_lands_as_before_a
 
 def test_an_unless_known_the_route_cant_read_is_refused_and_nothing_is_written(opened, lang):
     before = word_marks.marks(lang)
-    for bad in ("yes", 1, None, [True]):
+    for bad in ("yes", 1, [True]):
         answer = _post(opened, "words/mark", {"lang": lang, "unless_known": bad,
                                               "marks": [{"word": NEW[lang][1], "mark": "ignore"}]})[1]
         assert answer["ok"] is False and answer["kind"] == "refused"
     assert word_marks.marks(lang) == before and opened.services.heard == []
+
+
+def test_an_unless_known_of_null_is_off_as_an_ordinary_press_sends_it(opened, lang):
+    # null is no ask: a client that sends the key empty gets the ordinary press, never a refusal
+    anki_a, _anki_b, _not_known = _known_through_anki(lang)
+    answer = _post(opened, "words/mark", {"lang": lang, "unless_known": None,
+                                          "marks": [{"word": anki_a, "mark": "ignore"}]})[1]
+    assert answer["ok"] is True and answer["done"] == 1 and "skipped" not in answer
+
+
+def test_a_carry_whose_known_words_cant_be_read_writes_nothing_and_says_so(opened, lang, monkeypatch):
+    # the guard fails closed: a known-words file that can't be read at the check (a moment's lock, a half-written
+    # copy) never lets the batch through unchecked, even if the write's own read would then succeed
+    anki_a, _anki_b, _not_known = _known_through_anki(lang)
+    before = word_marks.marks(lang)
+    real, calls = anki_sync._read_known_file, []
+    def once(language, path=None):
+        calls.append(language)
+        if len(calls) == 1:
+            raise anki_sync._KnownFileError("Your known words couldn't be read just now.")
+        return real(language, path)
+    monkeypatch.setattr(anki_sync, "_read_known_file", once)
+    answer = _post(opened, "words/mark", {"lang": lang, "unless_known": True,
+                                          "marks": [{"word": anki_a, "mark": "ignore"}]})[1]
+    assert answer["ok"] is False and answer["kind"] == "failed"       # not "refused": the page tries again later
+    assert len(calls) == 1 and word_marks.marks(lang) == before and opened.services.heard == []

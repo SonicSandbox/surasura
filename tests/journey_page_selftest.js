@@ -780,7 +780,8 @@
       const marksSent = (n0) => CALLS.slice(n0).filter(([, rt]) => rt === "words/mark");
       const sentWords = (n0) => marksSent(n0).flatMap(([, , b]) => b.marks.map((m) => m.word));
       const seed = (v) => { localStorage.removeItem(DONE); localStorage.setItem(OLD, v); };
-      const oldValue = JSON.stringify([mine[0], known, ignored, 42, null, "", "  ", mine[1], mine[0], "借".repeat(65), ` ${mine[2]} `]);
+      const oldValue = JSON.stringify([mine[0], known, ignored, 42, null, "", "  ", mine[1], mine[0], "借".repeat(65), ` ${mine[2]} `,
+        "#" + mine[0], mine[1] + "\n" + mine[2], "㍿".repeat(20)]);   // no word of a list (word_marks.clean): a comment, a line break, 80 once NFKC'd
       ok("carry: the five words the checks need", mine.length === 3, words.length);
       seed(oldValue);
       let n0 = CALLS.length;
@@ -899,6 +900,13 @@
       ok("a search result jumps to its word's episode", J.S.ep === far);
       key("Backspace"); await settle();
       ok("⌫ goes back after a jump", J.S.ep === from);
+      {                                                  // the box emptied (or only spaces): Enter jumps nowhere
+        const qe = $("#q"), at0 = J.S.ep, wi0 = J.S.wi;
+        await J.search(qtxt); qe.value = "　 "; await J.search(qe.value);
+        qe.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); await settle();
+        ok("an emptied search box: Enter jumps nowhere (the hidden results are gone)", J.S.ep === at0 && J.S.wi === wi0 && $("#res").classList.contains("hide"));
+        qe.value = "";
+      }
       /* J-FIX 2: what the old page's search held (test_report_search.py), ported. Its rule (rsNorm): NFKC, katakana as
          hiragana, lower case — on the query and on every key, a word's met forms (the Forms column) among them */
       await J.buildSearch();

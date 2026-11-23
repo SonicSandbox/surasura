@@ -437,7 +437,8 @@ def door_route(body, app):
     the learner knows; `done` counts only the words written."""
     from app import door
     from app.services import journey_door
-    language, sent, unless_known = body.get("lang"), body.get("marks"), body.get("unless_known", False)
+    language, sent, unless_known = body.get("lang"), body.get("marks"), body.get("unless_known")
+    unless_known = False if unless_known is None else unless_known      # (null: no ask, as an ordinary press)
     if (language not in journey_door.LANGS or not isinstance(sent, list) or len(sent) > DOOR_MOST
             or not isinstance(unless_known, bool)):
         raise door.RouteError(DOOR_UNREAD, "refused")
@@ -448,6 +449,8 @@ def door_route(body, app):
             raise door.RouteError(DOOR_UNREAD, "refused")
     pairs, stale, skipped, now = [], [], [], None
     known = _known_now(language) if unless_known else ()
+    if known is None:                               # fails closed: an unchecked carry could Ignore a known word
+        raise door.RouteError("Surasura couldn't read your known words just now: nothing was changed.", "failed")
     for m in sent:
         if _norm(m["word"]) in known:
             skipped.append(m["word"])
@@ -470,12 +473,12 @@ def door_route(body, app):
 
 
 def _known_now(language):
-    """Every word known now, by any source (KnownWord.json's known entries, as `apply` keys them; a file that can't be
-    read: none — `apply` then says why it can't write)."""
+    """Every word known now, by any source (KnownWord.json's known entries, as `apply` keys them); None for a file that
+    can't be read (none at all: an empty set)."""
     try:
         _data, words = anki_sync._read_known_file(language)
     except anki_sync._KnownFileError:
-        return set()
+        return None
     return anki_sync._known_keys([e for e in words or () if isinstance(e, dict)])
 
 

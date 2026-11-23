@@ -691,7 +691,7 @@ async function carryOldIgnores() {
     for (const x of old) {
       const w = typeof x === "string" ? x.trim() : "";
       const key = w.normalize("NFKC");                    // as the route reads a word: one write a word
-      if (!w || w.length > 64 || seen.has(key)) continue;
+      if (!w || w.length > 64 || key.length > 64 || w.startsWith("#") || /[\r\n]/.test(w) || seen.has(key)) continue;   // no word of a list (word_marks.clean)
       seen.add(key);
       if (!Object.hasOwn(a.marks, w) && !MARK.has(w) && !MWAIT.has(w)) words.push(w);   // Known, Ignored or pressed here: left as is
     }
@@ -1343,7 +1343,7 @@ let RES = [], RESI = 0;
 async function search(q) {
   q = fold(q).trim();
   const box = $("res");
-  if (!q) { box.classList.add("hide"); return; }
+  if (!q) { RES = []; box.classList.add("hide"); return; }      // (Enter then jumps nowhere)
   await buildSearch();
   RES = [];
   for (let c = 0; c < SIDX.length && RES.length < 40; c++) {

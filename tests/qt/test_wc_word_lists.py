@@ -20,6 +20,12 @@ from tests.qt.test_word_lists_window import _fresh_session, _open, _put, _rows, 
 KNOWN = ["毎日", "勉強", "友達", "学校", "電話", "旅行"]
 
 
+def _words(win):
+    """The words the list shows (Mado-LT 4: a Known row reads its word, reading and where it came from)."""
+    from app.qt.word_lists_window import WORD
+    return [win.shown.index(i, 0).data(WORD) for i in range(win.shown.rowCount())]
+
+
 def test_the_known_button_shows_its_words_in_one_layout_pass(main):
     """Ignore → Known button: one click lays the word lists window out at most once, and no row is laid out again for
     each row the Known tab shows. A click on the list already shown changes nothing, so it asks for no layout at all."""
@@ -34,7 +40,7 @@ def test_the_known_button_shows_its_words_in_one_layout_pass(main):
     assert sum(w.layout_requests.values()) == 0, w.report()
     with wc.measure(main) as w:
         win.kind_buttons["known"].click()
-        assert wait_until(lambda: sorted(_rows(win)) == sorted(KNOWN), 3)
+        assert wait_until(lambda: sorted(_words(win)) == sorted(KNOWN), 3)
         wc.rest(150)
     assert w.hints <= unit * wc.PASS_SLACK, w.report()
     assert w.most_moved()[0] <= wc.MOVES_PER_PASS, w.report()

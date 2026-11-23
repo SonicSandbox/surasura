@@ -557,6 +557,25 @@ def test_a_press_let_go_twice_still_cuts_its_line_itself(episode, fake_miner, mo
     assert got.get("path") and len([m for m in made if m[0] == "cut"]) == 1 and clips._cutting == {}
 
 
+def test_a_press_waiting_on_one_that_ran_out_of_its_time_cuts_the_line_with_its_own(episode, fake_miner, monkeypatch):
+    # (the review's finding, both lenses: the first press's "took too long" is its own time's, not the line's — a
+    # press that came later still has time and plays the line)
+    ep = episode("ja")
+    made = []
+    _fake_direct(monkeypatch, made).append("ja")
+    cue = ep["lines"][4]
+    key = clips._key("ja", ep["video"], cue)
+    first = clips._cutting[key] = [_Seen(), None]
+    got = {}
+    press = threading.Thread(target=lambda: got.update(path=_cut(ep, cue)), daemon=True)
+    press.start()
+    assert first[0].waited.wait(5)
+    first[1] = clips.Refused(clips.TOO_SLOW, "failed")                 # the first press's time ran out
+    clips._release(first, key)
+    press.join(5)
+    assert got.get("path") and len([m for m in made if m[0] == "cut"]) == 1
+
+
 def test_the_cut_aheads_tool_ends_at_a_press_and_no_tool_runs_past_the_press_time(monkeypatch):
     stop = threading.Event()
     threading.Timer(0.3, stop.set).start()

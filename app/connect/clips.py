@@ -148,9 +148,10 @@ def cut(language, line_id, settings=None, steps=None, miner=None):
         # a press of the same line, or the cut ahead, is cutting it: its answer is this one's, within this press's time
         if not held[0].wait(max(0.0, until - time.monotonic())):
             raise Refused(TOO_SLOW, "failed")
-        if held[1] is not None:
+        if held[1] is not None and held[1].message != TOO_SLOW:
             raise held[1]
-        # (no clip and no refusal: the cut ahead let it go at a press — this press cuts it itself, as often as it is)
+        # (no clip and no refusal: the cut ahead let it go at a press — this press cuts it itself, as often as it is;
+        # nor one whose time ran out: that was the other press's time, this one has its own)
     try:
         path = _cut(language, key, video, subtitle, cue, settings, miner, until)
     except Refused as e:

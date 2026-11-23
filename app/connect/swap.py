@@ -46,6 +46,7 @@ log = logging.getLogger("surasura-cli")
 
 SWAP_TAG = "surasura::swapped"
 BY_SWAP, BY_BAD_CARD = "swap", "bad card"
+BY_JOURNEY, BY_ADD_NOW = "journey", "add now"   # the journey page's ⇄ and *Add now* (`door_routes`): the line pressed
 ASKED, QUEUED, MADE, WAITS, DROPPED, UNDONE = "asked", "queued", "made", "waits", "dropped", "undone"
 TRIES = 3                       # episodes tried before an ask waits (each cut no card: its lines were the old card's)
 RETRY_S = 6 * 3600              # a waiting ask is looked at again this long after, or when the library has more files
@@ -614,7 +615,8 @@ def undo(anki, ledger, language, swap_id, open_store=None, ours=None, flag=GREEN
         if anki.reviewing():
             raise tidy.Reviewing()
         _old_back(anki, row, keep_tag=bool(_rows(ledger, "language = ? AND old_note = ? AND state = ? AND id != ?",
-                                                 (language, row["old_note"], MADE, row["id"]))), flag=flag)
+                                                 (language, row["old_note"], MADE, row["id"]))), flag=flag,
+                  restore=row.get("by") != BY_JOURNEY)
         with ledger.transaction():      # under the lock (a look never tags it again), the queue's write inside the
             _update(ledger.conn, row["id"], state=UNDONE)       # ledger's: either fails, neither changes
             if entry is not None:
@@ -631,7 +633,9 @@ def _entry(language, row):
     return next((e for e in swap_queue.load(language) if str(e.get("id")) == str(row["ref"])), None)
 
 
-def _old_back(anki, row, keep_tag=False, flag=GREEN):
+def _old_back(anki, row, keep_tag=False, flag=GREEN, restore=True):
+    """The old card back as the swap found it: unsuspended and its Swap flag off (`restore`: the loop's move took it
+    out of reviews; the journey's ⇄ took nothing, so only the tag goes), `SWAP_TAG` gone."""
     cards = [int(row["old_card"])] if row.get("old_card") else []
     if row.get("old_note") and not cards:
         for info in anki.notes([int(row["old_note"])]) or ():
@@ -639,9 +643,9 @@ def _old_back(anki, row, keep_tag=False, flag=GREEN):
     infos = [c for c in (anki.cards(cards) if cards else []) if isinstance(c, dict) and c.get("cardId")]
     back = [int(c["cardId"]) for c in infos if c.get("queue") == -1]
     flagged = [int(c["cardId"]) for c in infos if c.get("flags") == flag]
-    if back:
+    if back and restore:
         anki.unsuspend(back)
-    if flagged:
+    if flagged and restore:
         anki.set_flag(flagged, 0)
     if row.get("old_note") and infos and not keep_tag:      # the note's other card still swapped: its tag stays
         anki.remove_tags([int(row["old_note"])], SWAP_TAG)

@@ -20,8 +20,8 @@ waits as every one does (never while you review, the cap, Anki closed): there is
   Tidy never takes it by itself: you asked for it (`new_cards`, read by `tidy.asked_for`); only its Undo does.
 - **Undo** (`undo`): the new card removed with a backup, as Tidy removes one (`tidy.run`, why `swap`: notes, media and
   an Anki package kept; a card you studied or changed stays, and then nothing is undone), the old card unsuspended,
-  its Swap flag off (the learner's pick, `review_loop.move_flags`) and its tag gone, then the queue's entry `undone` (`swap_queue.undone`) with the ledger's row in
-  one step. Twice: nothing more.
+  its Swap flag off (the learner's pick, `review_loop.move_flags`) and its tag gone, then the queue's entry `undone`
+  (`swap_queue.undone`) with the ledger's row in one step. Twice: nothing more.
 
 **The one record of a swap is the swap queue's entry** (waiting · made · dropped · undone, with why). The ledger's
 `swaps` holds what Connect's job needs (the line, what to avoid, the episodes tried, the job, the new note, the tag

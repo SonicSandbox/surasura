@@ -385,10 +385,25 @@ def _progress(job):
                                           and got[k] >= 0 for k in keys)) or not got["stage"]:
         return {"percent": MINE_FROM, "doing": "Starting Anki Miner"}
     out = {k: got[k] for k in keys}
-    out["percent"] = MINE_FROM + (MINE_TO - MINE_FROM) * anki_miner.percent(out) // 100
+    done = anki_miner.percent(out)
+    run, runs = got.get("run"), got.get("runs")
+    if all(isinstance(n, int) and not isinstance(n, bool) for n in (run, runs)) and 0 <= run < runs:
+        # Kantan-SD 6: one call cutting from several episodes in turn — the bar goes once over all of them
+        done = (100 * run + done) // runs
+    out["percent"] = MINE_FROM + (MINE_TO - MINE_FROM) * done // 100
     doing = STAGE_WORDS.get(out["stage"], "Starting Anki Miner")
     out["doing"] = f"{doing} ({out['done']} of {out['total']})" if out["total"] else doing
+    if isinstance(got.get("source"), str) and got["source"].strip():
+        out["source"] = got["source"]           # the other episode this sentence is cut from (`_line`)
     return out
+
+
+def _source(job):
+    """Kantan-SD 6: the other episode the job's sentence is being cut from just now (Best: saved with the run's
+    progress by `runner.Steps._mine_one`), or None — its own lines, or not mining."""
+    got = _saved(job) if job.get("state") == "mining" else None
+    source = got.get("source") if isinstance(got, dict) else None
+    return source if isinstance(source, str) and source.strip() else None
 
 
 def _saved(job):
@@ -519,6 +534,10 @@ def _line(conn, lang, rec, open_jobs, items, is_running, need_says=()):
                                     f"updated_at >= ?", (lang,) + book.FINISHED + (started,)).fetchone()[0]
         total = finished + len(open_jobs)
         title = items.get(job["item_id"], {}).get("title") or "an episode"
+        source = _source(job)
+        if source:      # Kantan-SD 6 (PROVISIONAL): the episode whose words are made, and where this sentence is from
+            return (f"Making cards {finished + 1} of {total} for {title} — a sentence from {source} "
+                    f"({STEP_WORDS[job['state']]})"), "working"
         return f"Making cards {finished + 1} of {total} — {title} ({STEP_WORDS[job['state']]})", "working"
     if rec.get("updating"):                 # F9: a mining job's line wins; then Connect's own Generate
         return UPDATING_LINE, "working"

@@ -338,6 +338,9 @@ def _content(snap):
 # --- the window's providers (W3.5 row 7): plain functions, each made once per window and language ---------------- #
 CONNECT_JOB_KIND = jobs_module.CONNECT_KIND   # Connect's mining as the window's registry lists it (row 40; row 35's sheet)
 CONNECT_JOB_LABEL = "Making cards"
+# Kantan-SD 6 (PROVISIONAL): under *Card sentences: Best* a word's sentence can be cut from another episode — the line
+# keeps naming the episode whose words are made, then where the sentence is from
+CONNECT_SENTENCE_FROM = "{title} — a sentence from {source}"
 CONNECT_STOPPING = "Stopping…"            # the mining line's step once its Stop is asked (try a9.1)
 CONNECT_JOB_MISSED = 2                    # looks without mining before its job ends (a gap between two batches)
 # The phase strip (its card's item 3; Michi's meanings, `app/connect/feed.py`): Connect's episodes that wait, each
@@ -418,6 +421,9 @@ def mirror_connect(registry, got):
     if item is not None:
         from app.services.view_rows import stem
         title = stem(getattr(item, "title", None)) or None   # T3: the line names the episode being mined (no ".srt")
+        source = stem(getattr(item, "source", None)) or None
+        if title and source:        # Kantan-SD 6: … and the episode this sentence is cut from, under Best
+            title = CONNECT_SENTENCE_FROM.format(title=title, source=source)
         if getattr(item, "stopping", None):              # try a9.1: a Stop asked — said at once, as the row's pill
             step = (f"{title} · {CONNECT_STOPPING}" if title else CONNECT_STOPPING, None, None)
         elif item.progress is not None:

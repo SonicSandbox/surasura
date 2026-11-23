@@ -582,3 +582,23 @@ def test_write_takes_at_most_MOST_items_a_call(ledger):
     got = ct.write(anki, anki, ledger, [{"id": n, "translation": "A spider's <b>thread</b>."}
                                          for n in range(1, ct.MOST + 3)], "ja")
     assert got["written"] == list(range(1, ct.MOST + 1)) and anki.value(ct.MOST + 1, "Hint") == ""
+
+
+def test_a_card_cut_from_another_episodes_line_takes_that_episodes_neighbours(tmp_path):
+    """Kantan-SD 6 (*Card sentences: Best*): episode 01's job cut 迷宮's card from episode 04's line (the job's pick
+    names it, `from`). The card's lines around are 04's — never 01's, where the same short line sits at the same time
+    with other lines around it (a wrong context for the card's translation)."""
+    import json
+    first = _srt(tmp_path / "第01話.srt", [(0.0, "いらっしゃいませ。"), (1.0, "コーヒーをください。"), (2.5, "はい。"),
+                                         (3.2, "少々お待ちください。")])
+    other = _srt(tmp_path / "第04話.srt", [(0.0, "地図を見せて。"), (1.0, "この先は迷宮だよ。"), (2.5, "はい。"),
+                                         (3.2, "気をつけて進もう。")])
+    src = _library(tmp_path, {7: (first, 2.5, "はい。"), 8: (other, 2.5, "はい。")})
+    conn = sqlite3.connect(src[0])
+    conn.execute("DELETE FROM outcomes WHERE note_id = 8")              # one card, made by episode 01's job
+    conn.execute("UPDATE jobs SET picked = ? WHERE item_id = 1",
+                 (json.dumps({"words": [{"word": "w7", "reading": "", "from": 2, "own": {"word": "w7", "reading": ""}}],
+                              "sources": {"2": {"video": "第04話.mkv"}}}, ensure_ascii=False),))
+    conn.commit()
+    conn.close()
+    assert ct.context([7], "ja", 1, *src)[7] == (["この先は迷宮だよ。"], ["気をつけて進もう。"])

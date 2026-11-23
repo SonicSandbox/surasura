@@ -321,6 +321,30 @@ def _nothing(conn, lang):
         (lang, book.LEVEL, runner.NO_WORDS, lang) + book.OPEN + (lang,))]
 
 
+def nothing(language, path=None):
+    """One language's `nothing` alone (`_nothing`: the items mined with nothing new to make) in one read-only look,
+    for a reader that needs no more of the record — the journey's rail (J-TIMES), whose stones are the window's
+    (`stone_plan.state_of`). [] with no ledger, one a newer Surasura made, or one that can't be read just now."""
+    path = path or book.path()
+    if not os.path.exists(path):
+        return []
+    try:
+        conn = sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True, timeout=2.0, isolation_level=None)
+    except sqlite3.Error:
+        return []
+    try:
+        conn.execute("PRAGMA query_only=1")
+        try:
+            schema = int((conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone() or ["0"])[0])
+        except (ValueError, TypeError):
+            return []
+        return [] if schema > book.SCHEMA else _nothing(conn, language)
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
 def _turns(entries, is_running, between=False):
     """Laptop round 9 #56: while Connect works on one job, every other open job with no reason of its own waits its
     turn — `reason` runner.TURN and `behind` the item in flight, in the record only (never the ledger's). Alpha 3 A2:

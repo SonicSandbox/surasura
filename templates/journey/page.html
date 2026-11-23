@@ -288,6 +288,12 @@ const SETTINGS = [
 const SET = {};
 const HS = Object.assign({}, HEAD.settings);           // SHAPE 1.1's names → the page's (key names PROVISIONAL until J-SET)
 const SZ = { s: 0, m: 1, l: 2 };
+/* ⌕ (D15 kept it): Japanese only (Nadeshiko holds Japanese sentences), shown unless Settings' switch is off
+   (`lookup`: word_search_enabled; a head without it: shown, as before), opening the kind of sentences chosen
+   (`lookup_category`: word_search_category, one of the four, else All: nothing else reaches the URL) */
+const LOOK_KINDS = ["all", "anime", "liveaction", "youtube"];
+const lookOn = () => LANG === "ja" && HS.lookup !== false;
+const lookQuery = () => { const k = HS.lookup_category; return LOOK_KINDS.includes(k) && k !== "all" ? `?category=${encodeURIComponent(k)}` : ""; };
 if (HS.source != null && HS.where_from == null) HS.where_from = HS.source;
 if (HS.theme != null && HS.theme !== "night" && HS.theme !== "light") HS.theme = /light/i.test(String(HS.theme)) ? "light" : "night";   // the old looks: Modern Light → Light, the rest → Night (Zen Mode: J-SET's Q6)
 const okSet = (s, v) => v != null && (s.k === "keys" && typeof v === "object" || (typeof s.def !== "boolean" || typeof v === "boolean") && s.opts.some((o) => String(o[0]) === String(v)));   // the learner's own key map is an object; a switch only a switch ("false" is none)
@@ -434,11 +440,13 @@ function blob(name) {
 }
 const blobNow = (name) => BLOBS[name + "!"] || null;
 
-/* the search index: word / spelling / readings of every word, built a chunk at a time */
+/* the search index: word / spelling / readings / the forms it was met in (the Forms column) of every word, built a
+   chunk at a time; each key folded as the query is (`fold`: the old page's rule, J-FIX 2) */
 const SIDX = [], SMETA = [];                           // chunk -> each word's search keys · [shown, reading, ep]
+const fold = (s) => kana(String(s || "").normalize("NFKC")).toLowerCase();   // full / half width as one, katakana as hiragana
 function indexChunk(c, d) {
   if (SIDX[c]) return;
-  SIDX[c] = d.w.map((w) => `${w[0]}\u0001${w[1]}\u0001${kana(w[2])}\u0001${w[3]}\u0001${w[2]}`.toLowerCase());
+  SIDX[c] = d.w.map((w) => fold([w[0], w[1], w[2], w[3], ...(Array.isArray(w[4]) ? w[4] : [])].join("\u0001")));
   SMETA[c] = d.w.map((w) => [w[1] || w[0], kana(w[3] || w[2]), w[5]]);
 }
 const smeta = (id) => { const c = chunkOfWord(id); return SMETA[c] ? SMETA[c][id - CH[c][0]] : null; };
@@ -966,7 +974,7 @@ function actsPart(w) {
   const b = (a, label, tipOn, tipOff) => `<button class="btn ${m === a ? "lit " + a + " " + mw : ""}" data-act="${a}" data-tip="${m === a ? tipOn : tipOff}${kt(a)}${m === a && mw === "queued" ? "\n" + waitWord() : ""}">${label} <span class="kc">${esc(keyOf(a))}</span></button>`;
   const route = (w[6] & 8) ? "swap/queue" : "card/make";
   const pick = SWAP_SHOWN && built(route) ? `<button class="btn" data-act="pick" data-tip="${(w[6] & 8) ? "⇄ Make its card from the chosen sentence instead" : "Add now: make its card from the chosen sentence, first in your order"}${kt("pick")}">⇄ <span class="kc">${esc(keyOf("pick"))}</span></button>` : "";
-  const look = LANG === "ja" ? `<a class="ib" href="https://nadeshiko.co/en/search/${encodeURIComponent(w[0])}" target="_blank" rel="noopener noreferrer" aria-label="Look the word up" data-tip="⌕ Look it up in your browser${kt("lookup")}">⌕</a>` : "";
+  const look = lookOn() ? `<a class="ib" href="https://nadeshiko.co/en/search/${encodeURIComponent(w[0])}${lookQuery()}" target="_blank" rel="noopener noreferrer" aria-label="Look the word up" data-tip="⌕ Look it up in your browser${kt("lookup")}">⌕</a>` : "";
   return `<div class="actw" data-r="acts" data-w="${esc(w[0])}"><div class="acts">${b("known", "✓ Known", "Known: press again to clear it", "Known: off your list")}${b("ignore", "⊘ Ignore", "Ignored: press again to clear it", "Ignore: never study it")}${pick}</div>${look}</div>`;
 }
 /* the header counts only the lines shown (PROVISIONAL, J-FIX): it is inside the lines' part, so a setting that
@@ -1265,7 +1273,7 @@ function drawSetRow(k) {                                // the settings sheet: o
   if (el && s) { const html = setRowHtml(s); if (el.outerHTML !== html) el.outerHTML = html; }
 }
 function openKeys(arm) {
-  const rows = ACTIONS.filter(([a]) => a !== "pick" || SWAP_SHOWN).map(([a, t]) => `<div class="krow"><span class="kn">${esc(t)}</span><button class="kc ${arm === a ? "arm" : ""}" data-bind="${a}" aria-label="Move ${esc(t)}" data-tip="Click, then press the new key">${esc(arm === a ? "…" : (keyOf(a) || "not set"))}</button></div>`).join("");
+  const rows = ACTIONS.filter(([a]) => (a !== "pick" || SWAP_SHOWN) && (a !== "lookup" || lookOn())).map(([a, t]) => `<div class="krow"><span class="kn">${esc(t)}</span><button class="kc ${arm === a ? "arm" : ""}" data-bind="${a}" aria-label="Move ${esc(t)}" data-tip="Click, then press the new key">${esc(arm === a ? "…" : (keyOf(a) || "not set"))}</button></div>`).join("");
   sheet("keys-sheet", `<h3>Keys</h3><h5>Left hand</h5>${rows}<h5>Right hand</h5><ul><li>↓ / Space next word · ↑ the word before · ← → lines · Enter ▶ the line</li><li>PgUp / PgDn (‹ ›) episodes · / search · ⌫ back after a jump · Esc close</li><li>Shift is never taken: it is Yomitan's.</li></ul><div class="counts">Preset: <span class="seg"><button data-preset="qwerty">QWERTY</button><button data-preset="dvorak">Dvorak</button></span></div>`);
 }
 let ARM = null;
@@ -1333,7 +1341,7 @@ function buildSearch() {
 }
 let RES = [], RESI = 0;
 async function search(q) {
-  q = kana(q.trim()).toLowerCase();
+  q = fold(q).trim();
   const box = $("res");
   if (!q) { box.classList.add("hide"); return; }
   await buildSearch();
@@ -1435,6 +1443,7 @@ function toggleMeaning() { S.open.meaning = !S.open.meaning; if (S.open.meaning)
 function toggleFocus(on) { S.focus = on == null ? !S.focus : on; document.body.classList.toggle("focus", S.focus); $("b-focus").classList.toggle("on", S.focus); saveSoon(); }
 function toggleList() { S.list = !S.list; $("b-list").classList.toggle("on", S.list); $("b-list").dataset.tip = S.list ? "Word view: one word at a time" : "List view: the episode's words as cards"; drawWord(); saveSoon(); }
 document.addEventListener("keydown", (e) => {
+  if (e.isComposing || e.keyCode === 229) return;     // the IME's own Enter / Esc: never the page's (J-FIX 2)
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   const inField = e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA");
   if (ARM) { e.preventDefault(); if (e.key !== "Escape" && e.key.length === 1 && !e.shiftKey) { const a = ARM; ARM = null; bindKey(a, e.key.toLowerCase()); openKeys(); } else { ARM = null; openKeys(); } return; }
@@ -1555,7 +1564,7 @@ function afterFirstWord() {
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && D.state !== "unopened") hello(); });
   if (window.JSELFTEST && /[?&]selftest=/.test(location.search)) setTimeout(() => window.JSELFTEST(window.__J), 50);
 }
-window.__J = { S, page, rail: () => rail, TIMES, D, MARK, MWAIT, PRE, FLAGGED, QUEUE: () => QUEUE, SET, SET_WAIT, SETTINGS, KEYS: () => KEYS, ACTIONS, PRESETS,
+window.__J = { S, page, rail: () => rail, TIMES, D, HS, MARK, MWAIT, PRE, FLAGGED, QUEUE: () => QUEUE, SET, SET_WAIT, SETTINGS, KEYS: () => KEYS, ACTIONS, PRESETS,
   RC, go, step, epStep, markWord, pickLine, selLine, srcOf, shownLines, drawPart, drawDesk, redrawMarks, prestudied, setSetting, setFilter, setOrder, toggleFocus, toggleList, search, jumpTo, hello, readState, flushQueue, drawWord,
   openSettings, openKeys, openFlag, flagLine, closeLayer, doAction, curWordId, wordNow, seq, loadEp, epReady, blob, blobNow, kanjiTip, lineId, stoneSvg, setDoor, mediaUrl,
   CHUNKS, SIDX, buildSearch, tipText, nextEp, listScrolled, D14_MS, SWAP_SHOWN };

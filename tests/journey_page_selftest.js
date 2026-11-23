@@ -129,7 +129,7 @@
        way to `offline` (SPEC §3.5); a route not yet built drops the group that is only that route */
     const OFFLINE = MODE !== "on";
     const CONTRACT = Q.get("rail") === "contract";      // another rail plugged in: the page's own groups + `contract`
-    const SKIP = new Set(CONTRACT ? ["word", "marks", "pre", "picker", "door", "queue", "player", "flag", "settings", "meet", "carry", "list", "focus", "search", "notyet", "a11y", "offline", "layout"]
+    const SKIP = new Set(CONTRACT ? ["word", "marks", "pre", "picker", "door", "queue", "player", "flag", "settings", "meet", "carry", "list", "focus", "search", "lookup", "notyet", "a11y", "offline", "layout"]
       : OFFLINE ? ["marks", "pre", "flag", "door", "queue", "settings", "meet", "carry", "contract"] : ["offline", "contract"]);
     if (NOTYET.has("episode/prestudied")) SKIP.add("pre");
     if (NOTYET.has("line/flag")) SKIP.add("flag");
@@ -899,6 +899,63 @@
       ok("a search result jumps to its word's episode", J.S.ep === far);
       key("Backspace"); await settle();
       ok("⌫ goes back after a jump", J.S.ep === from);
+      /* J-FIX 2: what the old page's search held (test_report_search.py), ported. Its rule (rsNorm): NFKC, katakana as
+         hiragana, lower case — on the query and on every key, a word's met forms (the Forms column) among them */
+      await J.buildSearch();
+      const sn = (x) => { x = String(x || "").normalize("NFKC"); if (H.lang === "ja") x = x.replace(/[\u30a1-\u30f6]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60)); return x.toLowerCase(); };
+      const every = []; for (const [, d] of J.CHUNKS) d.w.forEach((x, j) => every.push([d.w0 + j, x]));
+      const keysOf = (x) => [x[0], x[1], x[2], x[3]].map(sn);
+      const hits = (q) => { const n = sn(q), o = new Set(); for (const [, x] of every) if (keysOf(x).some((k) => k.includes(n)) || (x[4] || []).some((f) => sn(f).includes(n))) o.add(x[0]); return o.size; };   // distinct words (the fixture repeats its words)
+      const finds = async (q, x) => { await J.search(q); return $$(".res .ri b").some((b) => b.textContent === (x[1] || x[0])); };
+      const few = (pred) => { const tried = new Set(); for (const e of every) { const f = pred(e); if (!f || tried.has(f)) continue; tried.add(f); if (hits(f) <= 2) return [e[1], f]; } return null; };   // one the 40 results can't crowd out
+      if (H.lang === "ja") {
+        const byForm = few(([, x]) => (x[4] || []).find((f) => f.length >= 2 && !keysOf(x).some((k) => k.includes(sn(f)))));
+        ok("search finds a word by an inflected form it was met in (not a part of its spelling or reading)", byForm && await finds(byForm[1], byForm[0]), byForm ? `${byForm[1]} → ${byForm[0][0]}` : "no such word in the fixture");
+      }
+      const HALF = {};                                   // full-width katakana -> its half-width spelling (ｶﾞ for ガ)
+      for (let c = 0xff66; c <= 0xff9d; c++) { const h = String.fromCharCode(c); HALF[h.normalize("NFKC")] = h; for (const m of ["\uff9e", "\uff9f"]) { const v = (h + m).normalize("NFKC"); if (v.length === 1) HALF[v] = h + m; } }
+      const half = (x) => [...x].map((c) => HALF[c] || c).join(""), full = (x) => x.replace(/[!-~]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0xfee0));
+      const kata = H.lang === "ja" && few(([, x]) => /^[\u30a1-\u30fa\u30fc]{2,}$/.test(x[0]) && x[0]);
+      if (H.lang === "ja") ok("width: a half-width katakana query finds its word", kata && half(kata[1]) !== kata[1] && await finds(half(kata[1]), kata[0]), kata ? `${half(kata[1])} → ${kata[1]}` : "no katakana word in the fixture");
+      const latin = few(([, x]) => /[a-z]{2}/i.test(x[2]) && x[2].split(" ")[0]);   // zh: a pinyin syllable (ja readings are kana)
+      if (H.lang === "zh") ok("width: a full-width upper-case query finds its word (ＮＩÚ → niú)", latin && full(latin[1].toUpperCase()) !== latin[1] && await finds(full(latin[1].toUpperCase()), latin[0]), latin ? `${full(latin[1].toUpperCase())} → ${latin[0][0]}` : "no pinyin in the fixture");
+      const qb = $("#q"); qb.focus(); qb.value = qtxt; await J.search(qtxt); await settle();
+      const ep0 = J.S.ep;
+      qb.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, isComposing: true })); await settle();
+      ok("the IME owns Enter while composing: no jump, the box keeps its word", J.S.ep === ep0 && qb.value === qtxt && !$("#res").classList.contains("hide"));
+      qb.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, isComposing: true })); await settle();
+      ok("the IME owns Esc while composing: the box keeps its word and its results", qb.value === qtxt && !$("#res").classList.contains("hide"));
+      qb.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await settle();
+      ok("…and Esc once the composition is done clears the box", qb.value === "" && $("#res").classList.contains("hide"));
+      const keyTime = async (q) => { let best = Infinity; for (let k = 0; k < 3; k++) { const t2 = performance.now(); await J.search(q); best = Math.min(best, performance.now() - t2); } return best; };   // the index built: best of 3 (warm)
+      SPEED.searchKey = await keyTime(qtxt);
+      SPEED.searchMiss = await keyTime(H.lang === "ja" ? "ゟゟ" : "龘龘");     // no word matches: every key read (the worst keystroke)
+      ok(`a search keystroke ≤ ${N > 5000 ? 50 : 16} ms (the index built; one that matches nothing reads every key)`, Math.max(SPEED.searchKey, SPEED.searchMiss) <= (N > 5000 ? 50 : 16), `${SPEED.searchKey.toFixed(1)} ms · no match ${SPEED.searchMiss.toFixed(1)} ms`);
+      const rk = await press(() => J.search(qtxt));
+      budget(ok, "a search keystroke", rk, ["top"]);
+      $("#res").classList.add("hide"); qb.value = ""; qb.blur();
+    }
+
+    /* ---- ⌕ honours its Settings switch and category (test_word_search_button.py, ported; D15 kept it) ---- */
+    if (group("lookup")) {
+      await goWord(E, 0);
+      const look = () => $('#stage a[aria-label="Look the word up"]'), w = J.wordNow(J.curWordId());
+      const base = `https://nadeshiko.co/en/search/${encodeURIComponent(w[0])}`, hs = J.HS || {};
+      const keysListed = () => { J.openKeys(); const on = $$("#keys-sheet .krow .kn").some((el) => /Look the word up/.test(el.textContent)); J.closeLayer(); return on; };
+      if (H.lang === "zh") ok("zh: no ⌕ (Nadeshiko holds Japanese sentences only), its key not listed", !look() && !keysListed());
+      else {
+        ok("⌕ shown by default (no switch in the head: as before), its URL plain for All", look() && look().getAttribute("href") === base && keysListed(), look() && look().getAttribute("href"));
+        hs.lookup_category = "anime"; J.drawWord(); await settle();
+        ok("⌕ opens the chosen kind of sentences (?category=anime)", look() && look().getAttribute("href") === base + "?category=anime", look() && look().getAttribute("href"));
+        hs.lookup_category = "\"><img src=x>"; J.drawWord(); await settle();
+        ok("⌕: a category it doesn't know is All (never put into the URL)", look() && look().getAttribute("href") === base, look() && look().getAttribute("href"));
+        hs.lookup = false; J.drawWord(); await settle();
+        let opened = 0; const real = HTMLAnchorElement.prototype.click; HTMLAnchorElement.prototype.click = function () { opened++; };
+        key(keyName("lookup")); await settle();
+        HTMLAnchorElement.prototype.click = real;
+        ok("⌕ switched off: no button, its key does nothing and is not listed", !look() && !opened && !keysListed());
+        hs.lookup = undefined; hs.lookup_category = undefined; J.drawWord(); await settle();
+      }
     }
 
     /* ---- not yet built: what hides (SPEC §3.2, §6) ---- */

@@ -4454,6 +4454,14 @@ def _plan_json(obj):
 _PLAN_HEADER = [None]          # (key, header): one tuple, so two threads never pair one file's key with another's header
 
 
+def _table_is_this_runs(results_dir, language, run_signature):
+    """Whether results/ holds this run's sentence table (`plan_rules.SENTENCE_TABLE >= 1`: a run without its table is
+    not reused — a library generated before the switch was on gets one at its next Generate)."""
+    from app import sentence_table
+    return sentence_table.open_table(os.path.join(results_dir, sentence_table.TABLE_FILE), language=language,
+                                     engine=engine_id(), run_signature=run_signature) is not None
+
+
 def _plan_is_this_runs(run_signature, results_dir=None):
     """Is results/'s plan file whole and written by the run `run_signature` names? The reuse gate's question (E1.2-1;
     on the 3.0 line always, 2.x while the fast re-plan's preview is on): a plan lost or damaged gets a full run."""
@@ -6145,7 +6153,8 @@ def main():
             and not os.environ.get("SURASURA_FORCE_RUN")         # surasura-cli generate --force
             and drawn_for(RESULTS_DIR) == _run_sig          # ...and results/ is THIS run's (above; F7: or redrawn for it)
             and _store.get_meta("last_run_signature") == read_run_stamp(RESULTS_DIR)
-            and (not _plan_on or _plan_is_this_runs(read_run_stamp(RESULTS_DIR)))):   # its plan too (E1.2-1)
+            and (not _plan_on or _plan_is_this_runs(read_run_stamp(RESULTS_DIR)))    # its plan too (E1.2-1)
+            and (plan_rules.SENTENCE_TABLE < 1 or _table_is_this_runs(RESULTS_DIR, language, read_run_stamp(RESULTS_DIR)))):
         print("Nothing affecting the analysis changed since the last run - reusing existing results.")
         _progress("Writing the journey")    # the sidecars and a re-render write results/: a cancel waits for the end
         record_analysed(language, _library, data_dir, user_files_dir)
@@ -6652,6 +6661,13 @@ def main():
         return _phrase_uses[index] if _phrase_uses is not None else 0
 
 
+    # The sentence table (plan_rules.SENTENCE_TABLE >= 1; app/sentence_table.py): every candidate line of every word
+    # and phrase, as numbers, appended where the shortlists below are offered one — off (0), None: nothing changes.
+    _table = None
+    if plan_rules.SENTENCE_TABLE >= 1 and _plan_on:
+        from app import sentence_table
+        _table = sentence_table.Packer()
+
     # --- AGGREGATION PASS ---
     for seq_idx, (file_path, label, weight, source_type) in enumerate(found_files, 1):
         _progress("Reading your files", seq_idx - 1, len(found_files))
@@ -6920,7 +6936,8 @@ def main():
                     first_here = entry.get("_fsq") != seq_idx
                     if first_here:
                         entry["_fsq"] = seq_idx     # its first sentence in this file: below, whatever the shortlists
-                    elif not _could_take(entry, is_too_short, is_too_long, src_idx, file_is_spoken, is_over_hard_max):
+                    elif _table is None and not _could_take(entry, is_too_short, is_too_long, src_idx, file_is_spoken,
+                                                            is_over_hard_max):
                         continue
                     if unknown_uses is None:
                         unknown_uses = Counter(unknown_keys)
@@ -6946,6 +6963,8 @@ def main():
                         s_hash = plan_rules.text_hash_of(s_text)
                     new_ctx = _candidate(is_too_short, is_too_long, rolling_context_cost(_phrase_uses_of(index), freqs),
                                          lrs, s_text, src_idx, marks, len(freqs), s_hash, s_no)
+                    if _table is not None and (first_here or not is_over_hard_max):
+                        _table.add(index, src_idx, s_no, len(s_text), s_hash, lrs, marks, over=is_over_hard_max)
                     if first_here:
                         # its first sentence in this file: the plan's (Context 1 and a near candidate wherever the file
                         # goes) kept compact, and whole while it is one of the files nearest its first meeting here
@@ -6981,6 +7000,8 @@ def main():
                     continue                # never a row: no example sentence of its is ever shown
                 entry = word_stats[key]
                 near_too = False
+                if _table is not None and (not is_over_hard_max or entry.get("_fsq") != seq_idx):
+                    _table.add(key, src_idx, s_no, len(s_text), s_hash, unique_lrs, marks or (), over=is_over_hard_max)
                 if entry.get("_fsq") != seq_idx:
                     # Its first sentence in this file: the plan's (Context 1 and a near candidate wherever the file
                     # goes) kept compact; whole while it is one of the files nearest its first meeting in this order
@@ -7224,6 +7245,8 @@ def main():
                             lrs = ((lrs - rare_set)
                                    | {unit for lr in lrs & rare_set for unit in _view.units(lr) if not _known(unit)})
                     freqs = _unknown_counts(lrs)
+                    if _table is not None:
+                        _table.add(index, src_idx, s_no, len(s_text), s_hash, lrs, marks or ())
                     entry = word_stats[_phrase_row_of[index]]
                     plan_rules.keep_best(entry.setdefault("finished_contexts", []),
                                          _candidate(short, long, rolling_context_cost(_phrase_uses_of(index), freqs),
@@ -7233,6 +7256,8 @@ def main():
                 if targets:
                     unk_freqs = _unknown_counts(unique_lrs)
                     for key in targets:
+                        if _table is not None:
+                            _table.add(key, src_idx, s_no, len(s_text), s_hash, unique_lrs, marks or ())
                         plan_rules.keep_best(word_stats[key].setdefault("finished_contexts", []),
                                              _candidate(short, long, rolling_context_cost(_uses(key), unk_freqs),
                                                         unique_lrs, s_text, src_idx, marks, len(unk_freqs), s_hash,
@@ -8034,6 +8059,22 @@ def main():
             print(f"Saved the plan file ({_plan_size:,} bytes).")
         except Exception as e:
             print(f"Warning: could not write the plan file ({e}); the last one is left as it was.")
+        if _table is not None and _run_sig:
+            # The sentence table beside the plan, on the plan's rows, sources and co-words' rule (one rule, numbered
+            # by key as the plan's are). Never fails the run: without it a reader takes today's path.
+            try:
+                _table_size = _table.finish(
+                    row_keys, lambda w: row_of.get(_phrase_row_of.get(w) if isinstance(w, int) else w),
+                    lambda lr: plan_rules.clauses_or(_atom(lr), _view.known_when(lr, _atom)),
+                    lambda lr: row_of.get(lr, -1) if lr not in phrase_keys else -1, _coword_key,
+                    lambda index: row_of.get(_phrase_row_of.get(index)),
+                    [[s["path"], s["type"], None] for s in source_list],
+                    {"engine": engine_id(), "run_signature": _run_sig, "language": language},
+                ).write(os.path.join(RESULTS_DIR, sentence_table.TABLE_FILE))
+                print(f"Saved the sentence table ({_table_size:,} bytes, {len(_table):,} lines offered).")
+            except Exception as e:
+                print(f"Warning: could not write the sentence table ({e}); cards take today's path.")
+        del _table
 
     # All outputs are now written — record the run-signature so an identical re-run can skip
     # entirely next time (and the presentation fingerprint, signed with the stones the report was

@@ -8101,6 +8101,9 @@ def main():
             # by key as the plan's are). Never fails the run: without it a reader takes today's path.
             try:
                 _signed.update((os.path.abspath(entry[0]), entry) for entry in (_sig_parts or {}).get("files") or ())
+                _listed_at = {}             # each row's place in the list just written (progressive_rows' order)
+                for _place, _row in enumerate(progressive_rows):
+                    _listed_at.setdefault((_row["Word"], _row["Reading"]), _place)
                 _table_size = _table.finish(
                     row_keys, lambda w: row_of.get(_phrase_row_of.get(w) if isinstance(w, int) else w),
                     lambda lr: plan_rules.clauses_or(_atom(lr), _view.known_when(lr, _atom)),
@@ -8108,6 +8111,7 @@ def main():
                     lambda index: row_of.get(_phrase_row_of.get(index)),
                     [[s["path"], s["type"], _source_digest(s)] for s in source_list],
                     {"engine": engine_id(), "run_signature": _run_sig, "language": language},
+                    places=[_listed_at.get(key, -1) for key in row_keys],
                 ).write(os.path.join(RESULTS_DIR, sentence_table.TABLE_FILE))
                 print(f"Saved the sentence table ({_table_size:,} bytes, {len(_table):,} lines offered).")
             except Exception as e:

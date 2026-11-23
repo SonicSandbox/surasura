@@ -6,8 +6,22 @@ import threading
 import time
 from collections.abc import Mapping
 from typing import Any, Callable, Dict, Optional
-from app import locks
+from app import locks, plan_rules
 from app.path_utils import get_settings_path, read_text
+
+# *Length* (logic.context min_chars / preferred_max_chars, the length a learner likes best: the sentence choice's zone,
+# its spec § 4.6): its default's one home — every reader's fall-back asks `sentence_length_default()`. 14–25 once the
+# sentence table is on (plan_rules.SENTENCE_TABLE >= 1); 10–50 before, which a saved file may still hold unchosen
+# (`load_settings` reads it as today's; a learner's own pick carries `sentence_length_chosen`).
+OLD_SENTENCE_LENGTH = (10, 50)
+SENTENCE_LENGTH = (14, 25)
+SENTENCE_LENGTH_CHOSEN = "sentence_length_chosen"
+
+
+def sentence_length_default():
+    """*Length*'s default, (min_chars, preferred_max_chars), at this process's level of the sentence table."""
+    return SENTENCE_LENGTH if plan_rules.SENTENCE_TABLE >= 1 else OLD_SENTENCE_LENGTH
+
 
 # --- SETTINGS TEMPLATE (DEFAULTS) ---
 DEFAULT_SETTINGS = {
@@ -224,6 +238,10 @@ DEFAULT_SETTINGS = {
     # yet writes every default (`_read_file_as_is`), so a saved ["suspended"] without it is the old default, never a
     # choice (`load_settings` reads today's). Written beside every pick (the Settings row, the 2.x panel).
     "known_from_anki_chosen": False,
+    # True once the learner set *Length* with the sentence table on (E-LENGTH): a saved 10–50 without it is the old
+    # default, never a choice (`load_settings` reads today's, at SENTENCE_TABLE >= 1). Written beside the row's change.
+    # Never in a signature: what it decides is the pair itself.
+    SENTENCE_LENGTH_CHOSEN: False,
     # The review loop's two other moves (Mado-LT, 3.0.18; WL-46 / 46b, ruled 2026-11-20): the flag that, with the card
     # suspended, means Ignore (1, red) and Swap (3, green) — Anki's flag numbers 1 … 7, picked on Settings' move cards.
     # Read only through `review_loop.move_flags` (a bad value, or Swap on Ignore's flag, reads as the default); those
@@ -300,9 +318,9 @@ DEFAULT_SETTINGS = {
         "context": {
             "_comment": "min_chars/preferred_max_chars: ideal sentence length range. max_chars: hard cap — sentences longer than this are excluded from candidate examples (a word's own/original sentence is still kept as a fallback). recency_files: tiebreaker only — among sentences that are otherwise equal (same i+1 cost, same length) prefer the one whose other words you met in this file or up to N files earlier; 0 = same file only, -1 = disable.",
             "search_range": 20,
-            "min_chars": 10,
+            "min_chars": sentence_length_default()[0],
             "max_extra": 2,
-            "preferred_max_chars": 50,
+            "preferred_max_chars": sentence_length_default()[1],
             "max_contexts": 3,
             "max_chars": 150,
             "recency_files": 1
@@ -374,6 +392,29 @@ def _optional_module_defaults() -> Dict[str, Any]:
 _OLD_ZH_BOUNDARIES = "\u3002\uff01\uff1f!?\n\uff1b;\u2026\u2026"
 
 
+def _read_length(settings, held):
+    """E-LENGTH (spec § 4.6), only once the sentence table is on: *Length* as the file `held` (settings.json's dict)
+    says it — a pair it doesn't hold is today's default, and the old default saved unchosen (exactly 10 and 50 with no
+    `sentence_length_chosen`: a first save wrote every default) reads as today's; any other pair is the learner's
+    own, kept. Read so, never written (settings criteria 11). At level 0 nothing changes."""
+    if plan_rules.SENTENCE_TABLE < 1:
+        return
+    context = (settings.get("logic") or {}).get("context")
+    logic = held.get("logic") if isinstance(held, dict) else None
+    own = logic.get("context") if isinstance(logic, dict) else None
+    if not isinstance(context, dict):
+        return
+    own = own if isinstance(own, dict) else {}
+    low, high = sentence_length_default()
+    unchosen = (own.get("min_chars"), own.get("preferred_max_chars")) == OLD_SENTENCE_LENGTH
+    if unchosen and not held.get(SENTENCE_LENGTH_CHOSEN):
+        own = {}
+    if "min_chars" not in own:
+        context["min_chars"] = low
+    if "preferred_max_chars" not in own:
+        context["preferred_max_chars"] = high
+
+
 class SettingsError(Exception):
     """settings.json exists but can't be read (`load_settings(strict=True)`)."""
 
@@ -384,6 +425,7 @@ def load_settings(strict: bool = False) -> Dict[str, Any]:
     defaults (the command line's `settings-unreadable`: a fallback a later save would write back, P0.3 05 §1)."""
     settings_path = get_settings_path()
     settings = copy.deepcopy(DEFAULT_SETTINGS)
+    held_length = {}
     # Optional modules contribute their own defaults, but only when importable.
     settings.update(_optional_module_defaults())
 
@@ -392,6 +434,7 @@ def load_settings(strict: bool = False) -> Dict[str, Any]:
             # Hand-edited too (the reveal gates): read in its own encoding (path_utils.read_text), or a
             # BOM from Notepad loaded the defaults — which the dashboard's next save then wrote over it.
             user_settings = json.loads(read_text(settings_path))
+            held_length = user_settings if isinstance(user_settings, dict) else {}
             # Deep merge for 'logic'
             if "logic" in user_settings and isinstance(user_settings["logic"], dict):
                 user_logic = user_settings["logic"]
@@ -435,6 +478,8 @@ def load_settings(strict: bool = False) -> Dict[str, Any]:
             if strict:
                 raise SettingsError(f"settings.json can't be read: {e}") from e
             print(f"Warning: Could not load settings, using defaults: {e}")
+
+    _read_length(settings, held_length)
 
     # Sentence boundaries are user-editable, but a few characters are STRUCTURAL — without them
     # sentences simply never end. A saved settings.json overrides the defaults wholesale, so a user

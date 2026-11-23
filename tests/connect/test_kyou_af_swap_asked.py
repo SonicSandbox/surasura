@@ -49,6 +49,23 @@ def test_only_made_add_now_asks_of_this_language_in_the_order_asked(tmp_path):
     assert swap.asked_first("zh", db_path=path) == [1700000000400]
 
 
+def test_two_asks_come_back_in_the_order_asked_not_by_note(tmp_path):
+    """The order is the asks' own (the swaps' id), never the note ids': a newer note asked first stays first."""
+    path = str(tmp_path / "ledger.sqlite")
+    with Ledger(path) as ledger:
+        _ask(ledger, "ja", "眼鏡", 1700000000900)
+        _ask(ledger, "ja", "冒険", 1700000000100)
+    assert swap.asked_first("ja", db_path=path) == [1700000000900, 1700000000100]
+
+
+def test_a_ledger_from_a_newer_surasura_is_never_read(tmp_path):
+    path = str(tmp_path / "ledger.sqlite")
+    with Ledger(path) as ledger:
+        _ask(ledger, "ja", "借りる", 1700000000300)
+        ledger.conn.execute("UPDATE meta SET value = ? WHERE key = 'schema'", (str(ledger_mod.SCHEMA + 1),))
+    assert swap.asked_first("ja", db_path=path) == []
+
+
 def test_the_read_never_writes_the_ledger(tmp_path):
     path = str(tmp_path / "ledger.sqlite")
     with Ledger(path) as ledger:

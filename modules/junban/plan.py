@@ -387,7 +387,7 @@ def plan(cards, rank_of, exclude=None, number=None, pins=None, out=None, weave=N
         stats["pinned"] = sum(1 for row in order if row.card_id in lift)
     if gone:
         stats["out"] = sum(1 for row in order if row.out)     # P4.1 L2: only when something is out
-    lifted = sum(1 for row in order if row.asked is not None)
+    lifted = sum(1 for row in order if row.asked is not None) if asked_at else 0
     if lifted:
         stats["asked"] = lifted                               # Kyou-AF: only when an asked card is in scope
     if weave_of:

@@ -1018,6 +1018,11 @@ def _asked_first(language, cards):
         from app.connect import swap
         notes = swap.asked_first(language)
     except Exception:
+        import logging
+        logging.getLogger("surasura-cli").info("Junban: the cards asked from the journey weren't read this run",
+                                               exc_info=True)
+        return []
+    if not notes:
         return []
     place = {note: index for index, note in enumerate(notes)}
     return [card["card_id"] for card in sorted((card for card in cards if card.get("note") in place),

@@ -72,6 +72,7 @@ def test_no_asked_card_is_the_plan_it_always_was(deck):
         writes, stats = plan(cards, rank_of, asked=asked)
         assert writes == before[0]
         assert stats == before[1]
+        assert "asked" not in stats
         assert all(row.asked is None for row in stats["order"])
 
 
@@ -107,18 +108,20 @@ def test_a_studied_or_deleted_asked_card_is_no_longer_special(deck):
 
 
 def test_a_click_in_the_preview_keeps_the_asked_cards_first_and_a_clicked_off_one_stays_off(deck):
-    """`replan` re-plans from the rows alone: the asked cards keep their place and order; one clicked off is not lifted."""
+    """`replan` re-plans from the rows alone: the asked cards keep their place and order; one clicked off is not lifted.
+    The preview says why it is first — once, whatever the clicks — and a card no longer asked gets its own reason back."""
     cards, rank_of = deck
-    _w, stats = plan(cards, rank_of, asked=[24, 21])
+    _w, stats = plan(cards, rank_of, asked=[24, 5, 21])
+    listed = next(r for r in stats["order"] if r.card_id == 5)
+    assert listed.why == f"you asked for it · list #{rank_of[listed.word] + 1:,}"
     _w, after = replan(stats["order"], exclude={3})
-    assert _ids(after)[:2] == [24, 21]
-    _w, off = replan(stats["order"], exclude={24})
-    assert _ids(off)[0] == 21 and next(r for r in off["order"] if r.card_id == 24).asked is None
-    # the preview says why it is first, and a card no longer asked gets its own reason back
-    assert stats["order"][0].why.startswith("you asked for it")
-    assert not next(r for r in off["order"] if r.card_id == 24).why
+    assert _ids(after)[:3] == [24, 5, 21]
     _w, back = replan(after["order"])
     assert [row.why for row in back["order"]] == [row.why for row in after["order"]], "never stacked"
+    _w, off = replan(stats["order"], exclude={5})
+    assert _ids(off)[:2] == [24, 21]
+    off_row = next(r for r in off["order"] if r.card_id == 5)
+    assert off_row.asked is None and "you asked for it" not in (off_row.why or "")
 
 
 def test_an_asked_card_is_never_woven_nor_taken_out(deck):

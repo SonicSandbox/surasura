@@ -332,8 +332,10 @@ def _old_lines(ledger, row, anki=None):
 
 
 def _avoid(ledger, row, anki=None):
-    """Every line the swap's new card must not be cut from: its old card's, and those of the other asks of the same word
-    still open (one new card serves them all) -> a list, or None while one of them can't be read."""
+    """Every line the swap's new card must not be cut from: its old card's, those of the other asks of the same word
+    still open (one new card serves them all), and every line a made swap of the word moved away from (Kyou-DW 3: a
+    line swapped away from — a deleted card's *Only in this sentence*, a Bad card, a ⇄ — is never used for the word
+    again; an undone swap gives its line back) -> a list, or None while one of them can't be read."""
     out = []
     rows = [row] + [r for r in _rows(ledger, "language = ? AND word = ? AND state IN (?, ?) AND id != ?",
                                      (row["language"], row["word"], ASKED, WAITS, row["id"])) if _same_word(r, row)]
@@ -342,6 +344,10 @@ def _avoid(ledger, row, anki=None):
         if lines is None:
             return None
         out += [x for x in lines if x not in out]
+    for r in _rows(ledger, "language = ? AND word = ? AND state = ? AND id != ? AND avoid IS NOT NULL",
+                   (row["language"], row["word"], MADE, row["id"])):
+        if _same_word(r, row):
+            out += [x for x in json.loads(r["avoid"]) if x not in out]
     return out
 
 

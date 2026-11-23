@@ -94,7 +94,11 @@ def test_same_for_all_answers_every_card_of_the_card(world, page, monkeypatch): 
     toasts = []
     monkeypatch.setattr(win.toasts, "show", lambda text, undo=None, **_k: toasts.append((text, undo)))
     entry = next(e for e in ny.entries if e.kind == service.DELETED)
-    button(ny, entry.key, "dw_all_parsing").click()
+    button(ny, entry.key, "dw_all_parsing").click()      # Kyou-DW 3: it asks one more thing first (the whole card)
+    assert wait_until(lambda: any(b.property("action") == "dw_all_word_wrong" for b in ny.cards.buttons(
+        next(e for e in ny.entries if e.kind == service.DELETED).key)), 5)
+    entry = next(e for e in ny.entries if e.kind == service.DELETED)
+    next(b for b in ny.cards.buttons(entry.key) if b.property("action") == "dw_all_word_wrong").click()
     assert wait_until(lambda: toasts, 5)
     assert page[0][:4] == ("answer", "ja", [a["note_id"] for a in ASKED], "parsing")
     assert toasts[0][0] == strings.NEEDS_DELETED_DONE["parsing"].format(n="2")

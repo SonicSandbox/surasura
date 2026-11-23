@@ -17,7 +17,13 @@ that asks why — **Known · Ignore · Parsing mistake · Bad card**, one line a
   rules); Ignore → the loop's Ignore (`unknow=True`); Parsing mistake → that Ignore + the card's line into Send report's
   list (`flags.add(source="loop")`, J-FLAGS: shown and untickable before anything is sent); Bad card → Swap's one maker
   (`swap.make_card(..., by=BY_BAD_CARD)`: a new card from another line — Swap chooses it, never this card's line).
-  A word Known or Ignored since is skipped, said. **Undo** (`undo`): each answer taken back while its word is as the
+  **Parsing mistake asks one more thing** (Kyou-DW 3, 3.0.19; Sonic's yes, PROVISIONAL): *The word is wrong* (`PARSING`,
+  no word at all: as above) or *Only in this sentence* (`LINE`: the word is real, this line read it wrong — the line
+  into Send report's list as the same parsing report, and the word a new card from another sentence through Bad card's
+  door; Swap keeps that line out of every later swap of the word, `swap._avoid`, until the answer is undone). Which
+  one is offered first is the look's guess (`likely`, kept with the card): a word a dictionary holds (the shipped
+  meanings, the learner's own) that the last Generate kept sentences of in `SEVERAL` other files → `LINE` first, else
+  `PARSING`; the learner always picks. A word Known or Ignored since is skipped, said. **Undo** (`undo`): each answer taken back while its word is as the
   answer left it (the mark as it was before, the line off the list, the new card through Swap's own Undo).
 - **The old deletes, once** (the Discord promise: cards deleted as parsing mistakes before the loop could ask): at the
   look's first run in this version the words already deleted (`Store.unmined_words`) are kept as one list (ledger meta
@@ -34,7 +40,9 @@ import logging
 log = logging.getLogger("surasura-cli")
 
 KNOWN, IGNORE, PARSING, BAD = "known", "ignore", "parsing", "bad"
-WHYS = (KNOWN, IGNORE, PARSING, BAD)
+LINE = "line"                   # Kyou-DW 3: Parsing mistake › *Only in this sentence* (PARSING: *The word is wrong*)
+WHYS = (KNOWN, IGNORE, PARSING, BAD, LINE)
+SEVERAL = 3                     # Kyou-DW 3 (PROVISIONAL): "said in several other files" — the guess's count
 WAS_KNOWN, WAS_IGNORED = "known", "ignored"     # `state`: never asked (the word was already so when the card went)
 ASK_DAYS = 14                   # WL-31 (PROVISIONAL): an unanswered card goes after this long, never asked again
 OLD_KEY = "old-deletes:{lang}"  # ledger meta: the one-time list of deletes from before the loop asked
@@ -59,6 +67,7 @@ _SQL = """CREATE TABLE IF NOT EXISTS deleted (
   why        TEXT,
   why_at     TEXT,
   undo       TEXT,
+  likely     TEXT,
   PRIMARY KEY (language, note_id))"""
 
 
@@ -68,6 +77,8 @@ def _now():
 
 def ensure(ledger):
     ledger.conn.execute(_SQL)
+    if "likely" not in {r[1] for r in ledger.conn.execute("PRAGMA table_info(deleted)")}:
+        ledger.conn.execute("ALTER TABLE deleted ADD COLUMN likely TEXT")     # Kyou-DW 3: the look's guess
 
 
 def _has(conn, table):
@@ -87,11 +98,13 @@ def _made(conn, language, note_id):
         (language, int(note_id))).fetchone()
 
 
-def seen(language, gone, store=None, state_of=None, ledger=None, now=None):
+def seen(language, gone, store=None, state_of=None, ledger=None, now=None, likely_of=None):
     """The deleted-card look's notes (`gone`, taken out of the store just now) remembered as deleted by you: each one
     Connect made gets its row (word, sentence, line, episode), its `state` `known` / `ignored` when its word already
-    was (`state_of(word, reading)`, default Swap's — the pick's own test; unreadable → asked). Then, once ever per
-    language, the old deletes kept (`store`: its `unmined_words` minus the ones just stamped). -> how many stamped."""
+    was (`state_of(word, reading)`, default Swap's — the pick's own test; unreadable → asked), and the follow-up's
+    guess (`likely_of(language, [(note, word, reading, sentence)])`, default `likely`; none → *The word is wrong*
+    first). Then, once ever per language, the old deletes kept (`store`: its `unmined_words` minus the ones just
+    stamped). -> how many stamped."""
     from app.connect import ledger as ledger_mod
     own = ledger is None
     ledger = ledger or ledger_mod.Ledger()
@@ -106,6 +119,12 @@ def seen(language, gone, store=None, state_of=None, ledger=None, now=None):
                 rows.append((note,) + tuple(made))
         if rows and state_of is None:
             state_of = _states(language)
+        guess = {}
+        if rows:
+            try:
+                guess = (likely_of or likely)(language, [(r[0], r[1], r[2] or "", r[3] or "") for r in rows]) or {}
+            except Exception:
+                log.info("Kyou-DW: no guess for the deleted cards' follow-up", exc_info=True)
         stamped = 0
         with ledger.transaction():
             for note, word, reading, sentence, start, item_id in rows:
@@ -117,9 +136,10 @@ def seen(language, gone, store=None, state_of=None, ledger=None, now=None):
                         state = None
                 cur = ledger.conn.execute(
                     "INSERT OR IGNORE INTO deleted (language, note_id, word, reading, item_id, sentence, line_start, "
-                    "gone_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "gone_at, state, likely) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (language, note, word, reading or "", item_id, sentence, start, at,
-                     state if state in (WAS_KNOWN, WAS_IGNORED) else None))
+                     state if state in (WAS_KNOWN, WAS_IGNORED) else None,
+                     guess.get(note) if guess.get(note) in (LINE, PARSING) else None))
                 stamped += cur.rowcount
         if store is not None:
             _keep_old(ledger, language, store)
@@ -127,6 +147,30 @@ def seen(language, gone, store=None, state_of=None, ledger=None, now=None):
     finally:
         if own:
             ledger.close()
+
+
+def likely(language, rows):
+    """Kyou-DW 3: which answer the follow-up offers first, for each deleted card -> {note: LINE | PARSING}; {} when it
+    can't be read (never raises). `rows`: [(note, word, reading, sentence)]. A word the last Generate kept sentences
+    of in `SEVERAL` files other than this line's (`sentences.files_saying`: the plan's pools) **and** a dictionary
+    holds — the shipped meanings (`journey_render.Meanings`: JMdict EN · CC-CEDICT) or the learner's own
+    (`own_dicts.lookup`: only whether it holds the word; its text is never kept) — is a real word this line read
+    wrong: LINE; anything else PARSING (today's order). The dictionaries are read only for the words said that often."""
+    try:
+        from app.connect import sentences
+        said = sentences.files_saying(language, [(w, r, s) for _n, w, r, s in rows])
+        often = list(dict.fromkeys((w, r or "") for _n, w, r, _s in rows if said.get((w, r or ""), 0) >= SEVERAL))
+        held = set()
+        if often:
+            from app import journey_render, own_dicts
+            shipped = journey_render.Meanings(language)
+            shipped.prepare([(w, r, "") for w, r in often])
+            held = {(w, r) for w, r in often if shipped.of(w, r, "")}
+            held |= set(own_dicts.lookup([k for k in often if k not in held]) or ())
+        return {n: LINE if (w, r or "") in held else PARSING for n, w, r, _s in rows}
+    except Exception:
+        log.info("Kyou-DW: the follow-up's guess couldn't be read", exc_info=True)
+        return {}
 
 
 def _tidied(conn, language):
@@ -195,7 +239,7 @@ def _keep_old(ledger, language, store):
 # Read-only: Connect's record (`status.read`)
 # --------------------------------------------------------------------------- #
 def status_of(conn, language, now=None):
-    """-> {"asked": [{note_id, word, reading, sentence, item_id, gone_at}], newest first; "known": n, "ignored": n (the
+    """-> {"asked": [{note_id, word, reading, sentence, item_id, gone_at, likely}], newest first; "known": n, "ignored": n (the
     cards never asked, of the last `ASK_DAYS`); "old": the one-time list}. Read-only: nothing made or written."""
     out = {"asked": [], "known": 0, "ignored": 0, "old": []}
     if not _has(conn, "meta"):
@@ -213,13 +257,14 @@ def status_of(conn, language, now=None):
                                  "gone_at >= ? GROUP BY state", (language, since)):
         if state in (WAS_KNOWN, WAS_IGNORED):
             out[state] = n
+    guessed = "likely" in {r[1] for r in conn.execute("PRAGMA table_info(deleted)")}   # (a ledger before Kyou-DW 3)
     rows = conn.execute(
-        "SELECT d.note_id, d.word, d.reading, d.sentence, d.item_id, d.gone_at FROM deleted d WHERE d.language = ? "
-        "AND d.state IS NULL AND d.why IS NULL AND d.gone_at >= ? ORDER BY d.gone_at DESC, d.note_id DESC",
-        (language, since)).fetchall()
+        f"SELECT d.note_id, d.word, d.reading, d.sentence, d.item_id, d.gone_at, {'d.likely' if guessed else 'NULL'} "
+        "FROM deleted d WHERE d.language = ? AND d.state IS NULL AND d.why IS NULL AND d.gone_at >= ? "
+        "ORDER BY d.gone_at DESC, d.note_id DESC", (language, since)).fetchall()
     newer = _newer_cards(conn, language, {r[1] for r in rows}) if rows else {}
     out["asked"] = [{"note_id": r[0], "word": r[1], "reading": r[2], "sentence": r[3] or "", "item_id": r[4],
-                     "gone_at": r[5]} for r in rows if not any(n > r[0] for n in newer.get(r[1], ()))]
+                     "gone_at": r[5], "likely": r[6]} for r in rows if not any(n > r[0] for n in newer.get(r[1], ()))]
     return out
 
 
@@ -291,7 +336,7 @@ def answer(language, note_ids, why, ledger=None, state_of=None, open_store=_defa
     A word Known or Ignored since the look is never asked again (its `state` set, counted)."""
     if why not in WHYS:
         raise ValueError(f"unknown answer {why!r}")
-    if why == BAD:
+    if why in (BAD, LINE):
         from app.connect import swap  # noqa: F401  (Swap's maker absent: nothing claimed, the press says it failed)
     from app.connect import ledger as ledger_mod
     own = ledger is None
@@ -328,7 +373,7 @@ def answer(language, note_ids, why, ledger=None, state_of=None, open_store=_defa
                     else:
                         ledger.conn.execute("UPDATE deleted SET why = NULL, why_at = NULL WHERE language = ? AND "
                                             "note_id = ?", (language, r["note_id"]))
-                        if why == BAD and r["word"] in (swap_state := _swap_state(out, r)):
+                        if why in (BAD, LINE) and r["word"] in (swap_state := _swap_state(out, r)):
                             ledger.conn.execute("UPDATE deleted SET state = ? WHERE language = ? AND note_id = ?",
                                                 (swap_state[r["word"]], language, r["note_id"]))
         return out
@@ -351,7 +396,7 @@ def _act(language, rows, why, out, open_store):
     if not rows:
         return {}
     undos = {}
-    if why == BAD:
+    if why in (BAD, LINE):
         from app.connect import swap
         for r in rows:
             try:
@@ -365,8 +410,10 @@ def _act(language, rows, why, out, open_store):
                 out["skipped"].append((r["note_id"], r["word"], REFUSED.get(got.get("why"), got.get("why") or "")))
                 continue
             undos[r["note_id"]] = {"swap": got.get("id")}
+            if why == LINE:             # only this sentence: its line is a parsing report too (Swap asked first:
+                undos[r["note_id"]]["flag"] = _flag(language, r, out, open_store)   # nothing flagged for a drop)
         return undos
-    from app.services import flags, word_marks
+    from app.services import word_marks
     mark = "known" if why == KNOWN else "ignore"
     words = list(dict.fromkeys(r["word"] for r in rows))
     marked = word_marks.apply(language, [(w, mark) for w in words], undoable=False, unknow=mark == "ignore")
@@ -379,18 +426,25 @@ def _act(language, rows, why, out, open_store):
     for r in rows:
         undo = {"mark": mark, "before": before.get(r["word"], mark), "wrote": r["word"] in before}
         if why == PARSING:
-            show, episode = _place(language, r["item_id"], open_store)
-            key = FLAG_KEY.format(note=r["note_id"])
-            try:
-                flags.add(language, r["sentence"] or r["word"], r["word"], "loop", key=key, show=show,
-                          episode=episode, at=r["line_start"], reasons=(flags.PARSING,))
-                undo["flag"] = key
-            except Exception as e:          # Full, busy: the word is ignored all the same; the line is said missing
-                log.info("Kyou-DW: the line wasn't added to Send report's list (%s)", e)
-                undo["flag"] = None
-                out.setdefault("unflagged", []).append((r["note_id"], r["word"], str(e)))
+            undo["flag"] = _flag(language, r, out, open_store)
         undos[r["note_id"]] = undo
     return undos
+
+
+def _flag(language, r, out, open_store):
+    """The card's line into Send report's list (source `loop`, reason parsing) -> its key, or None when the list
+    refused it (Full, busy: the answer stands; the line is said missing)."""
+    from app.services import flags
+    show, episode = _place(language, r["item_id"], open_store)
+    key = FLAG_KEY.format(note=r["note_id"])
+    try:
+        flags.add(language, r["sentence"] or r["word"], r["word"], "loop", key=key, show=show,
+                  episode=episode, at=r["line_start"], reasons=(flags.PARSING,))
+        return key
+    except Exception as e:
+        log.info("Kyou-DW: the line wasn't added to Send report's list (%s)", e)
+        out.setdefault("unflagged", []).append((r["note_id"], r["word"], str(e)))
+        return None
 
 
 def undo(language, note_ids, ledger=None, settings=None):
@@ -437,7 +491,7 @@ def undo(language, note_ids, ledger=None, settings=None):
                     except Exception:
                         log.info("Kyou-DW: the line wasn't taken off Send report's list", exc_info=True)
         for r in rows:
-            if r["why"] != BAD:
+            if r["why"] not in (BAD, LINE):
                 continue
             from app.connect import swap
             u = json.loads(r["undo"] or "{}")
@@ -445,8 +499,14 @@ def undo(language, note_ids, ledger=None, settings=None):
             if got.get("why") == swap.ALREADY:      # Swap undid it, then this record failed: the retry finishes it
                 got = {}
             if got.get("why"):          # not made yet, studied, Anki closed: Swap's own words, the answer kept
-                out["skipped"].append((r["note_id"], r["word"], got["why"]))
+                out["skipped"].append((r["note_id"], r["word"], got["why"]))     # (its line stays flagged too)
                 continue
+            if u.get("flag"):           # only this sentence: its line off Send report's list, once the card is back
+                from app.services import flags
+                try:
+                    flags.unflag(language, "loop", u["flag"], r["word"])
+                except Exception:
+                    log.info("Kyou-DW: the line wasn't taken off Send report's list", exc_info=True)
             back.append((r, u))
         with ledger.transaction():
             for r, _u in back:

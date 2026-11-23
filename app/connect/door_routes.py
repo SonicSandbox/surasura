@@ -17,6 +17,9 @@ card for the word already. The library store busy with another save just now is 
 press again; `_line`). A second press for a word whose ask is still open answers that ask (`already`), never a
 second card. Not queued on the page (SPEC §3.5: an action that needs the app), so `at` is not read.
 
+And `clip/cut` {lang, line_id} — ▶ on a line the browser can't play: its clip, cut on the press and kept
+(`app/connect/clips.py`, J-CLIP); {lang, line_ids, ahead: true} — the shown lines cut before they are pressed.
+
 Inert until the journey v3 page ships (J-CUT): the door doesn't listen before then (`journey_door.ON`), so nothing
 calls these. Runs on the door's thread: opens the ledger and the store there, never a widget. Qt-free.
 """
@@ -102,7 +105,18 @@ def _line(steps, lang, line_id):
     as a line gone, so its one store read (`steps.subtitle`) is watched here: a store busy past its own wait (Connect's
     `Wait(LIBRARY_BUSY)` at the open, SQLite's "locked" in the read) is no line gone (J-FIX)."""
     from app import door
-    from app.connect import runner, swap
+    from app.connect import swap
+    busy = _watch(steps)
+    picked = swap._resolve_line_id(steps, lang, line_id)
+    if any(busy):
+        raise door.RouteError(BUSY, "busy")
+    return picked
+
+
+def _watch(steps):
+    """`steps.subtitle` watched for a store busy just now (`_line`'s rule) -> the list it appends to (True: busy) —
+    the line's one store read, Swap's and the clip's alike."""
+    from app.connect import runner
     read, busy = steps.subtitle, []
 
     def subtitle(language, job):
@@ -115,7 +129,38 @@ def _line(steps, lang, line_id):
             busy.append("locked" in str(e).lower() or "busy" in str(e).lower())
             raise
     steps.subtitle = subtitle
-    picked = swap._resolve_line_id(steps, lang, line_id)
-    if any(busy):
-        raise door.RouteError(BUSY, "busy")
-    return picked
+    return busy
+
+
+def clip_route(body, app):
+    """`clip/cut` {lang, line_id} -> {url}: ▶ on a line the browser can't play (an .mkv) — its clip cut now, or the one
+    kept (`clips.cut`), served by the door's one GET (`door.serve_file`: the URL's path, as SPEC §3.3 names it).
+    {lang, line_ids, ahead: true} -> {ahead: n}: the page idle on a word asks its shown lines of the open episode cut
+    before they are pressed (`clips.ahead`; answered at once — the one ask that doesn't stop a cut ahead,
+    `journey_door._route`). Refused in the clip's own words (Connect off, Anki Miner absent or too old, no time in its
+    file, gone, the video not on this PC, Anki Miner couldn't); the store busy is `busy`, as above."""
+    from app import door, settings_manager
+    from app.connect import clips, runner
+    lang = body.get("lang")
+    if lang not in LANGS:
+        raise door.RouteError(NOT_READ, "refused")
+    if body.get("ahead"):
+        ids = body.get("line_ids")
+        ids = [i for i in ids if isinstance(i, str) and len(i) <= LINE_MAX] if isinstance(ids, list) else []
+        return {"ahead": clips.ahead(lang, ids)}
+    line_id = body.get("line_id")
+    if not isinstance(line_id, str) or len(line_id) > LINE_MAX:
+        raise door.RouteError(clips.NO_LINE, "refused")
+    settings = settings_manager.load_settings()
+    steps = runner.Steps(settings)
+    busy = _watch(steps)
+    try:
+        path = clips.cut(lang, line_id, settings=settings, steps=steps)
+    except clips.Refused as e:
+        if any(busy):
+            raise door.RouteError(BUSY, "busy") from None
+        raise door.RouteError(e.message, e.kind) from None
+    url = door.serve_file(path, clips.kind(path))
+    if url is None:
+        raise door.RouteError("Surasura is closing.", "closed")
+    return {"url": url[url.index(door.CLIP_PATH):]}

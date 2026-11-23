@@ -286,8 +286,8 @@ def asked_for(ledger, language, note_ids, why=None):
     """The notes of `note_ids` you asked for -> frozenset: a card you asked for is never Tidy's, studied or not, past
     the cap or not (`why_kept`'s ASKED). A swap's new card is one (your ⇄ — Suspend + Green flag — asked for it, as it
     is never held by the cap: OPEN 56 f / g, PROVISIONAL), read from Swap's own record (`swap.new_cards`), but not in
-    the swap's own Undo (`why` "swap"), which takes back the card it made. Journey v3 D3's *Add now* fills it from its
-    own record once built."""
+    the swap's own Undo (`why` "swap"), which takes back the card it made. Journey v3 D3's *Add now* is one too: it
+    asks through Swap's maker (`door_routes.card_route`), so its card is in the same record."""
     from app.connect import swap
     asked = set()
     if why != swap.BY_SWAP:

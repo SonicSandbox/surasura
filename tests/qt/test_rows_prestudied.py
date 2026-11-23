@@ -59,6 +59,19 @@ def _blits(monkeypatch):
     return drawn
 
 
+def _looks(lst):
+    """The rows the last refresh rebuilt that paint differently (the view repaints these only: `RowsView.set_entries`)."""
+    return [n for n in lst.model().changed if lst.model().looks_different(n)]
+
+
+def _settle(lst):
+    """Paint the list on screen and let its warm (the rows painted ahead) run its course."""
+    from PyQt6.QtWidgets import QApplication
+    QApplication.processEvents()
+    lst.viewport().repaint()
+    assert wait_until(lambda: not lst._warm.isActive(), 10)
+
+
 def _parts(lst, i):
     entry = lst.model().entries[i]
     return lst.delegate.parts(entry, lst.visualRect(lst.model().index(i, 0)))
@@ -182,15 +195,22 @@ def test_one_card_is_one_card_never_one_cards(window):
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_finished_work_pre_studied_lights_its_row_alone_and_its_hover_names_them(window, monkeypatch, language):
     """A Finished row draws no string: the sparkle sits at its cover's shoulder, and its hover names the pre-studied
-    files. Marking two repaints that Finished row alone (Current's rows are the same objects); an Undo takes it off."""
+    files. Marking two repaints that Finished row alone (Current's rows are the same objects); an Undo takes it off.
+    What is asserted is what looks different and what is painted: any change inside Finished (a mined date, a cover —
+    on the base too, F-JS1) hands the list its month labels made anew, which compare equal and are never repainted."""
     seed, win = window(language)
     fin = win.page_widgets["finished"].list
     i, row = next((i, e[1]) for i, e in enumerate(fin.model().entries) if e[0] == rows.FINISHED)
     eps = row.episodes[:2]
     cur_entries = current(win).model().entries
+    win.show_tab("finished")                                  # a hidden list paints nothing: Finished on screen
+    _settle(fin)
+    renders = fin.delegate.renders
     seed.library.commit(items=[{"id": e.id, "prestudied_at": STAMP} for e in eps])
     assert wait_until(lambda: fin.model().entries[i][1] is not row)
-    assert fin.model().changed == [i]
+    assert _looks(fin) == [i], "that Finished row alone looks different"
+    _settle(fin)
+    assert fin.delegate.renders == renders + 1, "its picture painted once, no other row's"
     assert rows.finished_pre(fin.model().entries[i][1]) == tuple(e.label for e in eps)
     tips = [tip for name, _r, tip, _p in _parts(fin, i) if name == "pre"]
     assert tips == [strings.ROWS_STONE_PRE_NAMES.format(names=" · ".join(e.label for e in eps))]
@@ -198,5 +218,9 @@ def test_a_finished_work_pre_studied_lights_its_row_alone_and_its_hover_names_th
     marked = fin.model().entries[i][1]
     seed.library.commit(items=[{"id": e.id, "prestudied_at": None} for e in eps])
     assert wait_until(lambda: fin.model().entries[i][1] is not marked)
-    assert fin.model().changed == [i] and rows.finished_pre(fin.model().entries[i][1]) == ()
+    assert _looks(fin) == [i] and rows.finished_pre(fin.model().entries[i][1]) == ()
+    paints = fin.delegate.paints
+    _settle(fin)
+    assert fin.delegate.paints > paints, "the row is painted again"
+    assert fin.delegate.renders == renders + 1, "from its picture before the mark, still kept: nothing drawn afresh"
     assert [name for name, *_ in _parts(fin, i) if name == "pre"] == []

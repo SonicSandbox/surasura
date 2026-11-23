@@ -93,7 +93,8 @@ _AFTER_TE = frozenset(("て", "で", "って", "ちゃ", "じゃ"))
 _NAME_LINKS = frozenset(("・", "･", "＝", "="))     # フランク・ライアン: one name
 _NUMERALS = frozenset("〇一二三四五六七八九十百千万億兆")
 _KATAKANA = re.compile(r"[\u30a0-\u30ff]+")
-_LINKED = re.compile("[%s]" % "".join(sorted(_NAME_LINKS))).search     # a line that may hold a name link
+_LINK_1, _LINK_2, _LINK_3, _LINK_4 = sorted(_NAME_LINKS)     # asked of a line one by one: no regex call
+_ISALPHA = str.isalpha
 _LISTS = {}
 
 
@@ -130,34 +131,36 @@ class LineWords:
     def __init__(self, tokens, text, language, people=frozenset()):
         grammar, particles, helpers, titles = _lists(language)
         self.tokens = tokens
-        if _LINKED(text) is not None:
+        if _LINK_1 in text or _LINK_2 in text or _LINK_3 in text or _LINK_4 in text:   # a name link
             self._linked(tokens, text, grammar, particles, helpers, titles, people)
             return
         pos, find = 0, text.find
         at, counted, later = [], [], None
-        before = None                           # the token before: (lemma, surface)
+        put, mark = at.append, counted.append
+        before = before_surface = None          # the token before's lemma and surface
         for lemma, _reading, surface, _orth in tokens:
+            start = pos
             a = find(surface, pos)
-            glued = a == pos                    # no text between it and the token before
-            if a >= 0:
-                pos = a + len(surface)
+            if a < 0:
+                a = pos                         # a token the line's text doesn't hold (a quote mark cut off): here
             else:
-                a, glued = pos, True            # a token the line's text doesn't hold (a quote mark cut off): here
-            at.append(a)
-            word = lemma not in grammar and (surface.isalpha() or any(map(str.isalpha, surface)))   # grammar · a mark
-            if word:
-                if (lemma in helpers and before is not None and glued and before[1] in _AFTER_TE
-                        and before[0] in particles):
-                    word = False                # a helping verb: 見ている, 来てくれる
-                elif len(surface) == 1 and a and (text[a - 1].isdigit() or text[a - 1] in _NUMERALS):
-                    word = False                # a counter after its number (the number is no token): 三人, ２０分
-                elif lemma in people:           # a person: counted unless a call, by what follows (below)
-                    if later is None:
-                        later = []
-                    later.append(len(counted))
-                    word = False
-            counted.append(word)
-            before = (lemma, surface)
+                pos = a + len(surface)
+            put(a)
+            if lemma in grammar or not (surface.isalpha() or any(map(_ISALPHA, surface))):
+                mark(False)                     # grammar · a mark
+            elif (lemma in helpers and before is not None and a == start and before_surface in _AFTER_TE
+                  and before in particles):
+                mark(False)                     # a helping verb right after て / で: 見ている, 来てくれる
+            elif len(surface) == 1 and a and (text[a - 1].isdigit() or text[a - 1] in _NUMERALS):
+                mark(False)                     # a counter after its number (the number is no token): 三人, ２０分
+            elif lemma in people:               # a person: counted unless a call, by what follows (below)
+                if later is None:
+                    later = []
+                later.append(len(counted))
+                mark(False)
+            else:
+                mark(True)
+            before, before_surface = lemma, surface
         self.at, self.counted, self.head = at, counted, range(len(at))
         if later is not None:
             for i in later:
@@ -248,14 +251,20 @@ COLUMNS = (("src", "<i4"), ("number", "<i4"), ("chars", "<u2"), ("marks", "u1"),
 _BYTES = sum(np.dtype(t).itemsize for _n, t in COLUMNS)
 
 
+# A line as the walk packs it (27 bytes, one `struct` call a line): its word's provisional id, its source, its place,
+# its length, how many co-words and phrases follow, its hash, its marks, besides, where the word starts.
+_LINE = struct.Struct("<iiiiiiIBBB")
+_LINE_COLUMNS = np.dtype([("word", "<i4"), ("src", "<i4"), ("number", "<i4"), ("chars", "<i4"), ("ncow", "<i4"),
+                          ("nphr", "<i4"), ("hash", "<u4"), ("marks", "u1"), ("besides", "u1"), ("starts", "u1")])
+
+
 class Packer:
-    """The walk's side: lines appended as the files are read, as compact arrays (no Python object per line) — six
-    ints a line (its word, source, place, length, how many co-words, how many phrases), its hash, three bytes (marks,
-    besides, starts), and the co-words' and phrases' ids one after another."""
+    """The walk's side: lines appended as the files are read, as compact bytes (no Python object per line) — one
+    `_LINE` a line, and the co-words' and phrases' ids one after another."""
 
     def __init__(self):
         self._ids, self._keys = {}, []          # any key (a word, a co-word) -> its provisional id; id -> key
-        self._ints, self._hash, self._bytes = array("i"), array("I"), array("B")
+        self._lines = bytearray()
         self._cow, self._phr = array("i"), array("i")     # co-words: provisional ids · set phrases: the walk's numbers
         self._held = ((), [])                   # the last line's co-words and their ids (a line offered for several words)
 
@@ -267,7 +276,7 @@ class Packer:
         return found
 
     def __len__(self):
-        return len(self._hash)
+        return len(self._lines) // _LINE.size
 
     def add(self, word, src, number, chars, text_hash, cowords=(), phrases=(), besides=0, starts=0, over=False):
         """One candidate line of `word` (the key its row is found by): sentence `number` of source `src`, `chars`
@@ -286,10 +295,9 @@ class Packer:
             if None in ids:
                 ids = [self._id(c) for c in cowords]
             self._held = (cowords, ids)
-        self._ints.extend((w, src, number, chars, len(ids), len(phrases)))
-        self._hash.append(text_hash & 0xFFFFFFFF)
-        self._bytes.extend((OVER if over else 0, besides if besides < 255 else 255,
-                            starts if starts < STARTS_PAST else STARTS_PAST))
+        self._lines += _LINE.pack(w, src, number, chars, len(ids), len(phrases), text_hash & 0xFFFFFFFF,
+                                  OVER if over else 0, besides if besides < 255 else 255,
+                                  starts if starts < STARTS_PAST else STARTS_PAST)
         if ids:
             self._cow.extend(ids)
         if phrases:
@@ -314,8 +322,8 @@ class Packer:
             k = row_of(key)
             if k is not None and k >= 0:
                 rows[p] = k
-        ints = _view(self._ints, np.int32).reshape(-1, 6)
-        word, src, number, chars, ncow, nphr = (ints[:, c] for c in range(6))
+        lines = np.frombuffer(self._lines, _LINE_COLUMNS) if self._lines else np.zeros(0, _LINE_COLUMNS)
+        word, src, number, chars, ncow, nphr = (lines[c] for c in ("word", "src", "number", "chars", "ncow", "nphr"))
         line_row = rows[word]
         keep = line_row >= 0
         # every line once for its row, in (row, file, place) order — a line the walk offered twice is kept once
@@ -350,7 +358,7 @@ class Packer:
         del phr, mapped
 
         line_row = line_row[order]
-        hashes = _view(self._hash, np.uint32)[order]
+        hashes = lines["hash"][order]
         # the fingerprint: kept only where another line of the same word says the same words (never 0 then)
         if len(order):
             _u, inverse, counts = np.unique((line_row.astype(np.int64) << 32) | hashes, return_inverse=True,
@@ -361,9 +369,9 @@ class Packer:
             fp = hashes
         cols = {"src": src[order], "number": number[order], "chars": np.minimum(chars[order], 0xFFFF),
                 "ncow": np.diff(cow_at), "nphr": np.diff(phr_at), "fp": fp}
-        bytes3 = _view(self._bytes, np.uint8).reshape(-1, 3)[order]
-        cols["marks"], cols["besides"], cols["starts"] = bytes3[:, 0], bytes3[:, 1], bytes3[:, 2]
-        del ints, word, src, number, chars, ncow, nphr, keep, hashes
+        for name in ("marks", "besides", "starts"):
+            cols[name] = lines[name][order]
+        del lines, word, src, number, chars, ncow, nphr, keep, hashes
         t = Table()
         with_lines, starts = np.unique(line_row, return_index=True)
         bounds = np.append(starts, len(line_row)).tolist()

@@ -127,7 +127,7 @@ def test_the_profiles_settings_are_its_exports_and_one_not_anki_miners_kind_goes
     assert clips.audio_settings(on) == {"padding": 0.3, "format": "opus", "bitrate": 192, "normalize": True}
     for bad in ({"audio_padding": "0.3"}, {"audio_padding": -1}, {"audio_padding": True}, {"audio_bitrate": 0},
                 {"audio_bitrate": 192.5}, {"audio_format": "wav"}, {"normalize_audio_loudness": "yes"},
-                {"audio_padding": None}):
+                {"audio_padding": None}, {"audio_padding": float("inf")}, {"audio_padding": float("nan")}):
         assert clips.audio_settings({"settings": dict(EXPORT_313["settings"], **bad)}) is None, bad
     assert clips.audio_settings(None) is None and clips.audio_settings({"settings": []}) is None
 
@@ -398,6 +398,18 @@ def test_a_press_waiting_on_a_line_the_ahead_cut_lets_go_cuts_it_itself(episode,
     assert _ahead_done()
     assert open(got["path"], encoding="utf-8").read() == second.text
     assert cuts == [(first.start, True), (second.start, False)]
+
+
+def test_the_cut_ahead_failing_before_its_first_cut_leaves_no_claim(episode, monkeypatch):
+    # (the clips folder unreachable as the ahead cut starts: its lines must not wait 35 s on a claim nobody holds)
+    ep = episode("ja")
+    def unreachable():
+        raise OSError("the data folder went away")
+    monkeypatch.setattr(clips, "_kept", lambda key: None)              # (its own lookups of the folder aside)
+    monkeypatch.setattr(clips, "root", unreachable)
+    clips.ahead("ja", [_id(c) for c in ep["lines"][:2]], settings=ep["settings"], steps=ep["steps"], miner=ep["miner"])
+    assert _ahead_done()
+    assert clips._cutting == {}
 
 
 def test_a_tool_that_fails_is_a_failure_whatever_it_wrote():

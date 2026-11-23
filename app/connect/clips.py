@@ -235,11 +235,11 @@ def _cut_ahead(language, ids, settings, steps, miner):
         key = _key(language, video, cue)
         if key not in can and not _kept(key):
             can[key] = (video, subtitle, cue)
+    folder = root()                             # (before the claims: nothing between them and their release raises)
     with _lock:                                 # claimed: a press of one of these lines waits for it, never cuts it
         mine = {key: _cutting.setdefault(key, [threading.Event(), None]) for key in can if key not in _cutting}
     if not mine:
         return
-    folder = root()
     run_dir = os.path.join(folder, f".run-ahead-{time.time_ns()}")
     try:
         os.makedirs(run_dir, exist_ok=True)
@@ -399,7 +399,7 @@ def audio_settings(export):
         return None
     padding, bitrate = values.get("audio_padding"), values.get("audio_bitrate")
     form, normalize = values.get("audio_format", "mp3"), values.get("normalize_audio_loudness", False)
-    if isinstance(padding, bool) or not isinstance(padding, (int, float)) or padding < 0 or \
+    if isinstance(padding, bool) or not isinstance(padding, (int, float)) or not 0 <= padding < 60 or \
             isinstance(bitrate, bool) or not isinstance(bitrate, int) or bitrate <= 0 or \
             form not in ("mp3", "opus") or not isinstance(normalize, bool):
         return None

@@ -254,7 +254,7 @@ def test_a_first_render_writes_the_lines_memo_once_and_the_rail_reads_connects_s
     results.mkdir()
     monkeypatch.setattr(gen, "RESULTS_DIR", str(results))
     monkeypatch.setattr(gen, "_load_source_map", lambda: source_map)
-    monkeypatch.setattr(gen, "_line_media", lambda language, rels, memo=None: (media, []))
+    monkeypatch.setattr(gen, "_line_media", lambda language, rels, memo=None, **_: (media, []))
     monkeypatch.setattr(jr, "nothing_new", lambda language, path=None: {2})
     writes = []
     real_save = gen.AnchorFinder.save_memo

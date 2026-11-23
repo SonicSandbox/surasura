@@ -32,6 +32,7 @@ journey is the page before the cut). Light to import: the window imports it afte
 import importlib
 import math
 import os
+import sys
 import time
 from dataclasses import dataclass
 from typing import Callable
@@ -132,8 +133,20 @@ def _route(spec, app):
         fn = resolve(spec)
         if fn is None:
             raise door.RouteError("This isn't in your Surasura yet.", NOT_YET)
+        if not (isinstance(body, dict) and body.get("ahead")):
+            _stop_clips_ahead()                 # a press on the page: the journey's clips cut ahead of it stop (J-CLIP)
         return fn(body, app)
     return call
+
+
+def _stop_clips_ahead():
+    """`clips.stop_ahead`, only once something asked for clips ahead (the module is never imported for it)."""
+    clips = sys.modules.get("app.connect.clips")
+    if clips is not None:
+        try:
+            clips.stop_ahead()
+        except Exception:
+            pass
 
 
 def _lang(body):

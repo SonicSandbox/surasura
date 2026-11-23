@@ -10,6 +10,9 @@
   const MODE = Q.get("door") || "on";
   const NOTYET = new Set((Q.get("notyet") || "").split(",").filter(Boolean));
   const CALLS = [], STORE = [], LONG = [];
+  /* door=on is a page opened from Surasura: it holds the door's address (port, token) as the real one does, kept in
+     sessionStorage by the page's own key before any check counts a write (a clip's url is that port's) */
+  if (MODE === "on") try { sessionStorage.setItem("surasura-door", JSON.stringify({ port: 9, token: "selftest" })); } catch (e) {}
   const setItem = Storage.prototype.setItem;
   Storage.prototype.setItem = function (k, v) { STORE.push([performance.now(), k]); return setItem.call(this, k, v); };
   try { new PerformanceObserver((l) => { for (const e of l.getEntries()) LONG.push([e.startTime, e.duration]); }).observe({ type: "longtask", buffered: true }); } catch (e) {}
@@ -17,7 +20,7 @@
   const PREBY = {};
   let undoN = 0;
   window.__J_FAKE_DOOR = async (route, body) => {
-    CALLS.push([performance.now(), route, JSON.parse(JSON.stringify(body))]);
+    CALLS.push([performance.now(), route, JSON.parse(JSON.stringify(body)), window.__J ? window.__J.S.ep : null]);   // + the open episode
     await null;
     if (window.__J_DOOR_DELAY) await new Promise((r) => setTimeout(r, window.__J_DOOR_DELAY));
     const mode = window.__J_DOOR_MODE || MODE;
@@ -42,6 +45,7 @@
       case "settings/set": return { ok: true, saved: true };
       case "swap/queue": return { ok: true, queued: true };
       case "card/make": return { ok: true, asked: true };
+      case "clip/cut": return body.ahead ? { ok: true, ahead: body.line_ids.length } : { ok: true, url: "/clip/" + "0123456789abcdef".repeat(2) + ".mp3" };
       default: return { ok: false, kind: "not_yet" };
     }
   };
@@ -541,6 +545,55 @@
       ok("…a v1 row (no item): its episode's store id", sid(["文", 0, 1.5], ["x", "anime", E, "", ""]) === `${page.ep(E).id}:1500`);
       ok("…a book's line (no start) or a file the store doesn't hold: the page's own p<hash>", /^p[0-9a-f]{8}$/.test(sid(["文", 0, null], ["x", "book", 0, "", "", 4321])) && /^p[0-9a-f]{8}$/.test(sid(["文", 0, 3], ["x", "anime", E, "", "", null])));
       ok("P: a file name with # or ? plays as itself (each part of the path encoded)", d != null && !!J.mediaUrl && J.mediaUrl("0/sub dir/ep#1 ?.mp3") === d + "sub%20dir/ep%231%20%3F.mp3", J.mediaUrl && J.mediaUrl("0/sub dir/ep#1 ?.mp3"));
+      /* ▶ on a line only a cut plays (J-CLIP; the fixture's first episode with words, E, is an .mkv): the press shows it is
+         working on its own button only, the clip plays from its own start, a word left meanwhile plays nothing, and
+         idle on a word asks the open episode's shown lines ahead, each once */
+      const pl = document.getElementById("player"), PLAYS = [], play0 = pl.play;
+      pl.play = function () { PLAYS.push([this.src, this.currentTime]); return Promise.resolve(); };   // nothing loaded
+      const cuts = (id, any) => { const w = J.wordNow(id); return J.shownLines(id, w).ks.filter((k) => { const ln = w[9][k], s = J.srcOf(id, ln[1]); return s && s[3] && !J.mediaUrl(s[3]) && ln[2] != null && (any || s[2] === E); }); };
+      let wi = -1, wx = -1, other = -1;                // wi: a line of its own episode's; wx: one of another's; other: neither wi
+      for (let k = 0; k < page.ep(E).new && (wi < 0 || wx < 0 || other < 0); k++) {
+        await goWord(E, k); const id = J.curWordId();
+        if (wx < 0 && cuts(id, true).length > cuts(id).length) wx = k;
+        if (wi < 0 && cuts(id).length) wi = k; else if (other < 0) other = k;
+      }
+      ok("the fixture has words with lines only a cut plays, from their own episode and from another", wi >= 0 && wx >= 0 && other >= 0, `${wi} ${wx} ${other}`);
+      if (!OFFLINE && wi >= 0 && wx >= 0 && other >= 0) {     // (the cut needs a live door: ?door=off / none have none)
+        await goWord(E, wx);
+        await new Promise((r) => setTimeout(r, 1500));                        // idle on a word whose cut line is another episode's
+        await goWord(E, wi);
+        const id = J.curWordId(), w = J.wordNow(id), ks = cuts(id), k = ks[0];
+        const lids = ks.map((x) => J.lineId(w[9][x], J.srcOf(id, w[9][x][1])));
+        ok("…its line has ▶ (the page asks the cut)", !!$(`#stage [data-play="${k}"]:not(.none)`));
+        const sids = lids.filter((l) => l[0] !== "p");                       // store ids: a line the store doesn't hold (p<hash>) is never asked
+        for (let t = 0; t < 50 && !(sids.length && CALLS.some(([, rt, b]) => rt === "clip/cut" && b.ahead && b.line_ids.includes(sids[0]))); t++)
+          await new Promise((r) => setTimeout(r, 100));                       // AHEAD_MS (1.2 s) idle on the word; 5 s at most (20k, a loaded PC)
+        const asked = CALLS.filter(([, rt, b]) => rt === "clip/cut" && b.ahead), flat = asked.flatMap(([, , b]) => b.line_ids);
+        ok("idle on a word: its shown lines from the open episode asked ahead, in one ask, each line once ever — never another episode's", !flat.some((x) => x[0] === "p") && sids.every((l) => flat.filter((x) => x === l).length === 1) && flat.length === new Set(flat).size && asked.every(([, , b, ep]) => b.line_ids.length && ep != null && b.line_ids.every((x) => x.startsWith(`${page.ep(ep).id}:`))), JSON.stringify(asked.map(([, , b, ep]) => [ep, b.line_ids])).slice(0, 200));
+        let release, held = new Promise((r) => (release = r));
+        window.__J_DOOR_HOOK = async (route, body) => (route === "clip/cut" && !body.ahead ? (await held, null) : null);
+        const n0 = CALLS.length, p0 = PLAYS.length;
+        const r = await press(() => $(`#stage [data-play="${k}"]`).click());
+        const waits = $$("#stage .pl.wait");
+        ok("▶ on a line only a cut plays: its own button waits at once, nothing else", waits.length === 1 && waits[0].dataset.play === String(k) && r.nodes === 1, `${waits.length} ${JSON.stringify(r.regions)}`);
+        budget(ok, "▶ a line only a cut plays (waiting)", r, ["lines"], { lines: 1 });
+        const call = CALLS.slice(n0).find(([, rt]) => rt === "clip/cut");
+        ok("…it asks clip/cut for that line's id", call && call[2].line_id === lids[0] && !call[2].ahead, call && JSON.stringify(call[2]));
+        release(); await settle(6);
+        const p = PLAYS[p0];
+        ok("the clip plays from its own start (0, never the line's time in its episode) at the door's url", PLAYS.length === p0 + 1 && /^http:\/\/127\.0\.0\.1:9\/clip\/[0-9a-f]{32}\.mp3$/.test(p[0]) && p[1] === 0 && w[9][k][2] > 0 && !$$("#stage .pl.wait").length, JSON.stringify(p));
+        held = new Promise((r2) => (release = r2));
+        $(`#stage [data-play="${k}"]`).click(); await settle();
+        await goWord(E, other);                                               // the learner moves on before the cut is back
+        release(); await settle(6);
+        ok("a word left while its line is cut: nothing plays, nothing waits", PLAYS.length === p0 + 1 && !$$("#stage .pl.wait").length, PLAYS.length - p0);
+        delete window.__J_DOOR_HOOK;
+        await goWord(E, wi);
+        const na = CALLS.length;
+        await new Promise((r2) => setTimeout(r2, 1500));                      // idle on it again: asked once, never twice
+        ok("…back on that word and idle again: nothing asked ahead a second time", !CALLS.slice(na).some(([, rt, b]) => rt === "clip/cut" && b.ahead && b.line_ids.some((x) => lids.includes(x))), JSON.stringify(CALLS.slice(na).map((c) => c[2])).slice(0, 200));
+      }
+      pl.play = play0; pl.removeAttribute("src");
     }
 
     /* ---- a whole run with Surasura closed (?door=off) or the page opened by hand (?door=none): SPEC §3.5's table ---- */

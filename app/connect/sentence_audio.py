@@ -269,14 +269,16 @@ def _keep(anki, names, keep_dir):
 
 
 def replace(anki, ledger, note_id, new, was, media=None, keep_dir=None, tag=None, by="swap", verb=VERB, extra=(),
-            on_record=None):
+            on_record=None, loose=()):
     """The replace mode (the docstring above) -> {"id" (None when nothing was written), "filled": [note id] or [],
     "skipped": {note id: why}}. `new` {field: value}; `was` {field: the value it must still hold}, one per field of
     `new`; `media` {name: a file on disk} stored under that name (Anki's own answer is the name written); `keep_dir`:
     where the replaced media are copied first; `extra`: more tags put on with `tag` (FS-1: the first-episode tag),
     each only when the note hasn't it — those, recorded, are the ones its Undo takes off; `on_record(id)`: called with
     the record's id once it is written, before Anki is touched (the caller keeps it: a kill or an error anywhere after
-    leaves a record it can settle). Raises Reviewing, the
+    leaves a record it can settle); `loose`: fields of `new` another fill writes after this one (FS-1: the sentence
+    furigana it empties, Backfill's ふりがな refills) — Undo puts them back too, but never reads them as changed since.
+    Raises Reviewing, the
     writer's Busy, AnkiConnect's errors, OSError (a copy that didn't read back), ValueError (a field of `new` with no
     `was`)."""
     n = int(note_id)
@@ -304,6 +306,7 @@ def replace(anki, ledger, note_id, new, was, media=None, keep_dir=None, tag=None
         on = {str(t).lower() for t in note.get("tags") or ()}
         rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "mode": REPLACE, "field": None,
                "tag": tag, "had_tag": had, "extra": [t for t in extra or () if t and t.lower() not in on],
+               "loose": sorted(f for f in loose or () if f in new),
                "by": by, "notes": {str(n): dict(new)},
                "was": {str(n): {f: str(was[f] or "") for f in new}}, "media": sorted(stored_new), "kept": kept,
                "keep_dir": os.path.join(keep_dir, rid) if kept else None, "state": WRITING}
@@ -378,7 +381,8 @@ def _undo_replace(anki, rec):
             emptied.append(n)                                 # put back already (an Undo stopped after its write)
             _tags_off(anki, n, rec)
             continue
-        if any(str((fields.get(f) or {}).get("value") or "") != v for f, v in value.items()):
+        loose = set(rec.get("loose") or ())
+        if any(str((fields.get(f) or {}).get("value") or "") != v for f, v in value.items() if f not in loose):
             kept[n] = "changed since"
             continue
         for name in rec.get("kept") or {}:

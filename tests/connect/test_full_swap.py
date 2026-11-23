@@ -793,6 +793,31 @@ def test_a_write_stopped_after_ankis_update_is_settled_when_tried_again_never_ca
     assert anki.media["sl-old.mp3"] == b"ID3 old clip"
 
 
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_undo_after_backfill_refilled_the_new_lines_furigana_puts_the_old_card_back(ledger, lang, tmp_path,
+                                                                                     monkeypatch):
+    """The swap empties the sentence furigana and the same job's Backfill refills it for the new line (`run_named`'s
+    `rewritten`). Before: Undo read that fill as the learner's edit — every in-place Undo of a card with a furigana
+    field refused. Now the furigana is the writer's `loose` field: put back with the old line, never read as an edit;
+    a real edit of the sentence still refuses."""
+    word, old, other = CASES[lang]
+    anki, _first, row = _swapped(ledger, lang, tmp_path, monkeypatch)
+    anki.notes_[900]["fields"]["SentenceFurigana"]["value"] = "新[あたら]しい 行[ぎょう]"       # Backfill's fill
+    assert swap.undo(anki, ledger, lang, row["id"])["undone"]
+    assert _value(anki, "Sentence") == old.replace(word, f"<b>{word}</b>")
+    assert _value(anki, "SentenceFurigana") == "AJTの色[いろ]"
+
+
+def test_undo_after_backfill_still_refuses_a_hand_edit_of_the_new_sentence(ledger, tmp_path, monkeypatch):
+    anki, _first, row = _swapped(ledger, "ja", tmp_path, monkeypatch)
+    anki.notes_[900]["fields"]["SentenceFurigana"]["value"] = "新[あたら]しい"
+    anki.notes_[900]["fields"]["Sentence"]["value"] += "（直した）"
+    with pytest.raises(tidy.Refused) as refused:
+        swap.undo(anki, ledger, "ja", row["id"])
+    assert refused.value.say == swap.CHANGED
+    assert _value(anki, "SentenceFurigana") == "新[あたら]しい"                        # nothing changed
+
+
 def test_the_swap_names_its_write_before_anki_is_touched_so_a_kill_anywhere_after_is_settled(
         ledger, tmp_path, monkeypatch):
     """Refuter R1: the swap kept the record's id only when `replace` raised or returned — a kill of the app after

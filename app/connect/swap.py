@@ -775,7 +775,8 @@ def write_in_place(anki, ledger, row, rendered, mapping, keep_dir, learned=None)
     try:
         got = sentence_audio.replace(writer, ledger, note, new, {f: have[f] for f in new}, media=media,
                                      keep_dir=keep_dir, tag=SWAP_TAG, by=BY_SWAP, verb=VERB, extra=first,
-                                     on_record=lambda rid: _set(ledger, row["id"], wrote=rid))   # before Anki
+                                     on_record=lambda rid: _set(ledger, row["id"], wrote=rid),   # before Anki
+                                     loose=(mapping.fields.get("sentence_furigana") or FURIGANA,))  # Backfill's after
     except BaseException as e:
         if getattr(e, "sentence_audio_id", None):
             _set(ledger, row["id"], wrote=e.sentence_audio_id)     # its record: settled when it is tried again

@@ -14,7 +14,8 @@ Every rate is one named constant in the block below and is read through one door
 holds one of these numbers. A changed rate needs no new table — the next call uses it.
 
 **The table** (Generate's, `app/sentence_table.py`: every candidate line of every list row, kept as numbers) is read
-here through `_table` only. The cost takes its columns as arrays and numbers — no Python object per line — so the
+here through `_table` (its head, kept per process while the file's stamp holds) and `_take` (the asked rows' blocks)
+only. The cost takes its columns as arrays and numbers — no Python object per line — so the
 work behind `choose` can change language later.
 
 **Pure in `plan_rules`' sense:** the standard library at the top; numpy is imported inside the functions that need it;
@@ -28,6 +29,7 @@ a file's number, which a Generate changes.
 
 Nothing imports this module while `plan_rules.SENTENCE_TABLE` is 0.
 """
+import math
 import os
 from collections import namedtuple
 
@@ -70,9 +72,9 @@ def rates():
 REAL, AI_VOICE, SILENT = "real", "ai", None
 _HEARD_CODE = {REAL: 0, AI_VOICE: 1, SILENT: 2}
 
-# A line's marks (SPEC § 3.2, the table's one byte)
+# A line's mark (SPEC § 3.2, the table's one byte: `sentence_table.OVER`, a test keeps them equal). A sung line has no
+# mark: Connect's cut refuses it (the lead, 2026-11-23)
 OVER_WALL = 4               # over *Never longer than*: kept as a file's first sentence for the word card, never chosen
-SUNG = 8                    # a sung line (the cut refuses it): never chosen
 
 # What the moment knows of one file: its library item (None: none), how well it is remembered (0 to 1), how it is
 # heard, and whether its date is only its show's (an unwatched episode of a started show: UNWATCHED applies)
@@ -91,7 +93,7 @@ Line = namedtuple("Line", "file item_id text cost others chars context heard num
 BIG = 1 << 30               # a place no row has: a row off the list, a co-word never known
 _RANK_DIGITS = 9            # costs equal to this many decimals are a tie (the same terms summed in another order)
 _LINE_COLUMNS = ("row", "src", "number", "chars", "flags", "besides", "start", "hash", "ncow", "ncrowd")
-_MOMENT_ARRAYS = ("placed", "placed_now", "known_at", "own", "ctx", "show_only", "hear", "young")
+_MOMENT_ARRAYS = ("placed", "placed_now", "known_at", "own", "lemma", "ctx", "show_only", "hear", "young")
 
 
 # --------------------------------------------------------------------------------------------------------------- #
@@ -134,7 +136,8 @@ def cost(columns, moment, low, high, r=None):
     file), "number" (its place in the file), "chars", "flags", "besides" (other words it says besides the word),
     "start" (where the word starts, in characters), "hash", "ncow", "ncrowd"; flat "cow" (its other new words, as
     co-words) and "crowd" (its set phrases, as list rows), found by the two counts. `moment`: by row "placed" (its
-    place in the list now) and "placed_now" (the same, -1 for a row known since the Generate); by co-word "known_at"
+    place in the list now), "placed_now" (the same, -1 for a row known since the Generate) and "lemma" (one number a lemma:
+    a row's other readings are never its young word); by co-word "known_at"
     (`known_at` over "placed_now"), "own" (its own row, -1: none) and "young" (its weight while you are still learning
     it); by file "ctx" (0 to 1), "show_only" (its date is its show's) and "hear" (0 its own clip, 1 the AI voice, 2
     none). `low`, `high`: the learner's Length. `r`: the rates (None: `rates()`)."""
@@ -168,7 +171,7 @@ def cost(columns, moment, low, high, r=None):
     # The length rule (SPEC § 4.2): the zone, fewer than two other words, the late word
     outside = np.where(chars < low, low - chars, np.where(chars > high, chars - high, 0))
     few = columns["besides"].astype(np.int64) < r.few_words
-    usable = (flags & (OVER_WALL | SUNG)) == 0
+    usable = (flags & OVER_WALL) == 0
     long_ = usable & (chars > high)
     late = long_ & (columns["start"].astype(np.float64) >= r.late_from * chars - 1e-9)   # (at exactly 2/3: late)
     _rows, at = np.unique(row, return_inverse=True)
@@ -181,7 +184,8 @@ def cost(columns, moment, low, high, r=None):
     ctx = moment["ctx"].astype(np.float64) * np.where(moment["show_only"].astype(bool), r.unwatched, 1.0)
     heard = np.asarray((r.heard_real, r.heard_ai, r.heard_silent), np.float64)[moment["hear"].astype(np.int64)]
     young = np.zeros(n)
-    learning = ~its_own & known & (own_c >= 0)
+    lemma = moment["lemma"]            # (never one of the word's own other readings)
+    learning = ~its_own & known & (own_c >= 0) & (lemma[np.maximum(own_c, 0)] != lemma[row[cow_line]])
     if learning.any():
         np.maximum.at(young, cow_line[learning], moment["young"].astype(np.float64)[cow[learning]])
 
@@ -195,14 +199,53 @@ def cost(columns, moment, low, high, r=None):
 # The reader
 # --------------------------------------------------------------------------------------------------------------- #
 
+_HEAD = {}                  # language -> ((the table's path, time, size, the run's stamp), the table, its head read)
+
+
 def _table(language):
-    """The table the last Generate wrote for `language` (E-TABLE's `app/sentence_table.py`), or None: none written,
-    another engine or format, damaged — never an exception."""
+    """The table the last Generate wrote for `language` (`results/sentences.bin`, `app/sentence_table.py`), its head read
+    once a process while the file's (path, time, size) and the run's stamp hold (SPEC § 5.3) — or None: none written,
+    another language, engine or run, damaged. Never an exception."""
     try:
-        from app import sentence_table
-        return sentence_table.read(language)
+        from app import analyzer, sentence_table
+        from app.path_utils import get_user_file
+        results = get_user_file("results")
+        run = analyzer.read_run_stamp(results)
+        if not run:
+            return None
+        path = os.path.join(results, sentence_table.TABLE_FILE)
+        st = os.stat(path)
+        stamp = (path, st.st_mtime_ns, st.st_size, run)
+        hit = _HEAD.get(language)
+        if hit is not None and hit[0] == stamp:
+            return hit[1]
+        _HEAD.pop(language, None)
+        tab = sentence_table.open_table(path, language=language, engine=analyzer.engine_id(), run_signature=run)
+        if tab is not None:
+            _HEAD[language] = (stamp, tab)
+        return tab
     except Exception:
         return None
+
+
+# The cost's columns and the table's own names for them (`sentence_table.COLUMNS`)
+_FROM_BLOCK = (("src", "src"), ("number", "number"), ("chars", "chars"), ("flags", "marks"), ("besides", "besides"),
+               ("start", "starts"), ("hash", "fp"), ("ncow", "ncow"), ("ncrowd", "nphr"))
+
+
+def _take(tab, rows):
+    """The cost's columns for `rows`' lines, each row's lines together, read from their blocks only."""
+    import numpy as np
+    parts = [(k, got) for k in rows for got in [tab.block(k)] if got is not None]
+
+    def joined(values):
+        return np.concatenate([np.asarray(v, np.int64) for v in values]) if values else np.zeros(0, np.int64)
+    cols = {"row": joined([np.full(len(block[0]["number"]), k, np.int64) for k, block in parts])}
+    for mine, theirs in _FROM_BLOCK:
+        cols[mine] = joined([block[0][theirs] for _k, block in parts])
+    cols["cow"] = joined([block[1] for _k, block in parts])
+    cols["crowd"] = joined([block[2] for _k, block in parts])
+    return cols
 
 
 def _tokens(language):
@@ -230,16 +273,31 @@ def _row_of(key, exact, by_lemma):
     return k
 
 
-def _moment_arrays(tab, moment, order, root):
-    """The moment as the cost's arrays, and each file's (path, normalised path, rel, kind, digest, Seen)."""
+def _young(moment):
+    """The young words' weights; one that is no finite number is left out (a broken moment never drops a line)."""
+    out = {}
+    for lemma, weight in (moment.young or {}).items():
+        weight = float(weight)
+        if math.isfinite(weight) and weight > 0:
+            out[lemma] = weight
+    return out
+
+
+def _moment_arrays(tab, moment, order, root, srcs=None):
+    """The moment as the cost's arrays, and {file: (path, normalised path, rel, kind, digest, Seen)} for the files
+    `srcs` (None: every file) — or (None, None) when no order is handed in and the table names none."""
     import numpy as np
-    keys = tab.keys
+    keys = tab.head["keys"]
     rows = len(keys)
+    placed = np.full(rows + 1, BIG, np.int64)
     if order is None:
-        placed = np.arange(rows + 1, dtype=np.int64)
-        placed[rows] = BIG
+        places = tab.head.get("places")     # the Generate's list order, by row (None or < 0: not on the list)
+        if places is None or len(places) != rows:
+            return None, None
+        for k, at in enumerate(places):
+            if at is not None and at >= 0:
+                placed[k] = int(at)
     else:
-        placed = np.full(rows + 1, BIG, np.int64)
         order = {(key[0], key[1] or ""): place for key, place in order.items()}
         for k, (lemma, reading) in enumerate(keys):
             at = order.get((lemma, reading or ""))
@@ -254,35 +312,42 @@ def _moment_arrays(tab, moment, order, root):
             for k in hits:
                 if k is not None:
                     placed_now[k] = -1
+    codes = {}
+    lemma = np.fromiter((codes.setdefault(key[0], len(codes)) for key in keys), np.int64, rows)
     formulas = tab.formulas()
     own = np.asarray(formulas[0], np.int64)
-    young_of = moment.young or {}
+    young_of = _young(moment)
     young = np.fromiter((young_of.get(keys[o][0], 0.0) if 0 <= o < rows else 0.0 for o in own.tolist()),
                         np.float64, len(own))
     files = moment.files or {}
     base = os.path.join(root, "")
-    placed_files, ctx, show_only, hear = [], [], [], []
-    for rel, kind, digest in tab.sources:
+    sources = tab.sources()
+    ctx, show_only, hear = np.zeros(len(sources)), np.zeros(len(sources), bool), np.zeros(len(sources), np.int8)
+    placed_files = {}
+    for s in (range(len(sources)) if srcs is None else srcs):
+        rel, kind, digest = sources[s]
         path = rel if os.path.isabs(rel) else base + rel.replace("/", os.sep)
         at = os.path.normcase(os.path.abspath(path))
         seen = files.get(at) or Seen()
-        placed_files.append((path, at, rel, kind, digest, seen))
-        ctx.append(float(seen.context or 0.0))
-        show_only.append(bool(seen.show_only))
-        hear.append(_HEARD_CODE.get(seen.heard, 2))
+        placed_files[s] = (path, at, rel, kind, digest, seen)
+        context = float(seen.context or 0.0)
+        ctx[s] = context if math.isfinite(context) else 0.0
+        show_only[s] = bool(seen.show_only)
+        hear[s] = _HEARD_CODE.get(seen.heard, 2)
     arrays = {"placed": placed, "placed_now": placed_now, "known_at": known_at(formulas, placed_now), "own": own,
-              "ctx": np.asarray(ctx, np.float64), "show_only": np.asarray(show_only, bool),
-              "hear": np.asarray(hear, np.int8), "young": young}
+              "lemma": lemma, "ctx": ctx, "show_only": show_only, "hear": hear, "young": young}
     return arrays, placed_files
 
 
-def _tie_ranks(sources):
-    """Each file's rank by its own path from the data folder ("/" separators, compared as text)."""
+def _tie_ranks(sources, srcs=None):
+    """Each file's rank by its own path from the data folder ("/" separators, compared as text), among `srcs` (None:
+    every file; the rest BIG)."""
     import numpy as np
-    rels = [str(s[0]).replace("\\", "/") for s in sources]
-    by = sorted(range(len(rels)), key=lambda s: (rels[s], s))
-    out = np.empty(len(rels), np.int64)
-    out[by] = np.arange(len(rels), dtype=np.int64)
+    pick = range(len(sources)) if srcs is None else srcs
+    rels = {s: str(sources[s][0]).replace("\\", "/") for s in pick}
+    out = np.full(len(sources), BIG, np.int64)
+    for rank, s in enumerate(sorted(rels, key=lambda s: (rels[s], s))):
+        out[s] = rank
     return out
 
 
@@ -310,7 +375,8 @@ def choose(language, keys, *, n=1, moment, length, never=None, order=None, only=
            clean_only=False, shown=None, whole=False, table=None):
     """The best `n` sentences of each list row asked, at `moment` -> {(lemma, reading): [Line, …]}, best first ([] for
     a row with no line it can use; a key that is no row of the list is left out: the caller's library search); None
-    when there is no table for `language` — the caller takes today's path.
+    when there is no table for `language`, or no order to weigh by (none handed in, none in the table) — the caller
+    takes today's path.
 
     `keys` the rows asked · `moment` a `Moment` · `length` the learner's Length (low, high) · `never` {key: {line text}}
     lines never returned (Swap's old card: Connect's `same_line`) · `order` {key: place} the list's order when it is
@@ -333,8 +399,9 @@ def choose(language, keys, *, n=1, moment, length, never=None, order=None, only=
 
 
 def _choose(tab, language, keys, n, moment, length, never, order, only, heard_first, clean_only, shown, whole):
+    import numpy as np
     keys = list(dict.fromkeys(tuple(k) for k in keys or ()))
-    exact, by_lemma = _key_rows(tab.keys)
+    exact, by_lemma = _key_rows(tab.head["keys"])
     asked = {key: k for key in keys for k in [_row_of(key, exact, by_lemma)] if k is not None}
     out = {key: [] for key in asked}
     if not asked:
@@ -343,17 +410,25 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
     if root is None:
         from app.path_utils import get_data_path
         root = get_data_path(language)
-    arrays, files = _moment_arrays(tab, moment, order, root)
-    with_lines = set(tab.rows())
-    columns = tab.take(sorted(with_lines) if whole else sorted({k for k in asked.values() if k in with_lines}))
+    with_lines = set(tab.rows().values())
+    columns = _take(tab, sorted(with_lines) if whole else sorted({k for k in asked.values() if k in with_lines}))
+    srcs = np.unique(columns["src"]).tolist()
+    arrays, files = _moment_arrays(tab, moment, order, root, srcs)
+    if arrays is None:
+        return None             # no order to weigh "new when studied" by: the caller's own path
     low, high = length
     total, others, words, co_young = cost(columns, arrays, low, high)
     spans = _spans(columns["row"])
-    tie = _tie_ranks(tab.sources)
+    tie = _tie_ranks(tab.sources(), srcs)
     src_a, num_a, hash_a, chars_a = columns["src"], columns["number"], columns["hash"], columns["chars"]
     inside = None if only is None else {os.path.normcase(os.path.abspath(p)) for p in only}
-    never = {tuple(k): v for k, v in (never or {}).items() if v}
-    young_of = moment.young or {}
+    never_rows = {}             # by row: a key named with or without its reading is the same row's
+    for key, texts in (never or {}).items():
+        k = _row_of(tuple(key), exact, by_lemma)
+        if texts and k is not None:
+            never_rows.setdefault(k, []).extend(texts)
+    young_of = _young(moment)
+    hear = arrays["hear"]
     r = rates()
 
     tokens = [None]
@@ -403,28 +478,30 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
         sentences = held(src)
         return str(sentences[number][0]).strip() if 0 <= number < len(sentences) else None
 
-    def young_in(src, number, lemma):
-        """The youngest word the line holds besides the word, read from the token store (a word known before the
-        Generate is no co-word of the table)."""
+    def young_in(src, number):
+        """The youngest word the line holds that is no row of the list, read from the token store: a word known before
+        the Generate is no co-word of the table (a row's young weight is the cost's, by its place)."""
         sentences = held(src)
         if not (0 <= number < len(sentences)):
             return 0.0
-        return max((young_of.get(t[0], 0.0) for t in sentences[number][1] if t and t[0] != lemma), default=0.0)
+        return max((young_of.get(t[0], 0.0) for t in sentences[number][1] if t and t[0] not in by_lemma),
+                   default=0.0)
 
     same_line = None
-    if never:
+    if never_rows:
         from app.connect.sentences import same_line
     try:
         for key, k in asked.items():
             a, b = spans.get(k, (0, 0))
             if a == b:
                 continue
-            banned = never.get(key)
-            lemma = tab.keys[k][0]
+            banned = never_rows.get(k)
+            # (a word with no heard line it could use is walked as without the ask: never every line of it)
+            heard_ask = heard_first and bool((np.isfinite(total[a:b]) & (hear[src_a[a:b]] != 2)).any())
             taken, texts = [], set()
             heard_one = False
             for i in _ranked(total, num_a, tie, src_a, a, b):
-                if len(taken) >= max(n, YOUNG_LINES if young_of else 0) and (not heard_first or heard_one):
+                if len(taken) >= max(n, YOUNG_LINES if young_of else 0) and (not heard_ask or heard_one):
                     break
                 src, number, repeat = int(src_a[i]), int(num_a[i]), int(hash_a[i])
                 if repeat and repeat in texts:
@@ -442,7 +519,7 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
                     texts.add(repeat)
                 line_cost = float(total[i])
                 if young_of and len(taken) < YOUNG_LINES:
-                    held_young = young_in(src, number, lemma)
+                    held_young = young_in(src, number)
                     old = line_cost
                     # (the co-words' youngest is in the cost already: only a younger one moves it)
                     line_cost = old - r.young * max(0.0, held_young - float(co_young[i]))
@@ -455,7 +532,7 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
                                    seen.heard, number)))
             lead = sorted(taken[:YOUNG_LINES]) if young_of else taken[:YOUNG_LINES]
             ordered = [t[-1] for t in lead + taken[YOUNG_LINES:]]
-            if heard_first and ordered and _HEARD_CODE.get(ordered[0].heard, 2) == 2:
+            if heard_ask and ordered and _HEARD_CODE.get(ordered[0].heard, 2) == 2:
                 first = next((line for line in ordered if _HEARD_CODE.get(line.heard, 2) != 2), None)
                 if first is not None:
                     ordered = [first] + [line for line in ordered if line is not first]
@@ -467,4 +544,3 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
             except Exception:
                 pass
     return out
-

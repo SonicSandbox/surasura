@@ -64,18 +64,47 @@ def L(row, src, number, text, word, besides=2, cow=(), crowd=(), flags=0, repeat
 
 
 class Table:
-    """A table in memory: `keys` every list row in the Generate's order, `sources` [(rel, kind, digest)], `lines`
-    (`L`), `cowords` [(its own row or -1, clauses of rows)]."""
+    """A table in memory with `sentence_table.Table`'s reading side: `keys` every list row (the Generate's list order
+    unless `places` says another), `sources` [(rel, kind, digest)], `lines` (`L`), `cowords` [(its own row or -1,
+    clauses of rows)]. `blocked` the rows whose blocks were read."""
 
-    def __init__(self, keys, sources, lines, cowords=()):
-        self.keys = [tuple(k) for k in keys]
-        self.sources = [tuple(s) for s in sources]
+    def __init__(self, keys, sources, lines, cowords=(), places=True):
+        keys = [list(k) for k in keys]
+        self.head = {"keys": keys}
+        if places is True:
+            self.head["places"] = list(range(len(keys)))
+        elif places is not None:
+            self.head["places"] = list(places)
+        self._sources = [list(s) for s in sources]
         self.lines = sorted(lines, key=lambda l: (l["row"], l["src"], l["number"]))
         self.cowords = list(cowords)
-        self.taken = []
+        self.blocked = []
+
+    def sources(self):
+        return self._sources
 
     def rows(self):
-        return sorted({l["row"] for l in self.lines})
+        keys = self.head["keys"]
+        return {tuple(keys[k]): k for k in sorted({l["row"] for l in self.lines})}
+
+    def block(self, row):
+        self.blocked.append(row)
+        lines = [l for l in self.lines if l["row"] == row]
+        if not lines:
+            return None
+        cols = {theirs: np.asarray([l[mine] for l in lines], dtype)
+                for mine, theirs, dtype in (("src", "src", "<i4"), ("number", "number", "<i4"),
+                                            ("chars", "chars", "<u2"), ("flags", "marks", "u1"),
+                                            ("hash", "fp", "<u4"), ("besides", "besides", "u1"),
+                                            ("start", "starts", "u1"))}
+        cols["ncow"] = np.asarray([len(l["cow"]) for l in lines], "<u2")
+        cols["nphr"] = np.asarray([len(l["crowd"]) for l in lines], "<u2")
+        return (cols, np.asarray([c for l in lines for c in l["cow"]], "<i4"),
+                np.asarray([c for l in lines for c in l["crowd"]], "<i4"))
+
+    def take(self, rows):
+        """The cost's columns, as the reader takes them."""
+        return SS._take(self, rows)
 
     def formulas(self):
         own = np.asarray([c[0] for c in self.cowords], np.int32)
@@ -84,27 +113,14 @@ class Table:
         cl_rows = np.asarray([r for c in self.cowords for cl in c[1] for r in cl], np.int32)
         return own, ncl, cl_len, cl_rows
 
-    def take(self, rows):
-        self.taken.append(list(rows))
-        lines = [l for l in self.lines if l["row"] in set(rows)]
-        cols = {name: np.asarray([l[name] for l in lines], dtype)
-                for name, dtype in (("row", np.int32), ("src", np.int32), ("number", np.int32),
-                                    ("chars", np.uint16), ("flags", np.uint8), ("besides", np.uint8),
-                                    ("start", np.uint8), ("hash", np.uint32))}
-        cols["ncow"] = np.asarray([len(l["cow"]) for l in lines], np.uint8)
-        cols["ncrowd"] = np.asarray([len(l["crowd"]) for l in lines], np.uint8)
-        cols["cow"] = np.asarray([c for l in lines for c in l["cow"]], np.int32)
-        cols["crowd"] = np.asarray([c for l in lines for c in l["crowd"]], np.int32)
-        return cols
-
     def shown(self):
-        return {(self.sources[l["src"]][0], l["number"]): l["text"] for l in self.lines}
+        return {(self._sources[l["src"]][0], l["number"]): l["text"] for l in self.lines}
 
 
 def costs(tab, length=LENGTH, moment=None, order=None):
     """{(row, src, number): cost} of every line of `tab` at `moment`."""
     arrays, _files = SS._moment_arrays(tab, moment or SS.Moment(), order, os.getcwd())
-    cols = tab.take(tab.rows())
+    cols = tab.take(sorted(tab.rows().values()))
     total = SS.cost(cols, arrays, *length)[0]
     return {(int(r), int(s), int(n)): float(c) for r, s, n, c in zip(cols["row"], cols["src"], cols["number"], total)}
 
@@ -152,7 +168,7 @@ def test_the_score_module_imports_nothing_heavy_at_its_top():
         tree = ast.parse(f.read())
     top = {alias.name.split(".")[0] for node in tree.body if isinstance(node, ast.Import) for alias in node.names}
     top |= {node.module.split(".")[0] for node in tree.body if isinstance(node, ast.ImportFrom)}
-    assert top <= {"os", "collections"}, top
+    assert top <= {"os", "math", "collections"}, top
 
 
 # --- every term alone -------------------------------------------------------------------------------------------------- #
@@ -244,12 +260,14 @@ def test_where_a_word_lives_follows_the_length_of_the_moment():
     assert late == pytest.approx([0.03 * (len(SUN_LATE) - high)] * 5)
 
 
-def test_a_line_over_never_longer_than_or_sung_is_never_a_candidate():
+def test_a_line_over_never_longer_than_is_never_a_candidate():
+    # the table's own mark (sung lines carry none: Connect's cut refuses them)
+    from app import sentence_table
+    assert SS.OVER_WALL == sentence_table.OVER
     tab = Table([("文化祭", "ぶんかさい")], [("show/ep01.srt", "subtitle", None)],
-                [L(0, 0, 0, FESTIVAL, "文化祭", flags=SS.OVER_WALL), L(0, 0, 1, PREPARE, "文化祭", flags=SS.SUNG),
-                 L(0, 0, 2, SIGN, "文化祭")])
+                [L(0, 0, 0, FESTIVAL, "文化祭", flags=SS.OVER_WALL), L(0, 0, 2, SIGN, "文化祭")])
     got = costs(tab)
-    assert got[(0, 0, 0)] == float("inf") and got[(0, 0, 1)] == float("inf")
+    assert got[(0, 0, 0)] == float("inf")
     assert got[(0, 0, 2)] == pytest.approx(0.03)
 
 
@@ -617,10 +635,11 @@ def test_whole_scores_every_row_in_one_pass_with_the_same_answer(tmp_path):
                     lambda f, n, t: L(0 if "文化祭" in t else 1, f, n, t, "文化祭" if "文化祭" in t else "看板")
                     if "文化祭" in t or "看板" in t else None)
     parts = SS.choose("ja", keys, n=2, moment=lib.moment(), length=LENGTH, table=tab, shown=tab.shown())
+    assert tab.blocked == [0, 1]
     whole = SS.choose("ja", keys, n=2, moment=lib.moment(), length=LENGTH, table=tab, shown=tab.shown(), whole=True)
-    assert parts == whole and tab.taken[0] == [0, 1] and tab.taken[1] == [0, 1]
+    assert parts == whole and tab.blocked == [0, 1, 0, 1]
     only_one = SS.choose("ja", keys[1:], n=2, moment=lib.moment(), length=LENGTH, table=tab, shown=tab.shown())
-    assert tab.taken[-1] == [1] and only_one[keys[1]] == parts[keys[1]]
+    assert tab.blocked[4:] == [1] and only_one[keys[1]] == parts[keys[1]]
 
 
 def test_chinese_lines_through_the_same_reader(tmp_path):
@@ -655,9 +674,9 @@ def test_a_table_damaged_inside_its_blocks_reads_as_none_never_an_exception(tmp_
     lib = Library(tmp_path)
     tab = _fest(lib, [("ep01", [FESTIVAL])])
 
-    def broken(rows):
-        raise ValueError("a damaged block")
-    tab.take = broken
+    def broken(row):
+        raise ValueError("a block of the wrong size")
+    tab.block = broken
     assert SS.choose("ja", FEST, moment=lib.moment(), length=LENGTH, table=tab, shown=tab.shown()) is None
 
 
@@ -667,3 +686,212 @@ def test_an_order_handed_in_with_no_reading_finds_its_row():
                 [L(0, 0, 3, PREPARE, "文化祭", cow=(0, 1))], ((0, ((0,),)), (1, ((1,),))))
     assert one(tab) == pytest.approx(1.0)                                 # 準備 below 文化祭: new
     assert one(tab, order={("準備", None): 0, ("文化祭", None): 1}) == pytest.approx(0.0)
+
+
+# --- the gates session: the refuters' findings that held, the waste lens, the round trip ----------------------------- #
+
+def test_never_names_a_row_with_or_without_its_reading(tmp_path):
+    # Swap's old card named (lemma, reading), the ask (lemma, ""): the same row, so the old line is still never shown
+    lib = Library(tmp_path)
+    tab = _fest(lib, [("ep01", [FESTIVAL, PREPARE])])
+    got = SS.choose("ja", [("文化祭", "")], moment=lib.moment(), length=LENGTH, table=tab, shown=tab.shown(),
+                    never={("文化祭", "ぶんかさい"): {FESTIVAL}})
+    assert [l.text for l in got[("文化祭", "")]] == [PREPARE]
+    got = SS.choose("ja", FEST, moment=lib.moment(), length=LENGTH, table=tab, shown=tab.shown(),
+                    never={("文化祭", None): {FESTIVAL}})
+    assert [l.text for l in got[FEST[0]]] == [PREPARE]
+
+
+def test_a_context_or_young_weight_that_is_no_number_never_drops_a_line(monkeypatch, tmp_path):
+    # A broken moment (NaN) is weighed as nothing known of it: the line is still a candidate, never silently gone
+    monkeypatch.setattr(SS, "_tokens", lambda language: None)
+    lib = Library(tmp_path)
+    tab = lib.table(KEYS[:2], [("ep01", [FESTIVAL, PREPARE])],
+                    lambda f, n, t: L(0, f, n, t, "文化祭", cow=(1,) if t == PREPARE else ()),
+                    cowords=((0, ((0,),)), (1, ((1,),))))
+    for broken in (float("nan"), float("inf")):
+        files = {"show/ep01.srt": SS.Seen(1, broken)}
+        got = SS.choose("ja", FEST, n=2, moment=lib.moment(files, young={"準備": broken}), length=LENGTH,
+                        table=tab, shown=tab.shown(), order={KEYS[1]: 0, KEYS[0]: 1})
+        assert [(l.text, l.cost, l.context) for l in got[FEST[0]]] == [(FESTIVAL, 0.0, 0.0), (PREPARE, 0.0, 0.0)]
+
+
+def test_a_young_word_still_below_on_the_list_lends_no_young_weight(monkeypatch, tmp_path):
+    # 看板 is a row below 文化祭 (still new when the card is studied): a new word, never the line's young word, though
+    # the token store reads it in the line and Anki holds a young card of it
+    lib = Library(tmp_path)
+    tab = lib.table([FEST[0], ("看板", "かんばん")], [("ep01", [SIGN])],
+                    lambda f, n, t: L(0, f, n, t, "文化祭", cow=(1,)), cowords=((0, ((0,),)), (1, ((1,),))))
+    path = os.path.join(lib.root, "show", "ep01.srt")
+    store = Tokens({path: [(SIGN, [["文化祭", "", "文化祭"], ["看板", "", "看板"], ["描く", "", "描く"]])]})
+    monkeypatch.setattr(SS, "_tokens", lambda language: store)
+    got = SS.choose("ja", FEST, moment=lib.moment(young={"看板": 1.0}), length=LENGTH, table=tab)
+    assert got[FEST[0]][0].cost == pytest.approx(1.0 + 0.03)
+    # ...while a word known before the Generate (no row) still lends its weight
+    got = SS.choose("ja", FEST, moment=lib.moment(young={"看板": 1.0, "描く": 0.5}), length=LENGTH, table=tab)
+    assert got[FEST[0]][0].cost == pytest.approx(1.0 + 0.03 - 0.15)
+
+
+def test_the_words_own_other_reading_is_never_its_young_word():
+    # 描く read かく is taught above 描く read えがく: its young weight is the lemma's own, never the line's young word
+    keys = [("描く", "かく"), ("描く", "えがく")]
+    tab = Table(keys, [("show/ep01.srt", "subtitle", None)], [L(1, 0, 2, SIGN, "描く", cow=(0,))],
+                ((0, ((0,),)), (1, ((1,),))))
+    assert one(tab, moment=SS.Moment(young={"描く": 1.0})) == pytest.approx(0.03)
+    # another word's young weight still counts (the same line, 看板 taught above and young)
+    keys = [("看板", "かんばん"), ("描く", "えがく")]
+    tab = Table(keys, [("show/ep01.srt", "subtitle", None)], [L(1, 0, 2, SIGN, "描く", cow=(0,))],
+                ((0, ((0,),)), (1, ((1,),))))
+    assert one(tab, moment=SS.Moment(young={"看板": 1.0})) == pytest.approx(0.03 - 0.3)
+
+
+class _Counted(dict):
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.asked = 0
+
+    def get(self, key, default=None):
+        self.asked += 1
+        return super().get(key, default)
+
+
+def test_heard_first_on_a_word_with_no_heard_line_reads_no_more_lines_than_without(tmp_path):
+    # Every line silent: the ask cannot be met, so the walk stops at n as without it (never every line of the word)
+    lib = Library(tmp_path)
+    tab = _fest(lib, [("ep01", [FESTIVAL]), ("ep02", [PREPARE]), ("ep03", [SIGN])])
+    files = {f"show/ep0{i}.srt": SS.Seen(i, 0.0, SS.SILENT) for i in (1, 2, 3)}
+    plain, asked = _Counted(tab.shown()), _Counted(tab.shown())
+    a = SS.choose("ja", FEST, moment=lib.moment(files), length=LENGTH, table=tab, shown=plain)
+    b = SS.choose("ja", FEST, moment=lib.moment(files), length=LENGTH, table=tab, shown=asked, heard_first=True)
+    assert a == b and [l.text for l in b[FEST[0]]] == [FESTIVAL]
+    assert asked.asked == plain.asked == 1
+
+
+def test_only_the_files_of_the_lines_taken_are_resolved_and_ranked(tmp_path):
+    # 20,000 files, a word in two: the moment's per-file work and the tie ranks are the two files', not the library's
+    sources = [(f"show/ep{i:05d}.srt", "subtitle", None) for i in range(6)]
+    tab = Table(FEST, sources, [L(0, 4, 0, FESTIVAL, "文化祭"), L(0, 1, 0, PREPARE, "文化祭")])
+    arrays, files = SS._moment_arrays(tab, SS.Moment(), None, str(tmp_path), [1, 4])
+    assert sorted(files) == [1, 4] and len(arrays["ctx"]) == 6
+    ranks = SS._tie_ranks(tab.sources(), [4, 1])
+    assert (ranks[1], ranks[4]) == (0, 1) and all(ranks[s] == SS.BIG for s in (0, 2, 3, 5))
+
+
+def test_no_order_handed_in_and_none_in_the_table_reads_as_none(tmp_path):
+    # The table's head names the Generate's list order ("places"); without it and without an order, "new when studied"
+    # cannot be weighed: today's path
+    lib = Library(tmp_path)
+    tab = _fest(lib, [("ep01", [FESTIVAL])])
+    del tab.head["places"]
+    assert SS.choose("ja", FEST, moment=lib.moment(), length=LENGTH, table=tab, shown=tab.shown()) is None
+    got = SS.choose("ja", FEST, moment=lib.moment(), length=LENGTH, table=tab, shown=tab.shown(), order={FEST[0]: 0})
+    assert [l.text for l in got[FEST[0]]] == [FESTIVAL]
+
+
+def test_the_lists_order_is_the_heads_places_not_the_rows_numbering():
+    # rows numbered as Generate met them (文化祭 0, 準備 1); the list puts 準備 first: then it is known above
+    tab = Table([("文化祭", "ぶんかさい"), ("準備", "じゅんび")], [("show/ep01.srt", "subtitle", None)],
+                [L(0, 0, 3, PREPARE, "文化祭", cow=(1,))], ((0, ((0,),)), (1, ((1,),))), places=[1, 0])
+    assert one(tab) == pytest.approx(0.0)
+    tab.head["places"] = [0, 1]
+    assert one(tab) == pytest.approx(1.0)
+    tab.head["places"] = [0, -1]                                          # 準備 off the list: never taught
+    assert one(tab) == pytest.approx(1.0)
+
+
+# --- the round trip: a table Generate's packer wrote, read back by the reader ---------------------------------------- #
+
+RT_KEYS = [("文化祭", "ぶんかさい"), ("準備", "じゅんび"), ("看板", "かんばん")]
+RT_EPISODES = [("ep01", [FESTIVAL, PREPARE, SIGN]), ("ep02", [COLOUR, PREPARE])]
+RT_WORDS = {FESTIVAL: ["文化祭"], PREPARE: ["文化祭", "準備"], SIGN: ["文化祭", "看板"], COLOUR: ["看板"]}
+
+
+def _rt_lines():
+    """Every (row, file, place, text, word, its other words) of the two episodes."""
+    out = []
+    for f, (_name, texts) in enumerate(RT_EPISODES):
+        for n, text in enumerate(texts):
+            for word in RT_WORDS[text]:
+                row = [k[0] for k in RT_KEYS].index(word)
+                out.append((row, f, n, text, word, [c for c in RT_WORDS[text] if c != word]))
+    return out
+
+
+def _rt_sources(lib):
+    """The two episodes written once: [[rel, kind, digest]] as the plan numbers its files."""
+    return [[f"show/{name}.srt", "srt", lib.write(f"show/{name}.srt", texts)] for name, texts in RT_EPISODES]
+
+
+def _rt_written(sources, tmp_path, language="ja", run="sig-1"):
+    from app import sentence_table as st
+    rows = [k[0] for k in RT_KEYS]
+    p = st.Packer()
+    for row, f, n, text, word, others in _rt_lines():
+        p.add(RT_KEYS[row], f, n, len(text), plan_rules.text_hash_of(text), [RT_KEYS[rows.index(c)] for c in others],
+              besides=len(others), starts=text.find(word))
+    row_of = {k: i for i, k in enumerate(RT_KEYS)}
+    tab = p.finish(RT_KEYS, row_of.get, lambda key: ((row_of[key],),), lambda key: row_of.get(key, -1),
+                   lambda key: key, lambda index: None, sources,
+                   {"engine": "e47", "run_signature": run, "language": language})
+    path = os.path.join(str(tmp_path), "results", st.TABLE_FILE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tab.write(path)
+    return path
+
+
+def _rt_fake(sources):
+    rows = [k[0] for k in RT_KEYS]
+    lines = [L(row, f, n, text, word, besides=len(others), cow=[rows.index(c) for c in others],
+               repeat=plan_rules.text_hash_of(text) & 0xFFFFFFFF if text == PREPARE else 0)
+             for row, f, n, text, word, others in _rt_lines()]
+    return Table(RT_KEYS, sources, lines, [(k, ((k,),)) for k in range(len(RT_KEYS))])
+
+
+def test_the_round_trip_a_written_table_gives_the_reader_what_its_lines_give(tmp_path):
+    # Generate's packer writes the two episodes' lines; opened from disk, the reader chooses what it chooses from the
+    # same lines in memory — every row, every order, ja
+    from app import sentence_table as st
+    lib = Library(tmp_path)
+    sources = _rt_sources(lib)
+    opened = st.open_table(_rt_written(sources, tmp_path), language="ja", engine="e47", run_signature="sig-1")
+    assert opened is not None and opened.head["keys"] == [list(k) for k in RT_KEYS]
+    fake = _rt_fake(sources)
+    shown = fake.shown()
+    for order in ({k: i for i, k in enumerate(RT_KEYS)}, {RT_KEYS[1]: 0, RT_KEYS[2]: 1, RT_KEYS[0]: 2}):
+        ours = SS.choose("ja", RT_KEYS, n=3, moment=lib.moment(), length=LENGTH, table=opened, shown=shown,
+                         order=order)
+        mine = SS.choose("ja", RT_KEYS, n=3, moment=lib.moment(), length=LENGTH, table=fake, shown=shown,
+                         order=order)
+        assert ours == mine and all(ours[k] for k in RT_KEYS)
+    # 準備's PREPARE in both episodes is one sentence: shown once (the table's fingerprint)
+    assert [l.text for l in ours[RT_KEYS[1]]] == [PREPARE]
+    # the head names no list order yet: no order handed in reads as None (today's path)
+    assert SS.choose("ja", RT_KEYS, moment=lib.moment(), length=LENGTH, table=opened, shown=shown) is None
+
+
+def test_the_reader_opens_results_table_once_while_its_stamp_holds(monkeypatch, tmp_path):
+    # SPEC § 5.3: the head kept per process until the file's (path, time, size) or the run's stamp changes; another
+    # run, language or engine, or no table: None
+    from app import analyzer, path_utils
+    lib = Library(tmp_path)
+    sources = _rt_sources(lib)
+    path = _rt_written(sources, tmp_path)
+    monkeypatch.setattr(path_utils, "get_user_file", lambda rel: os.path.join(str(tmp_path), rel))
+    monkeypatch.setattr(analyzer, "engine_id", lambda: "e47")
+    run = ["sig-1"]
+    monkeypatch.setattr(analyzer, "read_run_stamp", lambda results: run[0])
+    monkeypatch.setattr(SS, "_HEAD", {})
+    first = SS._table("ja")
+    assert first is not None and SS._table("ja") is first
+    assert SS._table("zh") is None
+    _rt_written(sources, tmp_path, run="sig-2")
+    run[0] = "sig-2"
+    again = SS._table("ja")
+    assert again is not None and again is not first
+    run[0] = "sig-3"
+    assert SS._table("ja") is None
+    run[0] = None
+    assert SS._table("ja") is None
+    run[0] = "sig-2"
+    os.remove(path)
+    assert SS._table("ja") is None

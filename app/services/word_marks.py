@@ -430,19 +430,31 @@ def door_route(body, app):
     page showed before the press): one whose word has changed since the page drew it, in a file written after the
     press, or changed by this Surasura after the press (even back again), is skipped and listed in `stale` (Charter G4: a waiting press never erases newer work; the page then draws
     the app's mark). Marks it can't read are refused (the page lets them go); a write that couldn't be made is "busy"
-    (another program holds the known words) or "failed", in plain words: the page keeps those marks."""
+    (another program holds the known words) or "failed", in plain words: the page keeps those marks.
+    `unless_known: true` (the page's carry-over of the old page's ignores, J-FIX 2; off by default, so a press is as
+    before): a mark whose word is known by any source now (this module's Known, or an Anki card's entry the page's
+    `state` never sees) is skipped and listed in `skipped` (as sent), never written: an old ignore never undoes what
+    the learner knows; `done` counts only the words written."""
     from app import door
     from app.services import journey_door
-    language, sent = body.get("lang"), body.get("marks")
-    if language not in journey_door.LANGS or not isinstance(sent, list) or len(sent) > DOOR_MOST:
+    language, sent, unless_known = body.get("lang"), body.get("marks"), body.get("unless_known")
+    unless_known = False if unless_known is None else unless_known      # (null: no ask, as an ordinary press)
+    if (language not in journey_door.LANGS or not isinstance(sent, list) or len(sent) > DOOR_MOST
+            or not isinstance(unless_known, bool)):
         raise door.RouteError(DOOR_UNREAD, "refused")
     for m in sent:
         if (not isinstance(m, dict) or not isinstance(m.get("word"), str)
                 or m.get("mark") not in ("known", "ignore", "", None)
                 or m.get("was") not in ("known", "ignore", "", None)):
             raise door.RouteError(DOOR_UNREAD, "refused")
-    pairs, stale, now = [], [], None
+    pairs, stale, skipped, now = [], [], [], None
+    known = _known_now(language) if unless_known else ()
+    if known is None:                               # fails closed: an unchecked carry could Ignore a known word
+        raise door.RouteError("Surasura couldn't read your known words just now: nothing was changed.", "failed")
     for m in sent:
+        if _norm(m["word"]) in known:
+            skipped.append(m["word"])
+            continue
         if m.get("at") is not None:
             if now is None:
                 now = (marks(language), _door_times(language))
@@ -450,13 +462,24 @@ def door_route(body, app):
                 stale.append(m["word"])
                 continue
         pairs.append((m["word"], m.get("mark") or None))
+    more = {"skipped": skipped} if unless_known else {}
     if not pairs:
-        return {"done": 0, "undo_id": None, "stale": stale}
+        return {"done": 0, "undo_id": None, "stale": stale, **more}
     result = app.services.mark_words(language, pairs)
     if result.error is not None:
         raise door.RouteError(result.error, "busy" if result.busy else "failed")     # (the page keeps them)
     undo_id = f"{_DOOR_SESSION}.{result.undo_id}" if result.undo_id is not None else None
-    return {"done": len(result.done), "undo_id": undo_id, "stale": stale}
+    return {"done": len(result.done), "undo_id": undo_id, "stale": stale, **more}
+
+
+def _known_now(language):
+    """Every word known now, by any source (KnownWord.json's known entries, as `apply` keys them); None for a file that
+    can't be read (none at all: an empty set)."""
+    try:
+        _data, words = anki_sync._read_known_file(language)
+    except anki_sync._KnownFileError:
+        return None
+    return anki_sync._known_keys([e for e in words or () if isinstance(e, dict)])
 
 
 def door_undo(body, app):

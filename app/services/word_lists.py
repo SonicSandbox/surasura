@@ -23,9 +23,14 @@ none of them changed.
   add always writes the list file: KnownWord.json stays the sync's, decision 41).
 - `remove(kind, language, words, source="list")` -> a `Change`: every line naming exactly that word (as the line holds
   it, trimmed) goes; `source="known"` takes KnownWord.json's IGNORED entries of that dictForm out instead.
-- **Known** (`kind="known"`, Kotoba-K): the words marked known in Surasura (KnownWord.json's `source: "Surasura"`
-  entries, `app/services/word_marks.py`) — read, added and taken off through `word_marks`, its rules; a word known any
-  other way (Anki, an import) is never one of them.
+- **Known** (`kind="known"`, Kotoba-K; *Your words*, Mado-LT 4): every word KnownWord.json counts known, however it
+  became known, and every word Still learning — once each, **newest first** by the date it became known (its first
+  known entry's `created`: KnownWord.json is append-only; an entry with no date, an old import's, after the dated ones
+  in the file's order, newest first too). Each `Entry` names its reading (the entry's own `secondary`, else the
+  reading the library uses it with most: the token store's `readings`; Japanese in hiragana), where it came from
+  (`origin`: `ORIGINS`, else "imported") and `created` (ms, None: no date); `source` "known", or "learning" for a word
+  Still learning. Added and marked through `word_marks`, its rules (the window's ✓: Still learning, `word_marks`'
+  "learning"); a word known any other way (Anki, an import) is never written here.
 - `words_in(text, language, kind)` -> the candidate words of pasted text, read by the library's own tokenizer
   (`analyzer.JapaneseTokenizer`: `join_affixes` with the library's tables; `ChineseTokenizer`: `chinese_cut` /
   `chinese_word`), each a `Candidate(word, spelling, status)`: `word` is the lemma (the identity everywhere, what a
@@ -77,7 +82,11 @@ BLACKLIST_VERB = "Blacklist merge"
 FIND_VERB = "word-lists-find"       # app_entry.py's verb for the paste's child
 FIND_TIMEOUT = 120.0                # s a paste's child may take before it is stopped (the arrivals worker's STUCK)
 
-Entry = namedtuple("Entry", "word source")                # source: "list" · "known" (KnownWord.json) · "names"
+# source: "list" · "known" (KnownWord.json) · "names" · "learning" (the Known tab: Still learning). Mado-LT 4:
+# reading, origin ("anki" · "surasura" · "imported") and created (ms) — the Known tab's; None elsewhere
+Entry = namedtuple("Entry", "word source reading origin created", defaults=(None, None, None))
+# where a known word came from, by its entry's `source` (anything else: "imported" — Migaku, Jiten, an Anki deck file)
+ORIGINS = {anki_sync.SOURCE: "anki", anki_sync.MARKED_SOURCE: "surasura", anki_sync.GRADUATED_SOURCE: "surasura"}
 Candidate = namedtuple("Candidate", "word spelling status")   # status: "new" · "listed" · "known" · "left_out"
 
 
@@ -226,8 +235,10 @@ def read(kind, language):
     """The list's words for the window (see the module docstring) -> a `Listing`."""
     listing = Listing()
     if kind == KNOWN:
-        from app.services import word_marks
-        listing.entries = [Entry(w, "list") for w, mark in word_marks.marks(language).items() if mark == "known"]
+        try:
+            listing.entries = _known_words(language)
+        except anki_sync._KnownFileError as e:
+            listing.error = str(e)
         return listing
     path = list_path(kind, language)
     try:
@@ -243,6 +254,55 @@ def read(kind, language):
         listing.entries += [Entry(w, "known") for w in _known_ignored(language)]
         listing.entries += [Entry(w, "names") for w in _names(language)]
     return listing
+
+
+def _known_words(language):
+    """The Known tab (see the module docstring) -> [Entry]. `anki_sync._KnownFileError` when the file can't be read."""
+    from app import practice
+    from app.services import word_marks
+    _data, words = anki_sync._read_known_file(language)
+    firsts = {}                     # NFKC word -> {"known": (index, entry) first known, "turned": … first turned}
+    for i, e in enumerate(words or ()):
+        word = str(e.get("dictForm") or "").strip() if isinstance(e, dict) else ""
+        if not word:
+            continue
+        state = "known" if anki_sync._is_known(e) else "turned" if word_marks._turned(e) else None
+        if state is not None:
+            firsts.setdefault(word_marks._norm(word), {}).setdefault(state, (i, e))
+    rows = []
+    for held in firsts.values():
+        i, e = held.get("known") or held["turned"]
+        rows.append((practice._created_ms(e.get("created")), i, Entry(
+            str(e.get("dictForm")).strip(), "known" if "known" in held else "learning",
+            str(e.get("secondary") or "").strip(), ORIGINS.get(e.get("source"), "imported"), None)))
+    rows.sort(key=lambda row: (row[0] is not None, row[0] or 0, row[1]), reverse=True)
+    out = [entry._replace(created=created) for created, _i, entry in rows]
+    missing = [entry.word for entry in out if not entry.reading]
+    found = _library_readings(language, missing) if missing else {}
+    if found:
+        out = [entry._replace(reading=found[entry.word]) if not entry.reading and entry.word in found else entry
+               for entry in out]
+    return out
+
+
+def _library_readings(language, words):
+    """{word: the reading the library uses it with most} from the token store ({}: none there, or it can't be read);
+    Japanese in hiragana, as an entry's own reading is written."""
+    try:
+        from app import token_index
+        store = token_index.open_reader(language)
+        if store is None:
+            return {}
+        try:
+            found = store.readings(words)
+        finally:
+            store.close()
+    except Exception:
+        return {}
+    if language == "ja":
+        from app.journey_render import _hira
+        found = {w: _hira(r) for w, r in found.items()}
+    return found
 
 
 def _known_ignored(language):

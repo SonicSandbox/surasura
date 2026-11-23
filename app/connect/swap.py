@@ -114,6 +114,33 @@ def new_cards(ledger, language, note_ids):
         (language, MADE)) if int(n) in ids)
 
 
+def asked_first(language, db_path=None):
+    """The new notes of the made *Add now* asks (journey v3 D3: `BY_ADD_NOW`, the journey's pick for a word with no
+    card), in the order they were asked (the swaps' `id`), each once -> [note id]: Junban's order puts their cards
+    first (`modules/junban`, `plan(asked=)`). An undone ask is none. Read-only as `ledger.listed_of` (never made, no
+    schema written, no write lock); [] with no ledger, one from a newer Surasura (never read, as `TooNew` says) or
+    before any swap was asked; raises sqlite3.Error when it can't be read just now (busy, locked)."""
+    import sqlite3
+    from pathlib import Path
+    from app.connect import ledger as ledger_mod
+    db_path = db_path or ledger_mod.path()
+    if not os.path.exists(db_path):
+        return []
+    conn = sqlite3.connect(Path(os.path.abspath(db_path)).as_uri() + "?mode=rw", uri=True, timeout=2.0)
+    try:
+        conn.execute("PRAGMA query_only=ON")
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'swaps'").fetchone():
+            return []
+        schema = conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
+        if schema and str(schema[0]).isdigit() and int(schema[0]) > ledger_mod.SCHEMA:
+            return []
+        rows = conn.execute("SELECT new_note FROM swaps WHERE language = ? AND by = ? AND state = ? AND new_note IS "
+                            "NOT NULL ORDER BY id", (language, BY_ADD_NOW, MADE)).fetchall()
+    finally:
+        conn.close()
+    return list(dict.fromkeys(int(n) for (n,) in rows))
+
+
 def _rows(ledger, where, params=()):
     cur = ledger.conn.execute(f"SELECT * FROM swaps WHERE {where} ORDER BY id", params)
     names = [d[0] for d in cur.description]
@@ -332,8 +359,10 @@ def _old_lines(ledger, row, anki=None):
 
 
 def _avoid(ledger, row, anki=None):
-    """Every line the swap's new card must not be cut from: its old card's, and those of the other asks of the same word
-    still open (one new card serves them all) -> a list, or None while one of them can't be read."""
+    """Every line the swap's new card must not be cut from: its old card's, those of the other asks of the same word
+    still open (one new card serves them all), and every line a made swap of the word moved away from (Kyou-DW 3: a
+    line swapped away from — a deleted card's *Only in this sentence*, a Bad card, a ⇄ — is never used for the word
+    again; an undone swap gives its line back) -> a list, or None while one of them can't be read."""
     out = []
     rows = [row] + [r for r in _rows(ledger, "language = ? AND word = ? AND state IN (?, ?) AND id != ?",
                                      (row["language"], row["word"], ASKED, WAITS, row["id"])) if _same_word(r, row)]
@@ -342,6 +371,10 @@ def _avoid(ledger, row, anki=None):
         if lines is None:
             return None
         out += [x for x in lines if x not in out]
+    for r in _rows(ledger, "language = ? AND word = ? AND state = ? AND id != ? AND avoid IS NOT NULL",
+                   (row["language"], row["word"], MADE, row["id"])):
+        if _same_word(r, row):
+            out += [x for x in json.loads(r["avoid"]) if x not in out]
     return out
 
 

@@ -329,9 +329,13 @@ STRINGS = {
     "deleted_title": "{n:,} cards you deleted · add a note",
     "deleted_title_many": "{n:,} cards you deleted · note a few",
     "deleted_say": ("Surasura made these cards and you deleted them in Anki. Say why and it does the rest: Known and "
-                    "Ignore go to your word lists; Parsing mistake ignores the word and puts its sentence in Send "
-                    "report's list for us; Bad card makes a new card from another sentence. Leave any: it stays "
-                    "deleted and is never made again."),
+                    "Ignore go to your word lists; Parsing mistake asks if the word is wrong (it's ignored) or only "
+                    "this sentence (a new card from another one) — either way the sentence goes in Send report's list "
+                    "for us and is never used again; Bad card makes a new card from another sentence. Leave any: it "
+                    "stays deleted and is never made again."),
+    # Kyou-DW 3 (PROVISIONAL): Parsing mistake's follow-up, one more line under its card's line (all: first on the card)
+    "deleted_how": "「{word}」: no word at all, or wrong only in this sentence?",
+    "deleted_how_all": "All {n:,}: no words at all, or wrong only in their sentences?",
     "old_deletes_title_one": "A card you deleted before Surasura asked why",
     "old_deletes_title": "{n:,} cards you deleted before Surasura asked why",
     "old_deletes_say": ("If you deleted some because Surasura cut their words wrong, Forget lets their cards be made "
@@ -435,7 +439,7 @@ def item_key(item_id):
 def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(), asks=(), answered=frozenset(),
             mine_line=20, offers=frozenset(), cards_on=False, miner_found=True, gone_folders=(), settled=False,
             hidden=frozenset(), emptied=None, settings_folders=(), backlog=None, miner_update=None, no_subs=None,
-            generate_log=None, strays=None):
+            generate_log=None, strays=None, asking=frozenset()):
     """The page's entries in order (see the module's doc). `view`: the reader's `View` (None: no library); `failures`:
     `status` Entries (text, at, seen); `connect`: one language's Connect record (`read_connect`; None: Connect off);
     `seen` / `answered`: `read_seen` / `read_answered`; `offline_roots`: `find_offline`'s Roots; `asks`: `asks_of`'s
@@ -454,7 +458,9 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     (Michi-U): `miner_update(view)`'s answer — ONE line while titles wait only for the approved Anki Miner; `no_subs`
     (Michi-NS): `no_subs_offer`'s answer — ONE card while videos have no subtitle and a way to get one is here;
     `generate_log` (Kantan-B1): the window's Generate log, a Generate failure's hover (never its line); `strays`
-    (Michi-DK): `deck_strays`' answer — ONE card while Connect's cards are outside the deck Surasura shows."""
+    (Michi-DK): `deck_strays`' answer — ONE card while Connect's cards are outside the deck Surasura shows;
+    `asking` (Kyou-DW 3): the deleted cards whose *Parsing mistake* was pressed (note ids; the card's own key for
+    *All parsing mistakes*), each asked its follow-up (`_deleted_entries`)."""
     seen, answered, hidden = frozenset(seen or ()), frozenset(answered or ()), frozenset(hidden or ())
     rows = tuple(view.rows) if view is not None and view.mode == "store" else ()
     by_id = {e.id: (r, e) for r in rows for e in r.episodes}
@@ -524,7 +530,7 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     unsaved = _tidy_unsaved_entry(connect, seen, answered) if cards_on and connect else None    # Kyou-SH3
     if unsaved is not None:
         out.append(unsaved)
-    out.extend(_deleted_entries(connect, seen, answered) if cards_on and connect else ())     # Kyou-DW: asked why
+    out.extend(_deleted_entries(connect, seen, answered, asking) if cards_on and connect else ())    # Kyou-DW: why
     out.extend(_swap_entries(connect, seen, answered) if cards_on and connect else ())    # Kantan-SL: Swap, said
     anki = _anki_entry(connect, seen) if cards_on else None    # Connect may run (it clears the line by itself: A-5)
     if anki is not None:
@@ -1316,10 +1322,25 @@ def _tidy_entry(connect, seen, answered=frozenset()):
 DELETED_ACTIONS = ("dw_known", "dw_ignore", "dw_parsing", "dw_bad")       # a line's four chips (WL-35)
 DELETED_ALL = ("dw_all_known", "dw_all_ignore", "dw_all_parsing", "dw_all_bad")    # *Same for all*
 DELETED_MANY = 10                       # WL-27: this many or more is a mass delete (its title asks for a few)
+# Kyou-DW 3 (PROVISIONAL): *Parsing mistake*'s follow-up — The word is wrong · Only in this sentence, the look's guess
+# first (`connect.deleted.likely`: "line" → Only in this sentence first); never answered for the learner
+DELETED_HOW = f"{DELETED}-how"
+DELETED_HOW_ALL = "all"                 # the whole card's follow-up line (`deleted_how_key(None)`)
+HOW_ACTIONS = ("dw_word_wrong", "dw_only_line")
+HOW_ALL = ("dw_all_word_wrong", "dw_all_only_line")
 
 
 def deleted_line_key(note_id):
     return f"{DELETED}:{int(note_id)}"
+
+
+def deleted_how_key(note_id):
+    """The follow-up line's key: one card's (`note_id`), or the whole card's (None)."""
+    return f"{DELETED_HOW}:{DELETED_HOW_ALL if note_id is None else int(note_id)}"
+
+
+def _first(actions, line_first):
+    return tuple(reversed(actions)) if line_first else actions
 
 
 def old_line_key(word):
@@ -1331,26 +1352,45 @@ def _deleted_text(word, sentence):
     return f"「{word}」 {sentence}" if sentence else f"「{word}」"
 
 
-def _deleted_entries(connect, seen, answered=frozenset()):
+def _deleted_entries(connect, seen, answered=frozenset(), asking=frozenset()):
     """Kyou-DW (PROVISIONAL): ONE quiet card for the cards you deleted that Surasura asks about (Connect's record's
     `deleted.asked`: `connect.deleted.status_of`) — a line a card, each with Known · Ignore · Parsing mistake · Bad
     card; two or more: the same four for all, and *Leave them* (each line answered: never asked again). A line
     answered or left leaves the card (its key, `deleted_line_key`); a new delete joins it. Then ONE card, once, for
     the deletes from before it asked (`deleted.old`): *Forget* a line (the store's `allow_again`), *Forget all*,
-    *Keep them* (answered for good)."""
+    *Keep them* (answered for good). Kyou-DW 3: a card whose *Parsing mistake* was pressed (`asking`: its note id)
+    has one more line under its own — *The word is wrong* · *Only in this sentence*, the look's guess first
+    (`likely`); *All parsing mistakes* (`asking` holds the card's own key: a card that changed since — a line
+    answered, a new delete — asks again) asks it once, first on the card, for every card."""
     rec = (connect or {}).get("deleted") or {}
     out = []
     asked = [a for a in rec.get("asked") or () if deleted_line_key(a["note_id"]) not in answered]
     if asked:
-        lines = tuple(NeedLine(key=deleted_line_key(a["note_id"]), text=_deleted_text(a["word"], a.get("sentence")),
-                               item_id=a.get("item_id"), label=a["word"], number=int(a["note_id"]), rel_path=None,
-                               actions=DELETED_ACTIONS) for a in asked)
-        n = len(lines)
+        lines = []
+        for a in asked:
+            lines.append(NeedLine(key=deleted_line_key(a["note_id"]), text=_deleted_text(a["word"], a.get("sentence")),
+                                  item_id=a.get("item_id"), label=a["word"], number=int(a["note_id"]), rel_path=None,
+                                  actions=DELETED_ACTIONS))
+            if int(a["note_id"]) in asking:
+                lines.append(NeedLine(key=deleted_how_key(a["note_id"]), text=STRINGS["deleted_how"].format(
+                    word=a["word"]), item_id=a.get("item_id"), label=a["word"], number=int(a["note_id"]),
+                    rel_path=None, actions=_first(HOW_ACTIONS, a.get("likely") == "line")))
+        n = len(asked)
+        key = f"{DELETED}:" + ",".join(str(int(a["note_id"])) for a in asked)
+        if n > 1 and key in asking:
+            # most cards' guess first (a tie: The word is wrong)
+            line_first = 2 * sum(1 for a in asked if a.get("likely") == "line") > n
+            lines.insert(0, NeedLine(key=deleted_how_key(None), text=STRINGS["deleted_how_all"].format(n=n),
+                                     item_id=None, label="", number=None, rel_path=None,
+                                     actions=_first(HOW_ALL, line_first)))
+        lines = tuple(lines)
         title = (STRINGS["deleted_title_one"] if n == 1 else
                  STRINGS["deleted_title_many" if n >= DELETED_MANY else "deleted_title"].format(n=n))
-        key = f"{DELETED}:" + ",".join(str(int(a["note_id"])) for a in asked)
+        whole = DELETED_ALL if n > 1 else ()
+        if n > 1 and key in asking:
+            whole = tuple(a for a in whole if a != "dw_all_parsing")    # its follow-up stands in its place
         out.append(Entry(key=key, kind=DELETED, title=title, lines=lines,
-                         actions=(DELETED_ALL if n > 1 else ()) + ("dw_leave",), unseen=key not in seen,
+                         actions=whole + ("dw_leave",), unseen=key not in seen,
                          say=STRINGS["deleted_say"], data={"notes": [int(a["note_id"]) for a in asked]}))
     old = [o for o in rec.get("old") or () if OLD_DELETES not in answered and old_line_key(o["word"]) not in answered]
     if old:

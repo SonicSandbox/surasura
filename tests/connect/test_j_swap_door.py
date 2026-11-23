@@ -18,7 +18,9 @@ or unsuspends one the learner put away themselves, or a press that says *queued*
 when nothing will ever make it. Real Japanese and Chinese lines from tests/Test Resources; the ledger and the library
 store are real; Anki is Tidy's fake.
 """
+import contextlib
 import os
+import sqlite3
 
 import pytest
 
@@ -164,6 +166,63 @@ def test_a_line_with_no_time_or_gone_from_its_file_is_refused_never_swaps_own_pi
     gone = _refused("card/make", lang, word, f"{item}:999999")
     assert (gone.message, gone.kind) == (door_routes.GONE, "gone")
     assert _refused("card/make", lang, word, "99999:1000").message == door_routes.GONE       # no such item
+    assert _asks(ledger) == []
+
+
+@contextlib.contextmanager
+def _another_program_holds_the_library(lang):
+    """The language's store held as another program's save holds it: an exclusive-locking connection in a write
+    transaction, so a reader's open waits out the store's own wait and finds it busy. Let go of in `finally`, so a
+    failing assert never leaves it held."""
+    data_dir, _user_files = c.dirs(lang)
+    other = sqlite3.connect(library_store.library_db_path(lang, data_dir), isolation_level=None, timeout=0.1)
+    try:
+        other.execute("PRAGMA locking_mode=EXCLUSIVE")
+        other.execute("BEGIN EXCLUSIVE")
+        other.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        yield
+    finally:
+        other.execute("ROLLBACK")
+        other.close()
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+@pytest.mark.parametrize("route", ["swap/queue", "card/make"])
+def test_a_press_while_the_library_is_busy_says_busy_and_press_again_never_that_the_line_is_gone(ledger, lang, route):
+    # J-FIX: the line's file is found through the library store; a store busy with another program's save is no line
+    # gone. Told *gone*, the learner would think the journey is older than the library and give up on a good line;
+    # told *busy*, they press again. Nothing is asked while it is busy, and the same press goes through once it isn't.
+    word, _old, other = CASES[lang]
+    item = _library(lang)
+    if route == "swap/queue":
+        _connects_card(ledger, lang, item)
+    line_id = _line(lang, item, other)[0]
+    with _another_program_holds_the_library(lang):
+        e = _refused(route, lang, word, line_id)
+    assert (e.message, e.kind) == (door_routes.BUSY, "busy")
+    assert _asks(ledger) == []
+    got = _press(route, lang, word, line_id)                       # pressed again: nothing was lost
+    assert not got["already"] and [r["line_id"] for r in _asks(ledger)] == [line_id]
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_store_read_locked_mid_press_is_busy_and_any_other_failure_still_says_the_line_is_gone(ledger, lang,
+                                                                                                 monkeypatch):
+    # the open can find the store free and its read still meet another save's lock (SQLite's "database is locked"):
+    # busy as well. A read that fails any other way (a damaged row, a file error) is no moment's state: still *gone*,
+    # as before, so a press is never told to try again for ever
+    from app.connect import runner
+    word, _old, other = CASES[lang]
+    item = _library(lang)
+    line_id = _line(lang, item, other)[0]
+    for error, said in ((sqlite3.OperationalError("database is locked"), (door_routes.BUSY, "busy")),
+                        (sqlite3.OperationalError("no such column: rel_path"), (door_routes.GONE, "gone")),
+                        (runner.Wait(runner.ON_BATTERY), (door_routes.GONE, "gone"))):
+        def fails(self, lang_, job, error=error):
+            raise error
+        monkeypatch.setattr(runner.Steps, "subtitle", fails)
+        e = _refused("card/make", lang, word, line_id)
+        assert (e.message, e.kind) == said, error
     assert _asks(ledger) == []
 
 

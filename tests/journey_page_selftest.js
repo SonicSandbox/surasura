@@ -815,6 +815,18 @@
       window.__J_DOOR_MODE = null;
       await J.hello(); await settle();
       ok("…and the next hello with the door on carries them", JSON.stringify(sentWords(n0)) === JSON.stringify(mine) && !!localStorage.getItem(DONE));
+      {                                                  // the word lists busy with another program: tried again later
+        seed(JSON.stringify(mine)); mine.forEach((w) => J.MARK.delete(w));
+        const hook = window.__J_DOOR_HOOK;
+        window.__J_DOOR_HOOK = (route, body) => route === "words/mark" ? { ok: false, kind: "busy", error: "Your word lists are busy." } : hook(route, body);
+        n0 = CALLS.length;
+        await J.hello(); await settle();
+        ok("the Ignore route answering busy: no done-mark, nothing shown Ignored (a later hello tries again)", marksSent(n0).length === 1 && !localStorage.getItem(DONE) && mine.every((w) => !J.MARK.has(w)));
+        window.__J_DOOR_HOOK = hook;
+        n0 = CALLS.length;
+        await J.hello(); await settle();
+        ok("…and the next hello carries them", JSON.stringify(sentWords(n0)) === JSON.stringify(mine) && !!localStorage.getItem(DONE));
+      }
       const many = [];                                   // 5,000 old words (real ones, joined two and three at a time)
       for (let a = 0; a < words.length && many.length < 5000; a++) for (let b = 0; b < words.length && many.length < 5000; b++) for (let c = 0; c < words.length && many.length < 5000; c++) if (a !== b && b !== c) many.push(words[a] + words[b] + words[c]);
       seed(JSON.stringify(many)); n0 = CALLS.length;

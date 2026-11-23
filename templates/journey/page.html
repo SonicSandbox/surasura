@@ -510,7 +510,7 @@ const DOOR = (function () {
   }
   return door && door.port && door.token ? door : null;
 })();
-const D = { state: DOOR ? "unknown" : "unopened", routes: null, library: null, sending: false, heard: 0, notyet: new Set() };   // heard: hellos answered
+const D = { state: DOOR ? "unknown" : "unopened", routes: null, library: null, sending: false, carrying: false, heard: 0, notyet: new Set() };   // heard: hellos answered
 async function doorCall(route, body, ms) {
   if (window.__J_FAKE_DOOR) return window.__J_FAKE_DOOR(route, body || {});
   if (!DOOR) return { ok: false, offline: true, why: "unopened" };
@@ -654,7 +654,60 @@ async function hello() {
     const changed = await readState();
     await flushQueue();
     if (changed || had !== JSON.stringify(routes)) { drawWord(); rail.update("all"); }   // only what the answers changed
+    await carryOldIgnores();
   } finally { D.heard++; }
+}
+/* The old journey page's ignores, carried over once (Sonic's answer to SPEC §9 item 1; J-FIX). That page kept its
+   ignored words only in this browser, under OLD_IGNORES; they never reached Surasura's lists. Nothing else is read
+   from the browser (its ✓ Completed marks are dropped on purpose). With the door on: Surasura's marks read whole (state,
+   no `since`), the old words it has neither Known nor Ignored sent through ⊘'s own route, OLD_BATCH a call, each an
+   Ignore over no mark at the time of that read (the stale rule skips a word changed since); then OLD_DONE, so it never
+   runs again. The old key is never written or removed. Surasura closed, busy or failing: nothing marked done, it is
+   tried at a later hello (the words already carried are Ignored by then, so they are never sent twice). Undo takes
+   back every call's own write; OLD_DONE stays (PROVISIONAL: the learner said no to those words). */
+const OLD_IGNORES = `surasura_ignored_words_${LANG}`;
+const OLD_DONE = `surasura_journey_old_ignores_${LANG}`;
+const OLD_BATCH = 500;                                  // the route's most a call (word_marks.DOOR_MOST)
+async function carryOldIgnores() {
+  let old = null;
+  try { if (localStorage.getItem(OLD_DONE)) return; old = JSON.parse(localStorage.getItem(OLD_IGNORES) || "null"); } catch (e) { return; }
+  if (!Array.isArray(old) || !old.length || D.carrying || !live() || !built("words/mark")) return;
+  if (D.library && HEAD.library && D.library !== HEAD.library) return;     // another library's Surasura (D31)
+  D.carrying = true;
+  try {
+    const at = Date.now(), a = await doorCall("state", { since: null }, 6000);
+    if (!a || !a.ok || !a.marks || typeof a.marks !== "object") return;
+    const words = [], seen = new Set();
+    for (const x of old) {
+      const w = typeof x === "string" ? x.trim() : "";
+      if (!w || w.length > 64 || seen.has(w)) continue;
+      seen.add(w);
+      if (!a.marks[w] && !MARK.has(w) && !MWAIT.has(w)) words.push(w);      // Known, Ignored or pressed here: left as is
+    }
+    const added = [], undos = [];
+    let all = true;
+    for (let k = 0; k < words.length && all; k += OLD_BATCH) {
+      const batch = words.slice(k, k + OLD_BATCH);
+      const r = await doorCall("words/mark", { marks: batch.map((word) => ({ word, mark: "ignore", was: "", at })) });
+      if (!r || !r.ok) { all = !!r && r.kind === "refused"; continue; }   // unreadable: let go; else a later hello
+      const stale = new Set(r.stale || []);
+      for (const w of batch) if (!stale.has(w)) { added.push(w); MARK.set(w, "ignore"); }
+      if (r.undo_id != null) undos.push(r.undo_id);
+    }
+    if (all) { try { localStorage.setItem(OLD_DONE, String(Date.now())); } catch (e) {} }
+    if (!added.length) return;
+    redrawMarks();
+    const n = added.length;
+    toast(`⊘ ${n.toLocaleString("en")} ${n === 1 ? "word" : "words"} from your old journey page added to your Ignore list`, () => undoOldIgnores(added, undos));
+  } finally { D.carrying = false; }
+}
+async function undoOldIgnores(added, undos) {               // newest write first, as each Undo puts its own back
+  for (const id of undos.slice().reverse()) {
+    const a = await doorCall("words/undo", { undo_id: id });
+    if (!a || !a.ok) { toast(a && a.error || "Surasura is closed: that Undo can't be kept."); await readState(); redrawMarks(); return; }
+  }
+  for (const w of added) if (MARK.get(w) === "ignore" && !MWAIT.has(w)) MARK.delete(w);
+  redrawMarks();
 }
 const sinceMs = () => { const n = Number(HEAD.stamp); return isFinite(n) && n > 0 ? (HEAD.minor >= 1 ? n : Math.floor(n / 1e6)) : null; };   // 1.1: ms; v1: ns
 async function readState() {                              // true when an answer changed something on the page

@@ -129,8 +129,8 @@
        way to `offline` (SPEC §3.5); a route not yet built drops the group that is only that route */
     const OFFLINE = MODE !== "on";
     const CONTRACT = Q.get("rail") === "contract";      // another rail plugged in: the page's own groups + `contract`
-    const SKIP = new Set(CONTRACT ? ["word", "marks", "pre", "picker", "door", "queue", "player", "flag", "settings", "meet", "list", "focus", "search", "notyet", "a11y", "offline", "layout"]
-      : OFFLINE ? ["marks", "pre", "flag", "door", "queue", "settings", "meet", "contract"] : ["offline", "contract"]);
+    const SKIP = new Set(CONTRACT ? ["word", "marks", "pre", "picker", "door", "queue", "player", "flag", "settings", "meet", "carry", "list", "focus", "search", "notyet", "a11y", "offline", "layout"]
+      : OFFLINE ? ["marks", "pre", "flag", "door", "queue", "settings", "meet", "carry", "contract"] : ["offline", "contract"]);
     if (NOTYET.has("episode/prestudied")) SKIP.add("pre");
     if (NOTYET.has("line/flag")) SKIP.add("flag");
     const group = (g) => { const on = only.size ? only.has(g) : !SKIP.has(g); if (on) GROUPS.push([performance.now(), g]); return on; };
@@ -761,6 +761,70 @@
       }
       ok("the kinds of word checked: " + Object.keys(found).sort().join(" "), true);
       J.closeLayer();
+    }
+
+    /* ---- the old page's ignores, carried over once (J-FIX; Sonic's answer to SPEC §9 item 1): the old journey page
+       kept its ignored words only in this browser (`surasura_ignored_words_<lang>`). At a hello with the door on, the
+       ones not Known or Ignored in Surasura already go through ⊘'s own route, in batches, once; the old key is never
+       touched, nothing else of the browser's is read. ---- */
+    if (group("carry")) {
+      const OLD = `surasura_ignored_words_${H.lang}`, DONE = `surasura_journey_old_ignores_${H.lang}`;
+      const words = [];                                  // real words of the first episodes (30: the 5,000 case's too)
+      for (const i of epsWith(1).slice(0, 60)) { if (words.length >= 30) break; await J.loadEp(i); for (const id of J.seq(i) || []) { const w = J.wordNow(id)[0]; if (!words.includes(w)) words.push(w); } }
+      await goWord(E, 0);
+      const shownWord = J.wordNow(J.curWordId())[0];
+      const [known, ignored, ...rest] = words.filter((w) => w !== shownWord), mine = rest.slice(0, 3);   // never the shown word: its row stays
+      const marksNow = { [known]: "known", [ignored]: "ignore" };
+      window.__J_DOOR_HOOK = (route, body) => route === "state" && body.since === null ? { ok: true, at: Date.now(), marks: marksNow } : null;
+      const marksSent = (n0) => CALLS.slice(n0).filter(([, rt]) => rt === "words/mark");
+      const sentWords = (n0) => marksSent(n0).flatMap(([, , b]) => b.marks.map((m) => m.word));
+      const seed = (v) => { localStorage.removeItem(DONE); localStorage.setItem(OLD, v); };
+      const oldValue = JSON.stringify([mine[0], known, ignored, 42, null, "", "  ", mine[1], mine[0], "借".repeat(65), ` ${mine[2]} `]);
+      ok("carry: the five words the checks need", mine.length === 3, words.length);
+      seed(oldValue);
+      let n0 = CALLS.length;
+      const r = await press(() => J.hello());
+      const sent = marksSent(n0);
+      ok("carried: one call through ⊘'s route, only the old words Surasura doesn't have Known or Ignored, each once, trimmed",
+        sent.length === 1 && JSON.stringify(sentWords(n0)) === JSON.stringify(mine), JSON.stringify(sentWords(n0)));
+      ok("carried: each an Ignore over no mark (`was` \"\") with the time of the read, so the stale rule skips a word changed since",
+        sent.length === 1 && sent[0][2].marks.every((m) => m.mark === "ignore" && m.was === "" && typeof m.at === "number"), sent[0] && JSON.stringify(sent[0][2].marks[0]));
+      ok("carried: Surasura's marks read whole first (state with no `since`), through the existing route", CALLS.slice(n0).some(([, rt, b]) => rt === "state" && b.since === null));
+      ok("carried: the done-mark written, the old key left exactly as it was", localStorage.getItem(DONE) && localStorage.getItem(OLD) === oldValue, localStorage.getItem(DONE));
+      ok("carried: the page shows them Ignored", mine.every((w) => J.MARK.get(w) === "ignore") && J.MARK.get(known) !== "ignore");
+      const tl = $("#toast");
+      ok("carried: one line, how many, with Undo (PROVISIONAL)", !tl.classList.contains("hide") && /\b3 words from your old journey page/.test(tl.textContent) && /Ignore list/.test(tl.textContent) && tl.querySelector("button"), tl.textContent);
+      budget(ok, "the old ignores carried: only the three rows whose mark changed, and the toast", r, ["rail-words", "toast"], { "rail-words": 3 });
+      n0 = CALLS.length;
+      await J.hello(); await settle();
+      ok("never again: a later hello sends nothing", !marksSent(n0).length);
+      n0 = CALLS.length;
+      tl.querySelector("button").click(); await settle(8);
+      const undos = CALLS.slice(n0).filter(([, rt]) => rt === "words/undo");
+      ok("Undo: the carry's own write taken back through the route's Undo (its undo id)", undos.length === 1 && /^s\.\d+$/.test(undos[0][2].undo_id), JSON.stringify(undos.map((u) => u[2])));
+      ok("Undo: the words un-ignored on the page; the done-mark stays (the carry-over never comes back — PROVISIONAL)", mine.every((w) => !J.MARK.has(w)) && !!localStorage.getItem(DONE));
+      for (const [name, v] of [["empty", "[]"], ["malformed", "{not json"], ["not a list", '{"a": 1}']]) {
+        seed(v); n0 = CALLS.length;
+        await J.hello(); await settle();
+        ok(`a key ${name}: nothing sent, no error`, !marksSent(n0).length);
+      }
+      seed(JSON.stringify(mine)); n0 = CALLS.length;
+      window.__J_DOOR_MODE = "off";
+      await J.hello(); await settle();
+      ok("Surasura closed: nothing sent, no done-mark (it waits for a later load)", !marksSent(n0).length && !localStorage.getItem(DONE));
+      window.__J_DOOR_MODE = null;
+      await J.hello(); await settle();
+      ok("…and the next hello with the door on carries them", JSON.stringify(sentWords(n0)) === JSON.stringify(mine) && !!localStorage.getItem(DONE));
+      const many = [];                                   // 5,000 old words (real ones, joined two and three at a time)
+      for (let a = 0; a < words.length && many.length < 5000; a++) for (let b = 0; b < words.length && many.length < 5000; b++) for (let c = 0; c < words.length && many.length < 5000; c++) if (a !== b && b !== c) many.push(words[a] + words[b] + words[c]);
+      seed(JSON.stringify(many)); n0 = CALLS.length;
+      const l0 = LONG.length, t1 = performance.now();
+      await J.hello(); await settle(8);
+      const big = marksSent(n0);
+      ok(`${many.length.toLocaleString("en")} old words: a few calls of at most 500, every word once`, many.length === 5000 && big.length <= 10 && big.every(([, , b]) => b.marks.length <= 500) && new Set(sentWords(n0)).size === 5000, `${big.length} calls`);
+      ok(`${many.length.toLocaleString("en")} old words: the page stays responsive (no long task)`, LONG.slice(l0).every(([, d]) => d <= 50), JSON.stringify(LONG.slice(l0)) + ` ${(performance.now() - t1).toFixed(0)} ms`);
+      window.__J_DOOR_HOOK = null;
+      localStorage.removeItem(OLD);
     }
 
     /* ---- List view, Focus, search ---- */

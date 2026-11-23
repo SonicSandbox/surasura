@@ -15,12 +15,16 @@ waits as every one does (never while you review, the cap, Anki closed): there is
 - **Made:** the swap queue's entry marked made with the new note (`swap_queue.made`: the pair old note → new note, the
   record the full Swap reads); the old card stays as the learner left it (suspended, green) and gains the tag
   `surasura::swapped` (`SWAP_TAG`) — Swap's only write to it. Said on *Needs you*: *A new card for 「…」 · Undo · OK*.
+  **The journey's ⇄** (`BY_JOURNEY`) is the same ask from the page, so it is one out, one in too: once its new card is
+  made (never at the press), Swap suspends the old card's cards still in reviews, as the learner would have, through
+  the shelf's writer (`JOURNEY_TAKES_OLD`, `_take_old`: the cards it took recorded first, `took`), and never flags them.
 - **The cap:** the swap's job carries its time as an ask (`asked_at`): never held by the cap, the learner's move is the
   yes — the old card left the count when it was suspended, the new one counts as any Connect card (one out, one in).
   Tidy never takes it by itself: you asked for it (`new_cards`, read by `tidy.asked_for`); only its Undo does.
 - **Undo** (`undo`): the new card removed with a backup, as Tidy removes one (`tidy.run`, why `swap`: notes, media and
   an Anki package kept; a card you studied or changed stays, and then nothing is undone), the old card unsuspended,
-  its Swap flag off (the learner's pick, `review_loop.move_flags`) and its tag gone, then the queue's entry `undone`
+  its Swap flag off (the learner's pick, `review_loop.move_flags`) and its tag gone — a journey ⇄'s old card gets
+  back only the cards the press took (`took`), its flags untouched: as it was before the press —, then the queue's entry `undone`
   (`swap_queue.undone`) with the ledger's row in one step. Twice: nothing more.
 
 **The one record of a swap is the swap queue's entry** (waiting · made · dropped · undone, with why). The ledger's
@@ -47,6 +51,8 @@ log = logging.getLogger("surasura-cli")
 SWAP_TAG = "surasura::swapped"
 BY_SWAP, BY_BAD_CARD = "swap", "bad card"
 BY_JOURNEY, BY_ADD_NOW = "journey", "add now"   # the journey page's ⇄ and *Add now* (`door_routes`): the line pressed
+JOURNEY_TAKES_OLD = True        # a journey ⇄ is one out, one in: its old card suspended once the new one is made (the
+                                # lead's ruling, PROVISIONAL — OPEN-FOR-SONIC 72 a); False: two cards, the old one tagged only
 ASKED, QUEUED, MADE, WAITS, DROPPED, UNDONE = "asked", "queued", "made", "waits", "dropped", "undone"
 TRIES = 3                       # episodes tried before an ask waits (each cut no card: its lines were the old card's)
 RETRY_S = 6 * 3600              # a waiting ask is looked at again this long after, or when the library has more files
@@ -82,11 +88,14 @@ _SQL = """CREATE TABLE IF NOT EXISTS swaps (
   updated_at TEXT NOT NULL,
   tried_at REAL,
   tried_files INTEGER,
-  tidy_id INTEGER)"""
+  tidy_id INTEGER,
+  took TEXT)"""
 
 
 def ensure(ledger):
     ledger.conn.execute(_SQL)
+    if "took" not in {r[1] for r in ledger.conn.execute("PRAGMA table_info(swaps)")}:
+        ledger.conn.execute("ALTER TABLE swaps ADD COLUMN took TEXT")   # a journey ⇄'s cards it suspended (JSON ids)
 
 
 def _now():
@@ -563,8 +572,11 @@ def _tag_waiting(ledger, language, anki):
                 return
             rows = _rows(ledger, *where)    # again under the lock: an Undo that held it may have undone one
             notes = sorted({int(r["old_note"]) for r in rows if r.get("old_note")})
-            have = {int(n["noteId"]) for n in anki.notes(notes) if isinstance(n, dict) and n.get("noteId")} \
-                if notes else set()
+            infos = [n for n in anki.notes(notes) if isinstance(n, dict) and n.get("noteId")] if notes else []
+            have = {int(n["noteId"]) for n in infos}
+            for r in rows:
+                if r.get("by") == BY_JOURNEY and JOURNEY_TAKES_OLD:
+                    _take_old(anki, ledger, r, infos)
             if have:
                 anki.add_tags(sorted(have), SWAP_TAG)
     except Exception:
@@ -572,6 +584,21 @@ def _tag_waiting(ledger, language, anki):
         return
     for r in rows:
         _set(ledger, r["id"], tagged=1)
+
+
+def _take_old(anki, ledger, row, infos):
+    """A journey ⇄'s old card out of reviews (one out, one in), under the caller's write lock: its cards in reviews now
+    are added to the record first (`took`: a retry after a failed write keeps the cards it suspended), then suspended
+    through Junban's door. A card the learner had suspended isn't taken, so Undo leaves it so."""
+    cards = [int(c) for n in infos if int(n["noteId"]) == int(row["old_note"] or 0) for c in n.get("cards") or ()]
+    now = {int(c["cardId"]) for c in (anki.cards(cards) if cards else [])
+           if isinstance(c, dict) and c.get("cardId") and c.get("queue") != -1}
+    took = sorted(set(_took(row)) | now)
+    if row.get("took") is None or now - set(_took(row)):
+        _set(ledger, row["id"], took=json.dumps(took))
+        row["took"] = json.dumps(took)
+    if took:
+        anki.suspend(took)
 
 
 # --------------------------------------------------------------------------- #
@@ -587,6 +614,15 @@ class AnkiSwap(tidy.AnkiConnectTidy):
     def remove_tags(self, note_ids, tag):
         from app import anki_connect
         anki_connect.invoke("removeTags", self.url, notes=list(note_ids), tags=tag)
+
+    def suspend(self, card_ids):
+        """A journey ⇄'s old card out of reviews, through the app's one suspend door (Junban's `ankiconnect.suspend`,
+        the shelf's adapter's too); a card Anki didn't take raises, so the look tries again."""
+        from app import anki_connect
+        from modules.junban import ankiconnect
+        failures = (ankiconnect.suspend(self.url, card_ids) or ((), ()))[1]
+        if failures:
+            raise anki_connect.AnkiError(f"Anki didn't take suspend for {len(failures)}: {failures[0][1]}")
 
     def unsuspend(self, card_ids):
         from app import anki_connect
@@ -607,7 +643,8 @@ class AnkiSwap(tidy.AnkiConnectTidy):
 def undo(anki, ledger, language, swap_id, open_store=None, ours=None, flag=GREEN):
     """One swap undone -> {"undone": True, "word"}: the new card removed with a backup (`tidy.run`, why "swap": a card
     you studied or changed stays — moved to a deck of your own too — `tidy.Refused`, and nothing here changes), then
-    the old card back to study (unsuspended, its Swap flag off — `flag`, the learner's pick — `SWAP_TAG` gone), then
+    the old card back to study (unsuspended, its Swap flag off — `flag`, the learner's pick — `SWAP_TAG` gone; a
+    journey ⇄'s: only the cards its press took, no flag; while another made swap keeps it out, none: `_old_back`), then
     the swap `undone` in the queue and the ledger together (the queue's write fails: neither changes, and a retry
     finishes it — the new card isn't deleted twice). `ours`: the deck Surasura shows for the language's new cards (`fields.surasura_deck`), handed to
     Tidy as an ordinary tidy hands it — a card with no home on record is Surasura's only there. Refused (`Refused`)
@@ -641,10 +678,17 @@ def undo(anki, ledger, language, swap_id, open_store=None, ours=None, flag=GREEN
     with anki.writer(VERB):
         if anki.reviewing():
             raise tidy.Reviewing()
-        _old_back(anki, row, keep_tag=bool(_rows(ledger, "language = ? AND old_note = ? AND state = ? AND id != ?",
-                                                 (language, row["old_note"], MADE, row["id"]))), flag=flag)
+        row = _rows(ledger, "id = ?", (row["id"],))[0]     # again under the lock: a look in the gap may have taken it
+        still = _rows(ledger, "language = ? AND old_note = ? AND state = ? AND id != ?",
+                      (language, row["old_note"], MADE, row["id"]))
+        journey = [r for r in still if r.get("by") == BY_JOURNEY]
+        took = _took(row) if row.get("by") == BY_JOURNEY else None
+        back = _old_back(anki, row, keep_tag=bool(still), flag=flag, took=took,
+                         hold=bool(still) if took is not None else bool(journey))
         with ledger.transaction():      # under the lock (a look never tags it again), the queue's write inside the
             _update(ledger.conn, row["id"], state=UNDONE)       # ledger's: either fails, neither changes
+            if journey and back:        # a journey ⇄ still holds the old card out: these go back with its Undo
+                _update(ledger.conn, journey[-1]["id"], took=json.dumps(sorted(set(back) | set(_took(journey[-1])))))
             if entry is not None:
                 if swap_queue.undone(language, str(row["ref"])) is None:
                     raise RuntimeError(f"the swap queue's entry {row['ref']} isn't made: nothing was undone there")
@@ -659,20 +703,29 @@ def _entry(language, row):
     return next((e for e in swap_queue.load(language) if str(e.get("id")) == str(row["ref"])), None)
 
 
-def _old_back(anki, row, keep_tag=False, flag=GREEN):
+def _took(row):
+    return [int(c) for c in json.loads(row["took"])] if row.get("took") else []
+
+
+def _old_back(anki, row, keep_tag=False, flag=GREEN, took=None, hold=False):
+    """The old card back as the swap found it, `SWAP_TAG` gone -> the suspended cards it puts back. The loop's move
+    (`took` None) took it out of reviews: unsuspended, its Swap flag off. A journey ⇄ (`took`: the cards its press
+    suspended) gets back only those, no flag changed: a card the learner had put away stays so. `hold`: another made
+    swap still keeps the card out (its Undo puts them back: `undo` hands a journey ⇄ the list), so none unsuspended."""
     cards = [int(row["old_card"])] if row.get("old_card") else []
     if row.get("old_note") and not cards:
         for info in anki.notes([int(row["old_note"])]) or ():
             cards = [int(c) for c in info.get("cards") or ()]
     infos = [c for c in (anki.cards(cards) if cards else []) if isinstance(c, dict) and c.get("cardId")]
-    back = [int(c["cardId"]) for c in infos if c.get("queue") == -1]
-    flagged = [int(c["cardId"]) for c in infos if c.get("flags") == flag]
-    if back:
+    back = [int(c["cardId"]) for c in infos if c.get("queue") == -1 and (took is None or int(c["cardId"]) in took)]
+    flagged = [int(c["cardId"]) for c in infos if c.get("flags") == flag] if took is None else []
+    if back and not hold:
         anki.unsuspend(back)
     if flagged:
         anki.set_flag(flagged, 0)
     if row.get("old_note") and infos and not keep_tag:      # the note's other card still swapped: its tag stays
         anki.remove_tags([int(row["old_note"])], SWAP_TAG)
+    return back
 
 
 def act_undo(settings, language, swap_id):

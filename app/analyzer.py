@@ -4459,7 +4459,8 @@ def _journey_plan(args, run_signature, results_dir=None):
     (`journey_render._ahead`, `_plan_pcts`): one source every piece reads (J-CUT, the lead's ruling), read after it is
     written, so a Generate, its reuse and a redraw draw the same page. results/'s plan, numbers only (`pools=False`),
     when it is whole and written by the run `run_signature` names; None for Zen, before the cut-over, or without such a
-    plan (the render then counts each word in its own episode). Never raises."""
+    plan (the render then counts each word in its own episode). Only the tables the count reads (`plan_engine.counts`:
+    the whole plan held ~130 MB more at the render's peak at 20,000 files, J-CUT 3). Never raises."""
     if not run_signature or args.theme in ZEN_THEMES:
         return None
     from app.services import journey_settings
@@ -4467,10 +4468,10 @@ def _journey_plan(args, run_signature, results_dir=None):
         return None
     from app import plan_engine
     try:
-        plan = plan_engine.load(os.path.join(results_dir or RESULTS_DIR, PLAN_FILE), pools=False, trusted=True)
+        plan = plan_engine.counts(os.path.join(results_dir or RESULTS_DIR, PLAN_FILE))
     except Exception:
         return None
-    return plan if plan.header.get("run_signature") == run_signature else None
+    return plan if plan is not None and plan.header.get("run_signature") == run_signature else None
 
 
 def _plan_is_this_runs(run_signature, results_dir=None):

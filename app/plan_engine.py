@@ -363,6 +363,73 @@ def candidates(path, language=None):
                       tables["cowords"], pools)
 
 
+Counts = namedtuple("Counts", "header files keys per_file")
+_COUNT_TABLES = (b'{"files":', b'{"keys":')
+_COUNT_LINES = _COUNT_TABLES + (b'{"f":',)
+_COUNT_MARK = max(len(mark) for mark in _COUNT_LINES)     # a line's first bytes that tell whether `counts` reads it
+_PIECE = 1 << 20                                          # the zipped bytes `counts` unzips at a time
+
+
+def counts(path):
+    """The plan file's per-file counts only, for the journey (J-CUT: each word's count ahead and each episode's *%
+    known*, `journey_render._ahead` / `_plan_pcts`) -> `Counts`: the header, `files` (each one's [path]), `keys`, and
+    `per_file` (each file's {"main", "ph", "prog"}); None when there is no readable plan of a format this engine reads.
+    Light where `load` is whole: the stream is unzipped a piece at a time and only these tables are kept — the rows,
+    the ties, the spellings, the example sentences and each file's `fs` are never held (at 20,000 files `load(pools=
+    False)` held ~130 MB more at the render's peak). No check that the plan is this run's or this library's: the caller
+    compares its header's `run_signature` (`analyzer._journey_plan`)."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        unzip, rest, header, files, keys, per_file = zlib.decompressobj(31), b"", None, [], [], []
+
+        def take(line):
+            nonlocal header
+            if header is None:
+                header = json.loads(line)
+                if not isinstance(header, dict) or header.get("format") not in FORMATS:
+                    raise PlanError("not a plan file this engine reads")
+            elif line.startswith(b'{"f":'):
+                found = json.loads(line)
+                if found["f"] != len(per_file):
+                    raise PlanError("the plan file's files are out of order")
+                per_file.append({"main": found["main"], "ph": found["ph"], "prog": found["prog"]})
+            elif line.startswith(_COUNT_TABLES):
+                (name, chunk), = json.loads(line).items()
+                if name == "files":
+                    files.extend([entry[0]] for entry in chunk)
+                else:
+                    keys.extend(chunk)
+
+        skip = False                                # inside a line the count never reads: dropped as it streams
+
+        def ended(piece):
+            nonlocal skip
+            if skip:
+                cut = piece.find(b"\n")
+                if cut < 0:
+                    return b""
+                piece, skip = piece[cut + 1:], False
+            return piece
+
+        for at in range(0, len(data), _PIECE):
+            lines = (rest + ended(unzip.decompress(data[at:at + _PIECE]))).split(b"\n")
+            rest = lines.pop()
+            for line in lines:
+                take(line)
+            if header is not None and len(rest) >= _COUNT_MARK and not rest.startswith(_COUNT_LINES):
+                rest, skip = b"", True
+        rest += ended(unzip.flush())
+        for line in rest.split(b"\n"):
+            if line:
+                take(line)
+        if header is None or len(per_file) != len(files):
+            raise PlanError("the plan file's files don't match its tables")
+    except (OSError, EOFError, zlib.error, ValueError, TypeError, KeyError, IndexError, AttributeError, PlanError):
+        return None
+    return Counts(header, files, keys, per_file)
+
+
 def _validate_pools(plan):
     """Format 3's example-sentence tables (F7), checked as the rest: every source, co-word, row and sentence an index
     that exists, the lengths 0 or 1, every listed row's pools there once and no other row's."""

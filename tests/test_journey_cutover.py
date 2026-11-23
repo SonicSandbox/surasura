@@ -219,11 +219,11 @@ def test_the_journey_reads_only_this_runs_plan_and_none_for_zen_or_before_the_cu
     monkeypatch.delenv("SURASURA_DOOR", raising=False)
     header = {"format": plan_engine.FORMAT, "run_signature": "run-1"}
     seen = []
-    monkeypatch.setattr(plan_engine, "load", lambda path, **kw: seen.append(kw) or plan_engine.Plan(
-        header, [], [], [], [], []))
+    monkeypatch.setattr(plan_engine, "load", lambda *_a, **_k: pytest.fail("the whole plan: ~130 MB more at 20,000 files"))
+    monkeypatch.setattr(plan_engine, "counts", lambda path: seen.append(path) or plan_engine.Counts(header, [], [], []))
     args = analyzer.parse_analysis_args(["--language=ja", "--static", "--no-open"])
     assert analyzer._journey_plan(args, "run-1", str(tmp_path)).header is header
-    assert seen == [{"pools": False, "trusted": True}], "the numbers only: the sentence tables stay undecoded"
+    assert seen == [os.path.join(str(tmp_path), analyzer.PLAN_FILE)], "the count's tables only, of results/'s plan"
     assert analyzer._journey_plan(args, "run-2", str(tmp_path)) is None, "another run's plan is never read"
     assert analyzer._journey_plan(args, "", str(tmp_path)) is None
     zen = analyzer.parse_analysis_args(["--language=ja", "--static", "--no-open", "--theme", "Zen Mode"])
@@ -231,8 +231,40 @@ def test_the_journey_reads_only_this_runs_plan_and_none_for_zen_or_before_the_cu
     monkeypatch.setenv("SURASURA_DOOR", "0")
     assert analyzer._journey_plan(args, "run-1", str(tmp_path)) is None
     monkeypatch.delenv("SURASURA_DOOR")
-    monkeypatch.setattr(plan_engine, "load", lambda path, **kw: (_ for _ in ()).throw(plan_engine.PlanError("gone")))
+    monkeypatch.setattr(plan_engine, "counts", lambda path: None)
     assert analyzer._journey_plan(args, "run-1", str(tmp_path)) is None, "no plan: each word's own episode"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_plans_count_tables_read_alone_are_the_whole_loads_and_a_damaged_or_missing_plan_is_none(language,
+                                                                                                    tmp_path,
+                                                                                                    monkeypatch):
+    # J-CUT 3: the journey reads only what its count needs (`plan_engine.counts`), streamed, never the whole plan —
+    # so they must be the very values `load` gives: each file's path, the keys, each file's main / ph / prog
+    from app import plan_engine
+    store, _ids, _names = _library(language)
+    store.close()
+    root = os.environ["SURASURA_TEST_ROOT"]
+    _generate(root, language)
+    path = os.path.join(root, "results", analyzer.PLAN_FILE)
+    whole, light = plan_engine.load(path, pools=False), plan_engine.counts(path)
+    assert light.header == whole.header and light.keys == whole.keys
+    assert light.files == [[entry[0]] for entry in whole.files] and len(light.files) > 1
+    assert light.per_file == [{k: line[k] for k in ("main", "ph", "prog")} for line in whole.per_file]
+    assert any(line["main"] for line in light.per_file)
+    # unzipped 64 bytes at a time: every line, the ones it skips unread among them, stands across a piece's end
+    monkeypatch.setattr(plan_engine, "_PIECE", 64)
+    assert plan_engine.counts(path) == light
+    with open(path, "rb") as f:
+        data = f.read()
+    cut = tmp_path / "cut.json.gz"
+    cut.write_bytes(data[:len(data) // 2])                         # a plan cut short (a copy stopped mid-way)
+    assert plan_engine.counts(str(cut)) is None
+    lines = gzip.decompress(data).split(b"\n")
+    short = tmp_path / "short.json.gz"                             # whole gzip, but its last file's line gone
+    short.write_bytes(gzip.compress(b"\n".join(lines[:-2] + [b""])))
+    assert plan_engine.counts(str(short)) is None, "files that don't match its tables"
+    assert plan_engine.counts(str(tmp_path / "none.json.gz")) is None
 
 
 def test_zen_keeps_its_own_page(tmp_path):

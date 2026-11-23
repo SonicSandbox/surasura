@@ -557,7 +557,7 @@ def test_a_press_let_go_twice_still_cuts_its_line_itself(episode, fake_miner, mo
     assert got.get("path") and len([m for m in made if m[0] == "cut"]) == 1 and clips._cutting == {}
 
 
-def test_the_cut_aheads_tool_ends_at_a_press_and_no_tool_runs_past_the_press_time():
+def test_the_cut_aheads_tool_ends_at_a_press_and_no_tool_runs_past_the_press_time(monkeypatch):
     stop = threading.Event()
     threading.Timer(0.3, stop.set).start()
     start = time.monotonic()
@@ -566,9 +566,11 @@ def test_the_cut_aheads_tool_ends_at_a_press_and_no_tool_runs_past_the_press_tim
     start = time.monotonic()
     assert clips._run(HANG, until=time.monotonic() + 0.5) is None
     assert 0.4 < time.monotonic() - start < 3
-    start = time.monotonic()
-    assert clips._run(HANG, until=time.monotonic() - 1) is None         # no time left: not started
-    assert clips._run(HANG, stop=stop) is None and time.monotonic() - start < 0.5
+    started, real = [], anki_miner._popen
+    monkeypatch.setattr(anki_miner, "_popen", lambda *a, **k: started.append(a) or real(*a, **k))
+    assert clips._run(HANG, until=time.monotonic() - 1) is None         # no time left: never started
+    assert clips._run(HANG, stop=stop) is None                          # a press came first: never started
+    assert started == []
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])

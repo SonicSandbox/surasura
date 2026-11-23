@@ -151,6 +151,33 @@ def test_a_deleted_card_whose_word_has_a_new_card_since_is_not_asked(lang, ledge
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_newer_card_surasuras_tidy_deleted_never_hides_the_ask_and_one_its_undo_put_back_does(lang, ledger):
+    # why: a Bad card's Undo (and any tidy) takes the newer card out of Anki: the deleted card must ask again, never
+    # stay hidden behind a card that is gone; a tidy undone puts the card back, so it hides the ask again
+    from app.connect import tidy
+    item, notes = _made(lang, ledger)
+    _gone(lang, ledger, notes[:1])
+    word, reading, sentence = LINES[lang][0]
+    job = ledger.queue(lang, item + 1, "test", None)
+    with ledger.transaction():
+        ledger.record_outcomes(job, 1, [{"word": word, "reading": reading, "sentence": sentence, "outcome": "made",
+                                         "note_id": NOTE + 100}])
+    ledger.conn.execute(tidy._SQL)
+    with ledger.transaction():
+        cur = ledger.conn.execute("INSERT INTO tidies (language, at, why, state, folder, notes, made, deleted) VALUES "
+                                  "(?, ?, 'swap', 'done', '', '{}', '[]', ?)", (lang, "2026-11-22T10:00:00Z",
+                                                                                json.dumps([NOTE + 100])))
+    assert [a["note_id"] for a in _asked(lang, ledger)["asked"]] == notes[:1], "the newer card is gone: asked"
+    with ledger.transaction():
+        ledger.conn.execute("UPDATE tidies SET state = 'undone' WHERE id = ?", (cur.lastrowid,))
+    assert _asked(lang, ledger)["asked"] == [], "put back by the tidy's Undo: it stands, nothing to ask"
+    other = "zh" if lang == "ja" else "ja"
+    with ledger.transaction():
+        ledger.conn.execute("UPDATE tidies SET state = 'done', language = ? WHERE id = ?", (other, cur.lastrowid))
+    assert _asked(lang, ledger)["asked"] == [], "another language's tidy says nothing of this one's cards"
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
 def test_the_learners_own_card_and_one_seen_twice_are_stamped_once_or_not_at_all(lang, ledger):
     # why: only Surasura's cards are asked (a note Connect has no outcome for is the learner's own); the look runs
     # every run, so a note seen gone again is never a second line

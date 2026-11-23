@@ -33,7 +33,7 @@
 | ![New arrivals: new shows and episodes, with their covers, waiting to be placed](docs/assets/images/readme/arrivals.png) | ![Mine: the episode's cards come next](docs/assets/images/readme/mine.png) |
 | New episodes, books and videos **arrive by themselves**. Drag one into your order, or press ↑. | **Mine** makes the cards with Anki Miner, and Anki shows them in your order. |
 
-**Also:** **Piyo ぴよ** lets you practise with your own AI app, on your own words.
+**Also:** **Piyo ぴよ** lets you practise with your own AI app, on your own words: stories, chats, quizzes, and output drills that make you say the words you already know.
 
 ## What it reads
 

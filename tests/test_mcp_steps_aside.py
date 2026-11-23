@@ -203,7 +203,7 @@ def test_a_write_under_way_finishes_with_one_line_and_a_new_call_is_refused(monk
     calls = mcp_server.Calls()
     started, go, ended = threading.Event(), threading.Event(), threading.Event()
 
-    def saving(_state, round_id, lines, notes, language):
+    def saving(_state, round_id, lines, notes, language, results=None):
         started.set()
         assert go.wait(10)
         return {"saved": round_id}

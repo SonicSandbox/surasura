@@ -29,6 +29,8 @@ What it does is read from the plan file named by FAKE_ANKI_MINER_PLAN (JSON; eve
      "crash_after_runs": 1,                                # … a native crash once that many runs wrote their result
      "deaf_runs": {"<run_id>": 30}}                        # … `deaf` for that run only
     {"slow": {"<command>": 30}}                            # row 56: sleeps this long before it answers that command
+    {"until": {"<command>": "<a file>"}}                   # Flake-F5: answers that command once the file is there
+                                                           # (<= 5 s): a call held open until the caller did something
     {"export_cut": true}                                   # row 56: half its export written, then it hangs
     {"clear_leftovers": 0.3}                               # 3.10: this long after it starts, before its setup, an
                                                            # unconsumed cancel file is deleted once (runfolder.py)
@@ -817,6 +819,10 @@ def main(argv):
     argv = argv[1:]
     command = argv[0] if argv else None
     time.sleep(float((plan.get("slow") or {}).get(command, 0)))     # row 56: a look-up still under way at a Stop
+    until = (plan.get("until") or {}).get(command)
+    deadline = time.monotonic() + 5.0
+    while until and not os.path.exists(until) and time.monotonic() < deadline:
+        time.sleep(0.05)
     if plan.get("mine") == "garbage" and command == "mine":
         sys.stdout.write("Traceback (most recent call last): …\n")
         return 0

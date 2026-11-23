@@ -282,13 +282,15 @@ const SETTINGS = [
     help: ["For this page only: Surasura's window keeps its own."] },
   { k: "keys", key: "journey_keys", name: "Keys", def: "qwerty", opts: [["qwerty", "QWERTY"], ["dvorak", "Dvorak"]],
     help: ["Dvorak puts every key in the same places.", "Move any key in the keys sheet (?): a moved key trades places."] },
+  { k: "first_meeting", key: "journey_first_meeting", name: "Where you'll first meet it", def: true, opts: [[true, "Shown"], [false, "Hidden"]],
+    help: ["The sentence you first meet the word in, marked.", "Hidden: the word's next sentences show in its place, in the list's order.", "A word's only sentence, or the one on its card, always shows."] },
 ];
 const SET = {};
 const HS = Object.assign({}, HEAD.settings);           // SHAPE 1.1's names → the page's (key names PROVISIONAL until J-SET)
 const SZ = { s: 0, m: 1, l: 2 };
 if (HS.source != null && HS.where_from == null) HS.where_from = HS.source;
 if (HS.theme != null && HS.theme !== "night" && HS.theme !== "light") HS.theme = /light/i.test(String(HS.theme)) ? "light" : "night";   // the old looks: Modern Light → Light, the rest → Night (Zen Mode: J-SET's Q6)
-const okSet = (s, v) => v != null && (s.k === "keys" && typeof v === "object" || s.opts.some((o) => String(o[0]) === String(v)));   // the learner's own key map is an object
+const okSet = (s, v) => v != null && (s.k === "keys" && typeof v === "object" || (typeof s.def !== "boolean" || typeof v === "boolean") && s.opts.some((o) => String(o[0]) === String(v)));   // the learner's own key map is an object; a switch only a switch ("false" is none)
 for (const s of SETTINGS) SET[s.k] = okSet(s, HS[s.k]) ? HS[s.k] : s.def;
 const SET_WAIT = {};                                   // setting -> "send" | "wait" | "queued" (until Surasura has it)
 
@@ -679,7 +681,7 @@ async function readState() {                              // true when an answer
     for (const [l, on] of keep) if (on) FLAGGED.add(l); else FLAGGED.delete(l);
   }
   if (a.settings && typeof a.settings === "object") {
-    for (const s of SETTINGS) if (a.settings[s.key] != null && !SET_WAIT[s.k]) SET[s.k] = a.settings[s.key];
+    for (const s of SETTINGS) if (a.settings[s.key] != null && !SET_WAIT[s.k] && (typeof s.def !== "boolean" || typeof a.settings[s.key] === "boolean")) SET[s.k] = a.settings[s.key];   // a switch only a switch
     applyLook();
   }
   return stateKey() !== was;
@@ -796,9 +798,14 @@ function flagLine(id, k, reasons, note, on) {
 /* each setting redraws only the part it owns (the redraw rule): a look one is CSS, a data one its own part */
 const SET_DRAW = {
   theme: () => applyLook(), word_size: () => applyLook(), sentence_size: () => applyLook(), where_from: () => applyLook(),
-  pitch: () => drawPart("reading"), sentences: () => drawPart("lines"), meanings: () => drawDesk(),
+  pitch: () => drawPart("reading"), sentences: () => linesAgain(), first_meeting: () => linesAgain(), meanings: () => drawDesk(),
   keys: () => { drawPart("acts"); drawDesk(); },
 };
+function linesAgain() {                                // fewer lines shown: the chosen one stays among them
+  const id = curWordId(), w = id != null && wordNow(id);
+  if (w) S.line = Math.max(0, Math.min(S.line, shownLines(id, w).ks.length - 1));
+  drawPart("lines");
+}
 function setSetting(k, value) {
   const s = SETTINGS.find((x) => x.k === k);
   SET[k] = value; SET_WAIT[k] = "send";
@@ -862,16 +869,36 @@ function hl(text, w) {
   return esc(text);
 }
 const PLAYABLE = /\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|mp4|m4v|webm)$/i;
-function lineHtml(id, w, k, sel) {
+function lineHtml(id, w, k, p, sel, meet) {         // line k of the word's, shown p-th; `meet`: the first-meeting one
   const ln = w[9][k], src = srcOf(id, ln[1]);
   const label = src ? src[0] : "", kind = src ? src[1] : "", play = src ? src[3] : "";
   const can = play && (PLAYABLE.test(play) || built("clip/cut") && D.routes != null) && ln[2] != null;
   const lid = lineId(ln, src), lit = FLAGGED.has(lid), fw = shownWait(FWAIT.get(lid));
   const flag = built("line/flag") ? `<button class="fl ${lit ? "lit" : ""} ${fw}" data-flag="${k}" aria-label="Flag this sentence" data-tip="${lit ? "Flagged for Send report" : "Flag this sentence for Send report"}${fw === "queued" ? "\n" + waitWord() : ""}">⚑</button>` : "";
-  const oc = k === 0 && (w[6] & 8) ? `<div class="oc">On your card</div>` : "";
-  return `<div class="ln ${sel ? "sel" : ""}" data-li="${k}"><button class="pl ${can ? "" : "none"}" data-play="${k}" aria-label="Play the line" data-tip="▶ the line${kt("line")}"><svg class="i" viewBox="0 0 16 16"><path d="M5 3.5v9l7-4.5z" fill="currentColor"/></svg></button><div class="lt">${oc}<div class="tx">${hl(ln[0], w)}</div><div class="src" data-tip="${esc(label)}">${kindIcon(kind)}<span class="sn">${esc(label)}</span></div></div>${flag}</div>`;
+  const tags = [k === 0 && (w[6] & 8) ? "On your card" : "", meet ? "Where you'll first meet it" : ""].filter(Boolean);
+  const oc = tags.length ? `<div class="oc">${tags.join(" · ")}</div>` : "";
+  return `<div class="ln ${sel ? "sel" : ""}${meet ? " fm" : ""}" data-li="${p}"><button class="pl ${can ? "" : "none"}" data-play="${k}" aria-label="Play the line" data-tip="▶ the line${kt("line")}"><svg class="i" viewBox="0 0 16 16"><path d="M5 3.5v9l7-4.5z" fill="currentColor"/></svg></button><div class="lt">${oc}<div class="tx">${hl(ln[0], w)}</div><div class="src" data-tip="${esc(label)}">${kindIcon(kind)}<span class="sn">${esc(label)}</span></div></div>${flag}</div>`;
 }
 function linesShown(w) { const n = Number(SET.sentences) || 0; return n > 0 ? Math.min(n, w[9].length) : w[9].length; }
+/* The first-meeting line (SPEC § Sentences are the list's; Sonic: its own marked line, shown by default, hideable):
+   of the lines shown, the first whose source is the episode the word is first met in (its own, w[5]; outside Only i+1
+   that is the list's first line, analyzer note 35). Marked, never chosen: the page adds, drops or moves no line of the
+   list's. Hidden, the next lines show in its place in the list's order — but never the word's only line, nor the one
+   on its card (PROVISIONAL, J-PAGE 5). {ks: the lines shown, as the word's own numbers; meet: the marked one or -1;
+   hid: one is hidden} */
+function shownLines(id, w) {
+  const all = w[9].length, n = linesShown(w);
+  let m = -1;
+  for (let k = 0; k < n && m < 0; k++) { const s = srcOf(id, w[9][k][1]); if (s && s[2] === w[5]) m = k; }
+  const off = SET.first_meeting === false, hid = off && m >= 0 && all > 1 && !(m === 0 && (w[6] & 8));
+  const ks = [];
+  for (let k = 0; k < all && ks.length < n; k++) if (!(hid && k === m)) ks.push(k);
+  return { ks, meet: off ? -1 : m, hid };
+}
+function lineK() {                                      // the chosen line (S.line: its place among those shown), as the word's own number
+  const id = curWordId(), w = id != null && wordNow(id), ks = w ? shownLines(id, w).ks : [];
+  return ks[S.line] ?? ks[0] ?? 0;
+}
 /* the word's parts, each its own region, so a setting or a press redraws only its own */
 function readingPart(w) {
   const play = (w[6] & 8) && built("word/audio") && D.routes != null ? `<button class="ib" data-act="word" aria-label="Play the word" data-tip="▶ the word, from its card${kt("word")}"><svg class="i" viewBox="0 0 16 16"><path d="M3 6v4h2.5L9 13V3L5.5 6z"/><path d="M11 5.5a3.5 3.5 0 0 1 0 5"/></svg></button>` : "";
@@ -886,10 +913,10 @@ function actsPart(w) {
   return `<div class="actw" data-r="acts" data-w="${esc(w[0])}"><div class="acts">${b("known", "✓ Known", "Known: press again to clear it", "Known: off your list")}${b("ignore", "⊘ Ignore", "Ignored: press again to clear it", "Ignore: never study it")}${pick}</div>${look}</div>`;
 }
 function linesPart(id, w, list) {
-  const n = linesShown(w);
+  const { ks, meet, hid } = shownLines(id, w), left = w[9].length - ks.length - (hid ? 1 : 0);
   let h = "";
-  for (let k = 0; k < n; k++) h += lineHtml(id, w, k, !list && k === S.line);
-  const more = w[9].length > n ? `<div class="more">+${w[9].length - n} more in Settings › Sentences per word</div>` : "";
+  ks.forEach((k, p) => { h += lineHtml(id, w, k, p, !list && p === S.line, k === meet); });
+  const more = left > 0 ? `<div class="more">+${left} more in Settings › Sentences per word</div>` : "";
   return `<div class="lines" data-r="lines">${h}${more}</div>`;
 }
 function wordHtml(id, w, list) {
@@ -908,9 +935,14 @@ function drawPart(part, word) {
     const w = id != null && wordNow(id);
     if (!w || (word != null && w[0] !== word)) continue;
     const html = part === "reading" ? readingPart(w) : part === "acts" ? actsPart(w) : linesPart(id, w, !!card);
-    if (el.outerHTML !== html) { el.outerHTML = html; st.__h = null; }
+    // compared as nodes: `esc` writes ' as &#39;, which outerHTML never gives back, so a string compare redrew a part
+    // with an apostrophe in it at every press
+    PART_T.innerHTML = html;
+    const nu = PART_T.content.firstElementChild;
+    if (nu && !el.isEqualNode(nu)) { el.replaceWith(nu); st.__h = null; }
   }
 }
+const PART_T = document.createElement("template");
 const drawActs = (word) => drawPart("acts", word);
 function meaningHtml(id, w) {
   if (!S.open.meaning) return "";
@@ -1308,7 +1340,7 @@ document.addEventListener("click", (e) => {
     else if (a === "picker") { if (rail.picker) rail.picker(); }
     else if (a === "meaning") toggleMeaning();
     else if (a === "word") playWord();
-    else if (a === "pick") pickLine(S.line);
+    else if (a === "pick") pickLine(lineK());
     return;
   }
   if ((el = c("[data-pre]"))) { prestudied(Number(el.dataset.pre), "press"); return; }
@@ -1367,7 +1399,7 @@ document.addEventListener("keydown", (e) => {
     case "ArrowDown": case " ": e.preventDefault(); if (S.list) listMove(1); else step(1); break;
     case "ArrowUp": e.preventDefault(); if (S.list) listMove(-1); else step(-1); break;
     case "ArrowLeft": case "ArrowRight": selLine(S.line + (e.key === "ArrowRight" ? 1 : -1)); e.preventDefault(); break;
-    case "Enter": pickLine(S.line); break;
+    case "Enter": pickLine(lineK()); break;
     case "PageDown": e.preventDefault(); epStep(1); break;
     case "PageUp": e.preventDefault(); epStep(-1); break;
     case "/": e.preventDefault(); $("q").focus(); break;
@@ -1385,11 +1417,11 @@ function listMove(d) {
 function doAction(a) {
   if (a === "known" || a === "ignore") { if (S.list) { markWord(a); listMove(1); } else markWord(a); }
   else if (a === "pre") prestudied(S.ep, "press");
-  else if (a === "line") playLine(S.line);
+  else if (a === "line") playLine(lineK());
   else if (a === "word") playWord();
   else if (a === "meaning") toggleMeaning();
   else if (a === "pitch") { S.pitchShown = !S.pitchShown; drawPart("reading"); }
-  else if (a === "pick") pickLine(S.line);
+  else if (a === "pick") pickLine(lineK());
   else if (a === "filter") setFilter((S.filter + 1) % FILTERS.length);
   else if (a === "focus") toggleFocus();
   else if (a === "lookup") { const a2 = $("stage").querySelector('a[aria-label="Look the word up"]'); if (a2) a2.click(); }
@@ -1403,7 +1435,7 @@ function redrawMarks() {                               // marks read back: each 
 function selLine(k) {                                   // the chosen line: two lines' class, nothing else
   const id = curWordId(), w = id != null && wordNow(id);
   if (!w) return;
-  S.line = Math.max(0, Math.min(linesShown(w) - 1, k));
+  S.line = Math.max(0, Math.min(shownLines(id, w).ks.length - 1, k));
   for (const el of $("stage").querySelectorAll(".lines > .ln")) setCls(el, "sel", Number(el.dataset.li) === S.line);
   $("stage").__h = null;
 }
@@ -1466,7 +1498,7 @@ function afterFirstWord() {
   if (window.JSELFTEST && /[?&]selftest=/.test(location.search)) setTimeout(() => window.JSELFTEST(window.__J), 50);
 }
 window.__J = { S, page, rail: () => rail, TIMES, D, MARK, MWAIT, PRE, FLAGGED, QUEUE: () => QUEUE, SET, SET_WAIT, SETTINGS, KEYS: () => KEYS, ACTIONS, PRESETS,
-  RC, go, step, epStep, markWord, pickLine, selLine, drawPart, drawDesk, redrawMarks, prestudied, setSetting, setFilter, setOrder, toggleFocus, toggleList, search, jumpTo, hello, readState, flushQueue, drawWord,
+  RC, go, step, epStep, markWord, pickLine, selLine, srcOf, shownLines, drawPart, drawDesk, redrawMarks, prestudied, setSetting, setFilter, setOrder, toggleFocus, toggleList, search, jumpTo, hello, readState, flushQueue, drawWord,
   openSettings, openKeys, openFlag, flagLine, closeLayer, doAction, curWordId, wordNow, seq, loadEp, epReady, blob, blobNow, kanjiTip, lineId, stoneSvg, setDoor, mediaUrl,
   CHUNKS, SIDX, buildSearch, tipText, nextEp, listScrolled, D14_MS, SWAP_SHOWN };
 start();

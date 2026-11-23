@@ -69,7 +69,9 @@
 
 ## More
 
-- **Piyo ぴよ** (practise with your own AI): Settings › Connections › *Piyo ぴよ*.
+- **Piyo ぴよ** (practise with your own AI): Settings › Connections › *Piyo ぴよ*. Besides stories, chats and
+  quizzes, ask it to "make me say my words" (kind *produce*): one word you know at a time, a short scene,
+  a few easy words banned, and the word comes back later if it didn't come.
 - **Report a problem** (the bug icon, top right): **Send report** shows exactly what goes, your Windows name taken
   out, then sends it to Sonic; **Make a zip instead** keeps it on your PC.
 - Questions: [FAQ](Surasura%20FAQ.md) · [How Parsing Works](How%20Parsing%20Works.md) ·

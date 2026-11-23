@@ -1010,6 +1010,25 @@ def _made_by_connect(language):
         return {}
 
 
+def _asked_first(language, cards):
+    """Kyou-AF (journey v3 D3): the cards of `cards` you asked for from the journey (*Add now*), in the order you asked
+    (`swap.asked_first`, Connect's record; a note's cards by id) -> [card id] for `plan(asked=)`. [] without Connect's
+    record or when it can't be read just now: every card placed as before (the next run reads it again)."""
+    try:
+        from app.connect import swap
+        notes = swap.asked_first(language)
+    except Exception:
+        import logging
+        logging.getLogger("surasura-cli").info("Junban: the cards asked from the journey weren't read this run",
+                                               exc_info=True)
+        return []
+    if not notes:
+        return []
+    place = {note: index for index, note in enumerate(notes)}
+    return [card["card_id"] for card in sorted((card for card in cards if card.get("note") in place),
+                                               key=lambda card: (place[card["note"]], card["card_id"]))]
+
+
 def _journey_pending(language, csv_path=None):
     """The store's "journey pending" (True / False), or None outside store mode — and None while the list
     itself is missing ("is the list missing at all?" is preflight's question, as below)."""
@@ -2059,8 +2078,10 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
     # as unmatched — the same pass, so the run writes the order the preview showed (I5).
     excluded = _excluded(settings)
     number = _numbering(language, decks, job, front)
+    asked = _asked_first(language, cards) if preview else None
     writes, stats = plan(cards, rank_of, exclude=excluded, number=number, pins=pins, out=set(outs), weave=weave,
-                         width=pin_feed.SIDE_WIDTH if weave else None)     # Kyou-B: two titles at a time
+                         width=pin_feed.SIDE_WIDTH if weave else None,     # Kyou-B: two titles at a time
+                         asked=asked)
     if side is not None and side[0] and files is not None:
         # Kyou-C: every title's count — the cards the weave could take (none in scope: 0) — for the host to record
         # (`pins.record_side`): the one rule the window, Connect's top N and Generate's order follow (`side_pair`).

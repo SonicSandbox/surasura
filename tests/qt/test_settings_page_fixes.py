@@ -164,7 +164,10 @@ def test_at_text_size_large_no_control_runs_past_the_page_and_narrow_rows_stack(
     page._settle()
     widest = max(v.minimumSizeHint().width() for v in page.rows.values() if v.isVisibleTo(page))
     m = page.body.layout().contentsMargins()
-    width = page.nav_panel.width() + 1 + m.left() + m.right() + widest + extra + 4
+    # (+ the scroll bar's width, Mado-LT 5: the view is the page less the nav and the bar — the old widest row, the
+    # sync choices side by side, asked ~50 px more than the body needed, which hid the bar's 10)
+    bar = page.scroll.verticalScrollBar().sizeHint().width()
+    width = page.nav_panel.width() + 1 + m.left() + m.right() + widest + bar + extra + 4
     page.resize(width, 620)
     QApplication.processEvents()
     page._settle()
@@ -567,6 +570,38 @@ def test_every_choice_cards_line_fits_its_card_whole():
         if row.kind == "cards":
             for _v, _label, line in catalog.options(row, dict(ALL_ON), "ja"):
                 assert len(line) <= 80, (row.id, line)
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_every_choice_set_side_by_side_fits_the_narrowest_page(language):
+    """Mado-LT 4: a Choice sets its options side by side and never wraps, so one wider than the page widens the whole
+    page past its view (its right edge cut off, every row laid out and painted again). The narrowest is the window's
+    minimum at Large text: a 625 px column on Windows' fonts, where 66 characters over three options measured 602 px with
+    their row (2026-11-22; the suite's stand-in font measures about twice as wide, so the bound is in characters). A
+    longer one-of is a `select`."""
+    for row in catalog.ROWS:
+        if row.kind == "choice":
+            labels = [label for _v, label, _line in catalog.options(row, dict(ALL_ON), language)]
+            assert sum(map(len, labels)) <= 60, (row.id, labels)
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_sync_delay_is_a_list_that_keeps_a_held_value_and_never_widens_the_page(qapp, language):
+    """Mado-LT 4 (Anki & mining's *More options* repainted the page above its button): *Sync Anki after tomorrow's
+    cards change* set its three choices side by side — with 順's held *5 minutes after* a fourth — wider than a small
+    window's page at Large text, so opening the fold widened the page. A list now: the held value shown and kept until
+    another is picked, the fold opens with the page's width unchanged, a pick writes its one key."""
+    page, store = make_page(dict(ALL_ON, anki_sync_delay_min=5), language)
+    select = page.rows["anki_sync_delay_min"].controls[0]
+    assert isinstance(select, sc.Select)
+    assert [v for v, _l, _t in select._options] == [1, 0, "off", 5]
+    assert select.value() == 5 and select._options[3][1] == "5 minutes after"
+    width = page.body.width()
+    page.fold("anki")
+    page._settle()
+    assert page.rows["anki_sync_delay_min"].isVisibleTo(page)
+    assert page.body.width() == width                                   # the page never grew wider than it was
+    assert _written(store, select, 0) == [{"anki_sync_delay_min": 0}]
 
 
 # --- Mado-LT (3.0.18): *Your daily loop*'s three move cards pick live, one flag one move ---------------------------- #

@@ -912,19 +912,20 @@ function actsPart(w) {
   const look = LANG === "ja" ? `<a class="ib" href="https://nadeshiko.co/en/search/${encodeURIComponent(w[0])}" target="_blank" rel="noopener noreferrer" aria-label="Look the word up" data-tip="⌕ Look it up in your browser${kt("lookup")}">⌕</a>` : "";
   return `<div class="actw" data-r="acts" data-w="${esc(w[0])}"><div class="acts">${b("known", "✓ Known", "Known: press again to clear it", "Known: off your list")}${b("ignore", "⊘ Ignore", "Ignored: press again to clear it", "Ignore: never study it")}${pick}</div>${look}</div>`;
 }
+/* the header counts only the lines shown (PROVISIONAL, J-FIX): it is inside the lines' part, so a setting that
+   changes which lines show redraws the count with them and nothing else */
 function linesPart(id, w, list) {
   const { ks, meet, hid } = shownLines(id, w), left = w[9].length - ks.length - (hid ? 1 : 0);
   let h = "";
   ks.forEach((k, p) => { h += lineHtml(id, w, k, p, !list && p === S.line, k === meet); });
   const more = left > 0 ? `<div class="more">+${left} more in Settings › Sentences per word</div>` : "";
-  return `<div class="lines" data-r="lines">${h}${more}</div>`;
+  return `<div class="lines" data-r="lines"><div class="sh">Sentences · ${ks.length} <button class="q" data-help="lines" aria-label="About the sentences">?</button></div>${h}${more}</div>`;
 }
 function wordHtml(id, w, list) {
   const s = seq(S.ep) || [];
   const head = list ? "" : `<div class="meta">Word ${S.wi + 1} of ${s.length} <span class="ml">${kindIcon(EPS[S.ep][5], gemOf(S.ep))} ${esc(epTitle(S.ep))}</span>${navHtml()}</div>`;
   return `${head}<div class="wrow"><span class="w jp" lang="${LANG}">${esc(w[1] || w[0])}</span>${marksHtml(w[6])}<span class="ah" data-tip="Its count in this episode and the next two">×${w[7]}</span>${ankiHtml(w[6])}</div>
 ${readingPart(w)}${actsPart(w)}
-<div class="sh">Sentences · ${w[9].length} <button class="q" data-help="lines" aria-label="About the sentences">?</button></div>
 ${linesPart(id, w, list)}`;
 }
 /* one part of the shown word redrawn in place (word view), or of each card showing the word (List) */

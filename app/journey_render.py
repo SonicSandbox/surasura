@@ -783,6 +783,9 @@ class Sources:
         self.titles = {}                        # {file name: its shown name}: the head's, so each is made once
         self.items = {}                         # {rel path: the store's item id}: a line id's first half
         self._rows = {}
+        self._answers = {}                      # {rel path: the timer's memo answers for it}: `prepare`'s
+        self.saved = False                      # the timer's memo written with every answer (`prepare`); a line
+                                                # asked of the timer after it sets this back
 
     def row(self, rel):
         found = self._rows.get(rel)
@@ -809,29 +812,60 @@ class Sources:
     def prepare(self, asks):
         """Each ▶ line's times (`asks`: [(rel, text)], the ones `build` will ask) found a file at a time, in the order
         the page names them, and that file's lines let go before the next (J-TIMES: holding every subtitle's
-        `cues.Timeline` to the render's end was 78 MB at 20,000 files) — the answers are the timer's memo's, so `times`
-        then reads them. The same calls `times` makes, so the same answers and the same memo, in another order."""
-        if self.timer is None:
+        `cues.Timeline` to the render's end was 78 MB at 20,000 files), and its folder's listing once its last file is
+        checked (31 MB of entries) — the answers are the timer's memo's: `times` then reads each file's from it, one
+        lookup a line. The same calls `times` makes for a line the memo lacks, so the same answers and the same memo."""
+        timer = self.timer
+        if timer is None:
             return
+        media, smap = self.media, self.map
         by_file = {}
         for rel, text in asks:
-            if (self.media.get(rel) or ("",))[0]:
-                by_file.setdefault(rel, []).append(text)
+            texts = by_file.get(rel, False)
+            if texts is False:
+                texts = by_file[rel] = [] if (media.get(rel) or ("",))[0] else None
+            if texts is not None:
+                texts.append(text)
+        paths = {rel: (smap.get(rel) or {}).get("abs") or rel for rel, texts in by_file.items() if texts is not None}
+        left = {}                               # {folder: its files still to check}
+        for path in paths.values():
+            folder = os.path.split(path)[0]
+            left[folder] = left.get(folder, 0) + 1
         # AnchorFinder's own (static_html_generator, J-CUT's file: a `forget` there once it is theirs): each file's
-        # lines, and the folder listings its freshness check reads once a file (31 MB of entries at 20,000 files)
-        kept, listings = getattr(self.timer, "_timelines", None), getattr(self.timer, "_dirs", None)
-        for rel, texts in by_file.items():
-            for text in texts:
-                self.times(rel, text)
+        # memo entry, its lines, and the folder listings its freshness check reads once a file
+        entry_of = getattr(timer, "_entry", None)
+        kept, listings = getattr(timer, "_timelines", None), getattr(timer, "_dirs", None)
+        for rel, path in paths.items():
+            answers = entry_of(path)["a"] if entry_of is not None else {}
+            for text in by_file[rel]:
+                hit = answers.get(text)
+                if not (isinstance(hit, list) and len(hit) == 3):
+                    self.times(rel, text)       # the memo lacks it: the line reader's answer, kept in `answers`
+            if entry_of is not None:
+                self._answers[rel] = answers
             if kept is not None:
-                kept.pop((self.map.get(rel) or {}).get("abs") or rel, None)
-        if listings is not None:
-            listings.clear()                    # every file asked has been checked: a later one lists its folder again
+                kept.pop(path, None)
+            folder = os.path.split(path)[0]
+            left[folder] -= 1
+            if not left[folder] and listings is not None:
+                listings.pop(folder, None)      # its every file asked is checked: a later one lists it again
+        # Written now, before the meanings and the pitch, rather than at the render's end: its one string (10 MB at
+        # 20,000 files) was the first render's peak there. The same memo — `build` asks nothing more.
+        save = getattr(timer, "save_memo", None)
+        if save is not None:
+            save()
+            self.saved = True
 
     def times(self, rel, sentence):
+        answers = self._answers.get(rel)
+        if answers is not None:                 # `prepare`'s: the timer's memo for this file, checked this render
+            hit = answers.get(sentence)
+            if isinstance(hit, list) and len(hit) == 3:
+                return hit[1], hit[2]
         if self.timer is None or not (self.media.get(rel) or ("",))[0]:
             return None, None
         meta = self.map.get(rel) or {}
+        self.saved = False                      # a line `prepare` didn't ask: the memo is written again at the end
         try:
             return self.timer.times(meta.get("abs") or rel, sentence)
         except Exception:
@@ -1230,12 +1264,13 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
         from app import own_dicts
         return own_dicts.lookup(keys)
     memo = WordMemo(os.path.join(gen.RESULTS_DIR, WORD_MEMO), *memo_keys(language))
+    sources = Sources(language, source_map, None, media, timer)
     out = build(language, rows, stats, priority, facts, settings, backlog=backlog,
                 known=_known_terms(language, script),
-                ranks=ranks, pitch=Pitch(language, tagger), sources=Sources(language, source_map, None, media, timer),
+                ranks=ranks, pitch=Pitch(language, tagger), sources=sources,
                 plan=plan, own=own, stamp=stamp, memo=memo, nothing=nothing_new(language))
     out.head["dirs"] = dirs
-    if timer is not None:
+    if timer is not None and not sources.saved:
         timer.save_memo()
     memo.save()
     if not out.head.get("library"):

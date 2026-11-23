@@ -157,6 +157,84 @@ def test_the_timeline_reads_no_name_clues_and_the_same_lines(language):
     assert line is not None and line[0] > 0
 
 
+def _two_shows(tmp_path, language):
+    """Show A's two episodes in one folder, show B's one in another, the page naming them A1, B1, A2 — so A's folder
+    is still to be checked after B's is done."""
+    source_map, media = {}, {}
+    for show, e in (("A", 1), ("B", 1), ("A", 2)):
+        folder = tmp_path / "data" / show
+        folder.mkdir(parents=True, exist_ok=True)
+        name = f"ep{e:02d}.srt"
+        shutil.copyfile(SUBTITLE[language], folder / name)
+        (folder / f"ep{e:02d}.mp4").write_bytes(b"")
+        rel = f"{show}/{name}"
+        source_map[rel] = {"name": name, "type": "subtitle", "abs": str(folder / name)}
+        media[rel] = (str(folder / f"ep{e:02d}.mp4"), "")
+    asks = [(rel, text) for rel in source_map for text in LINES[language]]
+    return source_map, media, asks
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_folders_listing_goes_once_its_last_file_is_checked_and_never_twice(tmp_path, language, monkeypatch):
+    source_map, media, asks = _two_shows(tmp_path, language)
+    sources, timer = _sources(tmp_path, language, source_map, media)
+    listed = []
+    real = os.scandir
+    monkeypatch.setattr(os, "scandir", lambda folder=".": listed.append(os.path.basename(folder)) or real(folder))
+    seen = {"A": [], "B": []}
+
+    def times(path, sentence):                  # what the timer still holds as each file is asked
+        seen[os.path.basename(os.path.dirname(path))].append(sorted(os.path.basename(f) for f in timer._dirs))
+        return real_times(path, sentence)
+    real_times = timer.times
+    monkeypatch.setattr(timer, "times", times)
+    sources.prepare(asks)
+    # why: each folder listed once (A's kept while B was checked — dropped early, A2 would list it again: the
+    # stats the listing saves), and none left once every file was checked (the 31 MB at 20,000 files)
+    assert sorted(listed) == ["A", "B"] and timer._dirs == {} and timer._timelines == {}
+    assert seen["B"][0] == ["A", "B"] and seen["A"][-1] == ["A"]        # B's gone after B1; A's stays for A2
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_lines_memo_is_written_once_with_every_answer_and_again_after_a_late_line(tmp_path, language):
+    source_map, media, asks = _two_shows(tmp_path, language)
+    sources, timer = _sources(tmp_path, language, source_map, media)
+    sources.prepare(asks)
+    memo = tmp_path / "line_times.json"
+    # why: written before the meanings and the pitch (its one string was the 20,000-file render's peak at the end),
+    # with every answer the page asks — so the render's end writes nothing more
+    assert sources.saved and memo.exists()
+    written = json.loads(memo.read_text(encoding="utf-8"))
+    assert sorted(written) == sorted(meta["abs"] for meta in source_map.values())
+    assert all(len(entry["a"]) == len(LINES[language]) for entry in written.values())
+    # every answer `times` reads now is the timer's own, line for line (one lookup: the memo prepare kept)
+    fresh, _t = _sources(tmp_path / "data", language, source_map, media)
+    for rel, text in asks:
+        assert sources.times(rel, text) == fresh.times(rel, text) and sources.saved
+    # a line prepare never asked: the line reader's answer, and the memo is written again at the render's end
+    late = sources.times("A/ep01.srt", "まったく別の文。" if language == "ja" else "完全不同的句子。")
+    assert late == (None, None) and not sources.saved
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_line_the_memo_holds_as_a_damaged_answer_is_asked_again(tmp_path, language):
+    source_map, media, asks = _two_shows(tmp_path, language)
+    sources, timer = _sources(tmp_path, language, source_map, media)
+    sources.prepare(asks)
+    timer.save_memo()
+    # The memo's file hand-edited (or written by an older reader): one answer no longer [anchor, start, end]
+    memo = tmp_path / "line_times.json"
+    data = json.loads(memo.read_text(encoding="utf-8"))
+    path = source_map["A/ep01.srt"]["abs"]
+    data[path]["a"][LINES[language][0]] = [None, 1.2]
+    memo.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    again, timer = _sources(tmp_path, language, source_map, media)
+    again.prepare(asks)
+    # why: never a time served from a broken answer — the line reader's again, and the memo mended
+    assert again.times("A/ep01.srt", LINES[language][0]) == (1.2, 4.1 if language == "ja" else 3.8)
+    assert timer._entry(path)["a"][LINES[language][0]] == [None, 1.2, 4.1 if language == "ja" else 3.8]
+
+
 # --- the rail's stones ------------------------------------------------------------------------------------------ #
 
 def _nothing_ledger(tmp_path, language):

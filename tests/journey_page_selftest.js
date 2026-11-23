@@ -833,11 +833,11 @@
       {                                                  // a word known through Anki (never in `state`): the route skips it
         seed(JSON.stringify(mine)); mine.forEach((w) => J.MARK.delete(w));
         const hook = window.__J_DOOR_HOOK;
-        window.__J_DOOR_HOOK = (route, body) => route === "words/mark" ? { ok: true, done: body.marks.length - 1, undo_id: "s." + (900 + body.marks.length), stale: [], skipped: [mine[1]] } : hook(route, body);
+        window.__J_DOOR_HOOK = (route, body) => route === "words/mark" ? { ok: true, done: body.marks.length - 2, undo_id: "s." + (900 + body.marks.length), stale: [], skipped: [mine[1]] } : hook(route, body);
         n0 = CALLS.length;
         await J.hello(); await settle();
         ok("a skipped word (Known through Anki) is never shown Ignored; the rest are", J.MARK.get(mine[0]) === "ignore" && !J.MARK.has(mine[1]) && J.MARK.get(mine[2]) === "ignore" && !!localStorage.getItem(DONE));
-        ok("…and the toast counts the words actually added", /\b2 words from your old journey page/.test($("#toast").textContent), $("#toast").textContent);
+        ok("…and the toast counts the words Surasura actually added (one skipped, one it already had: 1 of 3)", /\b1 word from your old journey page/.test($("#toast").textContent), $("#toast").textContent);
         seed(JSON.stringify([mine[1]])); n0 = CALLS.length;
         window.__J_DOOR_HOOK = (route, body) => route === "words/mark" ? { ok: true, done: 0, undo_id: null, stale: [], skipped: body.marks.map((m) => m.word) } : hook(route, body);
         const t0 = $("#toast").textContent;

@@ -308,6 +308,13 @@ def _chosen(language, keys, avoid, files, bad, reachable):
 def _resolve_line_id(steps, language, text):
     """The learner's picked line -> (item id, its text), or None when it no longer exists (the item gone, its subtitle
     gone or re-timed past it)."""
+    got = line_cue(steps, language, text)
+    return (got[0], got[1].text) if got else None
+
+
+def line_cue(steps, language, text):
+    """A line id (`line_id()`'s form) -> (item id, its `cues.Cue`, the subtitle it is in), or None when it no longer
+    exists — the one way a picked line is found: Swap's (`_resolve_line_id`) and the journey's clip (`clips.cut`)."""
     got = _parse_line_id(text)
     if got is None:
         return None
@@ -320,7 +327,7 @@ def _resolve_line_id(steps, language, text):
         from app.cues import seconds
         for cue in cues.read(subtitle, language):
             if abs(int(round(seconds(cue.start) * 1000)) - ms) <= 5:
-                return item_id, cue.text
+                return item_id, cue, subtitle
     except Exception:
         log.info("Swap: a picked line couldn't be read", exc_info=True)
     return None

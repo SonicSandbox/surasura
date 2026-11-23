@@ -204,15 +204,16 @@ def plan(anki, steps, lang, epub, mapping):
     return out
 
 
-def cut(miner, lang, profile, can, run_dir, timeout=None, troubles=None):
+def cut(miner, lang, profile, can, run_dir, timeout=None, troubles=None, on_poll=None, below=False):
     """The clips of `can` ({note id: Cue}) -> {note id: clip path}: Anki Miner's `media`, CUT_LINES cues a call (S6), an
-    episode per audio file, each cue once (two cards of one cue share its clip). Each answered line is matched back to
+    episode per audio (or video: J-CLIP's one line, `clips.cut`) file, each cue once (two cards of one cue share its clip). Each answered line is matched back to
     its cue only when its `line_start` and its length are the cue's (within `anki_miner.LINE_TOLERANCE`: two cues of
     one start are two cues, Anki Miner's nearest line the first's — r2 S1) and its text holds the cue's or sits inside
     it (Anki Miner drops a speaker tag) — else, a line it cut no clip for, an answer of another length or a run that
     refused that file, those cards are left out. A refusal of the first call is raised; of a later one, the cutting
     stops with what was cut (pressed again, only the cards still empty are cut). Why cards were left out goes into
-    `troubles` (a list); nothing cut at all for a refusal is raised in Anki Miner's words (r2 S2)."""
+    `troubles` (a list); nothing cut at all for a refusal is raised in Anki Miner's words (r2 S2). `on_poll` / `below`:
+    `anki_miner.api`'s (the journey's clips cut ahead of a press: stopped at a press, below normal priority)."""
     from app.connect import anki_miner, lineup
     cards = {}
     for note_id, cue in can.items():
@@ -230,8 +231,11 @@ def cut(miner, lang, profile, can, run_dir, timeout=None, troubles=None):
                 key = f"c{c}e{len(runs) + 1}"
                 runs[key] = (cue.audio, cue.subtitle, [])
             runs[key][2].append(cue)
+        # a video's line goes as `video_file` (the journey's ▶ on an .mkv line, `clips`), an audio file's as
+        # `audio_file` — the one cutter for both, as the spot-check sends them (`lineup._spot_check`)
         job = {"schema": 1, "run_dir": run_dir, "language": lang,
-               "episodes": [{"run_id": run_id, "audio_file": os.path.abspath(audio),
+               "episodes": [{"run_id": run_id,
+                             ("audio_file" if anki_miner.is_audio(audio) else "video_file"): os.path.abspath(audio),
                              "subtitle_file": os.path.abspath(sub),
                              "lines": [{"line_start": cue.start, "line_expansion": [0, 0]} for cue in cues]}
                             for run_id, (audio, sub, cues) in runs.items()]}
@@ -240,7 +244,8 @@ def cut(miner, lang, profile, can, run_dir, timeout=None, troubles=None):
         path = os.path.join(run_dir, f"media-{c}.json")
         lineup._write_json(path, job)
         try:
-            verdict = anki_miner.api(miner, ["media", path], timeout=timeout or lineup.SPOT_TIMEOUT)
+            verdict = anki_miner.api(miner, ["media", path], timeout=timeout or lineup.SPOT_TIMEOUT, on_poll=on_poll,
+                                     below=below)
             if not verdict.get("runs"):
                 anki_miner._result(verdict)     # a refusal of the whole call: raised
         except anki_miner.AnkiMinerError as e:

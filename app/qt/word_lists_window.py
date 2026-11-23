@@ -23,9 +23,10 @@ import re
 import time
 
 from PyQt6.QtCore import QAbstractListModel, QEvent, QModelIndex, QRect, QSortFilterProxyModel, Qt
-from PyQt6.QtGui import QPalette
+from PyQt6.QtGui import QBrush, QPalette
 from PyQt6.QtWidgets import (QAbstractItemView, QButtonGroup, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget,
-                             QListWidgetItem, QPlainTextEdit, QPushButton, QStyledItemDelegate, QWidget)
+                             QListWidgetItem, QPlainTextEdit, QPushButton, QStyledItemDelegate,
+                             QStyleOptionViewItem, QWidget)
 
 from app import scrub
 from app.journey_render import _hira
@@ -61,19 +62,27 @@ class _RemoveDelegate(QStyledItemDelegate):
         (`ink-faint`) while not now."""
         if self.not_now():
             return style.qcolor(style.colours()["ink-faint"])
-        source = index.data(SOURCE) if index is not None and index.data(KNOWN_ROW) else None
+        source = _known_source(index) if index is not None else None
         if source in s.WORD_LISTS_KNOWN_MARK_INK:
             return style.qcolor(style.colours()[s.WORD_LISTS_KNOWN_MARK_INK[source]])
         return option.palette.color(QPalette.ColorRole.Text)
 
     def mark_glyph(self, index):
         """The mark painted: ✓ or ○ on a Known tab's row (its word known, or Still learning), ✕ on any other."""
-        glyph = s.WORD_LISTS_KNOWN_MARK.get(index.data(SOURCE)) if index.data(KNOWN_ROW) else None
-        return glyph or s.WORD_LISTS_REMOVE_MARK
+        return s.WORD_LISTS_KNOWN_MARK.get(_known_source(index)) or s.WORD_LISTS_REMOVE_MARK
 
     def initStyleOption(self, option, index):
-        super().initStyleOption(option, index)
+        """Qt's own, for the one role a row here paints — its text (Mado-LT 6): the six others Qt's own asks of every row in
+        view at every paint (font, alignment, ink, check, icon, background) no row sets, and each is a call into the
+        Python model, twice through the proxy."""
+        option.index = index
+        text = index.data(Qt.ItemDataRole.DisplayRole)
+        if text is not None:
+            option.features |= QStyleOptionViewItem.ViewItemFeature.HasDisplay
+            option.text = text
         option.text = scrub.shown(option.text)             # (Report a problem's picture: a name in a list scrubbed)
+        option.backgroundBrush = QBrush()
+        option.styleObject = None
 
     def mark_rect(self, option):
         side = option.rect.height()
@@ -81,7 +90,7 @@ class _RemoveDelegate(QStyledItemDelegate):
 
     def paint(self, painter, option, index):
         super().paint(painter, option, index)
-        if index.data(SOURCE) == "names":
+        if _entry_at(index)[1] == "names":
             return
         painter.save()
         painter.setPen(self.mark_colour(option, index))
@@ -195,6 +204,21 @@ class _Words(QAbstractListModel):
         row = self.row_of(at)
         if row is not None:
             self.dataChanged.emit(self.index(row, 0), self.index(row, 0))
+
+
+def _entry_at(index):
+    """The entry `index`'s row shows, read from the list's own model in Python: the paint asks it of every row in view,
+    and `index.data()` would go through Qt and back into Python twice (the proxy, then the model) for each role."""
+    model = index.model()
+    if isinstance(model, QSortFilterProxyModel):
+        index, model = model.mapToSource(index), model.sourceModel()
+    return model.entries[model.place(index.row())]
+
+
+def _known_source(index):
+    """A Known tab's row: where its word is held ("known" · "learning"); None on any other row."""
+    entry = _entry_at(index)
+    return entry[1] if len(entry) > 3 and entry[3] is not None else None
 
 
 class _WordsView(QListView):
@@ -691,6 +715,7 @@ def _find(word, source=None, reading=None, origin=None, created=None):
     return f"{word} {shown}" if shown else word
 
 
+@functools.lru_cache(maxsize=1024)                      # (a row's face, made once while it is in view)
 def _face(word, source, reading=None, origin=None, created=None):
     """A row of the list, as the view asks for it: (text, tip, search text) — the word, marked by where it is held,
     with its tip. A Known tab's row (`origin` given): the word, its reading and where it came from; its tip says since

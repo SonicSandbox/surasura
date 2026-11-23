@@ -338,13 +338,17 @@ def _step(own_ms, fn, *args):
     return own_ms() - t0
 
 
-def _after(w, own_ms):
+def _after(w, own_ms, paints):
     """The steps the event loop runs after a change, each timed alone on the window's thread's own clock: the window's
-    layout (a line shown or hidden, the count's width), the view's delayed layout of its rows (it asks `index()` of
-    every row) and the next paint (the rows in view: `data()` of those only). Then anything else posted, untimed."""
+    layout (a line shown or hidden, the count's width) and the view's delayed layout of its rows (it asks `index()` of
+    every row) -> their times; then the next paint, its time put in `paints` with the rows it drew. Then anything else
+    posted, untimed."""
     from PyQt6.QtCore import QEvent
     steps = [_step(own_ms, QApplication.sendPostedEvents, None, QEvent.Type.LayoutRequest.value),
-             _step(own_ms, w.list.doItemsLayout), _step(own_ms, w.list.viewport().repaint)]
+             _step(own_ms, w.list.doItemsLayout)]
+    drawn = len(paints["rows"])
+    paints["ms"].append(_step(own_ms, w.list.viewport().repaint))
+    paints["drawn"].append(len(paints["rows"]) - drawn)
     QApplication.processEvents()
     return steps
 
@@ -353,13 +357,16 @@ def test_ten_thousand_known_words_open_search_and_mark_in_steps_under_4_ms(main,
     """A learner with a few years of Anki knows this many words: the Known tab on the Migaku export (11,582 entries,
     10,020 known) opens, answers a search keystroke and shows a ✓'s ○ each in steps under the Qt guide's 4 ms on the
     window's thread (its own CPU time: never the time a worker or another process took meanwhile) — the rows made as
-    they come into view, never one item per word in the answer's step (~150 ms before)."""
+    they come into view, never one item per word in the answer's step (~140 ms before). A paint draws the rows in view
+    only, as many at 10,000 words as at 4: its time is the delegate's, the list's size never in it (printed, not held
+    to the 4 ms here: under a loaded machine 15 rows' text reads up to ~5 ms, before this change as after)."""
     from tests.qt.test_guide import _own_ms, _speed
     own_ms = _own_ms()
     budget = 4.0 * _speed(own_ms)                                           # 4 ms here; scaled on a slower machine
     steps = {"open": [], "keystroke": [], "press": []}
+    paints = {"ms": [], "drawn": [], "rows": []}
     moment = ["open"]
-    real_show, real_marked = WordListsWindow._show, WordListsWindow._row_marked
+    real_show, real_marked, real_paint = WordListsWindow._show, WordListsWindow._row_marked, _RemoveDelegate.paint
 
     def timed(real):
         def step(self, *a, **k):
@@ -369,18 +376,24 @@ def test_ten_thousand_known_words_open_search_and_mark_in_steps_under_4_ms(main,
             finally:
                 steps[moment[0]].append(own_ms() - t0)
         return step
+
+    def paint(self, painter, option, index):
+        paints["rows"].append(index.row())
+        return real_paint(self, painter, option, index)
     monkeypatch.setattr(WordListsWindow, "_show", timed(real_show))
     monkeypatch.setattr(WordListsWindow, "_row_marked", timed(real_marked))
+    monkeypatch.setattr(_RemoveDelegate, "paint", paint)
     shutil.copyfile(os.path.join(ja_resources_dir, "KnownWord.json"), _write("ja", []))
     w = _open(main)
     assert w.model.rowCount() == 10020 and len(steps["open"]) == 1          # the answer's own step, timed
-    steps["open"] += _after(w, own_ms)
+    steps["open"] += _after(w, own_ms, paints)
+    in_view = w.list.viewport().height() // w.list.sizeHintForRow(0) + 2   # (a row cut at each edge)
     finds = [w.shown.index(i, 0).data(FIND).casefold() for i in range(10020)]
 
     moment[0] = "keystroke"
     for text in ("ち", "ちょ", "", "灯", "zz"):                              # narrowing, cleared, a kanji, nothing
         steps["keystroke"].append(_step(own_ms, w.search.setText, text))
-        steps["keystroke"] += _after(w, own_ms)
+        steps["keystroke"] += _after(w, own_ms, paints)
         assert w.shown.rowCount() == sum(text in find for find in finds)  # every word it holds, and only those
     assert w.count.text() == "0 of 10020 words"
     w.search.clear()
@@ -388,15 +401,16 @@ def test_ten_thousand_known_words_open_search_and_mark_in_steps_under_4_ms(main,
     moment[0] = "press"
     word = w.shown.index(5000, 0).data(WORD)                               # a row deep in the list
     w.list.scrollTo(w.shown.index(5000, 0))
-    _after(w, own_ms)                                                      # (the scroll's own: not the press)
+    _after(w, own_ms, paints)                                              # (the scroll's own: not the press)
     steps["press"].append(_step(own_ms, w.mark_known_row, word))
     assert w.shown.index(5000, 0).data(SOURCE) == "learning"               # its ○ at once
-    steps["press"] += _after(w, own_ms)                                    # (its marks greyed: not now)
+    steps["press"] += _after(w, own_ms, paints)                            # (its marks greyed: not now)
     assert wait_until(lambda: not w.busy() and word in w.cleared, 30)      # the answer's step timed …
-    steps["press"] += _after(w, own_ms)                                    # … and the marks back
+    steps["press"] += _after(w, own_ms, paints)                            # … and the marks back
+    assert 0 < max(paints["drawn"]) <= in_view, (paints["drawn"], in_view)  # only ever the rows in view
     worst = {name: round(max(took), 2) for name, took in steps.items()}
-    print("Mado-LT 6 worst step, ms:", worst, "budget", round(budget, 2),
-          {name: [round(took, 2) for took in took_all] for name, took_all in steps.items()})
+    print("Mado-LT 6 worst step, ms:", worst, "budget", round(budget, 2), "paint, ms:", round(max(paints["ms"]), 2),
+          "rows drawn", max(paints["drawn"]), {name: [round(took, 2) for took in took_all] for name, took_all in steps.items()})
     assert all(took < budget for took in worst.values()), (worst, budget)
 
 
@@ -448,3 +462,36 @@ def test_the_current_word_stays_current_through_a_search_that_still_shows_it(mai
     w.search.setText("看板")
     assert not w.list.currentIndex().isValid()
     assert w.shown.index(0, 0).data(Qt.ItemDataRole.EditRole) == "看板   かんばん   · Anki card"
+
+
+def test_the_delegate_reads_each_rows_mark_and_text_from_the_lists_own_model(qapp):
+    """(Mado-LT 6: the delegate reads a row's entry from the list's model, not role by role through Qt.) On the Ignore
+    tab a known-words entry keeps its ✕ in the row's ink (never a Known tab's ✓), a name draws no mark, and each row
+    hands Qt its text to draw — through the proxy, as the window shows it."""
+    from PyQt6.QtCore import QSortFilterProxyModel
+    from PyQt6.QtWidgets import QListView, QStyleOptionViewItem
+    from app.qt.word_lists_window import _Words
+    words = _Words()
+    words.fill([("冒険", "list"), ("良い", "known"), ("太郎", "names")], ["冒険", "良い", "太郎"])
+    shown = QSortFilterProxyModel()
+    shown.setSourceModel(words)
+    view = QListView()
+    view.setModel(shown)
+    delegate = _RemoveDelegate(view, lambda _i: None)
+    view.setItemDelegate(delegate)
+    option = QStyleOptionViewItem()
+    known = shown.index(1, 0)
+    assert delegate.mark_glyph(known) == s.WORD_LISTS_REMOVE_MARK
+    assert delegate.mark_colour(option, known) == option.palette.color(option.palette.ColorRole.Text)
+    delegate.initStyleOption(option, known)
+    assert option.text == known.data(Qt.ItemDataRole.DisplayRole) == s.WORD_LISTS_MARK_KNOWN.format(word="良い")
+    assert option.features & QStyleOptionViewItem.ViewItemFeature.HasDisplay
+    view.resize(300, 120)
+    view.show()
+    QApplication.processEvents()                                            # (laid out and exposed)
+    marked = []
+    real = delegate.mark_glyph
+    delegate.mark_glyph = lambda index: marked.append(index.data(WORD)) or real(index)
+    view.viewport().repaint()
+    assert marked == ["冒険", "良い"]                                          # the name: no mark
+    view.close()

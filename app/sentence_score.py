@@ -285,17 +285,14 @@ def _young(moment):
 
 def _moment_arrays(tab, moment, order, root, srcs=None):
     """The moment as the cost's arrays, and {file: (path, normalised path, rel, kind, digest, Seen)} for the files
-    `srcs` (None: every file) — or (None, None) when no order is handed in and the table names none."""
+    `srcs` (None: every file); the list's order is `order` when one is handed in, else the table's `places`."""
     import numpy as np
     keys = tab.head["keys"]
     rows = len(keys)
     placed = np.full(rows + 1, BIG, np.int64)
     if order is None:
-        places = tab.head.get("places")     # the Generate's list order, by row (None or < 0: not on the list)
-        if places is None or len(places) != rows:
-            return None, None
-        for k, at in enumerate(places):
-            if at is not None and at >= 0:
+        for k, at in enumerate(tab.places()):   # the Generate's list order, by row (< 0: not on the list)
+            if at >= 0:
                 placed[k] = int(at)
     else:
         order = {(key[0], key[1] or ""): place for key, place in order.items()}
@@ -375,8 +372,8 @@ def choose(language, keys, *, n=1, moment, length, never=None, order=None, only=
            clean_only=False, shown=None, whole=False, table=None):
     """The best `n` sentences of each list row asked, at `moment` -> {(lemma, reading): [Line, …]}, best first ([] for
     a row with no line it can use; a key that is no row of the list is left out: the caller's library search); None
-    when there is no table for `language`, or no order to weigh by (none handed in, none in the table) — the caller
-    takes today's path.
+    when there is no table for `language` — the caller takes today's path. "New when studied" is weighed by `order`
+    when one is handed in, else by the table's `places` (the last Generate's list).
 
     `keys` the rows asked · `moment` a `Moment` · `length` the learner's Length (low, high) · `never` {key: {line text}}
     lines never returned (Swap's old card: Connect's `same_line`) · `order` {key: place} the list's order when it is
@@ -414,8 +411,6 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
     columns = _take(tab, sorted(with_lines) if whole else sorted({k for k in asked.values() if k in with_lines}))
     srcs = np.unique(columns["src"]).tolist()
     arrays, files = _moment_arrays(tab, moment, order, root, srcs)
-    if arrays is None:
-        return None             # no order to weigh "new when studied" by: the caller's own path
     low, high = length
     total, others, words, co_young = cost(columns, arrays, low, high)
     spans = _spans(columns["row"])

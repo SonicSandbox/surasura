@@ -83,6 +83,9 @@ class Table:
     def sources(self):
         return self._sources
 
+    def places(self):
+        return self.head["places"]
+
     def rows(self):
         keys = self.head["keys"]
         return {tuple(keys[k]): k for k in sorted({l["row"] for l in self.lines})}
@@ -777,9 +780,9 @@ def test_only_the_files_of_the_lines_taken_are_resolved_and_ranked(tmp_path):
     assert (ranks[1], ranks[4]) == (0, 1) and all(ranks[s] == SS.BIG for s in (0, 2, 3, 5))
 
 
-def test_no_order_handed_in_and_none_in_the_table_reads_as_none(tmp_path):
-    # The table's head names the Generate's list order ("places"); without it and without an order, "new when studied"
-    # cannot be weighed: today's path
+def test_a_head_without_places_is_refused_unless_an_order_is_handed_in(tmp_path):
+    # Every table of format 3 names the Generate's list order ("places"); a head without it is a damaged one: with no
+    # order handed in, "new when studied" cannot be weighed — today's path
     lib = Library(tmp_path)
     tab = _fest(lib, [("ep01", [FESTIVAL])])
     del tab.head["places"]
@@ -804,47 +807,55 @@ def test_the_lists_order_is_the_heads_places_not_the_rows_numbering():
 RT_KEYS = [("文化祭", "ぶんかさい"), ("準備", "じゅんび"), ("看板", "かんばん")]
 RT_EPISODES = [("ep01", [FESTIVAL, PREPARE, SIGN]), ("ep02", [COLOUR, PREPARE])]
 RT_WORDS = {FESTIVAL: ["文化祭"], PREPARE: ["文化祭", "準備"], SIGN: ["文化祭", "看板"], COLOUR: ["看板"]}
+RT_JA = ("ja", RT_KEYS, RT_EPISODES, RT_WORDS)
+# night_market.srt: 我们 in two lines, each with one other list word (夜市, 牛肉面) — which is taught first moves its cost
+RT_ZH = ("zh", [("我们", "wǒmen"), ("夜市", "yèshì"), ("牛肉面", "niúròumiàn")],
+         [("ep01", [NIGHT, TEA]), ("ep02", [NOODLE, PRICE])],
+         {NIGHT: ["我们", "夜市"], NOODLE: ["我们", "牛肉面"], TEA: [], PRICE: []})
 
 
-def _rt_lines():
+def _rt_lines(case=RT_JA):
     """Every (row, file, place, text, word, its other words) of the two episodes."""
+    _language, keys, episodes, words = case
     out = []
-    for f, (_name, texts) in enumerate(RT_EPISODES):
+    for f, (_name, texts) in enumerate(episodes):
         for n, text in enumerate(texts):
-            for word in RT_WORDS[text]:
-                row = [k[0] for k in RT_KEYS].index(word)
-                out.append((row, f, n, text, word, [c for c in RT_WORDS[text] if c != word]))
+            for word in words[text]:
+                row = [k[0] for k in keys].index(word)
+                out.append((row, f, n, text, word, [c for c in words[text] if c != word]))
     return out
 
 
-def _rt_sources(lib):
+def _rt_sources(lib, case=RT_JA):
     """The two episodes written once: [[rel, kind, digest]] as the plan numbers its files."""
-    return [[f"show/{name}.srt", "srt", lib.write(f"show/{name}.srt", texts)] for name, texts in RT_EPISODES]
+    return [[f"show/{name}.srt", "srt", lib.write(f"show/{name}.srt", texts)] for name, texts in case[2]]
 
 
-def _rt_written(sources, tmp_path, language="ja", run="sig-1"):
+def _rt_written(sources, tmp_path, language="ja", run="sig-1", case=RT_JA, places=None):
     from app import sentence_table as st
-    rows = [k[0] for k in RT_KEYS]
+    keys = case[1]
+    rows = [k[0] for k in keys]
     p = st.Packer()
-    for row, f, n, text, word, others in _rt_lines():
-        p.add(RT_KEYS[row], f, n, len(text), plan_rules.text_hash_of(text), [RT_KEYS[rows.index(c)] for c in others],
+    for row, f, n, text, word, others in _rt_lines(case):
+        p.add(keys[row], f, n, len(text), plan_rules.text_hash_of(text), [keys[rows.index(c)] for c in others],
               besides=len(others), starts=text.find(word))
-    row_of = {k: i for i, k in enumerate(RT_KEYS)}
-    tab = p.finish(RT_KEYS, row_of.get, lambda key: ((row_of[key],),), lambda key: row_of.get(key, -1),
+    row_of = {k: i for i, k in enumerate(keys)}
+    tab = p.finish(keys, row_of.get, lambda key: ((row_of[key],),), lambda key: row_of.get(key, -1),
                    lambda key: key, lambda index: None, sources,
-                   {"engine": "e47", "run_signature": run, "language": language})
+                   {"engine": "e47", "run_signature": run, "language": language}, places=places)
     path = os.path.join(str(tmp_path), "results", st.TABLE_FILE)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tab.write(path)
     return path
 
 
-def _rt_fake(sources):
-    rows = [k[0] for k in RT_KEYS]
+def _rt_fake(sources, case=RT_JA, places=True):
+    keys = case[1]
+    rows = [k[0] for k in keys]
     lines = [L(row, f, n, text, word, besides=len(others), cow=[rows.index(c) for c in others],
                repeat=plan_rules.text_hash_of(text) & 0xFFFFFFFF if text == PREPARE else 0)
-             for row, f, n, text, word, others in _rt_lines()]
-    return Table(RT_KEYS, sources, lines, [(k, ((k,),)) for k in range(len(RT_KEYS))])
+             for row, f, n, text, word, others in _rt_lines(case)]
+    return Table(keys, sources, lines, [(k, ((k,),)) for k in range(len(keys))], places=places)
 
 
 def test_the_round_trip_a_written_table_gives_the_reader_what_its_lines_give(tmp_path):
@@ -865,8 +876,61 @@ def test_the_round_trip_a_written_table_gives_the_reader_what_its_lines_give(tmp
         assert ours == mine and all(ours[k] for k in RT_KEYS)
     # 準備's PREPARE in both episodes is one sentence: shown once (the table's fingerprint)
     assert [l.text for l in ours[RT_KEYS[1]]] == [PREPARE]
-    # the head names no list order yet: no order handed in reads as None (today's path)
-    assert SS.choose("ja", RT_KEYS, moment=lib.moment(), length=LENGTH, table=opened, shown=shown) is None
+
+
+def _opened(tmp_path, case, places, run):
+    """The case's two episodes written by Generate's packer with `places`, opened from disk: (library, sources,
+    table)."""
+    from app import sentence_table as st
+    lib = Library(tmp_path / run)
+    sources = _rt_sources(lib, case)
+    path = _rt_written(sources, tmp_path / run, language=case[0], run=run, case=case, places=places)
+    tab = st.open_table(path, language=case[0], engine="e47", run_signature=run)
+    assert tab is not None and tab.places() == places
+    return lib, sources, tab
+
+
+def _costs(got, keys):
+    return [[(l.text, l.cost) for l in got[k]] for k in keys]
+
+
+@pytest.mark.parametrize("case", [RT_JA, RT_ZH], ids=["ja", "zh"])
+def test_with_no_order_handed_in_the_reader_weighs_by_the_tables_places(tmp_path, case):
+    # E-TABLE's format 3: each row's place in the list Generate wrote (-1: not on it). With no order handed in, the
+    # reader gives what the same places handed in as an order give, and what its lines in memory give; another list
+    # order gives another answer (the places are read, not the rows' first-met numbering)
+    language, keys = case[0], case[1]
+    costs = {}
+    for run, places in (("first", [0, 1, 2]),      # the word first: its lines' other words still new when studied
+                        ("last", [2, 0, 1]),       # both other words before it: known when it is studied
+                        ("off", [2, -1, 1])):      # as "last", but the second word off the list: never taught
+        lib, sources, tab = _opened(tmp_path, case, places, run)
+        shown = _rt_fake(sources, case).shown()
+        got = SS.choose(language, keys, n=3, moment=lib.moment(), length=LENGTH, table=tab, shown=shown)
+        as_order = {k: at for k, at in zip(keys, places) if at >= 0}
+        assert got == SS.choose(language, keys, n=3, moment=lib.moment(), length=LENGTH, table=tab, shown=shown,
+                                order=as_order)
+        assert got == SS.choose(language, keys, n=3, moment=lib.moment(), length=LENGTH,
+                                table=_rt_fake(sources, case, places), shown=shown)
+        assert all(got[k] for k in keys)
+        costs[run] = _costs(got, keys)
+    assert costs["last"][0] != costs["first"][0]   # the word's lines cost less once their others are taught first
+    assert costs["off"][0] != costs["last"][0]     # -1 is off the list, never a place before the word (known)
+
+
+@pytest.mark.parametrize("case", [RT_JA, RT_ZH], ids=["ja", "zh"])
+def test_an_order_handed_in_after_a_move_wins_over_the_tables_places(tmp_path, case):
+    # SPEC § 5: a move rewrites the list, never the table — the caller hands the new order, and it wins over `places`
+    language, keys = case[0], case[1]
+    lib, sources, tab = _opened(tmp_path, case, [0, 1, 2], "before")
+    shown = _rt_fake(sources, case).shown()
+    moved = {keys[1]: 0, keys[2]: 1, keys[0]: 2}
+    after = SS.choose(language, keys, n=3, moment=lib.moment(), length=LENGTH, table=tab, shown=shown, order=moved)
+    before = SS.choose(language, keys, n=3, moment=lib.moment(), length=LENGTH, table=tab, shown=shown)
+    lib2, _sources, tab2 = _opened(tmp_path, case, [2, 0, 1], "moved")      # the moved list, as a Generate writes it
+    again = SS.choose(language, keys, n=3, moment=lib2.moment(), length=LENGTH, table=tab2, shown=shown)
+    assert _costs(after, keys) == _costs(again, keys)
+    assert _costs(after, keys)[0] != _costs(before, keys)[0]
 
 
 def test_the_reader_opens_results_table_once_while_its_stamp_holds(monkeypatch, tmp_path):

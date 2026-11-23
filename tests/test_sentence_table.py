@@ -596,3 +596,29 @@ def test_the_chinese_copula_is_grammar_as_da_and_desu_are():
     (text, tokens), = analyzer.ChineseTokenizer().tokenize_sentences("他是老师。")
     words = st.LineWords(tokens, text, "zh")
     assert words.of_word(_key(tokens, "老师"))[0] == 1            # 他
+
+
+def test_a_name_linked_to_a_piece_the_library_does_not_know_is_still_one_name():
+    # why: ジョン・スミス is one person even when the library names only ジョン; what follows the whole name (は) says
+    # it is part of the sentence, so the row ジョン's line says 医者 besides it — スミス is the name, not a word
+    _text, tokens, words = _line("ja", 6, people=("ジョン",))
+    assert words.of_word(_key(tokens, "ジョン"))[0] == 1
+
+
+def test_where_the_word_starts_is_its_first_place_in_the_line():
+    # why: the late-word term asks where the learner first meets the word in the line
+    text, tokens, words = _line("ja", 10)
+    assert words.of_word(_key(tokens, "駅")) == (1, 0)            # 歩く; both 駅 are the word, the first at 0
+
+
+def test_a_title_after_a_name_is_passed_over_to_see_what_follows():
+    # why: ケン警部が — the が after the title says the name is part of the sentence (警部 itself is a word, as the
+    # tagger's count has it)
+    _text, tokens, words = _line("ja", 11, people=("ケン",))
+    assert words.of_word(_key(tokens, "来"))[0] == 2              # ケン 警部
+
+
+def test_a_name_before_da_is_what_the_sentence_is_about():
+    # why: 犯人はケンだ — a name followed by だ / です counts, as one followed by a particle does
+    _text, tokens, words = _line("ja", 12, people=("ケン",))
+    assert words.of_word(_key(tokens, "犯人"))[0] == 1            # ケン

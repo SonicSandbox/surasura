@@ -224,8 +224,9 @@ def test_two_removes_in_one_clock_tick_stay_two_entries(language, monkeypatch):
         shows = {}
         for i in ids:
             shows.setdefault(store.item(i)["rel_path"].split("/")[1], []).append(i)
-        still = time.time()
-        monkeypatch.setattr(ls.time, "time", lambda: still)
+        still = time.time_ns()
+        monkeypatch.setattr(ls.time, "time", lambda: still / 1e9)
+        monkeypatch.setattr(ls.time, "time_ns", lambda: still)          # the store's stamp reads this one (Flake-F4)
         store.remove(shows[a] + shows[b])
         store.remove(shows[a + " 2"] + shows[b + " 2"])
         entries = store.removed()

@@ -2000,6 +2000,8 @@ class ShellWindow(QMainWindow):
             page = self.page_widgets.get(name)
             if hasattr(page, "set_view"):
                 moved = page.set_view(view) not in ("same", "later") or page.list.looks_changed or moved   # a4
+        self._path_repaint()                        # the card's press names Up Next's episode (S19: only on a change),
+        #                                             read once Current holds this view (Flake-F4: never the one before)
         self.subline.setText(view.subline)
         fin = self.tab_buttons["finished"]
         label = strings.TABS["finished"][0]
@@ -3277,7 +3279,6 @@ class ShellWindow(QMainWindow):
             self._guide_key = key
             if not first and self.duties is not None and self.duties.guide_panel is not None:
                 self._guide_soon.start()
-        self._path_repaint()                        # the card's press names Up Next's episode (S19: only on a change)
 
     def _guide_got(self, answer):
         asked, look, way, lines = answer

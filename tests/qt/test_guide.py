@@ -299,22 +299,52 @@ def test_a_panel_that_fits_shows_no_scroll_bar_and_folded_lines_are_quiet_and_le
     panel.close()
 
 
-def test_no_slice_of_a_new_answer_passes_4_ms_and_a_newer_answer_cancels_the_rest(world, notes):
+def _own_ms():
+    """The window's thread's own CPU time so far, ms: what its steps themselves cost, never the time the machine gave
+    to someone else meanwhile (another process on a shared runner, a worker holding Python's lock in a C call). On
+    Windows its cycle counter (`hud.Counters`, the HUD's own; `time.thread_time` ticks at 15.6 ms there), elsewhere
+    `time.thread_time`; a counter that won't read: the wall clock, as before."""
+    import time
+    from app.qt import hud
+    counters = hud.Counters(calibrate=False)
+    if counters.ok:
+        # the clock rate from the least-interrupted of three short spins: an interrupted spin reads it low
+        counters.mhz = max(counters._calibrate() or 0 for _ in range(3)) or None
+        if counters.mhz and counters.sample():
+            return lambda: counters.ms(counters.sample()[1])
+        return lambda: time.perf_counter() * 1000
+    return lambda: time.thread_time() * 1000
+
+
+def test_no_slice_of_a_new_answer_passes_4_ms_and_a_newer_answer_cancels_the_rest(world, notes, monkeypatch):
     # The lead, 2026-11-12: the 4 ms rule strict. Two releases, the shipped notes (wrapping lines): the body is built one
     # piece a turn — each piece, and the place after the last, under 4 ms on the window's thread.
-    import time
+    # The 4 ms is the Qt guide's step budget (§ 4: no step on the GUI thread over 4 ms; § 7: this desktop's bar, the
+    # laptop's ÷ 2.5): what a piece costs the window's thread. So each piece is timed by that thread's own CPU time
+    # (`_own_ms`), not the wall clock: on GitHub's runner a piece of ~0.4 ms here (the largest ~1 ms) once read 5.47 ms
+    # of wall time, the thread taken away mid-piece. A piece that grew (a release in one turn) costs the thread itself,
+    # on any machine.
     here = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), guide.FOLDER)
     releases = guide.read_notes(here)
     look = guide.Look("3.0.4", tuple(guide.arrange(r, {"everyone", "ja", "miner", "books"}) for r in releases), True)
     panel = world.d.guide_panel
+    own_ms = _own_ms()
+    own = []
+    real_step = panel._step
+
+    def step(token):
+        t0 = own_ms()
+        real_step(token)
+        own.append(own_ms() - t0)
+    monkeypatch.setattr(panel, "_step", step)
     panel.slices.clear()
     panel.set_look(look)
     assert panel.building() and not panel.cards                             # nothing built in the asking turn
     assert wait_until(lambda: not panel.building())
-    assert len(panel.slices) >= len(panel.cards) and max(panel.slices) < 4.0, max(panel.slices)
-    t0 = time.perf_counter()
+    assert len(panel.slices) >= len(panel.cards) and max(own) < 4.0, (max(own), max(panel.slices))
+    t0 = own_ms()
     panel.place()
-    assert (time.perf_counter() - t0) * 1000 < 4.0
+    assert own_ms() - t0 < 4.0
     built = panel.builds
     panel.set_look(look._replace(releases=look.releases[:1]))               # a newer answer mid-way …
     QApplication.processEvents()

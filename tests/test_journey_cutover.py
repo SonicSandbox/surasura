@@ -299,16 +299,32 @@ def test_a_generate_writes_the_counts_table_beside_the_plan_and_its_counts_are_t
     assert [report_name(entry[0]) for entry in table.files] == names and len(names) > 1
     listed = _listed(root)
     assert listed and _listed(root, "progressive_learning_list.csv") <= listed
-    ahead, whole = journey_render._ahead(table, names), journey_render._ahead(streamed, names)
-    want = {e: {k: n for k, n in c.items() if k in listed} for e, c in whole.items()}
-    assert want == ahead
-    assert any(ahead.values()), "some listed word is counted"
+    # each word's count ahead (`build`'s: its uses in its own episode and the next AHEAD - 1, -1 where its own has
+    # none), the plan's own numbers summed here from the stream's every word met
+    whole = []
+    for line in streamed.per_file:
+        uses = {}
+        for t in (line["main"], line["ph"]):
+            for k, n in zip(t[0::2], t[1::2]):
+                key = (streamed.keys[k][0], streamed.keys[k][1])     # (a plan key holds more than the two)
+                uses[key] = uses.get(key, 0) + n
+        whole.append(uses)
+    words = sorted(listed)
+    word_eps = [w % len(names) for w in range(len(words))]
+    word_id = {key: w for w, key in enumerate(words)}
+    first = {}                                   # an episode is its report name's first file (shows share names)
+    for f, name in enumerate(names):
+        first.setdefault(name, f)
+    ep = [whole[first[name]] for name in names]
+    want = []
+    for key, e in zip(words, word_eps):
+        here = ep[e].get(key)
+        want.append(-1 if here is None else sum(ep[e + d].get(key, 0) for d in range(journey_render.AHEAD)
+                                                 if e + d < len(names)))
+    ahead = journey_render._ahead(table, names, word_eps, word_id)
+    assert list(ahead) == want and list(journey_render._ahead(streamed, names, word_eps, word_id)) == want
+    assert any(n > 0 for n in ahead), "some listed word is counted"
     assert journey_render._plan_pcts(table) == journey_render._plan_pcts(streamed)
-    # what a page asks (`build`: each word in its episode and the next two) is counted alone, the same numbers
-    wanted = {0: {next(iter(listed))}, 1: set(listed), len(names) - 1: set(list(listed)[:3])}
-    asked = journey_render._ahead(table, names, wanted)
-    assert asked == {e: {k: n for k, n in whole.get(e, {}).items() if k in wanted[e]} for e in wanted if e in whole}
-    assert asked == journey_render._ahead(streamed, names, wanted)
     # only the listed rows (the plan's tables keep every word met)
     assert sorted(map(tuple, table.keys)) == sorted(listed) and len(table.keys) <= len(streamed.keys)
     # and the page the reuse path draws from the stream (the table gone: a Generate before this build) is this one

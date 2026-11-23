@@ -29,6 +29,7 @@ import json
 import os
 import re
 import time
+from array import array
 from collections import namedtuple
 
 SHAPE = 1                       # the shape's version (SHAPE.md); a change is a NOTE to the page first
@@ -905,34 +906,48 @@ def _plan_pcts(plan, by_name=None):
         return None
 
 
-def _ahead(plan, names, wanted=None, by_name=None):
-    """{episode index: {(Word, Reading): count}} from the plan's per-file counts (`plan_engine.Plan`, `Counts`), for the
-    episodes it holds; None without a plan (each word's count ahead is then its count in its own episode). `wanted`
-    ({episode index: {(Word, Reading)}}: what the page asks, each word in its episode and the next AHEAD - 1) counts
-    only those — at 20,000 files every episode's every word was 25 MB of dicts for the 930 counts a page reads.
-    `by_name`: `_plan_files`' (made here when not handed in)."""
+def _ahead(plan, names, word_eps, word_id, by_name=None):
+    """Each page word's count ahead -> array, one number a word: its uses in its own episode and the next AHEAD - 1,
+    from the plan's per-file counts (`plan_engine.Plan`, `Counts`), or -1 where its own episode has no count for it (no
+    line in the plan, or the word not met there: the page then shows its count in its own episode); None without a
+    plan. `names` the page's episodes' file names in order, `word_eps` each word's episode index (in word order),
+    `word_id` {(Word, Reading): its word index} (`build`'s); the plan's keys are distinct. At 20,000 files the
+    {episode: {key: count}} dicts this was, and the asked sets that cut them, were 12.5 MB of the render's peak (J-CUT
+    5's gate); here a window of AHEAD episodes' words at a time. `by_name`: `_plan_files`' (made here when not handed
+    in)."""
     if plan is None:
         return None
     try:
         by_name = _plan_files(plan) if by_name is None else by_name
-        if wanted is None:
-            pairs = [(k[0], k[1]) for k in plan.keys]     # one tuple a key, not one an entry (1.16M at 20,000 files)
-        else:
-            asked = set().union(*wanted.values())
-            pairs = [(k[0], k[1]) if (k[0], k[1]) in asked else None for k in plan.keys]
-        out = {}
+        n = len(word_eps)
+        kw = array("i", [-1]) * n                  # each word's key in the plan
+        for k, key in enumerate(plan.keys):
+            wid = word_id.get((key[0], key[1]))
+            if wid is not None and wid < n:
+                kw[wid] = k
+        out = array("i", [-1]) * n
+        order = sorted(range(n), key=word_eps.__getitem__)
+        lo = hi = 0
         for e, name in enumerate(names):
-            f = by_name.get(name)
-            if f is None or (wanted is not None and e not in wanted):
+            while hi < n and word_eps[order[hi]] <= e:
+                hi += 1
+            while lo < hi and word_eps[order[lo]] <= e - AHEAD:
+                lo += 1
+            f = by_name.get(name) if lo < hi else None
+            if f is None:
                 continue
-            line = plan.per_file[f]
-            counts = {}
+            line, uses = plan.per_file[f], {}
             for table in (line["main"], line["ph"]):
-                for k, n in zip(table[0::2], table[1::2]):
-                    key = pairs[k]
-                    if key is not None:
-                        counts[key] = counts.get(key, 0) + n
-            out[e] = counts if wanted is None else {key: n for key, n in counts.items() if key in wanted[e]}
+                for k, m in zip(table[0::2], table[1::2]):
+                    uses[k] = uses.get(k, 0) + m
+            for i in range(lo, hi):
+                wid = order[i]
+                m = uses.get(kw[wid]) if kw[wid] >= 0 else None
+                if word_eps[wid] == e:
+                    if m is not None:
+                        out[wid] = m
+                elif m and out[wid] >= 0:
+                    out[wid] += m
         return out
     except Exception:
         return None
@@ -1027,15 +1042,9 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
             word_id[key] = len(words)
             words.append((e, row))
         ep[7] = len(words) - ep[8]
-    # The count ahead, only for what the page reads: each word in its own episode and the next AHEAD - 1
-    wanted = {}
-    for e, row in words:
-        key = (_text(row.get("Word")), _text(row.get("Reading")))
-        for d in range(AHEAD):
-            wanted.setdefault(e + d, set()).add(key)
-    ahead = _ahead(plan, [e[1] for e in eps], wanted, plan_files) if plan_files is not None else None
+    # The count ahead, one number a word: its uses in its own episode and the next AHEAD - 1
+    ahead = _ahead(plan, [e[1] for e in eps], [e for e, _row in words], word_id, plan_files)         if plan_files is not None else None
     del plan_files
-    del wanted
 
     sources = sources or Sources(language)
     if not sources.ep_of:
@@ -1122,9 +1131,8 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
                 hit = hit[1], hit[2]            # [anchor, start, end], as the memo was read
             found_lines.append((text, rel) + hit)
         marks = marks_of(row, thresholds) | (8 if in_anki(row, keys, owners, language) else 0)
-        here = ahead.get(e, {}).get(key) if ahead else None
-        count = int(_num(row.get("Occurrences (File)"))) if here is None else sum(
-            (ahead.get(e + d) or {}).get(key, 0) for d in range(AHEAD))
+        here = ahead[wid] if ahead is not None else -1
+        count = int(_num(row.get("Occurrences (File)"))) if here < 0 else here
         try:
             pitched = pitch.of(word, reading, pinyin)
         except Exception:

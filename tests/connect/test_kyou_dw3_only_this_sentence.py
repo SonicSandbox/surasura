@@ -264,10 +264,11 @@ def test_a_word_said_in_too_few_other_files_or_in_no_dictionary_is_offered_the_w
     from app import own_dicts
     monkeypatch.setattr(own_dicts, "lookup", lambda words, root=None: {})
     word, reading, lines, (odd, odd_reading, odd_line) = SAID[lang]
-    _files(lang, lines[:2], (word, reading))
-    assert deleted.likely(lang, [(1, word, reading, lines[0])]) == {1: deleted.PARSING}, "one other file: too few"
+    _files(lang, lines[:3], (word, reading))
+    got = deleted.likely(lang, [(1, word, reading, lines[0])])
+    assert got == {1: deleted.PARSING}, "two other files: too few — the deleted card's own file is never one of them"
     _files(lang, [odd_line] * 4, (odd, odd_reading), name="他{:02d}.srt")
-    assert deleted.likely(lang, [(2, odd, odd_reading, odd_line)]) == {2: deleted.PARSING}, "no dictionary holds it"
+    assert deleted.likely(lang, [(2, odd, odd_reading, "")]) == {2: deleted.PARSING}, "no dictionary holds it"
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
@@ -326,10 +327,32 @@ def test_same_for_all_asks_the_follow_up_once_for_the_whole_card_and_says_so(lan
                      likely_of=lambda language, rows: {n: deleted.LINE if n != notes[0] else deleted.PARSING
                                                        for n, *_ in rows})
     rec = _asked(lang, ledger)
-    (entry,) = needs._deleted_entries({"deleted": rec}, set(), set(), asking=frozenset({needs.DELETED_HOW_ALL}))
+    (plain,) = needs._deleted_entries({"deleted": rec}, set(), set())
+    (entry,) = needs._deleted_entries({"deleted": rec}, set(), set(), asking=frozenset({plain.key}))
     first = entry.lines[0]
     assert first.key == needs.deleted_how_key(None) and first.actions == ("dw_all_only_line", "dw_all_word_wrong")
     assert first.text == needs.STRINGS["deleted_how_all"].format(n=3)
     assert sum(ln.key.startswith(needs.DELETED_HOW) for ln in entry.lines) == 1, "asked once"
     assert sorted(entry.data["notes"]) == notes
     assert "dw_all_parsing" not in entry.actions, "the follow-up stands in for the batch's own press"
+    (two,) = needs._deleted_entries({"deleted": dict(rec, asked=rec["asked"][:2])}, set(), set(),
+                                    asking=frozenset({plain.key}))
+    assert not any(ln.key.startswith(needs.DELETED_HOW) for ln in two.lines),         "a card that changed since (a line answered) is not asked for all until pressed again"
+    assert "dw_all_parsing" in two.actions
+    tie = dict(rec, asked=[dict(rec["asked"][0], likely=deleted.LINE), dict(rec["asked"][1], likely=deleted.PARSING)])
+    (even,) = needs._deleted_entries({"deleted": tie}, set(), set())
+    (even,) = needs._deleted_entries({"deleted": tie}, set(), set(), asking=frozenset({even.key}))
+    assert even.lines[0].actions == ("dw_all_word_wrong", "dw_all_only_line"), "a tie: The word is wrong first"
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_an_own_dictionary_that_cant_be_read_takes_nothing_from_the_shipped_one(lang, monkeypatch):
+    # why: one broken dictionary of the learner's must not drop the whole guess — the shipped meanings still count
+    from app import own_dicts
+
+    def broken(words, root=None):
+        raise OSError("a dictionary file held open")
+    monkeypatch.setattr(own_dicts, "lookup", broken)
+    word, reading, lines, _odd = SAID[lang]
+    _files(lang, lines, (word, reading))
+    assert deleted.likely(lang, [(1, word, reading, lines[0])]) == {1: deleted.LINE}

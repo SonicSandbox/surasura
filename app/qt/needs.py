@@ -895,7 +895,7 @@ class NeedsYou(QObject):
         #                                          the seen file alone says whether it is hidden)
         self._seen_jobs = collections.deque()    # A4A-8: the page's seen-file writes, one after another as pressed
         self._dw_asking = set()                  # Kyou-DW 3: the deleted cards whose Parsing mistake asks its follow-up
-        #                                          (note ids; `service.DELETED_HOW_ALL`: the whole card), kept while
+        #                                          (note ids; a card's own key: the whole card), kept while
         #                                          the window is open: no time-out, never answered for the learner
         self.last_menu = None
         reader = getattr(win.services, "library", None)
@@ -2615,7 +2615,7 @@ class NeedsYou(QObject):
             back = [n for n, _w in got["done"]]
             self._dw_asking.difference_update(back)
             if whole:
-                self._dw_asking.discard(service.DELETED_HOW_ALL)
+                self._dw_asking.discard(entry.key)
 
             def undo_it():
                 out = deleted.undo(lang, back, settings=read_settings() or {})
@@ -2665,7 +2665,7 @@ class NeedsYou(QObject):
         self._deleted_answer("dw_all_ignore", entry, None, "ignore")
 
     def _do_dw_all_parsing(self, entry, _line):
-        self._ask_how(service.DELETED_HOW_ALL)
+        self._ask_how(entry.key)                    # this card's set of cards: one that changes since asks again
 
     def _do_dw_all_bad(self, entry, _line):
         self._deleted_answer("dw_all_bad", entry, None, "bad")

@@ -459,8 +459,8 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     (Michi-NS): `no_subs_offer`'s answer — ONE card while videos have no subtitle and a way to get one is here;
     `generate_log` (Kantan-B1): the window's Generate log, a Generate failure's hover (never its line); `strays`
     (Michi-DK): `deck_strays`' answer — ONE card while Connect's cards are outside the deck Surasura shows;
-    `asking` (Kyou-DW 3): the deleted cards whose *Parsing mistake* was pressed (note ids, `DELETED_HOW_ALL` for the
-    whole card), each asked its follow-up (`_deleted_entries`)."""
+    `asking` (Kyou-DW 3): the deleted cards whose *Parsing mistake* was pressed (note ids; the card's own key for
+    *All parsing mistakes*), each asked its follow-up (`_deleted_entries`)."""
     seen, answered, hidden = frozenset(seen or ()), frozenset(answered or ()), frozenset(hidden or ())
     rows = tuple(view.rows) if view is not None and view.mode == "store" else ()
     by_id = {e.id: (r, e) for r in rows for e in r.episodes}
@@ -1325,7 +1325,7 @@ DELETED_MANY = 10                       # WL-27: this many or more is a mass del
 # Kyou-DW 3 (PROVISIONAL): *Parsing mistake*'s follow-up — The word is wrong · Only in this sentence, the look's guess
 # first (`connect.deleted.likely`: "line" → Only in this sentence first); never answered for the learner
 DELETED_HOW = f"{DELETED}-how"
-DELETED_HOW_ALL = "all"                 # `asking`'s mark for the whole card's *All parsing mistakes*
+DELETED_HOW_ALL = "all"                 # the whole card's follow-up line (`deleted_how_key(None)`)
 HOW_ACTIONS = ("dw_word_wrong", "dw_only_line")
 HOW_ALL = ("dw_all_word_wrong", "dw_all_only_line")
 
@@ -1360,7 +1360,8 @@ def _deleted_entries(connect, seen, answered=frozenset(), asking=frozenset()):
     the deletes from before it asked (`deleted.old`): *Forget* a line (the store's `allow_again`), *Forget all*,
     *Keep them* (answered for good). Kyou-DW 3: a card whose *Parsing mistake* was pressed (`asking`: its note id)
     has one more line under its own — *The word is wrong* · *Only in this sentence*, the look's guess first
-    (`likely`); *All parsing mistakes* (`DELETED_HOW_ALL`) asks it once, first on the card, for every card."""
+    (`likely`); *All parsing mistakes* (`asking` holds the card's own key: a card that changed since — a line
+    answered, a new delete — asks again) asks it once, first on the card, for every card."""
     rec = (connect or {}).get("deleted") or {}
     out = []
     asked = [a for a in rec.get("asked") or () if deleted_line_key(a["note_id"]) not in answered]
@@ -1375,7 +1376,8 @@ def _deleted_entries(connect, seen, answered=frozenset(), asking=frozenset()):
                     word=a["word"]), item_id=a.get("item_id"), label=a["word"], number=int(a["note_id"]),
                     rel_path=None, actions=_first(HOW_ACTIONS, a.get("likely") == "line")))
         n = len(asked)
-        if n > 1 and DELETED_HOW_ALL in asking:
+        key = f"{DELETED}:" + ",".join(str(int(a["note_id"])) for a in asked)
+        if n > 1 and key in asking:
             # most cards' guess first (a tie: The word is wrong)
             line_first = 2 * sum(1 for a in asked if a.get("likely") == "line") > n
             lines.insert(0, NeedLine(key=deleted_how_key(None), text=STRINGS["deleted_how_all"].format(n=n),
@@ -1384,9 +1386,8 @@ def _deleted_entries(connect, seen, answered=frozenset(), asking=frozenset()):
         lines = tuple(lines)
         title = (STRINGS["deleted_title_one"] if n == 1 else
                  STRINGS["deleted_title_many" if n >= DELETED_MANY else "deleted_title"].format(n=n))
-        key = f"{DELETED}:" + ",".join(str(int(a["note_id"])) for a in asked)
         whole = DELETED_ALL if n > 1 else ()
-        if n > 1 and DELETED_HOW_ALL in asking:
+        if n > 1 and key in asking:
             whole = tuple(a for a in whole if a != "dw_all_parsing")    # its follow-up stands in its place
         out.append(Entry(key=key, kind=DELETED, title=title, lines=lines,
                          actions=whole + ("dw_leave",), unseen=key not in seen,

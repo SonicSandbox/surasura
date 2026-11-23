@@ -167,7 +167,10 @@ def likely(language, rows):
             shipped = journey_render.Meanings(language)
             shipped.prepare([(w, r, "") for w, r in often])
             held = {(w, r) for w, r in often if shipped.of(w, r, "")}
-            held |= set(own_dicts.lookup([k for k in often if k not in held]) or ())
+            try:                        # the learner's own: one that can't be read takes nothing from the shipped
+                held |= set(own_dicts.lookup([k for k in often if k not in held]) or ())
+            except Exception:
+                log.info("Kyou-DW: the learner's own dictionaries couldn't be read for the guess", exc_info=True)
         return {n: LINE if (w, r or "") in held else PARSING for n, w, r, _s in rows}
     except Exception:
         log.info("Kyou-DW: the follow-up's guess couldn't be read", exc_info=True)

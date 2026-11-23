@@ -27,11 +27,15 @@
   the open episode's lines it shows — at most AHEAD_MAX, those not kept, cut one at a time on a worker of its own,
   below normal priority (the lines the direct cut can't take in ONE `media` call); a newer ask replaces one not
   started; stopped the moment the learner presses anything on the page (`stop_ahead`, the door's every route but
-  this ask) — between two lines, or at `media`'s next poll. Never at Generate, never a whole library, never a line
+  this ask) — its ffmpeg / ffprobe within STOP_POLL_S, `media` at its next poll, a settings export once it ends
+  (at most SETTINGS_TIMEOUT: the press waiting on it then has the rest of its own time). Never at Generate, never a whole library, never a line
   the page doesn't show.
 - **Says why, never hangs:** `Refused` (its words, its `kind`) when Cards made for you is off, Anki Miner is absent or
   too old to cut a line, the line isn't one with a time in its file (or isn't there now), the video isn't on this PC,
-  or Anki Miner couldn't cut it; a cut is stopped past CUT_TIMEOUT.
+  or Anki Miner couldn't cut it. **One time limit a press** (PRESS_S, under the page's own 35 s wait; the lead's
+  ruling, J-CLIP 4): the direct cut's every stage and the `media` fallback share it — the direct cut stops once only
+  MEDIA_KEEP_S is left, `media` gets the rest, and a press waiting on another's cut waits only as long as its own
+  limit — so the page is answered in time, in words (TOO_SLOW), never late nor with a false "no clip".
 
 Runs on the door's thread (`door_routes.clip_route`); Qt-free; inert until the journey v3 page ships (J-CUT).
 """
@@ -48,7 +52,11 @@ log = logging.getLogger("surasura-cli")
 
 ROOT = "clips"                  # under Connect's folder (`verbs._connect_folder`): the local data folder
 CAP_BYTES = 64 << 20            # the cache's size: ~400 lines of 192 kbps audio; the oldest dropped first past it
-CUT_TIMEOUT = 30.0              # one cut at most (a share that stops answering never leaves ▶ waiting: the page waits 35 s)
+CUT_TIMEOUT = 30.0              # one tool's run at most (a share that stops answering never leaves a cut waiting)
+PRESS_S = 30.0                  # a press's whole time, every stage of both cuts in it (the page waits 35 s: answered first)
+MEDIA_KEEP_S = 10.0             # what the direct cut leaves the fallback: it stops once only this is left (`media` ~2.2 s)
+MEDIA_MIN_S = 3.0               # less than this left: no `media` call started (it couldn't finish), the press says so
+STOP_POLL_S = 0.05              # how soon the cut ahead's ffmpeg / ffprobe ends at a press
 RUN_LEFT_S = 60 * 60            # a run folder a crash left behind is removed once this old
 AHEAD_MAX = 6                   # lines an ahead ask cuts, in one call (a word's shown lines: ~2.7 s for 8)
 SETTINGS_TIMEOUT = 15.0         # Anki Miner's settings export on a press (~1.2 s; once until its files change)
@@ -79,6 +87,7 @@ NO_VIDEO = "This line's video isn't on this PC just now."
 FAILED = "Anki Miner couldn't cut this line ({})."
 CANT_KEEP = "Surasura couldn't save this line's clip on this PC just now: press ▶ again in a moment."
 WENT_WRONG = "Something went wrong in Surasura: press ▶ again."
+TOO_SLOW = "This line took too long to cut just now: press ▶ again in a moment."
 
 
 class Refused(Exception):
@@ -107,6 +116,7 @@ def cut(language, line_id, settings=None, steps=None, miner=None):
     """The kept clip of the line `line_id` names -> its path (cut now when none is kept). Raises Refused."""
     from app import settings_manager
     from app.connect import runner, swap
+    until = time.monotonic() + PRESS_S          # the press's one time limit: the line found, waited for and cut in it
     settings = settings if settings is not None else settings_manager.load_settings()
     if not (settings or {}).get("connect_enabled"):
         raise Refused(OFF, "off")
@@ -124,7 +134,7 @@ def cut(language, line_id, settings=None, steps=None, miner=None):
     if not video or not os.path.isfile(video):
         raise Refused(NO_VIDEO, "gone")
     key = _key(language, video, cue)
-    for _turn in range(2):
+    while True:
         kept = _kept(key)
         if kept:
             return kept
@@ -135,19 +145,14 @@ def cut(language, line_id, settings=None, steps=None, miner=None):
                 held = _cutting[key] = [threading.Event(), None]
         if mine:
             break
-        # a press of the same line, or the cut ahead, is cutting it: its answer is this one's
-        if not held[0].wait(CUT_TIMEOUT + 5):
-            raise Refused(FAILED.format("no clip"))
+        # a press of the same line, or the cut ahead, is cutting it: its answer is this one's, within this press's time
+        if not held[0].wait(max(0.0, until - time.monotonic())):
+            raise Refused(TOO_SLOW, "failed")
         if held[1] is not None:
             raise held[1]
-        # (no clip and no refusal: the cut ahead let it go at a press — this press cuts it itself)
-    else:
-        kept = _kept(key)
-        if kept:
-            return kept
-        raise Refused(FAILED.format("no clip"))
+        # (no clip and no refusal: the cut ahead let it go at a press — this press cuts it itself, as often as it is)
     try:
-        path = _cut(language, key, video, subtitle, cue, settings, miner)
+        path = _cut(language, key, video, subtitle, cue, settings, miner, until)
     except Refused as e:
         held[1] = e
         raise
@@ -186,7 +191,8 @@ def ahead(language, line_ids, settings=None, steps=None, miner=None):
 
 
 def stop_ahead():
-    """A press on the page: the ask waiting is dropped and a cut ahead under way is ended (within anki_miner.POLL_S)."""
+    """A press on the page: the ask waiting is dropped and a cut ahead under way is ended — its ffmpeg / ffprobe
+    within STOP_POLL_S, `media` within anki_miner.POLL_S, a settings export once it ends."""
     with _ahead_lock:
         _ahead["want"] = None
         if _ahead["worker"] is not None and _ahead["worker"].is_alive():
@@ -248,7 +254,8 @@ def _cut_ahead(language, ids, settings, steps, miner):
             if _ahead["stop"].is_set():
                 return
             video, subtitle, cue = can[key]
-            clip = _direct(language, video, cue, miner, os.path.join(run_dir, key), below=True) if direct else None
+            clip = _direct(language, video, cue, miner, os.path.join(run_dir, key), below=True,
+                           stop=_ahead["stop"]) if direct else None
             if clip is None:
                 direct = False                  # (what kept this line from the direct cut keeps the rest: one `media`)
                 rest[key] = lineup.Cue(video, subtitle, seconds(cue.start), seconds(cue.end), lineup.clean(cue.text))
@@ -299,7 +306,7 @@ def _kept(key):
     return None
 
 
-def _cut(language, key, video, subtitle, cue, settings, miner):
+def _cut(language, key, video, subtitle, cue, settings, miner, until):
     from app.cues import seconds
     from app.connect import add_audio, anki_miner, lineup
     miner = miner or anki_miner.find(settings)
@@ -309,14 +316,17 @@ def _cut(language, key, video, subtitle, cue, settings, miner):
     run_dir = os.path.join(folder, f".run-{key[:12]}-{time.time_ns()}")
     os.makedirs(run_dir, exist_ok=True)
     try:
-        clip = _direct(language, video, cue, miner, os.path.join(run_dir, "clip"))
+        clip = _direct(language, video, cue, miner, os.path.join(run_dir, "clip"), until=until - MEDIA_KEEP_S)
         if clip is None:                        # Anki Miner's own `media` (an older one without it: words to update)
             if not anki_miner.can_now({"Z-10"}):
                 raise Refused(OLD_MINER, "absent")
+            left = until - time.monotonic()
+            if left < MEDIA_MIN_S:
+                raise Refused(TOO_SLOW, "failed")
             # (the cutter matches Anki Miner's answer back by the line-up's text, `lineup.clean`, as its own cues are)
             line = lineup.Cue(video, subtitle, seconds(cue.start), seconds(cue.end), lineup.clean(cue.text))
             try:
-                clip = add_audio.cut(miner, language, None, {0: line}, run_dir, timeout=CUT_TIMEOUT).get(0)
+                clip = add_audio.cut(miner, language, None, {0: line}, run_dir, timeout=left).get(0)
             except anki_miner.AnkiMinerError as e:
                 raise Refused(FAILED.format(e.message), e.kind) from None
         if not clip:
@@ -336,19 +346,20 @@ _known = {}             # (Anki Miner's path, language) -> (its files' stamp, th
 _streams = {}           # (the video's path, size, mtime, language) -> the audio stream Anki Miner's rule picks, or None
 
 
-def _direct(language, video, cue, miner, out, below=False):
+def _direct(language, video, cue, miner, out, below=False, until=None, stop=None):
     """The line's clip cut as Anki Miner's `media` cuts it, written at `out` + its format's extension -> its path, or
-    None whenever it can't be (the caller asks `media`; nothing is said). Never raises."""
+    None whenever it can't be (the caller asks `media`; nothing is said). Never raises. `until` (time.monotonic()): no
+    stage runs past it (a press's); `stop` set: its ffmpeg / ffprobe end (the cut ahead's, at a press)."""
     from app.cues import seconds
     try:
         found = _binaries(miner)
-        got = _settings(miner, language) if found else None
-        stream = _stream(found[1], video, language, below) if got else None
+        got = _settings(miner, language, until) if found else None
+        stream = _stream(found[1], video, language, below, until, stop) if got else None
         if stream is None:
             return None
         clip = f"{out}.{got['format']}"
         cmd = command(found[0], video, seconds(cue.start), seconds(cue.end), stream, got, clip)
-        if _run(cmd, below) is None or not os.path.isfile(clip) or os.path.getsize(clip) == 0:
+        if _run(cmd, below, until=until, stop=stop) is None or not os.path.isfile(clip) or os.path.getsize(clip) == 0:
             return None
         return clip
     except Exception:                           # (the fallback is `media`: never an error the learner sees from here)
@@ -365,10 +376,11 @@ def _binaries(miner):
     return found if all(os.path.isfile(p) for p in found) else None
 
 
-def _settings(miner, language):
+def _settings(miner, language, until=None):
     """The profile's audio settings `media` cuts with (`audio_settings` of its `settings-export`, the profile `media`
     reads when none is named) — read once, again only once Anki Miner's files change (`anki_miner.stamp`); an export
-    that failed is tried again after SETTINGS_RETRY_S."""
+    that failed with its whole SETTINGS_TIMEOUT is tried again after SETTINGS_RETRY_S (one cut short by a press's
+    `until`: at the next press)."""
     from app.connect import anki_miner
     now = anki_miner.stamp(miner)
     held = _known.get((miner, language))
@@ -376,17 +388,20 @@ def _settings(miner, language):
         return held[1]
     if anki_miner.too_old_install(miner):
         return None                             # (it has no `--api`: run, it would open its window)
+    timeout = SETTINGS_TIMEOUT if until is None else min(SETTINGS_TIMEOUT, until - time.monotonic())
+    if timeout <= 0:
+        return None
     run_dir = os.path.join(root(), f".run-settings-{time.time_ns()}")
     got = None
     try:
         os.makedirs(run_dir, exist_ok=True)
         got = audio_settings(anki_miner.settings_export(miner, language, os.path.join(run_dir, "export.json"),
-                                                        timeout=SETTINGS_TIMEOUT))
+                                                        timeout=timeout))
     except Exception:
         log.info("Clips: Anki Miner's settings couldn't be read for the direct cut", exc_info=True)
     finally:
         shutil.rmtree(run_dir, ignore_errors=True)     # (an export may hold a key: never kept on disk)
-    if now is not None:
+    if now is not None and (got is not None or timeout >= SETTINGS_TIMEOUT):
         _known[(miner, language)] = (now, got, time.monotonic())
     return got
 
@@ -406,7 +421,7 @@ def audio_settings(export):
     return {"padding": float(padding), "format": form, "bitrate": bitrate, "normalize": normalize}
 
 
-def _stream(ffprobe, video, language, below=False):
+def _stream(ffprobe, video, language, below=False, until=None, stop=None):
     """The audio stream of `video` Anki Miner's rule picks (`pick_stream`), kept per file: only a file's first press
     pays the ffprobe (~0.1 s). None: none it picks here (the line goes to `media`)."""
     import json
@@ -415,7 +430,7 @@ def _stream(ffprobe, video, language, below=False):
     if key in _streams:
         return _streams[key]
     out = _run([ffprobe, "-v", "quiet", "-print_format", "json", "-show_streams", "-select_streams", "a",
-                str(video)], below, stdout=True)
+                str(video)], below, stdout=True, until=until, stop=stop)
     if out is None:
         return None                             # (ffprobe failed: asked again at the next press)
     try:
@@ -471,21 +486,33 @@ def command(ffmpeg, video, start, end, stream, got, out):
     return cmd + [str(out)]
 
 
-def _run(cmd, below=False, stdout=False):
+def _run(cmd, below=False, stdout=False, until=None, stop=None):
     """Run Anki Miner's ffmpeg / ffprobe with no window, ended with this process (`anki_miner._bind`), at most
-    CUT_TIMEOUT -> its stdout (b"" when not asked), or None when it failed."""
-    from app.connect import anki_miner
+    CUT_TIMEOUT and never past `until` (not started with no time left), ended within STOP_POLL_S once `stop` is set
+    -> its stdout (b"" when not asked), or None when it failed or was ended."""
+    from app.connect import anki_miner, stopping
+    timeout = CUT_TIMEOUT if until is None else min(CUT_TIMEOUT, until - time.monotonic())
+    if timeout <= 0 or (stop is not None and stop.is_set()):
+        return None
     proc = anki_miner._popen(cmd, below=below, stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE if stdout else subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              creationflags=anki_miner.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
     anki_miner._bind(proc)
     try:
-        out, _err = proc.communicate(timeout=CUT_TIMEOUT)
+        out, _err = stopping.wait(proc, timeout, (lambda: stopping.END if stop.is_set() else None) if stop else None,
+                                  _end, every=STOP_POLL_S)
+    except stopping.Stopped:
+        return None
     except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.communicate()
+        _end(proc)
         return None
     return (out or b"") if proc.returncode == 0 else None
+
+
+def _end(proc):
+    """A tool past its time, or the cut ahead's at a press: ended and collected (it starts no process of its own)."""
+    proc.kill()
+    proc.communicate()
 
 
 def _trim(folder, keep=None, cap=None):

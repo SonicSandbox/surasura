@@ -27,7 +27,9 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
+import time
 
 import pytest
 
@@ -184,7 +186,7 @@ def _fake_direct(monkeypatch, made):
     monkeypatch.setattr(clips, "_binaries", lambda miner: ("ffmpeg.exe", "ffprobe.exe"))
     made_lang = []
 
-    def run(cmd, below=False, stdout=False):
+    def run(cmd, below=False, stdout=False, until=None, stop=None):
         if os.path.basename(cmd[0]) == "ffprobe.exe":
             made.append(("probe", cmd[-1]))
             listed = [{"index": 1, "tags": {"language": "eng"}}, {"index": 2, "tags": {"language": TAG[made_lang[0]]}}]
@@ -249,15 +251,15 @@ def test_whatever_keeps_the_direct_cut_from_working_media_cuts_the_line_and_noth
         episode, fake_miner, monkeypatch, why):
     ep = episode("ja")
     monkeypatch.setattr(clips, "_binaries", lambda miner: None if why == "no bundled ffmpeg" else ("f", "p"))
-    monkeypatch.setattr(clips, "_settings", lambda miner, lang: None if why == "no settings" else
+    monkeypatch.setattr(clips, "_settings", lambda miner, lang, until=None: None if why == "no settings" else
                         clips.audio_settings(EXPORT_313))
 
-    def stream(ffprobe, video, lang, below=False):
+    def stream(ffprobe, video, lang, below=False, until=None, stop=None):
         if why == "raised":
             raise OSError("the share went away")
         return None if why == "no stream" else 1
     monkeypatch.setattr(clips, "_stream", stream)
-    monkeypatch.setattr(clips, "_run", lambda cmd, below=False, stdout=False: None)     # ffmpeg exits non-zero
+    monkeypatch.setattr(clips, "_run", lambda cmd, below=False, stdout=False, until=None, stop=None: None)  # exit 1
     cue = ep["lines"][2]
     path = _cut(ep, cue)
     with open(path, encoding="utf-8") as f:
@@ -307,7 +309,6 @@ def test_settings_are_never_asked_of_an_install_older_than_its_api(episode, monk
 # The cut ahead: one line at a time, claimed
 # --------------------------------------------------------------------------- #
 def _ahead_done(timeout=20):
-    import time
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         worker = clips._ahead["worker"]
@@ -341,7 +342,7 @@ def test_a_press_on_a_line_the_ahead_cut_holds_waits_for_it_never_cuts_it_twice(
     first, second = ep["lines"][0], ep["lines"][1]
     gate, inside, cuts = threading.Event(), threading.Event(), []
 
-    def direct(language, video, cue, miner, out, below=False):
+    def direct(language, video, cue, miner, out, below=False, until=None, stop=None):
         cuts.append((cue.start, below))
         if below and cue.start == first.start:
             inside.set()
@@ -375,7 +376,7 @@ def test_a_press_waiting_on_a_line_the_ahead_cut_lets_go_cuts_it_itself(episode,
     first, second = ep["lines"][0], ep["lines"][1]
     gate, inside, cuts = threading.Event(), threading.Event(), []
 
-    def direct(language, video, cue, miner, out, below=False):
+    def direct(language, video, cue, miner, out, below=False, until=None, stop=None):
         cuts.append((cue.start, below))
         if below:
             inside.set()
@@ -412,8 +413,168 @@ def test_the_cut_ahead_failing_before_its_first_cut_leaves_no_claim(episode, mon
     assert clips._cutting == {}
 
 
+# --------------------------------------------------------------------------- #
+# One time limit per press (the lead's ruling, J-CLIP 4): every stage of both cuts inside it, under the page's wait
+# --------------------------------------------------------------------------- #
+HANG = [sys.executable, "-c", "import time; time.sleep(60)"]            # a tool that stops answering (a share gone)
+WRITE = "import sys; open(sys.argv[1], 'w').write('clip')"
+
+
+def _limits(monkeypatch, press=4.0, keep=2.5, least=0.5):
+    """A press's time made short, so a test waits seconds, not the real 30 (raising=False: red on a clips.py without
+    them, by what it does)."""
+    monkeypatch.setattr(clips, "PRESS_S", press, raising=False)
+    monkeypatch.setattr(clips, "MEDIA_KEEP_S", keep, raising=False)
+    monkeypatch.setattr(clips, "MEDIA_MIN_S", least, raising=False)
+
+
+def _press(ep, cue, wait):
+    """The press on its own thread (the door's) -> (its clip's path or its refusal, seconds it took); the test fails
+    when no answer came within `wait` s (an old clips.py waits 30–35 s: the page has given up by then)."""
+    got = {}
+
+    def press():
+        start = time.monotonic()
+        try:
+            got["path"] = _cut(ep, cue)
+        except clips.Refused as e:
+            got["refused"] = e
+        got["took"] = time.monotonic() - start
+    thread = threading.Thread(target=press, daemon=True)
+    thread.start()
+    thread.join(wait)
+    assert not thread.is_alive(), f"no answer within {wait} s"
+    return got.get("path") or got.get("refused"), got["took"]
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_press_whose_ffmpeg_hangs_still_plays_through_media_within_its_time(episode, fake_miner, monkeypatch, lang):
+    # the direct cut stops once only MEDIA_KEEP_S is left, so `media` still cuts the line before the press's time ends
+    ep = episode(lang)
+    _limits(monkeypatch)
+    monkeypatch.setattr(clips, "_binaries", lambda miner: ("ffmpeg.exe", "ffprobe.exe"))
+    monkeypatch.setattr(clips, "_stream", lambda *a, **k: 1)
+    monkeypatch.setattr(clips, "command", lambda *a: HANG)
+    cue = ep["lines"][1]
+    path, took = _press(ep, cue, 8)
+    assert isinstance(path, str) and cue.text in open(path, encoding="utf-8").read()     # media's clip of that line
+    assert clips.PRESS_S - clips.MEDIA_KEEP_S - 0.2 < took < clips.PRESS_S
+    assert len(_media_calls(fake_miner)) == 1
+
+
+def test_media_gets_only_what_is_left_of_the_press_and_too_little_says_so_without_starting_it(
+        episode, fake_miner, monkeypatch):
+    ep = episode("ja")
+    _limits(monkeypatch)
+    monkeypatch.setattr(clips, "_direct", lambda *a, **k: None)          # the direct cut can't (no bundled ffmpeg)
+    asked = []
+    real = add_audio.cut
+
+    def cut(*a, timeout=None, **k):
+        asked.append(timeout)
+        return real(*a, timeout=timeout, **k)
+    monkeypatch.setattr(add_audio, "cut", cut)
+    path, _took = _press(ep, ep["lines"][0], 8)
+    assert isinstance(path, str) and 0 < asked[0] <= clips.PRESS_S    # never past the press's own time
+    # a press that waited on another's cut until less than MEDIA_MIN_S was left: said at once, Anki Miner not started
+    cue = ep["lines"][1]
+    key = clips._key("ja", ep["video"], cue)
+    held = clips._cutting[key] = [threading.Event(), None]
+    threading.Timer(clips.PRESS_S - 0.3, clips._release, (held, key)).start()      # let go uncut, late
+    refused, took = _press(ep, cue, 8)
+    assert isinstance(refused, clips.Refused) and refused.message == clips.TOO_SLOW, refused
+    assert took < clips.PRESS_S + 0.5 and len(asked) == 1
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_press_waiting_on_a_cut_that_never_ends_says_so_within_its_time(episode, monkeypatch, lang):
+    ep = episode(lang)
+    _limits(monkeypatch, press=1.0)
+    cue = ep["lines"][2]
+    key = clips._key(lang, ep["video"], cue)
+    clips._cutting[key] = [threading.Event(), None]                     # a cut of that line that never answers
+    try:
+        refused, took = _press(ep, cue, 5)
+    finally:
+        clips._cutting.pop(key, None)
+    assert isinstance(refused, clips.Refused) and refused.message == clips.TOO_SLOW, refused
+    assert took < clips.PRESS_S + 0.5
+
+
+class _Seen(threading.Event):
+    """A claim's event that says when a press starts waiting on it."""
+
+    def __init__(self):
+        super().__init__()
+        self.waited = threading.Event()
+
+    def wait(self, timeout=None):
+        self.waited.set()
+        return super().wait(timeout)
+
+
+def test_a_press_let_go_twice_still_cuts_its_line_itself(episode, fake_miner, monkeypatch):
+    # two asks ahead in a row each claimed the line and let it go uncut: the press plays it, never "couldn't cut"
+    ep = episode("ja")
+    made = []
+    _fake_direct(monkeypatch, made).append("ja")
+    cue = ep["lines"][3]
+    key = clips._key("ja", ep["video"], cue)
+    first = clips._cutting[key] = [_Seen(), None]
+    got = {}
+    press = threading.Thread(target=lambda: got.update(path=_cut(ep, cue)), daemon=True)
+    press.start()
+    assert first[0].waited.wait(5)
+    second = [_Seen(), None]
+    with clips._lock:
+        clips._cutting[key] = second                                    # the next ask claims it as the first lets go
+    first[0].set()
+    assert second[0].waited.wait(5)
+    clips._release(second, key)
+    press.join(5)
+    assert got.get("path") and len([m for m in made if m[0] == "cut"]) == 1 and clips._cutting == {}
+
+
+def test_the_cut_aheads_tool_ends_at_a_press_and_no_tool_runs_past_the_press_time():
+    stop = threading.Event()
+    threading.Timer(0.3, stop.set).start()
+    start = time.monotonic()
+    assert clips._run(HANG, stop=stop) is None
+    assert time.monotonic() - start < 3                                 # (a press, not CUT_TIMEOUT's 30 s)
+    start = time.monotonic()
+    assert clips._run(HANG, until=time.monotonic() + 0.5) is None
+    assert 0.4 < time.monotonic() - start < 3
+    start = time.monotonic()
+    assert clips._run(HANG, until=time.monotonic() - 1) is None         # no time left: not started
+    assert clips._run(HANG, stop=stop) is None and time.monotonic() - start < 0.5
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_press_on_a_line_whose_cut_ahead_hangs_plays_at_once(episode, fake_miner, monkeypatch, lang):
+    # the cut ahead's ffmpeg stopped answering on the line the learner then presses: the press stops it (the door's
+    # stop_ahead) and cuts the line itself — not 30 s later, when the ahead's tool runs out of time
+    ep = episode(lang)
+    monkeypatch.setattr(clips, "_binaries", lambda miner: ("ffmpeg.exe", "ffprobe.exe"))
+    monkeypatch.setattr(clips, "_stream", lambda *a, **k: 1)
+    calls = []
+
+    def command(ffmpeg, video, start, end, stream, got, out):
+        calls.append(out)
+        return HANG if len(calls) == 1 else [sys.executable, "-c", WRITE, out]
+    monkeypatch.setattr(clips, "command", command)
+    cue = ep["lines"][0]
+    clips.ahead(lang, [_id(cue)], settings=ep["settings"], steps=ep["steps"], miner=ep["miner"])
+    end = time.monotonic() + 10
+    while not calls and time.monotonic() < end:
+        time.sleep(0.02)
+    assert calls                                                        # the ahead's cut is under way, hung
+    clips.stop_ahead()
+    path, took = _press(ep, cue, 8)
+    assert isinstance(path, str) and open(path, encoding="utf-8").read() == "clip" and took < 3
+    assert _ahead_done() and clips._cutting == {} and _media_calls(fake_miner) == []
+
+
 def test_a_tool_that_fails_is_a_failure_whatever_it_wrote():
-    import sys
     assert clips._run([sys.executable, "-c", "import sys; print('half'); sys.exit(3)"], stdout=True) is None
     assert clips._run([sys.executable, "-c", "print('streams')"], stdout=True).strip() == b"streams"
     assert clips._run([sys.executable, "-c", "pass"]) == b""

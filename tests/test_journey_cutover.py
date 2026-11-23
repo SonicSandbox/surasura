@@ -569,7 +569,7 @@ def _zsig(theme, **settings):
 
 @pytest.mark.parametrize("old_option", [
     {"source_display": "full"}, {"words_per_day": 12}, {"show_words_per_day": False}, {"zen_limit": 20},
-    {"word_search_enabled": False}, {"word_search_category": "anime"}, {"study_order": "priority"},
+    {"study_order": "priority"},
     {"enable_koe": True}, {"logic": {"hide_audio_button": True, "inline_completed_files": True, "chunk_size": 20}}])
 def test_a_look_change_moves_no_signature_and_zen_in_or_out_does(old_option, monkeypatch):
     # The Redraw rule (the lead's ruling): the v3 page applies its looks itself and reads none of the old page's
@@ -583,6 +583,30 @@ def test_a_look_change_moves_no_signature_and_zen_in_or_out_does(old_option, mon
     assert _zsig("default", line_player=False) != plain, "a setting the v3 render reads still re-renders"
     monkeypatch.setenv("SURASURA_DOOR", "0")
     assert _zsig("modern-light") != _zsig("default"), "before the cut the old page drew its theme"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_lookups_switch_and_category_reach_the_page_and_re_render_it(language, monkeypatch):
+    # ⌕ (D15 kept it) is drawn by the page from its head's `lookup` / `lookup_category` (Settings' word_search_enabled
+    # / word_search_category): the render writes both, so a switch turned off hides ⌕ and a category reaches its link —
+    # and, being in the page, a change of either re-renders it (never a re-analysis: neither is a run's). A hand-edited
+    # "false" is no switch, and a category the page doesn't offer is All, as the old page read them.
+    from app import journey_render as jr
+    from tests.test_journey_render_shape import _rows, _stats
+    monkeypatch.delenv("SURASURA_DOOR", raising=False)
+
+    def head(**settings):
+        return jr.build(language, _rows(language, 1), _stats(1), settings=settings,
+                        pitch=jr.Pitch(language, kanjium={})).head["settings"]
+    assert (head()["lookup"], head()["lookup_category"]) == (True, "all"), "shown, All: the defaults"
+    off = head(word_search_enabled=False, word_search_category="anime")
+    assert (off["lookup"], off["lookup_category"]) == (False, "anime")
+    odd = head(word_search_enabled="false", word_search_category="podcast")
+    assert (odd["lookup"], odd["lookup_category"]) == (True, "all"), "a hand-edited value reads as the default"
+    plain = _sig(language)
+    assert _sig(language, word_search_enabled=False) != plain, "⌕ off re-renders the page"
+    assert _sig(language, word_search_category="anime") != plain, "a category re-renders the page"
+    assert _sig(language, word_search_category="all") == plain and _sig(language, word_search_enabled=True) == plain
 
 
 def _anki_miner(home, dict_id="jitendex"):

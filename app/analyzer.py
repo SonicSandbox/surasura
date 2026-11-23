@@ -5557,15 +5557,16 @@ def compute_render_signature(args, marks=None, made=_READ_NOW):
              (_made_fingerprint(_language) if made is _READ_NOW else made) if _backlog_on else None]
     _markers = {k: v for k, v in _markers.items() if k != "_comment"} if isinstance(_markers, dict) else _markers
     if args.theme not in ZEN_THEMES:
-        # Journey v3 (J-CUT): only what its render reads. Its looks (the theme, the source's display and J-SET's) are
-        # applied in the page and read back through the door, and the old page's options (words a day, ⌕'s switch and
-        # category, the study order's tab, Speech, the page size, its two switches, its templates) are read by no part
-        # of it, so a change of one draws nothing (the Redraw rule). A saved Zen look keeps the list below: Zen in or
+        # Journey v3 (J-CUT): only what its render reads — ⌕'s switch and category among them (the page's head). Its
+        # looks (the theme, the source's display and J-SET's) are applied in the page and read back through the door,
+        # and the old page's options (words a day, the study order's tab, Speech, the page size, its two switches, its
+        # templates) are read by no part of it, so a change of one draws nothing (the Redraw rule). A saved Zen look keeps the list below: Zen in or
         # out re-renders. Read through `journey_settings.v3()`, never by importing the generator (pandas: the fast
         # paths' cost); before the cut-over (or with SURASURA_DOOR=0) the old page's list, as it was.
         from app.services import journey_settings as _journey_settings
         if _journey_settings.v3():
-            _parts = ["journey v3", bool(_s.get("line_player", True)), *_anki, _markers]
+            _parts = ["journey v3", bool(_s.get("line_player", True)), _journey_settings.lookup_values(_s), *_anki,
+                      _markers]
             _stones = _stones_fingerprint(_language, marks)
             if _stones:
                 _parts.append(_stones)

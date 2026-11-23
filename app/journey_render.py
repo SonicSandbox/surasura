@@ -125,10 +125,11 @@ def _hira(text):
 
 
 def page_settings(settings):
-    """The head's `settings`: every row of SPEC §1.4 with its value at this render (`journey_settings.page_values`)."""
-    from app.services.journey_settings import page_values
+    """The head's `settings`: every row of SPEC §1.4 with its value at this render (`journey_settings.page_values`),
+    and ⌕'s switch and category (`journey_settings.lookup_values`: Settings' rows, not the page's ⚙)."""
+    from app.services.journey_settings import lookup_values, page_values
     values = page_values(settings)
-    return {name: values[key] for name, key in HEAD_SETTINGS.items()}
+    return {**{name: values[key] for name, key in HEAD_SETTINGS.items()}, **lookup_values(settings)}
 
 
 def sentences_of(row, per_word):

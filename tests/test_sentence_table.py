@@ -438,3 +438,144 @@ def test_at_level_1_a_run_without_its_table_is_not_reused(monkeypatch):
     os.remove(os.path.join(results, st.TABLE_FILE))
     out = _generate_at("ja", 1, force=False)
     assert "reusing existing results" not in out and os.path.exists(os.path.join(results, st.TABLE_FILE))
+
+
+# --------------------------------------------------------------------------- #
+# 5. The two numbers a line carries: words besides the word, where the word starts
+# --------------------------------------------------------------------------- #
+def _line(language, n, people=()):
+    """Line `n` of the language's sentence_words.txt as the store yields it: (its text, its tokens, its LineWords) —
+    `people`, surfaces the library knows as people's names (taken as their lemmas, as names_words holds them)."""
+    from app import analyzer
+    tokenizer = analyzer.JapaneseTokenizer() if language == "ja" else analyzer.ChineseTokenizer()
+    with open(os.path.join(RESOURCES, language, "sentence_words.txt"), encoding="utf-8") as f:
+        line = f.read().splitlines()[n]
+    (text, tokens), = tokenizer.tokenize_sentences(line)
+    names = frozenset(t[0] for t in tokens if t[2] in people)
+    return text, tokens, st.LineWords(tokens, text, language, names)
+
+
+def _key(tokens, surface):
+    return next((t[0], t[1]) for t in tokens if t[2] == surface)
+
+
+def test_grammar_is_left_out_and_every_content_word_counts():
+    # why: "does the line say something about the word" — 私 昨日 駅 友達 besides 会う; は で に ます た say nothing
+    text, tokens, words = _line("ja", 0)
+    assert words.of_word(_key(tokens, "会い")) == (4, text.index("会い"))
+    assert words.of_word(_key(tokens, "友達")) == (4, text.index("友達"))
+
+
+def test_a_helping_verb_after_te_is_grammar_but_the_same_verb_alone_counts():
+    # why: いる in 読んでいる is grammar (UniDic's helping use), in 家にいる it is the line's verb
+    _text, tokens, words = _line("ja", 1)
+    assert words.of_word(_key(tokens, "本"))[0] == 2              # 彼 読む
+    _text, tokens, words = _line("ja", 2)
+    assert words.of_word(_key(tokens, "家"))[0] == 1              # いる
+
+
+def test_a_counter_after_its_number_is_grammar():
+    # why: the number is no token of the store, so 人 in 三人 would read as the noun 人 'person'
+    _text, tokens, words = _line("ja", 3)
+    assert words.of_word(_key(tokens, "子供"))[0] == 2            # 公園 遊ぶ; not 人, not いる after で
+
+
+def test_a_person_the_line_is_about_and_a_place_count_but_a_call_does_not():
+    # why: the rule the picks were counted with — ケン followed by は is part of what is said, ロンドン is a place;
+    # a name standing free at the end, or before a comma, is a call
+    _text, tokens, words = _line("ja", 4, people=("ケン",))
+    assert words.of_word(_key(tokens, "住ん"))[0] == 2            # ケン ロンドン
+    _text, tokens, words = _line("ja", 5, people=("ケン",))
+    assert words.of_word(_key(tokens, "来い"))[0] == 1            # 早い; ケン is called
+    _text, tokens, words = _line("ja", 9, people=("ケン",))
+    assert words.of_word(_key(tokens, "来い"))[0] == 1            # こっち; ケン、 is called
+    _text, tokens, words = _line("ja", 4)                         # a library that names no one: every name counts
+    assert words.of_word(_key(tokens, "住ん"))[0] == 2
+
+
+def test_a_name_of_several_pieces_is_one_name_and_the_word_when_it_holds_the_word():
+    # why: ジョン・スミス is one person; the row スミス's line says only 医者 besides it
+    text, tokens, words = _line("ja", 6, people=("ジョン", "スミス"))
+    assert words.of_word(_key(tokens, "スミス")) == (1, text.index("スミス"))
+    assert words.of_word(_key(tokens, "医者"))[0] == 1            # the name, once
+
+
+def test_a_word_in_latin_letters_counts_and_marks_never_do():
+    # why: NASA is a thing the line names; 。 and the like are no words
+    _text, tokens, words = _line("ja", 7)
+    assert words.of_word(_key(tokens, "衛星"))[0] == 2            # NASA 見つかる
+
+
+def test_a_set_phrase_is_its_span_and_starts_where_its_first_token_does():
+    # why: a phrase row's words are its own tokens — 気がする says nothing besides itself
+    text, tokens, words = _line("ja", 8)
+    assert words.of_span(0, 3) == (0, 0)
+    assert words.of_span(2, 3) == (1, text.index("する"))         # する alone: 気 is a word besides it
+
+
+def test_chinese_leaves_out_its_particles_and_prepositions():
+    # why: jieba's own table — 在 了 吗 把 say nothing about the word; 我 你 他 (pronouns) do
+    _text, tokens, words = _line("zh", 0)
+    assert words.of_word(_key(tokens, "商店"))[0] == 4            # 我 昨天 买 本书
+    _text, tokens, words = _line("zh", 1)
+    assert words.of_word(_key(tokens, "吃饭"))[0] == 1            # 你
+
+
+def test_an_empty_line_and_a_word_not_in_it_are_zero():
+    # why: the walk never asks of a word outside the line, but a reader of the numbers must not crash on one
+    words = st.LineWords([], "", "ja")
+    assert words.of_word(("駅", "エキ")) == (0, 0) and words.of_span(0, 1) == (0, 0)
+    _text, _tokens, words = _line("ja", 0)
+    assert words.of_word(("無い語", "ナイゴ")) == (words.total, 0)
+
+
+def test_the_grammar_lists_are_base_forms_and_hold_no_katakana_word():
+    # why: the lists are read by base form (one token, no spaces); a katakana word is a loanword or a name: content
+    import re
+    for language in ("ja", "zh"):
+        grammar, particles, helpers, _titles = st._lists(language)
+        assert grammar and particles <= grammar and not helpers & particles
+        assert all(word and not re.search(r"\s", word) for word in grammar | helpers)
+    assert not [w for w in st._lists("ja")[0] if re.fullmatch(r"[゠-ヿ]+", w)]
+    assert {"は", "が", "を", "の", "だ", "です", "ます", "た"} <= st._lists("ja")[0]
+    assert {"的", "了", "吗", "把"} <= st._lists("zh")[0]
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_at_level_1_the_table_carries_each_lines_two_numbers(language, monkeypatch):
+    # why: the score reads both numbers from the table alone (SPEC § 4.2: written by Generate, never by a reader) —
+    # a plan sentence's line must carry the count and the start its text gives
+    from app import analyzer, plan_engine
+    monkeypatch.delenv("SURASURA_SENTENCE_TABLE", raising=False)
+    results = _seed(language)
+    _generate_at(language, 1)
+    table = st.open_table(os.path.join(results, st.TABLE_FILE), language=language)
+    plan = plan_engine.load(os.path.join(results, analyzer.PLAN_FILE))
+    rows, besides, starts = table.rows(), [], []
+    for k, (_first, pool, _audio) in plan.pools.items():
+        cols = table.block(rows[tuple(plan.keys[k][:2])])[0]
+        at = {(s, n): i for i, (s, n) in enumerate(zip(cols["src"].tolist(), cols["number"].tolist()))}
+        for s in pool:
+            sentence = plan.sentences[s]
+            i = at[(sentence[4], sentence[7])]
+            besides.append(int(cols["besides"][i]))
+            starts.append((int(cols["starts"][i]), sentence[0], plan.keys[k][0]))
+    assert besides and max(besides) >= 2 and len(set(besides)) >= 3
+    assert any(start > 0 for start, _t, _w in starts)
+    assert all(start <= len(text) for start, text, _w in starts)
+
+
+def test_at_level_1_each_source_carries_the_plans_own_digest(monkeypatch):
+    # why: a reader skips a line whose file changed since the Generate (SPEC § 5.4) by the file's digest — the one the
+    # plan's files already carry (plan_rules.file_digest), so the table and the plan never disagree about a file
+    import re
+    from app import analyzer, plan_engine
+    monkeypatch.delenv("SURASURA_SENTENCE_TABLE", raising=False)
+    results = _seed("ja")
+    _generate_at("ja", 1)
+    table = st.open_table(os.path.join(results, st.TABLE_FILE), language="ja")
+    plan = plan_engine.load(os.path.join(results, analyzer.PLAN_FILE))
+    sources = table.sources()
+    assert [s[2] for s in sources[:len(plan.files)]] == [f[2] for f in plan.files]
+    assert [s[0] for s in sources[:len(plan.files)]] == [f[0] for f in plan.files]
+    assert all(isinstance(s[2], str) and re.fullmatch(r"[0-9a-f]{16}", s[2]) for s in sources)

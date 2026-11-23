@@ -6667,6 +6667,19 @@ def main():
     if plan_rules.SENTENCE_TABLE >= 1 and _plan_on:
         from app import sentence_table
         _table = sentence_table.Packer()
+        _people = frozenset()       # the library's people's names, as Ignore names reads them (arrivals: the same meta)
+        if language == "ja" and _store is not None:
+            try:
+                _people = frozenset(json.loads(_store.get_meta("names_words") or "[]"))
+            except Exception:
+                pass
+        _held_words = [None, None]
+
+        def _line_words(s_text, s_tokens):
+            """The line's words for the table's two numbers (sentence_table.LineWords): made once a line."""
+            if _held_words[0] is not s_tokens:
+                _held_words[0], _held_words[1] = s_tokens, sentence_table.LineWords(s_tokens, s_text, language, _people)
+            return _held_words[1]
 
     # --- AGGREGATION PASS ---
     for seq_idx, (file_path, label, weight, source_type) in enumerate(found_files, 1):
@@ -6964,7 +6977,8 @@ def main():
                     new_ctx = _candidate(is_too_short, is_too_long, rolling_context_cost(_phrase_uses_of(index), freqs),
                                          lrs, s_text, src_idx, marks, len(freqs), s_hash, s_no)
                     if _table is not None and (first_here or not is_over_hard_max):
-                        _table.add(index, src_idx, s_no, len(s_text), s_hash, lrs, marks, over=is_over_hard_max)
+                        _table.add(index, src_idx, s_no, len(s_text), s_hash, lrs, marks,
+                                   *_line_words(s_text, s_tokens).of_span(start, end), over=is_over_hard_max)
                     if first_here:
                         # its first sentence in this file: the plan's (Context 1 and a near candidate wherever the file
                         # goes) kept compact, and whole while it is one of the files nearest its first meeting here
@@ -7001,7 +7015,8 @@ def main():
                 entry = word_stats[key]
                 near_too = False
                 if _table is not None and (not is_over_hard_max or entry.get("_fsq") != seq_idx):
-                    _table.add(key, src_idx, s_no, len(s_text), s_hash, unique_lrs, marks or (), over=is_over_hard_max)
+                    _table.add(key, src_idx, s_no, len(s_text), s_hash, unique_lrs, marks or (),
+                               *_line_words(s_text, s_tokens).of_word(key), over=is_over_hard_max)
                 if entry.get("_fsq") != seq_idx:
                     # Its first sentence in this file: the plan's (Context 1 and a near candidate wherever the file
                     # goes) kept compact; whole while it is one of the files nearest its first meeting in this order
@@ -7246,7 +7261,8 @@ def main():
                                    | {unit for lr in lrs & rare_set for unit in _view.units(lr) if not _known(unit)})
                     freqs = _unknown_counts(lrs)
                     if _table is not None:
-                        _table.add(index, src_idx, s_no, len(s_text), s_hash, lrs, marks or ())
+                        _table.add(index, src_idx, s_no, len(s_text), s_hash, lrs, marks or (),
+                                   *_line_words(s_text, s_tokens).of_span(start, end))
                     entry = word_stats[_phrase_row_of[index]]
                     plan_rules.keep_best(entry.setdefault("finished_contexts", []),
                                          _candidate(short, long, rolling_context_cost(_phrase_uses_of(index), freqs),
@@ -7257,7 +7273,8 @@ def main():
                     unk_freqs = _unknown_counts(unique_lrs)
                     for key in targets:
                         if _table is not None:
-                            _table.add(key, src_idx, s_no, len(s_text), s_hash, unique_lrs, marks or ())
+                            _table.add(key, src_idx, s_no, len(s_text), s_hash, unique_lrs, marks or (),
+                                       *_line_words(s_text, s_tokens).of_word(key))
                         plan_rules.keep_best(word_stats[key].setdefault("finished_contexts", []),
                                              _candidate(short, long, rolling_context_cost(_uses(key), unk_freqs),
                                                         unique_lrs, s_text, src_idx, marks, len(unk_freqs), s_hash,
@@ -8060,6 +8077,21 @@ def main():
         except Exception as e:
             print(f"Warning: could not write the plan file ({e}); the last one is left as it was.")
         if _table is not None and _run_sig:
+            _signed = {os.path.abspath(entry[0]): entry for entry in (_sig_parts or {}).get("files") or ()}
+
+            def _source_digest(source):
+                """A source's own digest, as the plan's files carry it (`plan_rules.file_digest` of its run-signature
+                entry); a Finished file's as a set-aside file's is made (run_signature_parts' "reference")."""
+                entry = _signed.get(source["abs"])
+                if entry is None:
+                    try:
+                        st = os.stat(source["abs"])
+                        stat = [st.st_mtime, st.st_size]
+                    except OSError:
+                        stat = None
+                    entry = [source["abs"], stat, None, None, source["type"]]
+                return plan_rules.file_digest(entry)
+
             # The sentence table beside the plan, on the plan's rows, sources and co-words' rule (one rule, numbered
             # by key as the plan's are). Never fails the run: without it a reader takes today's path.
             try:
@@ -8068,7 +8100,7 @@ def main():
                     lambda lr: plan_rules.clauses_or(_atom(lr), _view.known_when(lr, _atom)),
                     lambda lr: row_of.get(lr, -1) if lr not in phrase_keys else -1, _coword_key,
                     lambda index: row_of.get(_phrase_row_of.get(index)),
-                    [[s["path"], s["type"], None] for s in source_list],
+                    [[s["path"], s["type"], _source_digest(s)] for s in source_list],
                     {"engine": engine_id(), "run_signature": _run_sig, "language": language},
                 ).write(os.path.join(RESULTS_DIR, sentence_table.TABLE_FILE))
                 print(f"Saved the sentence table ({_table_size:,} bytes, {len(_table):,} lines offered).")

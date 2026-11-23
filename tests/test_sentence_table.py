@@ -361,3 +361,80 @@ def test_a_rows_lines_come_in_file_then_place_order(tmp_path):
                 ((word, 0, 3, 9, 8), {})], [word], {word: 0}.get)
     cols = st.open_table(_write(t, tmp_path)).block(0)[0]
     assert list(zip(cols["src"].tolist(), cols["number"].tolist())) == [(0, 3), (0, 40), (1, 0), (1, 2)]
+
+
+# --------------------------------------------------------------------------- #
+# 4. Generate writes it (level 1): the walk's lines, beside today's plan
+# --------------------------------------------------------------------------- #
+def _generate_at(language, level, force=True):
+    from tests.test_services_progress import _analyzer
+    env = {"SURASURA_SENTENCE_TABLE": str(level), "PYTHONHASHSEED": "0"}
+    if force:
+        env["SURASURA_FORCE_RUN"] = "1"
+    proc = _analyzer(language, env=env)
+    assert proc.returncode == 0, proc.stdout.decode("utf-8", "replace")[-3000:]
+    return proc.stdout.decode("utf-8", "replace")
+
+
+def _seed(language):
+    from tests import services_helpers as h
+    h.seed_library(language)
+    h.write_settings({"target_language": language, "anki_connect_url": "http://127.0.0.1:9"})
+    return os.path.join(h.root(), "results")
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_at_level_1_every_kept_sentence_of_the_plan_is_a_line_of_the_table(language, monkeypatch):
+    # why: the table must hold every candidate — the 60 + 15 the plan keeps today are some of them, so each of them
+    # must be its row's line in the table, at the same file, place and length (the best is always there: SPEC § 1)
+    from app import analyzer, plan_engine
+    monkeypatch.delenv("SURASURA_SENTENCE_TABLE", raising=False)
+    results = _seed(language)
+    _generate_at(language, 1)
+    with open(os.path.join(results, "run_signature.txt"), encoding="utf-8") as f:
+        signature = f.read().strip()
+    table = st.open_table(os.path.join(results, st.TABLE_FILE), language=language, engine=analyzer.engine_id(),
+                          run_signature=signature)
+    assert table is not None
+    plan = plan_engine.load(os.path.join(results, analyzer.PLAN_FILE))
+    rows, checked = table.rows(), 0
+    for k, (_first, pool, audio) in plan.pools.items():
+        key = tuple(plan.keys[k][:2])
+        assert key in rows, key
+        cols = table.block(rows[key])[0]
+        lines = dict(zip(zip(cols["src"].tolist(), cols["number"].tolist()), cols["chars"].tolist()))
+        for s in set(pool) | set(audio):
+            sentence = plan.sentences[s]
+            assert lines.get((sentence[4], sentence[7])) == sentence[9], (key, sentence[0])
+            checked += 1
+    assert checked >= 10
+    assert len(table.sources()) == len(plan.files) + len(plan.finished)
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_at_level_1_every_other_file_in_results_is_the_same_bytes_as_at_0(language, monkeypatch):
+    # why: release 1 leaves the list and the journey on today's rule — the table is written beside them and nothing
+    # else may move (the walk's offers to the table take nothing from the shortlists)
+    from tests import services_helpers as h
+    monkeypatch.delenv("SURASURA_SENTENCE_TABLE", raising=False)
+    _seed(language)
+    found = []
+    for level in (0, 1):
+        _generate_at(language, level)
+        found.append(_outputs())
+    assert st.TABLE_FILE in found[1] and st.TABLE_FILE not in found[0]
+    found[1].pop(st.TABLE_FILE)
+    assert found[0] == found[1]
+    assert h.root()
+
+
+def test_at_level_1_a_run_without_its_table_is_not_reused(monkeypatch):
+    # why: a library generated before the switch was on (or whose table was lost) must get its table at the next
+    # Generate, even when nothing else changed
+    monkeypatch.delenv("SURASURA_SENTENCE_TABLE", raising=False)
+    results = _seed("ja")
+    _generate_at("ja", 1)
+    assert "reusing existing results" in _generate_at("ja", 1, force=False)
+    os.remove(os.path.join(results, st.TABLE_FILE))
+    out = _generate_at("ja", 1, force=False)
+    assert "reusing existing results" not in out and os.path.exists(os.path.join(results, st.TABLE_FILE))

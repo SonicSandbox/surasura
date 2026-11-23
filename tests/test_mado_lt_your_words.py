@@ -126,13 +126,13 @@ def test_a_word_still_learning_stays_on_the_known_tab_as_learning_until_it_is_kn
     path = _known_path("ja")
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
-    data["words"].append(_entry("看板", anki_sync.SOURCE, "2026-11-23T08:00:00", has_card=1))
+    data["words"].append(_entry("看板", anki_sync.SOURCE, "2026-11-21T20:00:00", has_card=1))
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
     rows = {e.word: e for e in _known()}
     from app import practice
     assert rows["看板"].source == "known"
-    assert rows["看板"].created == practice._created_ms("2026-11-23T08:00:00")   # known again: since the new card
+    assert rows["看板"].created == practice._created_ms("2026-11-21T20:00:00")   # known again: since the new card
     assert [e.word for e in _known()][0] == "看板"                              # ... so newest first
 
 

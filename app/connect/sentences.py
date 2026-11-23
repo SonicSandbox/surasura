@@ -154,7 +154,8 @@ def ai_voice(settings, language):
 
 def heard(text, paired, ai):
     """How an item's sentence is heard -> REAL, AI_VOICE or SILENT: a video's or an audio file's (not `text`) and a
-    book's with an audiobook paired (`paired`: Connect lines it up and cuts the narrator's clip) its own clip; a
+    book's with an audiobook paired whose line-up can still give it (`paired`: `lineup.reach` — Connect lines it up
+    and cuts the narrator's clip) its own clip; a
     book's or a text's with none, the AI voice's while it can make it (`ai`: `ai_voice`; the card is mined without
     audio and the voice fills its empty SentenceAudio), else none."""
     if not text or paired:
@@ -162,13 +163,26 @@ def heard(text, paired, ai):
     return AI_VOICE if ai else SILENT
 
 
+def _heard_line(hear, line_text, ai):
+    """How one line of an item is heard: the item's answer (`_library`'s), or — a book lined up with its audiobook
+    (`lineup.Reach`) — the narrator's clip only for a line its line-up says (`lineup.said`); one it doesn't (a chapter
+    outside the audiobook's reach, a passage the narrator skipped) is a book's line with no audiobook (`heard`): the AI
+    voice's while it can make it, else none — never a clip its card can't get (Kyou-PB)."""
+    from app.connect import lineup
+    if isinstance(hear, lineup.Reach):
+        return REAL if lineup.said(hear, line_text) else heard(True, False, ai)
+    return hear
+
+
 def _library(language, store=None, ai=False, only=None):
     """{normalised path: (item id, context, how it is heard, a book or a text)} for the library's items, read once:
-    the store's items, their show's dates (`seen_dates`), their own (`watched_dates`), the order ahead
-    (`library.ahead`) and the books an audiobook is paired with (`library.paired_books`); `ai`: `heard`'s. {} with no
-    store. `only`: the items of these paths alone ([rel_path], the data folder's, with either slash) — what a reader
+    the store's items, their show's dates (`seen_dates`), their own (`watched_dates`; a watched mark with no date and
+    a show with none is "earlier", as a finished show with none), the order ahead (`library.ahead`) and the parts of
+    the books an audiobook is paired with (`library.paired_parts`, by item: Kyou-PB), each book's line-up read once
+    (`lineup.reach`: how it is heard is then a `lineup.Reach`, read line by line by `_heard_line`); `ai`: `heard`'s.
+    {} with no store. `only`: the items of these paths alone ([rel_path], the data folder's, with either slash) — what a reader
     of a few candidates asks, so its read follows them, not the library."""
-    from app.connect import library
+    from app.connect import library, lineup
     from app.path_utils import get_data_path
     from app import library_store
     own = store is None
@@ -183,7 +197,7 @@ def _library(language, store=None, ai=False, only=None):
         shows = store.seen_dates()
         dated = store.watched_dates()
         place = {item_id: n for n, item_id in enumerate(library.ahead(store))}
-        paired = {os.path.normcase(os.path.abspath(epub)) for epub, _ab, _sha in library.paired_books(store)}
+        paired = library.paired_parts(store)
         root = get_data_path(language)
         out = {}
         query = ("SELECT i.id, i.rel_path, i.tier, i.watched, i.work_id, i.parent_folder, i.source_type, w.media_type "
@@ -199,15 +213,24 @@ def _library(language, store=None, ai=False, only=None):
                     rows += store.conn.execute(f"{query} WHERE i.rel_path IN ({','.join('?' * len(batch))})",
                                                batch).fetchall()
         now = datetime.now(timezone.utc)
+        reach = {}              # a paired book -> its line-up's reach (`lineup.reach`), read once for its parts asked
         for item_id, rel, tier, watched, work, folder, source_type, media in rows:
             show = shows.get(library_store._show_of(item_id, work, folder)) or {}
             seen = dated.get(item_id) or show.get("watched_at") or show.get("finished_at")
-            if not seen and (show.get("finished") or tier == "graduated"):
-                seen = "earlier"
+            if not seen and (watched or show.get("finished") or tier == "graduated"):
+                seen = "earlier"            # a mark made before the store kept dates (Kyou-PB, PROVISIONAL)
             path = os.path.join(root, *str(rel).replace("\\", "/").split("/"))
             text = library.text_only({"rel_path": rel, "source_type": source_type})
             key = os.path.normcase(os.path.abspath(path))
-            out[key] = (item_id, context(seen, place.get(item_id), tier, now), heard(text, key in paired, ai), text)
+            book = paired.get(item_id) if text else None
+            if book is not None and book[0] not in reach:
+                try:
+                    reach[book[0]] = lineup.reach(book[2])
+                except Exception:   # a line-up's state not as written (by hand, a half copy): no clip promised
+                    reach[book[0]] = None
+            got = reach.get(book[0]) if book is not None else None
+            hear = got if isinstance(got, lineup.Reach) else heard(text, got is not None, ai)
+            out[key] = (item_id, context(seen, place.get(item_id), tier, now), hear, text)
         return out
     finally:
         if own:
@@ -406,10 +429,11 @@ def _from_list(language, kept, listed, here_key, never, young, files, reach, boo
                 is_here = at == here_key
                 if allowed is not None and at not in allowed:
                     continue
-                if not is_here and text_only and not (books and (hear is not SILENT or reach is None)):
-                    continue            # a book's line nothing can speak, where media is cut (`choose`'s `unheard`)
                 if same_line(row[plan_rules.TEXT], banned):
                     continue
+                hear = _heard_line(hear, row[plan_rules.TEXT], ai)
+                if not is_here and text_only and not (books and (hear is not SILENT or reach is None)):
+                    continue            # a book's line nothing can speak, where media is cut (`choose`'s `unheard`)
                 others = sum(1 for c in row[plan_rules.COWORDS] if own[c] != k)
                 found.append((Choice(path, item_id, row[plan_rules.TEXT], others, round(ctx, 4), is_here,
                                      hear is not SILENT, hear == AI_VOICE, row[plan_rules.NUMBER]), position, s))
@@ -550,7 +574,10 @@ def choose(language, keys, *, here=None, dial=None, never=None, young=None, file
             if same_line(text, never.get(key)):
                 continue
             item_id, ctx, hear, text_only = info[path]
+            hear = _heard_line(hear, text, ai)
             is_here = path == here_key
+            if not is_here and text_only and not (books and (hear is not SILENT or reach is None)):
+                continue                # a lined-up book's line its line-up never says (`_heard_line`): `unheard`'s
             if not is_here and (reach is None or not text_only) and not can_cut(path, item_id):
                 continue                # a book's line is judged by how it is heard (`unheard`), and is there
             found.append((Choice(path, item_id, text, rank[0], round(ctx + max(0.0, -rank[2]), 4), is_here,

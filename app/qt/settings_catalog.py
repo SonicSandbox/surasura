@@ -38,7 +38,7 @@ import unicodedata
 from collections import namedtuple
 from collections.abc import Mapping
 
-from app import settings_manager
+from app import plan_rules, settings_manager
 from app.connect import settings_values
 from app.connect import known_signal, review_loop
 from app.qt import settings_strings as S
@@ -493,6 +493,7 @@ NOT_SHOWN = {
     "setup_seen": "state: the version whose setup pages were seen (the wizard, WZ-8)",
     "setup_passed": "state: the setup pages saved before setup finished (the wizard)",
     "known_from_anki_chosen": "state: written beside *Count as known in Anki*'s pick (Kantan-B3)",
+    "sentence_length_chosen": "state: written beside *Length*'s pick once the sentence table is on (E-LENGTH)",
     "anki_sync_include_suspended": "retired (Kotoba-WS2): folded into *Count as known in Anki*, read once on load",
     "hints_seen": "state: the one-time hints shown, each per library (W-1's first watched mark)",
     "subs_with_hato": "the learner's one yes in Needs you (*Find them with hato*, NS-2; hato's card: 3.0.1's next step)",
@@ -913,7 +914,8 @@ def _per_language(row, settings, language, new):
 def change(row, settings, language, new):
     """What a control's new value writes: `(changes, update)` — `changes` {key: value}, only the row's own keys and only
     those whose value isn't already what the settings hold (`{}` for none; a row holding no setting never writes; a
-    *Count as known in Anki* pick carries `CHOSEN` beside it);
+    *Count as known in Anki* pick carries `CHOSEN` beside it; with the sentence table on, a *Length* change writes both
+    ends and `sentence_length_chosen`);
     `update` None, or for a per-language key the function that re-applies this language's entry onto the file's value at
     write time. `new` by kind: a bool, a value, a number; `range` a (low, high) pair; `tablets` the picks (a list
     value's values, or several bool keys' keys on — a {key: bool} dict too); `list` the items; the level a band name (a hand
@@ -936,6 +938,11 @@ def change(row, settings, language, new):
         # Kantan-B3: a pick, never read as an old default again — written on every pick, even when the loaded settings
         # already say True: the old switch's fold sets it in memory only (Kotoba-WS2F, the keeper's F1)
         out[CHOSEN] = True
+    if row.id == "sentence_length" and out and plan_rules.SENTENCE_TABLE >= 1:
+        # E-LENGTH: a Length set with the sentence table on is the learner's own, never read as the old default again —
+        # the pair as the row shows it (one end changed must not leave the file's other end on an old default)
+        out = {key: wanted[key] for key in row.keys}
+        out[settings_manager.SENTENCE_LENGTH_CHOSEN] = True
     if row.id in ASIDE_TICKS and out and not _off_list_set(settings) and _off_list(settings) == "aside":
         # Kyou-MO: unset, the switch is read from 3.0.17's ticks — a tick changed under *Set aside* pins it, so the
         # untick never flips it to *Leave*

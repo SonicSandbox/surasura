@@ -53,6 +53,7 @@ PLACED = {
     "connect_backlog_cap": "neither",        # P2.4: how many of Connect's cards wait in Anki, never a run
     "known_from_anki": "neither",            # P2.4: its words reach KnownWord.json (known_sig), never as a key
     "known_from_anki_chosen": "neither",     # Kantan-B3: whether its states are the learner's pick, never a run
+    "sentence_length_chosen": "neither",     # E-LENGTH: whether *Length* is the learner's pick, never a run
     "loop_ignore_flag": "neither",           # Mado-LT: the loop's Ignore move; what it moves is in the word lists
     "loop_swap_flag": "neither",             # Mado-LT: the loop's Swap move; what it queues is Connect's
     "connect_video_folders": "neither",      # P2.5: where Connect looks for a moved video, never a run

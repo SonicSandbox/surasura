@@ -140,9 +140,11 @@ def length_range(settings):
     """(lo, hi, own_lo, own_hi) in characters: the user's own `logic.context` range — read from THEIR
     settings on every export, since they may change it — widened by LENGTH_LEEWAY on each side. Never
     below 1, never past the hard cap `max_chars` (longer sentences are never examples anywhere)."""
+    from app.settings_manager import sentence_length_default     # *Length*'s one default (E-LENGTH)
     context = (settings.get("logic") or {}).get("context") or {}
-    own_lo = int(context.get("min_chars", 10))
-    own_hi = int(context.get("preferred_max_chars", 50))
+    low, high = sentence_length_default()
+    own_lo = int(context.get("min_chars", low))
+    own_hi = int(context.get("preferred_max_chars", high))
     cap = int(context.get("max_chars", 150))
     return max(1, own_lo - LENGTH_LEEWAY), min(cap, own_hi + LENGTH_LEEWAY), own_lo, own_hi
 

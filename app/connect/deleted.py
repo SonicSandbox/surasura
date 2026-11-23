@@ -23,8 +23,9 @@ that asks why — **Known · Ignore · Parsing mistake · Bad card**, one line a
   door; Swap keeps that line out of every later swap of the word, `swap._avoid`, until the answer is undone). Which
   one is offered first is the look's guess (`likely`, kept with the card): a word a dictionary holds (the shipped
   meanings, the learner's own) that the last Generate kept sentences of in `SEVERAL` other files → `LINE` first, else
-  `PARSING`; the learner always picks. A word Known or Ignored since is skipped, said. **Undo** (`undo`): each answer taken back while its word is as the
-  answer left it (the mark as it was before, the line off the list, the new card through Swap's own Undo).
+  `PARSING`; the learner always picks. A word Known or Ignored since is skipped, said. **Undo** (`undo`): each answer
+  taken back while its word is as the answer left it (the mark as it was before, the line off the list, the new card
+  through Swap's own Undo).
 - **The old deletes, once** (the Discord promise: cards deleted as parsing mistakes before the loop could ask): at the
   look's first run in this version the words already deleted (`Store.unmined_words`) are kept as one list (ledger meta
   `old-deletes:<lang>`), never grown; *Needs you* shows it once, and *Forget* frees a word through the store's
@@ -239,8 +240,9 @@ def _keep_old(ledger, language, store):
 # Read-only: Connect's record (`status.read`)
 # --------------------------------------------------------------------------- #
 def status_of(conn, language, now=None):
-    """-> {"asked": [{note_id, word, reading, sentence, item_id, gone_at, likely}], newest first; "known": n, "ignored": n (the
-    cards never asked, of the last `ASK_DAYS`); "old": the one-time list}. Read-only: nothing made or written."""
+    """-> {"asked": [{note_id, word, reading, sentence, item_id, gone_at, likely}], newest first; "known": n,
+    "ignored": n (the cards never asked, of the last `ASK_DAYS`); "old": the one-time list}. Read-only: nothing made or
+    written. `likely`: the look's guess for the follow-up (None: a card stamped before Kyou-DW 3)."""
     out = {"asked": [], "known": 0, "ignored": 0, "old": []}
     if not _has(conn, "meta"):
         return out

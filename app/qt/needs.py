@@ -480,7 +480,7 @@ class NeedsCards(QWidget):
         self.addon(card, box, e)
         by_line = dict(zip((ln.key for ln in e.lines), results or ())) if results else {}
         shown = FOLDER_LINES_SHOWN if e.kind in (service.FILES_FOLDER, service.LIBRARY_GONE) else LINES_SHOWN
-        if e.kind == service.DELETED:               # Kyou-DW 3: a follow-up line never pushes a card's line past the cut
+        if e.kind == service.DELETED:               # Kyou-DW 3: a follow-up line never pushes a card's line out
             shown += sum(1 for ln in e.lines if ln.key.startswith(service.DELETED_HOW))
         for ln in e.lines[:shown]:
             row = QHBoxLayout()
@@ -895,7 +895,8 @@ class NeedsYou(QObject):
         #                                          the seen file alone says whether it is hidden)
         self._seen_jobs = collections.deque()    # A4A-8: the page's seen-file writes, one after another as pressed
         self._dw_asking = set()                  # Kyou-DW 3: the deleted cards whose Parsing mistake asks its follow-up
-        #                                          (note ids; `service.DELETED_HOW_ALL`: the whole card) — this window's
+        #                                          (note ids; `service.DELETED_HOW_ALL`: the whole card), kept while
+        #                                          the window is open: no time-out, never answered for the learner
         self.last_menu = None
         reader = getattr(win.services, "library", None)
         opener = getattr(reader, "opener", None)

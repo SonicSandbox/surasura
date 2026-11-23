@@ -530,7 +530,7 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     unsaved = _tidy_unsaved_entry(connect, seen, answered) if cards_on and connect else None    # Kyou-SH3
     if unsaved is not None:
         out.append(unsaved)
-    out.extend(_deleted_entries(connect, seen, answered, asking) if cards_on and connect else ())     # Kyou-DW: asked why
+    out.extend(_deleted_entries(connect, seen, answered, asking) if cards_on and connect else ())    # Kyou-DW: why
     out.extend(_swap_entries(connect, seen, answered) if cards_on and connect else ())    # Kantan-SL: Swap, said
     anki = _anki_entry(connect, seen) if cards_on else None    # Connect may run (it clears the line by itself: A-5)
     if anki is not None:

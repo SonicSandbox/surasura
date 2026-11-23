@@ -56,7 +56,7 @@ def test_parsing_mistake_asks_the_follow_up_under_its_line_and_answers_nothing_y
                if b.property("line") == service.deleted_how_key(note))
 
 
-def test_only_in_this_sentence_answers_on_a_worker_with_its_own_words_and_an_undo(world, page, monkeypatch):  # noqa: F811
+def test_only_in_this_sentence_answers_on_a_worker_with_its_words_and_an_undo(world, page, monkeypatch):  # noqa: F811
     _seed, win, _writer, ny = world(connect=_connect(GUESSED))
     toasts = []
     monkeypatch.setattr(win.toasts, "show", lambda text, undo=None, **_k: toasts.append((text, undo)))

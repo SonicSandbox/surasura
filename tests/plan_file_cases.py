@@ -17,6 +17,7 @@ signature (results/run_signature.txt) hashes the root itself and is proven apart
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -239,6 +240,13 @@ def output_hashes(root):
     results = os.path.join(root, "results")
     out = {}
     spellings = [s.encode("utf-8") for s in _root_spellings(root)]
+    # The run signature hashes the root's path: written as <STAMP> where an output carries it (the journey's counts,
+    # plan_counts.json, name the plan they were written with)
+    try:
+        with open(os.path.join(results, "run_signature.txt"), "rb") as f:
+            stamp = f.read().strip()
+    except OSError:
+        stamp = b""
     for folder, _dirs, files in os.walk(results):
         for name in files:
             if name in NOT_COMPARED or name.endswith(".tmp"):
@@ -248,6 +256,10 @@ def output_hashes(root):
                 data = f.read()
             for s in spellings:
                 data = data.replace(s, b"<ROOT>")
+            if stamp:
+                data = data.replace(stamp, b"<STAMP>")
+            if name == "reading_list_static.html":     # the v3 page's head names its render time (`stamp`, ms)
+                data = re.sub(rb'"stamp":"\d+"', b'"stamp":""', data, count=1)
             out[os.path.relpath(path, results).replace("\\", "/")] = hashlib.sha256(data).hexdigest()
     return dict(sorted(out.items()))
 

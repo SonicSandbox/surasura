@@ -211,7 +211,11 @@ ENSURE_AUDIO_EXAMPLE = False
 #     keeps for it, and the list as many Context / Src columns as its widest row (plan_rules.context_limit /
 #     context_columns; the plan's re-pick the same) — 0 wrote no column before. Only a list with 0 changes; no
 #     tokenizing changed: SCHEMA_VERSION stays 28. 3.0.19.
-ENGINE_REVISION = 47
+# 48: a Generate writes the journey's counts beside its plan (results/plan_counts.json, `plan_engine.CountsTable`: the
+#     listed rows' uses in each file and each file's known / counted tokens, from the lines that write the plan), which
+#     the journey reads instead of the plan's tables (J-CUT, the lead's ruling). The plan and the lists are unchanged;
+#     SCHEMA_VERSION stays 28. 3.0.19.
+ENGINE_REVISION = 48
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -4376,6 +4380,9 @@ def plan_lines(run):
             yield _plan_json({name: table[start:start + _PLAN_CHUNK]})
 
     counted = [0] * len(keys)
+    table = run.get("counts")           # J-CUT: the journey's counts, from these very lines (`plan_engine.CountsTable`)
+    if table is not None:
+        table.start(keys, rows, files)
     for f, (file_path, _label, _weight, _type) in enumerate(found_files):
         uses, unusual, phrase_unusual, row_firsts = plan_files[f]
         # [k, its first sentence here (an id in `sentences`), …] for the listed rows met here
@@ -4408,8 +4415,10 @@ def plan_lines(run):
                 found = _plan_spellings(phrase, k, True, phrase_unusual, word_stats[key], tied[key])
                 if found:
                     spellings.append(found)
-        yield _plan_json({"f": f, "main": main, "ph": phrases, "sp": spellings,
-                          "prog": _plan_progressive(run, f, file_path, index, met), "fs": firsts})
+        prog = _plan_progressive(run, f, file_path, index, met)
+        if table is not None:
+            table.add(main, phrases, prog)
+        yield _plan_json({"f": f, "main": main, "ph": phrases, "sp": spellings, "prog": prog, "fs": firsts})
     for k, key in enumerate(keys):
         if counted[k] != word_stats[key]["total_count"]:
             raise ValueError(f"the uses of {key} add up to {counted[k]}, not {word_stats[key]['total_count']}")
@@ -4459,16 +4468,24 @@ def _journey_plan(args, run_signature, results_dir=None):
     (`journey_render._ahead`, `_plan_pcts`): one source every piece reads (J-CUT, the lead's ruling), read after it is
     written, so a Generate, its reuse and a redraw draw the same page. results/'s plan, numbers only (`pools=False`),
     when it is whole and written by the run `run_signature` names; None for Zen, before the cut-over, or without such a
-    plan (the render then counts each word in its own episode). Only the tables the count reads (`plan_engine.counts`:
-    the whole plan held ~130 MB more at the render's peak at 20,000 files, J-CUT 3). Never raises."""
+    plan (the render then counts each word in its own episode). The counts table the Generate wrote beside the plan
+    (`plan_engine.read_counts`: the listed rows' counts alone, the lead's ruling) when it is this run's, else only the
+    plan's tables the count reads (`plan_engine.counts`, a plan from before the table: the whole plan held ~130 MB more
+    at the render's peak at 20,000 files, J-CUT 3; its tables +109 MB over none). Never raises."""
     if not run_signature or args.theme in ZEN_THEMES:
         return None
     from app.services import journey_settings
     if not journey_settings.v3():
         return None
     from app import plan_engine
+    results = results_dir or RESULTS_DIR
+    path = os.path.join(results, PLAN_FILE)
+    if os.path.exists(path):        # the table beside this run's plan (its counts, written once), else the plan's own
+        table = plan_engine.read_counts(os.path.join(results, plan_engine.COUNTS_FILE), run_signature)
+        if table is not None:
+            return table
     try:
-        plan = plan_engine.counts(os.path.join(results_dir or RESULTS_DIR, PLAN_FILE))
+        plan = plan_engine.counts(path)
     except Exception:
         return None
     return plan if plan is not None and plan.header.get("run_signature") == run_signature else None
@@ -4635,7 +4652,8 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
             drawn = static_html_generator.generate_static_html(
                 theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
                 open_browser=not args.no_open, language=language, marks=marks, found=found_files,
-                plan=plan)                  # the Generate's plan, the journey's figures (`_journey_plan`'s source)
+                plan=plan_engine.read_counts(os.path.join(RESULTS_DIR, plan_engine.COUNTS_FILE),   # the Generate's
+                                             plan.header.get("run_signature")) or plan)   # figures (its counts table)
             report_failed = not _report_written(_html, rendering)
             try:
                 store.set_meta("last_render_sig", signed_render(args, drawn, not report_failed, made))
@@ -8063,6 +8081,8 @@ def main():
         try:
             if not _run_sig:
                 raise ValueError("the run has no signature")
+            from app import plan_engine as _plan_engine
+            _counts_table = _plan_engine.CountsTable()
             _plan_size = write_plan_file(RESULTS_DIR, plan_lines({
                 "language": language,
                 "engine": engine_id(),
@@ -8082,8 +8102,12 @@ def main():
                 "pick": {"keys": row_keys, "sentences": sentences, "firsts": first_rows, "cowords": cowords,
                          "picked": picked, "place": src_place, "sources": source_list,
                          "recency_files": RECENCY_FILES, "ensure_audio": bool(ENSURE_AUDIO_EXAMPLE),
-                         "max_chars": max_chars}}))
+                         "max_chars": max_chars},
+                "counts": _counts_table}))
             print(f"Saved the plan file ({_plan_size:,} bytes).")
+            # J-CUT: the journey's counts beside it, from the same lines (the render and the redraw read them)
+            if not _counts_table.write(RESULTS_DIR, _run_sig):
+                print("Warning: could not write the journey's counts; the journey reads the plan.")
         except Exception as e:
             print(f"Warning: could not write the plan file ({e}); the last one is left as it was.")
 

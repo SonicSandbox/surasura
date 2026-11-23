@@ -269,6 +269,86 @@ def test_the_plans_count_tables_read_alone_are_the_whole_loads_and_a_damaged_or_
     assert plan_engine.counts(str(tmp_path / "none.json.gz")) is None
 
 
+def _listed(root, name="priority_learning_list.csv"):
+    """The (Word, Reading) of every word a list of the Generate's holds — the priority list's: the plan's rows, the
+    only words a page (or the redraw's re-pick) can draw."""
+    import csv
+    with open(os.path.join(root, "results", name), encoding="utf-8-sig", newline="") as f:
+        return {(r["Word"], r["Reading"]) for r in csv.DictReader(f)}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_generate_writes_the_counts_table_beside_the_plan_and_its_counts_are_the_streamed_ones(language,
+                                                                                               monkeypatch):
+    # The lead's ruling on J-CUT's item 2: the Generate writes the count ahead's numbers once, a small table beside the
+    # plan from the pass that writes it, and the render and the redraw read that instead of streaming the plan
+    # (+109 MB at the 20,000-file first render). Same answer: every listed word's count in every episode, and every
+    # episode's *% known*, are the plan's own.
+    from app import journey_render, plan_engine
+    from app.path_utils import report_name
+    store, _ids, _names = _library(language)
+    store.close()
+    root = os.environ["SURASURA_TEST_ROOT"]
+    _generate(root, language)
+    results = os.path.join(root, "results")
+    streamed = plan_engine.counts(os.path.join(results, analyzer.PLAN_FILE))
+    table = plan_engine.read_counts(os.path.join(results, plan_engine.COUNTS_FILE),
+                                    streamed.header["run_signature"])
+    assert table is not None, "the Generate wrote the table beside its plan"
+    names = [report_name(entry[0]) for entry in streamed.files]
+    assert [report_name(entry[0]) for entry in table.files] == names and len(names) > 1
+    listed = _listed(root)
+    assert listed and _listed(root, "progressive_learning_list.csv") <= listed
+    ahead, whole = journey_render._ahead(table, names), journey_render._ahead(streamed, names)
+    want = {e: {k: n for k, n in c.items() if k in listed} for e, c in whole.items()}
+    assert want == ahead
+    assert any(ahead.values()), "some listed word is counted"
+    assert journey_render._plan_pcts(table) == journey_render._plan_pcts(streamed)
+    # only the listed rows (the plan's tables keep every word met)
+    assert sorted(map(tuple, table.keys)) == sorted(listed) and len(table.keys) <= len(streamed.keys)
+    # and the page the reuse path draws from the stream (the table gone: a Generate before this build) is this one
+    html = _page(root)
+    os.remove(os.path.join(results, plan_engine.COUNTS_FILE))
+    os.remove(os.path.join(results, "reading_list_static.html"))
+    assert "Re-rendering report" in _generate(root, language)
+    assert [r[7] for r in _chunk_records(_page(root))] == [r[7] for r in _chunk_records(html)]
+    assert [ep[6] for ep in _head(_page(root))["eps"]] == [ep[6] for ep in _head(html)["eps"]]
+
+
+def test_the_journey_reads_the_counts_table_of_this_run_else_the_plans_stream(tmp_path, monkeypatch):
+    # A plan with no table (a Generate before this build), a table of another run, or a damaged one: today's stream,
+    # the same answer. This run's table: the plan's tables are never read.
+    from app import plan_engine
+    monkeypatch.delenv("SURASURA_DOOR", raising=False)
+    streamed = []
+    monkeypatch.setattr(plan_engine, "counts", lambda path: streamed.append(path) or plan_engine.Counts(
+        {"format": plan_engine.FORMAT, "run_signature": "run-1"}, [], [], []))
+    args = analyzer.parse_analysis_args(["--language=ja", "--static", "--no-open"])
+    results = str(tmp_path)
+    table = plan_engine.CountsTable()
+    table.start([["猫", "ネコ"], ["犬", "イヌ"], ["鳥", "トリ"]], [["row"], None, ["row"]],
+                [["A/ep01.srt", "now"], ["A/ep02.srt", "now"]])
+    table.add([0, 3, 1, 5], [2, 1], [40, 30])
+    table.add([1, 2], [0, 1, 2, 2], [20, 18])
+    assert table.write(results, "run-1")
+    with open(tmp_path / analyzer.PLAN_FILE, "wb"):
+        pass
+    got = analyzer._journey_plan(args, "run-1", results)
+    assert streamed == [] and got.keys == [["猫", "ネコ"], ["鳥", "トリ"]]
+    assert got.files == [["A/ep01.srt"], ["A/ep02.srt"]]
+    # 犬 was never listed: not in the table; 猫's uses in A/ep02 are a phrase's (ph) and summed as `_ahead` sums them
+    assert [line["main"] for line in got.per_file] == [[0, 3, 1, 1], [0, 1, 1, 2]]
+    assert [tuple(line["prog"][:2]) for line in got.per_file] == [(40, 30), (20, 18)]
+    assert analyzer._journey_plan(args, "run-2", results) is None and len(streamed) == 1, "another run's: the stream"
+    (tmp_path / plan_engine.COUNTS_FILE).write_text('{"counts": 1, "run_signature": "run-1", "keys": [', "utf-8")
+    assert analyzer._journey_plan(args, "run-1", results).keys == [] and len(streamed) == 2, "damaged: the stream"
+    os.remove(tmp_path / plan_engine.COUNTS_FILE)
+    assert analyzer._journey_plan(args, "run-1", results).keys == [] and len(streamed) == 3, "none: the stream"
+    assert table.write(results, "run-1")
+    os.remove(tmp_path / analyzer.PLAN_FILE)
+    assert analyzer._journey_plan(args, "run-1", results).keys == [] and len(streamed) == 4, "no plan: never its table"
+
+
 def test_zen_keeps_its_own_page(tmp_path):
     from tests.test_journey_stones import _render
     html = _render(tmp_path, "ja", ["第01話.srt", "第02話.srt"], theme="Zen Mode")

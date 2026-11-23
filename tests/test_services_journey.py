@@ -476,12 +476,13 @@ def test_after_moves_the_journey_is_redrawn_from_the_plan_as_its_generate_writes
 
 
 # What a redraw leaves as the last Generate wrote it (D1; F7): the plan and the run stamp (the Generate's own), the
-# library map (library_frequency.json: the plan's file numbers, which Junban reads through the order itself, and a word
+# journey's counts beside the plan (plan_counts.json: written with it, in its file order — the page drawn from them is
+# the same, below), the library map (library_frequency.json: the plan's file numbers, which Junban reads through the order itself, and a word
 # under the cut-off's Score), the source table's order (sources.json: by path),
 # and what word_stats.json keeps in the walk's order (a word's last-met surface, its sources as a set). Everything a
 # row shows is the Generate's.
-REDRAW_OWN = ["plan.json.gz", "run_signature.txt", "library_frequency.json", "sources.json", "word_stats.json",
-              "file_words.json"]
+REDRAW_OWN = ["plan.json.gz", "plan_counts.json", "run_signature.txt", "library_frequency.json", "sources.json",
+              "word_stats.json", "file_words.json"]
 # word_stats.json's fields the order moves (the rest are the whole library's, or kept in the walk's order)
 WORD_STATS_ORDERS = ("score", "high_count", "low_count", "goal_count", "min_seq", "final_context_1", "final_src_1",
                      "final_context_2", "final_src_2", "final_context_3", "final_src_3")

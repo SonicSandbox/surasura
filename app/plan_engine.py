@@ -32,6 +32,7 @@ import bisect
 import gzip
 import io
 import json
+import os
 import sys
 import zlib
 from array import array
@@ -428,6 +429,84 @@ def counts(path):
     except (OSError, EOFError, zlib.error, ValueError, TypeError, KeyError, IndexError, AttributeError, PlanError):
         return None
     return Counts(header, files, keys, per_file)
+
+
+COUNTS_FILE = "plan_counts.json"        # results/: the journey's counts, beside the plan (`CountsTable`)
+_NO_PHRASES = ()
+
+
+class CountsTable:
+    """The journey's counts, written once beside the plan by the pass that writes it (J-CUT, the lead's ruling): the
+    plan's own numbers, cut to what a page draws — each file's uses of the *listed* rows (main and phrases summed: the
+    only words a Generate's page or the redraw's can show; `journey_render._ahead` sums them so) and its `prog`'s first two
+    numbers, the tokens counted and those known before any file (*% known*, `_plan_pcts`). `analyzer.plan_lines` hands each file's line here as it makes it;
+    `write` puts the table beside the plan once that is written; `read_counts` reads it as `counts` reads the plan.
+    At 20,000 files the render held 44 MB of the plan's tables and +65 MB of their counts for every word met."""
+
+    def __init__(self):
+        self._renumber, self.keys, self.files, self.per_file = {}, [], [], []
+
+    def start(self, keys, rows, files):
+        """The plan's keys, its rows (None: not listed) and its files ([rel path, …]), before its first file's line."""
+        self._renumber = {}
+        self.keys = []
+        for k, row in enumerate(rows):
+            if row is not None:
+                self._renumber[k] = len(self.keys)
+                self.keys.append([keys[k][0], keys[k][1]])
+        self.files = [entry[0] for entry in files]
+        self.per_file = []
+
+    def add(self, main, phrases, prog):
+        """One file's line as the plan has it ([k, uses, …] twice, its `prog`), in the plan's order."""
+        renumber, counts = self._renumber, {}
+        for table in (main, phrases):
+            for k, n in zip(table[0::2], table[1::2]):
+                j = renumber.get(k)
+                if j is not None:
+                    counts[j] = counts.get(j, 0) + n
+        self.per_file.append([prog[0], prog[1], [x for j, n in counts.items() for x in (j, n)]])
+
+    def write(self, results_dir, run_signature):
+        """Write the table (atomically: a temp file, then `os.replace`) for the plan `run_signature` wrote. -> True,
+        or False (an old table stays, for its own run: never read for this one). Never raises."""
+        if len(self.per_file) != len(self.files):
+            return False
+        path = os.path.join(results_dir, COUNTS_FILE)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"counts": 1, "run_signature": run_signature, "keys": self.keys,
+                           "files": [[rel, *line] for rel, line in zip(self.files, self.per_file)]},
+                          f, ensure_ascii=False, separators=(",", ":"))
+            os.replace(tmp, path)
+            return True
+        except Exception:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return False
+
+
+def read_counts(path, run_signature):
+    """The counts table `CountsTable.write` put beside the plan -> `Counts`, shaped as `counts` reads the plan (`files`
+    [[rel path]], `keys` [[Word, Reading]], `per_file` [{"main", "ph", "prog"}]: the listed rows' uses under "main",
+    `prog`'s first two numbers), so the journey reads either alike; None when absent, damaged, or another run's."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("counts") != 1 or not run_signature or data.get("run_signature") != run_signature:
+            return None
+        keys, files, per_file = data["keys"], [], []
+        for rel, total, baseline, uses in data["files"]:
+            files.append([rel])
+            per_file.append({"main": uses, "ph": _NO_PHRASES, "prog": (total, baseline)})
+        if not all(isinstance(k, list) and len(k) == 2 for k in keys):
+            return None
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+    return Counts({"run_signature": run_signature, "counts": 1}, files, keys, per_file)
 
 
 def _validate_pools(plan):

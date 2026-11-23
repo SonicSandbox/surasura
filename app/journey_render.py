@@ -810,7 +810,7 @@ class Sources:
 
     def prepare(self, texts, rels):
         """Each ▶ line's answer, the page's lines in its order (`texts[i]` said in `rels[i]`; "" no source): [the timer's
-        memo answer [anchor, start, end], or None where nothing plays] — one memo lookup a line, so `build` reads the
+        memo answer — (start, end) made this render, [anchor, start, end] as read —, or None where nothing plays] — one memo lookup a line, so `build` reads the
         list rather than asking again (at 20,000 files a lookup costs ~3 µs: a second one was a slower warm render).
         A line the memo lacks is asked of the line reader a file at a time, and that file's lines let go before the
         next (J-TIMES: holding every subtitle's `cues.Timeline` to the render's end was 78 MB at 20,000 files); the
@@ -818,11 +818,11 @@ class Sources:
         `times` makes, so the same answers and the same memo."""
         hits = [None] * len(texts)
         timer = self.timer
-        # AnchorFinder's own (static_html_generator, J-CUT's file: a `forget` there once it is theirs): each file's
-        # memo entry, its lines, and the folder listings
-        entry_of = getattr(timer, "_entry", None)
-        if entry_of is None:
+        # AnchorFinder's own (static_html_generator): each file's memo answers, its lines let go, the folder listings
+        answers_in = getattr(timer, "answers", None)
+        if answers_in is None:
             return hits
+        answer = timer.answer
         media, smap = self.media, self.map
         answers_of, missing = {}, {}
         for i, rel in enumerate(rels):
@@ -830,26 +830,23 @@ class Sources:
                 continue
             answers = answers_of.get(rel)
             if answers is None:
-                answers = answers_of[rel] = entry_of((smap.get(rel) or {}).get("abs") or rel)["a"]                     if (media.get(rel) or ("",))[0] else False
+                answers = answers_of[rel] = answers_in((smap.get(rel) or {}).get("abs") or rel) \
+                    if (media.get(rel) or ("",))[0] else False
             if answers is False:
                 continue
             hit = answers.get(texts[i])
-            if isinstance(hit, list) and len(hit) == 3:
-                hits[i] = hit
+            if answer(hit) is not None:
+                hits[i] = hit                   # the memo's own answer (`build` reads its times: `AnchorFinder.answer`)
             else:
                 missing.setdefault(rel, []).append(i)
-        listings = getattr(timer, "_dirs", None)
-        if listings is not None:
-            listings.clear()                    # every file is checked: a later one lists its folder again
-        kept = getattr(timer, "_timelines", None)
+        timer.forget_listings()                 # every file is checked: a later one lists its folder again
         for rel, lines in missing.items():
             answers = answers_of[rel]
             for i in lines:
                 self.times(rel, texts[i])       # the line reader's answer, kept in `answers`
                 hit = answers.get(texts[i])
-                hits[i] = hit if isinstance(hit, list) and len(hit) == 3 else None
-            if kept is not None:
-                kept.pop((smap.get(rel) or {}).get("abs") or rel, None)
+                hits[i] = hit if answer(hit) is not None else None
+            timer.forget((smap.get(rel) or {}).get("abs") or rel)
         # Written now, before the meanings and the pitch, rather than at the render's end: its one string (10 MB at
         # 20,000 files) was the first render's peak there. The same memo — `build` asks nothing more.
         save = getattr(timer, "save_memo", None)
@@ -901,7 +898,7 @@ def _ahead(plan, names):
         by_name = {}
         for f, entry in enumerate(plan.files):
             by_name.setdefault(report_name(entry[0]), f)
-        keys = plan.keys
+        pairs = [(k[0], k[1]) for k in plan.keys]     # one tuple a key, not one an entry (1.16M at 20,000 files: 36 MB)
         out = {}
         for e, name in enumerate(names):
             f = by_name.get(name)
@@ -911,7 +908,7 @@ def _ahead(plan, names):
             counts = {}
             for table in (line["main"], line["ph"]):
                 for k, n in zip(table[0::2], table[1::2]):
-                    key = (keys[k][0], keys[k][1])
+                    key = pairs[k]
                     counts[key] = counts.get(key, 0) + n
             out[e] = counts
         return out
@@ -1088,8 +1085,11 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
         found_lines = []
         for i in range(first[wid], first[wid + 1]):
             text, rel, hit = texts[i], rels[i], hits[i]
-            found_lines.append((text, rel) + ((hit[1], hit[2]) if hit is not None else
-                                              sources.times(rel, text) if rel else (None, None)))
+            if hit is None:
+                hit = sources.times(rel, text) if rel else (None, None)
+            elif type(hit) is not tuple:
+                hit = hit[1], hit[2]            # [anchor, start, end], as the memo was read
+            found_lines.append((text, rel) + hit)
         marks = marks_of(row, thresholds) | (8 if in_anki(row, keys, owners, language) else 0)
         here = ahead.get(e, {}).get(key) if ahead else None
         count = int(_num(row.get("Occurrences (File)"))) if here is None else sum(

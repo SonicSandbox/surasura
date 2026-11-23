@@ -87,8 +87,8 @@ def test_as_is_searches_the_raw_text_and_signs_its_memo_with_the_line_reader(tmp
     st = os.stat(path)
     as_is = AnchorFinder()
     assert as_is._hay(path) is as_is._raw(path)
-    assert as_is._file_sig(path) == [st.st_mtime, st.st_size, as_is._lines()]
-    assert AnchorFinder(script="t")._file_sig(path) == [st.st_mtime, st.st_size, "t", as_is._lines()]
+    assert as_is._file_sig(path) == (st.st_mtime, st.st_size, as_is._lines())   # (the memo writes it as a list)
+    assert AnchorFinder(script="t")._file_sig(path) == (st.st_mtime, st.st_size, "t", as_is._lines())
 
 
 def test_a_script_switch_does_not_reuse_the_other_scripts_answers(tmp_path):

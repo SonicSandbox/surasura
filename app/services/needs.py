@@ -148,13 +148,16 @@ DECK_STRAYS = "deck-strays"           # Michi-DK: Connect's cards in another dec
 NO_SUBS = "no-subs"
 SHELVED = "shelved"                   # Kyou-SH (PROVISIONAL): cards Connect made sit on its shelf — said, Put back
 TIDIED = "tidied"                     # Kyou-SH2 (PROVISIONAL): Tidy deleted Connect's never-studied cards — said, Undo
+DELETED = "deleted"                   # Kyou-DW (PROVISIONAL): cards you deleted in Anki — asked why, an Undo each
+OLD_DELETES = "old-deletes"           # Kyou-DW (PROVISIONAL): the deletes from before it asked — forget them, once
 SWAPPED = "swapped"                   # Kantan-SL (PROVISIONAL): Swap made a card from another line — said, Undo
 SWAP_WAITS = "swap-waits"             # Kantan-SL (PROVISIONAL): a swap's word has no other line yet — said once
 FOLDER_MIN = 10                 # gone files (of two shows or more) before a folder is one card
 LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
          FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND, AUDIOBOOK_TRANSCRIPT, SETTINGS_FOLDER,
-         BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS, DECK_STRAYS, SHELVED, TIDIED, SWAPPED, SWAP_WAITS)
+         BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS, DECK_STRAYS, SHELVED, TIDIED, DELETED, OLD_DELETES,
+         SWAPPED, SWAP_WAITS)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
 WIRED_LATER = frozenset(("make_cards", "try_again", "change_video"))   # (K1's *Start fresh*: `SourceLooks.fresh`)
@@ -321,6 +324,19 @@ STRINGS = {
                        "studied. A copy is kept: Undo puts them back."),
     "tidy_unsaved_title": "Nothing deleted: the copy of {n:,} cards didn't save.",
     "tidy_unsaved_title_one": "Nothing deleted: the copy of a card didn't save.",
+    # Kyou-DW (PROVISIONAL): a deleted card asks why (WL ⑧ / WL-35); the old deletes, once
+    "deleted_title_one": "A card you deleted · add a note",
+    "deleted_title": "{n:,} cards you deleted · add a note",
+    "deleted_title_many": "{n:,} cards you deleted · note a few",
+    "deleted_say": ("Surasura made these cards and you deleted them in Anki. Say why and it does the rest: Known and "
+                    "Ignore go to your word lists; Parsing mistake ignores the word and puts its sentence in Send "
+                    "report's list for us; Bad card makes a new card from another sentence. Leave any: it stays "
+                    "deleted and is never made again."),
+    "old_deletes_title_one": "A card you deleted before Surasura asked why",
+    "old_deletes_title": "{n:,} cards you deleted before Surasura asked why",
+    "old_deletes_say": ("If you deleted some because Surasura cut their words wrong, Forget lets their cards be made "
+                        "again once the cut is fixed. Keep them leaves every one deleted, and this card goes for "
+                        "good."),
     "tidy_unsaved_say": ("Before deleting, Surasura reads back the copy it keeps of the cards. This copy was missing or "
                          "damaged, so every card stays in Anki. It tries again next time."),
     # Kantan-SL (PROVISIONAL): Swap, said
@@ -508,6 +524,7 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     unsaved = _tidy_unsaved_entry(connect, seen, answered) if cards_on and connect else None    # Kyou-SH3
     if unsaved is not None:
         out.append(unsaved)
+    out.extend(_deleted_entries(connect, seen, answered) if cards_on and connect else ())     # Kyou-DW: asked why
     out.extend(_swap_entries(connect, seen, answered) if cards_on and connect else ())    # Kantan-SL: Swap, said
     anki = _anki_entry(connect, seen) if cards_on else None    # Connect may run (it clears the line by itself: A-5)
     if anki is not None:
@@ -1296,6 +1313,59 @@ def _tidy_entry(connect, seen, answered=frozenset()):
                  unseen=key not in seen, say=say, data={"id": int(tidied["id"]), "cards": n})
 
 
+DELETED_ACTIONS = ("dw_known", "dw_ignore", "dw_parsing", "dw_bad")       # a line's four chips (WL-35)
+DELETED_ALL = ("dw_all_known", "dw_all_ignore", "dw_all_parsing", "dw_all_bad")    # *Same for all*
+DELETED_MANY = 10                       # WL-27: this many or more is a mass delete (its title asks for a few)
+
+
+def deleted_line_key(note_id):
+    return f"{DELETED}:{int(note_id)}"
+
+
+def old_line_key(word):
+    return f"{OLD_DELETES}:{word}"
+
+
+def _deleted_text(word, sentence):
+    sentence = " ".join(str(sentence or "").split())
+    return f"「{word}」 {sentence}" if sentence else f"「{word}」"
+
+
+def _deleted_entries(connect, seen, answered=frozenset()):
+    """Kyou-DW (PROVISIONAL): ONE quiet card for the cards you deleted that Surasura asks about (Connect's record's
+    `deleted.asked`: `connect.deleted.status_of`) — a line a card, each with Known · Ignore · Parsing mistake · Bad
+    card; two or more: the same four for all, and *Leave them* (each line answered: never asked again). A line
+    answered or left leaves the card (its key, `deleted_line_key`); a new delete joins it. Then ONE card, once, for
+    the deletes from before it asked (`deleted.old`): *Forget* a line (the store's `allow_again`), *Forget all*,
+    *Keep them* (answered for good)."""
+    rec = (connect or {}).get("deleted") or {}
+    out = []
+    asked = [a for a in rec.get("asked") or () if deleted_line_key(a["note_id"]) not in answered]
+    if asked:
+        lines = tuple(NeedLine(key=deleted_line_key(a["note_id"]), text=_deleted_text(a["word"], a.get("sentence")),
+                               item_id=a.get("item_id"), label=a["word"], number=int(a["note_id"]), rel_path=None,
+                               actions=DELETED_ACTIONS) for a in asked)
+        n = len(lines)
+        title = (STRINGS["deleted_title_one"] if n == 1 else
+                 STRINGS["deleted_title_many" if n >= DELETED_MANY else "deleted_title"].format(n=n))
+        key = f"{DELETED}:" + ",".join(str(int(a["note_id"])) for a in asked)
+        out.append(Entry(key=key, kind=DELETED, title=title, lines=lines,
+                         actions=(DELETED_ALL if n > 1 else ()) + ("dw_leave",), unseen=key not in seen,
+                         say=STRINGS["deleted_say"], data={"notes": [int(a["note_id"]) for a in asked]}))
+    old = [o for o in rec.get("old") or () if OLD_DELETES not in answered and old_line_key(o["word"]) not in answered]
+    if old:
+        lines = tuple(NeedLine(key=old_line_key(o["word"]), text=_deleted_text(o["word"], o.get("sentence")),
+                               item_id=None, label=o["word"], number=None, rel_path=None, actions=("dw_forget",))
+                      for o in old)
+        n = len(lines)
+        title = STRINGS["old_deletes_title_one"] if n == 1 else STRINGS["old_deletes_title"].format(n=n)
+        out.append(Entry(key=OLD_DELETES, kind=OLD_DELETES, title=title, lines=lines,
+                         actions=(("dw_forget_all",) if n > 1 else ()) + ("dw_keep_old",),
+                         unseen=OLD_DELETES not in seen, say=STRINGS["old_deletes_say"],
+                         data={"words": [o["word"] for o in old]}))
+    return out
+
+
 def _tidy_unsaved_entry(connect, seen, answered=frozenset()):
     """Kyou-SH3 (PROVISIONAL, F4): ONE card when Tidy's backup didn't read back — Connect's record's `tidy_unsaved`
     (`status._tidy_unsaved`: nothing was deleted, every card home). Nothing to undo: *OK* only (answered: this
@@ -1348,6 +1418,8 @@ def answer_keys(thing):
         return [item_key(i) for i in (thing.data or {}).get("item_ids") or ()]
     if thing.kind == BACKLOG_SHOWS:
         return list((thing.data or {}).get("left") or ()) or [thing.key]       # one per show it held
+    if thing.kind == DELETED:
+        return [deleted_line_key(n) for n in (thing.data or {}).get("notes") or ()]    # each card: never asked again
     return [thing.key]
 
 

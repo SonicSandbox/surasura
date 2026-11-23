@@ -105,6 +105,18 @@ def test_one_end_held_reads_the_other_from_the_default(level):
     assert _length() == (10, 50)
 
 
+def test_one_end_held_never_reads_a_pair_upside_down(level):
+    """A held end past the default's (14–25 is narrower than 10–50: a held low end of 26–50 sat above the high end):
+    the default's end follows it. A value that isn't a number is left to today's readers, as before."""
+    level(1)
+    _write({"target_language": "ja", "logic": {"context": {"min_chars": 30}}})
+    assert _length() == (30, 30)
+    _write({"target_language": "zh", "logic": {"context": {"preferred_max_chars": 12}}})
+    assert _length() == (12, 12)
+    _write({"target_language": "ja", "logic": {"context": {"min_chars": "30"}}})
+    assert _length() == ("30", 25)
+
+
 def test_the_load_writes_nothing(level):
     """Read so, never written (settings criteria 11): the file's bytes and time are the same after every load."""
     path = _write(_saved("ja", 10, 50))

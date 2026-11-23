@@ -409,10 +409,16 @@ def _read_length(settings, held):
     unchosen = (own.get("min_chars"), own.get("preferred_max_chars")) == OLD_SENTENCE_LENGTH
     if unchosen and not held.get(SENTENCE_LENGTH_CHOSEN):
         own = {}
+    def number(value):
+        return isinstance(value, int) and not isinstance(value, bool)
+    # an end the file holds past the default's other end pulls it along (14–25 is narrower than 10–50: a held low end
+    # of 30 must not sit above a high end of 25); a held value that isn't a number is left to its readers, as today
     if "min_chars" not in own:
-        context["min_chars"] = low
+        held_high = own.get("preferred_max_chars")
+        context["min_chars"] = min(low, held_high) if number(held_high) else low
     if "preferred_max_chars" not in own:
-        context["preferred_max_chars"] = high
+        held_low = own.get("min_chars")
+        context["preferred_max_chars"] = max(high, held_low) if number(held_low) else high
 
 
 class SettingsError(Exception):

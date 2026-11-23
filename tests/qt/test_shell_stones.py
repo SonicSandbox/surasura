@@ -84,3 +84,23 @@ def test_a_stone_tells_only_the_keeper_of_its_own_language_and_nothing_once_the_
     services._stone_marked(lib.language)
     assert reasons == ["stone"]
     replan.finish(time.monotonic() + 1)
+
+
+def test_a_pre_studied_mark_and_its_undo_ask_the_journey_nothing_and_count_nothing(lib, make_writer, gate):
+    # why (J-STONES; journey v3 SPEC §2.2, S19): the journey's own press shows the mark at once on its page; a mark
+    # is never a reason to look at the report again, and never a counted change — then a watched mark of the same
+    # episode still tells the keeper once, and the mark stays after watched
+    w, heard, reasons, counted, replan = _wired(lib, make_writer)
+    lib.store.set_library_options(keep_watched=True)
+    now = lib.ids("now")
+    on = lib.store.set_prestudied([now[0]], True, "press")
+    lib.store.undo(on)
+    lib.store.set_prestudied([now[0]], True, "end")
+    assert w.idle(5)
+    assert reasons == [] and counted == [], "a pre-studied mark: no look, no count"
+    w.set_watched([now[0]], True)
+    assert h.until(lambda: len(heard.saved) == 1)
+    assert w.idle(5)
+    assert reasons == ["stone"] and counted == []
+    assert lib.store.prestudied_marks([now[0]]), "pre-studied stays after watched"
+    replan.finish(time.monotonic() + 1)

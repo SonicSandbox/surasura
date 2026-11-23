@@ -359,11 +359,22 @@ def scope_query(decks, include_suspended=False):
     return query if include_suspended else query + " -is:suspended"
 
 
-def known_query(decks, include_suspended=False):
-    """The studied cards whose words count known (the sync and Replace): `scope_query`'s, never a red or a green card,
-    suspended or not (`NOT_KNOWN_FLAGS`: the review loop's Ignore and Swap; Kyou-LR, Kotoba-WS2's note b). The decks'
-    counts, note types and sentences keep `scope_query` (a deck of flagged cards is still a deck you study)."""
-    return f"{scope_query(decks, include_suspended)} {NOT_KNOWN_FLAGS}"
+def known_query(decks, include_suspended=False, settings=None):
+    """The studied cards whose words count known (the sync and Replace): `scope_query`'s, never a card with the review
+    loop's Ignore or Swap flag, suspended or not (red and green, `NOT_KNOWN_FLAGS`, unless the learner picked others on
+    Settings' move cards — `known_signal.not_known_flags`, read from `settings`, else the saved settings; Kyou-LR,
+    Kotoba-WS2's note b, Mado-LT). The decks' counts, note types and sentences keep `scope_query` (a deck of flagged
+    cards is still a deck you study)."""
+    try:
+        from app.connect import known_signal
+        if settings is None:
+            from app import settings_manager
+            settings = settings_manager.load_settings()
+        never = " ".join(f"-{f}" for f in known_signal.not_known_flags(settings))
+    except Exception as e:                      # the settings can't be read: the defaults, never a wider count
+        print(f"The review loop's flags couldn't be read ({e}): red and green stay out of the known words.")
+        never = NOT_KNOWN_FLAGS
+    return f"{scope_query(decks, include_suspended)} {never}"
 
 
 def counted_suspended(settings):
@@ -693,16 +704,17 @@ def _fresh_file(words):
 # --------------------------------------------------------------------------- #
 # Sync (append-only)
 # --------------------------------------------------------------------------- #
-def sync(language, url, decks, fields, include_suspended=False, full=False):
+def sync(language, url, decks, fields, include_suspended=False, full=False, settings=None):
     """Append the words of newly studied notes to KnownWord.json. Never raises; errors come back in
-    `SyncResult.error` with nothing written."""
+    `SyncResult.error` with nothing written. `settings`: for the review loop's flags (`known_query`; None: the saved
+    settings)."""
     with _LOCK:
         held, refused = _hold_known(language, "full" if full else "delta")
         if refused is not None:
             return refused
         try:
             return _sync(language, url or anki_connect.DEFAULT_URL, _clean_decks(decks),
-                         [str(f) for f in (fields or [])], _suspended_value(include_suspended), full)
+                         [str(f) for f in (fields or [])], _suspended_value(include_suspended), full, settings)
         except AnkiError as e:
             return SyncResult(mode="full" if full else "delta", error=str(e),
                               total_known=count_known(language))
@@ -715,7 +727,7 @@ def sync(language, url, decks, fields, include_suspended=False, full=False):
                 held.release()
 
 
-def _sync(language, url, decks, fields, include_suspended, full):
+def _sync(language, url, decks, fields, include_suspended, full, settings=None):
     if not decks:
         return SyncResult(mode="full" if full else "delta", error="Choose at least one deck first.",
                           total_known=count_known(language))
@@ -732,7 +744,7 @@ def _sync(language, url, decks, fields, include_suspended, full):
     full = bool(full or changed)
     result = SyncResult(mode="full" if full else "delta")
 
-    query = known_query(decks, include_suspended)
+    query = known_query(decks, include_suspended, settings)
     # A delta asks, in one request, for the studied notes and for those edited since the last sync — an edited
     # card's text is read again (add-only: its new words are appended; a word the edit took out stays known).
     note_ids, edited = ((anki_connect.find_notes(url, query), set()) if full
@@ -933,7 +945,7 @@ def sync_all(language, url, decks, fields, settings, include_suspended=False, fu
     `progress(what, done, total)`: the command line's progress lines. Never raises (each part keeps its own rule)."""
     if progress is not None:
         progress("reading Anki", 0, 3)
-    result = sync(language, url, decks, fields, include_suspended=include_suspended, full=full)
+    result = sync(language, url, decks, fields, include_suspended=include_suspended, full=full, settings=settings)
     if getattr(result, "error", None):
         return result, None                 # Anki or KnownWord.json can't be trusted this time: nothing more read
     if progress is not None:

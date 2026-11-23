@@ -41,19 +41,19 @@ def facts(**kw):
 # --- the table --------------------------------------------------------------------------------------------------- #
 def test_two_chapters_three_and_six_steps_each_with_its_words_and_a_real_place():
     assert [s.id for s in P.STEPS if s.chapter == P.FIRST] == ["words", "watch", "cards"]
-    assert [s.id for s in P.STEPS if s.chapter == P.READY] == ["junban", "backfill", "yours", "audiobook", "hato",
-                                                                "piyo"]
+    assert [s.id for s in P.STEPS if s.chapter == P.READY] == ["junban", "backfill", "loop", "yours", "audiobook",
+                                                                "hato", "piyo"]
     for step in P.STEPS:
         assert step.id in strings.PATH_STEPS and all(strings.PATH_STEPS[step.id])
         assert guide.anchor_ok(step.where, has_card=help_cards.available, locate=catalog.locate), step.id
 
 
 def test_the_steps_regroup_into_four_stages_and_the_later_steps_stay_outside_them():
-    # Mado-EZP (EZ2-1 / §0.9): ② First episode = words, watch; ③ Automate = cards, 順, Backfill (the review loop's step
-    # will go last there, WL-9); ④ Make it yours = yours; the chapters keep their card rules underneath
+    # Mado-EZP (EZ2-1 / §0.9): ② First episode = words, watch; ③ Automate = cards, 順, Backfill, then the review loop
+    # (Mado-LT, WL-9: last of ③); ④ Make it yours = yours; the chapters keep their card rules underneath
     by_stage = {stage: [s.id for s in P.STEPS if s.stage == stage] for stage in P.STAGES}
-    assert by_stage == {P.BOARD: [], P.EPISODE: ["words", "watch"], P.AUTOMATE: ["cards", "junban", "backfill"],
-                        P.YOURS: ["yours"]}
+    assert by_stage == {P.BOARD: [], P.EPISODE: ["words", "watch"],
+                        P.AUTOMATE: ["cards", "junban", "backfill", "loop"], P.YOURS: ["yours"]}
     assert [s.id for s in P.STEPS if s.stage is None] == ["audiobook", "hato", "piyo"]
     assert BY("cards").chapter == P.FIRST                                       # comes back at the next start
 
@@ -62,11 +62,14 @@ def test_the_four_stones_say_done_now_and_later_from_the_real_ticks():
     assert P.path(facts(), {}).stages == (P.DONE, P.NOW, P.LATER, P.LATER)     # ① done: a path needs a library
     two = facts(journey_opened=True, episodes_done=1)
     assert P.path(two, {}).stages == (P.DONE, P.DONE, P.NOW, P.LATER)
-    three = two._replace(cards_made=True, junban_ordered=True, backfilled=True)
+    three = two._replace(cards_made=True, junban_ordered=True, backfilled=True, loop_read=True)
     assert P.path(three, {}).stages == (P.DONE, P.DONE, P.DONE, P.NOW)
     assert P.path(three._replace(yours_picked=True), {}).stages == (P.DONE,) * 4
     # 順 absent or off: its two steps aren't offered, so ③ is done with the cards alone
-    assert P.path(two._replace(cards_made=True, junban=False), {}).stages == (P.DONE, P.DONE, P.DONE, P.NOW)
+    assert P.path(two._replace(cards_made=True, junban=False, loop_read=True), {}).stages == (P.DONE, P.DONE, P.DONE,
+                                                                                               P.NOW)
+    # Mado-LT: the loop's step is ③'s last — until a sync read a move from the phone, ③ is still to do
+    assert P.path(two._replace(cards_made=True, junban=False), {}).stages == (P.DONE, P.DONE, P.NOW, P.LATER)
     # a stage done ahead of the one to do now stays done (nothing is locked: ✦ lets any step be done)
     assert P.path(facts(yours_picked=True), {}).stages == (P.DONE, P.NOW, P.LATER, P.DONE)
 
@@ -131,7 +134,7 @@ def test_make_it_yours_comes_to_no_card_until_the_mining_model_lands_and_stays_i
     # being retired (Kantan-MO) — a card pushing a new learner there is the 308 off-list cards' trap. Hidden for every
     # path, a new one too; the step stays in ✦'s list, the string keeps ④ NOW, and the kept rule is untouched
     assert P.YOURS_CARD is False
-    done = facts(journey_opened=True, episodes_done=1, own_cards=True, junban=False)
+    done = facts(journey_opened=True, episodes_done=1, own_cards=True, junban=False, loop_read=True)
     way = P.path(done, {"first_ack": True, "yours_card": True})
     assert way.card is None and way.stages == (P.DONE, P.DONE, P.DONE, P.NOW)
     assert P.listed(way.steps)[:2] == (P.YOURS, [st for st in way.steps if st.step.id == "yours"])
@@ -153,7 +156,7 @@ def test_make_it_yours_row_presses_only_while_it_opens_level_the_mining_models_o
 def test_make_it_yours_comes_to_the_card_only_on_a_path_that_was_new_and_after_stage_three(monkeypatch):
     # the kept code path, for when the mining model re-points ④ (YOURS_CARD on again)
     monkeypatch.setattr(P, "YOURS_CARD", True)
-    done = facts(journey_opened=True, episodes_done=1, own_cards=True, junban=False)
+    done = facts(journey_opened=True, episodes_done=1, own_cards=True, junban=False, loop_read=True)
     new = {"first_ack": True, "yours_card": True}
     assert P.path(done, new).card == ("step", "yours", (P.DONE, P.DONE, P.DONE, P.NOW))
     assert P.path(done, {"first_ack": True, "yours_card": False}).card is None   # past chapter 1 then: ✦ only
@@ -488,7 +491,7 @@ def test_the_panels_one_list_is_now_then_later_then_done():
     f = facts(journey_opened=True, episodes_done=1, own_cards=True, video_waiting=True, lined_up=True)
     stage, now, later, done = P.listed(P.statuses(f, {}))
     assert stage == P.AUTOMATE
-    assert ids(now) == ["cards", "junban", "backfill", "hato"]                  # ③'s steps, then a useful later step
+    assert ids(now) == ["cards", "junban", "backfill", "loop", "hato"]          # ③'s steps, then a useful later step
     assert ids(later) == ["yours", "piyo"]                                      # ④'s, and one that can't apply yet
     assert ids(done) == ["words", "watch", "audiobook"]                         # ②'s, and a line-up done before
     _stage, now, later, done = P.listed(P.statuses(f._replace(junban=False), {}))   # 順 absent or off: never listed
@@ -504,3 +507,39 @@ def test_every_step_says_in_one_short_line_when_it_applies():
 def test_manga_and_plain_text_are_not_books_an_audiobook_lines_up_with():
     assert not P._view_facts(View((Row("manga", 0), Row("text", 0)), Counts(0, 0), ()))[2]
     assert P._view_facts(View((Row("lightnovel", 0),), Counts(0, 0), ()))[2]
+
+
+# --- Mado-LT: the review loop's step (WL-9, last of ③; PROVISIONAL words) ------------------------------------------ #
+def test_the_loop_step_is_useful_once_cards_are_in_anki_and_synced_and_done_once_a_move_was_read():
+    # why: it teaches what to do on the phone — useless before there are cards and a sync to read them
+    st = {s.step.id: s for s in P.statuses(facts(), {})}["loop"]
+    assert not st.useful and not st.done and strings.PATH_WHEN["loop"]
+    st = {s.step.id: s for s in P.statuses(facts(cards_made=True, anki_synced=True), {})}["loop"]
+    assert st.useful and not st.done
+    st = {s.step.id: s for s in P.statuses(facts(own_cards=True, anki_synced=True, loop_read=True), {})}["loop"]
+    assert st.useful and st.done
+
+
+def test_the_loop_steps_sheet_says_delete_freely_and_its_press_is_the_move_cards():
+    title, line = strings.PATH_STEPS["loop"]
+    assert "delete freely" in line and len(line.split()) <= 25
+    assert BY("loop").where == "settings:known_from_anki" and BY("loop").stage == P.AUTOMATE
+    assert catalog.locate("known_from_anki") == ("anki", "known_from_anki")       # the move cards' block
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_loop_is_done_from_its_record_and_an_unreadable_or_missing_one_is_not_done(language, tmp_path,
+                                                                                    monkeypatch):
+    # why: done is the real thing (a sync that moved something); a record that can't be read never ticks it
+    from app.connect import review_loop
+    record = tmp_path / f"review-loop-{language}.json"
+    monkeypatch.setattr(review_loop, "record_path", lambda lang: str(tmp_path / f"review-loop-{lang}.json"))
+    assert not P._loop_read(language)                                            # empty state: no record
+    record.write_text('{"syncs": []}', encoding="utf-8")
+    assert not P._loop_read(language)
+    word = "冒険" if language == "ja" else "冒险"
+    record.write_text(json.dumps({"syncs": [{"id": "1", "known": [word], "changes": []}]}), encoding="utf-8")
+    assert P._loop_read(language)
+    record.write_text("{not json", encoding="utf-8")
+    assert P.facts(language, {}, None, {}).loop_read is False
+    assert P.facts(language, {}, None, {"done": {"loop": "2026-11-22"}}).loop_read is True   # ticked: never read again

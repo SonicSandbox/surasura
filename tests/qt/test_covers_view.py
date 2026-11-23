@@ -651,8 +651,13 @@ def test_a_read_only_library_changes_no_cover_and_says_so(lib, tmp_path):
     row = lib.row(lib.store.ids("now")[0])
     said = []
     qcovers._library["window"] = SimpleNamespace(say=said.append)
-    lib.writer.opener.mode, lib.writer.opener.reason = "read-only", "damaged"
-    lib.writer.opener.check = lambda: "read-only"
+    # FLAKES (Flake-F4, train 61): the store played read-only by its two attributes was put back by the writer's own
+    # look at the mode (its thread's `check()`, at its start and every 2 s), later under load. The opener answers
+    # read-only instead, and that look is played here by hand, after it
+    opener = lib.writer.opener
+    real_check = opener.check
+    opener.state, opener.check = (lambda: ("read-only", "damaged")), (lambda: "read-only")
+    real_check()                                         # the writer's look at the mode, landing late
     assert qcovers.choose_image(row, path=write(str(tmp_path / "a.png"), png())) is False
     assert qcovers.use_generated(row) is False
     assert said == [strings.COVER_CANT] * 2

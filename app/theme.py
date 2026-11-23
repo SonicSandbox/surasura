@@ -89,6 +89,7 @@ STONE = MappingProxyType({
     "ore-rim": "#0c0f13",
     "crystal-0": "#0a0e14", "crystal-1": "#1e2530", "crystal-2": "#3e4858",
     "unlinked-base": "#2a313c", "unlinked-light": "#56627a", "unlinked-edge": "#9aa6b8",
+    "pre": "#b3c8ff", "pre-spark": "#eef3ff",     # J-STONES: pre-studied's cool sheen and its sparkle (the mock's --pre)
 })
 # Hard-coded, not tokens: the same whatever the theme. Tooltips and toasts are overlays: slate navy, solid (brief §4).
 FIXED = MappingProxyType({

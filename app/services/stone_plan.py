@@ -53,21 +53,24 @@ _KIND = {"anime": "shows", "drama": "shows", "movie": "shows", None: "shows",
 
 
 
-class Tier(namedtuple("Tier", "start n variant")):
-    """A watched group of `n` (12 · 60 · 120) files from the piece's file `start`."""
+class Tier(namedtuple("Tier", "start n variant pre", defaults=((),))):
+    """A watched group of `n` (12 · 60 · 120) files from the piece's file `start`; `pre` (J-STONES): the labels of its
+    files pre-studied, in order (the sparkle at its shoulder; its hover names them)."""
     __slots__ = ()
     kind = "tier"
 
 
-class Stone(namedtuple("Stone", "index state big dim variant missing removed")):
-    """One file of the twelve in play (or a one-file row): `state` cut · raw · rock."""
+class Stone(namedtuple("Stone", "index state big dim variant missing removed pre", defaults=(False,))):
+    """One file of the twelve in play (or a one-file row): `state` cut · raw · rock; `pre` (J-STONES): it was
+    pre-studied — an add over any state, never a state of its own (journey v3 SPEC §2.4)."""
     __slots__ = ()
     kind = "stone"
 
 
-class Ore(namedtuple("Ore", "start n mined watched cut_points mined_step variant")):
+class Ore(namedtuple("Ore", "start n mined watched cut_points mined_step variant pre", defaults=((),))):
     """Everything after the twelve: `mined` / `watched` of its `n`; `cut_points` 0–3 (watched already, gem-kit's
-    `o.cut`); `mined_step` 0 none · 1 up to half · 2 more · 3 all (the sheet's four ores)."""
+    `o.cut`); `mined_step` 0 none · 1 up to half · 2 more · 3 all (the sheet's four ores); `pre` (J-STONES): the labels
+    of its files pre-studied, in order — the sparkle at its shoulder, and its hover names them."""
     __slots__ = ()
     kind = "ore"
 
@@ -121,10 +124,27 @@ def tip_state(ep):
     return "cut" if ep.watched else "raw" if ep.cards > 0 else "nothing" if nothing_new(ep) else "rock"
 
 
+def state_of(ep):
+    """A file's stone — cut (watched) · raw (it looks mined: cards in Anki, or mined with nothing new to make) · rock —
+    the one rule the window's string, an opened row's lines and the journey's rail all draw by (journey v3 SPEC §2.4,
+    *decided*: one public function, never a copy). Pre-studied is never a state: an add over any of these (`is_pre`)."""
+    return "cut" if ep.watched else "raw" if _looks_mined(ep) else "rock"
+
+
+def is_pre(ep):
+    """J-STONES: was the file pre-studied (its words gone through before watching or reading it: the store's
+    `prestudied_at`, through the window's feed)? False for an episode from a cache made before it."""
+    return bool(getattr(ep, "prestudied", None))
+
+
+def _pre(eps):
+    """The labels of the pre-studied among `eps`, in order: a cut group's or the ore's sparkle and its hover."""
+    return tuple(e.label for e in eps if is_pre(e))
+
+
 def _stone(ep, i, key, big):
-    state = "cut" if ep.watched else "raw" if _looks_mined(ep) else "rock"
     dim = not _looks_mined(ep) and not ep.watched and not ep.in_top
-    return Stone(i, state, big, dim, variant(key, i), bool(ep.missing), bool(ep.removed))
+    return Stone(i, state_of(ep), big, dim, variant(key, i), bool(ep.missing), bool(ep.removed), is_pre(ep))
 
 
 def plan(episodes, next_index=None, media=None, key="", mix=False):
@@ -144,13 +164,13 @@ def plan(episodes, next_index=None, media=None, key="", mix=False):
     if n == 1:
         return Plan(gem, (_stone(eps[0], 0, key, nxt == 0),), 1, watched, in_anki, nxt, (0, 1), True)
     if first is None and n % BLOCK == 0:                 # finished, its last twelve whole: its tiers only
-        items = tuple(Tier(s, t, variant(key, "t", s)) for s, t in tiers(0, n))
+        items = tuple(Tier(s, t, variant(key, "t", s), _pre(eps[s:s + t])) for s, t in tiers(0, n))
         return Plan(gem, items, n, watched, in_anki, None, (n, n), False)
     if at is None:
         at = n - 1
     s0 = at // BLOCK * BLOCK
     s1 = min(n, s0 + BLOCK)
-    items = [Tier(s, t, variant(key, "t", s)) for s, t in tiers(0, s0)]
+    items = [Tier(s, t, variant(key, "t", s), _pre(eps[s:s + t])) for s, t in tiers(0, s0)]
     items += [_stone(eps[i], i, key, i == nxt) for i in range(s0, s1)]
     if s1 < n:
         rest = eps[s1:]
@@ -159,7 +179,7 @@ def plan(episodes, next_index=None, media=None, key="", mix=False):
         fc = c / len(rest)
         cut_points = 0 if not c else 3 if fc > 2 / 3 else 2 if fc > 1 / 3 else 1
         step = 0 if not m else 3 if m == len(rest) else 1 if m * 2 <= len(rest) else 2
-        items.append(Ore(s1, len(rest), m, c, cut_points, step, variant(key, "o", s1)))
+        items.append(Ore(s1, len(rest), m, c, cut_points, step, variant(key, "o", s1), _pre(rest)))
     return Plan(gem, tuple(items), n, watched, in_anki, nxt, (s0, s1), False)
 
 

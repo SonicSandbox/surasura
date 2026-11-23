@@ -1015,12 +1015,15 @@ CONNECT_ON = {"connect_enabled": True}
 def test_what_counts_as_known_is_one_row_always_shown_and_red_or_green_is_never_a_pick():
     """Kotoba-WS2 (Sonic 2026-11-19): *Count suspended cards as known* folded into *Count as known in Anki* — one row, one
     key, shown with Make cards for me on or off (off, the known-words sync reads its picks for the studied cards:
-    `anki_sync.counted_suspended`). Red and green are the review loop's Ignore and Swap (WL-46 / 46b): never a pick."""
+    `anki_sync.counted_suspended`). Red and green are the review loop's Ignore and Swap (WL-46 / 46b): never a pick.
+    Mado-LT (3.0.18): the row is the loop's ✓ Known move card, moved to Anki & mining (one home); the picks leave out
+    the loop's two flags as they are now (red and green by default)."""
     row = catalog.ROW["known_from_anki"]
-    assert (row.section, row.adv, row.kind, row.keys) == ("known", True, "tablets", ("known_from_anki",))
-    assert row.group == "counts_as_known" and "anki_sync_include_suspended" not in catalog.ROW
+    assert (row.section, row.adv, row.kind, row.keys) == ("anki", False, "tablets", ("known_from_anki",))
+    assert row.group == "loop" and "anki_sync_include_suspended" not in catalog.ROW
     assert "known_from_anki" in _shown(CONNECT_ON, "ja") and "known_from_anki" in _shown({}, "ja")
-    assert row.options == ("suspended", "marked", "flag:2", "flag:4", "flag:5", "flag:6", "flag:7")
+    picks = [v for v, _label, _line in catalog.options(row, {}, "ja")]
+    assert picks == ["suspended", "marked", "flag:2", "flag:4", "flag:5", "flag:6", "flag:7"]
     assert "every state you pick" in row.tip and len(row.tip.split()) <= 12 and "Suspended + Marked" in row.help
     assert "anki_sync_include_suspended" in catalog.NOT_SHOWN                      # retired, read once on load
 
@@ -1192,3 +1195,49 @@ def test_every_settings_path_a_line_names_starts_at_a_section_the_page_has():
                         wrong.append((table.__name__, name, place[:40]))     # (a section's name whole, not a prefix)
     assert seen >= 15                      # the lines are still found (a change to the arrow would pass this silently)
     assert wrong == []
+
+
+# --- Mado-LT (3.0.18; WL mock 04, PROVISIONAL words): the loop's three move cards ------------------------------------ #
+def test_the_three_move_cards_sit_together_in_anki_and_mining_known_swap_ignore():
+    # why: one formula, one block (*Your daily loop*), in the mock's order; Swap and Ignore are read only while Connect
+    # is on (`read_known_signal`), so their cards show only then — Known's always (the plain sync reads it too)
+    ids = [r.id for r in catalog.ROWS]
+    at = ids.index("known_from_anki")
+    assert ids[at:at + 3] == list(catalog.MOVE_ROWS) == ["known_from_anki", "loop_swap_flag", "loop_ignore_flag"]
+    for rid in catalog.MOVE_ROWS[1:]:
+        row = catalog.ROW[rid]
+        assert (row.section, row.adv, row.kind, row.keys) == ("anki", False, "select", (rid,))
+        assert rid in _shown(CONNECT_ON, "ja") and rid not in _shown({}, "ja")
+        assert len(row.tip.split()) <= 12 and row.help and rid in settings_placement.PLACED
+    assert [catalog.ROW[r].label for r in catalog.MOVE_ROWS] == ["✓ Known", "⇄ Swap", "✕ Ignore"]
+    assert "delete freely" in catalog.ROW["loop_ignore_flag"].help
+
+
+def test_a_moves_picks_never_offer_a_flag_another_move_holds():
+    # why: one flag on a suspended card must mean one move (the reader's rule, `review_loop.move_flags`)
+    settings = {"loop_ignore_flag": 7, "known_from_anki": ["suspended", "flag:2"]}
+    picks = {r: [v for v, _l, _line in catalog.options(catalog.ROW[r], settings, "ja")] for r in catalog.MOVE_ROWS}
+    assert picks["loop_swap_flag"] == [1, 3, 4, 5, 6]                    # not Ignore's purple, not Known's orange
+    assert picks["loop_ignore_flag"] == [1, 4, 5, 6, 7]                  # not Swap's green, not Known's orange
+    assert "flag:7" not in picks["known_from_anki"] and "flag:3" not in picks["known_from_anki"]
+    assert "flag:1" in picks["known_from_anki"]                          # red is free once Ignore moved off it
+    labels = S.OPTIONS["loop_swap_flag"]
+    assert labels[3] == "Suspend + Green flag" and labels[1] == "Suspend + Red flag" and labels ==         S.OPTIONS["loop_ignore_flag"]
+
+
+@pytest.mark.parametrize("rid, value", [("loop_swap_flag", 2), ("loop_ignore_flag", 7)])
+def test_a_move_card_writes_only_its_own_key(rid, value):
+    # why: rule 11 — one key, one write; an unchanged pick writes nothing
+    changes, update = catalog.change(catalog.ROW[rid], {}, "ja", value)
+    assert changes == {rid: value} and update is None
+    changes, _update = catalog.change(catalog.ROW[rid], {rid: value}, "ja", value)
+    assert changes == {}
+
+
+def test_knowns_line_names_a_pick_the_loop_holds_now():
+    # why: a Known pick of a flag the loop took (picked before the move changed) counts no card: never silent
+    row = catalog.ROW["known_from_anki"]
+    line = catalog.help_line(row, {"known_from_anki": ["suspended", "flag:7"], "loop_ignore_flag": 7}, "ja")
+    assert line == S.KNOWN_RED_GREEN
+    assert catalog.help_line(row, {"known_from_anki": ["suspended", "flag:1"], "loop_ignore_flag": 7}, "ja") != S.KNOWN_RED_GREEN
+    assert set(catalog.lines_for(["loop_ignore_flag"])) == {"known_from_anki", "loop_swap_flag"}

@@ -234,6 +234,23 @@ def test_a_journey_that_lacks_the_episode_still_ticks_and_the_bar_says_why(lib_w
                       strings.JOURNEY_NOT_YET.format(ep=episode.label))
 
 
+@pytest.mark.parametrize("step, key", [("words", "words"), ("watch", "watch")])
+def test_a_card_shown_before_the_first_view_names_up_next_once_that_view_lands(lib_world, step, key):
+    # FLAKES (Flake-F4; GitHub core 2/8 three times): under load the card was shown before the reader's first view, and
+    # that view's repaint named the presses from the page's view before it — no Up Next — so *Words* opened the
+    # journey on no episode and *Watch* lost its episode. The order is played here by hand, no timing in it
+    win = lib_world
+    _up(win)
+    view = win._guide_view
+    win.show_library(view._replace(rows=()))                     # the page as it is before the first view
+    c = _shown(win, facts(journey_opened=step == "watch"))
+    assert c.card[1] == step and win._up_next() is None
+    win.show_library(view)                                       # the first view with Current's rows
+    _row, ep = win._up_next()
+    assert c.presses[0][0] == key
+    assert c.primary.text() == strings.PATH_PRESS[key][0].format(ep=ep.label)
+
+
 def test_with_no_journey_on_disk_the_press_says_so_and_ticks_nothing(lib_world, monkeypatch):
     win = lib_world
     monkeypatch.setattr(win.services, "open_journey", lambda *file: False)
@@ -448,7 +465,8 @@ def test_make_it_yours_row_presses_only_while_it_opens_level(world, monkeypatch)
     # (the stage reads right) with its ? line and a *Do it* / *Again* — and none if it pointed anywhere else
     panel = world.d.guide_panel
     panel.set_look(guide.Look("3.0.5", (), False))
-    f = facts(journey_opened=True, episodes_done=1, own_cards=True, junban=False)
+    # (Mado-LT, 3.0.18: ③ ends with the loop's step, *Tell Surasura from your phone* — read once here, so ③ is done)
+    f = facts(journey_opened=True, episodes_done=1, own_cards=True, junban=False, loop_read=True)
     rows = _open_path(panel, f)
     assert panel.stage_row.states == (P.DONE, P.DONE, P.DONE, P.NOW)
     r = rows["yours"]
@@ -515,7 +533,8 @@ def test_a_step_that_cant_apply_now_reads_not_yet_with_when_behind_its_question_
     panel = world.d.guide_panel
     rows = _open_path(panel, facts(journey_opened=True, episodes_done=1, own_cards=True))   # no Anki, book, video
     later = {step_id for step_id, r in rows.items() if r.later}
-    assert later == {"junban", "backfill", "audiobook", "hato", "piyo"}          # (④'s applies once cards are made)
+    # (④'s applies once cards are made; Mado-LT: the loop's step once Anki synced — no Anki here, so not yet)
+    assert later == {"junban", "backfill", "loop", "audiobook", "hato", "piyo"}
     for step_id in later:
         r = rows[step_id]
         assert r.press is None and r.tick.text() == "", step_id                 # never a dead end, never a tick

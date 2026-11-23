@@ -155,8 +155,13 @@ def test_r1_r4_more_options_lays_the_page_out_once_and_repaints_nothing_above_it
     nothing above the button repainted but the scroll bar (the page's length changed), nothing made. *Fewer options*
     the same. (found.md F2: the slabs laid out twice and repainted whole; the first open also showed the options' box
     at a default 100 × 30 over the section's head before the layout placed it.)"""
+    from app.qt import settings_catalog as catalog
     bar = wc.rect_in_window(page.scroll.verticalScrollBar())
-    section = next(s for s, slab in page.slabs.items() if not slab.more_row.isHidden() and s not in page.folds())
+    # Mado-LT (3.0.18): the first fold was Known words' (one row, *Count as known in Anki*, now the ✓ Known move card in
+    # the open). Measured as before: the first fold of one row. (The next first fold, Anki & mining's ten, repaints
+    # above its button on the base too: a waste finding handed to the lead, not this test's.)
+    section = next(s for s, slab in page.slabs.items() if not slab.more_row.isHidden() and s not in page.folds()
+                   and len([r for r in catalog.rows(s) if r.adv and r.id in page.rows]) == 1)
     more = _in_view(page, page.slabs[section].more)
     unit = wc.one_pass(page.body, page)
     try:

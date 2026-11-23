@@ -655,7 +655,11 @@ WORDS_EPISODE_TITLE = "{title} · {ep}"
 WORDS_MENU = "Its words"
 WORDS_MENU_TIP = "The words you'll meet in it, kept open"
 # Kotoba-K: Known / Ignore on the kept card (leans PROVISIONAL)
-WORDS_MARK_GLYPH = {"known": "✓", "ignore": "⊘"}
+WORDS_MARK_GLYPH = {"known": "✓", "ignore": "⊘", "learning": "○"}     # Mado-LT: ○ Still learning (violet, accent-2)
+# Mado-LT (WL ⑦, PROVISIONAL): an In Anki word's lit ✓ cleared — the toast, its Undo the write's own
+WORDS_STILL_LEARNING = "{word}: still learning"
+WORDS_LEARNING_TIP = "Known through Anki\n• Click: still learning — you don't really know it yet"
+WORDS_STILL_LEARNING_TIP = "Surasura keeps it still learning until you Suspend + Mark its card again"
 WORDS_MARK_TIP = {"known": "Known: you know it\n• Leaves your list as known · click again to undo",
                   "ignore": "Ignore: not a word to learn (a name, a noise)\n• Leaves your list, never known · click "
                             "again to undo"}
@@ -1627,6 +1631,20 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     # Kyou-SH2 (PROVISIONAL): Tidy, said
     "undo_tidy": ("Undo", "Put those cards back in Anki from the copy Surasura kept, each in its own deck"),
     "leave_tidy": ("OK", "They stay deleted; this goes until the next tidy"),
+    # Kyou-DW (PROVISIONAL): a deleted card asks why (WL-35's four chips); the old deletes, once
+    "dw_known": ("Known", "You know this word: it counts as known"),
+    "dw_ignore": ("Ignore", "Not a word to learn: it goes on your Ignore list"),
+    "dw_parsing": ("Parsing mistake", "Surasura cut this word wrong: it's ignored, and the sentence goes in Send "
+                                      "report's list for us (you see it before anything is sent)"),
+    "dw_bad": ("Bad card", "The word is fine, the card wasn't: a new card from another sentence"),
+    "dw_all_known": ("All known", "Every card here: you know their words"),
+    "dw_all_ignore": ("Ignore all", "Every card here: not words to learn"),
+    "dw_all_parsing": ("All parsing mistakes", "Every card here: cut wrong; their sentences go in Send report's list"),
+    "dw_all_bad": ("All bad cards", "Every card here: a new card for each word from another sentence"),
+    "dw_leave": ("Leave them", "They stay deleted and are never made again; this card goes"),
+    "dw_forget": ("Forget", "Forget this delete: its card may be made again once the word is cut right"),
+    "dw_forget_all": ("Forget all", "Forget every delete here: their cards may be made again"),
+    "dw_keep_old": ("Keep them", "They all stay deleted; this card goes for good"),
     # Kantan-SL (PROVISIONAL): Swap, said
     "undo_swap": ("Undo", "Delete the new card (Surasura keeps a copy) and put the old card back in your reviews"),
     "leave_swap": ("OK", "Keep the new card"),
@@ -1756,6 +1774,32 @@ NEEDS_TIDY_LEFT = "OK · they stay deleted; a word made again if it climbs back"
 NEEDS_TIDY_SKIPPED = " · {k} left out: their words have new cards"           # Kyou-SH3 (PROVISIONAL, F5)
 NEEDS_TIDY_SKIPPED_ONE = " · 1 left out: its word has a new card"
 NEEDS_TIDY_UNSAVED_LEFT = "OK · nothing was deleted"                           # Kyou-SH3 (PROVISIONAL, F4)
+# Kyou-DW (PROVISIONAL): a deleted card's answer, said (each with Undo in its toast)
+NEEDS_ABOUT_NAME = "About {title}"
+NEEDS_DELETED_DONE_ONE = {
+    "known": "「{word}」 is known",
+    "ignore": "「{word}」 is ignored",
+    "parsing": "「{word}」 is ignored · its sentence is in Send report's list",
+    "bad": "A new card for 「{word}」 from another sentence is on its way",
+}
+NEEDS_DELETED_DONE = {
+    "known": "{n} words are known",
+    "ignore": "{n} words are ignored",
+    "parsing": "{n} words are ignored · their sentences are in Send report's list",
+    "bad": "New cards for {n} words from other sentences are on their way",
+}
+NEEDS_DELETED_NONE = "nothing to change"
+NEEDS_DELETED_NOT = "Nothing changed: {why}"
+NEEDS_DELETED_SKIPPED_ONE = " · 「{word}」 left: {why}"
+NEEDS_DELETED_SKIPPED = " · {n} left as they were"
+NEEDS_DELETED_UNFLAGGED = " · Send report's list is full, so a sentence wasn't added"
+NEEDS_DELETED_UNDONE = "Undone · asked again"
+NEEDS_DELETED_NOT_UNDONE = "Not undone: {why}"
+NEEDS_DELETED_LEFT = "OK · they stay deleted"
+NEEDS_FORGOT_ONE = "「{word}」 forgotten · its card may be made again"
+NEEDS_FORGOT = "{n} deletes forgotten · their cards may be made again"
+NEEDS_FORGET_REFUSED = "Your library can't be changed just now · try again in a moment"
+NEEDS_OLD_KEPT = "OK · they all stay deleted"
 NEEDS_SWAP_UNDONE = "Undone · the new card is gone and the old one is back in your reviews"     # Kantan-SL (PROVISIONAL)
 NEEDS_SWAP_NOT_UNDONE = "Not undone: {why}"
 NEEDS_SWAP_LEFT = "OK · the new card stays"
@@ -2341,6 +2385,7 @@ PATH_WHEN = {            # id -> when a step applies (its ? while it can't yet)
     "cards": "Once a show is in your library",
     "junban": "Once Anki is connected and has your cards",
     "backfill": "Once you have cards in Anki",
+    "loop": "Once your cards are in Anki and synced",
     "yours": "Once your first cards are made",
     "audiobook": "Once a book is in Current",
     "hato": "Once a new episode waits for its subtitles",
@@ -2354,6 +2399,9 @@ PATH_STEPS = {           # id -> (title, the line behind its ?)
     "junban": ("Put Anki's new cards in your order", "順 orders them by how often your shows use each word."),
     "backfill": ("Let your cards show how each word is used",
                  "Your cards can carry the word's usual patterns (パターン) and more lines from your shows (例文)."),
+    # Mado-LT (WL-9, PROVISIONAL words): the ? line is the loop's sheet — one line, the moves by what you do
+    "loop": ("Tell Surasura from your phone", "In Anki, suspend a card and mark it, or flag it: Surasura follows at the "
+             "next sync. Once synced, delete freely."),
     "yours": ("Pick which words get a card", "Which words Anki Miner makes cards from: its choice in Settings."),
     "audiobook": ("Line up a book with its audiobook",
     "Its cards get the narrator's voice: the book's ⋯ → Its audiobook…"),
@@ -2377,6 +2425,7 @@ PATH_PRESS = {
     "junban": ("Preview my deck", "順's window: today's order beside yours, before anything moves\n• Click: open it"),
     "junban-again": ("See what it did", "順's window: its last run, with Undo\n• Click: open it"),
     "backfill": ("Preview", "Backfill's window: what it would fill, before anything is written\n• Click: open it"),
+    "loop": ("See your moves", "What Suspend + Mark and each flag mean\n• Click: its place in Settings"),
     "yours": ("Pick your cards", "Which words get a card\n• Click: its choice in Settings"),
     "audiobook": ("Go to your book", "On Current: the book's ⋯ → Its audiobook…\n• Click: go there"),
     "hato": ("Set up hato", "hato finds subtitles on your yes\n• Click: its place in Settings"),
@@ -2388,6 +2437,7 @@ PATH_DO_TIPS = {         # a step's *Do it* in the panel -> what its press does
     "cards": "Makes the top episode's cards (or sets Anki Miner up first)\n• Click: do it",
     "junban": "Opens 順's window: your deck's order, before anything moves\n• Click: open it",
     "backfill": "Opens Backfill's window: what it would fill, before anything is written\n• Click: open it",
+    "loop": "What Suspend + Mark and each flag mean\n• Click: its place in Settings",
     "yours": "Which words get a card\n• Click: its choice in Settings",
     "audiobook": "On Current: the book's ⋯ → Its audiobook…\n• Click: go there",
     "hato": "hato finds subtitles on your yes\n• Click: its place in Settings",
@@ -2427,3 +2477,12 @@ REPORT_FLAG_TICKED = "Goes"
 REPORT_FLAG_UNTICKED = "Left out"
 REPORT_FLAGS_NONE_TIP = "Nothing is ticked and no report is saved, so there's nothing to send"
 # --- end the flagged sentences in Send report
+
+# --- J-STONES (3.0.19; journey v3 SPEC §2.4): pre-studied on the window's stones, and *1 card* (the plural fix)
+ROWS_STONE_STATE_ONE = " · 1 card in Anki"                 # `ROWS_STONE_STATE["raw"]` for one card: never *1 cards*
+ROWS_STONE_PRE = "\n✧ Pre-studied on {date}"              # a stone's tip: its words gone through before it was watched
+ROWS_STONE_PRE_NAMES = "✧ Pre-studied: {names}"            # a cut group's, the ore's or a Finished row's hover
+ROWS_STONE_PRE_JOIN = " · "
+ROWS_STONE_PRE_MORE = " …"                                 # past ROWS_STONE_PRE_SHOWN names
+ROWS_STONE_PRE_SHOWN = 6
+# --- end J-STONES

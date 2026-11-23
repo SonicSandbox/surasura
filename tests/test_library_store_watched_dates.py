@@ -76,6 +76,19 @@ def test_a_done_stamps_its_date_and_an_un_done_clears_it(language):
     store.close()
 
 
+def test_the_stores_stamp_is_the_clocks_own_microsecond_never_the_one_before(monkeypatch):
+    # FLAKES (Flake-F4, GitHub core 3/8): the stamp sat 1 µs before the test's own `datetime.now()`, read after it. One
+    # clock, two roundings: `int(time.time() * 1e6)` truncates a float (a step of ~238 ns this century), which at a
+    # whole microsecond can land just under it; `datetime.now()` floors the clock's integer. Played at such an instant
+    ns = 1795387316189577000                              # a whole microsecond where the float lands 1 µs low
+    assert int((ns / 1e9) * 1e6) == ns // 1000 - 1
+    monkeypatch.setattr(ls.time, "time_ns", lambda: ns)
+    monkeypatch.setattr(ls.time, "time", lambda: ns / 1e9)
+    monkeypatch.setattr(ls, "_NOW_LAST", [0])
+    assert _when(ls._now()) == datetime.fromtimestamp(ns // 1000 / 1e6, timezone.utc).replace(
+        microsecond=ns // 1000 % 10 ** 6)
+
+
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_second_done_on_a_watched_episode_keeps_its_first_date(language):
     """A Done on an episode already watched writes nothing (S19), its date included: the date is when it was first

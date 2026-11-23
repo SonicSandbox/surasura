@@ -125,7 +125,9 @@ def _arrow_off(text):
 
 def copy_for(path, folder, language="ja"):
     """The subtitle a job reads: an .ass / .ssa file's cleaned copy written into `folder` (UTF-8, no BOM, its own
-    name), or `path` itself for any other subtitle."""
+    name), or `path` itself for any other subtitle. The copy is written again for every pick of the episode, so its
+    replace may meet the last copy still held by another program: waited out as the run file's is
+    (`runfile.replace_held`)."""
     if not str(path).lower().endswith((".ass", ".ssa")):
         return path
     os.makedirs(folder, exist_ok=True)
@@ -135,5 +137,5 @@ def copy_for(path, folder, language="ja"):
     tmp = f"{dest}.{os.getpid()}.tmp"
     with open(tmp, "w", encoding="utf-8", newline="") as f:
         f.write(clean(read_text(path, language)))
-    os.replace(tmp, dest)
-    return dest
+    from app.connect import runfile
+    return runfile.replace_held(tmp, dest)

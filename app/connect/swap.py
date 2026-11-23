@@ -20,8 +20,8 @@ waits as every one does (never while you review, the cap, Anki closed): there is
   Tidy never takes it by itself: you asked for it (`new_cards`, read by `tidy.asked_for`); only its Undo does.
 - **Undo** (`undo`): the new card removed with a backup, as Tidy removes one (`tidy.run`, why `swap`: notes, media and
   an Anki package kept; a card you studied or changed stays, and then nothing is undone), the old card unsuspended,
-  its green flag off and its tag gone, then the queue's entry `undone` (`swap_queue.undone`) with the ledger's row in
-  one step. Twice: nothing more.
+  its Swap flag off (the learner's pick, `review_loop.move_flags`) and its tag gone, then the queue's entry `undone`
+  (`swap_queue.undone`) with the ledger's row in one step. Twice: nothing more.
 
 **The one record of a swap is the swap queue's entry** (waiting · made · dropped · undone, with why). The ledger's
 `swaps` holds what Connect's job needs (the line, what to avoid, the episodes tried, the job, the new note, the tag
@@ -49,7 +49,8 @@ BY_SWAP, BY_BAD_CARD = "swap", "bad card"
 ASKED, QUEUED, MADE, WAITS, DROPPED, UNDONE = "asked", "queued", "made", "waits", "dropped", "undone"
 TRIES = 3                       # episodes tried before an ask waits (each cut no card: its lines were the old card's)
 RETRY_S = 6 * 3600              # a waiting ask is looked at again this long after, or when the library has more files
-GREEN = 3                       # Anki's flag numbers: 3 green (Swap's move), 0 none
+GREEN = 3                       # Anki's flag numbers: 3 green (Swap's move by default: the learner's pick is
+                                # `review_loop.move_flags`), 0 none
 VERB = "Swap"
 NO_LINE = "no other line"
 GONE = "That swap can't be undone now."
@@ -575,12 +576,12 @@ class AnkiSwap(tidy.AnkiConnectTidy):
 # --------------------------------------------------------------------------- #
 # Undo
 # --------------------------------------------------------------------------- #
-def undo(anki, ledger, language, swap_id, open_store=None, ours=None):
+def undo(anki, ledger, language, swap_id, open_store=None, ours=None, flag=GREEN):
     """One swap undone -> {"undone": True, "word"}: the new card removed with a backup (`tidy.run`, why "swap": a card
     you studied or changed stays — moved to a deck of your own too — `tidy.Refused`, and nothing here changes), then
-    the old card back to study (unsuspended, its green flag off, `SWAP_TAG` gone), then the swap `undone` in the queue
-    and the ledger together (the queue's write fails: neither changes, and a retry finishes it — the new card isn't
-    deleted twice). `ours`: the deck Surasura shows for the language's new cards (`fields.surasura_deck`), handed to
+    the old card back to study (unsuspended, its Swap flag off — `flag`, the learner's pick — `SWAP_TAG` gone), then
+    the swap `undone` in the queue and the ledger together (the queue's write fails: neither changes, and a retry
+    finishes it — the new card isn't deleted twice). `ours`: the deck Surasura shows for the language's new cards (`fields.surasura_deck`), handed to
     Tidy as an ordinary tidy hands it — a card with no home on record is Surasura's only there. Refused (`Refused`)
     when it isn't made or is undone already (the queue's word first); Anki's Reviewing / Busy / errors, and a queue
     that can't be read or written, raise as Tidy's do."""
@@ -613,7 +614,7 @@ def undo(anki, ledger, language, swap_id, open_store=None, ours=None):
         if anki.reviewing():
             raise tidy.Reviewing()
         _old_back(anki, row, keep_tag=bool(_rows(ledger, "language = ? AND old_note = ? AND state = ? AND id != ?",
-                                                 (language, row["old_note"], MADE, row["id"]))))
+                                                 (language, row["old_note"], MADE, row["id"]))), flag=flag)
         with ledger.transaction():      # under the lock (a look never tags it again), the queue's write inside the
             _update(ledger.conn, row["id"], state=UNDONE)       # ledger's: either fails, neither changes
             if entry is not None:
@@ -630,18 +631,18 @@ def _entry(language, row):
     return next((e for e in swap_queue.load(language) if str(e.get("id")) == str(row["ref"])), None)
 
 
-def _old_back(anki, row, keep_tag=False):
+def _old_back(anki, row, keep_tag=False, flag=GREEN):
     cards = [int(row["old_card"])] if row.get("old_card") else []
     if row.get("old_note") and not cards:
         for info in anki.notes([int(row["old_note"])]) or ():
             cards = [int(c) for c in info.get("cards") or ()]
     infos = [c for c in (anki.cards(cards) if cards else []) if isinstance(c, dict) and c.get("cardId")]
     back = [int(c["cardId"]) for c in infos if c.get("queue") == -1]
-    green = [int(c["cardId"]) for c in infos if c.get("flags") == GREEN]
+    flagged = [int(c["cardId"]) for c in infos if c.get("flags") == flag]
     if back:
         anki.unsuspend(back)
-    if green:
-        anki.set_flag(green, 0)
+    if flagged:
+        anki.set_flag(flagged, 0)
     if row.get("old_note") and infos and not keep_tag:      # the note's other card still swapped: its tag stays
         anki.remove_tags([int(row["old_note"])], SWAP_TAG)
 
@@ -650,7 +651,7 @@ def act_undo(settings, language, swap_id):
     """*Undo* on a swap (Needs you) -> {"undone": True} or {"why": plain words}; anything else (a disk or ledger error)
     raises to the window's press, which says it failed."""
     from app import anki_connect, locks
-    from app.connect import fields, library
+    from app.connect import fields, library, review_loop
     from app.connect.ledger import Ledger, TooNew, path
     from app.connect.undo import NO_ANKI, NO_LEDGER, Reviewing
     if os.environ.get("SURASURA_NO_ANKI_SYNC"):
@@ -660,7 +661,8 @@ def act_undo(settings, language, swap_id):
     try:
         with Ledger() as ledger:
             return undo(AnkiSwap(anki_connect.address(settings)), ledger, language, swap_id,
-                        lambda: library.open_store(language), ours=fields.surasura_deck(settings, language))
+                        lambda: library.open_store(language), ours=fields.surasura_deck(settings, language),
+                        flag=review_loop.move_flags(settings)[review_loop.SWAP])
     except tidy.Refused as e:
         return {"why": e.say}
     except Reviewing:

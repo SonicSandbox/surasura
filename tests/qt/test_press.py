@@ -140,10 +140,17 @@ def _own_presses(monkeypatch):
 
 @pytest.fixture
 def handed(monkeypatch):
-    """`bridge.run_in_worker` replaced: each hand-over recorded with what the control showed at that moment."""
+    """`bridge.run_in_worker` replaced: each press's hand-over recorded with what the control showed at that moment.
+    FLAKES (Flake-F4, #611): the window's own work goes on the same worker — Needs you's gather once the reader's view
+    lands, later under load — and was recorded too, as `handed[0]`. Only a press's (`press.run`'s) is held here; the
+    rest runs, as in the app."""
     calls = _Calls()
+    real = qpress.bridge.run_in_worker
 
     def stub(fn, *args, then=None, failed=None, pool=None):
+        if not (getattr(then, "__module__", None) == qpress.__name__
+                and getattr(then, "__qualname__", "") == "run.<locals>.ended"):
+            return real(fn, *args, then=then, failed=failed, pool=pool)
         look = calls.look() if calls.look is not None else None
         calls.append(SimpleNamespace(fn=fn, args=args, then=then, failed=failed, look=look))
     monkeypatch.setattr(qpress.bridge, "run_in_worker", stub)
@@ -473,6 +480,17 @@ def test_a_menu_press_paints_the_hairline_in_the_frame_of_the_press_before_the_w
     qpress.run(None, "menu:open-logs", lambda: None, win=win)
     busy, painted = handed[0].look
     assert busy is True and painted >= 1
+    handed[0].then(None)
+
+
+def test_the_windows_own_work_runs_beside_a_press_and_is_never_taken_for_its_hand_over(window, handed):
+    # FLAKES (Flake-F4, #611): Needs you's gather, handed to the worker as the reader's view landed during the test,
+    # was `handed[0]` — the press's look read as None. The window's own work is played here by hand, no timing in it
+    ran = []
+    qpress.bridge.run_in_worker(lambda: "theirs", then=ran.append)       # the window's own (Needs you's gather)
+    qpress.run(None, "menu:open-logs", lambda: "mine", win=window)
+    assert len(handed) == 1 and handed[0].fn() == "mine"
+    assert wait_until(lambda: ran == ["theirs"], 5)                       # it ran, as in the app
     handed[0].then(None)
 
 

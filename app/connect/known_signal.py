@@ -14,7 +14,8 @@ A card you suspend and mark in Anki says "I know this": at Surasura's next known
   (`leech`). A Connect-made card **you** suspend counts like any (Anki's tag
   search ignores case). **A red or a green flag never counts** (Kotoba-WS2; Sonic 2026-11-20, the review loop's moves:
   Suspend + Red flag is *Ignore*, Suspend + Green flag is *Swap*, WL-46 / 46b), whatever the terms — red and green win
-  over every other state, so a pick naming one of them counts no card.
+  over every other state, so a pick naming one of them counts no card. (The two flags are the learner's pick since
+  Mado-LT, Settings' move cards: `not_known_flags`.)
 - **Newly signalled since the last read → known**: appended to KnownWord.json as the sync appends (append-only, under
   its `known-words-<lang>` lock), each entry marked `knownBy: "anki-signal"`; recorded here per language (the word, its
   card, when) for undo.
@@ -47,7 +48,7 @@ import os
 KNOWN_BY = "anki-signal"
 NEVER = ("-tag:Surasura::later", "-tag:Surasura::out", "-tag:surasura::shelf", "-tag:leech",
          "-flag:1", "-flag:3")       # Kotoba-WS2: red (Ignore) and green (Swap) are the loop's moves, never Known
-NOT_KNOWN_FLAGS = ("flag:1", "flag:3")
+NOT_KNOWN_FLAGS = ("flag:1", "flag:3")   # the loop's moves' default flags; the learner's: `not_known_flags(settings)`
 FLAGS = tuple(f"flag:{n}" for n in range(1, 8))
 TERMS = ("suspended", "marked") + FLAGS
 SIGNAL_WORD_ONLY = True     # the Word field only (the lean asked of Sonic); False: the known-words sync's fields
@@ -93,16 +94,24 @@ def _never(settings):
     named (`unlisted.later_tag`, `unlisted.out_tag`: P4.1 L2 — a taken-out show's suspends never say "I know this")."""
     tag = (settings or {}).get("junban_tag", "")
     tag = tag.strip() if isinstance(tag, str) else ""
+    never = tuple(t for t in NEVER if not t.startswith("-flag:")) + tuple(f"-{f}" for f in not_known_flags(settings))
     try:
         from modules.junban import unlisted
         later, out = unlisted.later_tag(tag), unlisted.out_tag(tag)
     except Exception:                       # Junban absent: its rule, as written there
         later, out = f"{tag or 'Surasura'}::later", f"{tag or 'Surasura'}::out"
-    never = NEVER
     for extra in (f"-tag:{later}", f"-tag:{out}"):
         if extra.lower() not in (n.lower() for n in never):
             never = never + (extra,)
     return never
+
+
+def not_known_flags(settings):
+    """The review loop's Ignore and Swap flags as search terms ("flag:1", "flag:3" by default; the learner's pick on
+    Settings' move cards, `review_loop.move_flags`): a card carrying one is never known, whatever the terms."""
+    from app.connect import review_loop
+    flags = review_loop.move_flags(settings)
+    return (f"flag:{flags[review_loop.IGNORE]}", f"flag:{flags[review_loop.SWAP]}")
 
 
 def query(terms, decks, settings=None):

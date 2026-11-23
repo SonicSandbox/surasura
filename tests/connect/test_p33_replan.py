@@ -90,7 +90,8 @@ class AnkiMinerStandIn(runner.Steps):
     def pick(self, lang, job, video):
         got = super().pick(lang, job, None)         # no video: no Anki Miner asked at the pick
         plan = self.current(lang)
-        self.picks.append(([(w["word"], w["reading"]) for w in got["words"]], plan.listed))
+        if not job.get("only"):     # (Kantan-SD 6: a line borrowed from another episode is no pick of that episode)
+            self.picks.append(([(w["word"], w["reading"]) for w in got["words"]], plan.listed))
         return dict(got, profile="p1", anki_miner="3.7.0", absent=False)
 
     def fit(self, lang, job, pairing, video, subtitle):

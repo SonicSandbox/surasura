@@ -21,6 +21,7 @@ import shutil
 import sqlite3
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -698,3 +699,79 @@ def test_the_undo_ids_kept_are_the_newest_hundred(monkeypatch):
     monkeypatch.setattr(prestudied, "_KEPT", prestudied.OrderedDict())
     ids = [prestudied._keep("ja", object()) for _ in range(prestudied.UNDO_KEPT + 5)]
     assert list(prestudied._KEPT) == ids[5:]
+
+
+# --- J-STONES (3.0.19): the window's feed carries the mark, and only where its date changed ------------------------ #
+# The window takes everything it draws through one read, `read_feed` (its reader, `library_reader`): the stones' add
+# comes the same way. A press feeds the rows whose date moved and nothing else — an un-mark of an episode never
+# marked changes nothing the window reads, so it costs the window's reader no re-read (the store drills' F6: before,
+# every pressed row was fed, though no field the reader keeps had changed).
+
+def _fed(store, seen, epoch):
+    feed = store.read_feed(seen, epoch)
+    return {r["id"]: r["prestudied_at"] for r in feed["items"]}, feed["version"]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_press_feeds_its_episode_with_its_date_and_its_undo_feeds_it_back(language):
+    """The window's look after a press sees that one episode, with the date it was marked; after the toast's Undo,
+    that one episode again, unmarked. Nothing else of the library comes with it."""
+    store = migrated(language)
+    a = store.ids("now")[0]
+    first = store.read_feed()
+    assert all("prestudied_at" in r and r["prestudied_at"] is None for r in first["items"])
+    seen, epoch = first["version"], first["epoch"]
+    on = store.set_prestudied([a], True, "press")
+    fed, seen = _fed(store, seen, epoch)
+    assert fed == {a: _mark(store, a)[0]} and fed[a]
+    store.undo(on)
+    fed, seen = _fed(store, seen, epoch)
+    assert fed == {a: None}
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_un_mark_of_an_episode_never_marked_feeds_the_window_nothing(language):
+    """Un-marking an episode that was never marked keeps it 'off' (so the end card never marks it), but its date was
+    and stays none: the window has nothing to redraw, and its look reads no row. Its Undo the same. A whole show
+    marked then feeds every one of its episodes once."""
+    store = migrated(language)
+    show = store.ids("soon")[:3]
+    first = store.read_feed()
+    seen, epoch = first["version"], first["epoch"]
+    off = store.set_prestudied(show, False, "press")
+    assert off is not None and _mark(store, show[0]) == (None, "off")
+    fed, seen = _fed(store, seen, epoch)
+    assert fed == {}
+    store.undo(off)
+    fed, seen = _fed(store, seen, epoch)
+    assert fed == {} and _mark(store, show[0]) == (None, None)
+    store.set_prestudied(show, True, "press")
+    fed, seen = _fed(store, seen, epoch)
+    assert set(fed) == set(show) and all(fed.values())
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_feed_reads_none_on_a_store_still_without_the_columns(language, monkeypatch):
+    """A busy first open leaves the columns to a later one: the window's feed, a cover's rows and Goal's search still
+    read, each row with no mark — never an error that empties the window."""
+    from app.services import covers, search
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    path = store.db_path
+    store.close()
+    _drop_columns(path)
+    with monkeypatch.context() as busy:
+        busy.setattr(ls.Store, "_added_prestudied", lambda self: None)     # the busy open
+        store = ls.open_store(language, data_dir, user_files_dir)
+        try:
+            feed = store.read_feed()
+            assert feed["items"] and all(r["prestudied_at"] is None for r in feed["items"])
+            items, works = covers.rows_for(store, [r["work_id"] for r in feed["items"]])
+            assert items and all(r["prestudied_at"] is None for r in items)
+            goal = {r["work_id"] for r in feed["items"] if r["tier"] == "goal"}
+            view = SimpleNamespace(rows=(), arrivals=(), finished=())
+            assert goal and search._goal(store, view, goal, set(), set(), "", language, 10)[0]
+        finally:
+            store.close()

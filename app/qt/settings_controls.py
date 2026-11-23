@@ -779,6 +779,19 @@ class Tablets(_Control):
         self.updateGeometry()
         self.update()
 
+    def set_options(self, options):
+        """New choices (Mado-LT: Known's states, less the flags Swap and Ignore took), the picks still offered kept —
+        no signal; a pick no longer offered drops out, as at build. -> True when they changed."""
+        if self.is_list or _options(options) == self._options:
+            return False
+        value = self.value()
+        self._options = _options(options)
+        self.setMouseTracking(any(t for _v, _l, t in self._options))
+        if not self.multi and value not in {v for v, _l, _t in self._options}:
+            value = self._options[0][0]
+        self.set_value(value)
+        return True
+
     def add_item(self, item):
         """A list's new item (the page's picker answered): added at the end and emitted, unless it is there already."""
         item = str(item)
@@ -1609,11 +1622,17 @@ class Select(_Control):
 
     def __init__(self, options, value=None, tooltip=None, name=None, parent=None):
         super().__init__(tooltip, name, parent)
-        self._options = _options(options)
         self._index = 0
         self.menu = QMenu(self)
-        group = QActionGroup(self.menu)
-        group.setExclusive(True)
+        self._group = QActionGroup(self.menu)        # one, refilled: `menu.clear()` deletes the actions, not a group
+        self._group.setExclusive(True)
+        self._fill(options)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.set_value(self._options[0][0] if value is None else value)
+
+    def _fill(self, options):
+        self._options = _options(options)
+        self.menu.clear()
         self._actions = []
         for v, label, tip in self._options:
             action = self.menu.addAction(label)
@@ -1621,10 +1640,19 @@ class Select(_Control):
             if tip:
                 action.setToolTip(tip)
             action.triggered.connect(lambda _checked=False, v=v: self._pick(v))
-            group.addAction(action)
+            self._group.addAction(action)
             self._actions.append(action)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.set_value(self._options[0][0] if value is None else value)
+
+    def set_options(self, options):
+        """New choices (Mado-LT: a move's flags, less the ones another move took), the value kept — no signal. -> True
+        when they changed."""
+        if _options(options) == self._options:
+            return False
+        value = self.value()
+        self._fill(options)
+        self.set_value(value)
+        self.updateGeometry()
+        return True
 
     def _find(self, value):
         for i, (v, _l, _t) in enumerate(self._options):

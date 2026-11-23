@@ -77,7 +77,8 @@ def card(answer, row, where, standing=None, counts=None, language="ja"):
 def keep_marked(old, new, marked):
     """Kotoba-K: the card `new` (the words asked again after a mark) with the words marked on the open card `old`
     (`marked`: {word: mark}) kept where they were — the numbers leave them out, but the open card shows them dimmed
-    with their mark until it closes (a second click clears one). The counts are `new`'s. -> a Card."""
+    with their mark until it closes (a second click clears one). An In Anki word made Still learning there (Mado-LT)
+    stays in its part, never joins another while the card is open. The counts are `new`'s. -> a Card."""
     def key(w):
         return (w.word, w.reading)
 
@@ -85,7 +86,7 @@ def keep_marked(old, new, marked):
         held = {key(w) for w in new_words}
         before = {key(w) for w in old_words}
         return tuple([w for w in old_words if key(w) in held or w.word in marked]
-                     + [w for w in new_words if key(w) not in before])
+                     + [w for w in new_words if key(w) not in before and marked.get(w.word) != "learning"])
     groups = {g.title: g for g in new.before}
     before = [Group(g.title, merged(g.words, groups[g.title].words if g.title in groups else ()))
               for g in old.before]

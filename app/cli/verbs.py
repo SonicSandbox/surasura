@@ -1402,6 +1402,12 @@ def pick(args):
     if listed is None:
         listed = _listed(args, lang)
     level_job = _level_job(args.job, lang)
+    # Kantan-SD 6 (Connect's runner, never on the command line): the words a job cuts from this episode's lines though
+    # it mines another (`runner._borrow`) — picked as a Best sentence's own job picked them, by name
+    only = getattr(args, "only", None)
+    if only:
+        from app.connect import level
+        level_job = {"kind": "level", "source": level.BEST, "words": [tuple(key) for key in only]}
     if level_job is not None:
         # P2.2, a level raise (HC-N38): the job names the newly listed words; only they go to Anki Miner, by the list
         from app.connect import level
@@ -1424,7 +1430,9 @@ def pick(args):
             subtitle = None
             read, tokens = cues.reading(args.file, lang, script, tokenizer)
         else:
-            subtitle = caption_clean.copy_for(args.file, run_dir, lang)
+            # (another episode's copy in a folder of its own: two shows' subtitles can share one file name)
+            aside = getattr(args, "aside", None)
+            subtitle = caption_clean.copy_for(args.file, os.path.join(run_dir, aside) if aside else run_dir, lang)
             read = cues.read(args.file, lang)
     except (OSError, UnicodeDecodeError, ValueError) as e:
         raise CliError("bad-data", f"The {'text' if book else 'subtitle'} can't be read: {e}") from None
@@ -1474,7 +1482,7 @@ def pick(args):
             word["sent"] = runfile.entries(word, named)         # the names the run file carries (Z-2: one a word)
         if not chosen["words"]:
             out["skipped"] = "no words to make cards from"
-        else:
+        elif not only:      # (the runner writes the one run file of a job whose lines come from several episodes)
             if book:
                 episode = runfile.reading_episode(f"{job}-1", book, runfile.word_requests(chosen["words"], named,
                                                                                          book=True),

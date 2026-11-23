@@ -524,6 +524,23 @@ def test_the_windows_undo_hands_tidy_the_deck_settings_show_through_the_same_fun
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
+@pytest.mark.parametrize("old_flag, left", [(4, 0), (3, 3)], ids=["the-swap-flag-off", "a-green-flag-of-your-own-stays"])
+def test_the_windows_undo_takes_off_the_swap_flag_you_picked_and_only_that_one(ledger, lang, old_flag, left,
+                                                                                monkeypatch):
+    # Why: since Mado-LT the Swap move's flag is the learner's pick on Settings' move cards (`review_loop.move_flags`),
+    # not always green. A card still carrying it is never known (`known_signal.not_known_flags`), so an Undo that only
+    # cleared green would leave a Blue-Swap learner's old card unknowable; a green flag that isn't the Swap move's is
+    # the learner's own and stays.
+    anki, swap_id = _made_swap(ledger, monkeypatch, lang, home=None, deck=SHOWN)
+    anki.cards_[9000]["flags"] = old_flag
+    monkeypatch.setattr(swap, "AnkiSwap", lambda url: anki)
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
+    got = swap.act_undo({"junban_deck": SHOWN, "junban_scope": "deck", "loop_swap_flag": 4}, lang, swap_id)
+    assert got["undone"] and anki.deleted == [950]
+    assert (anki.cards_[9000]["queue"], anki.cards_[9000]["flags"]) == (0, left)
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
 def test_a_swapped_card_is_in_both_of_surasuras_records_and_tidys_guarantee_takes_it_as_its_own(ledger, lang,
                                                                                                  monkeypatch):
     # Why: Undo deletes the new card only through Tidy's guarantee (Kyou-SH3), which takes a card as Surasura's only

@@ -250,13 +250,18 @@ ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway",
            "move_cards", "leave_cards",                                                  # Michi-DK
            "put_back_shelf", "leave_shelf",                                              # Kyou-SH
            "undo_tidy", "leave_tidy",                                                    # Kyou-SH2
+           "dw_all_known", "dw_all_ignore", "dw_all_parsing", "dw_all_bad", "dw_leave",  # Kyou-DW: the whole card
+           "dw_forget_all", "dw_keep_old",
            "undo_swap", "leave_swap", "leave_swap_wait")                                 # Kantan-SL
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "generate_again",
                      "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
                      "make_from_audio", "find_with_hato", "find_with_hato_zh",     # Michi-NS: each a long ask
                      "add_audio",                                                  # Kura-AB3 A2: Anki written
-                     "change_video")                                               # Kantan-B5: a picker's start
+                     "change_video",                                               # Kantan-B5: a picker's start
+                     "dw_known", "dw_ignore", "dw_parsing", "dw_bad", "dw_forget")  # Kyou-DW: a line's own answer
+# Kyou-DW: the cards whose line stands behind a ? beside the title (the Qt guide: no visible line under a title)
+ABOUT_KINDS = frozenset((service.DELETED, service.OLD_DELETES))
 
 
 class NeedsCards(QWidget):
@@ -448,12 +453,28 @@ class NeedsCards(QWidget):
         box = QVBoxLayout(card)
         box.setContentsMargins(*pad)
         box.setSpacing(round(6 * f))
-        title = _label(e.title, "needstitle", card)
-        if e.kind == service.FAILURE and (e.data or {}).get("log"):
-            title.setToolTip(strings.NEEDS_FAILURE_LOG_TIP.format(path=e.data["log"]))   # Kantan-B1: never the line
-        box.addWidget(title)
-        if e.say:
-            box.addWidget(_label(e.say, "sheetline", card))
+        if e.kind in ABOUT_KINDS and e.say:         # Kyou-DW: its line behind a ? beside the title, never shown below
+            from app.qt.tooltip import AboutMark, FitTitle
+            head = QHBoxLayout()
+            head.setSpacing(round(6 * f))
+            title = FitTitle(e.title, card)
+            title.setObjectName("needstitle")
+            title.setTextFormat(Qt.TextFormat.PlainText)
+            title.setWordWrap(True)
+            title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
+            head.addWidget(title, 1000)
+            card.about = AboutMark(strings.HELP_MARK, card)
+            card.about.set_about(strings.NEEDS_ABOUT_NAME.format(title=e.title), e.say)
+            head.addWidget(card.about, 0, Qt.AlignmentFlag.AlignTop)
+            head.addStretch(1)
+            box.addLayout(head)
+        else:
+            title = _label(e.title, "needstitle", card)
+            if e.kind == service.FAILURE and (e.data or {}).get("log"):
+                title.setToolTip(strings.NEEDS_FAILURE_LOG_TIP.format(path=e.data["log"]))   # Kantan-B1: never the line
+            box.addWidget(title)
+            if e.say:
+                box.addWidget(_label(e.say, "sheetline", card))
         self.addon(card, box, e)
         by_line = dict(zip((ln.key for ln in e.lines), results or ())) if results else {}
         shown = FOLDER_LINES_SHOWN if e.kind in (service.FILES_FOLDER, service.LIBRARY_GONE) else LINES_SHOWN
@@ -511,6 +532,34 @@ class NeedsCards(QWidget):
             acts.addWidget(more)
         box.addLayout(acts)
         return card
+
+
+def deleted_said(why, got):
+    """Kyou-DW (PROVISIONAL): an answer's line — what it did, and what it skipped and why."""
+    done, skipped = list(got.get("done") or ()), list(got.get("skipped") or ())
+    words = list(dict.fromkeys(w for _n, w in done))
+    if words:
+        text = (strings.NEEDS_DELETED_DONE_ONE[why].format(word=words[0]) if len(words) == 1 else
+                strings.NEEDS_DELETED_DONE[why].format(n=f"{len(words):,}"))
+    elif got.get("error"):
+        text = strings.NEEDS_DELETED_NOT.format(why=got["error"])
+    else:
+        text = strings.NEEDS_DELETED_NONE
+    if skipped:
+        text += (strings.NEEDS_DELETED_SKIPPED_ONE.format(word=skipped[0][1], why=skipped[0][2]) if len(skipped) == 1
+                 else strings.NEEDS_DELETED_SKIPPED.format(n=f"{len(skipped):,}"))
+    if got.get("unflagged"):
+        text += strings.NEEDS_DELETED_UNFLAGGED
+    return text
+
+
+def deleted_undone_said(out):
+    """Kyou-DW (PROVISIONAL): an Undo's line."""
+    out = out or {}
+    if out.get("done"):
+        return strings.NEEDS_DELETED_UNDONE
+    skipped = list(out.get("skipped") or ())
+    return strings.NEEDS_DELETED_NOT_UNDONE.format(why=skipped[0][2] if skipped else strings.NEEDS_DELETED_NONE)
 
 
 # --- the page's controller ---------------------------------------------------------------------------------------- #
@@ -2529,6 +2578,106 @@ class NeedsYou(QObject):
             self._say(strings.NEEDS_TIDY_UNSAVED_LEFT if unsaved else strings.NEEDS_TIDY_LEFT)
             self.refresh()
         self._press("leave_tidy", entry, service.answer, self.language, service.answer_keys(entry), then=done)
+
+    # Kyou-DW (PROVISIONAL): a deleted card asks why — each answer on a worker (`connect.deleted.answer`: the word
+    # lists' one writer, Send report's list, Swap's maker), said in a toast with its Undo (`deleted.undo`); a line's
+    # answer turns its own button, *Same for all* the card's
+    def _deleted_answer(self, name, entry, line, why):
+        from app.connect import deleted
+        lang, read_settings = self.language, self.read_settings
+        notes = [line.number] if line is not None else list((entry.data or {}).get("notes") or ())
+
+        def answer_it():
+            got = deleted.answer(lang, notes, why)
+            if got["done"]:
+                service.answer(lang, [service.deleted_line_key(n) for n, _w in got["done"]])
+            return got
+
+        def done(got):
+            got = got or {}
+            if not got.get("done"):
+                self._stays(name, entry)
+            self.refresh()
+            said = deleted_said(why, got)
+            if not got.get("done") or not self._alive():
+                self._say(said)
+                return
+            back = [n for n, _w in got["done"]]
+
+            def undo_it():
+                out = deleted.undo(lang, back, settings=read_settings() or {})
+                service.unanswer(lang, [service.deleted_line_key(n) for n, _w in out["done"]])
+                return out
+
+            def undone(out):
+                self._say(deleted_undone_said(out))
+                self.refresh()
+            self.win.toasts.show(said, undo=lambda: bridge.run_in_worker(undo_it, then=undone, failed=self._failed))
+        self._press(name, entry, answer_it, then=done, line=line, goes=line is None)
+
+    def _do_dw_known(self, entry, line):
+        self._deleted_answer("dw_known", entry, line, "known")
+
+    def _do_dw_ignore(self, entry, line):
+        self._deleted_answer("dw_ignore", entry, line, "ignore")
+
+    def _do_dw_parsing(self, entry, line):
+        self._deleted_answer("dw_parsing", entry, line, "parsing")
+
+    def _do_dw_bad(self, entry, line):
+        self._deleted_answer("dw_bad", entry, line, "bad")
+
+    def _do_dw_all_known(self, entry, _line):
+        self._deleted_answer("dw_all_known", entry, None, "known")
+
+    def _do_dw_all_ignore(self, entry, _line):
+        self._deleted_answer("dw_all_ignore", entry, None, "ignore")
+
+    def _do_dw_all_parsing(self, entry, _line):
+        self._deleted_answer("dw_all_parsing", entry, None, "parsing")
+
+    def _do_dw_all_bad(self, entry, _line):
+        self._deleted_answer("dw_all_bad", entry, None, "bad")
+
+    def _do_dw_leave(self, entry, _line):
+        def done(_n):
+            self._say(strings.NEEDS_DELETED_LEFT)
+            self.refresh()
+        self._press("dw_leave", entry, service.answer, self.language, service.answer_keys(entry), then=done)
+
+    # the old deletes, once: *Forget* is the store's `allow_again` through the window's writer (one toast, one Undo:
+    # Undo keeps the word deleted and puts its line back on the card)
+    def _forget(self, name, entry, line, words, keys):
+        lang = self.language
+
+        def told(_ticket, event):
+            if event == "undone":
+                bridge.run_in_worker(lambda: service.unanswer(lang, keys), then=lambda _n: self.refresh(),
+                                     failed=self._failed)
+            elif event == "refused":
+                self.refresh()
+        said = (strings.NEEDS_FORGOT_ONE.format(word=words[0]) if len(words) == 1 else
+                strings.NEEDS_FORGOT.format(n=f"{len(words):,}"))
+        writer = self.win.services.writer
+        number = self._give(said, (), lambda t, w=list(words): writer.allow_again(w, label=t), told=told)
+        if number is None:
+            self._say(strings.NEEDS_FORGET_REFUSED)
+            return
+        self._press(name, entry, service.answer, lang, keys, then=lambda _n: self.refresh(), line=line,
+                    goes=line is None)
+
+    def _do_dw_forget(self, entry, line):
+        self._forget("dw_forget", entry, line, [line.label], [line.key])
+
+    def _do_dw_forget_all(self, entry, _line):
+        words = list((entry.data or {}).get("words") or ())
+        self._forget("dw_forget_all", entry, None, words, [service.old_line_key(w) for w in words] + [entry.key])
+
+    def _do_dw_keep_old(self, entry, _line):
+        def done(_n):
+            self._say(strings.NEEDS_OLD_KEPT)
+            self.refresh()
+        self._press("dw_keep_old", entry, service.answer, self.language, [entry.key], then=done)
 
     # Kantan-SL (PROVISIONAL): Swap, said — *Undo* deletes the new card with a backup and puts the old one back to study
     # (`swap.act_undo`: Anki's write lock, waiting up to its 10 s; on a worker)

@@ -477,10 +477,19 @@ def register_of(key, stores, language="ja"):
 
 def open_sources(language="ja"):
     """-> [(name, Store or None)] in the language's fill order (`sources_for`); a database not built
-    yet is None."""
+    yet is None. One that fails to open closes those opened before it, then raises: a half-made list
+    nobody holds would keep a file open, and Windows then refuses Backfill's replace of it."""
     from modules.junban.patterns_store import open_store
-    return [(name, open_store(language=language, name=None if name == "library" else name))
-            for name in sources_for(language)]
+    out = []
+    try:
+        for name in sources_for(language):
+            out.append((name, open_store(language=language, name=None if name == "library" else name)))
+    except BaseException:
+        for _name, store in out:
+            if store is not None:
+                store.close()
+        raise
+    return out
 
 
 def tokenizer(tagger=None):

@@ -44,7 +44,7 @@
   again; the cap holds them as any. Kept below the top 20 while in Current; one placed out of it is dropped.
 """
 from app.connect import library
-from app.connect.ledger import ASKED, LEVEL, NOT_STARTED, SHOW, Ledger, stamp_key
+from app.connect.ledger import ASKED, LEVEL, NOT_STARTED, SHOW, SWAP, Ledger, stamp_key
 
 ENTERS = ("entered_mine_line",)
 LEAVES = ("left_mine_line", "removed", "finished")
@@ -227,8 +227,8 @@ def _asks(store, language, ledger, found, queued, dropped, asked, shows=None):
                 queued.append(item_id)
                 _catch_up(store, ledger, language, item_id, "user", None, queued, {} if shows is None else shows)
     for job in ledger.jobs(language, states=NOT_STARTED):
-        if not job.get("asked_at") or not ledger._not_started(job["id"]):
-            continue                        # no ask, or past its start: it finishes (02 §2)
+        if not job.get("asked_at") or job.get("kind") == SWAP or not ledger._not_started(job["id"]):
+            continue                        # no ask, a swap (its time, no ask of the store), or past its start
         now = (found.get(job["item_id"]) or (None, None))[0]
         if now is not None and stamp_key(now) >= stamp_key(job["asked_at"]):
             continue                        # the ask stands (a newer one moved it already)

@@ -68,12 +68,17 @@ KINDS = {".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac", ".ogg":
 
 OFF = "Cards made for you is off: turn it on in Connect to play this line."
 NO_MINER = "Anki Miner isn't installed: it cuts this line's audio."
-OLD_MINER = "This Anki Miner can't cut a line's audio: update it to play this line."
+# (PROVISIONAL, J-CLIP 3: the words name where Connect's update offer is; no door route opens the window from the
+# page)
+OLD_MINER = ("This Anki Miner can't cut a line's audio: update it in Surasura's Settings → Connections → "
+             "Anki Miner to play this line.")
 NO_LINE = "This line has no time in its file, so there's nothing to play."
 GONE = "Surasura can't find that line in its file now: the journey may be older than your library."
 BUSY = "Your library is busy just now: press ▶ again in a moment."
 NO_VIDEO = "This line's video isn't on this PC just now."
 FAILED = "Anki Miner couldn't cut this line ({})."
+CANT_KEEP = "Surasura couldn't save this line's clip on this PC just now: press ▶ again in a moment."
+WENT_WRONG = "Something went wrong in Surasura: press ▶ again."
 
 
 class Refused(Exception):
@@ -146,9 +151,9 @@ def cut(language, line_id, settings=None, steps=None, miner=None):
     except Refused as e:
         held[1] = e
         raise
-    except Exception as e:                      # (never a crashed route without its words)
+    except Exception as e:                      # (never a crashed route without its words, nor Anki Miner blamed)
         log.warning("Clips: a line couldn't be cut", exc_info=True)
-        held[1] = Refused(FAILED.format(type(e).__name__))
+        held[1] = Refused(CANT_KEEP if isinstance(e, OSError) else WENT_WRONG, "failed")
         raise held[1] from None
     finally:
         with _lock:

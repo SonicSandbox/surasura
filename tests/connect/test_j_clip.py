@@ -169,13 +169,94 @@ def test_a_refused_cut_is_the_waiting_press_answer_too(episode, monkeypatch):
     first = threading.Thread(target=press)
     first.start()
     assert started.wait(10)
+    started.clear()
     second = threading.Thread(target=press)
     second.start()
+    second.join(0.3)
+    assert second.is_alive()                    # waiting on the first press's cut
     go.set()
     first.join(20)
     second.join(20)
     assert said == [clips.FAILED.format("the video can't be read")] * 2
+    assert not started.is_set()                 # the waiting press took the refusal, never a cut of its own
     assert not os.listdir(clips.root())         # nothing kept, no run folder
+
+
+@pytest.mark.parametrize("change", ["size", "time"])
+def test_a_video_replaced_by_one_of_the_same_size_or_the_same_time_is_cut_again(episode, fake_miner, change):
+    # a re-encode of the same length (another release), or a copy that kept the old time: never the old clip
+    ep = episode("ja")
+    cue = ep["lines"][3]
+    first = _cut(ep, cue)
+    st = os.stat(ep["video"])
+    if change == "size":
+        with open(ep["video"], "ab") as f:
+            f.write(b" longer")
+        os.utime(ep["video"], ns=(st.st_atime_ns, st.st_mtime_ns))      # the same time as before
+    else:
+        with open(ep["video"], "r+b") as f:
+            f.write(b"\x00")                                            # the same size
+        os.utime(ep["video"], ns=(st.st_atime_ns, st.st_mtime_ns + 10 ** 9))
+    assert _cut(ep, cue) != first and len(_media_calls(fake_miner)) == 2
+
+
+def test_a_line_reworded_at_the_same_times_is_cut_again(episode, fake_miner, tmp_path):
+    # the subtitle fixed (a typo, a better translation's timing kept): the clip is named by its text too
+    ep = episode("ja")
+    cue = ep["lines"][2]
+    first = _cut(ep, cue)
+    edited = tmp_path / "edited.srt"
+    with open(SUBS["ja"], encoding="utf-8") as f:
+        edited.write_text(f.read().replace(cue.text, "ごめん、全然聞いてなかった。"), encoding="utf-8")
+    ep["steps"] = Steps(str(edited), ep["video"])
+    second = _cut(ep, cue)
+    assert second != first and "ごめん、全然聞いてなかった。" in _said(second)
+    assert len(_media_calls(fake_miner)) == 2
+
+
+def test_a_kept_clip_played_again_is_the_newest(episode, fake_miner):
+    # played is new again: the cap's trim drops the clips nobody played lately, never one just heard
+    ep = episode("zh")
+    cue = ep["lines"][0]
+    path = _cut(ep, cue)
+    os.utime(path, (1_000_000, 1_000_000))
+    assert _cut(ep, cue) == path
+    assert os.stat(path).st_mtime > 2_000_000 and len(_media_calls(fake_miner)) == 1
+
+
+def test_a_press_while_the_cut_ahead_reads_its_lines_stops_it_before_any_cut(episode, fake_miner):
+    ep = episode("ja")
+
+    class Pressed(Steps):
+        def video(self, lang, job):
+            clips.stop_ahead()                  # the learner presses while ahead looks its lines up
+            return super().video(lang, job)
+    ep["steps"] = Pressed(SUBS["ja"], ep["video"])
+    assert clips.ahead("ja", [_id(c) for c in ep["lines"][:3]], settings=ep["settings"], steps=ep["steps"],
+                       miner=ep["miner"]) == 3
+    assert _ahead_done()
+    assert _media_calls(fake_miner) == [] and clips._cutting == {}
+    assert [a for a in ep["steps"].asked if a[0] == "video"] == [("video", ITEM)]     # no line looked up after it
+
+
+def test_a_clip_that_cant_be_saved_says_so_in_surasuras_words_never_anki_miners_or_pythons(
+        episode, fake_miner, monkeypatch):
+    ep = episode("ja")
+    real = os.replace
+
+    def held(src, dst):
+        if os.path.dirname(dst) == clips.root():
+            raise PermissionError(13, "The process cannot access the file", dst)
+        return real(src, dst)
+    monkeypatch.setattr(clips.os, "replace", held)
+    with pytest.raises(clips.Refused) as e:
+        _cut(ep, ep["lines"][1])
+    assert e.value.message == clips.CANT_KEEP and "Error" not in e.value.message
+    assert "Anki Miner" not in e.value.message
+    monkeypatch.setattr(clips, "_cut", lambda *a: 1 / 0)
+    with pytest.raises(clips.Refused) as e:
+        _cut(ep, ep["lines"][2])
+    assert e.value.message == clips.WENT_WRONG
 
 
 def test_past_the_cap_the_oldest_clips_go_first_never_the_one_just_cut_and_a_played_one_is_new_again(tmp_path):

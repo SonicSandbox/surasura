@@ -298,7 +298,7 @@ def _moment_arrays(tab, moment, order, root, srcs=None):
         order = {(key[0], key[1] or ""): place for key, place in order.items()}
         for k, (lemma, reading) in enumerate(keys):
             at = order.get((lemma, reading or ""))
-            if at is not None:
+            if at is not None and at >= 0:       # < 0: off the list, as in `places`
                 placed[k] = int(at)
     placed_now = placed.copy()
     known = moment.known or ()
@@ -372,7 +372,7 @@ def choose(language, keys, *, n=1, moment, length, never=None, order=None, only=
            clean_only=False, shown=None, whole=False, table=None):
     """The best `n` sentences of each list row asked, at `moment` -> {(lemma, reading): [Line, …]}, best first ([] for
     a row with no line it can use; a key that is no row of the list is left out: the caller's library search); None
-    when there is no table for `language` — the caller takes today's path. "New when studied" is weighed by `order`
+    when there is no table for `language`, or one it cannot read — the caller takes today's path. "New when studied" is weighed by `order`
     when one is handed in, else by the table's `places` (the last Generate's list).
 
     `keys` the rows asked · `moment` a `Moment` · `length` the learner's Length (low, high) · `never` {key: {line text}}

@@ -910,11 +910,16 @@ def test_with_no_order_handed_in_the_reader_weighs_by_the_tables_places(tmp_path
         as_order = {k: at for k, at in zip(keys, places) if at >= 0}
         assert got == SS.choose(language, keys, n=3, moment=lib.moment(), length=LENGTH, table=tab, shown=shown,
                                 order=as_order)
+        # an order handed in with the places' own -1 kept: off the list too, never a place before every word
+        assert got == SS.choose(language, keys, n=3, moment=lib.moment(), length=LENGTH, table=tab, shown=shown,
+                                order=dict(zip(keys, places)))
         assert got == SS.choose(language, keys, n=3, moment=lib.moment(), length=LENGTH,
                                 table=_rt_fake(sources, case, places), shown=shown)
         assert all(got[k] for k in keys)
         costs[run] = _costs(got, keys)
-    assert costs["last"][0] != costs["first"][0]   # the word's lines cost less once their others are taught first
+    first, last = dict(costs["first"][0]), dict(costs["last"][0])   # the word's lines: {text: cost}
+    assert first.keys() == last.keys() and all(last[t] <= first[t] for t in first)
+    assert sum(last.values()) < sum(first.values())   # cheaper once its lines' other words are taught first
     assert costs["off"][0] != costs["last"][0]     # -1 is off the list, never a place before the word (known)
 
 
@@ -931,6 +936,12 @@ def test_an_order_handed_in_after_a_move_wins_over_the_tables_places(tmp_path, c
     again = SS.choose(language, keys, n=3, moment=lib2.moment(), length=LENGTH, table=tab2, shown=shown)
     assert _costs(after, keys) == _costs(again, keys)
     assert _costs(after, keys)[0] != _costs(before, keys)[0]
+    # an order that names only some words: the rest are off the list, never filled in from the table's places
+    part = SS.choose(language, keys, n=3, moment=lib.moment(), length=LENGTH, table=tab, shown=shown,
+                     order={keys[1]: 0, keys[0]: 1})
+    lib3, _sources, tab3 = _opened(tmp_path, case, [1, 0, -1], "part")
+    assert _costs(part, keys) == _costs(SS.choose(language, keys, n=3, moment=lib3.moment(), length=LENGTH,
+                                                   table=tab3, shown=shown), keys)
 
 
 def test_the_reader_opens_results_table_once_while_its_stamp_holds(monkeypatch, tmp_path):

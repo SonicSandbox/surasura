@@ -99,6 +99,7 @@ def test_the_first_render_answers_a_file_at_a_time_and_keeps_no_files_lines(tmp_
     # why: every file's lines were let go once its sentences were answered (the 78 MB at 20k), and the folder
     # listings once every file was checked (31 MB)
     assert timer._timelines == {} and timer._dirs == {}
+    assert sources.saved and (tmp_path / "a" / "line_times.json").exists()     # written before the meanings
     asked = []
     # The page before the change: each line asked as `build` meets it, every file's lines kept
     monkeypatch.setattr(jr.Sources, "prepare", lambda self, asks: None)
@@ -142,7 +143,8 @@ def test_an_empty_library_and_no_playable_file_ask_nothing(tmp_path, language):
     sources, timer = _sources(tmp_path, language, source_map, {})       # nothing plays: no time asked
     out = jr.build(language, _rows(language, 1), _stats(1), settings={}, pitch=_NoPitch(), sources=sources)
     assert timer._timelines == {} and timer._entries == {}
-    assert all(len(line) <= 2 for line in _lines_of(out))
+    lines = _lines_of(out)
+    assert lines and all(len(line) <= 2 for line in lines)
     empty, timer = _sources(tmp_path, language, source_map, media)
     out = jr.build(language, [], [], settings={}, pitch=_NoPitch(), sources=empty)
     assert out.head["eps"] == [] and timer._entries == {}
@@ -155,6 +157,13 @@ def test_the_timeline_reads_no_name_clues_and_the_same_lines(language):
     assert list(with_clues) == list(without) and without.clues is None
     line = cues.timeline(path, language).line(LINES[language][1])
     assert line is not None and line[0] > 0
+
+
+def test_the_timeline_never_tokenizes_the_files_names(monkeypatch):
+    # why: the name clues were 0.28 s of the 20,000-file first render, for a reader that never uses them
+    from app import names
+    monkeypatch.setattr(names, "file_clues", lambda content: (_ for _ in ()).throw(AssertionError("clues read")))
+    assert cues.timeline(SUBTITLE["ja"], "ja").line(LINES["ja"][1]) is not None
 
 
 def _two_shows(tmp_path, language):
@@ -233,6 +242,35 @@ def test_a_line_the_memo_holds_as_a_damaged_answer_is_asked_again(tmp_path, lang
     # why: never a time served from a broken answer — the line reader's again, and the memo mended
     assert again.times("A/ep01.srt", LINES[language][0]) == (1.2, 4.1 if language == "ja" else 3.8)
     assert timer._entry(path)["a"][LINES[language][0]] == [None, 1.2, 4.1 if language == "ja" else 3.8]
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_first_render_writes_the_lines_memo_once_and_the_rail_reads_connects_status(tmp_path, language,
+                                                                                         monkeypatch):
+    source_map, media = _library(tmp_path, language)
+    results = tmp_path / "results"
+    results.mkdir()
+    monkeypatch.setattr(gen, "RESULTS_DIR", str(results))
+    monkeypatch.setattr(gen, "_load_source_map", lambda: source_map)
+    monkeypatch.setattr(gen, "_line_media", lambda language, rels, memo=None: (media, []))
+    monkeypatch.setattr(jr, "nothing_new", lambda language, path=None: {2})
+    writes = []
+    real_save = gen.AnchorFinder.save_memo
+    monkeypatch.setattr(gen.AnchorFinder, "save_memo", lambda self: writes.append(1) or real_save(self))
+    out = jr.render(language, _rows(language), stats=_stats(), settings={}, facts=_facts({1: 3}), stamp="s")
+    # why: one write, before the meanings and the pitch (the 20,000-file render's peak was its string at the end)
+    assert len(writes) == 1 and (results / "line_times.json").exists()
+    assert [e[9] for e in out.head["eps"]][:2] == ["raw", "raw"]            # Ep 2: Connect found nothing new
+    # A line asked after prepare (another reader of the same Sources): the render's end writes it again
+    real_prepare = jr.Sources.prepare
+
+    def prepare_then_late(self, asks):
+        real_prepare(self, asks)
+        self.times("Show/ep01.srt", LINES[language][0] + "x")
+    monkeypatch.setattr(jr.Sources, "prepare", prepare_then_late)
+    writes.clear()
+    jr.render(language, _rows(language), stats=_stats(), settings={}, facts=_facts({1: 3}), stamp="s")
+    assert len(writes) == 2
 
 
 # --- the rail's stones ------------------------------------------------------------------------------------------ #

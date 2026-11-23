@@ -22,7 +22,8 @@ PYTHON = sys.executable          # captured before any test points sys.executabl
 SEED = hashlib.sha256("スラスラ swap test key (tests only)".encode("utf-8")).digest()
 OLD, NEW = "3.0.0", "3.0.1"
 APP_PART_FILES = ("Surasura.exe", "surasura-cli.exe", "updater.exe", "RELEASE_NOTES.md",
-                  "_internal/base_library.zip", "_internal/build_stamp.json", "_internal/templates/web_app.html")
+                  "_internal/base_library.zip", "_internal/build_stamp.json", "_internal/templates/web_app.html",
+                  "_internal/templates/journey/page.html")     # the journey's own folder (J-CUT)
 # What sits in an installed program folder besides the program: Inno's uninstaller, and the library's own folders and
 # settings should an installed copy run portable (its library.json unreadable). Never moved, never named by a release.
 FOREIGN = {
@@ -51,6 +52,7 @@ def program(version):
         "_internal/build_stamp.json": json.dumps({"build_id": f"test-{version}", "data_name": "Surasura",
                                                   "version": version}).encode("ascii"),
         "_internal/templates/web_app.html": f"<h1>語彙の旅 {version}</h1>\n".encode("utf-8"),
+        "_internal/templates/journey/page.html": f"<title>旅 {version}</title><!--JOURNEY-DATA-->\n".encode("utf-8"),
         "_internal/PyQt6/QtCore.pyd": b"MZ\x90\x00qt 6.11 " * 50,
         "_internal/licenses/PyQt6-6.11.0/licenses/LICENSE": b"GNU GENERAL PUBLIC LICENSE\n",
         "_internal/unidic_lite/dicdir/sys.dic": "上層部\t名詞\n一生懸命\t副詞\n走り出す\t動詞\n".encode("utf-8") * 40,

@@ -13,6 +13,7 @@ of RP-2's library (Japanese and Chinese) where the claim is that the report then
 """
 import json
 import os
+import re
 import threading
 import time
 
@@ -505,6 +506,8 @@ def _outputs(results):
         if os.path.isfile(path) and not name.endswith(_RUN_OWN):
             with open(path, "rb") as f:
                 out[name] = f.read()
+            if name == "reading_list_static.html":     # the v3 page's head names its render time (`stamp`, ms): the
+                out[name] = re.sub(rb'"stamp":"\d+"', b'"stamp":""', out[name], count=1)   # rest byte for byte
     return out
 
 

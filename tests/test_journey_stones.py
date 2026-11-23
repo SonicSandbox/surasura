@@ -40,6 +40,10 @@ REUSED = "Nothing affecting the analysis changed"
 WORDS = {"ja": ("冒険", "図書館", "文化祭"), "zh": ("冒险", "夜市", "挑战")}
 
 
+# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
+pytestmark = pytest.mark.usefixtures("journey_pre_cut")
+
+
 def _settings(language, **logic):
     """settings.json naming the report's language (the generator reads it there, as the dashboard has it)."""
     settings = {"target_language": language}

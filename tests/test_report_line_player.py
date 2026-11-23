@@ -51,6 +51,10 @@ LINE_JA = "文化祭まで、あと三日しかないよ。"            # placed
 LINE_ZH = "今天我们要去台北的夜市吃东西。"              # night_market.srt, cue 2: 00:00:04,100 --> 00:00:07,350
 
 
+# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
+pytestmark = pytest.mark.usefixtures("journey_pre_cut")
+
+
 @pytest.fixture(autouse=True)
 def _fresh_run():
     sources._LOOKED.clear()

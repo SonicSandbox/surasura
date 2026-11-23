@@ -94,6 +94,14 @@ def themed(monkeypatch):
         w.close()
 
 
+def _page_theme(html):
+    """The journey's look as the v3 page was drawn with it (its head's `settings.theme`: night · light)."""
+    import json
+    import re
+    found = re.search(r'<script type="application/json" id="j-head">(.*?)</script>', html, re.S)
+    return json.loads(found.group(1))["settings"]["theme"] if found else None
+
+
 def _halves(settings, language):
     args = _themed_argv(settings, language)
     return analyzer.journey_is_current(args, language), analyzer.report_is_current(args, language)
@@ -112,7 +120,7 @@ def test_a_theme_change_re_renders_the_journey_by_itself_and_re_analyses_nothing
     assert w.keeper.asked == 1 and h.until(lambda: w.launches.count() == 1, seconds=5), "one quiet run asked"
     said, html = _run(root, w.launches.runs[0])
     assert REUSED in said and RE_RENDER in said, "a re-render only"
-    assert "globalTheme = 'modern-light'" in html
+    assert _page_theme(html) == "light"              # the v3 page's head: its look, in the page's words
     assert _halves(settings.get(), language) == (True, True)
     w.replan.report_changed()                         # the same setting again: nothing left to draw
     assert fired.done(w.keeper)
@@ -147,7 +155,7 @@ def test_journey_opens_after_a_re_render_when_only_a_report_setting_changed_and_
     said, html = _run(root, w.launches.runs[0])
     t.join(10)
     assert not t.is_alive() and opened == [None]
-    assert REUSED in said and RE_RENDER in said and "globalTheme = 'midnight-vibrant'" in html
+    assert REUSED in said and RE_RENDER in said and _page_theme(html) == "night"
     assert _halves(settings.get(), language) == (True, True)
     t = _press(w, settings, opened)                   # current now: opens at once, no run
     t.join(10)

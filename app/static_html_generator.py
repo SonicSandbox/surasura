@@ -58,7 +58,27 @@ def report_holds(file):
         text = read_text(os.path.join(get_user_file("results"), REPORT_NAME))
     except OSError:
         return False
+    head = _journey_head(text)
+    if head is not None:                                   # a v3 page: its episodes' names, as its `#file=` reads them
+        return any(isinstance(e, list) and len(e) > 1 and e[1] == file for e in head.get("eps") or ())
     return f'"filename": {json.dumps(file)}' in text      # (a name holds no "/", so no "</" for the dump to escape)
+
+
+_HEAD_OPEN = '<script type="application/json" id="j-head">'
+
+
+def _journey_head(text):
+    """A v3 page's head (`journey_render.elements`' first element, JSON) out of the page's text; None for any other
+    page (the old one, Zen's) or a head that doesn't read."""
+    at = text.find(_HEAD_OPEN)
+    if at < 0:
+        return None
+    end = text.find("</script>", at)
+    try:
+        head = json.loads(text[at + len(_HEAD_OPEN):end])
+    except ValueError:
+        return None
+    return head if isinstance(head, dict) else None
 
 
 def open_report(app_mode=False, file=None):
@@ -1191,15 +1211,81 @@ def _journey_folds(data, file_order, marks, inline=False):
         data["folds"] = folds
 
 
+# --- Journey v3 (the cut-over, J-CUT; SPEC §7, §8) ----------------------------------------------------------------- #
+# The journey is v3's page: J-DATA's data (`app/journey_render.py`) in J-PAGE's page (`templates/journey/`), written to
+# the same file (`REPORT_NAME`), so *Journey ↗*, a page open in a browser and its storage keep their name. The old page
+# (`web_app.html`) stays for the YouTube preview, which loads it and this module's helpers itself (Charter S10), and Zen
+# keeps `zen_app.html` and the data path below. Two renderers until the preview moves to v3 (the dup audit's row 13).
+ZEN_THEMES = ("Zen Mode", "zen-focus")         # the display name and the theme id both pick Zen (`analyzer.ZEN_THEMES`)
+JOURNEY_DIR = os.path.join("templates", "journey")
+JOURNEY_RAIL = "stepper"                       # SPEC §1.1b; D13: Stepper only at first launch, the rail stays swappable
+RAIL_MARK = "<!--JOURNEY-RAIL-->"              # where the page takes its rail, once (its data: `journey_render.MARKER`)
+JOURNEY_FILES = ("page.html", f"rail-{JOURNEY_RAIL}.css", f"rail-{JOURNEY_RAIL}.js")   # what the page is made of
+
+
+def journey_v3():
+    """Whether Generate writes the v3 page: the cut-over's one switch (`journey_settings.v3()`: the door's `ON`, or
+    `SURASURA_DOOR` for one run), so the page, its Settings rows and the door turn on and off together."""
+    from app.services import journey_settings
+    return journey_settings.v3()
+
+
+def journey_template():
+    """The v3 page's HTML with its rail inlined — the rail's own `.css` and `.js` in place of `RAIL_MARK` and nothing else
+    changed (SPEC §1.1b) — and the data's marker left for `journey_render.write_page`."""
+    texts = []
+    for name in JOURNEY_FILES:
+        with open(get_resource(os.path.join(JOURNEY_DIR, name)), encoding="utf-8") as f:
+            texts.append(f.read())
+    page, css, js = texts
+    if page.count(RAIL_MARK) != 1:
+        raise ValueError("the journey's template must hold its rail marker once")
+    return page.replace(RAIL_MARK, f"<style>\n{css}\n</style>\n<script>\n{js}\n</script>")
+
+
+def _write_journey(language, app_mode=False, open_browser=True, marks=None, tagger=None, plan=None):
+    """Write the v3 journey: `journey_render.render` over this language's last Generate (the CSVs in results, the
+    library store, the ▶'s memos), with the run's own fugashi `tagger` (speed row 1: the pitch makes no second one), in
+    `journey_template()`, to `OUTPUT_FILE` (a temp file replaced: a page open in a browser is never half written).
+    Returns the watched marks it was drawn with (`marks`: the run's; None: read now, one read, before the render reads
+    the store) for the run's render signature, as the old path's `_journey_stones` does."""
+    from app import journey_render
+    if language is None:
+        try:
+            language = settings_manager.load_settings().get("target_language", "ja")
+        except Exception:
+            language = "ja"
+    if marks is None:
+        from app import analyzer
+        marks = analyzer.journey_marks(language)
+    out = journey_render.render(language, tagger=tagger if language == "ja" else None, plan=plan)
+    path = OUTPUT_FILE                          # the old page's file and name (as `open_report` and the window find it)
+    journey_render.write_page(out, journey_template(), path)
+    print(f"Journey written at: {path} ({out.head['counts']['eps']} episodes, {out.head['counts']['words']} words)")
+    if open_browser:
+        if app_mode:
+            open_as_app(path)
+        else:
+            webbrowser.open(f"file://{os.path.abspath(path)}")
+    return marks
+
+
 def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_browser=True, language=None, marks=None,
-                         found=None):
+                         found=None, tagger=None, plan=None):
     """Write the report. `language`: the run's (the analyzer's `--language`), whose journey's stones it draws (None:
     settings.json's); `marks`: those stones as the run read them (None: read here). Returns the marks the journey was
     drawn from — None for Zen or without a library store, `library_store.UNREAD` when they couldn't be read — for the
     run's render signature (`analyzer.signed_render`). `found`: the run's own `resolve_found_files` list, when it has
-    one (F7's redraw: every library file stat'd once a run)."""
+    one (F7's redraw: every library file stat'd once a run).
+
+    Since the cut-over (`journey_v3()`) every theme but Zen writes the v3 journey (`_write_journey`; `tagger`: the run's
+    fugashi tagger, `plan`: the plan file, both for the render); Zen writes `zen_app.html` from the data below."""
+    if theme not in ZEN_THEMES and journey_v3():
+        print("Writing the journey (v3)...")
+        return _write_journey(language, app_mode=app_mode, open_browser=open_browser, marks=marks, tagger=tagger,
+                              plan=plan)
     print(f"Generating static HTML (Theme: {theme})...")
-    
+
     # Pre-load settings
     try:
         settings = settings_manager.load_settings()

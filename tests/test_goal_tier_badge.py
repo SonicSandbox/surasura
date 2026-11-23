@@ -19,6 +19,10 @@ TEMPLATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
                         "templates", "web_app.html")
 
 
+# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
+pytestmark = pytest.mark.usefixtures("journey_pre_cut")
+
+
 def _entry(physical_path):
     return {"title": os.path.basename(physical_path), "physical_path": physical_path,
             "parent_folder": "", "origin_source": "Manual Import", "type": "File", "status": "New"}

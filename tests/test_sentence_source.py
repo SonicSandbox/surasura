@@ -29,6 +29,12 @@ TRANSCRIPT = ("今日の話題\nチャンネル | 2026-01-01 | 12:03\n"
 
 
 # --- classification ----------------------------------------------------------------------------- #
+
+
+# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
+pytestmark = pytest.mark.usefixtures("journey_pre_cut")
+
+
 class TestSourceClassification(unittest.TestCase):
     def test_subtitles_are_classified_by_extension(self):
         self.assertEqual(infer_source_type("data/ja/HighPriority/ep01.srt"), "subtitle")

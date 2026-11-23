@@ -28,6 +28,11 @@ TRAD_SRT = (
 )
 
 
+import pytest
+# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
+pytestmark = pytest.mark.usefixtures("journey_pre_cut")
+
+
 def _write(path, text):
     path.write_text(text, encoding="utf-8")
     return str(path)

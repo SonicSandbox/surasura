@@ -25,8 +25,9 @@ time in ms since the epoch (the page's `Date.now()`). Its owner asks `stale(at, 
 skips a stale write, saying so (`door.RouteError(..., STALE)` for one record; a list of the skipped for a batch, as
 `words/mark` does). The page then drops it and draws the app's value.
 
-Off until the journey v3 page ships (`enabled()`; J-CUT turns `ON`): until then the window starts no door, nothing
-listens, and *Your journey* opens the report as before. Light to import: the window imports it after its first frame.
+On since the journey v3 cut-over (`enabled()`; J-CUT turned `ON`): the window starts the door after its first frame and
+*Your journey* opens the page through it; `SURASURA_DOOR=0` turns it off for one run (then nothing listens and the
+journey is the page before the cut). Light to import: the window imports it after its first frame.
 """
 import importlib
 import math
@@ -35,8 +36,8 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-ON = False                      # the journey v3 cut-over (J-CUT) turns the door on: this one line
-ENV = "SURASURA_DOOR"           # "1": on for a run (the v3 page's own lanes, a test), whatever ON says
+ON = True                       # the journey v3 cut-over (J-CUT): the door, the v3 page and its Settings rows are on
+ENV = "SURASURA_DOOR"           # "1" on, "0" off for one run (a test of the page before the cut), whatever ON says
 LANGS = ("ja", "zh")
 NOT_YET = "not_yet"             # a route whose owner isn't built yet: the page hides its control
 STALE = "stale"                 # a waiting press older than its record's last change: skipped
@@ -81,7 +82,8 @@ class App:
 
 
 def enabled():
-    return ON or os.environ.get(ENV) == "1"
+    asked = os.environ.get(ENV)
+    return asked == "1" if asked in ("0", "1") else ON
 
 
 def stale(at, changed_ns):

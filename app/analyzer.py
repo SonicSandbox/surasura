@@ -5566,7 +5566,36 @@ def compute_render_signature(args, marks=None, made=_READ_NOW):
         _stones = _stones_fingerprint(getattr(args, "language", "ja"), marks)
         if _stones:
             _parts.append(_stones)
+        # Journey v3 (J-CUT): what its page reads that no part above holds — `_journey_fingerprint`. Before the cut-over
+        # (or with SURASURA_DOOR=0) no part: the old page's signature as it was. The generator's own switch
+        # (`static_html_generator.journey_v3`), read without importing the generator (pandas: the fast paths' cost).
+        from app.services import journey_settings as _journey_settings
+        if _journey_settings.v3():
+            _parts.append(_journey_fingerprint(getattr(args, "language", "ja"), _s))
     return json.dumps(_parts)
+
+
+def _journey_fingerprint(language, settings):
+    """The v3 journey's render inputs no other part holds (journey v3 SPEC §7; the engine map's rule: what the report
+    shows re-renders, never re-analyses): its own template folder (`templates/journey/`), *Meanings* (the one look the
+    render reads: Yours is read only when it isn't English — the page's other looks are applied in the page, J-SET's
+    LOOKS, and read back through the door), the learner's own dictionaries while Yours is asked (each one's id, time
+    and size: `own_dicts.stamp`) and, in Japanese, their Kanjium copy (the pitch reads it first). The meanings and kanji
+    tables and unidic ship with the app: its version is in the run signature. Never raises."""
+    try:
+        from app import own_dicts
+        from app.services import journey_settings
+        meanings = journey_settings.page_value(settings, "journey_meanings")
+        yours = [list(d) for d in own_dicts.stamp(own_dicts.chain())] if meanings != "en" else None
+        kanjium = None
+        if language == "ja":
+            found = own_dicts.kanjium_path()
+            if found:
+                st = os.stat(found)
+                kanjium = [st.st_size, st.st_mtime_ns]
+        return ["journey v3", _template_fingerprint(("journey",)), meanings, yours, kanjium]
+    except Exception:
+        return "journey unreadable"
 
 
 ZEN_THEMES = ("Zen Mode", "zen-focus")      # static_html_generator's choice of the Zen template (no journey)
@@ -5631,13 +5660,17 @@ def _made_fingerprint(language):
         return None
 
 
-def _template_fingerprint():
-    """Short hash of both report templates; a constant if they can't be read (never raises)."""
+def _template_fingerprint(names=("web_app.html", "zen_app.html")):
+    """Short hash of the report's templates — both old pages, or `("journey",)`: the v3 page's folder (every file in
+    it, by name, sorted); a constant if they can't be read (never raises)."""
     h = hashlib.sha1()
     try:
-        for name in ("web_app.html", "zen_app.html"):
-            with open(get_resource(os.path.join("templates", name)), "rb") as f:
-                h.update(f.read())
+        for name in names:
+            path = get_resource(os.path.join("templates", name))
+            for found in ([os.path.join(path, f) for f in sorted(os.listdir(path))] if os.path.isdir(path) else [path]):
+                h.update(os.path.basename(found).encode("utf-8"))
+                with open(found, "rb") as f:
+                    h.update(f.read())
     except Exception:
         return "templates-unreadable"
     return h.hexdigest()[:12]
@@ -7970,6 +8003,11 @@ def main():
             
     # --- STATIC GENERATION ---
     _progress("Writing the journey")
+    # The order analysed and each file's growth snapshot (Kura-GS), before the journey is drawn — as the redraw and the
+    # reuse path record it — so the journey's *% known* (the store's 'last' snapshot: `journey_render.store_facts`) is
+    # this Generate's (J-CUT). Past this step a cancel waits for the run's end.
+    record_analysed(language, _library, data_dir, user_files_dir,
+                    growth=lambda: _growth_figures(data_dir, found_files, file_growth))
     _drawn = None               # the journey's stones the report was drawn from (`signed_render`)
     _made = None                # Connect's record as read before it was drawn (F-6; a report not written signs "")
     if args.static:
@@ -7985,7 +8023,8 @@ def main():
             _made = _made_fingerprint(language)          # F-6: read before the report is drawn, signed with it
             _drawn = static_html_generator.generate_static_html(
                 theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
-                open_browser=not args.no_open, language=language)
+                open_browser=not args.no_open, language=language,
+                tagger=tokenizer.tagger if language == "ja" else None)     # J-CUT: the journey's pitch, no 2nd tagger
             _report_failed = not _report_written(os.path.join(RESULTS_DIR, "reading_list_static.html"), _rendering)
         except Exception as e:
             print(f"Error: Could not generate static HTML: {e}")
@@ -8040,8 +8079,6 @@ def main():
     # drawn from, so a same-setting re-run can open the report without re-rendering), then close
     # the store.
     _set_run_stamp(RESULTS_DIR, _run_sig)
-    record_analysed(language, _library, data_dir, user_files_dir,
-                    growth=lambda: _growth_figures(data_dir, found_files, file_growth))
     if _store is not None:
         try:
             if _run_sig:

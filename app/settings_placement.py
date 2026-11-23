@@ -23,10 +23,10 @@ PLACED = {
     "use_every_core": "neither",
     "app_theme": "neither", "text_size": "neither", "app_motion": "neither",
     "journey_settle_s": "neither", "journey_settle_battery_s": "neither",
-    # Journey v3's page (J-SET): looks, applied in the page; *Meanings* is read by the render J-CUT brings, which
-    # places it "report" with the render signature's new input — until then nothing reads it
+    # Journey v3's page (J-SET): looks, applied in the page; *Meanings* is read by the render (J-CUT: the render
+    # signature's `_journey_fingerprint`), so it re-renders and never re-analyses
     "journey_pitch": "neither", "journey_word_size": "neither", "journey_sentence_size": "neither",
-    "journey_keys": "neither", "journey_first_meeting": "neither", "journey_meanings": "neither",
+    "journey_keys": "neither", "journey_first_meeting": "neither", "journey_meanings": "report",
     "anki_connect_url": "neither",
     "connect_enabled": "neither", "placing_rules": "neither", "connect_mine_words": "neither",
     "connect_every_word": "neither",         # Cards for every new word (Kantan-MO): what Connect mines, never a run

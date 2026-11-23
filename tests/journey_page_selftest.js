@@ -558,16 +558,18 @@
         if (wi < 0 && cuts(id).length) wi = k; else if (other < 0) other = k;
       }
       ok("the fixture has words with lines only a cut plays, from their own episode and from another", wi >= 0 && wx >= 0 && other >= 0, `${wi} ${wx} ${other}`);
-      if (wi >= 0 && wx >= 0 && other >= 0) {
+      if (!OFFLINE && wi >= 0 && wx >= 0 && other >= 0) {     // (the cut needs a live door: ?door=off / none have none)
         await goWord(E, wx);
         await new Promise((r) => setTimeout(r, 1500));                        // idle on a word whose cut line is another episode's
         await goWord(E, wi);
         const id = J.curWordId(), w = J.wordNow(id), ks = cuts(id), k = ks[0];
         const lids = ks.map((x) => J.lineId(w[9][x], J.srcOf(id, w[9][x][1])));
         ok("…its line has ▶ (the page asks the cut)", !!$(`#stage [data-play="${k}"]:not(.none)`));
-        await new Promise((r) => setTimeout(r, 1500));                        // AHEAD_MS (1.2 s) idle on the word
+        const sids = lids.filter((l) => l[0] !== "p");                       // store ids: a line the store doesn't hold (p<hash>) is never asked
+        for (let t = 0; t < 50 && !(sids.length && CALLS.some(([, rt, b]) => rt === "clip/cut" && b.ahead && b.line_ids.includes(sids[0]))); t++)
+          await new Promise((r) => setTimeout(r, 100));                       // AHEAD_MS (1.2 s) idle on the word; 5 s at most (20k, a loaded PC)
         const asked = CALLS.filter(([, rt, b]) => rt === "clip/cut" && b.ahead), flat = asked.flatMap(([, , b]) => b.line_ids);
-        ok("idle on a word: its shown lines from the open episode asked ahead, in one ask, each line once ever — never another episode's", lids.every((l) => flat.filter((x) => x === l).length === 1) && flat.length === new Set(flat).size && asked.every(([, , b, ep]) => b.line_ids.length && ep != null && b.line_ids.every((x) => x.startsWith(`${page.ep(ep).id}:`))), JSON.stringify(asked.map(([, , b, ep]) => [ep, b.line_ids])).slice(0, 200));
+        ok("idle on a word: its shown lines from the open episode asked ahead, in one ask, each line once ever — never another episode's", !flat.some((x) => x[0] === "p") && sids.every((l) => flat.filter((x) => x === l).length === 1) && flat.length === new Set(flat).size && asked.every(([, , b, ep]) => b.line_ids.length && ep != null && b.line_ids.every((x) => x.startsWith(`${page.ep(ep).id}:`))), JSON.stringify(asked.map(([, , b, ep]) => [ep, b.line_ids])).slice(0, 200));
         let release, held = new Promise((r) => (release = r));
         window.__J_DOOR_HOOK = async (route, body) => (route === "clip/cut" && !body.ahead ? (await held, null) : null);
         const n0 = CALLS.length, p0 = PLAYS.length;

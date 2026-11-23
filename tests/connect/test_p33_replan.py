@@ -434,6 +434,9 @@ def test_a_band_lowered_between_two_jobs_writes_nothing_from_the_old_plan_and_ow
     # P3.3 the step's own check refused a list cut at other settings; now the verdict is read again and the step
     # defers (the next run Generates first, then orders)
     root, store, generates, ledger_path = connect
+    # (the sentence dial on Nearest: the lowered band's extra words would otherwise go, under Best, to the episodes
+    # with their better sentences as jobs of their own — tests/connect/test_kantan_sd_dial.py — not this test's two)
+    _settings_file(root, connect_enabled=True, connect_sentence_dial="nearest")
     fake = _deck(root)
     items = _episodes(store)[:2]
     steps = AnkiMinerStandIn(_loaded(), items)
@@ -446,7 +449,8 @@ def test_a_band_lowered_between_two_jobs_writes_nothing_from_the_old_plan_and_ow
     def order(lang, job):
         answers.append(real_order(lang, job))
         if len(answers) == 1:                        # occasional -> common: lowered, the window closed
-            _settings_file(root, connect_enabled=True, logic={"selection": {"band": "common"}})
+            _settings_file(root, connect_enabled=True, connect_sentence_dial="nearest",
+                           logic={"selection": {"band": "common"}})
         return answers[-1]
     steps.order = order
     with _patched(fake):

@@ -911,7 +911,8 @@ def _per_language(row, settings, language, new):
 def change(row, settings, language, new):
     """What a control's new value writes: `(changes, update)` — `changes` {key: value}, only the row's own keys and only
     those whose value isn't already what the settings hold (`{}` for none; a row holding no setting never writes; a
-    *Count as known in Anki* pick carries `CHOSEN` beside it);
+    *Count as known in Anki* pick carries `CHOSEN` beside it; with the sentence table on, a *Length* change writes both
+    ends and `sentence_length_chosen`);
     `update` None, or for a per-language key the function that re-applies this language's entry onto the file's value at
     write time. `new` by kind: a bool, a value, a number; `range` a (low, high) pair; `tablets` the picks (a list
     value's values, or several bool keys' keys on — a {key: bool} dict too); `list` the items; the level a band name (a hand

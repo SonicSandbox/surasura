@@ -307,6 +307,32 @@ def test_a_loop_swap_undone_while_a_journey_swap_holds_the_old_card_leaves_it_ou
     assert anki.deleted == [950] and anki.cards_[9000]["queue"] == 2
 
 
+def test_a_loop_swap_undone_hands_the_card_it_would_put_back_to_the_journey_swap_still_holding_it(ledger):
+    # the learner had put the card away with the loop's move (suspended, green): the journey ⇄ took nothing; the loop's
+    # Undo takes its flag off but leaves the card out while the journey's card stands; that one's Undo puts it back
+    swap_id, anki = _made_journey_swap(ledger, "ja", [{"reps": 3, "type": 2, "queue": -1, "flags": 3}])
+    assert _row(ledger, swap_id)["took"] == "[]"
+    loop = swap.make_card("ja", CASES["ja"][0], old_note=900, old_card=9000, ledger=ledger, wake=False)
+    swap._set(ledger, loop["id"], state=swap.MADE, new_note=950, tagged=1)
+    swap.undo(anki, ledger, "ja", loop["id"], open_store=lambda: library.open_store("ja"))
+    assert (anki.cards_[9000]["queue"], anki.cards_[9000]["flags"]) == (-1, 0)
+    swap.undo(anki, ledger, "ja", swap_id, open_store=lambda: library.open_store("ja"))
+    assert (anki.cards_[9000]["queue"], anki.cards_[9000]["flags"]) == (2, 0)
+
+
+def test_a_loop_swap_made_never_suspends_its_old_card(ledger):
+    # the loop's Suspend + Green already took it out; one the learner put back in reviews before it was made stays there
+    lang, word = "ja", CASES["ja"][0]
+    _library(lang)
+    got = swap.make_card(lang, word, old_note=900, old_card=9000, ledger=ledger, wake=False)
+    swap._set(ledger, got["id"], state=swap.MADE, new_note=950)
+    anki = JourneyAnki()
+    anki.add(900, "Japanese", word, 1, cards=[{"reps": 3, "type": 2, "queue": 2}])
+    swap._tag_waiting(ledger, lang, anki)
+    assert swap.SWAP_TAG in anki.notes_[900]["tags"] and anki.cards_[9000]["queue"] == 2
+    assert not [e for e in anki.log if e[0] == "suspend"]
+
+
 def test_a_line_id_too_long_to_be_a_line_or_a_padded_word_is_answered_in_words(ledger):
     lang, (word, _old, other) = "ja", CASES["ja"]
     item = _library(lang)

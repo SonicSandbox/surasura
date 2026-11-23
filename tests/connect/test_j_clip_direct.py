@@ -368,6 +368,45 @@ def test_a_press_on_a_line_the_ahead_cut_holds_waits_for_it_never_cuts_it_twice(
     assert (second.start, False) in cuts
 
 
+def test_a_press_waiting_on_a_line_the_ahead_cut_lets_go_cuts_it_itself(episode, fake_miner, monkeypatch):
+    # the press came on the second line while the ahead cut was on the first: ahead stops between lines and lets the
+    # second go uncut — the press waiting on it plays it, never "couldn't cut"
+    ep = episode("ja")
+    first, second = ep["lines"][0], ep["lines"][1]
+    gate, inside, cuts = threading.Event(), threading.Event(), []
+
+    def direct(language, video, cue, miner, out, below=False):
+        cuts.append((cue.start, below))
+        if below:
+            inside.set()
+            gate.wait(10)
+        path = f"{out}.mp3"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(cue.text)
+        return path
+    monkeypatch.setattr(clips, "_direct", direct)
+    clips.ahead("ja", [_id(first), _id(second)], settings=ep["settings"], steps=ep["steps"], miner=ep["miner"])
+    assert inside.wait(10)
+    got = {}
+    press = threading.Thread(target=lambda: got.update(path=_cut(ep, second)))
+    press.start()
+    press.join(0.3)
+    assert press.is_alive()                                     # waiting on ahead's claim of the second line
+    clips.stop_ahead()
+    gate.set()
+    press.join(15)
+    assert _ahead_done()
+    assert open(got["path"], encoding="utf-8").read() == second.text
+    assert cuts == [(first.start, True), (second.start, False)]
+
+
+def test_a_tool_that_fails_is_a_failure_whatever_it_wrote():
+    import sys
+    assert clips._run([sys.executable, "-c", "import sys; print('half'); sys.exit(3)"], stdout=True) is None
+    assert clips._run([sys.executable, "-c", "print('streams')"], stdout=True).strip() == b"streams"
+    assert clips._run([sys.executable, "-c", "pass"]) == b""
+
+
 # --------------------------------------------------------------------------- #
 # A real ffmpeg: the language's stream, the line's length
 # --------------------------------------------------------------------------- #

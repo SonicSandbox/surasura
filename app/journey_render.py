@@ -783,7 +783,6 @@ class Sources:
         self.titles = {}                        # {file name: its shown name}: the head's, so each is made once
         self.items = {}                         # {rel path: the store's item id}: a line id's first half
         self._rows = {}
-        self._answers = {}                      # {rel path: the timer's memo answers for it}: `prepare`'s
         self.saved = False                      # the timer's memo written with every answer (`prepare`); a line
                                                 # asked of the timer after it sets this back
 
@@ -809,59 +808,57 @@ class Sources:
                                        self.items.get(rel.replace("\\", "/"))]
         return found
 
-    def prepare(self, asks):
-        """Each ▶ line's times (`asks`: [(rel, text)], the ones `build` will ask) found a file at a time, in the order
-        the page names them, and that file's lines let go before the next (J-TIMES: holding every subtitle's
-        `cues.Timeline` to the render's end was 78 MB at 20,000 files), and its folder's listing once its last file is
-        checked (31 MB of entries) — the answers are the timer's memo's: `times` then reads each file's from it, one
-        lookup a line. The same calls `times` makes for a line the memo lacks, so the same answers and the same memo."""
+    def prepare(self, texts, rels):
+        """Each ▶ line's answer, the page's lines in its order (`texts[i]` said in `rels[i]`; "" no source): [the timer's
+        memo answer [anchor, start, end], or None where nothing plays] — one memo lookup a line, so `build` reads the
+        list rather than asking again (at 20,000 files a lookup costs ~3 µs: a second one was a slower warm render).
+        A line the memo lacks is asked of the line reader a file at a time, and that file's lines let go before the
+        next (J-TIMES: holding every subtitle's `cues.Timeline` to the render's end was 78 MB at 20,000 files); the
+        folder listings the freshness check reads go once every file is checked (31 MB of entries). The same calls
+        `times` makes, so the same answers and the same memo."""
+        hits = [None] * len(texts)
         timer = self.timer
-        if timer is None:
-            return
-        media, smap = self.media, self.map
-        by_file = {}
-        for rel, text in asks:
-            texts = by_file.get(rel, False)
-            if texts is False:
-                texts = by_file[rel] = [] if (media.get(rel) or ("",))[0] else None
-            if texts is not None:
-                texts.append(text)
-        paths = {rel: (smap.get(rel) or {}).get("abs") or rel for rel, texts in by_file.items() if texts is not None}
-        left = {}                               # {folder: its files still to check}
-        for path in paths.values():
-            folder = os.path.split(path)[0]
-            left[folder] = left.get(folder, 0) + 1
         # AnchorFinder's own (static_html_generator, J-CUT's file: a `forget` there once it is theirs): each file's
-        # memo entry, its lines, and the folder listings its freshness check reads once a file
+        # memo entry, its lines, and the folder listings
         entry_of = getattr(timer, "_entry", None)
-        kept, listings = getattr(timer, "_timelines", None), getattr(timer, "_dirs", None)
-        for rel, path in paths.items():
-            answers = entry_of(path)["a"] if entry_of is not None else {}
-            for text in by_file[rel]:
-                hit = answers.get(text)
-                if not (isinstance(hit, list) and len(hit) == 3):
-                    self.times(rel, text)       # the memo lacks it: the line reader's answer, kept in `answers`
-            if entry_of is not None:
-                self._answers[rel] = answers
+        if entry_of is None:
+            return hits
+        media, smap = self.media, self.map
+        answers_of, missing = {}, {}
+        for i, rel in enumerate(rels):
+            if not rel:
+                continue
+            answers = answers_of.get(rel)
+            if answers is None:
+                answers = answers_of[rel] = entry_of((smap.get(rel) or {}).get("abs") or rel)["a"]                     if (media.get(rel) or ("",))[0] else False
+            if answers is False:
+                continue
+            hit = answers.get(texts[i])
+            if isinstance(hit, list) and len(hit) == 3:
+                hits[i] = hit
+            else:
+                missing.setdefault(rel, []).append(i)
+        listings = getattr(timer, "_dirs", None)
+        if listings is not None:
+            listings.clear()                    # every file is checked: a later one lists its folder again
+        kept = getattr(timer, "_timelines", None)
+        for rel, lines in missing.items():
+            answers = answers_of[rel]
+            for i in lines:
+                self.times(rel, texts[i])       # the line reader's answer, kept in `answers`
+                hit = answers.get(texts[i])
+                hits[i] = hit if isinstance(hit, list) and len(hit) == 3 else None
             if kept is not None:
-                kept.pop(path, None)
-            folder = os.path.split(path)[0]
-            left[folder] -= 1
-            if not left[folder] and listings is not None:
-                listings.pop(folder, None)      # its every file asked is checked: a later one lists it again
+                kept.pop((smap.get(rel) or {}).get("abs") or rel, None)
         # Written now, before the meanings and the pitch, rather than at the render's end: its one string (10 MB at
         # 20,000 files) was the first render's peak there. The same memo — `build` asks nothing more.
         save = getattr(timer, "save_memo", None)
         if save is not None:
             save()
             self.saved = True
+        return hits
 
     def times(self, rel, sentence):
-        answers = self._answers.get(rel)
-        if answers is not None:                 # `prepare`'s: the timer's memo for this file, checked this render
-            hit = answers.get(sentence)
-            if isinstance(hit, list) and len(hit) == 3:
-                return hit[1], hit[2]
         if self.timer is None or not (self.media.get(rel) or ("",))[0]:
             return None, None
         meta = self.map.get(rel) or {}
@@ -1015,11 +1012,20 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
     sources = sources or Sources(language)
     if not sources.ep_of:
         sources.ep_of = ep_of_name              # each source's episode, as this head numbers them
+    # Every word's lines, read once: [text] and [its source] side by side (a tuple a line held to the loop below was
+    # 6 MB at 20,000 files), and each word's first line in them
+    texts, rels, first = [], [], []
+    for _e, row in words:
+        first.append(len(texts))
+        for text, rel in sentences_of(row, per_word):
+            texts.append(text)
+            rels.append(rel)
+    first.append(len(texts))
     # The ▶ times before the meanings and the pitch: the heap the subtitles' reading grew is theirs to reuse
     try:
-        sources.prepare((rel, text) for _e, row in words for text, rel in sentences_of(row, per_word) if rel)
+        hits = sources.prepare(texts, rels) or [None] * len(texts)
     except Exception:
-        pass                                    # `times` then asks line by line
+        hits = [None] * len(texts)              # `times` then asks line by line
 
     meanings = Meanings(language, memo)
     if words:
@@ -1079,8 +1085,11 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
         if language == "zh" and meanings is not None:
             pinyin = meanings.pinyin(word) or meanings.pinyin(orth)
             reading = reading or pinyin
-        found_lines = [(text, rel) + (sources.times(rel, text) if rel else (None, None))
-                       for text, rel in sentences_of(row, per_word)]
+        found_lines = []
+        for i in range(first[wid], first[wid + 1]):
+            text, rel, hit = texts[i], rels[i], hits[i]
+            found_lines.append((text, rel) + ((hit[1], hit[2]) if hit is not None else
+                                              sources.times(rel, text) if rel else (None, None)))
         marks = marks_of(row, thresholds) | (8 if in_anki(row, keys, owners, language) else 0)
         here = ahead.get(e, {}).get(key) if ahead else None
         count = int(_num(row.get("Occurrences (File)"))) if here is None else sum(

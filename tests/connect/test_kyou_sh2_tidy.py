@@ -52,6 +52,7 @@ class FakeAnki:
         self.export_ok = True
         self.keep_ids = True          # the import keeps the note and card ids (they're free again)
         self.filtered = set()
+        self.history = set()          # Kyou-SH3: card ids with a line in Anki's review history (`getReviewsOfCards`)
 
     def add(self, note_id, tag, word, mod, deck="日本語::Mining", cards=None, sound=None):
         cards = cards or [{"reps": 0, "type": 0, "queue": 0}]
@@ -76,6 +77,9 @@ class FakeAnki:
 
     def reviewing(self):
         return self.busy
+
+    def reviewed(self, card_ids):
+        return {int(c_) for c_ in card_ids} & self.history
 
     def writer(self, verb):
         self.log.append(("writer", verb))
@@ -192,7 +196,7 @@ def _mined(ledger, lang):
         library.record_batch(s, item, {w: [101 + i] for i, w in enumerate(words)}, "2026-11-21T10:00:00Z", batch="t-1")
     job_id = ledger.queue(lang, item, "user", None, store_id="s1")
     ledger.end_batch(job_id, 1, "done", [{"word": w, "reading": "", "outcome": "made", "note_id": 101 + i}
-                                         for i, w in enumerate(words)])
+                                         for i, w in enumerate(words)], deck="日本語::Mining")   # FakeAnki's deck
     ledger.set_state(job_id, "done")
     done_at = calendar.timegm(time.strptime(ledger.job_by_id(job_id)["updated_at"], "%Y-%m-%dT%H:%M:%SZ"))
     return item, "surasura::connect::" + ledger.tag_id(job_id), done_at
@@ -292,7 +296,7 @@ def test_the_backup_comes_before_any_delete_and_a_package_that_doesnt_hold_them_
     assert anki.deleted == [] and anki.media_deleted == []
     assert {anki.cards_[1040]["deckName"], anki.cards_[1050]["deckName"]} == {"日本語::Mining"}, "back in their deck"
     (row,) = ledger.conn.execute("SELECT state FROM tidies").fetchall()
-    assert row[0] == tidy.FAILED
+    assert row[0] == tidy.UNSAVED, "Kyou-SH3: a backup that didn't hold is said in Needs you (`tidy_unsaved`)"
     with c.store("ja") as s:
         assert set(WORDS["ja"]) <= library.made_words_all(s)
 
@@ -403,6 +407,7 @@ def test_undo_puts_back_exactly_what_went(ledger, lang, keep_ids):
     item, tag, done_at = _mined(ledger, lang)
     anki = _anki(lang, tag, done_at)
     anki.cards_[1050]["deckName"] = "日本語::Mining::Later"
+    ledger.set_homes([105], "日本語::Mining::Later")   # Kyou-SH4: made there (a card you moved there is yours)
     before = {n: json.loads(json.dumps(anki.notes_[n])) for n in (104, 105, 106)}
     media = dict(anki.media)
     with c.store(lang) as s:
@@ -524,7 +529,7 @@ def test_steps_tidy_takes_connects_lowest_and_never_yours_a_pinned_shows_or_an_a
     asked = ledger.queue(lang, 3, "user", None, store_id="s1")
     ledger.conn.execute("UPDATE jobs SET asked_at = '2026-11-21T00:00:00Z' WHERE id = ?", (asked,))
     took = []
-    monkeypatch.setattr(tidy, "run", lambda anki, ledger_, lang_, notes, why, open_store, limit: took.append(
+    monkeypatch.setattr(tidy, "run", lambda anki, ledger_, lang_, notes, why, open_store, limit, ours=None: took.append(
         (sorted(notes[:limit]), why)) or {"deleted": notes[:limit], "id": 7})
     steps.after_write = lambda _l: None
     assert steps.tidy(lang, ledger) == {"cards": 3, "id": 7}, "7 waiting > 1.5 × 2"
@@ -549,7 +554,7 @@ def test_steps_tidy_counts_the_old_shelf_and_connects_off_list_cards_without_ask
                                 (n * 10, n, made[n][1]))
     monkeypatch.setattr("app.anki_connect.invoke", lambda *a, **k: pytest.fail("no Anki call for the look"))
     took = []
-    monkeypatch.setattr(tidy, "run", lambda anki, ledger_, lang_, notes, why, open_store, limit: took.append(
+    monkeypatch.setattr(tidy, "run", lambda anki, ledger_, lang_, notes, why, open_store, limit, ours=None: took.append(
         sorted(notes[:limit])) or {"deleted": notes[:limit], "id": 1})
     steps.after_write = lambda _l: None
     steps.tidy("ja", ledger)

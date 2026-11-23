@@ -324,6 +324,22 @@ FINISHED_POOL = 15
 PER_FILE = 2
 NEAR_FILES = 10                 # the pick also weighs a row's first sentence in each of the next 10 files holding it
 NOT_FINISHED = 1 << 30          # a sentence's finish rank when it isn't from Finished content (0 = finished last)
+# *Sentences per word* (`logic.context.max_contexts`) 0 is All (J-SET, Sonic's "up to all you have"): a row shows every
+# sentence the list keeps for it — its first, the shortlist, Finished, the nearest files' — never none.
+ALL_CONTEXTS = 0
+
+
+def context_limit(max_contexts):
+    """The most sentences a row is given for *Sentences per word* `max_contexts`: the number itself, or under All
+    (`ALL_CONTEXTS`, or a hand-edited number below it) every candidate the list keeps (`ContextPicker.pick` stops at
+    its pool's end)."""
+    return max_contexts if max_contexts > ALL_CONTEXTS else 1 + POOL + FINISHED_POOL + NEAR_FILES + 1
+
+
+def context_columns(max_contexts, counts):
+    """How many Context / Src column pairs a list has: `max_contexts`, or under All as many as the row given the most
+    sentences has (`counts`: each row's number of sentences)."""
+    return max_contexts if max_contexts > ALL_CONTEXTS else max(counts, default=0)
 
 
 def order_free_key(short, long, cost, unknowns, text, where, text_hash=None):

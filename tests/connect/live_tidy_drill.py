@@ -3,8 +3,9 @@ under `with-lock.sh anki`, Anki open — the drill loads DevTest and puts the pr
 
     python tests/connect/live_tidy_drill.py --profile DevTest
 
-- A test batch: four Basic notes in deck DevTest, real words, one finished job of a scratch ledger (outcomes `made`),
-  each tagged with the job's tag and the drill's own; the first carries a clip (stored in Anki's media).
+- A test batch: four Basic notes in deck DevTest, real words, one finished job of a scratch ledger (outcomes `made`)
+  recorded in a scratch library's made words (Kyou-SH3: the guarantee's first clause), each tagged with the job's tag
+  and the drill's own; the first carries a clip (stored in Anki's media).
 - One card studied (`answerCards`): Tidy keeps it (*you've studied it*).
 - `tidy.run` (holding `anki-writer`): the other three go — the package Anki exported holds exactly them (its note ids
   read back), notes.json and the clip's bytes in the backup, the clip gone from Anki's media, the tidy's own deck gone.
@@ -44,8 +45,9 @@ def main():
     os.environ.pop("SURASURA_NO_ANKI_SYNC", None)
     sys.path.insert(0, REPO)
     from app import anki_connect
-    from app.connect import tidy, undo
+    from app.connect import library, tidy, undo
     from app.connect.ledger import Ledger
+    from tests import connect_helpers as c
 
     def ask(action, **params):
         return anki_connect.invoke(action, a.url, timeout=120, **params)
@@ -77,9 +79,13 @@ def main():
         drill_tag = f"surasura::test-tidy-{run}"
         clip = f"surasura-tidy-drill-{run}.mp3"
         clip_bytes = ("ID3 tidy drill " + run).encode("utf-8") * 40
+        c.library("ja")
+        open_store = lambda: library.open_store("ja")      # noqa: E731
         ledger = Ledger(os.path.join(root, "connect", "ledger.sqlite"))
         try:
-            job_id = ledger.queue("ja", 1, "user", None, store_id="drill")
+            with c.store("ja") as s:
+                item = s.ids("now")[0]
+            job_id = ledger.queue("ja", item, "user", None, store_id="drill")
             job_tag = f"surasura::connect::{ledger.tag_id(job_id)}"
             models = ask("modelNames")
             model = "Basic" if "Basic" in models else models[0]
@@ -93,8 +99,11 @@ def main():
                 ids = ask("addNotes", notes=notes)
             time.sleep(1.5)
             ledger.end_batch(job_id, 1, "done", [{"word": w, "reading": "", "outcome": "made", "note_id": n}
-                                                 for n, w in zip(ids, WORDS)])
+                                                 for n, w in zip(ids, WORDS)], deck="DevTest")
             ledger.set_state(job_id, "done")
+            with c.store("ja") as s:
+                library.record_batch(s, item, {w: [n] for n, w in zip(ids, WORDS)},
+                                     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), batch="drill")
             out["notes"] = ids
             studied = ids[3]
             card = ask("findCards", query=f"nid:{studied}")[0]
@@ -107,7 +116,7 @@ def main():
             time.sleep(6)                   # past the grace: the batch "ended" before any mod could look like an edit
             ledger.conn.execute("UPDATE jobs SET updated_at = ? WHERE id = ?",
                                 (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), job_id))
-            done = tidy.run(anki, ledger, "ja", ids, why=tidy.NOW)
+            done = tidy.run(anki, ledger, "ja", ids, why=tidy.NOW, open_store=open_store)
             row = tidy.tidy_row(ledger, done["id"])
             out["tidy"] = {"deleted": sorted(done["deleted"]), "kept": done["kept"], "state": row["state"]}
             out["package_notes"] = sorted(tidy.package_notes(os.path.join(row["folder"], "cards.apkg")) or [])
@@ -117,7 +126,7 @@ def main():
                 out["clip_in_anki_after_tidy"] = bool(ask("retrieveMediaFile", filename=clip))
             out["left_after_tidy"] = ask("findNotes", query=f"tag:{drill_tag}")
             out["temp_deck_after_tidy"] = tidy.TEMP_DECK.format(id=done["id"]) in ask("deckNames")
-            back = tidy.restore(anki, ledger, done["id"])
+            back = tidy.restore(anki, ledger, done["id"], open_store)
             out["restore"] = back
             now_ids = ask("findNotes", query=f"tag:{drill_tag}")
             out["ids_after_undo"] = sorted(now_ids)

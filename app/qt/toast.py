@@ -183,10 +183,12 @@ class ToastHost(QObject):
         self._paused = None                           # ms left while its card is open (the toast's time paused)
 
     # --- showing ---------------------------------------------------------------------------------------------- #
-    def show(self, message, undo=None, buttons=(), long=False, why=None):
+    def show(self, message, undo=None, buttons=(), long=False, why=None, tip=None):
         """Show `message` (plain text). `undo`: a callback for *Undo*; `buttons`: [(label, tooltip, callback)] — each
         click runs its callback and closes the toast. `long`: 12 s (the Anki offer), else 6.5 s. `why`: what made it
-        happen (`causes.Cause`, for what Surasura did by itself): a *Why?* at the end, outside the buttons' count."""
+        happen (`causes.Cause`, for what Surasura did by itself): a *Why?* at the end, outside the buttons' count.
+        `tip`: the toast's own tooltip (one short line; none by default)."""
+        self.card.setToolTip(tip or "")
         opening = motion.opening_of(self.card)
         if opening is not None:
             opening.finish()                          # replaced mid-rise: the old one lands, the new one shows in place

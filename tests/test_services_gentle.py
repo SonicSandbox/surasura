@@ -84,20 +84,20 @@ class _Load:
 class _World:
     """One window's registry and scheduler, every reading a stand-in."""
 
-    def __init__(self, gentle=True, reviewing=False):
+    def __init__(self, gentle=True):
         self.registry = jobs.JobRegistry()
         self.clock = _Clock()
         self.load = _Load()
         self.machine = (gentle, "8 logical CPUs" if gentle else None)
-        self.review = reviewing
-        self.review_asks = 0
         self.lines = []
-        self.g = G.Gentle(self.registry, machine=lambda: self.machine, load=self.load, reviewing=self._reviewing,
+        self.g = G.Gentle(self.registry, machine=lambda: self.machine, load=self.load,
                           clock=self.clock, log=self.lines.append).attach(watch=False)
 
-    def _reviewing(self):
-        self.review_asks += 1
-        return self.review
+    def busy(self, share):
+        """The CPU at `share` for a whole load window (the scheduler's busy / quiet read)."""
+        self.load.share = share
+        for _ in range(int(G.LOAD_WINDOW_S / G.TICK_S) + 2):
+            self.later(G.TICK_S)
 
     def later(self, seconds):
         self.clock.now += seconds
@@ -167,11 +167,11 @@ def test_on_a_gentle_pc_the_rest_waits_while_connect_makes_cards_or_a_reorder_wr
 
 
 def test_a_press_always_goes_first_whatever_the_scheduler_holds():
-    w = _World(gentle=True, reviewing=True)
+    w = _World(gentle=True)
     w.load.share = 0.99
     w.later(G.TICK_S)
     asked, started = w.submit("indexer", automatic=False)
-    assert asked.state == jobs.RUNNING and started, "a job you asked for never waits for the window, a review or load"
+    assert asked.state == jobs.RUNNING and started, "a job you asked for never waits for the window or load"
     generate, _ = w.submit("generate", automatic=False)
     assert generate.state != jobs.WAITING or generate.reason != G.WINDOW_FIRST
 
@@ -201,38 +201,29 @@ def test_on_a_strong_pc_the_rest_runs_beside_a_generate_as_before():
 
 
 @pytest.mark.parametrize("gentle", [True, False])
-def test_on_every_pc_the_rest_waits_while_you_review_in_anki_and_goes_when_you_stop(gentle):
-    w = _World(gentle=gentle, reviewing=True)
+def test_a_review_in_anki_holds_no_background_work_and_anki_is_never_asked(gentle, monkeypatch):
+    # why (OPEN 30, Sonic 2026-11-21: measure first): on DevTest none of these jobs slowed a review (Haya-LD's register
+    # §10); the one that does — Connect writing cards — is Connect's own rule (E2 + OPEN 40). The scheduler asks Anki
+    # nothing: every kind it keeps goes during a review, and the bar never says one waits for it.
+    from app import anki_connect
+    asked = []
+    monkeypatch.setattr(anki_connect, "reviewing", lambda *a, **k: asked.append(a) or True)
+    monkeypatch.setattr(anki_connect, "invoke", lambda action, *a, **k: asked.append(action) or True)
+    w = _World(gentle=gentle)
     w.g.ready()
-    w.later(G.SETTLE_S + 1)                            # the boot's first look asks Anki (the start's work comes now)
-    assert w.review_asks == 1
-    job, _ = w.submit("arrivals-zh")
-    assert (job.state, job.reason) == (jobs.WAITING, G.REVIEWING)
-    w.review = False
-    w.later(G.REVIEW_LOOK_S)
-    assert job.state == jobs.RUNNING
-    assert any("reviewing" in line for line in w.lines) and any("review ended" in line for line in w.lines)
-
-
-def test_anki_is_never_asked_while_no_background_work_waits():
-    # why: the point is a lighter Anki — a request every few seconds for nothing would be the opposite
-    w = _World(gentle=True)
-    w.submit("indexer")
-    w.later(G.REVIEW_LOOK_S)
-    assert w.review_asks == 0, "never asked while the window opens"
-    w.g.ready()
-    w.later(G.TICK_S)
-    assert w.review_asks == 1, "the boot's own look: the start's work comes now"
-    for job in w.registry.live():
-        w.registry.cancel(job.id)
-    w.review_asks = 0
-    w.clock.now += G.WANTED_FOR_S
-    for _ in range(5):
-        w.later(G.REVIEW_LOOK_S)
-    assert w.review_asks == 0
-    w.submit("indexer")
-    w.later(G.REVIEW_LOOK_S)
-    assert w.review_asks == 1
+    w.later(G.SETTLE_S + 1)
+    kinds = sorted(G.BACKGROUND)
+    for kind in kinds:
+        assert G.hold(kind) is None, kind               # nothing running: every kind goes, a review or not
+    for kind in kinds:
+        job, started = w.submit(kind)
+        assert job.reason is None or "review" not in job.reason.lower(), kind     # a gentle PC: one heavy at a time
+        if not gentle:
+            assert job.state == jobs.RUNNING and started, kind
+    for _ in range(20):
+        w.later(G.TICK_S)
+    assert asked == [], "no request to Anki from the scheduler, ever"
+    assert not hasattr(G, "REVIEWING") and not hasattr(G, "REVIEW_LOOK_S"), "the bar's review line is gone"
 
 
 @pytest.mark.parametrize("gentle", [True, False])
@@ -282,16 +273,15 @@ def test_on_a_gentle_pc_an_automatic_generate_waits_for_the_window_then_for_conn
     assert generate.state == jobs.RUNNING and started, "it goes in at Connect's step boundary"
 
 
-def test_the_generate_is_never_held_by_a_review_or_load():
+def test_the_generate_is_never_held_by_load():
     # why: the fresh list is the learner's own: only the rest waits for a quiet machine
-    w = _World(gentle=True, reviewing=True)
+    w = _World(gentle=True)
     w.g.ready()
-    w.load.share = 0.99
-    w.later(G.REVIEW_LOOK_S)
+    w.busy(0.99)
     w.submit("indexer")
-    w.later(G.REVIEW_LOOK_S)
+    w.later(G.TICK_S)
     generate, _ = w.submit("generate")
-    assert generate.state == jobs.RUNNING, "the indexer the review holds, asked first, never holds it back"
+    assert generate.state == jobs.RUNNING, "the indexer the load holds, asked first, never holds it back"
 
 
 def test_unplugging_a_laptop_makes_it_gentle_at_the_next_battery_look():
@@ -335,12 +325,12 @@ def test_a_reading_that_fails_never_holds_and_never_stops_the_watcher():
 
     def broken():
         raise OSError("no reading")
-    g = G.Gentle(registry, machine=broken, load=_Load(), reviewing=broken, clock=_Clock(),
+    g = G.Gentle(registry, machine=broken, load=_Load(), clock=_Clock(),
                  log=lambda line: None).attach(watch=False)
     registry.record("indexer", "Indexing", automatic=True)
     g.ready()
     g.tick()
-    assert not g.gentle and not g.reviewing
+    assert not g.gentle
     job = registry.submit("arrivals-ja", "Counting new arrivals", start=lambda j: None, automatic=True)
     assert job.state == jobs.RUNNING
 
@@ -372,7 +362,7 @@ def test_an_estimate_waits_for_its_turn_between_two_requests_and_the_workers_end
     try:
         client.stats(callback=got.put)
         assert got.get(timeout=30)["op"] == "stats"
-        held["now"] = G.REVIEWING
+        held["now"] = G.BUSY_NOW
         client.estimate(path, callback=got.put)
         with pytest.raises(queue.Empty):
             got.get(timeout=0.5)                   # held: never sent while you review
@@ -416,7 +406,7 @@ def test_the_reorder_catch_up_waits_for_its_turn_and_a_move_never_does(monkeypat
     monkeypatch.setattr(R, "_automation_on", lambda settings, language: True)
     monkeypatch.setattr(R, "_update_staged", lambda: False)
     monkeypatch.setattr(replan_preview, "SETTLE_S", 0.0)
-    held = {"now": G.REVIEWING}
+    held = {"now": G.BUSY_NOW}
     monkeypatch.setattr(G, "hold", lambda kind: held["now"] if kind == "replan" else None)
     timers = []
     opener = _Opener()
@@ -491,7 +481,7 @@ def test_a_second_busy_spell_holds_from_its_own_start():
 
 
 def test_a_press_lets_its_kind_through_every_hold_and_the_hold_comes_back_after():
-    w = _World(gentle=True, reviewing=True)
+    w = _World(gentle=True)
     job, started = w.submit("arrivals-ja")
     assert job.reason == G.WINDOW_FIRST
     G.press("arrivals-ja", True)
@@ -516,17 +506,14 @@ def test_a_pressed_estimate_goes_before_the_held_ones_and_a_long_hold_kills_no_h
     try:
         client.stats(callback=got.put)
         assert got.get(timeout=30)["op"] == "stats"
-        w.review = True
-        w.g._asked_at = w.clock.now
-        w.later(G.REVIEW_LOOK_S)
-        assert w.g.reviewing
+        w.busy(0.99)                                       # the rest held: a busy computer
+        assert w.g.busy
         held = client.estimate(JA, callback=got.put)
         time.sleep(0.8)                                   # held past STUCK
         pressed = client.estimate(ZH, callback=got.put, pressed=True)
         first = got.get(timeout=15)
         assert first["id"] == pressed, "your press goes before the estimate waiting for its turn"
-        w.review = False
-        w.later(G.REVIEW_LOOK_S)
+        w.busy(0.0)
         assert got.get(timeout=15)["id"] == held
     finally:
         client.stop()
@@ -686,7 +673,7 @@ def test_a_hold_that_ends_by_itself_is_no_time_the_worker_took_to_answer(monkeyp
     monkeypatch.setattr(A, "STUCK", 1.0)
     monkeypatch.setattr(G, "STEP_LOOK_S", 0.05)
     held = {"until": 0.0}
-    monkeypatch.setattr(G, "hold", lambda kind: G.REVIEWING if time.monotonic() < held["until"] else None)
+    monkeypatch.setattr(G, "hold", lambda kind: G.BUSY_NOW if time.monotonic() < held["until"] else None)
     registry = jobs.JobRegistry()
     client = A.ArrivalsWorker(registry, "ja", command=[sys.executable, "-c", _SLOW])
     got = queue.Queue()
@@ -755,7 +742,7 @@ def test_held_estimates_wait_quietly_while_a_press_waits_for_its_answer(monkeypa
     import queue
     from app.services import arrivals as A
     monkeypatch.setattr(G, "STEP_LOOK_S", 0.05)
-    monkeypatch.setattr(G, "hold", lambda kind: G.REVIEWING)        # the estimates are held all along
+    monkeypatch.setattr(G, "hold", lambda kind: G.BUSY_NOW)        # the estimates are held all along
     registry = jobs.JobRegistry()
     client = A.ArrivalsWorker(registry, "ja", command=[sys.executable, "-c", _SLOW_PRESS])
     puts = []

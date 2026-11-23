@@ -299,9 +299,10 @@ ROWS = {
                             "cap backlog waiting keep up to limit"),
     # Kyou-SH2 (PROVISIONAL): Tidy — by itself past 1.5 × the limit; this press past the limit
     "connect_tidy": ("Tidy waiting cards", "Past 1.5 × your limit, Surasura deletes the cards it made that you never "
-                                           "studied, lowest first. A copy is kept: Undo in Needs you.",
+                                           "studied, down to your limit, lowest first. A copy is kept: Undo in Needs "
+                                           "you.",
                      "Deletes now its never-studied cards past your limit; Undo brings them back.",
-                     "tidy clean clear delete cards waiting backlog clutter limit cap overflow"),
+                     "tidy clean clear delete cards waiting backlog clutter limit cap overflow put back undo restore"),
     # a7 (DIAGNOSIS 5): an extra, under More options — the library's folders are always searched
     "connect_video_folders": ("More video folders",
                               "Library folders are searched already. Add others only if needed.",
@@ -810,6 +811,19 @@ TIDY_DONE = "{n} cards tidied · Undo in Needs you"
 TIDY_DONE_ONE = "A card tidied · Undo in Needs you"
 TIDY_NONE = "Nothing to tidy: {why}"
 TIDY_CANT = "Not tidied: {why}"
+# Kyou-SH3 part 2 (PROVISIONAL): *Put back…* — the last 10 tidies, each with its Undo
+TIDY_PUT_BACK = "Put back…"
+TIDY_PUT_BACK_NAME = "Put back an earlier tidy"
+TIDY_PUT_BACK_TIP = "Put back the cards an earlier tidy deleted."
+TIDY_PUT_BACK_NONE = "No tidy yet: nothing to put back."
+TIDY_PUT_BACK_UNREAD = "Couldn't read the tidies just now: try again in a moment."
+TIDY_PAST = "{when} · {n} cards"
+TIDY_PAST_ONE = "{when} · 1 card"
+TIDY_PAST_BACK = " · put back"
+TIDY_PAST_GONE = " · its copy is missing"
+TIDY_PAST_TIP = "Put these cards back in Anki."
+TIDY_PAST_BACK_TIP = "Already put back: a tidy goes back once."
+TIDY_PAST_GONE_TIP = "Its copy isn't on disk any more, so it can't go back."
 EXPORT_NEXT = "Save as…"
 EXPORT_NEXT_TIP = "Choose where the file goes"
 EXPORT_FORMAT_NAME = "Format"
@@ -1101,3 +1115,40 @@ RULE_NEW_TIP = "New rule for {source}: pick where its arrivals go. Wait here sav
 # --- round 8 row 45 (P5): a press whose wait is worth naming — its words held in the bar while it runs ------------- #
 SWITCH_TURNING_ON = "Turning on Cards made for you…"
 SWITCH_TURNING_OFF = "Turning off Cards made for you…"
+
+
+# --- Journey v3's rows (J-SET; SPEC §1.4, the settings table; every word PROVISIONAL): shown only after the cut-over
+# (`settings_catalog.use_v3`). The page's ⚙ says the same names (templates/journey/).
+ROWS.update({
+    "journey_pitch": ("Pitch and tones", "", "Each word's pitch accent, or its tones in Chinese",
+                      "pitch accent tones chinese show hide f"),
+    "journey_meanings": ("Meanings", "Yours: the dictionaries you added to Anki Miner",
+                         "Which dictionary the meaning pane shows",
+                         "meanings dictionary definition english jmdict cc-cedict yours anki miner gloss"),
+    "journey_source": ("Where each line is from", "", "How each sentence shows the episode it came from",
+                       "source where from file episode icon name hover badge"),
+    "journey_first_meeting": ("Where you'll first meet it", "The sentence you first meet the word in, marked",
+                              "Show the line you first meet each word in", "first meeting meet sentence line marked"),
+    "journey_word_size": ("Word size", "", "How big the word is on your journey", "word size text font big small"),
+    "journey_sentence_size": ("Sentence size", "", "How big the sentences are on your journey",
+                              "sentence size text font big small"),
+    "journey_theme": ("The page's theme", "", "Your journey's look: Night or Light",
+                      "theme look night light dark journey page"),
+    "journey_keys": ("Keys", "One key of your own: the page's ⚙ › Keys", "The keys your journey answers to",
+                     "keys keyboard shortcuts qwerty dvorak hotkeys"),
+    "sentences_per_word": ("Sentences per word",
+                           "All: every sentence kept for a word, up to about 85 — Generate and your lists grow with it",
+                           "Most example sentences per word, on your journey and in your lists",
+                           "max sentences per word examples all contexts up to"),
+})
+_SIZES = {"s": "Small", "m": "Medium", "l": "Large"}
+OPTIONS.update({
+    "journey_pitch": {"shown": "Shown", "hidden": "Hidden until F"},
+    "journey_meanings": {"en": "English", "yours_en": "Yours, then English", "yours": "Yours only"},
+    "journey_source": {"icon": "Icon", "full": "Icon + name", "hover": "Only on hover"},
+    "journey_word_size": _SIZES,
+    "journey_sentence_size": _SIZES,
+    "journey_theme": {"Dark Flow": "Night", "Modern Light": "Light"},
+    "journey_keys": {"qwerty": "QWERTY", "dvorak": "Dvorak"},
+    "sentences_per_word": {**{n: str(n) for n in range(1, 11)}, 0: "All"},
+})

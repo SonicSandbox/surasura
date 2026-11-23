@@ -354,6 +354,8 @@ ANKI_WRITERS = {
     ("app/connect/tidy.py", "_cards_home"): ("Tidy", _TIDY, "only cards found in its own deck, back to the decks its "
                                              "ledger recorded"),
     ("app/connect/tidy.py", "_drop_temp"): ("Tidy", _TIDY, "its own deck, only when a search finds no card in it"),
+    ("app/connect/tidy.py", "_left_out"): ("Tidy", _TIDY, "Undo after a re-mine: only its own just-imported copy, "
+                                           "every card still in its own deck and never reviewed"),
     ("app/connect/sentence_audio.py", "AnkiConnectNotes.tag"): (
         "the one sentence-field writer (Add audio, the AI audio, Piyo's translations)",
         "Backfill: fills fields of existing cards; Piyo: writes cards only when asked",
@@ -431,6 +433,11 @@ def _song_test(node, parents, docs):
         bool(_SONG_WORDS.search(node.value))
 
 
+def _review_read(node, parents, docs):
+    """A review look of its own: AnkiConnect's `guiReviewActive` written out (a request, a multi's slot)."""
+    return isinstance(node, ast.Constant) and node.value == "guiReviewActive" and id(node) not in docs
+
+
 def _known_test(node, parents, docs):
     return isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and bool(_KNOWN_TEST.search(node.name))
 
@@ -447,6 +454,9 @@ SHARED_IDEAS = {
                                   "mined song lines a Generate leaves out)"),
     "the known test": (_known_test, "whether a card's word is known: a test of its own, by its name (row 74: "
                                     "Junban's known test read a kana card's word alone)"),
+    "the review check": (_review_read, "whether you're reviewing in Anki: `guiReviewActive` asked by a place of its "
+                                       "own (the dup audit 2026-11-22, Evidence 5: Junban asked it itself, so after "
+                                       "OPEN 40's idle rule Connect and Tidy would write while Junban held)"),
 }
 
 # idea -> the places that own it: (file, function or "*" for the whole file).
@@ -465,6 +475,9 @@ SHARED_OWNERS = {
                        "kana card's word)",
                        ("modules/junban/reposition.py", "known_test"): "its memo: `is_known_word` with the words read "
                                                                        "once"},
+    "the review check": {("app/anki_connect.py", "*"): "`reviewing` (its own look) and `review_on` (the rule over an "
+                                                        "answer read elsewhere), with OPEN 40's idle rule: every "
+                                                        "writer into Anki asks one of them"},
 }
 
 # (idea, file, function) -> why this place names the idea itself today (each a candidate to call the owner instead).
@@ -514,10 +527,21 @@ SHARED_READERS = {
         "a word key known by the analyzer's rule — the list's test, not a card's",
     ("the known test", "app/cli/verbs.py", "_known_test"): "a word key (lemma, reading) known by the analyzer's rule "
                                                            "(the YouTube preview's) — the list's test, not a card's",
+    # --- the review check: a look in the same request as the cards it guards (one answer), judged by the owner
+    ("the review check", "modules/junban/reposition.py", "_still_new"): "順's re-check of its cards: the review in "
+                                                                        "the same request, its answer through "
+                                                                        "`anki_connect.review_on`",
+    ("the review check", "modules/junban/reposition.py", "_put_back_out"): "順's put-back: the same, through "
+                                                                           "`review_on`",
+    ("the review check", "modules/junban/ankiconnect.py", "_checked"): "順's due re-check: the same, through "
+                                                                       "`review_on`",
+    ("the review check", "app/connect/setup.py", "<module>"): "`ANKI_ACTIONS`: the actions Connect's setup asks "
+                                                              "AnkiConnect to allow — no review read",
 }
 
 
-_SHARED_TEXT = tuple(sorted(_LIST_FILES)) + ("junban_deck", "side_by_side", "is_known", "known_test") + \
+_SHARED_TEXT = tuple(sorted(_LIST_FILES)) + ("junban_deck", "side_by_side", "is_known", "known_test",
+                                               "guiReviewActive") + \
     tuple(_NOTES.pattern[1:-1])
 _SONG_TEXT = re.compile(r"\bre\.(?:" + "|".join(sorted(_RE_CALLS)) + r")\(\s*[rbuRBU]*(?:\"[^\"\n]*|'[^'\n]*)(?i:" +
                         _SONG_WORDS.pattern[4:] + ")")

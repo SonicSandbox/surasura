@@ -157,7 +157,7 @@ def _store_path(lang):
 def _empty(lang):
     return {"line": "Up to date", "state": "idle", "jobs": [], "needs": [], "unseen": 0, "undo": [],
             "shelf": {"on_shelf": 0, "runs": [], "swap_ins": 0}, "made_today": 0, "updating": False, "failed": [],
-            "nothing": [], "tidied": None}
+            "nothing": [], "tidied": None, "tidy_unsaved": None}
 
 
 def read(languages=None, words=False, path=None):
@@ -271,6 +271,7 @@ def _language(conn, lang, is_running, words):
     rec["made_today"] = _made_today(conn, lang)
     rec["shelf"] = _shelf(conn, lang)
     rec["tidied"] = _tidied(conn, lang)         # Kyou-SH2: the newest tidy still to undo, *Needs you*'s card
+    rec["tidy_unsaved"] = _tidy_unsaved(conn, lang)     # Kyou-SH3: a tidy whose backup didn't read back, said
     # F9 (P4.1 row 4.1.7): Connect's own Generate under way — only while Connect runs (a mark a crash left says nothing)
     rec["updating"] = bool(is_running and (conn.execute("SELECT value FROM meta WHERE key = ?",
                                                          (f"generating:{lang}",)).fetchone() or [None])[0])
@@ -485,6 +486,23 @@ def _tidied(conn, lang):
         return None
     try:
         cards = len(json.loads(row[1] or "[]"))
+    except ValueError:
+        return None
+    return {"id": row[0], "cards": cards, "at": row[2], "why": row[3]} if cards else None
+
+
+def _tidy_unsaved(conn, lang):
+    """Kyou-SH3 (F4): the newest tidy whose backup couldn't be written or didn't read back (state `unsaved`: nothing
+    deleted), unless a tidy after it went through -> {"id", "cards" (the cards it would have deleted), "at", "why"},
+    or None."""
+    if not _has(conn, "tidies"):
+        return None
+    row = conn.execute("SELECT id, notes, at, why, state FROM tidies WHERE language = ? AND state IN ('done', "
+                       "'restoring', 'undone', 'unsaved') ORDER BY id DESC LIMIT 1", (lang,)).fetchone()
+    if not row or row[4] != "unsaved":
+        return None
+    try:
+        cards = len(json.loads(row[1] or "{}"))
     except ValueError:
         return None
     return {"id": row[0], "cards": cards, "at": row[2], "why": row[3]} if cards else None

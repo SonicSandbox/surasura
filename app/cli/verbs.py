@@ -1082,7 +1082,7 @@ def backfill(args):
     if anki_session is not None:
         anki_session.begin(url, fill_settings)       # S1 before the notes are read (P2.3; a dry run never syncs)
     try:
-        if anki_connect.patient("guiReviewActive", url) is True:
+        if anki_connect.reviewing(url, errors=True):     # the one review check (its busy error as before)
             raise CliError("anki-busy", "You're reviewing in Anki. Surasura fills once you've finished.")
         if ids is None:
             ids = anki_connect.find_notes(url, f'"tag:{anki_connect.escape_query(args.tag)}"')

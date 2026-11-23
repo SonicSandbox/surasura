@@ -642,3 +642,384 @@ def test_a_round_done_again_reads_its_own_kept_lines_back_before_newer_rounds():
     redo, broken = _run(state, calls)
     assert [c["round_id"] for c in _data(redo)["context"]][:2] == [old, newer]
     assert broken.is_error and "a number from 1 to 20" in broken.content[0].text
+
+
+# --- produce: output drills on words the learner knows (2026-11-19's hand-run trial) ----------------------------------- #
+PATTERNS_FIELD = ('<div class="pat-particle pat-src-conversational pat-thin">〜を 11% · 〜と 9%</div>'
+                  '<div class="pat-form pat-src-conversational pat-thin">跳躍する 11%</div>'
+                  '<div class="pat-colloc pat-src-conversational">跳躍を見せる · 大きな跳躍</div>'
+                  '<div class="pat-frame pat-src-conversational pat-thin">〜力</div>'
+                  '<div class="pat-register">書き言葉</div>')
+
+
+def _error_types():
+    from app import practice_rounds
+    assert tuple(name for name, _about in mcp_server.ERRORS) == practice_rounds.ERROR_TYPES
+    return practice_rounds.ERROR_TYPES
+
+
+def test_a_produce_round_holds_its_rules_in_code_and_its_words_without_patterns_when_none_are_built():
+    """The trial's lessons are the brief's rules, never left to the AI: one word at a time, a goal and 2-4 banned
+    crutch words, a precise word they know is wanted, the target never shown or hinted before they say it (checked:
+    targets on every draft), meaning-only hints, two tries then shown and brought back, a pass on the word with at most
+    1-2 other fixes, exactly the checked text shown, each attempt classified, and each result saved."""
+    _set_up("ja")
+    _write_list()
+
+    async def calls(client):
+        return await client.call_tool("surasura_practice_start", {"words": 3, "role": "coworker", "kind": "produce",
+                                                                   "source": "soon"})
+    state = _state()
+    state.keep_rounds = lambda: True
+    brief = _data(_run(state, calls))
+    assert brief["round"] == {"words": 3, "role": "coworker", "kind": "produce", "source": "soon"}
+    assert brief["mode"] == "chat"
+    rules = " ".join(brief["rules"])
+    for words in ("One word at a time", "Banned (2-4 crutch words", "a precise word for this that they know",
+                  "only the banned words are banned", "Never show, spell or hint", "about meaning and use only",
+                  "targets=[every round word not yet produced]", "the current word and every later one",
+                  "never a later word in an earlier word's drill", 'mode="answer"', "After 2 failed tries",
+                  "a retry, feedback on a miss", "leave it out of targets", "hides it again: put it back in",
+                  # live testing, 2026-11-20: the line in the target language, the brief in the chat's own; a crutch
+                  # word sharing the target's kanji in kana; a shown word back only at the end, the easier step first
+                  "the role's line: 1-2 short sentences in the target language",
+                  "a short brief in the language you talk to the learner in (never the target language; its labels too",
+                  "Goal (", "Register (", "Length (1-3 sentences)", "the line and the brief together",
+                  "Write a banned word in kana when it shares such a kanji", "a common kanji of the word",
+                  "Bring it back only at the end of the round, after every other word: first as the easier step",
+                  "a cloze (", "a choice of 2-3 words",
+                  "at most 1-2 other fixes", "Show exactly the text you checked", "coworker", "丁寧語"):
+        assert words in rules, words
+    for error_type in _error_types():
+        assert error_type in rules
+    assert "results=[{word, error_type, attempt, ok}]" in rules
+    assert "Bring the round's words in one at a time" not in rules      # the chat rule that would say the target
+    assert all("patterns" not in w for w in brief["round_words"])       # no patterns database in the test root
+    assert "never shown before the learner has produced the word" in brief["about_the_lines"]
+    assert brief["next"].startswith("Write the first word's scenario now")
+    # every round word in the first draft's targets, not only the first (R5: word 1's scenario never shows word 3)
+    assert 'targets=["散歩", "議事録", "冒険"]' in brief["next"]
+    assert state.readings["ja"] == {"散歩": "サンポ", "議事録": "ギジロク", "冒険": "ボウケン"}
+
+
+def test_a_produce_round_takes_the_words_the_learner_knows_well_unless_they_pick_a_source(monkeypatch):
+    asked = []
+
+    def known(state, language, source, limit, order=None):
+        asked.append(source)
+        return [{"word": "跳躍", "orth": "跳躍", "reading": "チョウヤク", "kana": "チョウヤク", "lines": []}]
+    monkeypatch.setattr(mcp_server, "anki_words", known)
+
+    async def calls(client):
+        return (await client.call_tool("surasura_practice_start", {"words": 1, "kind": "produce"}),
+                await client.call_tool("surasura_practice_start", {"words": 1, "kind": "chat"}))
+    _write_list()
+    produce, chat = (_data(r) for r in _run(_state(), calls))
+    assert produce["round"]["source"] == "known" and asked == ["known"]
+    assert [w["word"] for w in produce["round_words"]] == ["跳躍"]
+    assert chat["round"]["source"] == "soon"
+
+
+def test_a_produce_round_with_no_words_says_which_source_to_take():
+    async def calls(client):
+        return await client.call_tool("surasura_practice_start", {"kind": "produce", "source": "top"})
+    answer = _run(_state(), calls)
+    assert answer.is_error and "source known" in answer.content[0].text
+
+
+def test_a_produce_words_patterns_come_as_plain_lists_for_the_judge(monkeypatch):
+    """The card's パターン lines, read from its HTML: particles, forms, collocations, frames, the written lean, and
+    `thin` when few uses stand behind them. No database at all, or a lookup that fails: no patterns."""
+    from modules.junban import patterns
+    monkeypatch.setattr(patterns, "patterns_from_sources", lambda *a, **k: (PATTERNS_FIELD, None, "conversational"))
+    state = _state()
+    stores = [("conversational", object()), ("balanced", None)]
+    assert mcp_server.patterns_of(state, "ja", "跳躍", "チョウヤク", stores) == {
+        "particles": ["〜を 11%", "〜と 9%"], "forms": ["跳躍する 11%"], "collocations": ["跳躍を見せる", "大きな跳躍"],
+        "frames": ["〜力"], "register": "書き言葉", "thin": True}
+    assert mcp_server.patterns_of(state, "ja", "跳躍", "チョウヤク", [("conversational", None)]) is None
+    assert mcp_server.patterns_of(state, "ja", "跳躍", "チョウヤク", []) is None
+
+    def broken(*a, **k):
+        raise RuntimeError("database locked")
+    monkeypatch.setattr(patterns, "patterns_from_sources", broken)
+    assert mcp_server.patterns_of(state, "ja", "跳躍", "チョウヤク", [("conversational", object())]) is None
+
+
+def test_a_produce_rounds_brief_carries_each_words_patterns(monkeypatch):
+    from modules.junban import patterns
+    monkeypatch.setattr(patterns, "patterns_from_sources", lambda *a, **k: (PATTERNS_FIELD, None, "conversational"))
+    monkeypatch.setattr(mcp_server, "anki_words", lambda *a: [
+        {"word": "跳躍", "orth": "跳躍", "reading": "チョウヤク", "kana": "チョウヤク", "lines": []}])
+
+    async def calls(client):
+        return await client.call_tool("surasura_practice_start", {"words": 1, "kind": "produce"})
+    closed = []
+
+    class Opened:
+        def close(self):
+            closed.append(self)
+    monkeypatch.setattr(patterns, "open_sources", lambda language: [("conversational", Opened()), ("balanced", None)])
+    (word,) = _data(_run(_state(), calls))["round_words"]
+    assert word["patterns"]["collocations"] == ["跳躍を見せる", "大きな跳躍"]
+    assert len(closed) == 1                     # opened for the round, closed after it (R1)
+
+
+def test_the_learners_answer_is_checked_for_the_round_word_by_its_round_reading_and_its_results_kept(monkeypatch):
+    """Through the client, as the AI does it: the produce round remembers its words' readings, so 匂い for 臭い (におい
+    in the round; the bare word reads くさい) is found by reading; a crutch word is present; a draft that says the word
+    fails; and the judged attempts are kept in the round's file."""
+    from app import practice_rounds
+    _set_up("ja")
+    monkeypatch.setattr(mcp_server, "anki_words", lambda *a: [
+        {"word": "匂い", "orth": "臭い", "reading": "ニオイ", "kana": "ニオイ", "lines": []}])
+
+    async def calls(client):
+        brief = _data(await client.call_tool("surasura_practice_start", {"words": 1, "kind": "produce"}))
+        save = await client.call_tool("surasura_save_round", {"round_id": brief["round_id"]})
+        answer = await client.call_tool("surasura_check_text", {
+            "text": "なんか変な匂いがするね。", "mode": "answer", "targets": ["臭い"], "avoid": ["香り", "変"]})
+        draft = await client.call_tool("surasura_check_text", {"text": "この部屋、臭いがするね。", "targets": ["臭い"]})
+        results = await client.call_tool("surasura_save_round", {"round_id": brief["round_id"], "results": [
+            {"word": "臭い", "error_type": "reading_error", "attempt": 1, "ok": False, "note": "匂い"}]})
+        bad = await client.call_tool("surasura_save_round", {"round_id": brief["round_id"], "results": [
+            {"word": "臭い", "error_type": "spelling", "attempt": 2, "ok": False}]})
+        mode = await client.call_tool("surasura_check_text", {"text": "臭い", "mode": "speech"})
+        return brief, save, answer, draft, results, bad, mode
+    state = _state(known_texts=(TALK, "この部屋、臭いがするね。なんか変な匂いがするね。"))
+    state.keep_rounds = lambda: True
+    brief, save, answer, draft, results, bad, mode = _run(state, calls)
+    assert not save.is_error
+    answer = _data(answer)
+    assert answer["targets"][0]["how"] == "reading" and answer["targets"][0]["form"] == "匂い"
+    assert [a["present"] for a in answer["avoid"]] == [False, True]
+    assert _data(draft)["pass"] is False
+    assert _data(results)["results_kept"] == 1
+    assert bad.is_error and "error_type is one of" in bad.content[0].text
+    assert mode.is_error and "answer" in mode.content[0].text
+    kept = practice_rounds.load("ja", brief["round_id"])["results"]
+    assert [(r["word"], r["error_type"], r["ok"]) for r in kept] == [("臭い", "reading_error", False)]
+
+
+# --- Piyo-PA (our adapt of the produce rounds): the patterns databases per round, every unsaid word a target ------- #
+KYOU = [{"word": "今日", "orth": "今日", "reading": "キョウ", "kana": "キョウ", "lines": []}]
+
+
+def _build_patterns(ja_resources_dir, tmp_path, db_path):
+    """A real パターン set built from the learner-like Japanese in tests/Test Resources/ja (its subtitles and the
+    book), written where the server's first source is read: 今日 has its particles there."""
+    import glob
+    import shutil
+    from modules.junban import patterns_build
+    corpus = tmp_path / "corpus"
+    corpus.mkdir(exist_ok=True)
+    for path in glob.glob(os.path.join(ja_resources_dir, "*.srt")) + glob.glob(
+            os.path.join(ja_resources_dir, "books", "*.txt")):
+        shutil.copy(path, corpus)
+    patterns_build.build(corpus_dir=str(corpus), db_path=db_path, floor=1)
+
+
+def _first_source_path():
+    from modules.junban import patterns, patterns_build
+    return patterns_build.default_db_path("ja", patterns.sources_for("ja")[0])
+
+
+def test_a_second_process_can_replace_the_patterns_database_after_a_produce_round(
+        monkeypatch, ja_resources_dir, tmp_path):
+    """R1: Backfill puts a rebuilt set in with os.replace, which Windows refuses while any reader holds the file. A
+    produce round reads its words' patterns and lets the databases go, so another process replaces the file after the
+    round, while the server (the AI app's, hours long) is still up."""
+    import subprocess
+    import sys
+    db = _first_source_path()
+    os.makedirs(os.path.dirname(db), exist_ok=True)
+    _build_patterns(ja_resources_dir, tmp_path, db)
+    _build_patterns(ja_resources_dir, tmp_path, db + ".new")
+    monkeypatch.setattr(mcp_server, "anki_words", lambda *a: KYOU)
+
+    async def calls(client):
+        return await client.call_tool("surasura_practice_start", {"words": 1, "kind": "produce"})
+    state = _state()
+    server, _ = mcp_server.build(state, warm=False)
+
+    async def go():
+        async with Client(server) as client:
+            brief = _data(await calls(client))
+            swap = subprocess.run([sys.executable, "-c", "import os, sys; os.replace(sys.argv[1], sys.argv[2])",
+                                   db + ".new", db], capture_output=True, text=True)
+            return brief, swap
+    brief, swap = anyio.run(go)
+    assert brief["round_words"][0]["patterns"]["particles"]          # the set was read for the round
+    assert swap.returncode == 0, swap.stderr
+
+
+def test_a_patterns_set_built_mid_session_is_read_by_the_next_produce_round(monkeypatch, ja_resources_dir, tmp_path):
+    """R2: none built at the first round (no patterns), one built before the second, the same server: read."""
+    monkeypatch.setattr(mcp_server, "anki_words", lambda *a: KYOU)
+    state = _state()
+    server, _ = mcp_server.build(state, warm=False)
+
+    async def go():
+        async with Client(server) as client:
+            first = _data(await client.call_tool("surasura_practice_start", {"words": 1, "kind": "produce"}))
+            db = _first_source_path()
+            os.makedirs(os.path.dirname(db), exist_ok=True)
+            _build_patterns(ja_resources_dir, tmp_path, db)
+            second = _data(await client.call_tool("surasura_practice_start", {"words": 1, "kind": "produce"}))
+            return first, second
+    first, second = anyio.run(go)
+    assert "patterns" not in first["round_words"][0]
+    assert second["round_words"][0]["patterns"]["particles"]
+
+
+def test_a_produce_rounds_patterns_databases_are_closed_even_when_a_lookup_fails(monkeypatch):
+    """A lookup that raises still lets every opened database go (the round answers, without patterns)."""
+    from modules.junban import patterns
+    closed = []
+
+    class Opened:
+        def close(self):
+            closed.append(self)
+
+    def broken(*a, **k):
+        raise RuntimeError("database disk image is malformed")
+    monkeypatch.setattr(patterns, "open_sources", lambda language: [("conversational", Opened()),
+                                                                    ("balanced", Opened()), ("library", None)])
+    monkeypatch.setattr(patterns, "patterns_from_sources", broken)
+    monkeypatch.setattr(mcp_server, "anki_words", lambda *a: KYOU)
+
+    async def calls(client):
+        return await client.call_tool("surasura_practice_start", {"words": 1, "kind": "produce"})
+    brief = _data(_run(_state(), calls))
+    assert "patterns" not in brief["round_words"][0] and len(closed) == 2
+
+
+def test_a_patterns_database_that_fails_to_open_leaves_none_open_before_it(monkeypatch, ja_resources_dir, tmp_path):
+    """The first source opens, the second refuses (locked, a disk error): the first is closed again, so a rebuild
+    replaces it at once (Windows refuses os.replace over a file a reader holds; the lens pass found it held)."""
+    from modules.junban import patterns_store
+    db = str(tmp_path / "patterns_ja_conversational.db")
+    _build_patterns(ja_resources_dir, tmp_path, db)
+    _build_patterns(ja_resources_dir, tmp_path, db + ".new")
+    opened = []
+
+    def open_store(path=None, language="ja", name=None, quiet=False):
+        if opened:
+            raise OSError("database is locked")
+        opened.append(patterns_store.Store(db))
+        return opened[-1]
+    monkeypatch.setattr(patterns_store, "open_store", open_store)
+    with mcp_server.patterns_open("ja") as stores:
+        assert stores == []                     # the round goes on without patterns
+    os.replace(db + ".new", db)                 # WinError 5 while the first store was left open
+
+
+def test_word_ones_scenario_fails_when_it_shows_a_later_round_word(monkeypatch):
+    """R5: the round's words are all words the learner knows, so a draft showing word 3 passes the checker's own
+    rules; checked as the brief says (every word not yet produced as a target) it fails on that word."""
+    monkeypatch.setattr(mcp_server, "anki_words", lambda *a: [
+        {"word": w, "orth": w, "reading": r, "kana": r, "lines": []}
+        for w, r in (("約束", "ヤクソク"), ("散歩", "サンポ"), ("映画", "エイガ"))])
+    draft = "【friend】明日、映画を見に行こうよ。"
+
+    async def calls(client):
+        brief = _data(await client.call_tool("surasura_practice_start", {"words": 3, "kind": "produce"}))
+        alone = _data(await client.call_tool("surasura_check_text", {"text": draft, "targets": ["約束"]}))
+        every = _data(await client.call_tool("surasura_check_text", {"text": draft, "targets": ["約束", "散歩", "映画"]}))
+        return brief, alone, every
+    brief, alone, every = _run(_state(known_texts=(TALK, draft, "明日")), calls)
+    assert 'targets=["約束", "散歩", "映画"]' in brief["next"]
+    assert alone["pass"] is True                                   # the current word alone misses it
+    assert every["pass"] is False and any("映画" in r for r in every["reasons"])
+
+
+def test_the_practice_prompt_leaves_the_source_to_the_round_when_none_is_given():
+    async def calls(client):
+        return (await client.get_prompt("practice", {"words": "3", "role": "friend", "kind": "produce"}),
+                await client.get_prompt("practice", {"words": "3", "role": "friend", "kind": "chat", "source": "top"}))
+    produce, chat = _run(_state(), calls)
+    assert "source=" not in produce.messages[0].content.text and 'kind="produce"' in produce.messages[0].content.text
+    assert 'source="top"' in chat.messages[0].content.text
+
+
+def test_a_chinese_produce_round_starts_and_checks_its_word_by_the_word_alone(monkeypatch):
+    """Chinese through the server: the round starts (no patterns database here), the answer's target is found by its
+    word through the card matching's Chinese branch, a banned word is present, and no reading is looked for."""
+    _set_up("zh")
+    monkeypatch.setattr(mcp_server, "anki_words", lambda *a: [
+        {"word": "电影", "orth": "电影", "reading": "dian4 ying3", "kana": "dian4 ying3", "lines": []}])
+
+    async def calls(client):
+        brief = _data(await client.call_tool("surasura_practice_start", {"words": 1, "kind": "produce"}))
+        answer = _data(await client.call_tool("surasura_check_text", {
+            "text": ZH_TALK, "mode": "answer", "targets": ["电影", "冒险"], "avoid": ["明天"]}))
+        return brief, answer
+    brief, answer = _run(_zh_state(), calls)
+    assert brief["round"]["source"] == "known" and [w["word"] for w in brief["round_words"]] == ["电影"]
+    assert answer["targets"][0]["found"] is True and answer["targets"][0]["how"] == "lemma"
+    assert answer["targets"][1] == {"word": "冒险", "found": False}
+    assert answer["avoid"][0]["present"] is True
+
+
+def test_a_produce_round_of_weak_words_starts_each_with_an_easier_step_and_suggests_known(monkeypatch):
+    """Live testing, 2026-11-20: struggling words 0/3 free, known 3/3. A produce round from struggling (or today)
+    says every word is weak and goes through a cloze or a choice first, and its note suggests known; a known round
+    keeps the easier step for a word it had to show."""
+    monkeypatch.setattr(mcp_server, "anki_words", lambda *a: [
+        {"word": "受容", "orth": "受容", "reading": "ジュヨウ", "kana": "ジュヨウ", "lines": []}])
+
+    async def calls(client):
+        return (await client.call_tool("surasura_practice_start", {"words": 1, "kind": "produce",
+                                                                   "source": "struggling"}),
+                await client.call_tool("surasura_practice_start", {"words": 1, "kind": "produce"}))
+    weak, known = (_data(r) for r in _run(_state(), calls))
+    weak_rules, known_rules = " ".join(weak["rules"]), " ".join(known["rules"])
+    assert "Every word in this round is a weak one" in weak_rules and "every word here, and" in weak_rules
+    assert "source known" in weak["note"]
+    assert "Every word in this round is a weak one" not in known_rules and "note" not in known
+    assert "a word you had to show) goes through an easier step first" in known_rules
+    # live round 20261121-203357: a free drill right after its choice was too easy (受容 passed trivially), and 反省
+    # fit ＿＿した as well as the target — the free drills come at the round's end, the distractors clearly wrong
+    for rules in (weak_rules, known_rules):
+        assert ("Do the easier step for every weak word first, in order; then their free drills, in the same order, "
+                "at the end of the round") in rules
+        assert "A distractor must be clearly wrong in the gap" in rules and "never a word that fits it too" in rules
+        assert "best of another part of speech" in rules
+        assert "then a new free drill (a new goal, new banned words) as the round's last" in rules
+
+
+# --- produce: fresh words each round (live testing, 2026-11-21: the same three known words three rounds running) ---- #
+def _rows(*words):
+    return [{"word": w, "orth": w} for w in words]
+
+
+def _names(rows):
+    return [r["word"] for r in rows]
+
+
+def test_a_produce_round_leaves_out_words_passed_lately_puts_missed_ones_first_and_fills_from_the_rest():
+    import random
+    rows = _rows("俳優", "跳躍", "トロール", "受容", "従属", "冒険")
+    order = mcp_server.fresh_order(rows, 3, passed={"俳優", "跳躍", "トロール"}, missed={"従属"},
+                                   rng=random.Random(1))
+    assert order[0]["word"] == "従属"                                   # missed: first
+    assert set(_names(order[:3])) == {"従属", "受容", "冒険"}
+    assert _names(order[3:]) == ["俳優", "跳躍", "トロール"]             # passed: last, so never short of words
+    # every word passed: the round still gets its words, in the source's order
+    assert _names(mcp_server.fresh_order(rows[:3], 2, passed={"俳優", "跳躍", "トロール"}, missed=set()))[:2] == [
+        "俳優", "跳躍"]
+
+
+def test_two_produce_rounds_in_a_row_differ_and_keep_the_sources_order_as_weight():
+    """Drawn from the first POOL × n by the source's order as weight: rounds vary, each set keeps the source's order,
+    and the first word (a leech, in struggling) is drawn most often."""
+    import random
+    rows = _rows(*[f"語{i}" for i in range(20)])
+    rng = random.Random(7)
+    sets = [tuple(_names(mcp_server.fresh_order(rows, 3, set(), set(), rng=rng)[:3])) for _ in range(300)]
+    assert len(set(sets)) > 10
+    position = {r["word"]: i for i, r in enumerate(rows)}
+    assert all(list(s) == sorted(s, key=position.get) for s in sets)
+    assert all(position[w] < 3 * mcp_server.POOL for s in sets for w in s)
+    counts = {w: sum(w in s for s in sets) for w in position}
+    assert counts["語0"] == max(counts.values()) and counts["語0"] > counts["語8"]

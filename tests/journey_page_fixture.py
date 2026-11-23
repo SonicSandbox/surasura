@@ -126,7 +126,7 @@ _SHOWS = {
 
 
 def build(lang="ja", n_eps=40, seed=7, words_per_ep=None, sentences=3, meanings="en", stamp="1763700000000",
-          library="lib-fixture"):
+          library="lib-fixture", first_meeting=None):
     """SHAPE v1's parts for a library of `n_eps` episodes: {"head", "chunks", "meanings", "kanji", "yours", "stones"}."""
     rng = random.Random(seed)
     vocab = _ja_vocab() if lang == "ja" else _zh_vocab()
@@ -193,6 +193,10 @@ def build(lang="ja", n_eps=40, seed=7, words_per_ep=None, sentences=3, meanings=
             out_lines = []
             for j, text in enumerate(lines[:sentences]):
                 src_ep = idx if j == 0 else rng.randrange(len(eps))
+                # the list's first line is the first meeting's (analyzer note 35) but under Only i+1: there every
+                # sixth word's first line is from another episode, with the first meeting second or not shown at all
+                if wid % 6 in (2, 5) and len(eps) > 1:
+                    src_ep = (idx + 1) % len(eps) if j == 0 else (idx if j == 1 and wid % 6 == 5 else src_ep)
                 key = (src_ep, j == 2)
                 if key not in cur["srcmap"]:
                     se = eps[src_ep]
@@ -230,7 +234,8 @@ def build(lang="ja", n_eps=40, seed=7, words_per_ep=None, sentences=3, meanings=
         if n_eps > 10 else []
     head = {
         "v": 1, "minor": 1, "lang": lang, "stamp": stamp, "library": library,
-        "settings": {"sentences": sentences, "meanings": meanings},
+        "settings": dict({"sentences": sentences, "meanings": meanings},
+                         **({} if first_meeting is None else {"first_meeting": first_meeting})),
         "shows": shows, "eps": eps, "finished": finished, "orders": {"freq": freq},
         "chunks": [[c["w0"], len(c["w"])] for c in chunks],
         "dirs": ["file:///H:/Surasura-usage/tmp/journey-media/"],

@@ -5,7 +5,8 @@ One JSON file per round in `User Files/<lang>/practice/` (user data: never commi
 Surasura): the round's choices (role, kind, source), its words with their lines, so it can be done again exactly as it
 was, and what the learner asked to keep — lines (the AI's checked replies, the learner's answers) and notes ("mixes up
 冒険 and 危険"). A later round reads back only a little of it (`context`: the newest rounds' newest lines and notes,
-CONTEXT_CHARS at most), so saved rounds never flood the AI's context.
+CONTEXT_CHARS at most), so saved rounds never flood the AI's context. A produce round also keeps its `results`: each
+attempt as the AI judged it (`ERROR_TYPES`), a log only — nothing reads it back or schedules from it yet.
 
 Writes are Surasura's own files only: each save reads the round, adds to it and writes it whole with a temp file and
 os.replace (`anki_sync._atomic_write_json`), under the `practice` lock, so a crash mid-save leaves the round as it was
@@ -32,9 +33,18 @@ CONTEXT_CHARS = 1500            # everything a brief carries back, at most
 CONTEXT_SCAN = 30               # the newest round files looked in for it (a round kept with nothing added is passed)
 LIST_LIMIT = 50                 # past rounds one listing may give
 LAST_SCAN = 5                   # round files `last_round` reads at most, newest first (unreadable ones passed over)
+# A produce round's results (Piyo's output drills): how each attempt went, as the AI judged it — a log, read by no
+# scheduler. One result: the round word (WORD_CHARS at most), its error type, which try it was (1 to TRIES_MOST), and
+# whether it passed; a note (TEXT_CHARS at most) when the AI adds one.
+ERROR_TYPES = ("retrieval_miss", "reading_error", "morphological_error", "collocation_mismatch", "tone_drift", "ok")
+WORD_CHARS = 30
+TRIES_MOST = 20
+# A word passed (ok) in a produce round is left out of the next produce rounds for this long (live testing,
+# 2026-11-21: known gave 俳優, 跳躍, トロール three rounds running, all ok the first time): `recent_results`
+FRESH_DAYS = 7
 # A round file's shape: `round` is there and every key that is there holds this type, else the file "isn't a round" and is left alone (a save
 # never writes over it, a listing and a read-back pass it over).
-_SHAPE = (("round", dict), ("words", list), ("lines", list), ("notes", list))
+_SHAPE = (("round", dict), ("words", list), ("lines", list), ("notes", list), ("results", list))
 _ID = re.compile(r"\d{8}-\d{6}-[0-9a-f]{8}\Z")
 
 
@@ -107,14 +117,57 @@ def _texts(values, what):
     return out
 
 
-def save(language, round_id, start=None, lines=None, notes=None):
+def _results(values):
+    """A produce round's results a save adds, each {word, error_type, attempt, ok[, note]} checked; anything else ->
+    ValueError saying what to send. Nothing is saved when one is wrong."""
+    if values is None:
+        return []
+    if isinstance(values, dict):
+        values = [values]
+    if not isinstance(values, list):
+        raise ValueError("results is a list of {word, error_type, attempt, ok}.")
+    if len(values) > PER_SAVE:
+        raise ValueError(f"At most {PER_SAVE} results in one save: save the rest in another call.")
+    out = []
+    for value in values:
+        if not isinstance(value, dict):
+            raise ValueError("Each result is {word, error_type, attempt, ok}. Nothing was saved.")
+        extra = set(value) - {"word", "error_type", "attempt", "ok", "note"}
+        if extra:
+            raise ValueError(f"A result holds word, error_type, attempt, ok and an optional note, not "
+                             f"{', '.join(sorted(map(str, extra)))}. Nothing was saved.")
+        word, kind, attempt, ok = (value.get(k) for k in ("word", "error_type", "attempt", "ok"))
+        if not isinstance(word, str) or not word.strip() or len(word.strip()) > WORD_CHARS:
+            raise ValueError(f"A result's word is the round word, {WORD_CHARS} characters at most. Nothing was saved.")
+        if kind not in ERROR_TYPES:
+            raise ValueError(f"A result's error_type is one of {', '.join(ERROR_TYPES)}, not {kind!r}. Nothing was "
+                             f"saved.")
+        if isinstance(attempt, bool) or not isinstance(attempt, int) or not 1 <= attempt <= TRIES_MOST:
+            raise ValueError(f"A result's attempt is which try it was: a number from 1 to {TRIES_MOST}. Nothing was "
+                             f"saved.")
+        if not isinstance(ok, bool):
+            raise ValueError("A result's ok is true when the attempt passed, else false. Nothing was saved.")
+        item = {"word": word.strip(), "error_type": kind, "attempt": attempt, "ok": ok}
+        note = value.get("note")
+        if note is not None:
+            note = str(note).strip()
+            if len(note) > TEXT_CHARS:
+                raise ValueError(f"A result's note is kept short, {TEXT_CHARS} characters at most. Nothing was saved.")
+            if note:
+                item["note"] = note
+        out.append(item)
+    return out
+
+
+def save(language, round_id, start=None, lines=None, notes=None, results=None):
     """Keep a round: written the first time with `start` (the brief's round: its choices and words), then each later
-    save adds `lines` and `notes` and marks it done again. -> the round as saved. ValueError (said as what to do) for an
-    unknown round, an unreadable file, too many or too long texts; `contract.CliError` (busy) when the lock is held."""
+    save adds `lines`, `notes` and a produce round's `results` (`_results`) and marks it done again. -> the round as
+    saved. ValueError (said as what to do) for an unknown round, an unreadable file, too many or too long texts, a
+    result that isn't one; `contract.CliError` (busy) when the lock is held."""
     from app.anki_sync import _atomic_write_json
     from app.cli import contract
     path = _path(language, round_id)
-    lines, notes = _texts(lines, "lines"), _texts(notes, "notes")
+    lines, notes, results = _texts(lines, "lines"), _texts(notes, "notes"), _results(results)
     now = datetime.now().isoformat(timespec="seconds")
     with contract.take_lock("practice", "saving a practice round", wait=5.0):
         data = _read(path, language)
@@ -128,6 +181,8 @@ def save(language, round_id, start=None, lines=None, notes=None):
         data["saved"] = now
         for key, new in (("lines", lines), ("notes", notes)):
             data[key] = data.get(key, []) + [{"text": text, "at": now} for text in new]
+        if results:
+            data["results"] = data.get("results", []) + [dict(item, at=now) for item in results]
         _atomic_write_json(path, data)
     return data
 
@@ -148,6 +203,35 @@ def _newest(language):
     except OSError:
         return []
     return sorted(entries, reverse=True)
+
+
+def recent_results(language, days=None, now=None):
+    """What the produce rounds of the last `days` (FRESH_DAYS) logged -> (passed, missed): the words with an ok
+    attempt, and the words with only misses. Read from the round files saved in that time (a file that can't be read
+    is passed over); a result's own `at` must be in it too. Words as the AI logged them, NFKC."""
+    import unicodedata
+    from datetime import timedelta
+    cutoff = (now or datetime.now()) - timedelta(days=FRESH_DAYS if days is None else days)
+    passed, tried = set(), set()
+    for mtime, path in _newest(language):
+        if datetime.fromtimestamp(mtime) < cutoff:
+            break                           # newest first: every file after it is older still
+        try:
+            data = _read(path, language)
+        except ValueError:
+            continue
+        for item in (data or {}).get("results") or []:
+            if not isinstance(item, dict) or not isinstance(item.get("word"), str):
+                continue
+            try:
+                when = datetime.fromisoformat(str(item.get("at") or ""))
+            except ValueError:
+                continue
+            if when < cutoff:
+                continue
+            word = unicodedata.normalize("NFKC", item["word"]).strip()
+            (passed if item.get("ok") is True else tried).add(word)
+    return passed, tried - passed
 
 
 def last_round(language):
@@ -181,7 +265,8 @@ def rounds(language, limit=10):
         out.append({"round_id": os.path.basename(path)[:-5], "started": data.get("started"), "saved": data.get("saved"),
                     **_choices(data),
                     "round_words": [w["orth"] for w in words(data)],
-                    "lines_kept": len(_texts_of(data, "lines")), "notes_kept": len(_texts_of(data, "notes"))})
+                    "lines_kept": len(_texts_of(data, "lines")), "notes_kept": len(_texts_of(data, "notes")),
+                    **({"results_kept": len(data["results"])} if data.get("results") else {})})
     return out
 
 

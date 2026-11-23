@@ -680,9 +680,10 @@ async function carryOldIgnores() {
     const words = [], seen = new Set();
     for (const x of old) {
       const w = typeof x === "string" ? x.trim() : "";
-      if (!w || w.length > 64 || seen.has(w)) continue;
-      seen.add(w);
-      if (!a.marks[w] && !MARK.has(w) && !MWAIT.has(w)) words.push(w);      // Known, Ignored or pressed here: left as is
+      const key = w.normalize("NFKC");                    // as the route reads a word: one write a word
+      if (!w || w.length > 64 || seen.has(key)) continue;
+      seen.add(key);
+      if (!Object.hasOwn(a.marks, w) && !MARK.has(w) && !MWAIT.has(w)) words.push(w);   // Known, Ignored or pressed here: left as is
     }
     const added = [], undos = [];
     let all = true;
@@ -691,7 +692,7 @@ async function carryOldIgnores() {
       const r = await doorCall("words/mark", { marks: batch.map((word) => ({ word, mark: "ignore", was: "", at })) });
       if (!r || !r.ok) { all = !!r && r.kind === "refused"; continue; }   // unreadable: let go; else a later hello
       const stale = new Set(r.stale || []);
-      for (const w of batch) if (!stale.has(w)) { added.push(w); MARK.set(w, "ignore"); }
+      for (const w of batch) if (!stale.has(w)) { added.push(w); if (!MWAIT.has(w)) MARK.set(w, "ignore"); }   // a press since is what's drawn
       if (r.undo_id != null) undos.push(r.undo_id);
     }
     if (all) { try { localStorage.setItem(OLD_DONE, String(Date.now())); } catch (e) {} }

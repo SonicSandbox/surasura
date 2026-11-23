@@ -509,19 +509,63 @@ def _little(*arrays):
     return out
 
 
+class _Strings:
+    """Strings kept as one string and its offsets (`read_counts`: at 20,000 files the table's 30,399 keys as lists of
+    two strings were 7.3 MB of the render's peak, this ~1 MB) -> each one, made when asked."""
+    __slots__ = ("_text", "_at")
+
+    def __init__(self, strings):
+        self._text = "".join(strings)
+        self._at = array("i", [0])
+        n = 0
+        for one in strings:
+            n += len(one)
+            self._at.append(n)
+
+    def __len__(self):
+        return len(self._at) - 1
+
+    def __getitem__(self, i):
+        if not -len(self) <= i < len(self):
+            raise IndexError(i)
+        i %= len(self)
+        return self._text[self._at[i]:self._at[i + 1]]
+
+
 class _Names:
     """`read_counts`' files, each read as `counts` gives one ([its path]): here its report name (`report_name`, the
-    journey's one use of the path), kept as one list of strings rather than a list a file."""
+    journey's one use of the path), kept packed (`_Strings`) rather than a list a file."""
     __slots__ = ("_names",)
 
     def __init__(self, names):
-        self._names = names
+        self._names = _Strings(names)
 
     def __len__(self):
         return len(self._names)
 
     def __getitem__(self, f):
         return [self._names[f]]
+
+
+class _Keys:
+    """`read_counts`' keys, each read as `counts` gives one ([Word, Reading]), kept packed (`_Strings`)."""
+    __slots__ = ("_parts",)
+
+    def __init__(self, keys):
+        self._parts = _Strings([part for key in keys for part in key])
+
+    def __len__(self):
+        return len(self._parts) // 2
+
+    def __getitem__(self, k):
+        if not -len(self) <= k < len(self):
+            raise IndexError(k)
+        k %= len(self)
+        return [self._parts[2 * k], self._parts[2 * k + 1]]
+
+    def __iter__(self):
+        parts = self._parts
+        return ([parts[i], parts[i + 1]] for i in range(0, len(parts), 2))
 
 
 class _CountLines:
@@ -550,7 +594,8 @@ def read_counts(path, run_signature):
     """The counts table `CountsTable.write` put beside the plan -> `Counts`, shaped as `counts` reads the plan (`files`
     [[its report name]] — `report_name` of a name is the name —, `keys` [[Word, Reading]], `per_file`: each file's {"main", "ph", "prog"}, the listed rows' uses under
     "main", `prog`'s first two numbers), so the journey reads either alike; None when absent, damaged (its CRC, its
-    lengths, a key out of range), or another run's."""
+    lengths, a key out of range), or another run's. Held lean for the render's peak (the lead's ruling: no cost bought
+    back elsewhere): the keys and names packed (`_Keys`, `_Names`), the uses 16-bit when every one fits."""
     try:
         with open(path, "rb") as f:
             head = json.loads(f.readline())
@@ -574,10 +619,12 @@ def read_counts(path, run_signature):
                 any(d % 2 for d in (at[f + 1] - at[f] for f in range(len(files)))) or \
                 (n and not 0 <= min(uses[0::2]) <= max(uses[0::2]) < len(keys)):
             return None
+        if n and max(uses) < 1 << 16 and min(uses) >= 0:
+            uses = array("H", uses)         # the narrower type when every key and count fits (2 bytes a number, not 4)
+        return Counts({"run_signature": run_signature, "counts": 1}, _Names(files), _Keys(keys),
+                      _CountLines(uses, at, total, baseline))
     except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError):
         return None
-    return Counts({"run_signature": run_signature, "counts": 1}, _Names(files), keys,
-                  _CountLines(uses, at, total, baseline))
 
 
 def _validate_pools(plan):

@@ -302,8 +302,8 @@ _TIDY = "Tidy / Torii: keep Anki uncluttered — Connect's own never-studied car
         "never delete anything without a backup"
 
 # (file, function) -> (the piece, its ROLES.md row, why this place may change a card).
-_SWAP = "Swap: gives a card a better sentence (simple: a new card) — the old card only tagged; Undo through " \
-    "Tidy's guarantee, the old card back in reviews"
+_SWAP = "Swap: gives a card a better sentence (simple: a new card) — the old card tagged (a journey ⇄'s suspended " \
+    "too: one out, one in); Undo through Tidy's guarantee, the old card back in reviews"
 ANKI_WRITERS = {
     # --- the doors themselves
     ("modules/junban/ankiconnect.py", "_write_action"): ("Junban", _JUNBAN, "the door: a position (or a flag) "
@@ -362,10 +362,15 @@ ANKI_WRITERS = {
     ("app/connect/swap.py", "AnkiSwap.remove_tags"): ("Swap", _SWAP, "Swap's adapter: that tag off again, on Undo"),
     ("app/connect/swap.py", "AnkiSwap.unsuspend"): ("Swap", _SWAP, "Swap's adapter: the old card back in reviews, on Undo"),
     ("app/connect/swap.py", "AnkiSwap.set_flag"): ("Swap", _SWAP, "Swap's adapter: the old card's green flag off, on Undo"),
-    ("app/connect/swap.py", "_tag_waiting"): ("Swap", _SWAP, "the old card of a made swap tagged (its only write to it), "
-                                              "under the writer, never while reviewing"),
-    ("app/connect/swap.py", "_old_back"): ("Swap", _SWAP, "Undo: only the old card the swap suspended and flagged, back "
-                                           "in reviews, its tag off unless the note's other card is still swapped"),
+    ("app/connect/swap.py", "AnkiSwap.suspend"): ("Swap", _SWAP, "Swap's adapter: a journey ⇄'s old card out of "
+                                                  "reviews, through Junban's suspend door"),
+    ("app/connect/swap.py", "_tag_waiting"): ("Swap", _SWAP, "the old card of a made swap tagged, under the writer, "
+                                              "never while reviewing"),
+    ("app/connect/swap.py", "_take_old"): ("Swap", _SWAP, "a journey ⇄'s old card suspended once its new card is made "
+                                           "(only the cards in reviews, recorded first), under _tag_waiting's writer"),
+    ("app/connect/swap.py", "_old_back"): ("Swap", _SWAP, "Undo: only the old card the swap suspended and flagged (a "
+                                           "journey ⇄: the cards its press took, no flag), back in reviews unless a "
+                                           "journey ⇄ still holds it, its tag off unless the note is still swapped"),
     ("app/connect/sentence_audio.py", "AnkiConnectNotes.tag"): (
         "the one sentence-field writer (Add audio, the AI audio, Piyo's translations)",
         "Backfill: fills fields of existing cards; Piyo: writes cards only when asked",

@@ -226,7 +226,8 @@ def status_of(conn, language, now=None):
 def _newer_cards(conn, language, words):
     """{word: the note ids Connect made for it that may still be in Anki}: none the look saw gone (`deleted`), none
     Surasura's own Tidy deleted (`tidies`, done — a Bad card's or a swap's new card its Undo took back among them)."""
-    gone = {int(n) for (n,) in conn.execute("SELECT note_id FROM deleted WHERE language = ?", (language,))}
+    gone = {int(n) for (n,) in conn.execute("SELECT note_id FROM deleted WHERE language = ?", (language,))} \
+        if _has(conn, "deleted") else set()     # (the journey's ⇄ asks before any deleted-card look ran)
     if _has(conn, "tidies"):
         for (deleted_notes,) in conn.execute("SELECT deleted FROM tidies WHERE language = ? AND state = 'done' AND "
                                              "deleted IS NOT NULL", (language,)):

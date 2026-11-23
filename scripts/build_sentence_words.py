@@ -12,7 +12,7 @@ conjunctions are said, not content; anything else is content. A helping verb (Un
 is grammar only right after て / で / って / ちゃ / じゃ — kept apart, judged by its place. A katakana word is never
 grammar (a loanword or a name). Chinese: jieba's own tag
 table (`dict.txt`) — its particles (u*), modal particles (y), interjections (e), prepositions (p) and conjunctions (c)
-that it counts 2,000 times or more. Nothing of a user's library is read. The lists change no tokenization: rebuilding
+that it counts 2,000 times or more, and the copula 是 (as だ / です). Nothing of a user's library is read. The lists change no tokenization: rebuilding
 them changes only the table's counts (a `sentence_table.VERSION` bump).
 """
 import argparse
@@ -31,6 +31,7 @@ KATAKANA = re.compile(r"[\u30a0-\u30ff]+")
 MIN_USES = 5                    # a base form met fewer times is left to the default (content)
 ZH_MIN_COUNT = 2000             # jieba's own count
 ZH_TAGS = ("u", "y", "e", "p", "c")
+ZH_COPULA = ("是",)              # the copula, as Japanese だ / です: jieba files it as a verb
 BEGIN, END = "# --- grammar words: scripts/build_sentence_words.py writes this block ---", "# --- end of the block ---"
 
 
@@ -91,7 +92,7 @@ def chinese():
             word, count, tag = line.split()
             if tag[0] in ZH_TAGS and int(count) >= ZH_MIN_COUNT:
                 out.add(word)
-    return sorted(out)
+    return sorted(out | set(ZH_COPULA))
 
 
 def literal(name, words, comment):

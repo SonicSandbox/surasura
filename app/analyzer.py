@@ -6676,9 +6676,14 @@ def main():
         _held_words = [None, None]
 
         def _line_words(s_text, s_tokens):
-            """The line's words for the table's two numbers (sentence_table.LineWords): made once a line."""
+            """The line's words for the table's two numbers (sentence_table.LineWords): made once a line. A line it
+            can't count reads as none (0, 0): the table never fails the run."""
             if _held_words[0] is not s_tokens:
-                _held_words[0], _held_words[1] = s_tokens, sentence_table.LineWords(s_tokens, s_text, language, _people)
+                try:
+                    words = sentence_table.LineWords(s_tokens, s_text, language, _people)
+                except Exception:
+                    words = sentence_table.LineWords((), "", language)
+                _held_words[0], _held_words[1] = s_tokens, words
             return _held_words[1]
 
     # --- AGGREGATION PASS ---
@@ -8077,7 +8082,7 @@ def main():
         except Exception as e:
             print(f"Warning: could not write the plan file ({e}); the last one is left as it was.")
         if _table is not None and _run_sig:
-            _signed = {os.path.abspath(entry[0]): entry for entry in (_sig_parts or {}).get("files") or ()}
+            _signed = {}
 
             def _source_digest(source):
                 """A source's own digest, as the plan's files carry it (`plan_rules.file_digest` of its run-signature
@@ -8095,6 +8100,7 @@ def main():
             # The sentence table beside the plan, on the plan's rows, sources and co-words' rule (one rule, numbered
             # by key as the plan's are). Never fails the run: without it a reader takes today's path.
             try:
+                _signed.update((os.path.abspath(entry[0]), entry) for entry in (_sig_parts or {}).get("files") or ())
                 _table_size = _table.finish(
                     row_keys, lambda w: row_of.get(_phrase_row_of.get(w) if isinstance(w, int) else w),
                     lambda lr: plan_rules.clauses_or(_atom(lr), _view.known_when(lr, _atom)),

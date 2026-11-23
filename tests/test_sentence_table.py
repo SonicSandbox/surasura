@@ -579,3 +579,20 @@ def test_at_level_1_each_source_carries_the_plans_own_digest(monkeypatch):
     assert [s[2] for s in sources[:len(plan.files)]] == [f[2] for f in plan.files]
     assert [s[0] for s in sources[:len(plan.files)]] == [f[0] for f in plan.files]
     assert all(isinstance(s[2], str) and re.fullmatch(r"[0-9a-f]{16}", s[2]) for s in sources)
+
+
+def test_a_token_the_lines_text_does_not_hold_moves_no_later_place():
+    # why: the line's text can lose a mark its tokens keep (a quote cut off its edge); the words after it must keep
+    # their own places, and a counter's look at the character before it must stay inside the text
+    tokens = [("」", "", "」", "」"), ("駅", "エキ", "駅", "駅"), ("人", "ヒト", "人", "人")]
+    words = st.LineWords(tokens, "駅人", "ja")
+    assert words.at == [0, 0, 1]
+    assert words.of_word(("人", "ヒト")) == (1, 1)
+
+
+def test_the_chinese_copula_is_grammar_as_da_and_desu_are():
+    # why: 是 says nothing about the word, as だ / です do not in Japanese
+    from app import analyzer
+    (text, tokens), = analyzer.ChineseTokenizer().tokenize_sentences("他是老师。")
+    words = st.LineWords(tokens, text, "zh")
+    assert words.of_word(_key(tokens, "老师"))[0] == 1            # 他

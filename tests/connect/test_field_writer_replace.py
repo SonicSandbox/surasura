@@ -181,3 +181,24 @@ def test_replace_never_runs_while_you_review_and_needs_each_old_value(tmp_path, 
     with pytest.raises(sa.Reviewing):
         sa.replace(anki, ledger, 1, {"Sentence": _sentences()[7]}, {"Sentence": _sentences()[3]})
     assert anki.value(1, "Sentence") == _sentences()[3]
+
+
+def test_a_review_started_while_the_new_clip_is_stored_writes_no_field(tmp_path, ledger):
+    """Anki is asked again right before the fields (K88: a review started while the clip was being stored): nothing
+    written to the note, the swap asked again later — the record kept `writing` for its own Undo (mutant M4, FS-1 G)."""
+    anki = Anki()
+    _card(anki, 1, _sentences()[3])
+    clip = tmp_path / "sl-new.mp3"
+    clip.write_bytes(b"ID3 new")
+    asked = []
+
+    def reviewing():
+        asked.append(1)
+        return len(asked) > 2                       # the two checks before the lock's work: no; the one after: yes
+    anki.reviewing = reviewing
+    new = {"Sentence": _sentences()[7], "SentenceAudio": "[sound:sl-new.mp3]"}
+    with pytest.raises(sa.Reviewing) as e:
+        sa.replace(anki, ledger, 1, new, _was(anki, 1, new), media={"sl-new.mp3": str(clip)},
+                   keep_dir=str(tmp_path / "kept"))
+    assert len(asked) == 3 and anki.value(1, "Sentence") == _sentences()[3]
+    assert not [c for c in anki.calls if c[0] == "update"] and sa.pending(ledger) == [e.value.sentence_audio_id]

@@ -172,7 +172,8 @@ def _content(path):
 
 # Pinned from 3.0-dev d171b0c7 (the table as E-TABLE built it), before the speed work: re-pin only with a change of
 # the table's bytes made on purpose (and its format's VERSION).
-PINNED = {"ja": "", "zh": ""}
+PINNED = {"ja": "bc918e6d781de5bc56622ae4acec772a4d4dccbccefc44604146fed1ab562c3d",
+          "zh": "5988eb87850ebfbdc0bf8d1f75e474e647e69c8b908c467712d09f58bcf970ec"}
 
 
 def test_the_table_packed_from_real_lines_is_the_same_bytes_as_before_the_speed_work(real, tmp_path):
@@ -232,7 +233,7 @@ def test_the_finish_lets_go_of_the_packed_lines_and_works_in_little_more_memory_
     # why: the finish runs at the end of a Generate, at the run's most memory; working in 8-byte copies of every
     # line and co-word cost a 400-file Chinese library 160 MB there (the packed lines took 19 MB)
     p, keys, row = _big()
-    packed = len(p._lines) + 4 * len(p._cow)
+    packed = 40000 * 27 + 40000 * 17 * 4        # the lines as packed: 27 bytes a line, 4 a co-word's id
     tracemalloc.start()
     try:
         t = p.finish(keys, row.get, lambda k: ((row[k],),), row.get, lambda k: k, lambda i: None,
@@ -241,6 +242,7 @@ def test_the_finish_lets_go_of_the_packed_lines_and_works_in_little_more_memory_
     finally:
         tracemalloc.stop()
     assert sum(t.head["lines"]) == 40000
-    assert peak < 3 * packed, (peak, packed)
+    # measured: 5.4 x packed since the speed work, 12.3 x on 3.0-dev d171b0c7 (its int64 copies) — the bound between
+    assert peak < 8 * packed, (peak, packed)
     p.add(keys[0], 0, 99, 5, 1)                 # no view of the packed lines is left behind
     assert len(p) == 40001

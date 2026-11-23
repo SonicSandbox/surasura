@@ -414,10 +414,14 @@ def test_at_level_1_every_kept_sentence_of_the_plan_is_a_line_of_the_table(langu
 @pytest.mark.parametrize("language", ["ja", "zh"])
 def test_at_level_1_every_other_file_in_results_is_the_same_bytes_as_at_0(language, monkeypatch):
     # why: release 1 leaves the list and the journey on today's rule — the table is written beside them and nothing
-    # else may move (the walk's offers to the table take nothing from the shortlists)
+    # else may move (the walk's offers to the table take nothing from the shortlists). *Length* is the learner's own
+    # pick here: its default follows the level (settings_manager.sentence_length_default), which is E-LENGTH's to test
     from tests import services_helpers as h
     monkeypatch.delenv("SURASURA_SENTENCE_TABLE", raising=False)
     _seed(language)
+    h.write_settings({"target_language": language, "anki_connect_url": "http://127.0.0.1:9",
+                      "sentence_length_chosen": True,
+                      "logic": {"context": {"min_chars": 10, "preferred_max_chars": 50}}})
     found = []
     for level in (0, 1):
         _generate_at(language, level)

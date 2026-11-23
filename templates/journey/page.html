@@ -663,7 +663,9 @@ async function hello() {
    no `since`), the old words it has neither Known nor Ignored sent through ⊘'s own route, OLD_BATCH a call, each an
    Ignore over no mark at the time of that read (the stale rule skips a word changed since); then OLD_DONE, so it never
    runs again. The old key is never written or removed. Surasura closed, busy or failing: nothing marked done, it is
-   tried at a later hello (the words already carried are Ignored by then, so they are never sent twice). Undo takes
+   tried at a later hello (the words already carried are Ignored by then, so they are never sent twice). The route is
+   asked `unless_known`: a word known by any source (an Anki card's too, which `state` never shows) is skipped, never
+   Ignored (J-FIX 2: an old ignore never undoes what the learner knows); the toast counts the words it added. Undo takes
    back every call's own write; OLD_DONE stays (PROVISIONAL: the learner said no to those words). */
 const OLD_IGNORES = `surasura_ignored_words_${LANG}`;
 const OLD_DONE = `surasura_journey_old_ignores_${LANG}`;
@@ -686,19 +688,20 @@ async function carryOldIgnores() {
       if (!Object.hasOwn(a.marks, w) && !MARK.has(w) && !MWAIT.has(w)) words.push(w);   // Known, Ignored or pressed here: left as is
     }
     const added = [], undos = [];
-    let all = true;
+    let all = true, n = 0;
     for (let k = 0; k < words.length && all; k += OLD_BATCH) {
       const batch = words.slice(k, k + OLD_BATCH);
-      const r = await doorCall("words/mark", { marks: batch.map((word) => ({ word, mark: "ignore", was: "", at })) });
+      const r = await doorCall("words/mark", { unless_known: true, marks: batch.map((word) => ({ word, mark: "ignore", was: "", at })) });   // never over a word known by any source (Anki's too: J-FIX 2)
       if (!r || !r.ok) { all = !!r && r.kind === "refused"; continue; }   // unreadable: let go; else a later hello
-      const stale = new Set(r.stale || []);
-      for (const w of batch) if (!stale.has(w)) { added.push(w); if (!MWAIT.has(w)) MARK.set(w, "ignore"); }   // a press since is what's drawn
+      const left = new Set([...(r.stale || []), ...(r.skipped || [])]);
+      for (const w of batch) if (!left.has(w)) { added.push(w); if (!MWAIT.has(w)) MARK.set(w, "ignore"); }   // a press since is what's drawn
       if (r.undo_id != null) undos.push(r.undo_id);
+      n += Number.isInteger(r.done) ? r.done : 0;           // the words Surasura actually added
     }
     if (all) { try { localStorage.setItem(OLD_DONE, String(Date.now())); } catch (e) {} }
     if (!added.length) return;
     redrawMarks();
-    const n = added.length;
+    if (!n) return;
     toast(`⊘ ${n.toLocaleString("en")} ${n === 1 ? "word" : "words"} from your old journey page added to your Ignore list`, () => undoOldIgnores(added, undos));
   } finally { D.carrying = false; }
 }

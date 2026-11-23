@@ -245,6 +245,7 @@
       await goWord(E, 0);
       key(keyName("ignore")); await settle();
       ok("Ignore (W): marked ignore, next word", J.MARK.get(w0) === "ignore" && J.S.wi === 1);
+      ok("an ordinary press never asks the carry-over's guard (`unless_known`: as before J-FIX 2)", CALLS.filter(([, rt]) => rt === "words/mark").every(([, , b]) => !("unless_known" in b)));
       await goWord(E, 0);
       key(keyName("ignore")); await settle();
       ok("the same press again clears it (mark '')", !J.MARK.has(w0) && CALLS.filter(([, rt]) => rt === "words/mark").pop()[2].marks[0].mark === "");
@@ -789,6 +790,7 @@
         sent.length === 1 && JSON.stringify(sentWords(n0)) === JSON.stringify(mine), JSON.stringify(sentWords(n0)));
       ok("carried: each an Ignore over no mark (`was` \"\") with the time of the read, so the stale rule skips a word changed since",
         sent.length === 1 && sent[0][2].marks.every((m) => m.mark === "ignore" && m.was === "" && typeof m.at === "number"), sent[0] && JSON.stringify(sent[0][2].marks[0]));
+      ok("carried: the route asked never to Ignore a word known by any source (`unless_known`: Anki's known words too)", sent.length === 1 && sent[0][2].unless_known === true);
       ok("carried: Surasura's marks read whole first (state with no `since`), through the existing route", CALLS.slice(n0).some(([, rt, b]) => rt === "state" && b.since === null));
       ok("carried: the done-mark written, the old key left exactly as it was", localStorage.getItem(DONE) && localStorage.getItem(OLD) === oldValue, localStorage.getItem(DONE));
       ok("carried: the page shows them Ignored", mine.every((w) => J.MARK.get(w) === "ignore") && J.MARK.get(known) !== "ignore");
@@ -826,6 +828,21 @@
         n0 = CALLS.length;
         await J.hello(); await settle();
         ok("…and the next hello carries them", JSON.stringify(sentWords(n0)) === JSON.stringify(mine) && !!localStorage.getItem(DONE));
+      }
+      {                                                  // a word known through Anki (never in `state`): the route skips it
+        seed(JSON.stringify(mine)); mine.forEach((w) => J.MARK.delete(w));
+        const hook = window.__J_DOOR_HOOK;
+        window.__J_DOOR_HOOK = (route, body) => route === "words/mark" ? { ok: true, done: body.marks.length - 1, undo_id: "s." + (900 + body.marks.length), stale: [], skipped: [mine[1]] } : hook(route, body);
+        n0 = CALLS.length;
+        await J.hello(); await settle();
+        ok("a skipped word (Known through Anki) is never shown Ignored; the rest are", J.MARK.get(mine[0]) === "ignore" && !J.MARK.has(mine[1]) && J.MARK.get(mine[2]) === "ignore" && !!localStorage.getItem(DONE));
+        ok("…and the toast counts the words actually added", /\b2 words from your old journey page/.test($("#toast").textContent), $("#toast").textContent);
+        seed(JSON.stringify([mine[1]])); n0 = CALLS.length;
+        window.__J_DOOR_HOOK = (route, body) => route === "words/mark" ? { ok: true, done: 0, undo_id: null, stale: [], skipped: body.marks.map((m) => m.word) } : hook(route, body);
+        const t0 = $("#toast").textContent;
+        await J.hello(); await settle();
+        ok("every old word known: nothing said, nothing shown Ignored, done", marksSent(n0).length === 1 && !J.MARK.has(mine[1]) && !!localStorage.getItem(DONE) && ($("#toast").classList.contains("hide") || $("#toast").textContent === t0));
+        window.__J_DOOR_HOOK = hook;
       }
       const many = [];                                   // 5,000 old words (real ones, joined two and three at a time)
       for (let a = 0; a < words.length && many.length < 5000; a++) for (let b = 0; b < words.length && many.length < 5000; b++) for (let c = 0; c < words.length && many.length < 5000; c++) if (a !== b && b !== c) many.push(words[a] + words[b] + words[c]);

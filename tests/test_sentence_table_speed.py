@@ -236,7 +236,7 @@ def test_the_finish_lets_go_of_the_packed_lines_and_works_in_little_more_memory_
     # why: the finish runs at the end of a Generate, at the run's most memory; working in 8-byte copies of every
     # line and co-word cost a 400-file Chinese library 160 MB there (the packed lines took 19 MB)
     p, keys, row = _big()
-    packed = 40000 * 27 + 40000 * 17 * 4        # the lines as packed: 27 bytes a line, 4 a co-word's id
+    packed = 40000 * 31 + 40000 * 17 * 4        # the lines as packed: 31 bytes a line, 4 a co-word's id
     tracemalloc.start()
     try:
         t = p.finish(keys, row.get, lambda k: ((row[k],),), row.get, lambda k: k, lambda i: None,
@@ -245,7 +245,7 @@ def test_the_finish_lets_go_of_the_packed_lines_and_works_in_little_more_memory_
     finally:
         tracemalloc.stop()
     assert sum(t.head["lines"]) == 40000
-    # measured: 5.4 x packed since the speed work, 12.3 x on 3.0-dev d171b0c7 (its int64 copies) — the bound between
+    # measured: 5.1 x packed since the speed work, 11.8 x on 3.0-dev d171b0c7 (its int64 copies) — the bound between
     assert peak < 8 * packed, (peak, packed)
     p.add(keys[0], 0, 99, 5, 1)                 # no view of the packed lines is left behind
     assert len(p) == 40001

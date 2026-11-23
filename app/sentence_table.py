@@ -251,7 +251,7 @@ COLUMNS = (("src", "<i4"), ("number", "<i4"), ("chars", "<u2"), ("marks", "u1"),
 _BYTES = sum(np.dtype(t).itemsize for _n, t in COLUMNS)
 
 
-# A line as the walk packs it (27 bytes, one `struct` call a line): its word's provisional id, its source, its place,
+# A line as the walk packs it (31 bytes, one `struct` call a line): its word's provisional id, its source, its place,
 # its length, how many co-words and phrases follow, its hash, its marks, besides, where the word starts.
 _LINE = struct.Struct("<iiiiiiIBBB")
 _LINE_COLUMNS = np.dtype([("word", "<i4"), ("src", "<i4"), ("number", "<i4"), ("chars", "<i4"), ("ncow", "<i4"),

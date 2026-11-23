@@ -270,8 +270,10 @@ Episode = namedtuple("Episode", Episode._fields + ("prestudied",),
 Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("level", "string"),
                  defaults=tuple(Row._field_defaults.values())[:-1] + (None, None))
 # --- J-STONES: `prestudied`, the labels of the row's pre-studied files in order, made once as the row is (a Finished
-# row's cover sparkle and hover read it at each paint: never a walk of its files there); () in a cache from before
-Row = namedtuple("Row", Row._fields + ("prestudied",), defaults=tuple(Row._field_defaults.values()) + ((),))
+# row's cover sparkle and hover read it at each paint: never a walk of its files there); a cache from before lands its
+# `string` (None) here: () as it is read (`_row_from`). `string` stays last (what `to_cache` leaves unwritten)
+Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("prestudied", "string"),
+                 defaults=tuple(Row._field_defaults.values())[:-1] + ((), None))
 Arrival = namedtuple("Arrival", Arrival._fields + ("audio",), defaults=tuple(Arrival._field_defaults.values()) + ("",))
 
 

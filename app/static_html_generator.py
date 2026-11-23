@@ -629,14 +629,16 @@ LINE_TIMES_MEMO = "line_times.json"     # results/: a playable line's times with
 TIMED_TYPES = ("subtitle", "audio")     # a source with timed lines: a subtitle; an audiobook's transcript (its item's)
 
 
-def _line_media(language, rel_paths, memo_path=None, explain=False):
+def _line_media(language, rel_paths, memo_path=None, explain=False, cut_kinds=()):
     """({rel path: [where, why not]}, [folder URI, ...]) for the journey's ▶ (Kiku-L): the file `play.files` finds for
     each — when a browser plays it (`PLAYABLE`), `where` is "<its folder's place in the list>/<its name as it is>" (the
     page puts the URI together: a folder's URI once, a name never percent-encoded in the page — 20k sources were 2 MB
     more), else ["", its extension] (".mkv": the badge's hover says why; "vbr": an mp3 whose bit rate varies); nothing
     found, no row. `memo_path`: its answers kept between renders (only this render's sources: one that left the lists
-    leaves the file). `explain`: the badge is shown, so a line with no ▶ says why (`play.files`' hint). Never raises: a
-    lookup that fails is no ▶, never a failed report; a memo that can't be read or written only costs time."""
+    leaves the file). `explain`: the badge is shown, so a line with no ▶ says why (`play.files`' hint). `cut_kinds`:
+    the journey's render (J-CLIP) — a file of these kinds (the one cutter's videos) is looked for and gets its `where` too,
+    though no browser plays it: the page cuts its lines (`clip/cut`); this page asks none. Never raises: a lookup that
+    fails is no ▶, never a failed report; a memo that can't be read or written only costs time."""
     if not rel_paths:
         return {}, []
     memo = {}
@@ -650,7 +652,7 @@ def _line_media(language, rel_paths, memo_path=None, explain=False):
     before = dict(memo)                         # (`play.files` replaces an entry, never changes one in place)
     try:
         from app.services import play
-        found = play.files(language, sorted(rel_paths), memo=memo, explain=explain)
+        found = play.files(language, sorted(rel_paths), memo=memo, explain=explain, cut_kinds=cut_kinds)
     except Exception as e:
         print(f"Warning: could not look for the lines' audio: {e}")
         return {}, []
@@ -660,7 +662,7 @@ def _line_media(language, rel_paths, memo_path=None, explain=False):
         if not isinstance(path, str) or not os.path.isabs(path):
             continue                             # nothing found (or never a relative path: no URI, no ▶)
         ext = os.path.splitext(path)[1].lower()
-        if ext not in PLAYABLE:
+        if ext not in PLAYABLE and ext not in cut_kinds:
             out[rel] = ["", ext]
             continue
         if ext == ".mp3":

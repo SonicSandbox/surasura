@@ -318,11 +318,14 @@ _job_handle = None      # Windows: one job object for this process's Anki Miner 
 LOW_PRIORITY = False
 
 
-def _popen(args, **kwargs):
-    """`subprocess.Popen`, at idle priority while LOW_PRIORITY is on."""
+def _popen(args, below=False, **kwargs):
+    """`subprocess.Popen`, at idle priority while LOW_PRIORITY is on; `below`: below normal (the journey's clips cut
+    ahead of a press, `clips.ahead`) unless LOW_PRIORITY's idle already is."""
+    from app.connect import power
     if LOW_PRIORITY:
-        from app.connect import power
         return power.popen_idle(args, **kwargs)
+    if below:
+        return power.popen_below_normal(args, **kwargs)
     return subprocess.Popen(args, **kwargs)
 
 
@@ -378,7 +381,7 @@ def _communicate(proc, timeout, on_poll=None, look_up=False):
     return stopping.wait(proc, timeout, on_poll, _stop, look_up=look_up, every=POLL_S)[0]
 
 
-def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None, bind=True, look_up=None, env=None):
+def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None, bind=True, look_up=None, env=None, below=False):
     """Run `<path> --api <args…>` and return its verdict (a dict). Raises AnkiMinerError for a call with no verdict
     (absent, quarantined, crashed, timeout, unknown-version); a verdict with `ok: false` is returned as it is.
     `on_poll`: called every POLL_S while the call runs. A look-up (LOOK_UPS) still under way at the job's *Stop* is
@@ -386,13 +389,14 @@ def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None, bind=True, look_up=None
     call is never ended with this process (`_bind`) — Anki Miner's own `setup`, under its own run lock, finishes
     whenever Surasura quits (review A2-4). `look_up` True: ended at the job's *Stop* as a look-up is (Stage B's
     spot-check: `media` and `transcribe` write only their own run folder). `env`: the program's environment (Michi-YT:
-    `fetch` with the YouTube downloader's yt-dlp on its PATH), else this process's."""
+    `fetch` with the YouTube downloader's yt-dlp on its PATH), else this process's. `below`: started below normal
+    priority (`_popen`)."""
     flags = CREATE_NO_WINDOW if sys.platform == "win32" else 0
     if look_up is None:
         look_up = bool(args) and args[0] in LOOK_UPS    # row 56: read before the program starts, never after
     try:
         proc = _popen(_command(path) + ["--api", *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                      stderr=subprocess.DEVNULL, creationflags=flags, env=env)
+                      stderr=subprocess.DEVNULL, creationflags=flags, env=env, below=below)
         if bind:
             _bind(proc)
     except FileNotFoundError:
@@ -769,15 +773,16 @@ def check(path, language, profile=None):
     return _result(api(path, args))
 
 
-def settings_export(path, language, out, profile=None):
+def settings_export(path, language, out, profile=None, timeout=QUICK_TIMEOUT):
     """The export `--api settings-export` writes, read back and put in place at `out`. Row 56: Anki Miner writes it
     under a temporary name beside `out`, replaced in only once it is whole and read — an export ended mid-write (a
-    press, a timeout, a crash) leaves the last whole one at `out`, never half of one, and its part is removed."""
+    press, a timeout, a crash) leaves the last whole one at `out`, never half of one, and its part is removed.
+    `timeout`: the journey's ▶ waits less (`clips.SETTINGS_TIMEOUT`)."""
     root, ext = os.path.splitext(out)
     part = f"{root}.{os.getpid()}.part{ext}"        # the extension kept: Anki Miner writes the JSON file it is named
     args = ["settings-export", "--language", language, "--out", part] + (["--profile", profile] if profile else [])
     try:
-        _result(api(path, args))
+        _result(api(path, args, timeout=timeout))
         try:
             with open(part, encoding="utf-8") as f:
                 export = json.load(f)

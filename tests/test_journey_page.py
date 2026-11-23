@@ -113,7 +113,7 @@ def test_the_page_writes_only_the_settings_keys_of_spec_1_4():
     # the app's own keys (J-SET-TABLE § 2, the same names as the data): the page never invents one
     keys = set(re.findall(r'\{ k: "\w+", key: "([\w.]+)"', _read(PAGE)))
     assert keys == {"logic.context.max_contexts", "journey_pitch", "journey_meanings", "source_display", "journey_word_size",
-                    "journey_sentence_size", "theme", "journey_keys"}, keys
+                    "journey_sentence_size", "theme", "journey_keys", "journey_first_meeting"}, keys
 
 
 def test_the_render_inlines_only_the_chosen_rail():
@@ -191,6 +191,43 @@ def test_page_at_a_phone_and_a_half_screen_width(tmp_path, lang, width):
     assert any(name.startswith(f"{width} px") for name, _, _ in res["out"])
 
 
+def test_a_hand_edited_first_meeting_switch_reaches_the_page_as_shown():
+    # settings.json edited by hand ("false", 0): J-SET's reader takes it as no switch, the default (Shown); the page
+    # reads the head's value only when it is a switch (the Edge case below with a "false" head)
+    from app import journey_render as jr
+    assert jr.page_settings({"journey_first_meeting": "false"})["first_meeting"] is True
+    assert jr.page_settings({"journey_first_meeting": 0})["first_meeting"] is True
+    assert jr.page_settings({"journey_first_meeting": False})["first_meeting"] is False
+    assert jr.page_settings({})["first_meeting"] is True
+
+
+# (lang, sentences per word, the head's first_meeting, the kinds of word each case must reach). Every sixth fixture
+# word's first line is from another episode (Only i+1's case), so the first meeting is second or not shown at all.
+MEET_CASES = [
+    ("ja", 3, None, {"first", "later", "none", "card"}),
+    ("zh", 3, None, {"first", "later", "none", "card"}),
+    ("ja", 1, "false", {"only", "none"}),             # one line a word, and a hand-edited head value
+    ("zh", 1, "false", {"only", "none"}),
+]
+
+
+@needs_edge
+@pytest.mark.parametrize("lang,sentences,head,kinds", MEET_CASES, ids=[f"{c[0]}-{c[1]}" for c in MEET_CASES])
+def test_the_first_meeting_line_is_marked_and_its_switch_redraws_only_those_lines(tmp_path, lang, sentences, head, kinds):
+    # Sonic's ruling: the first-meeting sentence is its own marked line, shown by default, hideable. The page marks the
+    # line already shown whose source is the word's own episode and adds, drops or moves no other: the checks work
+    # out each word's expected lines from its own data, and count what each press of the switch redrew
+    import journey_page_run as runner
+    parts = fx.build(lang, 200, sentences=sentences, first_meeting=head)
+    path = runner.page_file(str(tmp_path), lang, 200, parts=parts)
+    res, errs = runner.run(path, "only=meet")
+    assert res and not errs, errs
+    fails = [(name, detail) for name, good, detail in res["out"] if not good]
+    assert not fails, fails
+    reached = next(name for name, _g, _d in res["out"] if name.startswith("the kinds of word checked"))
+    assert kinds <= set(reached.split(": ", 1)[1].split()), reached
+
+
 @needs_edge
 @pytest.mark.parametrize("lang", ["ja", "zh"])
 def test_an_empty_library_opens_on_its_empty_state(tmp_path, lang):
@@ -205,8 +242,12 @@ def test_an_empty_library_opens_on_its_empty_state(tmp_path, lang):
         # the start runs on after the first word: hello answers (here: no door) and redraws the marks, so wait for it
         heard = e.open_wait("window.__J.D.heard", 10) if first else False
         assert opened and first and heard, (opened, first, heard, e.errors())
+        # the first-meeting switch with no word to mark: its row is there, the press redraws nothing that throws
+        e.evaluate("window.__J.openSettings(), window.__J.setSetting('first_meeting', false), window.__J.closeLayer()")
+        switched = e.evaluate("window.__J.SET.first_meeting")
         stage = e.evaluate("document.getElementById('stage').textContent")
         rail = e.evaluate("document.getElementById('rail').textContent")
         errs = e.errors()
     assert not errs, errs
+    assert switched is False
     assert "Generate" in stage and "Generate" in rail, (stage, rail)

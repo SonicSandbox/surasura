@@ -704,6 +704,16 @@ def test_without_places_every_row_is_off_the_list_and_an_empty_library_has_none(
     assert st.open_table(_write(empty.finish(empty.packer()), tmp_path, "empty.bin")).places() == []
 
 
+def test_places_of_another_length_than_the_rows_are_refused(tmp_path):
+    # why: a place list off by one would give every later row its neighbour's place; refused, the run's write fails
+    # and is logged (the analyzer's try), and the reader takes today's path
+    lib = _Library(_sentences("ja"))
+    with pytest.raises(ValueError):
+        lib.packer().finish(lib.keys, lib.row.get, lib.clauses, lambda key: lib.row.get(key, -1), lambda key: key,
+                            lambda index: None, [], {"engine": "e47", "run_signature": "sig", "language": "ja"},
+                            places=list(range(len(lib.keys) - 1)))
+
+
 def _list_order(results):
     import csv
     with open(os.path.join(results, "progressive_learning_list.csv"), encoding="utf-8-sig", newline="") as f:
@@ -734,17 +744,20 @@ def test_at_level_1_a_generate_with_an_empty_list_writes_no_places(monkeypatch):
     results = _seed("ja")
     _generate_at("ja", 1, extra=("--min-freq=100000",))
     table = st.open_table(os.path.join(results, st.TABLE_FILE), language="ja")
-    assert table is not None and table.places() == [p for p in table.places() if p < 0]
+    assert table is not None and table.places() == [-1] * len(table.head["keys"])
     assert table.head["rows"] == []
 
 
-def test_at_level_1_generate_writes_the_same_table_whatever_the_hash_seed(monkeypatch):
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_at_level_1_generate_writes_the_same_table_whatever_the_hash_seed(language, monkeypatch):
     # why: the places come from the list, the rows from word_stats: neither may move with the process's seed
     monkeypatch.delenv("SURASURA_SENTENCE_TABLE", raising=False)
-    results = _seed("ja")
-    blobs = []
+    results = _seed(language)
+    path, blobs = os.path.join(results, st.TABLE_FILE), []
     for seed in ("1", "2"):
-        _generate_at("ja", 1, seed=seed)
-        blobs.append(open(os.path.join(results, st.TABLE_FILE), "rb").read())
+        if os.path.exists(path):
+            os.remove(path)                 # each run's own table, never the one before
+        assert "Saved the sentence table" in _generate_at(language, 1, seed=seed)
+        blobs.append(open(path, "rb").read())
     assert blobs[0] == blobs[1]
-    assert st.open_table(os.path.join(results, st.TABLE_FILE)).places()
+    assert max(st.open_table(path).places()) >= 0

@@ -232,6 +232,8 @@ class Packer:
         `sources`: [[rel, kind, digest]] · `head`: {engine, run_signature, language} · `places`: each row's place in
         the list Generate wrote (the study order: 0 first), -1 off it; none given: every row -1."""
         from app import plan_rules
+        if places is not None and len(places) != len(keys):
+            raise ValueError(f"{len(places)} places for {len(keys)} rows")
         n_ids = len(self._keys)
         rows = np.full(n_ids, -1, np.int64)
         for p, key in enumerate(self._keys):
@@ -419,7 +421,8 @@ class Table:
 
     def places(self):
         """Each row's place in the list this Generate wrote (by row, as `head['keys']`; -1: not on it) — what is taught
-        before a word when the caller passes no order (one is passed only after a move: SPEC § 5)."""
+        before a word when the caller passes no order. A move's redraw rewrites the list, never the table: after a
+        move the caller passes the order (SPEC § 5)."""
         return self.head["places"]
 
     def rows(self):

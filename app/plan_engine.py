@@ -592,8 +592,9 @@ class _CountLines:
 
 def read_counts(path, run_signature):
     """The counts table `CountsTable.write` put beside the plan -> `Counts`, shaped as `counts` reads the plan (`files`
-    [[its report name]] — `report_name` of a name is the name —, `keys` [[Word, Reading]], `per_file`: each file's {"main", "ph", "prog"}, the listed rows' uses under
-    "main", `prog`'s first two numbers), so the journey reads either alike; None when absent, damaged (its CRC, its
+    [[its report name]] — `report_name` of a name is the name —, `keys` [[Word, Reading]], `per_file`: each file's
+    {"main", "ph", "prog"}, the listed rows' uses under "main", `prog`'s first two numbers), so the journey reads
+    either alike; None when absent, damaged (its CRC, its
     lengths, a key out of range), or another run's. Held lean for the render's peak (the lead's ruling: no cost bought
     back elsewhere): the keys and names packed (`_Keys`, `_Names`), the uses 16-bit when every one fits."""
     try:

@@ -208,9 +208,10 @@ class AnchorFinder:
     MAX_ANCHOR = 40      # bounds the whitespace-tolerant pattern
     MAX_CHUNKS = 6       # a sentence can span a dozen cues; a few of the longest is plenty
     # The memo's answers: [anchor, start, end] — a times-only answer made this render is held as (start, end) and
-    # written as [None, start, end] (`save_memo`; 92,000 of them at 20,000 files: 3 MB less). A memo written before the times came from Connect's line reader
-    # (E5.1) holds [anchor, whole seconds] found otherwise, and is recomputed: its files' signatures differ. The
-    # signature also names the engine: the reader cleans lines as a Generate does, and that changes only with it.
+    # written as [None, start, end] (`save_memo`; 92,000 of them at 20,000 files: 3 MB less). A memo written before
+    # the times came from Connect's line reader (E5.1) holds [anchor, whole seconds] found otherwise, and is
+    # recomputed: its files' signatures differ. The signature also names the engine: the reader cleans lines as a
+    # Generate does, and that changes only with it.
     LINES = "cues-1"
 
     def __init__(self, cache_path=None, script="asis", language=None):

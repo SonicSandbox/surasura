@@ -61,7 +61,7 @@ def _bytes(path):
 
 
 def _model_rows(w):
-    return [(w.model.item(i).data(WORD), w.model.item(i).data(SOURCE)) for i in range(w.model.rowCount())]
+    return [(w.model.index(i, 0).data(WORD), w.model.index(i, 0).data(SOURCE)) for i in range(w.model.rowCount())]
 
 
 def _signals(w):
@@ -252,7 +252,7 @@ def test_an_add_inserts_its_row_alone_before_the_known_words_rows(main, known_fi
     w.add_typed()
     assert wait_until(lambda: w.list_paints == paints + 1 and not w.busy(), 30)
     assert seen == {"inserted": [(300, 300)], "removed": [], "reset": 0}
-    assert _model_rows(w) == [tuple(e) for e in word_lists.read("ignore", "ja").entries]
+    assert _model_rows(w) == [tuple(e)[:2] for e in word_lists.read("ignore", "ja").entries]
     assert _model_rows(w)[300] == ("冒険家", "list") and _model_rows(w)[301][1] == "known"
 
 
@@ -265,7 +265,7 @@ def test_a_cross_removes_its_row_alone(main, known_file, ja_resources_dir):
     assert wait_until(lambda: w.list_paints == paints + 1 and not w.busy(), 30)
     assert seen == {"inserted": [], "removed": [(1, 1)], "reset": 0}
     assert words[1] not in _bytes(path).decode("utf-8").splitlines()
-    assert _model_rows(w) == [tuple(e) for e in word_lists.read("ignore", "ja").entries]
+    assert _model_rows(w) == [tuple(e)[:2] for e in word_lists.read("ignore", "ja").entries]
 
 
 def test_a_list_or_language_switch_makes_every_row_again(main):
@@ -276,11 +276,12 @@ def test_a_list_or_language_switch_makes_every_row_again(main):
     w = _open(main)
     seen = _signals(w)
     w.kind_buttons["known"].click()
-    assert wait_until(lambda: _model_rows(w) == [("灯台", "list")])
+    # (Mado-LT 4: the Known tab's rows are KnownWord.json's known words, held as "known")
+    assert wait_until(lambda: _model_rows(w) == [("灯台", "known")])
     assert seen["reset"] >= 1
     resets = seen["reset"]
     main.services.settings.set({"target_language": "zh"})
-    assert wait_until(lambda: w.language == "zh" and _model_rows(w) == [("东西", "list")])
+    assert wait_until(lambda: w.language == "zh" and _model_rows(w) == [("东西", "known")])
     assert seen["reset"] > resets
 
 
@@ -304,7 +305,7 @@ def test_a_read_that_changed_the_file_leaves_the_rows_exactly_the_files(main, ja
     seen = _signals(w)
     w._show(w._asked, word_lists.Listing([word_lists.Entry(*e) for e in new]))
     assert _model_rows(w) == new
-    assert w.entries == new
+    assert [entry[:2] for entry in w.entries] == new         # (Mado-LT 4: + reading, origin, created)
     assert (seen["reset"] == 1) == (change in ("many", "refill", "empty"))
     if change in ("middle", "first", "last"):
         assert len(seen["inserted"]) + len(seen["removed"]) <= 4

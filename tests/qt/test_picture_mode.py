@@ -341,7 +341,7 @@ DRAWN = {
     ("wizard.py", "LevelSlider.paintEvent", "S.SLIDER_LOW"): "a constant",
     ("wizard.py", "LevelSlider.paintEvent", "S.SLIDER_HIGH"): "a constant",
     ("wizard.py", "_Tile.paintEvent", "self.title[:1]"): "one letter names no one",
-    ("word_lists_window.py", "_RemoveDelegate.paint", "s.WORD_LISTS_REMOVE_MARK"): "a constant mark",
+    ("word_lists_window.py", "_RemoveDelegate.paint", "self.mark_glyph(index)"): "a constant mark (✓ ○ ✕)",
 }
 # Every `elidedText` in app/qt that doesn't cut `scrub.shown(...)`, with why.
 CUT = {

@@ -375,3 +375,70 @@ def test_every_route_but_the_ahead_ask_stops_the_cut_ahead(monkeypatch):
     assert stopped == [1]
     call({"lang": "ja", "line_ids": ["7:1000"], "ahead": True})
     assert stopped == [1]
+
+
+# --------------------------------------------------------------------------- #
+# The route: `clip/cut` on the door (journey v3 SPEC §3.3)
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def route(episode, monkeypatch):
+    """The door route with Connect's lookups as the case's (its Steps), the door's GET standing in."""
+    from app import door, settings_manager
+    from app.connect import runner
+    ep = episode("ja")
+    monkeypatch.setattr(settings_manager, "load_settings", lambda *a, **k: dict(ep["settings"]))
+    monkeypatch.setattr(runner, "Steps", lambda settings: ep["steps"])
+    monkeypatch.setattr(anki_miner, "find", lambda settings: ep["miner"])
+    served = []
+    monkeypatch.setattr(door, "serve_file", lambda path, kind: served.append((path, kind)) or
+                        f"http://127.0.0.1:5123{door.CLIP_PATH}{len(served):032x}")
+    return dict(ep, served=served)
+
+
+def test_the_route_is_built_so_the_page_shows_the_play_button(monkeypatch):
+    from app.services import journey_door
+    assert journey_door.resolve(journey_door.ROUTES["clip/cut"]) is not None
+
+
+def test_a_press_answers_the_doors_url_path_for_the_kept_clip(route):
+    from app import door
+    from app.connect import door_routes
+    cue = route["lines"][2]
+    got = door_routes.clip_route({"lang": "ja", "line_id": _id(cue)}, None)
+    assert got["url"].startswith(door.CLIP_PATH) and "127.0.0.1" not in got["url"]    # the page adds its own port
+    ((path, kind),) = route["served"]
+    assert kind == "audio/mpeg" and cue.text in _said(path)
+
+
+@pytest.mark.parametrize("body, said", [
+    ({"lang": "en", "line_id": "7:1000"}, "Surasura couldn't read that."),
+    ({"lang": "ja", "line_id": "7:" + "1" * 60}, clips.NO_LINE),
+    ({"lang": "ja", "line_id": 71000}, clips.NO_LINE),
+    ({"lang": "ja", "line_id": "7:999999"}, clips.GONE),
+])
+def test_a_press_refused_says_why_in_the_clips_words(route, body, said):
+    from app import door
+    from app.connect import door_routes
+    with pytest.raises(door.RouteError) as e:
+        door_routes.clip_route(body, None)
+    assert str(e.value) == said and not route["served"]
+
+
+def test_the_library_busy_is_busy_never_a_line_gone(route):
+    from app import door
+    from app.connect import door_routes, runner
+
+    def busy(lang, job):
+        raise runner.Wait(runner.LIBRARY_BUSY)
+    route["steps"].subtitle = busy
+    with pytest.raises(door.RouteError) as e:
+        door_routes.clip_route({"lang": "ja", "line_id": _id(route["lines"][0])}, None)
+    assert e.value.kind == "busy" and str(e.value) == door_routes.BUSY
+
+
+def test_the_ahead_ask_answers_at_once_with_how_many_and_cuts_them(route, fake_miner):
+    from app.connect import door_routes
+    ids = [_id(c) for c in route["lines"][:3]] + ["x" * 99, 5]
+    assert door_routes.clip_route({"lang": "ja", "line_ids": ids, "ahead": True}, None) == {"ahead": 3}
+    assert _ahead_done() and [len(c["media_lines"]) for c in _media_calls(fake_miner)] == [3]
+    assert not route["served"]                  # nothing served: no press asked for it

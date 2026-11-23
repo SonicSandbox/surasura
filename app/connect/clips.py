@@ -35,7 +35,7 @@ log = logging.getLogger("surasura-cli")
 
 ROOT = "clips"                  # under Connect's folder (`verbs._connect_folder`): the local data folder
 CAP_BYTES = 64 << 20            # the cache's size: ~400 lines of 192 kbps audio; the oldest dropped first past it
-CUT_TIMEOUT = 60.0              # one press's cut at most (a share that stops answering never leaves ▶ waiting)
+CUT_TIMEOUT = 30.0              # one cut at most (a share that stops answering never leaves ▶ waiting: the page waits 35 s)
 RUN_LEFT_S = 60 * 60            # a run folder a crash left behind is removed once this old
 AHEAD_MAX = 6                   # lines an ahead ask cuts, in one call (a word's shown lines: ~2.7 s for 8)
 KINDS = {".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac", ".ogg": "audio/ogg", ".opus": "audio/ogg",

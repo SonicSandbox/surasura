@@ -128,6 +128,7 @@ body.focus .hd { opacity:.35; } body.focus .hd:hover { opacity:1; }
 .wf-icon .src .sn { display:none; }
 .pl { width:32px; height:32px; border-radius:7px; border:1px solid var(--line-hi); background:var(--surface); color:var(--accent); cursor:pointer; flex:none; display:grid; place-items:center; margin-top:4px; padding:0; }
 .pl.none { visibility:hidden; }
+.pl.wait > svg { display:none; }   /* a line being cut (clip/cut): the spinner in the triangle's place */
 .fl { margin-left:auto; opacity:0; border:0; background:none; color:var(--ink-faint); cursor:pointer; font-size:14px; min-width:32px; min-height:32px; border-radius:6px; flex:none; }
 .ln:hover .fl, .fl.lit, .fl.wait, .fl.queued { opacity:1; } .fl.lit { color:var(--warn); }
 .more { color:var(--ink-dim); font-size:12px; padding:6px 12px; }
@@ -1000,6 +1001,7 @@ function drawWord() {
   setHtml(st, html);
   drawDesk();
   if (end) reachEnd(i);
+  aheadSoon();
 }
 function resetSeqEp(i) { SEQ.delete(i); }
 function emptyHtml() {
@@ -1246,18 +1248,47 @@ function mediaUrl(p) {                                  // "<dir index>/<path in
   const [dir, ...rest] = p.split("/"), file = rest.join("/");
   return PLAYABLE.test(file) && HEAD.dirs[Number(dir)] ? HEAD.dirs[Number(dir)] + file.split("/").map(encodeURIComponent).join("/") : null;
 }
+/* A line the browser can't play (an .mkv) is cut by Surasura on the press (clip/cut, J-CLIP: ~2 s the first time,
+   at once once kept): the press shows it is working on its own button at once — nothing else is redrawn — and the
+   wait always ends (CLIP_MS, past the cut's own limit). The clip is the line: it plays from its start, to its end. An
+   answer for a word left meanwhile plays nothing (it is kept for the next press). */
+const CLIP_MS = 35000;
 async function playLine(k) {
   const id = curWordId(), w = id != null && wordNow(id), ln = w && w[9][k];
   if (!ln) return;
   const src = srcOf(id, ln[1]); if (!src || !src[3]) return;
-  let url = mediaUrl(src[3]);
+  let url = mediaUrl(src[3]), from = ln[2] || 0, end = ln[3];
   if (!url) {
     if (!live()) { toast("Surasura is closed: this line plays when the journey is open from Surasura."); return; }
-    const a = await doorCall("clip/cut", { line_id: lineId(ln, src) });
+    const b = $("stage").querySelector(`[data-play="${k}"]`);
+    if (b) b.classList.add("wait");
+    const a = await doorCall("clip/cut", { line_id: lineId(ln, src) }, CLIP_MS);
+    if (b) b.classList.remove("wait");
     if (!a || !a.ok) { toast(a && a.error || "Surasura couldn't cut that line."); return; }
-    url = `http://127.0.0.1:${DOOR.port}${a.url}`;
+    if (curWordId() !== id) return;
+    url = `http://127.0.0.1:${DOOR.port}${a.url}`; from = 0; end = null;
   }
-  try { player.src = url; player.currentTime = ln[2] || 0; playEnd = ln[3]; await player.play(); } catch (e) { toast("This browser can't play that file."); }
+  try { player.src = url; player.currentTime = from; playEnd = end; await player.play(); } catch (e) { toast("This browser can't play that file."); }
+}
+/* Ahead of a press (J-CLIP; a cut is ~2 s, Anki Miner's own start most of it): idle on a word for AHEAD_MS, its shown
+   lines from the open episode that only a cut plays are asked once, in one ask (Surasura cuts them below normal
+   priority and stops at the page's next press). Never a line not shown, never another episode's. */
+const AHEAD_MS = 1200, AHEADED = new Set();
+let aheadTimer = 0;
+function aheadSoon() {
+  clearTimeout(aheadTimer);
+  if (!live() || D.routes == null || !built("clip/cut")) return;
+  aheadTimer = setTimeout(() => {
+    const id = curWordId(), w = id != null && wordNow(id); if (!w) return;
+    const ids = [];
+    for (const k of shownLines(id, w).ks) {
+      const ln = w[9][k], src = srcOf(id, ln[1]);
+      if (!src || !src[3] || src[2] !== S.ep || ln[2] == null || mediaUrl(src[3])) continue;
+      const lid = lineId(ln, src);
+      if (lid[0] !== "p" && !AHEADED.has(lid)) { AHEADED.add(lid); ids.push(lid); }
+    }
+    if (ids.length) doorCall("clip/cut", { line_ids: ids, ahead: true });
+  }, AHEAD_MS);
 }
 async function playWord() {
   const id = curWordId(), w = id != null && wordNow(id);

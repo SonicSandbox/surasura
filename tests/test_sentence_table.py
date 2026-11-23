@@ -440,6 +440,56 @@ def test_at_level_1_a_run_without_its_table_is_not_reused(monkeypatch):
     assert "reusing existing results" not in out and os.path.exists(os.path.join(results, st.TABLE_FILE))
 
 
+# A set phrase said in many files (ja only: Chinese has no set phrases, analyzer.py's _phrase_set): in each file a
+# line in the preferred length first, then one over the preferred length, then one over *Never longer than*.
+_PAGES = ("{n}ページ目まで読んで、やっと気がついた。",
+          "{n}ページ目で彼女はすぐに気が付いて振り返ったが、そこにはもう誰もいなかった。",
+          "{n}ページ目を開いたとき、やっと気がついたのだが、その手紙を書いたのは先生ではなく、ずっと前に町を出ていった兄だったのだ。")
+
+
+def _phrase_library(files):
+    """`files` files of the three _PAGES lines (each file its own page number, so no two lines are the same text) and
+    a last one holding only the over-long line; lengths 22 / 40 / 62 against preferred 30 and *Never longer than* 55."""
+    from tests import services_helpers as h
+    folder = h.seed_library("ja", files=["context_test.txt"])
+    for n in range(files):
+        with open(os.path.join(folder, f"pages_{n:03d}.txt"), "w", encoding="utf-8") as f:
+            f.write("\n".join(line.format(n=n + 1) for line in _PAGES) + "\n")
+    with open(os.path.join(folder, "pages_zz_only_long.txt"), "w", encoding="utf-8") as f:
+        f.write(_PAGES[2].format(n=999) + "\n")
+    h.write_settings({"target_language": "ja", "anki_connect_url": "http://127.0.0.1:9",
+                      "logic": {"context": {"min_chars": 10, "preferred_max_chars": 30, "max_chars": 55}}})
+    return os.path.join(h.root(), "results")
+
+
+def test_at_level_1_a_phrase_keeps_every_line_its_shortlists_turn_away_and_an_over_long_one_only_as_a_files_first(
+        monkeypatch):
+    # why: the table holds every candidate (SPEC § 1), so the walk's skip of a line both full shortlists would turn
+    # away (`_could_take`) must not apply at level 1 — here the later files' longer line, once 60 short ones fill both;
+    # and a line over *Never longer than* is a candidate only as the phrase's first sentence in its file (never chosen,
+    # kept as the fallback), as a word's is: the table's size stays what the cap allows
+    monkeypatch.delenv("SURASURA_SENTENCE_TABLE", raising=False)
+    files = 100
+    results = _phrase_library(files)
+    _generate_at("ja", 1)
+    table = st.open_table(os.path.join(results, st.TABLE_FILE), language="ja")
+    names = [os.path.basename(s[0]) for s in table.sources()]
+    rows = [k for key, k in table.rows().items() if key[0] == "気が付く"]
+    assert len(rows) == 1, sorted(table.rows())
+    by_file = {}
+    for src, number, _chars, marks, _w in _lines_of(table, rows[0]):
+        by_file.setdefault(names[src], []).append((number, bool(marks & st.OVER)))
+    paged = {name: lines for name, lines in by_file.items() if name.startswith("pages_") and "zz" not in name}
+    assert len(paged) == files
+    # every file: its short line and its longer one, both under the cap (the longer one turned away by full shortlists
+    # in the later files at level 0), never its third, over the cap and not the file's first
+    assert {len(lines) for lines in paged.values()} == {2}, sorted(
+        (name, lines) for name, lines in paged.items() if len(lines) != 2)[:5]
+    assert not any(over for lines in paged.values() for _n, over in lines)
+    # a file whose only sentence of the phrase is over the cap: that one, kept, marked
+    assert [over for _n, over in by_file["pages_zz_only_long.txt"]] == [True]
+
+
 # --------------------------------------------------------------------------- #
 # 5. The two numbers a line carries: words besides the word, where the word starts
 # --------------------------------------------------------------------------- #

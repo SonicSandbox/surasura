@@ -41,8 +41,8 @@ FIND = Qt.ItemDataRole.UserRole + 2                       # what the search look
 KNOWN_ROW = Qt.ItemDataRole.UserRole + 3                  # True on a Known tab's row (its mark ✓ / ○, never ✕)
 _SPLIT = re.compile(r"[\s,、，]+")                          # the Add field's words
 _REBUILD_OVER = 100                                       # rows changed by one read past which every row is made again
-_FACE = {Qt.ItemDataRole.DisplayRole: 0, Qt.ItemDataRole.AccessibleTextRole: 0, Qt.ItemDataRole.ToolTipRole: 1,
-         FIND: 2}                                         # the roles `_face` answers: its text, tip and search text
+_FACE = {Qt.ItemDataRole.DisplayRole: 0, Qt.ItemDataRole.EditRole: 0, Qt.ItemDataRole.AccessibleTextRole: 0,
+         Qt.ItemDataRole.ToolTipRole: 1, FIND: 2}         # the roles `_face` answers: its text, tip and search text
 _ROLES = frozenset(_FACE) | {WORD, SOURCE, KNOWN_ROW}     # every role a row answers
 
 
@@ -178,11 +178,22 @@ class _Words(QAbstractListModel):
             self.rows[a:a] = new
             self.endInsertRows()
 
+    def place(self, row):
+        """Row `row`'s place in `entries`."""
+        return row if self.rows is None else self.rows[row]
+
+    def row_of(self, at):
+        """The row showing entry `at` (None: the search hides it)."""
+        if self.rows is None:
+            return at if 0 <= at < len(self.entries) else None
+        row = bisect.bisect_left(self.rows, at)
+        return row if row < len(self.rows) and self.rows[row] == at else None
+
     def set_entry(self, at, entry):
         """Entry `at` is `entry` (its search text unchanged: a ✓'s mark): its row alone painted again, when shown."""
         self.entries[at] = entry
-        row = at if self.rows is None else bisect.bisect_left(self.rows, at)
-        if self.rows is None or (row < len(self.rows) and self.rows[row] == at):
+        row = self.row_of(at)
+        if row is not None:
             self.dataChanged.emit(self.index(row, 0), self.index(row, 0))
 
 
@@ -366,7 +377,13 @@ class WordListsWindow(SecondaryWindow):
             self.count.setText(text)
 
     def _filter(self, text):
+        """The search's rows shown; the current word stays current while the search still shows it."""
+        current = self.shown.mapToSource(self.list.currentIndex())
+        at = self.model.place(current.row()) if current.isValid() else None
         self.model.search(text.strip())
+        row = self.model.row_of(at) if at is not None else None
+        if row is not None:
+            self.list.setCurrentIndex(self.shown.mapFromSource(self.model.index(row, 0)))
         self._count()
 
     def show_kind(self, kind):

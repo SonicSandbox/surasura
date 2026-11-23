@@ -332,30 +332,6 @@ def test_eleven_thousand_known_words_open_as_one_list(main, ja_resources_dir):
 
 
 # --- ten thousand words, every step under 4 ms (Mado-LT 6) ------------------------------------------------------ #
-# The machine's own speed for the 4 ms (the Qt guide § 4: no step on the window's thread over 4 ms): the idea of
-# Flake-F6's `tests/qt/test_guide.py::_speed` (its PR not landed yet: copied, not imported) — a fixed piece of the
-# same kind of work, timed by the same clock, the least of 5; REF_DESKTOP_MS its reading on the desktop the 4 ms is set
-# on. A slower machine reads it slower by the same ratio, and only then is the budget scaled (never below 4 ms).
-REF_TEXT = "この本は、毎日少しずつ読むことで、知らない言葉が自然に覚えられるように作られています。 " * 6
-REF_DESKTOP_MS = 3.16
-
-
-def _budget(own_ms):
-    from PyQt6.QtWidgets import QLabel
-    label = QLabel(REF_TEXT)
-    label.setWordWrap(True)
-    label.ensurePolished()
-    best = None
-    for _ in range(5):
-        t0 = own_ms()
-        for width in range(200, 420, 11):
-            label.heightForWidth(width)
-        took = own_ms() - t0
-        best = took if best is None else min(best, took)
-    label.deleteLater()
-    return 4.0 * max(1.0, best / REF_DESKTOP_MS)
-
-
 def _step(own_ms, fn, *args):
     t0 = own_ms()
     fn(*args)
@@ -378,9 +354,9 @@ def test_ten_thousand_known_words_open_search_and_mark_in_steps_under_4_ms(main,
     10,020 known) opens, answers a search keystroke and shows a ✓'s ○ each in steps under the Qt guide's 4 ms on the
     window's thread (its own CPU time: never the time a worker or another process took meanwhile) — the rows made as
     they come into view, never one item per word in the answer's step (~150 ms before)."""
-    from tests.qt.test_guide import _own_ms
+    from tests.qt.test_guide import _own_ms, _speed
     own_ms = _own_ms()
-    budget = _budget(own_ms)
+    budget = 4.0 * _speed(own_ms)                                           # 4 ms here; scaled on a slower machine
     steps = {"open": [], "keystroke": [], "press": []}
     moment = ["open"]
     real_show, real_marked = WordListsWindow._show, WordListsWindow._row_marked
@@ -457,3 +433,18 @@ def test_the_search_typed_on_one_tab_still_narrows_the_other_tabs_rows(main):
     w.show_kind("ignore")
     assert wait_until(lambda: w.entries is not None and not w.busy())
     assert _shown(w) == [("灯油", "list")] and w.count.text() == "1 of 3 words"
+
+
+def test_the_current_word_stays_current_through_a_search_that_still_shows_it(main):
+    """(Mado-LT 6) A word picked in the list, then a search typed: while the search shows it, it stays the current row
+    (Delete still takes the word the learner picked); a search that hides it leaves no row current."""
+    _write("ja", JA)
+    w = _open(main)
+    w.list.setCurrentIndex(w.shown.index(_row(w, "提灯"), 0))
+    w.search.setText("灯")
+    assert w.list.currentIndex().data(WORD) == "提灯" and w.list.currentIndex().row() == 1
+    w.search.setText("ちょうちん")
+    assert w.list.currentIndex().data(WORD) == "提灯" and w.list.currentIndex().row() == 0
+    w.search.setText("看板")
+    assert not w.list.currentIndex().isValid()
+    assert w.shown.index(0, 0).data(Qt.ItemDataRole.EditRole) == "看板   かんばん   · Anki card"

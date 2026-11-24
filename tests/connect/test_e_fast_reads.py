@@ -229,6 +229,21 @@ def test_a_file_s_tokens_are_let_go_once_its_texts_are_read(monkeypatch, lang, k
     assert [c.item_id for c in got] == before[(lang, young)]
 
 
+@pytest.mark.parametrize("lang, key, word, long_line", CASES)
+def test_a_malformed_entry_in_a_files_tokens_costs_only_its_own_line(monkeypatch, lang, key, word, long_line):
+    # why: what the walk reads of a file is made whole at its first read; one entry the token store holds badly (no
+    # text, no tokens, a lemma that is no string) must not blank the file's other lines — the walk read them line by
+    # line before, and met a bad entry only on its own line
+    w = World(monkeypatch, lang)
+    lines = LINES[lang]
+    w.table(key, [("ep01", [lines[0], "-", "-", "-"]), ("ep02", [lines[1]])], word)
+    w.place("ep01", 1, ctx=0.5)
+    w.place("ep02", 2, ctx=0.1)
+    w.tokens[w.path("ep01")] = [(lines[0], [[word, "", word]]), (), ("-", None), ("-", [[["not", "a", "string"]]])]
+    got = sentences.choose(lang, [key], dial=sentences.BEST, young={"看板": 1.0})[key]
+    assert [c.item_id for c in got] == [1, 2] and got[0].text == lines[0]
+
+
 # --- a young word's lines ------------------------------------------------------------------------------------------ #
 
 def test_a_young_word_is_read_only_in_lines_it_can_lift_to_the_top(monkeypatch, tmp_path):

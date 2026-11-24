@@ -320,15 +320,26 @@ def _young(moment):
     return out
 
 
-def _youngest(tokens, young_of, by_lemma):
+def _line_text(sentence):
+    """A line's text as the token store holds it, stripped — None for an entry held badly (that line unread alone)."""
+    try:
+        return str(sentence[0]).strip()
+    except Exception:
+        return None
+
+
+def _youngest(sentence, young_of, by_lemma):
     """A line's youngest word that is no row of the list: the highest of `young_of`'s weights among its tokens, 0 with
-    none (every weight is above 0: `_young`)."""
+    none (every weight is above 0: `_young`) or for an entry held badly (that line alone)."""
     best = 0.0
-    for t in tokens or ():
-        if t and t[0] in young_of and t[0] not in by_lemma:
-            weight = young_of[t[0]]
-            if weight > best:
-                best = weight
+    try:
+        for t in sentence[1] or ():
+            if t and t[0] in young_of and t[0] not in by_lemma:
+                weight = young_of[t[0]]
+                if weight > best:
+                    best = weight
+    except Exception:
+        return 0.0
     return best
 
 
@@ -608,8 +619,8 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
             cache = store()
             try:
                 sentences = cache.file_tokens(at) if cache else []
-                got = (tuple(str(s[0]).strip() for s in sentences),
-                       tuple(_youngest(s[1], young_of, by_lemma) for s in sentences) if young_of else None)
+                got = (tuple(map(_line_text, sentences)),
+                       tuple(_youngest(s, young_of, by_lemma) for s in sentences) if young_of else None)
             except Exception:
                 got = ((), None)
             read[at] = got

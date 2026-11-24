@@ -10,6 +10,11 @@ from unittest.mock import patch
 import pandas as pd
 
 
+import pytest
+# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
+pytestmark = pytest.mark.usefixtures("journey_pre_cut")
+
+
 def _render(tmp_path, rows):
     results = tmp_path / "results"
     results.mkdir()

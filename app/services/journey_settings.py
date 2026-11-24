@@ -106,6 +106,20 @@ def page_values(settings):
     return {key: page_value(settings, key) for key in KEYS}
 
 
+LOOKUP_KINDS = ("all", "anime", "liveaction", "youtube")       # ⌕'s kinds of sentences (the page's LOOK_KINDS)
+
+
+def lookup_values(settings):
+    """⌕'s two (D15 kept it), as the page reads them from its head (`lookup`, `lookup_category`): Settings'
+    word_search_enabled (a hand-edited "false" is no switch: shown) and word_search_category (one the page doesn't
+    offer: All), as the old page read them. Rendered into the page, so both are in the render signature
+    (`analyzer.compute_render_signature`'s v3 list); the page's ⚙ doesn't set them (not in KEYS)."""
+    on = _get(settings, "word_search_enabled", True)
+    kind = _get(settings, "word_search_category", "all")
+    return {"lookup": on if isinstance(on, bool) else True,
+            "lookup_category": kind if isinstance(kind, str) and kind in LOOKUP_KINDS else "all"}
+
+
 def stored(key, value):
     """What setting `key` to the page's `value` stores; ValueError for a key the page doesn't have or a value it
     doesn't offer."""

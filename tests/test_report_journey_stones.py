@@ -31,6 +31,10 @@ TEMPLATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 GREEN = ("#4caf50", "76, 175, 80", "green")
 
 
+# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
+pytestmark = pytest.mark.usefixtures("journey_pre_cut")
+
+
 def _template():
     with open(TEMPLATE, encoding="utf-8") as f:
         return f.read()

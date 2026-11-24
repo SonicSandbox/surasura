@@ -637,6 +637,32 @@ def test_generate_force_on_a_new_day_runs_whole_never_the_plans_redraw(run, mark
     assert analyzer.redrawn_for(results)["day"] == analyzer.drawn_day(), "a Generate's own marker: today's"
 
 
+_UNRECORD = r"""
+import sys
+from app import token_index
+store = token_index.open_store(sys.argv[1])
+store.set_meta("last_run_signature", "an earlier run")
+store.close()
+"""
+
+
+def test_a_journey_drawn_today_whose_run_the_token_store_does_not_record_runs_whole_then_is_reused(run):
+    # why: the day clause of `_drawn_another_day` (mutant X10) — with today's marker in place the reuse gate still
+    # declines when the token store's record of the last run is behind the run stamp (a Generate's last write, which
+    # never fails the run, did not land). The press then runs whole, which records the run, and the next press
+    # reuses; a redraw from the plan would leave the record behind and redraw at every press, never reusing
+    root = _generated(run.language, run.tmp.mktemp(f"unrecorded-{run.language}"))
+    results = os.path.join(root, "results")
+    p = subprocess.run([sys.executable, "-c", _UNRECORD, run.language], cwd=cases.REPO, env=_env(root),
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    assert p.returncode == 0, p.stderr[-2000:]
+    assert analyzer.redrawn_for(results)["day"] == analyzer.drawn_day(), "drawn today"
+    out = cases.generate(root, run.case, extra_env=LEVEL_2)
+    assert "Saved the sentence table" in out and "Redrew the journey" not in out, out[-1500:]
+    out = cases.generate(root, run.case, extra_env=LEVEL_2)
+    assert "reusing existing results" in out, out[-1500:]
+
+
 _STAMP = re.compile(rb'"stamp":"\d+"')
 _WRITTEN = ("priority_learning_list.csv", "progressive_learning_list.csv", "reading_list_static.html")
 

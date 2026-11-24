@@ -798,7 +798,7 @@ class Store:
         if row[2]:
             from app import sentence_table
             try:
-                words = sentence_table.read_file_words(zlib.decompress(row[2]), joined)
+                words = sentence_table.read_file_words(zlib.decompress(row[2]), self.language, joined)
             except zlib.error:
                 pass
         return sentences, words

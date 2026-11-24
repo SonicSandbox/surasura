@@ -6694,7 +6694,7 @@ def main():
                 kept, words = _file_words[0], None
                 if kept is not None:
                     try:
-                        words = kept.line(s_no, s_tokens, _people)
+                        words = kept.line(s_no, s_tokens, s_text, _people)
                     except Exception:
                         pass                # counted here instead
                 if words is not None:

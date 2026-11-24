@@ -2,9 +2,9 @@
 
 What these prove:
   - what the indexer keeps for a file (`sentence_table.file_words`, the token store's `words`) gives every line of the
-    real ja + zh files the numbers `LineWords` gives — for every word and every set-phrase span in it, with no person
-    in the line; a line that holds one of the library's people, a name link, a sentence a name table joined at the
-    read, or tokens of another count is handed back to be counted at the walk, as before;
+    real ja + zh files the numbers `LineWords` gives — for every word and every set-phrase span in it, with and
+    without the library's people (a person's tokens asked the person rule at the walk); a line with a name link, a
+    sentence a name table joined at the read, or tokens of another count is handed back to be counted at the walk;
   - a row of another rule's count, a damaged one, or none at all reads as "count at the walk", never as numbers;
   - a Generate at level 1 writes the same table, byte for byte, from a store indexed with the counts as from one
     indexed without them (at level 0, or by a build before them — the column dropped), Japanese and Chinese;
@@ -48,7 +48,7 @@ def _clipped(answers):
 
 
 def _kept(sentences, language, joined=()):
-    return st.FileWords(st.file_words(sentences, language), joined)
+    return st.FileWords(st.file_words(sentences, language), language, joined)
 
 
 # --------------------------------------------------------------------------- #
@@ -60,7 +60,7 @@ def test_every_real_line_kept_at_indexing_gives_the_numbers_the_walk_counts(real
     language, lines = real
     kept, compared = _kept(lines, language), 0
     for no, (text, tokens) in enumerate(lines):
-        words = kept.line(no, tokens)
+        words = kept.line(no, tokens, text)
         if words is None:
             assert any(link in text for link in st._NAME_LINKS), text     # only a name link is counted at the walk
             continue
@@ -69,24 +69,24 @@ def test_every_real_line_kept_at_indexing_gives_the_numbers_the_walk_counts(real
     assert compared >= 0.95 * len(lines) and compared >= 100
 
 
-def test_a_line_holding_one_of_the_librarys_people_is_counted_at_the_walk(real):
+def test_a_line_holding_one_of_the_librarys_people_gives_the_numbers_the_walk_counts(real):
     # why: a person counts only when the line is about them (a particle or だ / です after the name) — the library's
-    # people are known only after a whole index, so the indexer counts with none, and a line holding one of them must
-    # be handed back; every other line's numbers are the same with the people as without
+    # people are known only after a whole index, so the indexer counts with none, and the walk asks the person rule of
+    # a person's tokens alone: every line's numbers must be LineWords' with the people
     language, lines = real
     # (a Chinese library has no people today: its first words of some lines stand in, to prove the hand-back alone)
     people = _people(lines) if language == "ja" else frozenset(tokens[0][0] for _t, tokens in lines[:6] if tokens)
-    kept, handed_back, compared = _kept(lines, language), 0, 0
+    kept, with_people, compared = _kept(lines, language), 0, 0
     for no, (text, tokens) in enumerate(lines):
-        words = kept.line(no, tokens, people)
+        words = kept.line(no, tokens, text, people)
         if words is None:
-            handed_back += 1
+            assert any(link in text for link in st._NAME_LINKS), text
             continue
         assert _clipped(_answers(words, tokens)) == _clipped(_answers(st.LineWords(tokens, text, language, people),
                                                                        tokens))
         compared += 1
-    holding = sum(1 for _text, tokens in lines if any(t[0] in people for t in tokens))
-    assert holding and handed_back >= holding and compared >= len(lines) // 2
+        with_people += any(t[0] in people for t in tokens)
+    assert with_people >= 5 and compared >= 0.95 * len(lines)
 
 
 def test_a_sentence_a_name_table_joined_or_of_another_length_is_counted_at_the_walk(real):
@@ -95,11 +95,11 @@ def test_a_sentence_a_name_table_joined_or_of_another_length_is_counted_at_the_w
     language, lines = real
     no = next(i for i, (_text, tokens) in enumerate(lines) if len(tokens) >= 3 and i)
     kept = _kept(lines, language, joined={no})
-    assert kept.line(no, lines[no][1]) is None
-    assert kept.line(no - 1, lines[no - 1][1]) is not None or not lines[no - 1][1]
+    assert kept.line(no, lines[no][1], lines[no][0]) is None
+    assert kept.line(no - 1, lines[no - 1][1], lines[no - 1][0]) is not None or not lines[no - 1][1]
     other = _kept(lines, language)
-    assert other.line(no, lines[no][1][1:]) is None             # one token fewer than indexed: never trusted
-    assert other.line(len(lines), lines[no][1]) is None          # a sentence the file did not have when indexed
+    assert other.line(no, lines[no][1][1:], lines[no][0]) is None             # one token fewer than indexed: never trusted
+    assert other.line(len(lines), lines[no][1], lines[no][0]) is None          # a sentence the file did not have when indexed
 
 
 def test_a_line_with_a_name_link_is_kept_as_count_at_the_walk():
@@ -109,8 +109,8 @@ def test_a_line_with_a_name_link_is_kept_as_count_at_the_walk():
     text = "フランク・ライアンが来た"
     plain = [("猫", "ネコ", "猫", "猫"), ("が", "ガ", "が", "が"), ("来る", "クル", "来た", "来")]
     kept = _kept([(text, tokens), ("猫が来た", plain)], "ja")
-    assert kept.line(0, tokens) is None
-    assert kept.line(1, plain).of_word(("猫", "ネコ")) == st.LineWords(plain, "猫が来た", "ja").of_word(("猫", "ネコ"))
+    assert kept.line(0, tokens, text) is None
+    assert kept.line(1, plain, "猫が来た").of_word(("猫", "ネコ")) == st.LineWords(plain, "猫が来た", "ja").of_word(("猫", "ネコ"))
 
 
 def test_a_word_late_in_a_long_line_keeps_its_start_as_the_table_does():
@@ -118,15 +118,16 @@ def test_a_word_late_in_a_long_line_keeps_its_start_as_the_table_does():
     text = "あ" * 300 + "猫が来た"
     tokens = [("あ" * 300, "ア", "あ" * 300, "あ" * 300), ("猫", "ネコ", "猫", "猫"), ("が", "ガ", "が", "が"),
               ("来る", "クル", "来た", "来")]
-    words = _kept([(text, tokens)], "ja").line(0, tokens)
-    assert words.of_word(("猫", "ネコ"))[1] == st.STARTS_PAST
-    assert words.of_word(("猫", "ネコ"))[0] == st.LineWords(tokens, text, "ja").of_word(("猫", "ネコ"))[0]
+    words = _kept([(text, tokens)], "ja").line(0, tokens, text)
+    assert words.of_word(("猫", "ネコ")) == st.LineWords(tokens, text, "ja").of_word(("猫", "ネコ")) == (2, 300)
+    longer = "あ" * 40000 + "猫"                     # past what two bytes hold: counted at the walk
+    assert _kept([(longer, tokens[:2])], "ja").line(0, tokens[:2], longer) is None
 
 
 def test_an_empty_file_and_an_empty_line_keep_nothing_to_count():
     # why: a file with no sentences, or a line with no words (a song line's, ♪～), reads back as (0, 0)
-    assert _kept([], "ja").line(0, []) is None
-    empty = _kept([("♪～", [])], "ja").line(0, [])
+    assert _kept([], "ja").line(0, [], "") is None
+    empty = _kept([("♪～", [])], "ja").line(0, [], "♪～")
     assert empty.of_word(("猫", "ネコ")) == (0, 0) and empty.of_span(0, 1) == (0, 0)
 
 
@@ -137,9 +138,9 @@ def test_a_row_of_another_rule_or_damaged_reads_as_count_at_the_walk(damage):
     raw = st.file_words(lines, "ja")
     raw = {"another rule": (st.WORDS_RULE + 1).to_bytes(2, "little") + raw[2:], "cut short": raw[:-3],
            "not ours": b"\x00" * 3, "empty": b""}[damage]
-    assert st.read_file_words(raw) is None
-    assert st.read_file_words(None) is None
-    assert st.read_file_words(st.file_words(lines, "ja")) is not None
+    assert st.read_file_words(raw, "ja") is None
+    assert st.read_file_words(None, "ja") is None
+    assert st.read_file_words(st.file_words(lines, "ja"), "ja") is not None
 
 
 # --------------------------------------------------------------------------- #
@@ -253,7 +254,7 @@ def test_the_kept_counts_are_compressed_and_smaller_than_the_tokens(monkeypatch)
     finally:
         con.close()
     for tokens, words in rows:
-        assert st.read_file_words(zlib.decompress(words)) is not None
+        assert st.read_file_words(zlib.decompress(words), "ja") is not None
         assert len(words) < len(tokens)
 
 
@@ -291,7 +292,7 @@ def test_a_store_keeps_the_indexers_counts_and_an_old_one_read_only_reads_as_non
         store.reconcile([str(f)], tokenize_file)
         sentences, words = store.file_words(str(f))
         assert sentences == store.file_tokens(str(f)) and words is not None
-        assert all(words.line(no, tokens) is not None for no, (text, tokens) in enumerate(sentences)
+        assert all(words.line(no, tokens, text) is not None for no, (text, tokens) in enumerate(sentences)
                    if tokens and not any(link in text for link in st._NAME_LINKS))
         assert store.file_words(str(tmp_path / "not-indexed.srt")) == ([], None)
     finally:
@@ -305,3 +306,20 @@ def test_a_store_keeps_the_indexers_counts_and_an_old_one_read_only_reads_as_non
         assert reader._no_words
     finally:
         reader.close()
+
+
+def test_apply_spans_reports_every_sentence_a_join_changed_and_no_other(monkeypatch):
+    # why: the walk trusts a sentence's kept counts only when its tokens are the indexed ones — a join of two tokens,
+    # one token made a name, or a term put where every piece was dropped (a == b) all move the places after it
+    from app import names
+    sentences = [["猫が来た", [["猫", "ネコ", "猫", "猫"], ["が", "ガ", "が", "が"], ["来る", "クル", "来た", "来"]]]
+                 for _ in range(4)]
+    name = ["平野", "ヒラノ", "平野", "平野"]
+    joins = [(0, 0, 2, name), (1, 1, 2, name), (2, 3, 3, name)]          # two tokens · one · an insert at the end
+    monkeypatch.setattr(names, "chosen", lambda *a, **k: iter(list(joins)))
+    joined = set()
+    out = names.apply_spans(sentences, ["any"], {"any": 1}, joined=joined)
+    assert joined == {0, 1, 2}
+    assert [len(tokens) for _text, tokens in out] == [2, 3, 4, 3]
+    joins[:] = [(0, 0, 1, name)]
+    assert names.apply_spans([["猫", [["猫", "ネコ", "猫", "猫"]]]], ["any"], {"any": 1})[0][1] == [name]   # no set

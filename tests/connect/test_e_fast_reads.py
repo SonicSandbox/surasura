@@ -377,3 +377,20 @@ def test_the_cut_takes_the_scores_best_line_that_fits_the_cap_else_its_first(tmp
     assert chosen({0}) == [second]                  # the score's first is past the cap: its next, which fits
     assert chosen(set()) == [first]                 # both fit: the score's first
     assert chosen({0, 1}) == [first]                # none of the score's fits: its first, not the line it didn't name
+
+
+@pytest.mark.parametrize("lang, key, word", [(c[0], c[1], c[2]) for c in CASES])
+def test_swap_asks_for_more_when_the_scores_one_line_is_in_a_file_outside_the_library(monkeypatch, lang, key, word):
+    # why: Swap asks the score for one line first; one in a file outside the library (no item) can't be its card's,
+    # so it asks again for the picker's eight and takes the first it can use
+    from app.connect import swap
+    w = World(monkeypatch, lang)
+    w.table(key, [("ep01", [LINES[lang][0]]), ("ep02", [LINES[lang][4]])], word)
+    w.place("ep02", 2)                              # ep01: there on disk, outside the store
+    os.makedirs(os.path.dirname(w.path("ep01")), exist_ok=True)
+    if not os.path.isfile(w.path("ep01")):
+        with open(w.path("ep01"), "w", encoding="utf-8", newline="\r\n") as f:
+            f.write(f"1\n00:00:01,000 --> 00:00:02,000\n{LINES[lang][0]}\n")
+    first = sentences.choose(lang, [key], dial=sentences.BEST, young={}, top=1)[key]
+    assert [c.item_id for c in first] == [None]     # the score's first line: outside the library
+    assert swap._chosen(lang, {key}, set(), None, set(), None) == (2, LINES[lang][4])

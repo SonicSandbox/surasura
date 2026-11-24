@@ -742,10 +742,13 @@ def _say_rest(shell, line):
     """The rest's line in the bottom bar, kept for its time (the shell's `say`, as the Download's own end says its line):
     written straight in, the status line of the run it starts next ("… waits for …", one snapshot later, ~14 ms here)
     took the slot at once and what came in was never seen (FLAKES.md, the yield test)."""
-    if callable(getattr(shell, "say", None)):
-        shell.say(line)
-    else:
+    if not callable(getattr(shell, "say", None)):
         windows.say_in_bar(shell, line)
+        return
+    try:
+        shell.say(line)
+    except (AttributeError, RuntimeError):                 # the main window gone (a late answer at quit): as say_in_bar
+        pass
 
 
 def _plain(problem):

@@ -667,9 +667,9 @@ def test_a_moves_job_reads_the_known_words_only_when_their_files_change(lib, mon
     reads = []
     real = reposition._known_sets
 
-    def counted(language, settings):
+    def counted(language, settings, *store):
         reads.append(language)
-        return real(language, settings)
+        return real(language, settings, *store)
     with _patched(fake):
         host._job("catch-up")                    # the first job reads them (the window's warm-up, here)
         monkeypatch.setattr(reposition, "_known_sets", counted)
@@ -706,10 +706,6 @@ def test_a_jobs_known_words_are_read_as_a_run_reads_them_whatever_a_chinese_plan
     monkeypatch.setattr(analyzer, "SANITIZE_JA", False)       # what a Chinese plan leaves
     sets, _answered = reposition._known_memo("ja", settings)
     assert sets[0] == as_a_run[0] and sets[1] == as_a_run[1] and sets[2] == as_a_run[2]
-
-
-# The counts before KYOU-MO-WASTE's fix (the work-count pattern: a strict xfail, turned green by the fix)
-_WASTE = pytest.mark.xfail(strict=True, reason="KYOU-MO-WASTE: the count before the fix")
 
 
 def _real_sentences(root, fake):
@@ -776,7 +772,7 @@ def _known_words_changed(root):
     os.utime(known, (time.time() + 5, time.time() + 5))
 
 
-@pytest.mark.parametrize("lib", [pytest.param("ja", marks=_WASTE), "zh"], indirect=True)
+@pytest.mark.parametrize("lib", ["ja", "zh"], indirect=True)
 def test_a_moves_job_builds_one_learning_view_and_one_tagger(lib, monkeypatch):
     """KYOU-MO-WASTE (the margin under R6's 5 ms is 0.5-1 ms; every move pays this): the unlocking word's pass (§17)
     built its own LearningView and its own fugashi tagger beside the ones the job's placement had just built from the
@@ -796,7 +792,7 @@ def test_a_moves_job_builds_one_learning_view_and_one_tagger(lib, monkeypatch):
     assert counts.taggers == (1 if _language() == "ja" else 0), f"a move's job made {counts.taggers} taggers"
 
 
-@pytest.mark.parametrize("lib", [pytest.param("ja", marks=_WASTE), "zh"], indirect=True)
+@pytest.mark.parametrize("lib", ["ja", "zh"], indirect=True)
 def test_a_moves_job_reads_each_cards_sentence_once(lib, monkeypatch):
     """KYOU-MO-WASTE: cards mined from one scene share a sentence, and the unlocking word's pass read a list card's
     sentence again for every card it weighed it for (`blockers`: the card, then each card it would bring) — 2 to 7
@@ -820,8 +816,7 @@ def test_a_moves_job_reads_each_cards_sentence_once(lib, monkeypatch):
         assert not counts.texts
 
 
-@pytest.mark.parametrize("lib", [pytest.param("ja", marks=_WASTE), pytest.param("zh", marks=_WASTE)],
-                         indirect=True)
+@pytest.mark.parametrize("lib", ["ja", "zh"], indirect=True)
 def test_a_jobs_known_words_open_the_token_store_once(lib, monkeypatch):
     """KYOU-MO-WASTE: a job's known words (`_known_memo`) opened the token store for their key, closed it, and — once
     the learner's known words changed — opened it again to read them. At most one open a job, changed or not."""
@@ -843,7 +838,7 @@ def test_a_jobs_known_words_open_the_token_store_once(lib, monkeypatch):
     assert counts.opens <= 1, f"a job after the known words changed opened the token store {counts.opens} times"
 
 
-@pytest.mark.parametrize("lib", [pytest.param("ja", marks=_WASTE), "zh"], indirect=True)
+@pytest.mark.parametrize("lib", ["ja", "zh"], indirect=True)
 def test_the_unlocking_pass_places_alike_with_the_jobs_reading_or_its_own(lib, monkeypatch):
     """KYOU-MO-WASTE: the pass reads with the job's own LearningView and tagger — and places every card as when it
     builds its own (the shared reading is the same reading): in a move's job, on real sentences, the pass run both

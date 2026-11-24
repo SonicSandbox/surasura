@@ -544,8 +544,9 @@ class Table:
     def as_read(self, src, root):
         """Is source `src`'s file the one the Generate read: there, its digest (`source_digest`: its path in one
         spelling, time, size, kind) the table's (SPEC § 5.4)? `root`: the language's data folder, a relative source's,
-        in any spelling. No digest, gone, any error: False — nothing of it is shown, never a line of another file. (The
-        rule of the score's `as_read` for a source with a digest, `app/sentence_score.py`; the word card's, E-HOVER.)"""
+        its separators, case and `.` parts as the caller writes them (another drive's name for it is another path). No
+        digest, gone, any error: False — nothing of it is shown, never a line of another file. (The rule of the score's
+        `as_read` for a source with a digest, `app/sentence_score.py`; the word card's, E-HOVER.)"""
         try:
             if src < 0:
                 return False

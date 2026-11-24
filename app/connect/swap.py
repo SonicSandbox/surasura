@@ -75,7 +75,7 @@ NOT_MADE = "That swap's card isn't made yet."
 KEPT = "The new card stays: you've studied or changed it."
 # FS-1 (the full Swap, 3.1; SCOPE.md § 8, Sonic 2026-11-23): a swap's kind, decided when its job is made (`_kind_of`)
 IN_PLACE, NEW_CARD = "in place", "new card"
-SETTING = "swap_in_place"       # settings.json: True = *Same card, new sentence*; False (the default until FS-2) = *A new card*
+SETTING = "swap_in_place"       # settings.json: True = *Same card, new sentence*; False = *A new card* (True the default since 3.0.18)
 MARK = "（前の文）"               # before a kept translation of the old line, until Piyo writes the new one's (decision 2)
 CHANGED = "This card changed since the swap: nothing was undone."
 HAND_EDITED = "its sentence was changed by hand: a new card instead"     # decision 5 (the row's why, said once)
@@ -608,9 +608,8 @@ def _start(steps, ledger, language, row, store_id, anki, out, count=None, state_
 
 def in_place_on(settings=None):
     """The learner's *Swap gives a card a better sentence* (`SETTING`): True = *Same card, new sentence*, False = *A new
-    card* — the default until FS-2 lands its Settings row (the lead, 2026-11-23; FS-2's last commit makes decision 1's
-    True the default). A value that isn't True or False reads as the default (`DEFAULT_SETTINGS`, the one place it
-    turns: FS-2)."""
+    card* — True the default (decision 1; on since 3.0.18). A value that isn't True or False reads as the default
+    (`DEFAULT_SETTINGS`, the one place it turns)."""
     from app import settings_manager
     if settings is None:
         settings = settings_manager.load_settings()

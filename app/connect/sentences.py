@@ -597,9 +597,9 @@ def read_ahead(language):
         return False
 
 
-def _scored(language, keys, here_key, never, young, files, reach, books, ai, settings, only=None):
+def _scored(language, keys, here_key, never, young, files, reach, books, ai, settings, only=None, top=TOP):
     """`choose` for the keys that are rows of the table, by the score (`sentence_score.choose`: one cost a line, the
-    lowest first; every line of the word, not a kept few) -> {key: [Choice, …]} at most TOP a word, plus the mined
+    lowest first; every line of the word, not a kept few) -> {key: [Choice, …]} at most `top` a word, plus the mined
     episode's own best line (`here_key`) when it is not among them; None at level 0 or with no table for `language`
     (today's path). A key that is no row of the table is left out (the caller's path finds it).
 
@@ -658,7 +658,7 @@ def _scored(language, keys, here_key, never, young, files, reach, books, ai, set
         return sentence_score.choose(language, asked, n=n, moment=moment, length=(low, high), never=never or None,
                                      only=within, heard_first=heard_first, memo=memo)
 
-    out, asked, n = {}, list(keys), TOP
+    out, asked, n = {}, list(keys), top
     while asked:
         got = ask(asked, n, inside)
         if got is None:
@@ -669,14 +669,14 @@ def _scored(language, keys, here_key, never, young, files, reach, books, ai, set
         for key, lines in got.items():
             choices = [c for c in map(as_choice, lines) if c is not None]
             out[key] = choices
-            if len(choices) < TOP and len(lines) >= n and n < GROW_MOST:
+            if len(choices) < top and len(lines) >= n and n < GROW_MOST:
                 again.append(key)           # some of its best lines can't be made: ask for more of them
         asked, n = again, n * GROW
     if here_key and only is None:
         lacking = [key for key, choices in out.items() if not any(c.here for c in choices)]
         got = ask(lacking, 1, [here_key]) if lacking else None
         for key, lines in (got or {}).items():
-            out[key] = out[key][:TOP] + [c for c in map(as_choice, lines[:1]) if c is not None]
+            out[key] = out[key][:top] + [c for c in map(as_choice, lines[:1]) if c is not None]
     for key, choices in out.items():
         choices.sort(key=lambda c: round(c.cost, 9))        # (stable: the score's own order among equals)
         if heard_first and choices and not choices[0].audio:
@@ -684,9 +684,32 @@ def _scored(language, keys, here_key, never, young, files, reach, books, ai, set
             if first is not None:
                 choices.remove(first)
                 choices.insert(0, first)
-        mine = next((c for c in choices[TOP:] if c.here), None)
-        out[key] = choices[:TOP] + ([mine] if mine is not None else [])
+        mine = next((c for c in choices[top:] if c.here), None)
+        out[key] = choices[:top] + ([mine] if mine is not None else [])
     return out
+
+
+def lines_in(language, keys, path, *, young=None):
+    """The score's lines of each word inside one file, best first -> {(lemma, reading): [line text, …]} (a key that is
+    no row of the table left out), at the moment `choose` reads (`_scored`, `only` the file): what the cut takes first
+    (`pick.pick`'s `ranked`) — the score chooses the line, the cut refuses what it can't make (SPEC § 11, overlap 78;
+    the lead's ruling, 2026-11-23). None at level 0, with no table, or on any failure: the cut's own rule, as today."""
+    from app import plan_rules
+    if plan_rules.SENTENCE_TABLE < 1 or not path:
+        return None
+    keys = list(dict.fromkeys(tuple(k) for k in keys or ()))
+    if not keys:
+        return {}
+    try:
+        from app import settings_manager
+        settings = settings_manager.load_settings()
+        here_key = os.path.normcase(os.path.abspath(path))
+        got = _scored(language, keys, here_key, {}, young_weights(language) if young is None else dict(young), None,
+                      None, True, ai_voice(settings, language), settings, only=[here_key], top=GROW_MOST)
+    except Exception:                       # never the cut's fault: its own rule
+        log.info("Connect: the score's lines in a file weren't read (%s)", language, exc_info=True)
+        return None
+    return None if got is None else {key: [c.text for c in choices] for key, choices in got.items()}
 
 
 def choose(language, keys, *, here=None, dial=None, never=None, young=None, files=None, reach=None, store=None,

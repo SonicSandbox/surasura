@@ -1461,6 +1461,7 @@ def pick(args):
     from app import analyzer
     # the one learning rule, with the list's own counts (Kantan-MA): a rare compound counts toward its free parts
     view = analyzer.LearningView(*_counted(lang), known=is_known)
+    young = sentences.young_weights(lang)
     chosen = picking.pick(read, tokens, lang, is_known, mode=mode, listed=listed, carded=keys, carded_source=source,
                           readable=view.readable if lang == "ja" else None,
                           ignore_names=bool((loaded.get("logic") or {}).get("ignore_names", False)),
@@ -1474,7 +1475,10 @@ def pick(args):
                           # Kantan-SD: the young words break a last tie; `never` (Swap's old card's sentence, never on
                           # the command line) is a line the word isn't cut from again; Kantan-SL: a swap's one word
                           # (its old card's lines join `never`)
-                          young=sentences.young_weights(lang), never=getattr(args, "never", None), swap=swap)
+                          young=young, never=getattr(args, "never", None), swap=swap,
+                          # the sentence choice (level >= 1): the score's lines of the words in this file, which the
+                          # cut takes first (None at level 0: the cut's own rule)
+                          ranked=lambda asked: sentences.lines_in(lang, asked, args.file, young=young))
     out.update(chosen, cards_from=source)
     if setup is not None:
         info, profile, mapping = setup

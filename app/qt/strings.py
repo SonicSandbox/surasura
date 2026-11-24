@@ -1659,6 +1659,9 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "undo_swap": ("Undo", "Delete the new card (Surasura keeps a copy) and put the old card back in your reviews"),
     "leave_swap": ("OK", "Keep the new card"),
     "leave_swap_wait": ("OK", "They keep waiting for another sentence; this asks again for a new one"),
+    # FS-2 (PROVISIONAL): the full Swap, said — the same card
+    "undo_swap_same": ("Undo", "Put the old sentence, audio and picture back on the same card"),
+    "leave_swap_same": ("OK", "Keep the new sentence"),
     "open_logs": ("Open the logs folder",
     "Open the folder where Surasura keeps its logs, to look at them or send them"),
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
@@ -1816,6 +1819,10 @@ NEEDS_SWAP_UNDONE = "Undone · the new card is gone and the old one is back in y
 NEEDS_SWAP_NOT_UNDONE = "Not undone: {why}"
 NEEDS_SWAP_LEFT = "OK · the new card stays"
 NEEDS_SWAP_WAIT_LEFT = "OK · they wait for another sentence"
+NEEDS_SWAP_SAME_UNDONE = "Undone · the card has its old sentence back"                      # FS-2 (PROVISIONAL)
+NEEDS_SWAP_SAME_LEFT = "OK · the new sentence stays"
+# FS-2, decision 11 (PROVISIONAL): after *Bad card*, while Swap gives the same card — a deleted card's reviews are gone
+NEEDS_BAD_CARD_FLAG = " · Next time, flag it instead: the same card keeps its reviews"
 NEEDS_SHOWS_NOT_ADDED = "Nothing was added: your library can't be changed just now · try again in a moment"
 NEEDS_FIRST_CARDS_AUTOMATION_OFF = "automatic actions are off in Settings; turn them on, then ask again"
 NEEDS_ITS_NEW = "{name} joins your library as a new file"

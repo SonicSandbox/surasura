@@ -347,6 +347,14 @@ STRINGS = {
     "swapped_title": "A new card for 「{word}」 from another sentence.",
     "swapped_say": ("You flagged its old card green: the old card stays suspended in Anki, tagged surasura::swapped. "
                     "Undo deletes the new card (a copy is kept) and puts the old one back in your reviews."),
+    # FS-2 (PROVISIONAL): the full Swap, said — the same card with a new sentence; a fall-back to a new card says why
+    "swapped_same_title": "「{word}」 has a better sentence, on the same card.",
+    "swapped_same_say": "You flagged it: it keeps its reviews and is back in them. Undo puts the old sentence back.",
+    "swapped_same_say_journey": ("The line you picked on the journey: the card keeps its reviews. Undo puts the old "
+                                 "sentence back."),
+    "swapped_why_hand": "You'd changed its sentence by hand, so it got a new card.",                 # decision 5
+    "swapped_why_not_ours": "Surasura didn't make its card, so it got a new card.",                  # decision 6
+    "swapped_why_render": "Update Anki Miner to keep the same card: this time it got a new card.",   # decision 12
     "swap_waits_title": "No other sentence for 「{word}」 yet.",
     "swap_waits_title_many": "No other sentence yet for {n:,} words you swapped.",
     "swap_waits_say": ("Your library says these words in one sentence only, the one on their card. Their new card is "
@@ -1420,6 +1428,19 @@ def _tidy_unsaved_entry(connect, seen, answered=frozenset()):
     title = STRINGS["tidy_unsaved_title_one"] if n == 1 else STRINGS["tidy_unsaved_title"].format(n=n)
     return Entry(key=key, kind=TIDIED, title=title, lines=(), actions=("leave_tidy",), unseen=key not in seen,
                  say=STRINGS["tidy_unsaved_say"], data={"id": int(unsaved["id"]), "cards": n, "unsaved": True})
+def _swap():
+    from app.connect import swap
+    return swap
+
+
+def _swap_why(why):
+    """FS-2: Connect's reason a swap the setting would make in place made a new card (the record's `kind_why`) -> the
+    key of its words here; None for no reason, or one this version doesn't know."""
+    s = _swap()
+    return {s.HAND_EDITED: "swapped_why_hand", s.NOT_CONNECTS: "swapped_why_not_ours",
+            s.NO_RENDER: "swapped_why_render"}.get(why)
+
+
 def _swap_entries(connect, seen, answered=frozenset()):
     """Kantan-SL (PROVISIONAL): one card a swap made (Connect's record's `swaps.made`, the newest not undone) — *Undo*
     is `swap.act_undo` with `data["id"]`, *OK* holds for that swap — and ONE quiet card for every swap whose word has no
@@ -1430,9 +1451,16 @@ def _swap_entries(connect, seen, answered=frozenset()):
         key = f"{SWAPPED}:{made['id']}:{made.get('at') or ''}"
         if key in answered:
             continue
-        out.append(Entry(key=key, kind=SWAPPED, title=STRINGS["swapped_title"].format(word=made.get("word") or ""),
-                         lines=(), actions=("undo_swap", "leave_swap"), unseen=key not in seen,
-                         say=STRINGS["swapped_say"], data={"id": int(made["id"]), "word": made.get("word")}))
+        word = made.get("word") or ""
+        if made.get("kind") == _swap().IN_PLACE:       # FS-2: the same card, its own Undo (the old sentence back)
+            title, actions = STRINGS["swapped_same_title"].format(word=word), ("undo_swap_same", "leave_swap_same")
+            say = STRINGS["swapped_same_say_journey" if made.get("by") == _swap().BY_JOURNEY else "swapped_same_say"]
+        else:                                          # a new card; why, once, when the setting asked for the same
+            title, actions = STRINGS["swapped_title"].format(word=word), ("undo_swap", "leave_swap")
+            why = _swap_why(made.get("kind_why"))
+            say = (STRINGS[why] + " " if why else "") + STRINGS["swapped_say"]
+        out.append(Entry(key=key, kind=SWAPPED, title=title, lines=(), actions=actions, unseen=key not in seen,
+                         say=say, data={"id": int(made["id"]), "word": made.get("word")}))
     waits = list(swaps.get("waits") or ())
     if waits:
         key = f"{SWAP_WAITS}:" + ",".join(str(w["id"]) for w in waits)

@@ -652,6 +652,23 @@
           ok("…and ⇄ sends that same id", pc && pc[2].line_id === call[2].line_id, pc && pc[2].line_id);
         }
       }
+      if (MODE === "on") {                              // FS-2: ⇄'s toast follows the answer's `same` (*Swap gives*)
+        let f = null;
+        for (const i of epsWith(1).slice(0, 60)) {
+          await J.loadEp(i);
+          (J.seq(i) || []).forEach((id, wi) => { if (!f && (J.wordNow(id)[6] & 8) === 8) f = { i, wi }; });
+          if (f) break;
+        }
+        if (f) await goWord(f.i, f.wi);
+        if (f && $('#stage [data-act="pick"]')) {
+          J.pickLine(0); await settle();
+          ok("⇄ with A new card: the new card's words", /new card from this line/.test($("#toast").textContent), $("#toast").textContent);
+          window.__J_DOOR_HOOK = (rt) => (rt === "swap/queue" ? { ok: true, queued: true, same: true } : null);
+          J.pickLine(0); await settle();
+          window.__J_DOOR_HOOK = null;
+          ok("⇄ with Same card: the card gets the line and keeps its reviews, never a new card", /keeps its reviews/.test($("#toast").textContent) && !/new card/.test($("#toast").textContent), $("#toast").textContent);
+        }
+      }
     }
 
     /* ---- the settings: each redraws only what it owns (SPEC §1.4) ---- */

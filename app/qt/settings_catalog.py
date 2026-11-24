@@ -287,6 +287,9 @@ ROWS = (
     _row("known_from_anki", "anki", "tablets", ("known_from_anki",), group="loop",
          options=tuple(term for term, _label in settings_values.KNOWN)),
     _row("loop_swap_flag", "anki", "select", ("loop_swap_flag",), options=MOVE_FLAGS, when=_CONNECT),
+    # FS-2 (the full Swap, SCOPE § 4; PROVISIONAL words): what Swap gives the card — Swap's own setting (ROLES.md),
+    # under its flag: *Same card, new sentence* rewrites it in place, *A new card* is the simple Swap
+    _row("swap_in_place", "anki", "choice", ("swap_in_place",), options=(True, False), sub=True, when=_CONNECT),
     _row("loop_ignore_flag", "anki", "select", ("loop_ignore_flag",), options=MOVE_FLAGS, when=_CONNECT),
     # Kantan-B2 (PROVISIONAL): the words whose cards you deleted in Anki, never made again — each with *Allow again*
     _row("unmined_words", "anki", "door", when=_CONNECT, door=("unmined-words",)),
@@ -498,7 +501,6 @@ NOT_SHOWN = {
     "hints_seen": "state: the one-time hints shown, each per library (W-1's first watched mark)",
     "subs_with_hato": "the learner's one yes in Needs you (*Find them with hato*, NS-2; hato's card: 3.0.1's next step)",
     "subs_with_hato_zh": "the Chinese library's one yes in Needs you (*Find them with hato*, Zh-H)",
-    "swap_in_place": "off in the tree until FS-2 lands its Settings row (*Swap gives a card a better sentence*)",
     "open_count": "state: a launch counter",
     "paused": "state: the circles paused with a click at the bar's bottom left (Mado-PZ), resumed the same way",
     "skipped_version": "state: its way back is App's *Offer <version> again*",

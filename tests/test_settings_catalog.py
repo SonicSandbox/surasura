@@ -1201,9 +1201,12 @@ def test_every_settings_path_a_line_names_starts_at_a_section_the_page_has():
 def test_the_three_move_cards_sit_together_in_anki_and_mining_known_swap_ignore():
     # why: one formula, one block (*Your daily loop*), in the mock's order; Swap and Ignore are read only while Connect
     # is on (`read_known_signal`), so their cards show only then — Known's always (the plain sync reads it too)
+    # (FS-2: Swap's own setting, *Swap gives*, is indented under its card — a sub row, inside the block)
     ids = [r.id for r in catalog.ROWS]
     at = ids.index("known_from_anki")
-    assert ids[at:at + 3] == list(catalog.MOVE_ROWS) == ["known_from_anki", "loop_swap_flag", "loop_ignore_flag"]
+    block = [rid for rid in ids[at:at + 4] if not catalog.ROW[rid].sub]
+    assert block == list(catalog.MOVE_ROWS) == ["known_from_anki", "loop_swap_flag", "loop_ignore_flag"]
+    assert ids[at:at + 4] == ["known_from_anki", "loop_swap_flag", "swap_in_place", "loop_ignore_flag"]
     for rid in catalog.MOVE_ROWS[1:]:
         row = catalog.ROW[rid]
         assert (row.section, row.adv, row.kind, row.keys) == ("anki", False, "select", (rid,))

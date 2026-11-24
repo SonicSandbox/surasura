@@ -234,7 +234,8 @@ def test_every_visible_control_writes_exactly_its_keys_and_a_per_language_one_ke
             else:
                 assert given_update is None
                 # Kantan-B3's marker rides beside *Count as known in Anki*'s pick (a pick, never an old default)
-                beside = {catalog.CHOSEN} if row.id == "known_from_anki" else set()
+                # (and FS-2's beside *Swap gives*': the default's later flip reaches only who never picked)
+                beside = {"known_from_anki": {catalog.CHOSEN}, "swap_in_place": {catalog.SWAP_CHOSEN}}.get(row.id, set())
                 assert set(changes) == set(expected) and set(changes) <= set(row.keys) | beside, (row.id, changes)
                 assert changes == expected
             store.land()

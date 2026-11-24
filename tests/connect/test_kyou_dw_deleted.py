@@ -507,6 +507,28 @@ def test_bad_card_is_a_new_card_from_another_line_made_as_every_connect_card_and
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_undo_on_a_bad_cards_swap_card_deletes_the_new_card_and_leaves_the_deleted_one_as_it_is(
+        lang, swap_world, monkeypatch):
+    # why: FS-2 2 (the lead's ruling): *Needs you*'s card for a Bad card's swap says what its Undo does, so that is
+    # pinned here — Swap's own Undo (`swap.act_undo`, the window's `undo_swap_deleted`) deletes the new card through
+    # Tidy's guarantee (a backup kept) and writes nothing to the old note: it is deleted, nothing to unsuspend,
+    # unflag or untag. The answer itself stands (only the deleted card's own Undo takes it back and asks again)
+    from app.connect import swap
+    anki, lists = swap_world
+    lists(lang)
+    led, notes, _word, row, _avoided = _bad_card(lang, anki, monkeypatch)
+    try:
+        _make_it(led, anki, row, lang)
+        del anki.log[:]
+        assert swap.act_undo({}, lang, row["id"]) == {"undone": True, "word": row["word"]}
+        assert anki.deleted == [NEW], "the new card deleted through Tidy's guarantee (a backup kept)"
+        assert [e for e in anki.log if e[0] in ("unsuspend", "set_flag", "remove_tags")] == [],             "the old card is deleted: nothing put back, unflagged or untagged"
+        assert swap._rows(led, "id = ?", (row["id"],))[0]["state"] == swap.UNDONE
+        assert _asked(lang, led)["asked"] == [], "the Bad card answer stands: the old card stays deleted, unasked"
+    finally:
+        led.close()
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
 @pytest.mark.parametrize("why", ["auto", "now"])
 def test_an_ordinary_tidy_keeps_a_bad_cards_new_card_you_asked_for(lang, why, swap_world, monkeypatch):
     # why: the learner asked for this card (OPEN 56 g: a swap's new card counts as asked for, `tidy.asked_for`): an

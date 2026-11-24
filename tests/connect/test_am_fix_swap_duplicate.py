@@ -40,6 +40,11 @@ class Anki(FullAnki):
         super().__init__()
         self.refuse = None
 
+    def find_notes(self, query):
+        """`"tag:<tag>"` alone, as `add_new_card` asks it: the notes holding that tag (Anki's tag search, case-blind)."""
+        tag = query.strip('"')[len("tag:"):].lower()
+        return [nid for nid, n in self.notes_.items() if tag in [t.lower() for t in n.get("tags") or ()]]
+
     def add_note(self, note):
         self.log.append(("add_note", note["deckName"], note["modelName"], tuple(sorted(note["fields"])),
                          dict(note.get("options") or {})))
@@ -135,12 +140,11 @@ def test_a_rendered_translation_is_the_new_cards_own(ledger, tmp_path, monkeypat
     assert _value(anki, "Hint", done["outcomes"][0]["note_id"]) == "May I borrow a pen?"
 
 
-@pytest.mark.parametrize("why", ["another note type", "deleted", "no render", "not on its line"])
+@pytest.mark.parametrize("why", ["another note type", "deleted", "not on its line"])
 def test_a_swap_anki_would_take_or_render_cant_make_is_mined_as_before(ledger, why, tmp_path, monkeypatch):
     """Only the old card of Connect's own note type is the duplicate: a card of the learner's own note type, or one
-    deleted since (a *Bad card*'s), is mined — Anki takes it — and so is the word when render can't make it (an Anki
-    Miner without `render`, 3.5–3.10; the word not on that line). Nothing is added, stored or written; for another note
-    type nothing is even rendered."""
+    deleted since (a *Bad card*'s), is mined — Anki takes it — and so is the word render didn't find on that line.
+    Nothing is added, stored or written; for another note type nothing is even rendered."""
     anki = _card(Anki(), "ja")
     row = _simple_swap(ledger, "ja", anki, monkeypatch)
     renders = []
@@ -150,14 +154,75 @@ def test_a_swap_anki_would_take_or_render_cant_make_is_mined_as_before(ledger, w
         anki.notes_[900]["modelName"] = "Japanese (recognition)"
     elif why == "deleted":
         del anki.notes_[900]
-    elif why == "no render":
-        def none(*a, **k):
-            raise anki_miner.AnkiMinerError("no-render", "This Anki Miner can't render a line (3.11 or later can).")
-        monkeypatch.setattr(anki_miner, "render_line", none)
     assert steps.swap_new_card("ja", ledger.job_by_id(row["job_id"]), {"video": "a.mkv", "subtitle": "a.ass"},
                                _words("ja"), 1, ledger, row) is None
     assert not any(op[0] in ("add_note", "store", "update", "delete_media") for op in anki.log)
-    assert len(renders) == {"another note type": 0, "deleted": 0, "no render": 0, "not on its line": 1}[why]
+    assert len(renders) == {"another note type": 0, "deleted": 0, "not on its line": 1}[why]
+
+
+def _no_render(*a, **k):
+    raise anki_miner.AnkiMinerError("no-render", "This Anki Miner can't render a line (3.11 or later can).")
+
+
+def test_an_anki_miner_without_render_says_once_update_it_and_never_waits_silently(ledger, tmp_path, monkeypatch):
+    """The lead's ruling 2 (AM-FIX 2): an Anki Miner older than 3.11 (3.5.0, the installed one) can't make this card —
+    its `mine` refuses it as the old card's duplicate and it has no `render` — so the swap never goes to `mine` to be
+    refused: it waits, and *Needs you* says once *Update Anki Miner to swap this card's sentence*. Nothing is added,
+    stored or written. Two such swaps are one line (the language's, `standing`: no item), and each job waits on it."""
+    anki = _card(Anki(), "ja")
+    row = _simple_swap(ledger, "ja", anki, monkeypatch)
+    steps = _steps(tmp_path, monkeypatch, anki, _rendered(tmp_path, "ja"))
+    monkeypatch.setattr(anki_miner, "render_line", _no_render)
+    job = ledger.job_by_id(row["job_id"])
+    with pytest.raises(runner.Needs) as e:
+        steps.swap_new_card("ja", job, {"video": "a.mkv", "subtitle": "a.ass"}, _words("ja"), 1, ledger, row)
+    need = e.value
+    assert (need.kind, need.say) == (runner.SWAP_UPDATE_NEED, "Update Anki Miner to swap this card's sentence")
+    assert need.standing and not need.whole
+    assert not any(op[0] in ("add_note", "store", "update", "delete_media") for op in anki.log)
+    assert runner._need(ledger, "ja", need, job) is True
+    assert runner._need(ledger, "ja", need, dict(job, id=job["id"] + 1)) is False     # said once
+    assert [(n["kind"], n["item_id"]) for n in ledger.needs("ja") if n["kind"] == need.kind] == [(need.kind, None)]
+
+
+def test_the_update_line_goes_by_itself_once_render_answers(ledger, tmp_path, monkeypatch):
+    """Updated (by *Update* or by hand), the swap's next try renders: the line is fixed by itself and the card made."""
+    anki = _card(Anki(), "ja")
+    row = _simple_swap(ledger, "ja", anki, monkeypatch)
+    job = ledger.job_by_id(row["job_id"])
+    ledger.need("ja", runner.SWAP_UPDATE_NEED, "Update Anki Miner to swap this card's sentence", job_id=job["id"],
+                standing=True)
+    steps = _steps(tmp_path, monkeypatch, anki, _rendered(tmp_path, "ja"))
+    done = steps.swap_new_card("ja", job, {"video": "a.mkv", "subtitle": "a.ass"}, _words("ja"), 1, ledger, row)
+    assert done["outcomes"][0]["outcome"] == "made"
+    assert not [n for n in ledger.needs("ja") if n["kind"] == runner.SWAP_UPDATE_NEED]
+
+
+def test_the_update_line_goes_when_no_swap_waits_on_it_any_more(ledger, monkeypatch):
+    """A swap that waited on the update ends another way (taken back, its word now Known): once no open swap job waits
+    on the line, it goes — never an *Update* line standing for nothing; one still waiting keeps it."""
+    anki = _card(Anki(), "ja")
+    row = _simple_swap(ledger, "ja", anki, monkeypatch)
+    ledger.need("ja", runner.SWAP_UPDATE_NEED, swap.UPDATE_TO_SWAP, job_id=row["job_id"], standing=True)
+    ledger.set_state(row["job_id"], "waiting", reason=swap.UPDATE_TO_SWAP)
+    runner._swap_update_gone(ledger, "ja")
+    assert [n["kind"] for n in ledger.needs("ja")] == [runner.SWAP_UPDATE_NEED]     # one still waits on it
+    ledger.set_state(row["job_id"], "dropped")
+    runner._swap_update_gone(ledger, "ja")
+    assert not [n for n in ledger.needs("ja") if n["kind"] == runner.SWAP_UPDATE_NEED]
+
+
+def test_the_update_line_on_needs_you_leads_to_connects_update_offer():
+    """*Needs you*'s line for it offers *Update* — Surasura's own install route, the approved release, asked first
+    (`NeedsPage._do_update_miner`: it reads the version from the line) — and *Dismiss*."""
+    from app.connect import am_release
+    from app.services import needs as service
+    rec = {"needs": [{"id": 7, "kind": runner.SWAP_UPDATE_NEED, "say": swap.UPDATE_TO_SWAP, "item": None,
+                      "at": "2026-11-23T20:00:00Z", "seen_at": None}]}
+    entry = next(e for e in service.entries(None, connect=rec) if e.kind == runner.SWAP_UPDATE_NEED)
+    assert entry.title == "Update Anki Miner to swap this card's sentence"
+    assert entry.actions == ("update_miner", "dismiss")
+    assert entry.data["version"] == am_release.APPROVED and entry.unseen
 
 
 def test_a_new_card_anki_refuses_leaves_no_clip_behind_and_asks_you_as_a_refused_mine_does(ledger, tmp_path, monkeypatch):
@@ -173,6 +238,23 @@ def test_a_new_card_anki_refuses_leaves_no_clip_behind_and_asks_you_as_a_refused
     stored = [op[1] for op in anki.log if op[0] == "store"]
     assert len(stored) == 2 and all(name not in anki.media for name in stored)
     assert {"sl-old.mp3", "sl-old.webp"} <= set(anki.media)                # the old card's media stay
+
+
+def test_a_retry_after_an_add_whose_answer_was_lost_takes_that_note_never_a_second_card(ledger, tmp_path,
+                                                                                       monkeypatch):
+    """`addNote` went through but its answer was lost (a timeout, a kill before the ledger's record): the job's next
+    try finds the note by the job's own tag and answers with it — nothing stored, nothing added again (duplicates are
+    allowed here, so Anki would take a twin)."""
+    anki = _card(Anki(), "ja")
+    row = _simple_swap(ledger, "ja", anki, monkeypatch)
+    job = ledger.job_by_id(row["job_id"])
+    steps = _steps(tmp_path, monkeypatch, anki, _rendered(tmp_path, "ja"))
+    first = steps.swap_new_card("ja", job, {"video": "a.mkv", "subtitle": "a.ass"}, _words("ja"), 1, ledger, row)
+    anki.log.clear()
+    again = steps.swap_new_card("ja", job, {"video": "a.mkv", "subtitle": "a.ass"}, _words("ja"), 2, ledger, row)
+    assert again["outcomes"][0]["note_id"] == first["outcomes"][0]["note_id"]
+    assert not any(op[0] in ("add_note", "store") for op in anki.log)
+    assert sum(1 for n in anki.notes_.values() if n["modelName"] == "Lapis") == 2       # the old card + one new
 
 
 def test_while_you_review_nothing_is_stored_or_added(ledger, tmp_path, monkeypatch):
@@ -301,10 +383,12 @@ def test_named_by_text_reads_a_chinese_caption_and_a_crlf_file(tmp_path):
         [{"word": "牛肉面", "line_expansion": [0, 0], "line_text": f"{{\\pos(380,1020)}}{zh_b}\\N"}]
 
 
-@pytest.mark.parametrize("case", ["no word-from-line", "srt", "missing file", "no line start", "word nowhere"])
+@pytest.mark.parametrize("case", ["no word-from-line", "srt", "missing file", "no line start", "word nowhere",
+                                  "start after text"])
 def test_named_by_text_changes_nothing_it_cant_be_sure_of(tmp_path, case):
-    """An Anki Miner that may not take `line_text` on a subtitle's word (no `word-from-line`: 3.5, 3.6), an .srt (one
-    cue a caption), a file that can't be read, a book's entry (no start), a word no tied event holds: as they are."""
+    """An Anki Miner without `word-from-line` (3.5, 3.6: drilled on the installed 3.5.0, it finds a word on a later
+    event by its start already, so it keeps the old way), an .srt (one cue a caption), a file that can't be read or
+    whose Format names Start after Text, a book's entry (no start), a word no tied event holds: as they are."""
     words = [{"word": "長老", "line_text": "長老の話によれば➡"}] if case == "no line start" else \
         [_entry("村長" if case == "word nowhere" else "長老", 11.5)]
     path = TV
@@ -313,6 +397,14 @@ def test_named_by_text_changes_nothing_it_cant_be_sure_of(tmp_path, case):
         shutil.copy(TV, path)
     elif case == "missing file":
         path = str(tmp_path / "gone.ass")
+    elif case == "start after text":
+        path = str(tmp_path / "odd.ass")
+        with open(TV, encoding="utf-8") as f:
+            text = f.read()
+        events = text.index("[Events]")
+        at = text.index("Format:", events)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text[:at] + "Format: Layer, Text, Start" + text[text.index("\n", at):])
     features = () if case == "no word-from-line" else FROM_LINE
     assert runfile.named_by_text(path, words, features, "ja") == words
 

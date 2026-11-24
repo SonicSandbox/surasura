@@ -42,9 +42,9 @@ CARDS = {"A": ("約束", "明日の約束を忘れないでね。", "約束は�
          "B": ("気配", "誰かの気配がした。", "春の気配を感じる。"),
          "C": ("溜め息", "思わず溜め息が出た。", "彼は深い溜め息をついた。")}
 SIDE = ("Sentence", "SentenceFurigana", "SentenceAudio", "Picture", "MiscInfo", "Hint")
-# --miner: the new line is a real one of the episode (Bocchi the Rock! 02's .ja.ass), found by these words — lines
-# with no half-width characters: Anki Miner 3.13 answers not_found for a word named on a line holding any (ﾗｲﾌﾞ, ｡),
-# its render and its mine alike (FS-R, 2026-11-23: kantan-fs-register.md § FS-R)
+# --miner: the new line is a real one of the episode (Bocchi the Rock! 02's .ja.ass), found by these words. (FS-R
+# read its not_found answers as half-width text — ﾗｲﾌﾞ, ｡ —; AM-FIX found the cause: a caption's later event of one
+# start, now named by its text, `runfile.named_by_text`. `--line B 必要 必要だから` drills such a line: made.)
 REAL = {"A": ("音楽", "音楽を聴くのが好きだ。", "好きな音楽の話"),
         "B": ("社会", "社会の勉強をした。", "社会が怖い"),
         "C": ("説明", "詳しい説明をお願いします。", "説明しよう")}

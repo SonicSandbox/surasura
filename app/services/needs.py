@@ -182,7 +182,10 @@ CONNECT_ACTIONS = {"not-timed": ("check_again", "change_video", "mine_anyway"), 
                    # is on and installed (`NeedsYou.has`)
                    "book-audiobook": ("pick_audiobook", "ai_audio", "no_audiobook"),
                    # Kura-AB3 A2 (PROVISIONAL): a book lined up — its earlier text-only cards get the narrator's voice
-                   "book-add-audio": ("add_audio",)}
+                   "book-add-audio": ("add_audio",),
+                   # AM-FIX 2 (the lead's ruling 2): a swap an Anki Miner without `render` can't make — *Update*
+                   # (Michi-U's route: the approved release, asked first; `runner.SWAP_UPDATE_NEED`)
+                   "swap-update": ("update_miner",)}
 SEEN_VERSION = 1
 _NO_VIDEO_REASON = "No video: its video isn't on this computer (or isn't downloaded yet)."   # runner.NO_VIDEO's words
 
@@ -575,7 +578,7 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
         out.append(Entry(key=f"connect:{n['id']}", kind=kind, title=title, lines=(),
                          actions=CONNECT_ACTIONS.get(kind, ()) + ("dismiss",), unseen=not n.get("seen_at"), say="",
                          data={"need_id": n["id"], "item_id": n.get("item"), "connect": True, "at": n.get("at"),
-                               **_episode_of(by_id, n.get("item"))}))
+                               **_episode_of(by_id, n.get("item")), **_update_version(kind)}))
     for gap in reversed((connect or {}).get("gaps") or ()):
         entry = _gap_entry(gap, seen)
         if entry.key not in answered:
@@ -583,6 +586,15 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     out = [e for e in out if e.kind == BULK or e.key not in hidden]
     out[lines_at:lines_at] = _reason_lines(out)
     return out
+
+
+def _update_version(kind):
+    """AM-FIX 2: the release a Connect line's *Update* asks for (`update_miner`, `NeedsPage._do_update_miner` reads it)
+    -> {"version"} for a line that offers it, else {}."""
+    if "update_miner" not in CONNECT_ACTIONS.get(kind, ()):
+        return {}
+    from app.connect import am_release
+    return {"version": am_release.APPROVED}
 
 
 def _episode_of(by_id, item_id):

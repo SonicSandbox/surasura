@@ -272,7 +272,7 @@ def named_by_text(subtitle, words, features=(), language=None):
         return words
     try:
         events = _events(subtitle, language)
-    except (OSError, ValueError):
+    except (OSError, ValueError, IndexError):      # (IndexError: a Format line naming Start after Text)
         return words
     from app import analyzer
     folded = [_fold(analyzer.ass_dialogue_text(text, language or "ja")) for _start, text in events]

@@ -168,6 +168,10 @@ BOOK_ASKED, BOOK_SAID = "book_audio_asked:", "book_audio_said:"
 # record keeps the book's Connect notes then (`notes`: made before it lined up, text-only) — the only ones offered. A press, from the line or the book row's ⋯,
 # keeps the notes it looked at (`ADD_AUDIO_SEEN<lang>:<book key>` -> [note ids]): the row offers only the others.
 ADD_AUDIO_NEED = "book-add-audio"
+# AM-FIX 2 (the lead's ruling 2): a swap whose card only `render` can make, with an Anki Miner without it — ONE standing
+# *Needs you* line for the language (`swap.UPDATE_TO_SWAP` · *Update*, Connect's update offer), every such swap waiting
+# on it; fixed by itself at the next swap `render` answers (`Steps.swap_new_card`)
+SWAP_UPDATE_NEED = "swap-update"
 ADD_AUDIO_ASK = ("「{title}」 is lined up with its audiobook now — add the narrator's voice to the cards Connect made "
                  "from it before, where they have none?")
 ADD_AUDIO_ASKED = "add_audio_asked:"
@@ -846,6 +850,8 @@ def _language(steps, ledger, lang, prepared, parked, out):
             ended = ledger.job_by_id(job["id"]) or {}
             if ended.get("kind") == SWAP:
                 _swap_look(steps, ledger, lang, store_now)     # Kantan-SL: its card made -> the swap's record, at once
+                if ended.get("state") in ENDED:
+                    _swap_update_gone(ledger, lang)
             if ended.get("state") in ENDED:     # its troubles went, but a step it ended without (Backfill…) stands
                 keep = _skipped_says(ended)
                 if ended.get("kind") == LEVEL:  # Mattias #5: a level raise says nothing of a failed part's words
@@ -886,6 +892,15 @@ def _language(steps, ledger, lang, prepared, parked, out):
         if _stop(steps):
             break
     return outside
+
+
+def _swap_update_gone(ledger, lang):
+    """AM-FIX 2: a swap job ended (made, dropped, undone): the language's *Update Anki Miner to swap this card's
+    sentence* (SWAP_UPDATE_NEED, no item) goes once no open swap job waits on it — the next one that can't render says
+    it again."""
+    from app.connect import swap
+    if not any(j.get("kind") == SWAP and j.get("reason") == swap.UPDATE_TO_SWAP for j in ledger.open_jobs(lang)):
+        _fixed(ledger, lang, kinds=(SWAP_UPDATE_NEED,))
 
 
 def _swap_look(steps, ledger, lang, store_now):
@@ -2540,7 +2555,7 @@ def _mine_batch(steps, ledger, lang, job, picked, todo, attempt):
         row = swap.new_card_row(ledger, job["id"])  # AM-FIX: a new card beside its old one, which Anki Miner refuses
         done = steps.swap_new_card(lang, job, _part_read(steps, lang, job, picked), todo, attempt, ledger, row)             if row is not None else None
         if done is not None:
-            return done                     # None: mined as any card (Anki takes it, or there's no render)
+            return done                     # None: mined as any card (Anki takes it, or render didn't find the word)
     if not _alone(ledger, job["id"]):
         return steps.mine(lang, job, _part_read(steps, lang, job, picked), todo, attempt)
     got, out, refused = {}, None, []
@@ -5181,8 +5196,10 @@ class Steps:
         here instead: the word rendered on its line (`_swap_render`), then the note added beside the old card
         (`swap.add_new_card`: the old card's word side, the new line's sentence side, the job's tags) -> the batch's
         answer, the new note made (the job's other steps — Backfill's ふりがな, the record — run as for any card made);
-        None to mine it as any card: its old card gone or of another note type (Anki takes that one), no `render`
-        (Anki Miner 3.5–3.10), the word not on its line."""
+        None to mine it as any card: its old card gone or of another note type (Anki takes that one), the word not on
+        its line. No `render` (Anki Miner 3.5–3.10: its `mine` would refuse this card too) -> Needs SWAP_UPDATE_NEED,
+        the language's line said once (`swap.UPDATE_TO_SWAP`): the swap waits for the update, never mined to be
+        refused; the next swap render answers fixes that line."""
         from app import anki_connect, locks
         from app.connect import runfile, sentence_audio, swap
         anki = swap.AnkiSwap(self.url)
@@ -5195,7 +5212,10 @@ class Steps:
         mapping = ready[3][2]
         if info is None or info.get("modelName") != mapping.note_type:
             return None
-        word, rendered, _why = self._swap_render(lang, job, picked, words, attempt, ready)
+        word, rendered, why = self._swap_render(lang, job, picked, words, attempt, ready)
+        if why == swap.NO_RENDER:
+            raise Needs(SWAP_UPDATE_NEED, swap.UPDATE_TO_SWAP, standing=True)
+        _fixed(ledger, lang, kinds=(SWAP_UPDATE_NEED,))     # render answered: Anki Miner was updated
         if rendered is None:
             return None
         tags = (runfile.job_tag(_tag(job)), runfile.from_tag(self.show(lang, job)),

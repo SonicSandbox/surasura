@@ -8,7 +8,8 @@ What these prove:
     line, every word and span); a line a worker reads otherwise than the walk did (other tokens, another length, no
     such sentence) gives no answer, and that file is answered by the walk, read as the walk reads it — the same bytes;
   - a worker that dies, or a pool that breaks, leaves its files to the walk (the same bytes), never ends or hangs the
-    run; a line offered without its question fails the table at its write (the run's own warning); the workers end;
+    run — stuck workers hold the run's end CORES_WAIT_S in all, never once a batch; a line offered without its
+    question fails the table at its write (the run's own warning); the workers end;
     a song line (read by the walk with no words) is answered as the walk answers it;
   - one core, a library under CORES_MIN_FILES files, *Use every core* off or on, settings' `index_pool_workers` 0:
     the count is 1 under the threshold, then `token_index.pool_workers`' rule, at most CORES_MAX (settings asking N
@@ -229,6 +230,44 @@ def test_a_worker_that_dies_or_a_pool_that_breaks_leaves_the_walk_to_answer_the_
     cores.reads(lambda path: (files[path], None), language, frozenset())
     there = _walk(files, cores)
     cores.settle(there)
+    assert bytes(there._lines) == bytes(here._lines)
+    assert cores.here == len(files)
+    assert pool.shut
+
+
+class _Stuck:
+    """A worker's answer that never comes (both workers stuck): each wait moves `clock` on by its whole timeout."""
+
+    def __init__(self, clock, waits):
+        self.clock, self.waits = clock, waits
+
+    def done(self):
+        return False
+
+    def result(self, timeout=None):
+        self.waits.append(timeout)
+        self.clock[0] += timeout
+        raise TimeoutError("still working")
+
+
+def test_stuck_workers_hold_the_runs_end_cores_wait_s_in_all_never_a_wait_a_batch(real, monkeypatch):
+    # why: with both workers stuck (a file held open, a frozen drive) every batch still out at the walk's end used to
+    # be waited for CORES_WAIT_S in turn — 20 batches, 100 minutes; the run's end waits once, then the walk answers
+    # every file itself, the same bytes, and the workers end
+    language, lines = real
+    files = _files(lines)
+    monkeypatch.setattr(st, "CORES_BATCH", 1)                  # a batch a file: as many batches out as files
+    clock, waits = [0.0], []
+    monkeypatch.setattr(st, "time", type("T", (), {"monotonic": staticmethod(lambda: clock[0])}))
+    pool = _Pool(files, language, frozenset())
+    pool.submit = lambda _fn, batch: pool.sent.append(batch) or _Stuck(clock, waits)
+    here = _walk(files, _Here(language, frozenset()))
+    cores = st.Cores(pool)
+    cores.reads(lambda path: (files[path], None), language, frozenset())
+    there = _walk(files, cores)
+    cores.settle(there)
+    assert len(pool.sent) == len(files) > 2
+    assert sum(waits) <= st.CORES_WAIT_S and waits[0] == st.CORES_WAIT_S
     assert bytes(there._lines) == bytes(here._lines)
     assert cores.here == len(files)
     assert pool.shut

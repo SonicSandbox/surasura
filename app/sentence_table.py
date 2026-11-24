@@ -34,6 +34,7 @@ import json
 import os
 import re
 import struct
+import time
 import zlib
 from array import array
 from operator import itemgetter
@@ -785,7 +786,8 @@ def line_words(kept, no, tokens, text, language, people=frozenset(), counted=Non
 # failure to start is today's single-process path.
 CORES_BATCH = 2000              # questions sent to a worker at a time (files are never split)
 CORES_MAX = 2                   # workers at most: one kept up at 2,000 files; 24 allowed spawned 15 on the zh root
-CORES_WAIT_S = 300              # a batch not answered in this long is answered here (a stuck worker never hangs it)
+CORES_WAIT_S = 300              # the walk's end waits this long in all for the batches still out, then answers the
+                                # rest itself (stuck workers never hang it: once, never once a batch)
 CORES_MIN_FILES = 8000          # fewer files: one process (the timed gate, E-CORES 2: the gain passes 5 % of a Generate
                                 # near here — 0.5 s at 2,000, 6.6 s at 20,000 — a worker ~38 MB) unless settings ask N
 _NUMBERS = struct.Struct("BB")
@@ -975,8 +977,9 @@ class Cores:
             if self._wrong is not None:
                 raise ValueError(f"{self._wrong}: a line offered without its question")
             self._send()
+            end = time.monotonic() + CORES_WAIT_S
             while self._sent:
-                self._take(*self._sent.pop(0), wait=CORES_WAIT_S)
+                self._take(*self._sent.pop(0), wait=max(0.0, end - time.monotonic()))
             if self.here:
                 print(f"Sentence table: {self.here:,} files answered by the walk itself.")
         finally:

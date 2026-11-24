@@ -22,8 +22,8 @@ inside: the same run writes the same bytes, packed as the walk goes or at the en
 
 The walk's side is `Packer`: lines are appended as the files are read, words, co-words and phrases by whatever key
 the walk holds them by; `finish` resolves the keys (rows, formulas numbered by key) only at the end, so one file's
-lines are a function of that file alone — a pool of workers could each pack its share and the main process join
-them by key, in the plan's file order (SPEC § 8.3; not built).
+lines are a function of that file alone. Each line's two numbers can be worked out on other cores (`Cores`, E-CORES:
+the walk's order kept, the answers written in at the end).
 
 numpy is imported here only (it arrives with pandas); the cost of a line is E-SCORE's (`app/sentence_score.py`).
 """
@@ -303,6 +303,17 @@ class Packer:
             self._cow.extend(ids)
         if phrases:
             self._phr.extend(phrases)
+
+    def fill(self, first, numbers):
+        """The two numbers of the lines from `first` on (`numbers`: two bytes a line, as `numbers_of` makes them),
+        packed 0 by the walk while another core worked them out (`Cores`)."""
+        n = len(numbers) // 2
+        if n:
+            lines = np.frombuffer(self._lines, _LINE_COLUMNS, n, first * _LINE.size)
+            two = np.frombuffer(numbers, np.uint8).reshape(n, 2)
+            lines["besides"] = two[:, 0]
+            lines["starts"] = two[:, 1]
+            del lines, two
 
     def finish(self, keys, row_of, clauses_of, own_row, key_order, phrase_row, sources, head, places=None):
         """-> the Table. `keys`: every list row's (word, reading), by row · `row_of(word key)` -> its row or None
@@ -692,3 +703,207 @@ class KeptWords:
         if a >= n:
             return self.total, 0
         return self.total - sum(c & 1 for c in codes[start + a:start + min(b, n)]), codes[start + a] >> 1
+
+
+def line_words(kept, no, tokens, text, language, people=frozenset(), counted=None):
+    """Line `no`'s words for the table's two numbers: as the indexer counted them (`kept`, the file's `FileWords`, or
+    None), else counted here (`LineWords`) — the same numbers. A line it can't count reads as none (0, 0): the table
+    never fails the run. `counted`, a list: [lines read from the kept counts, lines counted here] is added to."""
+    words = None
+    if kept is not None:
+        try:
+            words = kept.line(no, tokens, text, people)
+        except Exception:
+            pass                        # counted here instead
+    if words is not None:
+        if counted is not None:
+            counted[0] += 1
+        return words
+    if counted is not None:
+        counted[1] += 1
+    try:
+        return LineWords(tokens, text, language, people)
+    except Exception:
+        return LineWords((), "", language)
+
+
+# --- The walk's two numbers on the other cores (E-CORES, SPEC § 8.3) ------------------------------------------------ #
+# A line's two numbers (the words besides the word, where the word starts) are a function of its file's cached tokens,
+# the file's kept counts and the library's people alone; which lines are offered is the walk's (it reads what earlier
+# files left: a word's first sentence in a file, a phrase known as a whole). So with `Cores` the walk still offers
+# every line to `Packer.add` in its own order, with the numbers 0, and asks `Cores` instead of `line_words`: each
+# question is kept as (sentence number, its tokens, its characters, the word's key or the phrase's span). A batch of
+# files' questions goes to a worker, which reads each file from the token store itself (`Store.file_words`: the same
+# sentences the walk read) and answers with two bytes a question; `settle` writes the answers into the packed lines in
+# the walk's order — the order workers finish in never matters. A file a worker reads otherwise than the walk did (its
+# lines' tokens or lengths differ) is answered here, read again as the walk reads it. One process when the PC has one
+# core, or the library is small (`token_index.pool_workers`' rule, *Use every core* included); every failure to start
+# is today's single-process path.
+CORES_BATCH = 2000              # questions sent to a worker at a time (files are never split)
+CORES_MAX = 2                   # workers: the walk asks ~5 µs of work a line, so two keep ahead of it (the profile)
+_NUMBERS = struct.Struct("BB")
+_CORE = {}
+
+
+def numbers_of(sentences, kept, asked, language, people=frozenset(), counted=None):
+    """-> bytes, two a question of `asked` ([(sentence number, tokens, characters, key) or (…, start, end)], as
+    `Cores` keeps them): the words besides the word and where it starts, clipped as `Packer.add` clips them — or None
+    when a question's line is not in `sentences` as the walk read it."""
+    out, pack = bytearray(), _NUMBERS.pack
+    held, line, words, n_lines = -1, None, None, len(sentences)
+    for q in asked:
+        no = q[0]
+        if no != held:
+            if no >= n_lines:
+                return None
+            text, tokens = sentences[no]
+            held, line = no, (len(tokens), len(text))
+            words = line_words(kept, no, tokens, text, language, people, counted)
+        if q[1] != line[0] or q[2] != line[1]:
+            return None
+        besides, starts = words.of_word(q[3]) if len(q) == 4 else words.of_span(q[3], q[4])
+        out += pack(besides if besides < 255 else 255, starts if starts < STARTS_PAST else STARTS_PAST)
+    return bytes(out)
+
+
+def _cores_start(store_path, language, people, switches):
+    """A worker's start: the token store opened to read only, the run's name switches. It never outlives the walk's
+    process (as the indexer's workers: `token_index._pool_start`)."""
+    import gc
+    import multiprocessing
+    import threading
+    gc.disable()                        # a batch's objects make no cycles (the engine map's § Heavy work)
+    parent = multiprocessing.parent_process()
+    if parent is not None:
+        def watch():
+            parent.join()
+            os._exit(1)
+        threading.Thread(target=watch, name="cores-parent-watch", daemon=True).start()
+    from app import token_index
+    store = token_index.open_reader(language, store_path)
+    if store is not None:
+        store.switches = switches
+    _CORE.update(store=store, language=language, people=people)
+
+
+def _cores_answer(batch):
+    """[(path, questions)] -> [(the file's answers or None, [lines read from the kept counts, lines counted here])]."""
+    store, language, people = _CORE["store"], _CORE["language"], _CORE["people"]
+    out = []
+    for path, asked in batch:
+        counted = [0, 0]
+        try:
+            sentences, kept = store.file_words(path) if store is not None else ([], None)
+            out.append((numbers_of(sentences, kept, asked, language, people, counted), counted))
+        except Exception:
+            out.append((None, counted))
+    return out
+
+
+def cores_wanted(n_files):
+    """How many workers a walk of `n_files` files takes: `token_index.pool_workers`' rule (settings'
+    `index_pool_workers`, *Use every core*), at most CORES_MAX; 1 = this process alone."""
+    from app import token_index
+    try:
+        from app import settings_manager
+        setting = settings_manager.load_settings().get("index_pool_workers")
+    except Exception:
+        setting = None
+    return min(token_index.pool_workers(n_files, setting, every=token_index.every_core()), CORES_MAX)
+
+
+class Cores:
+    """The walk's side of the workers (above). `file(path, packer)` before a file's lines are offered; then each
+    offered line asks `line(text, tokens, number)` — this object, whose `of_word(key)` / `of_span(a, b)` keep the
+    question and answer (0, 0) — and `settle(packer, read, …)` before `Packer.finish` writes every answer in."""
+
+    def __init__(self, pool):
+        self._pool = pool
+        self._sent = []                 # ([(path, questions, first line)], the worker's Future)
+        self._batch, self._size = [], 0
+        self._path, self._first, self._asked = None, 0, []
+        self._line = self._wrong = None
+        self.counted = [0, 0]
+
+    @classmethod
+    def start(cls, n_files, store, language, people):
+        """The workers for a walk of `n_files` files over `store` — or None: one process (one core, a small library, a
+        store with no file to read again, a pool that won't start)."""
+        try:
+            size = cores_wanted(n_files)
+            if size < 2 or store is None or not getattr(store, "path", None):
+                return None
+            import multiprocessing
+            from concurrent.futures import ProcessPoolExecutor
+            from app import token_index
+            pool = ProcessPoolExecutor(     # a worker that dies fails the table (BrokenProcessPool), never hangs it
+                size, mp_context=multiprocessing.get_context("spawn"), initializer=_cores_start,
+                initargs=(store.path, language, frozenset(people), token_index._library_switches(language)))
+        except Exception as e:
+            print(f"Sentence table: one process ({e}).")
+            return None
+        print(f"Sentence table: the lines' words in {size} processes.")
+        return cls(pool)
+
+    def file(self, path, packer):
+        """The next file's lines follow."""
+        self._close_file(packer)
+        self._path, self._first = path, len(packer)
+
+    def _close_file(self, packer):
+        asked = self._asked
+        if asked:
+            if len(packer) - self._first != len(asked):
+                self._wrong = self._path        # never the run's failure: the table's, at `settle`
+            self._batch.append((self._path, asked, self._first))
+            self._size += len(asked)
+            if self._size >= CORES_BATCH:
+                self._send()
+            self._asked = []
+
+    def _send(self):
+        batch = self._batch
+        if batch:
+            result = self._pool.submit(_cores_answer, [(path, asked) for path, asked, _first in batch])
+            self._sent.append((batch, result))
+        self._batch, self._size = [], 0
+
+    def line(self, text, tokens, number):
+        self._line = (number, len(tokens), len(text))
+        return self
+
+    def of_word(self, key):
+        self._asked.append(self._line + (key,))
+        return 0, 0
+
+    def of_span(self, a, b):
+        self._asked.append(self._line + (a, b))
+        return 0, 0
+
+    def settle(self, packer, read, language, people):
+        """Every answer written into `packer`'s lines; a file a worker couldn't answer is answered here from
+        `read(path)` -> (sentences, kept counts), as the walk reads it. The workers end."""
+        try:
+            self._close_file(packer)
+            if self._wrong is not None:
+                raise ValueError(f"{self._wrong}: a line offered without its question")
+            self._send()
+            for batch, result in self._sent:
+                for (path, asked, first), (numbers, counted) in zip(batch, result.result()):
+                    if numbers is None:
+                        counted = [0, 0]
+                        sentences, kept = read(path)
+                        numbers = numbers_of(sentences, kept, asked, language, people, counted)
+                        if numbers is None:
+                            raise ValueError(f"{path}: its lines are not the ones the walk read")
+                    packer.fill(first, numbers)
+                    self.counted[0] += counted[0]
+                    self.counted[1] += counted[1]
+            self._sent = []
+        finally:
+            self.close()
+
+    def close(self):
+        pool, self._pool = self._pool, None
+        if pool is not None:
+            pool.shutdown(wait=True, cancel_futures=True)

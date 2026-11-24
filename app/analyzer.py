@@ -3052,14 +3052,22 @@ def _tokenize_file(tokenizer, file_path, language):
     return tokenizer.tokenize_sentences(text)
 
 
-def file_sentences(store, tokenizer, file_path, language):
+def file_sentences(store, tokenizer, file_path, language, words=None):
     """A file's tokenized sentences as a run reads them: cached in the token store (the name tables applied), else
-    tokenized here."""
+    tokenized here. `words`, a list: its first item becomes the file's lines as the indexer counted them for the
+    sentence table (`Store.file_words`), or None — the walk counts them."""
+    if words is not None:
+        words[0] = None
     if store is None:
         if not os.path.exists(file_path):
             return []                   # a missing item (9b) with no token store to read it from
         return _tokenize_file(tokenizer, file_path, language)
-    sentences = store.file_tokens(file_path)
+    if words is not None:
+        sentences, words[0] = store.file_words(file_path)
+        if not sentences:
+            words[0] = None
+    else:
+        sentences = store.file_tokens(file_path)
     # Safety net: an empty result for a NON-empty file means the cached blob was unreadable
     # (disk damage) while its (mtime,size) still matched, so reconcile didn't refresh it.
     # Re-tokenize directly rather than silently drop the whole file's contribution.
@@ -6353,11 +6361,11 @@ def main():
                                   (1 if stype in ("subtitle", "bilibili") else 2))
         return idx
 
-    def _sentences_of(file_path):
+    def _sentences_of(file_path, words=None):
         """A file's tokenized sentences: cached in the store (fresh for changed files, reused otherwise), else
         tokenized here (`file_sentences`, the arrival record's reader too) — a song line's with no words
-        (`song_sentences`, below)."""
-        sentences = file_sentences(_store, tokenizer, file_path, language)
+        (`song_sentences`, below). `words`: as `file_sentences`' (the sentence table's kept counts)."""
+        sentences = file_sentences(_store, tokenizer, file_path, language, words)
         out = _songs.get(file_path)
         if out:
             sentences = [(s[0], []) if no in out else s for no, s in enumerate(sentences)]
@@ -6675,15 +6683,24 @@ def main():
             except Exception:
                 pass
         _held_words = [None, None]
+        _file_words = [None]        # the file's lines as the indexer counted them (Store.file_words), or None
+        _counted = [0, 0]           # lines read from those counts · lines counted here
 
-        def _line_words(s_text, s_tokens):
-            """The line's words for the table's two numbers (sentence_table.LineWords): made once a line. A line it
+        def _line_words(s_text, s_tokens, s_no):
+            """The line's words for the table's two numbers: as the indexer counted them (sentence_table.KeptWords,
+            E-INDEX), else counted here (sentence_table.LineWords) — the same numbers. Made once a line. A line it
             can't count reads as none (0, 0): the table never fails the run."""
             if _held_words[0] is not s_tokens:
-                try:
-                    words = sentence_table.LineWords(s_tokens, s_text, language, _people)
-                except Exception:
-                    words = sentence_table.LineWords((), "", language)
+                kept = _file_words[0]
+                words = kept.line(s_no, s_tokens, _people) if kept is not None else None
+                if words is not None:
+                    _counted[0] += 1
+                else:
+                    _counted[1] += 1
+                    try:
+                        words = sentence_table.LineWords(s_tokens, s_text, language, _people)
+                    except Exception:
+                        words = sentence_table.LineWords((), "", language)
                 _held_words[0], _held_words[1] = s_tokens, words
             return _held_words[1]
 
@@ -6697,7 +6714,7 @@ def main():
         src_idx = _source_idx(file_path, source_type)
 
         # Cached tokenized sentences from the store (fresh for changed files, reused otherwise).
-        sentences = _sentences_of(file_path)
+        sentences = _sentences_of(file_path, _file_words if _table is not None else None)
 
         file_total_words = 0
         file_known_words = 0
@@ -6984,7 +7001,7 @@ def main():
                                          lrs, s_text, src_idx, marks, len(freqs), s_hash, s_no)
                     if _table is not None and (first_here or not is_over_hard_max):
                         _table.add(index, src_idx, s_no, len(s_text), s_hash, lrs, marks,
-                                   *_line_words(s_text, s_tokens).of_span(start, end), over=is_over_hard_max)
+                                   *_line_words(s_text, s_tokens, s_no).of_span(start, end), over=is_over_hard_max)
                     if first_here:
                         # its first sentence in this file: the plan's (Context 1 and a near candidate wherever the file
                         # goes) kept compact, and whole while it is one of the files nearest its first meeting here
@@ -7022,7 +7039,7 @@ def main():
                 near_too = False
                 if _table is not None and (not is_over_hard_max or entry.get("_fsq") != seq_idx):
                     _table.add(key, src_idx, s_no, len(s_text), s_hash, unique_lrs, marks or (),
-                               *_line_words(s_text, s_tokens).of_word(key), over=is_over_hard_max)
+                               *_line_words(s_text, s_tokens, s_no).of_word(key), over=is_over_hard_max)
                 if entry.get("_fsq") != seq_idx:
                     # Its first sentence in this file: the plan's (Context 1 and a near candidate wherever the file
                     # goes) kept compact; whole while it is one of the files nearest its first meeting in this order
@@ -7199,7 +7216,7 @@ def main():
                 src_place.append((plan_rules.NOT_FINISHED, 0))
             src_place[src_idx] = (rank, 0)
             try:
-                sentences = list(_sentences_of(file_path))
+                sentences = list(_sentences_of(file_path, _file_words if _table is not None else None))
             except Exception as e:
                 print(f"Warning: a finished file couldn't be read for example sentences ({e}).")
                 continue
@@ -7268,7 +7285,7 @@ def main():
                     freqs = _unknown_counts(lrs)
                     if _table is not None:
                         _table.add(index, src_idx, s_no, len(s_text), s_hash, lrs, marks or (),
-                                   *_line_words(s_text, s_tokens).of_span(start, end))
+                                   *_line_words(s_text, s_tokens, s_no).of_span(start, end))
                     entry = word_stats[_phrase_row_of[index]]
                     plan_rules.keep_best(entry.setdefault("finished_contexts", []),
                                          _candidate(short, long, rolling_context_cost(_phrase_uses_of(index), freqs),
@@ -7280,7 +7297,7 @@ def main():
                     for key in targets:
                         if _table is not None:
                             _table.add(key, src_idx, s_no, len(s_text), s_hash, unique_lrs, marks or (),
-                                       *_line_words(s_text, s_tokens).of_word(key))
+                                       *_line_words(s_text, s_tokens, s_no).of_word(key))
                         plan_rules.keep_best(word_stats[key].setdefault("finished_contexts", []),
                                              _candidate(short, long, rolling_context_cost(_uses(key), unk_freqs),
                                                         unique_lrs, s_text, src_idx, marks, len(unk_freqs), s_hash,
@@ -8114,7 +8131,8 @@ def main():
                     {"engine": engine_id(), "run_signature": _run_sig, "language": language},
                     places=[_listed_at.get(key, -1) for key in row_keys],
                 ).write(os.path.join(RESULTS_DIR, sentence_table.TABLE_FILE))
-                print(f"Saved the sentence table ({_table_size:,} bytes, {len(_table):,} lines offered).")
+                print(f"Saved the sentence table ({_table_size:,} bytes, {len(_table):,} lines offered; their words "
+                      f"counted when indexed: {_counted[0]:,} lines, here: {_counted[1]:,}).")
             except Exception as e:
                 print(f"Warning: could not write the sentence table ({e}); cards take today's path.")
         del _table

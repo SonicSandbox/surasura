@@ -6691,8 +6691,12 @@ def main():
             E-INDEX), else counted here (sentence_table.LineWords) — the same numbers. Made once a line. A line it
             can't count reads as none (0, 0): the table never fails the run."""
             if _held_words[0] is not s_tokens:
-                kept = _file_words[0]
-                words = kept.line(s_no, s_tokens, _people) if kept is not None else None
+                kept, words = _file_words[0], None
+                if kept is not None:
+                    try:
+                        words = kept.line(s_no, s_tokens, _people)
+                    except Exception:
+                        pass                # counted here instead
                 if words is not None:
                     _counted[0] += 1
                 else:

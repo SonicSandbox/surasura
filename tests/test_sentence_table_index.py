@@ -255,3 +255,53 @@ def test_the_kept_counts_are_compressed_and_smaller_than_the_tokens(monkeypatch)
     for tokens, words in rows:
         assert st.read_file_words(zlib.decompress(words)) is not None
         assert len(words) < len(tokens)
+
+
+def _old_shape(path):
+    """The files table as the build before made it (SCHEMA_VERSION 28: no `words` column)."""
+    con = sqlite3.connect(path)
+    try:
+        con.execute("CREATE TABLE files_before (path TEXT PRIMARY KEY, mtime REAL, size INTEGER, total INTEGER, "
+                    "counts BLOB, tokens BLOB, names BLOB, bound BLOB, counted INTEGER NOT NULL DEFAULT 1, "
+                    "aside INTEGER NOT NULL DEFAULT 0, lines BLOB)")
+        con.execute("INSERT INTO files_before SELECT path, mtime, size, total, counts, tokens, names, bound, counted, "
+                    "aside, lines FROM files")
+        con.execute("DROP TABLE files")
+        con.execute("ALTER TABLE files_before RENAME TO files")
+        con.commit()
+    finally:
+        con.close()
+
+
+def test_a_store_keeps_the_indexers_counts_and_an_old_one_read_only_reads_as_none(tmp_path):
+    # why: Store.file_words is the walk's one read — the row's counts as written, and for a store a build before
+    # them made, opened to read only (no column added: a reader never writes), the sentences with no counts, asked
+    # once (not a failing query a file)
+    from app import token_index as ti
+    lines = [(text, [list(t) for t in tokens]) for text, tokens in _lines("ja")[:30]]
+    f = tmp_path / "episode.srt"
+    f.write_text("\n".join(text for text, _t in lines), encoding="utf-8")
+
+    def tokenize_file(_path):
+        return {"sentences": lines, "counts": {"猫|ネコ": 1}, "words": st.file_words(lines, "ja")}
+
+    db = str(tmp_path / "token_store_ja.db")
+    store = ti.open_store("ja", path=db)
+    try:
+        store.reconcile([str(f)], tokenize_file)
+        sentences, words = store.file_words(str(f))
+        assert sentences == store.file_tokens(str(f)) and words is not None
+        assert all(words.line(no, tokens) is not None for no, (text, tokens) in enumerate(sentences)
+                   if tokens and not any(link in text for link in st._NAME_LINKS))
+        assert store.file_words(str(tmp_path / "not-indexed.srt")) == ([], None)
+    finally:
+        store.close()
+    _old_shape(db)
+    reader = ti.open_reader("ja", path=db)
+    try:
+        for _ in range(2):
+            sentences, words = reader.file_words(str(f))
+            assert words is None and sentences == reader.file_tokens(str(f)) and sentences
+        assert reader._no_words
+    finally:
+        reader.close()

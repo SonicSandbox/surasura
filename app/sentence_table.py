@@ -565,8 +565,8 @@ def open_table(path, language=None, engine=None, run_signature=None):
 # is kept as "count at the walk"; so is, at the walk, a line holding one of the library's people (known only after a
 # whole index), a sentence a name table joined as the store was read, and every line of a row with none — each is
 # counted by `LineWords` as before, so the numbers, and the table's bytes, are the same whichever way they came.
-# Rebuilding the lists or changing the rule bumps WORDS_RULE too (a row of another rule reads as none) and
-# token_index.SCHEMA_VERSION (every file indexed again with the new count).
+# Rebuilding the lists or changing the rule bumps WORDS_RULE too (a row of another rule reads as none: the walk
+# counts it) and, once the switch is on in the tree, token_index.SCHEMA_VERSION (every file indexed again).
 WORDS_RULE = 1
 _UNCOUNTED = 0xFFFF             # a line's total: counted at the walk
 _WORDS_HEAD = struct.Struct("<HI")      # the rule, the file's sentences; then each one's end, total and codes

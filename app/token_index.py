@@ -681,6 +681,7 @@ class Store:
         self.path = path            # the store's file
         self._names = None          # the library's name tables, read on the first cached file (Japanese)
         self._adjust = None         # (meta names_adjust as stored, parsed): `_names_entry`
+        self._no_words = False      # a store made before the `words` column, opened to read only: `file_words`
 
     def close(self):
         try:
@@ -780,12 +781,15 @@ class Store:
         (`sentence_table.FileWords`, E-INDEX) — words None when the row keeps none (written while the sentence table
         was off, by a build before them, by another rule, or unreadable): the walk counts every line, as before. A
         sentence a name table joined is left to the walk (its tokens are not the indexed ones)."""
+        if self._no_words:
+            return self.file_tokens(path), None
         try:
             row = self.conn.execute("SELECT tokens, names, words FROM files WHERE path=?", (_norm(path),)).fetchone()
         except sqlite3.OperationalError as e:
             if "no such column" not in str(e).lower():
                 raise
-            return self.file_tokens(path), None    # a store a build before them made, opened to read only
+            self._no_words = True                   # a store a build before them made, opened to read only
+            return self.file_tokens(path), None
         if not row:
             return [], None
         joined = set()

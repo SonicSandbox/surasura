@@ -1,0 +1,117 @@
+{
+  "version": "3.0.18",
+  "date": "2026-11-23",
+  "items": [
+    {
+      "id": "journey-v3",
+      "kind": "new",
+      "for": [
+        "everyone"
+      ],
+      "text": "Journey ↗ opens a new page: swap a sentence, Add now and ▶ play a line, right there.",
+      "where": "control:journey"
+    },
+    {
+      "id": "review-loop",
+      "kind": "new",
+      "for": [
+        "anki"
+      ],
+      "text": "Flag a card on your phone: Surasura reads it as Known, Swap or Ignore at the next sync.",
+      "where": "tab:settings"
+    },
+    {
+      "id": "deleted-asks-why",
+      "kind": "new",
+      "for": [
+        "anki"
+      ],
+      "text": "Delete one of Surasura's cards in Anki and it asks why: Known, Ignore, Parsing mistake, Bad card.",
+      "where": "tab:needs"
+    },
+    {
+      "id": "swap-keeps-card",
+      "kind": "new",
+      "for": [
+        "anki",
+        "miner"
+      ],
+      "text": "Swap keeps your card: the same card gets a better sentence, and its reviews are kept.",
+      "where": "tab:needs"
+    },
+    {
+      "id": "add-now-first",
+      "kind": "tweak",
+      "for": [
+        "anki",
+        "junban"
+      ],
+      "text": "A card you add from the journey comes first among your new cards."
+    },
+    {
+      "id": "known-ignore",
+      "kind": "tweak",
+      "for": [
+        "everyone"
+      ],
+      "text": "Known · Ignore: the Blacklist joins your Ignore list once; Your words has both tabs.",
+      "where": "control:known"
+    },
+    {
+      "id": "tidy",
+      "kind": "new",
+      "for": [
+        "anki",
+        "miner"
+      ],
+      "text": "Tidy: unstudied cards past 1.5× your limit are deleted, a copy kept, with Undo.",
+      "where": "tab:settings"
+    },
+    {
+      "id": "study-order",
+      "kind": "tweak",
+      "for": [
+        "anki",
+        "junban"
+      ],
+      "text": "One study order for Connect and Junban, and Cards for every new word.",
+      "where": "control:level"
+    },
+    {
+      "id": "audiobook-cards",
+      "kind": "new",
+      "for": [
+        "books",
+        "audiobooks",
+        "miner"
+      ],
+      "text": "A book paired with its audiobook gives cards from its chapters, with audio."
+    },
+    {
+      "id": "gentler",
+      "kind": "tweak",
+      "for": [
+        "everyone"
+      ],
+      "text": "Gentler on the machine: the window first, then one heavy job at a time on a small PC."
+    },
+    {
+      "id": "review-pauses",
+      "kind": "fix",
+      "for": [
+        "anki",
+        "miner"
+      ],
+      "text": "Starting a review in Anki pauses card making, so your review card is never redrawn."
+    },
+    {
+      "id": "furigana-pitch",
+      "kind": "fix",
+      "for": [
+        "ja",
+        "anki"
+      ],
+      "text": "Backfill fills a card's missing furigana and pitch; Connect's cards always get both."
+    }
+  ]
+}

@@ -840,21 +840,27 @@ def test_a_jobs_known_words_open_the_token_store_once(lib, monkeypatch):
 
 @pytest.mark.parametrize("lib", ["ja", "zh"], indirect=True)
 def test_the_unlocking_pass_places_alike_with_the_jobs_reading_or_its_own(lib, monkeypatch):
-    """KYOU-MO-WASTE: the pass reads with the job's own LearningView and tagger — and places every card as when it
-    builds its own (the shared reading is the same reading): in a move's job, on real sentences, the pass run both
-    ways on the same cards gives the same sort, reason and counts. Chinese: no pass."""
+    """KYOU-MO-WASTE: the pass reads with the job's own LearningView and tagger, each sentence once — and places
+    every card as the pass did before, building its own and reading each sentence afresh (the shared reading is the
+    same reading): in a move's job, on real sentences, the pass run both ways on the same cards gives the same sort,
+    reason and counts, and it moves some. Chinese: no pass."""
     import copy
     root, store = lib
     fake = _deck(root)
     assert _real_sentences(root, fake) >= 40
     host, _lines = _host()
     real, runs = reposition._ready_first_pass, []
+    once = reposition._SentenceWords.of
 
     def both(cards, notes, *args, learning=None, tagger=None, **kwargs):
         own = copy.deepcopy(cards)
-        alone = real(own, notes, *args, **kwargs)
+        with monkeypatch.context() as afresh:              # as before: every sentence read again, no memo
+            afresh.setattr(reposition._SentenceWords, "of", lambda words, text: tuple(words._words(text)))
+            alone = real(own, notes, *args, **kwargs)
+        assert reposition._SentenceWords.of is once
         shared = real(cards, notes, *args, learning=learning, tagger=tagger, **kwargs)
-        runs.append((learning is not None and tagger is not None, own == cards, alone == shared))
+        moved = sum(1 for card in cards if "after " in (card.get("why") or "") or "needs " in (card.get("why") or ""))
+        runs.append((learning is not None and tagger is not None, own == cards, alone == shared, moved > 0))
         return shared
     with _patched(fake):
         host._job("catch-up")
@@ -864,7 +870,7 @@ def test_the_unlocking_pass_places_alike_with_the_jobs_reading_or_its_own(lib, m
         host._job("move")
         assert fake.write_requests, "the move reordered nothing"
     if _language() == "ja":
-        assert runs == [(True, True, True)], runs
+        assert runs == [(True, True, True, True)], runs
     else:
         assert runs == []
 

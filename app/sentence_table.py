@@ -27,6 +27,7 @@ them by key, in the plan's file order (SPEC § 8.3; not built).
 
 numpy is imported here only (it arrives with pandas); the cost of a line is E-SCORE's (`app/sentence_score.py`).
 """
+import gzip
 import json
 import os
 import re
@@ -527,6 +528,26 @@ class Table:
         keys = self.head["keys"]
         return {(keys[k][0], keys[k][1]): k for k in self.head["rows"]}
 
+    def as_read(self, src, root):
+        """Is source `src`'s file the one the Generate read: there, its digest (path, time, size, kind) the table's
+        (SPEC § 5.4)? `root`: the language's data folder, a relative source's. No digest, gone, any error: False —
+        nothing of it is shown, never a line of another file. (The rule of the score's `as_read` for a source with a
+        digest, `app/sentence_score.py`; the word card's, E-HOVER.)"""
+        try:
+            from app import plan_rules
+            if src < 0:
+                return False
+            rel, kind, digest = self.sources()[src]
+            if digest is None:
+                return False
+            path = rel if os.path.isabs(rel) else os.path.join(root, "") + rel.replace("/", os.sep)
+            st = os.stat(path)
+            return any(plan_rules.file_digest([signed, [st.st_mtime, st.st_size], None, None, kinds]) == digest
+                       for signed in dict.fromkeys((os.path.join(root, rel), path))
+                       for kinds in ((kind, None) if not kind else (kind,)))
+        except Exception:
+            return False
+
 
 def open_table(path, language=None, engine=None, run_signature=None):
     """The table at `path`, its head read (blocks on demand) — or None: no file, a damaged or half-written one,
@@ -692,3 +713,85 @@ class KeptWords:
         if a >= n:
             return self.total, 0
         return self.total - sum(c & 1 for c in codes[start + a:start + min(b, n)]), codes[start + a] >> 1
+
+
+class TableFirsts:
+    """The word card (Hover-W) at level 2 (`plan_rules.SENTENCE_TABLE >= 2`, E-HOVER): each listed word's first sentence in a file
+    from the sentence table beside the plan (`app/sentence_table.py`) — the word's block, its lines of that file, the
+    lowest place (SPEC § 5.2): a read, never a ranking. The walk keeps a word's first sentence of each file there, with
+    the OVER mark when over *Never longer than*, so it is the plan's `FirstSentences`' answer (`app/plan_engine.py`, kept pure: this read lives here). `of_files({f: rows})` -> {f: {k:
+    (sentence number, None, its length)}} for each file's `rows`, each row's block read once for all the files (a
+    title's words: one read a word, not one a word and file), for a file that is the one the Generate read
+    (`Table.as_read`; else {}): a line said once keeps no hash, so None in its place — the file's digest and the line's
+    length (`title_words.sentence_of`) stand for it. `of(f, rows)`: one file's. `files` the table's sources' rel paths (the plan's files, then the Finished ones); `key` the plan's
+    (mtime_ns, size). A table file replaced since it was opened (its stamp moved) answers nothing: its blocks are not
+    where the head read them."""
+
+    def __init__(self, table, root, key):
+        self._table, self._root, self.key = table, root, key
+        st = os.stat(table.path)
+        self._stamp = (st.st_mtime_ns, st.st_size)
+        self.files = [source[0] for source in table.sources()]
+
+    def _same_table(self):
+        try:
+            st = os.stat(self._table.path)
+        except OSError:
+            return False
+        return (st.st_mtime_ns, st.st_size) == self._stamp
+
+    def of(self, f, rows=()):
+        return self.of_files({f: rows}).get(f, {})
+
+    def of_files(self, asked):
+        out, wanted = {f: {} for f in asked}, {}
+        if not self._same_table():
+            return out
+        for f, rows in asked.items():
+            if 0 <= f < len(self.files) and self._table.as_read(f, self._root):
+                for k in rows:
+                    wanted.setdefault(k, []).append(f)
+        for k, files in wanted.items():
+            try:
+                block = self._table.block(k)
+                if block is None:
+                    continue
+                src, number, chars = block[0]["src"], block[0]["number"], block[0]["chars"]   # (file, place) order
+                for f in files:
+                    i = int(src.searchsorted(f))
+                    if i < len(src) and src[i] == f:
+                        out[f][k] = (int(number[i]), None, int(chars[i]))
+            except Exception:
+                return {f: {} for f in asked}        # a damaged table: nothing, never a guess (nor an error)
+        return out
+
+
+def table_firsts(path, data_dir):
+    """`TableFirsts` for the plan at `path`: only its header line read (its language, engine and run), the table
+    beside it opened for that run — or None: no plan, its language, engine or run not named, no table, another run's
+    or engine's, a damaged one. The plan's format is not asked: the table is told by its run (release 2's plan keeps no
+    first sentences of its own)."""
+    try:
+        st = os.stat(path)
+        with gzip.open(path, "rb") as fh:
+            header = json.loads(fh.readline())
+        language, engine, run = header.get("language"), header.get("engine"), header.get("run_signature")
+        if not language or not engine or not run:
+            return None                              # (open_table checks only what it is given: all three, always)
+        table = open_table(os.path.join(os.path.dirname(path), TABLE_FILE), language=language, engine=engine,
+                           run_signature=run)
+        if table is None or not data_dir:
+            return None
+        return TableFirsts(table, data_dir, (st.st_mtime_ns, st.st_size))
+    except Exception:
+        return None
+
+
+def table_stamp(path):
+    """The (mtime_ns, size) of the sentence table beside the plan at `path`, or None: none there. The word card keeps
+    its reader only while this holds too (a table written after the plan, E-HOVER)."""
+    try:
+        st = os.stat(os.path.join(os.path.dirname(path), TABLE_FILE))
+        return st.st_mtime_ns, st.st_size
+    except Exception:
+        return None

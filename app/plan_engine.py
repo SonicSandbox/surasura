@@ -1841,11 +1841,17 @@ class FirstSentences:
                 out.setdefault(pairs[j], (self._number[i], self._hash[i]))
         return out
 
+    def of_files(self, asked):
+        """{f: rows} -> {f: `of(f)`} (the rows are `TableFirsts`'; here each file's every row)."""
+        return {f: self.of(f) for f in asked}
+
 
 def first_sentences(path):
     """`FirstSentences` from the plan file at `path` (format 3 or 4), or None: no plan, another format, one without
     first sentences (format 1 or 2), or tables that don't fit together. Its own read of the file — the window's numbers
-    load it lean — on the caller's worker (at 20,000 files ~0.7 s, ~13 MB kept: Hover-W's register)."""
+    load it lean — on the caller's worker (at 20,000 files ~0.7 s, ~13 MB kept: Hover-W's register). At level 2 of the
+    sentence table the word card reads the table first (`sentence_table.TableFirsts`, through
+    `title_words.first_sentences`), this read its fall-back."""
     import base64
     import os
     try:

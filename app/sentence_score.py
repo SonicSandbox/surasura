@@ -283,11 +283,14 @@ _FROM_BLOCK = (("src", "src"), ("number", "number"), ("chars", "chars"), ("flags
 def _take(tab, rows):
     """The cost's columns for `rows`' lines, each row's lines together, read from their blocks only."""
     import numpy as np
-    parts = [(k, got) for k in rows for got in [tab.block(k)] if got is not None]
+    got = tab.blocks(rows)                  # (the table's file opened once for every asked row's block)
+    parts = [(k, got[k]) for k in rows if got.get(k) is not None]
 
     def joined(values):
-        return np.concatenate([np.asarray(v, np.int64) for v in values]) if values else np.zeros(0, np.int64)
-    cols = {"row": joined([np.full(len(block[0]["number"]), k, np.int64) for k, block in parts])}
+        # (one join, then one conversion: the same numbers as each block's own made int64 before the join)
+        return np.concatenate(values).astype(np.int64, copy=False) if values else np.zeros(0, np.int64)
+    cols = {"row": np.repeat(np.asarray([k for k, _block in parts], np.int64),
+                             [len(block[0]["number"]) for _k, block in parts])}
     for mine, theirs in _FROM_BLOCK:
         cols[mine] = joined([block[0][theirs] for _k, block in parts])
     cols["cow"] = joined([block[1] for _k, block in parts])

@@ -820,3 +820,38 @@ def test_the_costs_young_pass_reads_only_co_words_with_a_weight_and_gives_the_ol
         fin = np.isfinite(total0)
         assert np.array_equal(np.isfinite(total), fin)
         assert np.allclose(total[fin], total0[fin] - SS.rates().young * want[fin], rtol=0, atol=1e-12)
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_readers_blocks_come_from_one_open_of_the_file_and_are_each_rows_own(tmp_path, language, monkeypatch):
+    # why: E-FAST 6 — a pick read its words' blocks one `open` of the table each (307 for one Chinese episode: 12 ms of
+    # a 224 ms pick); `blocks` reads them all through one, in the file's order, and gives what `block` gives row by row
+    # (a row asked twice or with no line: as `block` answers it); the score's `_take` asks it once a pick
+    from app import sentence_score as SS
+    import numpy as np
+    lib = _Library(_sentences(language))
+    path = _write(lib.finish(lib.packer(), language), tmp_path)
+    table = st.open_table(path)
+    rows = sorted(table.head["rows"])
+    assert len(rows) > 10
+    opened = []
+    real_open = open
+
+    def counted(file, *a, **k):
+        if os.path.abspath(str(file)) == os.path.abspath(path):
+            opened.append(file)
+        return real_open(file, *a, **k)
+    monkeypatch.setattr(st, "open", counted, raising=False)
+    asked = list(reversed(rows)) + [rows[0], len(lib.keys) + 5]        # (out of order, one twice, one with no line)
+    got = table.blocks(asked)
+    assert len(opened) == 1, "one open of the file for every block"
+    assert sorted(got) == rows, "every row with lines, once; a row with no line left out"
+    for k in rows:
+        cols, cow, phr = table.block(k)
+        mine, mine_cow, mine_phr = got[k]
+        assert sorted(mine) == sorted(cols) and all(np.array_equal(mine[c], cols[c]) for c in cols)
+        assert np.array_equal(mine_cow, cow) and np.array_equal(mine_phr, phr)
+    opened.clear()
+    cols = SS._take(table, rows)
+    assert len(opened) == 1, "the score's take: one open a pick"
+    assert cols["row"].tolist() == [k for k in rows for _n in range(len(table.block(k)[0]["number"]))]

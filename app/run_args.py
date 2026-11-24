@@ -9,16 +9,6 @@ Light by rule (02 §5): the standard library and `app.zh_script` only — no Tk,
 
 from app.zh_script import effective as _effective_zh_script
 
-# The report themes as the settings name them (the window's combobox) -> the analyzer's --theme.
-THEME_ARGS = {
-    "Default (Dark)": "default",
-    "Dark Flow": "world-class",
-    "Midnight (Vibrant)": "midnight-vibrant",
-    "Modern Light": "modern-light",
-    "Zen Mode": "zen-focus",
-}
-
-
 def analyzer_args(settings, language=None, headless=False, opens=True):
     """The analyzer's argv (`['analyzer.py', ...]`) for Generate with `settings` (settings.json's shape).
 
@@ -63,16 +53,11 @@ def analyzer_args(settings, language=None, headless=False, opens=True):
     if max_c != 3:
         args.append(f'--max-contexts={max_c}')
 
-    args.append(f'--theme={THEME_ARGS.get(settings.get("theme", "Dark Flow"), "default")}')
+    # No --theme (J-RETIRE): the journey's look is applied in its page (J-SET), Zen and the old page are retired
 
     opens = opens and not headless
     if settings.get("open_app_mode", False) and opens:
         args.append('--app-mode')
-
-    # Zen Limit (passed to analyzer just in case, or for consistency)
-    zen_limit = settings.get("zen_limit", 50)
-    if zen_limit > 0:
-        args.append(f'--zen-limit={zen_limit}')
     if not opens:
         args.append('--no-open')
     return args

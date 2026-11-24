@@ -9,7 +9,6 @@ licences ask for wherever the data goes.
 The catalog reads no library: the values here are settings as a user's file holds them (real deck names, real folders).
 """
 import ast
-import contextlib
 import importlib.util
 import os
 import subprocess
@@ -28,18 +27,6 @@ from app.settings_placement import OWNERS, PLACED
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EVERYTHING = frozenset(catalog.MODULES) | {"koe_revealed", "hato_found", "miner_found"}   # + row 13's tools
 NOTHING = frozenset()
-
-
-@contextlib.contextmanager
-def _settings_pre_cut():
-    """The Settings before the journey v3 cut-over (`use_v3(False)`), for what only they hold: Speech's rows (D15: speaking
-    left the journey with the old page; the YouTube preview's old page still reads its keys) — back to the switch's own
-    after (J-CUT)."""
-    catalog.use_v3(False)
-    try:
-        yield
-    finally:
-        catalog.use_v3(catalog._journey_v3())
 
 
 def _found(name):
@@ -218,10 +205,9 @@ def test_every_door_opens_a_registered_window_or_one_still_to_come():
     waiting = catalog.pending(registered)
     assert "nobody" not in waiting.values(), f"doors no opener holds and nothing brings: {waiting}"
     assert {"frequency-lists", "sentence-dictionary"} <= registered and not set(waiting) & registered
-    doors = catalog.doors()
-    with _settings_pre_cut():      # Speech's door (koe) is on the Settings before the cut-over only (D15)
-        assert "nobody" not in catalog.pending(registered).values()
-        doors |= catalog.doors()
+    # Speech's door (koe) has no row since the Settings before the cut-over retired (J-RETIRE; D15: speaking left the
+    # journey; the shelved Koe module's own window)
+    doors = catalog.doors() | {"koe"}
     assert set(catalog.PENDING_OPENERS) <= doors
 
 
@@ -237,10 +223,8 @@ def test_settings_held_by_a_window_are_reached_through_its_door_row():
     for opener in ("junban", "backfill"):
         assert [row.id for row in catalog.ROWS if opener in row.door] == [
             "junban_scope" if opener == "junban" else "junban_backfill_cards"]
-    with _settings_pre_cut():                  # Speech's window and its door row: the Settings before the cut-over (D15)
-        speech = {key: row.id for row in catalog.ROWS for key in row.reaches}
-        for key in ("koe_voice", "koe_model", "koe_style", "koe_temperature", "koe_daily_cap"):
-            assert speech[key] == "koe_door" and key not in catalog.NOT_SHOWN
+    for key in ("koe_voice", "koe_model", "koe_style", "koe_temperature", "koe_daily_cap"):   # Speech's (D15): no row
+        assert key not in reached and key in catalog.NOT_SHOWN, key
     for row in catalog.ROWS:
         if row.reaches:
             # (a program row reaches its program, which its own picker writes: Sonic 2026-11-05)
@@ -619,8 +603,6 @@ def test_values_read_dotted_paths_per_language_entries_and_defaults_from_a_froze
     assert catalog.value(catalog.ROW["anki_decks"], settings, "zh") == []
     assert catalog.value(catalog.ROW["automation"], settings, "ja") is True             # D29's default: on
     assert catalog.value(catalog.ROW["connect_backlog_cap"], settings, "zh") == 80
-    with _settings_pre_cut():                                      # Speech's row: before the cut-over only (D15)
-        assert catalog.value(catalog.ROW["enable_koe"], settings, "ja") is False        # absent: off
     assert catalog.value(catalog.ROW["known_road"], settings, "ja") == "anki"
     assert catalog.value(catalog.ROW["known_road"], settings, "zh") == "import"
 
@@ -688,17 +670,13 @@ def test_module_rows_hide_without_their_module():
             assert row_id in _shown({"enable_koe": True}, "ja"), row_id
     check(("enable_junban", "junban_scope", "put_back", "backfill_patterns", "enable_youtube_transcripts",
            "enable_youtube_preview", "setup_cards"))
-    with _settings_pre_cut():                  # Speech's rows: the Settings before the cut-over only (D15)
-        check(("enable_koe", "koe_door"))
 
 
 def test_speech_shows_only_once_revealed_in_settings_json():
     """The reveal gate (`koe.is_revealed`: the key present in the file): its module alone shows nothing."""
-    with _settings_pre_cut():                  # Speech's rows: the Settings before the cut-over only (D15)
-        assert not {"enable_koe", "koe_door"} & _shown({}, "ja", frozenset(catalog.MODULES))
-        assert {"enable_koe", "koe_door"} <= _shown({"enable_koe": False}, "ja", EVERYTHING)
-    if catalog._V3:                            # the cut-over's: not even revealed
-        assert not {"enable_koe", "koe_door"} & _shown({"enable_koe": False}, "ja", EVERYTHING)
+    # Speech left the journey (D15) and the Settings before the cut-over retired (J-RETIRE): not even revealed
+    assert not {"enable_koe", "koe_door"} & _shown({}, "ja", frozenset(catalog.MODULES))
+    assert not {"enable_koe", "koe_door"} & _shown({"enable_koe": False}, "ja", EVERYTHING)
 
 
 @WITH_MODULES
@@ -819,10 +797,7 @@ def test_reveal_targets_and_written_keys_find_their_rows():
     assert catalog.locate("mine_line") == ("anki", "mine_line")
     assert catalog.locate("soon_line") == ("content", "soon_line")
     assert catalog.locate("logic.names_kanji") == ("parsing", "names_kanji")
-    with _settings_pre_cut():                                   # Speech's door: the Settings before the cut-over
-        assert catalog.locate("koe_voice") == ("reading", "koe_door")
-    if catalog._V3:                                             # the cut-over's: no row reaches it (NOT_SHOWN)
-        assert catalog.locate("koe_voice") is None and "koe_voice" in catalog.NOT_SHOWN
+    assert catalog.locate("koe_voice") is None and "koe_voice" in catalog.NOT_SHOWN    # Speech's: no row (D15)
     assert catalog.locate("app_theme") is None
     assert catalog.rows_for(["logic.selection.auto"]) == ["level"]
 

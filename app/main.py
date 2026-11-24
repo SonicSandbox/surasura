@@ -335,7 +335,6 @@ class MasterDashboardApp:
         self.var_context_max_chars = tk.IntVar(value=50)
         self.var_words_per_day = tk.IntVar(value=5) # Target words per day
         self.var_show_words_per_day = tk.BooleanVar(value=True) # Show target days calculation
-        self.var_zen_limit = tk.IntVar(value=50) # Default Zen Limit
         self.onboarding_completed = tk.BooleanVar(value=False)
         self.var_open_count = tk.IntVar(value=0)
         self.var_hide_audio = tk.BooleanVar(value=False)
@@ -499,7 +498,6 @@ class MasterDashboardApp:
         self.var_add_graduated.trace_add("write", self.save_settings)
         self.var_words_per_day.trace_add("write", self.save_settings)
         self.var_show_words_per_day.trace_add("write", self.save_settings)
-        self.var_zen_limit.trace_add("write", self.save_settings) # Added trace for zen limit
         self.var_hide_audio.trace_add("write", self.save_settings)
         self.var_enable_youtube.trace_add("write", self.save_settings)
         self.var_enable_youtube.trace_add("write", lambda n, i, m: self.update_youtube_visibility())
@@ -515,10 +513,8 @@ class MasterDashboardApp:
         self.var_anki_sync_auto.trace_add("write", self.save_settings)
         self.var_anki_backlog_on_generate.trace_add("write", self.save_settings)
         self.var_anki_auto_generate.trace_add("write", self.save_settings)
-        # Selecting a theme both persists it AND toggles the Zen Limit slider's visibility. (A single
-        # <<ComboboxSelected>> binding — a second bind() without add="+" would replace this one.)
-        self.combo_theme.bind("<<ComboboxSelected>>",
-                              lambda e: (self.save_settings(), self._update_zen_visibility()))
+        # Selecting a theme persists it (the journey's page reads its look from it; Zen retired, J-RETIRE).
+        self.combo_theme.bind("<<ComboboxSelected>>", lambda e: self.save_settings())
 
         # Always-fresh preview: when the window regains focus (e.g. after editing content in
         # Explorer or importing words), cheaply check for a delta and re-index in the background.
@@ -1662,7 +1658,7 @@ class MasterDashboardApp:
         theme_app_frame = ttk.Frame(view_frame)
         theme_app_frame.pack(fill=tk.X, pady=(0, 8))
 
-        themes = ['Default (Dark)', 'Dark Flow', 'Midnight (Vibrant)', 'Modern Light', 'Zen Mode']
+        themes = ['Default (Dark)', 'Dark Flow', 'Midnight (Vibrant)', 'Modern Light']
         self.combo_theme = ttk.Combobox(theme_app_frame, values=themes, state="readonly", width=20)
         self.combo_theme.set('Dark Flow')
         self.combo_theme.pack(side=tk.LEFT)
@@ -1672,22 +1668,8 @@ class MasterDashboardApp:
         chk_app_mode.pack(side=tk.LEFT, padx=(20, 0))
         ToolTip(chk_app_mode, "RECOMMENDS keeping it off until the migaku or lookupextension is turned on for that site.")
         
-        # Zen Mode Limit Slider — only shown when the Zen Mode theme is selected (wired below).
-        self.zen_limit_frame = ttk.Frame(view_frame)
-        self.zen_limit_frame.pack(fill=tk.X, pady=(0, 8))
-
-        ttk.Label(self.zen_limit_frame, text="Zen Limit:").pack(side=tk.LEFT)
-        zen_slider_main = tk.Scale(self.zen_limit_frame, from_=25, to=125, orient=tk.HORIZONTAL,
-                                   variable=self.var_zen_limit, showvalue=False,
-                                   bg=BG_COLOR, fg=TEXT_COLOR, highlightthickness=0,
-                                   activebackground=ACCENT_COLOR, troughcolor=SURFACE_COLOR, length=300)
-        zen_slider_main.pack(side=tk.LEFT, padx=(5, 10))
-        ToolTip(zen_slider_main, "Limit words for Zen Mode (25-125).")
-
-        # Value Label on the right
-        ttk.Label(self.zen_limit_frame, textvariable=self.var_zen_limit, width=4).pack(side=tk.LEFT)
         # The one main action: (re)generate the journey and open it. It reuses the last analysis
-        # when nothing relevant changed — so theme / Zen limit apply instantly without a recompute.
+        # when nothing relevant changed — so a theme applies instantly without a recompute.
         # The small red YouTube-preview button sits to its right (shown only when that feature is on).
         self.journey_row = ttk.Frame(view_frame)
         self.journey_row.pack(fill=tk.X)
@@ -1704,7 +1686,7 @@ class MasterDashboardApp:
         self.btn_journey.pack(fill=tk.X, expand=True)
         ToolTip(self.btn_journey, lambda: (
             "Generate your learning path and open it in the browser. Reuses the last analysis if "
-            "nothing changed, so theme / Zen limit apply instantly."
+            "nothing changed, so a theme applies instantly."
             + (" Your library, known words or settings changed since the last Generate."
                if self._journey_state is False else "")))
         # The check sits ON the button, at its right edge, so the button never changes length (the
@@ -1728,11 +1710,6 @@ class MasterDashboardApp:
         # Short hint shown ONLY while the library is empty; Generate is disabled until content is added.
         self.lbl_generate_hint = ttk.Label(view_frame, text="Add content first — tap Import Content above.",
                                             foreground="#aaaaaa", font=("Segoe UI", 8, "italic"))
-
-        # The Zen Limit only affects the Zen Mode theme -> show that slider only when it's chosen.
-        # (The <<ComboboxSelected>> binding that drives this lives with the theme-save binding in
-        # __init__; here we just set the initial state.)
-        self._update_zen_visibility()
         
         # Footer
         footer_frame = ttk.Frame(self.root, padding=(10, 0)) # Zero vertical padding for footer
@@ -3345,17 +3322,6 @@ class MasterDashboardApp:
         from modules.junban import open_backfill
         open_backfill(self)
 
-    def _update_zen_visibility(self, event=None):
-        """Show the Zen Limit slider only when the Zen Mode theme is selected (it has no effect on
-        any other theme). Re-packed BEFORE the journey button so it keeps its position above it."""
-        if not hasattr(self, "zen_limit_frame"):
-            return
-        if self.combo_theme.get() == "Zen Mode":
-            if not self.zen_limit_frame.winfo_ismapped():
-                self.zen_limit_frame.pack(fill=tk.X, pady=(0, 8), before=self.journey_row)
-        else:
-            self.zen_limit_frame.pack_forget()
-
     def load_settings(self):
         try:
             settings = settings_manager.load_settings()
@@ -3367,7 +3333,6 @@ class MasterDashboardApp:
             theme = settings.get("theme", "Dark Flow")
             if theme in self.combo_theme['values']:
                 self.combo_theme.set(theme)
-            self._update_zen_visibility()   # .set() fires no event -> sync the slider to the loaded theme
 
             self.var_strategy.set(settings.get("strategy", "freq"))
             self.var_target_coverage.set(settings.get("target_coverage", 90))
@@ -3391,7 +3356,6 @@ class MasterDashboardApp:
             self.var_add_graduated.set(settings.get("add_graduated_words", True))
             self.var_words_per_day.set(settings.get("words_per_day", 5))
             self.var_show_words_per_day.set(settings.get("show_words_per_day", True))
-            self.var_zen_limit.set(settings.get("zen_limit", 50))
 
             self.onboarding_completed.set(settings.get("onboarding_completed", False))
             self.var_open_count.set(settings.get("open_count", 0))
@@ -3502,7 +3466,6 @@ class MasterDashboardApp:
                 "add_graduated_words": self.var_add_graduated.get(),
                 "words_per_day": self._iv(self.var_words_per_day, cur.get("words_per_day", 5)),
                 "show_words_per_day": self.var_show_words_per_day.get(),
-                "zen_limit": self._iv(self.var_zen_limit, cur.get("zen_limit", 50)),
                 "onboarding_completed": self.onboarding_completed.get(),
                 "open_count": self._iv(self.var_open_count, cur.get("open_count", 0)),
                 "auto_update_enabled": self.var_auto_update.get(),
@@ -4637,7 +4600,6 @@ class MasterDashboardApp:
                                   "max_contexts": self.var_max_contexts.get()}},
             "theme": self.combo_theme.get(),
             "open_app_mode": self.var_open_app_mode.get(),
-            "zen_limit": self.var_zen_limit.get(),
         }
 
     def _try_open_existing_report(self, args):
@@ -4665,7 +4627,7 @@ class MasterDashboardApp:
 
         Mirrors the analyzer's own skip gate (compute_run_signature + outputs-present + render-sig),
         computed in-process so we can avoid the subprocess entirely. Conservative: only the pure
-        'nothing changed, same presentation' case short-circuits; a changed theme/zen or any missing
+        'nothing changed, same presentation' case short-circuits; a changed render input or any missing
         piece falls through so the subprocess handles the re-render/analysis as before."""
         try:
             from app import analyzer as _analyzer

@@ -5,10 +5,9 @@ literal identifiers, classes and URL survive. That is the established convention
 test_modality_badge.py / test_sort_filter_feature.py), and it is what stops a rename from silently
 removing a feature from the shipped report.
 
-Unlike the 文 badge, this is deliberately a web_app-ONLY feature — Zen Mode has no card footer, no
-Ignore button and none of the v/z/w/s hotkeys, and adding an outbound link there would break the
-minimal reading surface it exists to be. test_zen_is_deliberately_untouched pins that decision so a
-future reader doesn't "fix" the asymmetry by accident.
+Zen's page (which had no ⌕, on purpose) retired with the old journey page (J-RETIRE, 2026-11-23). The journey page's
+⌕ — its switch and category reaching the page and re-rendering it — is test_journey_cutover's
+`test_the_lookups_switch_and_category_reach_the_page_and_re_render_it`.
 """
 
 import os
@@ -16,19 +15,9 @@ import os
 import pytest
 
 
-# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
-pytestmark = pytest.mark.usefixtures("journey_pre_cut")
-
-
 @pytest.fixture
 def web_html(project_root):
     with open(os.path.join(project_root, "templates", "web_app.html"), encoding="utf-8") as f:
-        return f.read()
-
-
-@pytest.fixture
-def zen_html(project_root):
-    with open(os.path.join(project_root, "templates", "zen_app.html"), encoding="utf-8") as f:
         return f.read()
 
 
@@ -190,12 +179,12 @@ def test_zh_s_a_chinese_report_has_no_lookup_button(web_html):
 
 
 def test_category_is_validated_before_injection():
-    """A hand-edited settings.json must not be able to put arbitrary text into the report's URL."""
-    import inspect
-    from app import static_html_generator
-    src = inspect.getsource(static_html_generator.generate_static_html)
-    assert '("all", "anime", "liveaction", "youtube")' in src
-    assert 'word_search_category = "all"' in src
+    """A hand-edited settings.json must not be able to put arbitrary text into the page's URL: a category the page
+    doesn't offer reads as All (`journey_settings.lookup_values`, what the journey page's head carries)."""
+    from app.services.journey_settings import LOOKUP_KINDS, lookup_values
+    assert tuple(LOOKUP_KINDS) == ("all", "anime", "liveaction", "youtube")
+    assert lookup_values({"word_search_category": "anime'><script>alert(1)</script>"})["lookup_category"] == "all"
+    assert lookup_values({"word_search_category": "anime"})["lookup_category"] == "anime"
 
 
 # --- the dashboard round-trip ------------------------------------------------------------------ #
@@ -270,10 +259,9 @@ def test_settings_re_render_but_never_re_analyze():
     import inspect
     from app import analyzer
     run_src = inspect.getsource(analyzer.settings_signature)    # the run signature's settings part (P3.3 extract)
-    render_src = inspect.getsource(analyzer.compute_render_signature)
     for key in ("word_search_enabled", "word_search_category"):
         assert key in run_src, f"{key} missing from the run signature's non-analysis exclusions"
-        assert key in render_src, f"{key} missing from the render signature — report goes stale"
+    # the render half: the signature moves (the next test; the journey page reads them through `lookup_values`)
 
 
 def test_changing_a_setting_changes_the_render_signature(monkeypatch):
@@ -281,7 +269,7 @@ def test_changing_a_setting_changes_the_render_signature(monkeypatch):
     import argparse
     from app import analyzer, settings_manager
 
-    args = argparse.Namespace(theme="Dark Flow", zen_limit=50)
+    args = argparse.Namespace()
     base = dict(settings_manager.get_default_settings())
 
     def _with(**over):
@@ -293,66 +281,3 @@ def test_changing_a_setting_changes_the_render_signature(monkeypatch):
     assert _with(word_search_enabled=False) != default
     assert _with(word_search_category="anime") != default
     assert _with(word_search_category="all") == default
-
-
-# --- scope ------------------------------------------------------------------------------------ #
-
-def test_zen_is_deliberately_untouched(zen_html):
-    """Zen has no footer, no Ignore and no action hotkeys — see this module's docstring."""
-    assert "btn-search" not in zen_html
-    assert "nadeshiko" not in zen_html
-
-
-# --- end to end -------------------------------------------------------------------------------- #
-
-def test_button_survives_into_the_generated_report(tmp_path, monkeypatch):
-    """A template feature is useless if injection drops it. Renders a real report from a minimal
-    CSV carrying genuine vocabulary and asserts the button and its URL arrive in the HTML.
-    """
-    import pandas as pd
-    from app import static_html_generator
-
-    results = tmp_path / "results"
-    results.mkdir()
-
-    rows = [
-        # 聖文 is the word from the feature request; 覗き込む exercises a multi-character lemma.
-        {"Word": "聖文", "Reading": "セイブン", "Tier": "Outside", "Score": 40,
-         "Occurrences": 12, "Count (High)": 12, "Count (Low)": 0, "Count (Goal)": 0,
-         "Modality": "", "Sources": "book.txt", "Context 1": "聖文を読み上げる。"},
-        {"Word": "覗き込む", "Reading": "ノゾキコム", "Tier": "Outside", "Score": 30,
-         "Occurrences": 9, "Count (High)": 9, "Count (Low)": 0, "Count (Goal)": 0,
-         "Modality": "reading", "Sources": "book.txt", "Context 1": "窓を覗き込む。"},
-    ]
-    pd.DataFrame(rows).to_csv(results / "priority_learning_list.csv", index=False,
-                              encoding="utf-8-sig")
-    prog = [dict(r, Sequence=1, **{"Source File": "book.txt",
-                                   "Occurrences (Global)": r["Occurrences"],
-                                   "Occurrences (File)": r["Occurrences"]}) for r in rows]
-    pd.DataFrame(prog).to_csv(results / "progressive_learning_list.csv", index=False,
-                              encoding="utf-8-sig")
-
-    # The generator resolves its paths ONCE at import, so each must be redirected individually —
-    # patching RESULTS_DIR alone still writes into the developer's real results/ (testing.md §5.2).
-    out = results / "reading_list_static.html"
-    monkeypatch.setattr(static_html_generator, "RESULTS_DIR", str(results))
-    monkeypatch.setattr(static_html_generator, "PRIORITY_CSV",
-                        str(results / "priority_learning_list.csv"))
-    monkeypatch.setattr(static_html_generator, "PROGRESSIVE_CSV",
-                        str(results / "progressive_learning_list.csv"))
-    monkeypatch.setattr(static_html_generator, "OUTPUT_FILE", str(out))
-
-    static_html_generator.generate_static_html(theme="Dark Flow", open_browser=False)
-
-    html = out.read_text(encoding="utf-8")
-    assert "https://nadeshiko.co/en/search/" in html
-    assert 'class="btn-search"' in html
-    assert "const isSearch = e.key === '\\\\';" in html
-    # The settings the browser reads must arrive with them.
-    assert "let globalWordSearch = " in html
-    assert '"enabled": true' in html
-    assert '"category": "all"' in html
-    # The words themselves reach the payload, so the data-attribute has something to carry.
-    # The word payload is dumped with the default ensure_ascii=True (static_html_generator.py:653),
-    # so it arrives \u-escaped and the browser decodes it back — assert the form actually shipped.
-    assert "\\u8056\\u6587" in html, "the word never reached the report payload"

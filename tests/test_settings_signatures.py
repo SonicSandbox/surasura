@@ -125,7 +125,7 @@ def _argv(lang, settings=None):
         var_context_max_chars=_Var(context.get("preferred_max_chars", 50)),
         var_max_contexts=_Var(context.get("max_contexts", 3)),
         combo_theme=_Var(s.get("theme") if s.get("theme") in THEMES else "Dark Flow"),
-        var_open_app_mode=_Var(s.get("open_app_mode", False)), var_zen_limit=_Var(s.get("zen_limit", 50)))
+        var_open_app_mode=_Var(s.get("open_app_mode", False)))
     dashboard._effective_zh_script = lambda language: MasterDashboardApp._effective_zh_script(dashboard, language)
     dashboard._run_settings = lambda: MasterDashboardApp._run_settings(dashboard)
     return MasterDashboardApp._analyzer_args(dashboard)
@@ -370,16 +370,16 @@ def test_the_dashboards_save_writes_only_its_own_keys_and_keeps_a_logic_key_writ
     on_disk["a_key_from_a_later_version"] = {"x": 1}
     on_disk["logic"]["automation"] = False          # D29's switch (3.0): not the dashboard's, so never written back on
     _write(on_disk)
-    app.var_zen_limit.set(77)
+    app.var_words_per_day.set(7)
     app.save_settings()
     after = _read()
-    assert after["zen_limit"] == 77
+    assert after["words_per_day"] == 7
     assert after["logic"]["weights"] == {"high": 7, "low": 2, "goal": 1}
     assert after["logic"]["selection"]["bands_ppm"] == {"very_rare": 3}
     assert after["a_key_from_a_later_version"] == {"x": 1}
     assert after["logic"]["automation"] is False
     changed = {k for k in set(after) | set(on_disk) if after.get(k) != on_disk.get(k)}
-    assert changed <= {"zen_limit", "logic", "anki_connect_url"}, changed
+    assert changed <= {"words_per_day", "logic", "anki_connect_url"}, changed
 
 
 def test_junban_panel_save_keeps_the_journey_current(library, start_dashboard):
@@ -648,8 +648,8 @@ def test_report_only_logic_settings_re_render_and_never_re_analyze(library, monk
     """"Show 'Target Met' inline", "Hide Audio Button", the page size and the ✦ / ⚖ thresholds: the templates read them
     from the logic block the report embeds, and no run reads them. Changing one re-renders the report (about 3 s) —
     never a full analysis (about 13 s on a large library). Since the v3 cut-over (J-CUT) the journey's render reads only
-    the thresholds (its ✦ / ⚖ marks): the old page's three re-render it only before the cut (SURASURA_DOOR=0; Zen keeps
-    the old list too) and draw nothing on v3 (the Redraw rule)."""
+    the thresholds (its ✦ / ⚖ marks): the old page's three draw nothing (the Redraw rule) — with the door off for a run
+    too, since the old page and Zen retired (J-RETIRE): no switch brings its list back."""
     for door in ("0", None):
         if door:
             monkeypatch.setenv("SURASURA_DOOR", door)
@@ -661,7 +661,7 @@ def test_report_only_logic_settings_re_render_and_never_re_analyze(library, monk
         for lang in LANGUAGES:
             run, render = _signatures(lang)
             assert run == before[lang][0], f"{lang}: no new analysis"
-            if door or v3_reads:
+            if v3_reads:
                 assert render != before[lang][1], f"{lang}: a new report"
             else:
                 assert render == before[lang][1], f"{lang}: nothing on the v3 page reads it"
@@ -705,21 +705,18 @@ def test_the_chinese_run_signature_ignores_japanese_only_switches(library):
 
 
 # === 6. Speech's port ============================================================================================== #
-def test_koe_port_re_renders_only_while_speech_is_on(library, monkeypatch):
-    """The report embeds Speech's port to reach its helper — only while Speech is on. Then a new port is a new report;
-    with Speech off, the report holds no port and nothing changes. Never a new analysis. The old page's (before the v3
-    cut-over: SURASURA_DOOR=0; Zen's too): the v3 page has no Speech (SPEC § 7)."""
-    monkeypatch.setenv("SURASURA_DOOR", "0")
-    _write({"target_language": "ja", "koe_port": 8787})
-    off = _signatures("ja")
-    _write({"target_language": "ja", "koe_port": 8790})
-    assert _signatures("ja") == off, "Speech off: the report holds no port"
-    _write({"target_language": "ja", "enable_koe": True, "koe_port": 8787})
-    on_run, on_render = _signatures("ja")
-    _write({"target_language": "ja", "enable_koe": True, "koe_port": 8790})
-    run, render = _signatures("ja")
-    assert render != on_render, "Speech on: a new port is a new report"
-    assert run == on_run == off[0], "never a new analysis"
+def test_speech_and_its_port_move_no_signature(library, monkeypatch):
+    """Speech left the journey (D15) and the old page that embedded its port retired (J-RETIRE): turning it on or moving
+    its port is neither a new report nor a new analysis, with the door off for a run too."""
+    for door in ("0", None):
+        if door:
+            monkeypatch.setenv("SURASURA_DOOR", door)
+        else:
+            monkeypatch.delenv("SURASURA_DOOR", raising=False)
+        _write({"target_language": "ja", "koe_port": 8787})
+        off = _signatures("ja")
+        _write({"target_language": "ja", "enable_koe": True, "koe_port": 8790})
+        assert _signatures("ja") == off
 
 
 # === 7. The Rarity slider and the library's name tables ============================================================ #

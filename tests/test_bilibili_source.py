@@ -19,7 +19,7 @@ import pytest
 
 from app import analyzer
 from app.path_utils import infer_source_type
-from app.static_html_generator import AnchorFinder, _intern_sources, _video_link
+from app.static_html_generator import _video_link
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EP_URL = "https://www.bilibili.tv/en/play/2410703/30646923"
@@ -59,25 +59,11 @@ def test_the_badge_opens_the_episode_page():
     assert _video_link("x [dQw4w9WgXcQ].txt", "youtube", None) == "dQw4w9WgXcQ"
 
 
-def test_the_source_table_carries_the_type_and_the_page(tmp_path):
-    transcript = tmp_path / "E7 [bilibili-30646923].txt"
-    transcript.write_text(TRANSCRIPT, encoding="utf-8")
-    (tmp_path / "E7 [bilibili-30646923].surasura.json").write_text(
-        json.dumps({"video_id": "30646923", "url": EP_URL, "cues": []}), encoding="utf-8")
-    rel = "HighPriority/E7 [bilibili-30646923].txt"
-    records = [{"Context 1": "欢迎光临时光照相馆。", "Src 1": rel}]
-    table = []
-    _intern_sources(records, {rel: {"name": transcript.name, "type": "bilibili",
-                                    "abs": str(transcript)}},
-                    table, {}, finder=AnchorFinder())
-    assert table[0][1] == "bilibili" and table[0][4] == EP_URL
-
-
-@pytest.mark.parametrize("template", ["web_app.html", "zen_app.html"])
-def test_both_reports_know_the_bilibili_badge(template):
-    """The template treats row[4] as either a YouTube id or a page URL. A URL must be used as-is,
-    without youtu.be in front and without a ?t= offset the site doesn't understand."""
-    with open(os.path.join(PROJECT_ROOT, "templates", template), encoding="utf-8") as f:
+def test_the_preview_page_knows_the_bilibili_badge():
+    """The YouTube preview's page (web_app.html; the journey page shows no video badge) treats row[4] as either a
+    YouTube id or a page URL. A URL must be used as-is, without youtu.be in front and without a ?t= offset the site
+    doesn't understand."""
+    with open(os.path.join(PROJECT_ROOT, "templates", "web_app.html"), encoding="utf-8") as f:
         content = f.read()
     assert "bilibili: '📺'" in content
     assert "const pageUrl = videoId.startsWith('https://') || videoId.startsWith('http://');" in content

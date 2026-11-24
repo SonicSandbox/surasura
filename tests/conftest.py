@@ -349,16 +349,6 @@ def _real_analyzer_imported_first():
     yield
 
 
-@pytest.fixture
-def journey_pre_cut(monkeypatch):
-    """The journey as it was before the v3 cut-over (J-CUT): the door, the v3 page and its Settings rows off for this
-    test and every process it starts (`SURASURA_DOOR=0`), so Generate writes the old page (`web_app.html`). For the
-    old renderer's tests — still live for Zen's page and the helpers the YouTube preview loads; they retire with the
-    old renderer when the preview moves to v3 (journey v3 SPEC, the dup audit's row 13). A module asks for it with
-    `pytestmark = pytest.mark.usefixtures("journey_pre_cut")`."""
-    monkeypatch.setenv("SURASURA_DOOR", "0")
-
-
 @pytest.fixture(autouse=True)
 def _isolate_analyzer_module_state():
     """Keep the analyzer's module-level state from leaking between tests.

@@ -20,7 +20,6 @@ import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB_APP = os.path.join(ROOT, "templates", "web_app.html")
-ZEN_APP = os.path.join(ROOT, "templates", "zen_app.html")
 RUNAWAY = os.path.join(ROOT, "tests", "Test Resources", "ja", "runaway_transcript.txt")
 
 CAP = 150  # logic.context.max_chars default
@@ -35,7 +34,7 @@ def _runaway():
     return _read(RUNAWAY).strip()
 
 
-# --- Mirror of trimContext() in templates/web_app.html + zen_app.html -------------------------
+# --- Mirror of trimContext() in templates/web_app.html (the YouTube preview's page) -------------------------
 # Kept deliberately line-for-line with the JS so the invariants below describe what actually ships.
 # Known benign divergence: JS lengths/indices are UTF-16 code units, so a sentence containing
 # non-BMP kanji (e.g. 𠮟) yields a window a couple of units shorter there. Everything is measured
@@ -99,8 +98,8 @@ def trim_context(text, word, cap):
 
 # --- Template wiring --------------------------------------------------------------------------
 
-def test_both_templates_define_the_trim_helper():
-    for path in (WEB_APP, ZEN_APP):
+def test_the_preview_page_defines_the_trim_helper():
+    for path in (WEB_APP,):
         html = _read(path)
         assert "function trimContext(text, word, cap)" in html, f"{path} lost trimContext"
         # The cap is read from the SAME setting that governs candidate exclusion, not hardcoded.
@@ -117,11 +116,6 @@ def test_web_app_trims_at_every_render_site():
     assert "const displayC1 = formatContext(c1Full)" not in html
 
 
-def test_zen_mode_trims_its_contexts():
-    html = _read(ZEN_APP)
-    assert "trimContext(c.text, word, zenCap)" in html
-
-
 def test_audio_reads_what_is_displayed_not_the_runaway_original():
     """The Listen button must speak the windowed sentence, not 400 characters of transcript."""
     html = _read(WEB_APP)
@@ -135,8 +129,6 @@ def test_full_sentence_stays_reachable_on_hover_when_trimmed():
     web = _read(WEB_APP)
     assert "c1Trim.trimmed ? ` title=\"${escapeHtml(c1Full)}\"` : ''" in web
     assert '<div class="context-box"${c1Title}>' in web
-    zen = _read(ZEN_APP)
-    assert "t.trimmed ? ` title=\"${escapeHtml(c.text)}\"` : ''" in zen
 
 
 # --- Windowing behaviour on the real runaway transcript ---------------------------------------

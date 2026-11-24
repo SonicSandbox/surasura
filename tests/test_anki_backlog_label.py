@@ -38,10 +38,6 @@ _BACKLOG = {"version": 1, "synced_at": "2026-09-23T10:00:00", "decks": ["TheBank
                       "1789711432548": {"word": "スルリ", "keys": ["スルリ", "するり"], "source": "", "freqsort": None}}}
 
 
-# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
-pytestmark = pytest.mark.usefixtures("journey_pre_cut")
-
-
 def _write_backlog(language="ja", data=None):
     folder = os.path.join(os.environ["SURASURA_TEST_ROOT"], "User Files", language)
     os.makedirs(folder, exist_ok=True)
@@ -84,17 +80,30 @@ def test_chinese_backlog_words_are_read_in_the_reports_script():
     assert anki_backlog_keys("zh", {"anki_backlog_on_generate": True}) == ["學習"]
 
 
-def test_the_rendered_report_carries_the_words(tmp_path):
-    """The one global the template reads, injected beside the others."""
+def _journey(tmp_path, keys, language="ja"):
+    """The journey page's data (`journey_render.render`, the page every look writes since J-RETIRE) for a real list —
+    the bundled sample's lines (test_journey_render_shape's `_rows`) — with the backlog's keys `keys`; returns each
+    word record of its chunks and the call `anki_backlog_keys` got."""
+    import gzip
+    from app import journey_render as jr
     from app import static_html_generator as shg
-    out = os.path.join(str(tmp_path), "report.html")
-    with patch.object(shg, "PRIORITY_CSV", os.path.join(str(tmp_path), "none.csv")), \
-         patch.object(shg, "PROGRESSIVE_CSV", os.path.join(str(tmp_path), "none.csv")), \
-         patch.object(shg, "OUTPUT_FILE", out), \
-         patch.object(shg, "anki_backlog_keys", return_value=["辿り着く"]):
-        shg.generate_static_html(theme="default", open_browser=False)
-    with open(out, encoding="utf-8") as f:
-        assert 'let globalAnkiBacklog = ["辿り着く"];' in f.read()
+    from tests.test_journey_render_shape import _rows, _stats
+    rows = _rows(language, 3)
+    with patch.object(shg, "RESULTS_DIR", str(tmp_path)),          patch.object(shg, "PRIORITY_CSV", os.path.join(str(tmp_path), "priority_learning_list.csv")),          patch.object(shg, "anki_backlog_keys", return_value=keys) as asked:
+        out = jr.render(language, rows=rows, priority=rows, stats=_stats(3), settings={})
+    records = [w for blob in out.chunks for w in json.loads(gzip.decompress(blob).decode("utf-8"))["w"]]
+    return records, asked
+
+
+@pytest.mark.parametrize("language,word", [("ja", "文化祭"), ("zh", "夜市")])
+def test_the_rendered_report_carries_the_words(tmp_path, language, word):
+    """The backlog's words reach the journey page: the backlogged word's record carries the in-Anki mark (8), no
+    other word's does; without a backlog none does (the page shows no mark, no filter entry, no count)."""
+    records, _asked = _journey(tmp_path, [word], language)
+    marked = {w[0] for w in records if w[6] & 8}
+    assert marked == {word}, marked
+    records, _asked = _journey(tmp_path, [], language)
+    assert not any(w[6] & 8 for w in records)
 
 
 # --- the cards read through the dictionary (Patterns_Quality_Spec §7) ------------------------------- #
@@ -345,15 +354,9 @@ def test_a_kana_card_the_list_holds_as_spelled_keeps_no_fold(tmp_path):
 
 
 def test_the_report_labels_against_the_list_it_shows(tmp_path):
-    """The generator hands the label the priority list it renders — the same file Junban indexes."""
-    from app import static_html_generator as shg
-    priority = os.path.join(str(tmp_path), "none.csv")
-    with patch.object(shg, "PRIORITY_CSV", priority), \
-         patch.object(shg, "PROGRESSIVE_CSV", os.path.join(str(tmp_path), "none.csv")), \
-         patch.object(shg, "OUTPUT_FILE", os.path.join(str(tmp_path), "report.html")), \
-         patch.object(shg, "anki_backlog_keys", return_value=[]) as keys:
-        shg.generate_static_html(theme="default", open_browser=False)
-    assert keys.call_args[0][2] == priority
+    """The journey hands the label the priority list it renders — the same file Junban indexes."""
+    _records, asked = _journey(tmp_path, [])
+    assert asked.call_args[0][2] == os.path.join(str(tmp_path), "priority_learning_list.csv")
 
 
 # --- a presentation setting: re-render, never re-analyze -------------------------------------------- #

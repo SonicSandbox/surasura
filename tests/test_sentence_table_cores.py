@@ -10,12 +10,18 @@ What these prove:
   - a worker that dies, or a pool that breaks, leaves its files to the walk (the same bytes), never ends or hangs the
     run; a line offered without its question fails the table at its write (the run's own warning); the workers end;
     a song line (read by the walk with no words) is answered as the walk answers it;
-  - one core, a small library, *Use every core* off or on, settings' `index_pool_workers` 0: the count follows
-    `token_index.pool_workers`' rule, at most CORES_MAX, and 1 is today's one-process path; level 0 starts nothing.
+  - one core, a library under CORES_MIN_FILES files, *Use every core* off or on, settings' `index_pool_workers` 0:
+    the count is 1 under the threshold, then `token_index.pool_workers`' rule, at most CORES_MAX (settings asking N
+    get N at any size, as the indexer does), and 1 is today's one-process path; level 0 starts nothing;
+  - numpy: the table's module never imports it at its top, a walk worker never loads it, and every process of a
+    Generate at level 1 that loads it (the Generate's own, through pandas) has its BLAS on one thread at that import,
+    the variables put back after (a learner's own kept); at level 0 the Generate's import is today's.
 
 What a wrong answer would cost a learner: a card's sentence chosen on numbers that moved with how many cores the PC
 has, or with which worker finished first — or a Generate that hangs, or fails, because a helper process did.
 """
+import ast
+import json
 import os
 from concurrent.futures import Future
 from concurrent.futures.process import BrokenProcessPool
@@ -228,7 +234,7 @@ def test_a_line_offered_without_its_question_fails_the_table_at_its_write(real):
 
 
 # --------------------------------------------------------------------------- #
-# 3. How many: the indexer's rule, at most CORES_MAX; 1 is today's path
+# 3. How many: one process under CORES_MIN_FILES, then the indexer's rule, at most CORES_MAX; 1 is today's path
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("cpus, files, setting, every, want", [
     (1, 20000, None, False, 1),         # one core: one process
@@ -239,10 +245,17 @@ def test_a_line_offered_without_its_question_fails_the_table_at_its_write(real):
     (24, 20000, 0, False, 1),           # index_pool_workers 0: one process
     (24, 3, 8, False, min(3, st.CORES_MAX)),
     (4, 20000, None, True, min(4, st.CORES_MAX)),
+    (24, st.CORES_MIN_FILES - 1, None, False, 1),        # under the threshold (2,000 files, the zh root): one process
+    (24, st.CORES_MIN_FILES - 1, None, True, 1),         # *Use every core* too: workers only where they win
+    (24, st.CORES_MIN_FILES, None, False, st.CORES_MAX),
+    (24, 2000, 2, False, 2),            # settings asking a number get it at any size, as the indexer's do
+    (24, 2000, "two", False, 1),        # an unreadable setting reads as automatic: under the threshold
 ])
-def test_the_worker_count_follows_the_indexers_rule_at_most_cores_max(monkeypatch, cpus, files, setting, every, want):
-    # why: *Use every core* and settings' `index_pool_workers` mean what they mean for the indexer; a PC with one core
-    # (or a small library) gets today's single-process path
+def test_the_worker_count_is_one_under_the_threshold_then_the_indexers_rule(monkeypatch, cpus, files, setting, every,
+                                                                            want):
+    # why: workers cost ~30 MB each and won nothing at 2,000 files or on the zh root, so a library under
+    # CORES_MIN_FILES stays one process; above it *Use every core* and settings' `index_pool_workers` mean what they
+    # mean for the indexer; a PC with one core gets today's single-process path
     from app import settings_manager, token_index
     monkeypatch.setattr(os, "cpu_count", lambda: cpus)
     monkeypatch.setattr(token_index, "_free_memory_mb", lambda: 16000)
@@ -308,3 +321,94 @@ def test_at_level_0_a_generate_starts_no_worker(monkeypatch):
     h.write_settings({"target_language": "ja", "anki_connect_url": "http://127.0.0.1:9", "index_pool_workers": 2})
     log = _generate_at("ja", 0)
     assert "Sentence table" not in log and "sentence table" not in log
+
+
+# --------------------------------------------------------------------------- #
+# 5. numpy: never at the table's import, never in a walk worker, one BLAS thread wherever a level-1 Generate loads it
+# --------------------------------------------------------------------------- #
+_BLAS = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")
+# The spy: on PYTHONPATH as sitecustomize, so every Python process the Generate starts runs it — what the BLAS
+# variables were when numpy was first looked for, and at the exit whether numpy loaded and what kind of process it was
+_SPY = """
+import atexit, json, os, sys
+NAMES = %r
+_seen = {}
+class _Spy:
+    def find_spec(self, name, path=None, target=None):
+        if name == "numpy" and "at_import" not in _seen:
+            _seen["at_import"] = {n: os.environ.get(n) for n in NAMES}
+        return None
+sys.meta_path.insert(0, _Spy())
+def _write():
+    table = sys.modules.get("app.sentence_table")
+    kind = "walk" if table is not None and getattr(table, "_CORE", None) else (
+        "main" if "analyzer" in sys.argv[1:2] else "other")
+    with open(os.path.join(%r, "%%d.json" %% os.getpid()), "w") as f:
+        json.dump(dict(_seen, kind=kind, numpy="numpy" in sys.modules, after={n: os.environ.get(n) for n in NAMES}), f)
+atexit.register(_write)
+"""
+
+
+def test_the_table_module_imports_no_numpy_at_its_top_and_its_widths_are_numpys():
+    # why: a walk worker and the indexer's workers import the table's module to read lines — numpy there cost ~16 MB a
+    # process; the two widths it now works out without numpy must be numpy's own, or every block reads wrong
+    import numpy as np
+    with open(st.__file__, encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    top = {alias.name.split(".")[0] for node in tree.body if isinstance(node, ast.Import) for alias in node.names}
+    top |= {node.module.split(".")[0] for node in tree.body if isinstance(node, ast.ImportFrom)}
+    assert "numpy" not in top, top
+    assert st._BYTES == sum(np.dtype(t).itemsize for _n, t in st.COLUMNS)
+    assert np.dtype(st._LINE_COLUMNS).itemsize == st._LINE.size
+
+
+def _spied_generate(language, level, spy, monkeypatch, learner=None):
+    """One Generate (6 files, 2 workers asked) with the spy in every process -> (its log, [each process's record])."""
+    from tests import services_helpers as h
+    from tests.test_generate_finished import _shows
+    from tests.test_services_progress import _analyzer
+    for name in _BLAS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("SURASURA_SENTENCE_TABLE", raising=False)
+    _shows(language, names=(language == "ja"))[0].close()
+    h.write_settings({"target_language": language, "anki_connect_url": "http://127.0.0.1:9", "index_pool_workers": 2})
+    spy.mkdir()
+    (spy / "sitecustomize.py").write_text(_SPY % (_BLAS, str(spy)), encoding="utf-8")
+    env = {"SURASURA_SENTENCE_TABLE": str(level), "PYTHONHASHSEED": "0", "SURASURA_FORCE_RUN": "1",
+           "PYTHONPATH": str(spy) + os.pathsep + h.PROJECT_ROOT}
+    if learner:
+        env["OPENBLAS_NUM_THREADS"] = learner
+    proc = _analyzer(language, env=env)
+    log = proc.stdout.decode("utf-8", "replace")
+    assert proc.returncode == 0, log[-3000:]
+    seen = [json.loads(p.read_text(encoding="utf-8")) for p in spy.glob("*.json")]
+    assert [s["kind"] for s in seen].count("main") == 1, seen
+    return log, seen
+
+
+@pytest.mark.parametrize("language, learner", [("ja", None), ("zh", None), ("ja", "4")])
+def test_every_process_of_a_level_1_generate_loads_numpy_with_one_blas_thread_and_a_walk_worker_none(
+        language, learner, tmp_path, monkeypatch):
+    # why: numpy's BLAS reserves a buffer a CPU thread at its first import (~750 MB committed on 24 threads) for calls
+    # the table never makes; the Generate brings numpy in through pandas, its workers need none — and the variables
+    # are put back, so nothing the Generate starts later is given them; a thread count the learner set is theirs
+    log, seen = _spied_generate(language, 1, tmp_path / "spy", monkeypatch, learner)
+    assert "Sentence table: the lines' words in 2 processes." in log
+    held = {n: "1" for n in _BLAS}
+    if learner:
+        held["OPENBLAS_NUM_THREADS"] = learner
+    main = next(s for s in seen if s["kind"] == "main")
+    assert main["numpy"] and main["at_import"] == held
+    assert main["after"] == {n: (learner if n == "OPENBLAS_NUM_THREADS" else None) for n in _BLAS}
+    walk = [s for s in seen if s["kind"] == "walk"]
+    assert walk and not any(s["numpy"] for s in walk), walk
+    for s in seen:                  # the indexer's workers too: no numpy, or numpy held
+        assert not s["numpy"] or s["at_import"] == held, s
+
+
+def test_at_level_0_the_generates_numpy_import_is_todays(tmp_path, monkeypatch):
+    # why: the switch is off in the tree — the Generate loads numpy through pandas as it does today, nothing set
+    log, seen = _spied_generate("ja", 0, tmp_path / "spy", monkeypatch)
+    main = next(s for s in seen if s["kind"] == "main")
+    assert main["numpy"] and main["at_import"] == {n: None for n in _BLAS}
+    assert not [s for s in seen if s["kind"] == "walk"]

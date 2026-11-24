@@ -6296,6 +6296,9 @@ def main():
 
     # pandas is only needed from here on (to write the CSVs on a full run). Import it lazily so the
     # "nothing changed" skip path above never pays its ~0.35s import cost.
+    if plan_rules.SENTENCE_TABLE >= 1:
+        from app import sentence_score
+        sentence_score.numpy_one_thread()   # (pandas brings numpy in: its BLAS held to one thread, as the table)
     import pandas as pd
 
     # F7: only the order moved since the last Generate, and the journey keeper asks for the journey: redrawn from that

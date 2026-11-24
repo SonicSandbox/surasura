@@ -25,7 +25,9 @@ the walk holds them by; `finish` resolves the keys (rows, formulas numbered by k
 lines are a function of that file alone. Each line's two numbers can be worked out on other cores (`Cores`, E-CORES:
 the walk's order kept, the answers written in at the end).
 
-numpy is imported here only (it arrives with pandas); the cost of a line is E-SCORE's (`app/sentence_score.py`).
+numpy is imported here only, at its first use (`_np`: never at this module's import — a walk worker and the indexer's
+workers read lines and never load it), through `sentence_score.numpy_one_thread` (its BLAS held to one thread); the
+cost of a line is E-SCORE's (`app/sentence_score.py`).
 """
 import json
 import os
@@ -35,8 +37,6 @@ import zlib
 from array import array
 from operator import itemgetter
 
-import numpy as np
-
 TABLE_FILE = "sentences.bin"
 MAGIC = b"SURATBL\n"
 VERSION = 3                     # 3: each row's place in the list · 2: the two word numbers counted (1 wrote 0)
@@ -45,6 +45,18 @@ LEVEL = 3                       # zlib: 0.44 s for 7.01 MB at 20,000 files (ligh
 OVER = 1 << 2                   # marks: over *Never longer than* (a file's first sentence of the word; never chosen)
 STARTS_PAST = 255               # where the word starts: 255 = at or past 255 characters
 _SEP = (",", ":")
+_numpy = None
+
+
+def _np():
+    """numpy, imported at its first use (a process that only reads lines never pays for it: ~16 MB a walk worker),
+    with its BLAS held to one thread — `sentence_score.numpy_one_thread`, the one door to it."""
+    global _numpy
+    if _numpy is None:
+        from app import sentence_score
+        _numpy = sentence_score.numpy_one_thread()
+    return _numpy
+
 
 # "Words besides the word" (SPEC § 3.2, decision 9b): the line's content words that are not the word — a place or a
 # thing counts, a person the line is about counts (a particle or だ / です follows the name), a person's name said as
@@ -249,14 +261,15 @@ class LineWords:
 # before (mostly 0) and read back whole.
 COLUMNS = (("src", "<i4"), ("number", "<i4"), ("chars", "<u2"), ("marks", "u1"), ("ncow", "<u2"), ("nphr", "<u2"),
            ("fp", "<u4"), ("besides", "u1"), ("starts", "u1"))
-_BYTES = sum(np.dtype(t).itemsize for _n, t in COLUMNS)
+_BYTES = sum(int(t[-1]) for _n, t in COLUMNS)    # (a type's last digit is its width in bytes: "<i4" 4)
 
 
 # A line as the walk packs it (31 bytes, one `struct` call a line): its word's provisional id, its source, its place,
-# its length, how many co-words and phrases follow, its hash, its marks, besides, where the word starts.
+# its length, how many co-words and phrases follow, its hash, its marks, besides, where the word starts — and the
+# same as numpy's type (`_LINE_COLUMNS`).
 _LINE = struct.Struct("<iiiiiiIBBB")
-_LINE_COLUMNS = np.dtype([("word", "<i4"), ("src", "<i4"), ("number", "<i4"), ("chars", "<i4"), ("ncow", "<i4"),
-                          ("nphr", "<i4"), ("hash", "<u4"), ("marks", "u1"), ("besides", "u1"), ("starts", "u1")])
+_LINE_COLUMNS = [("word", "<i4"), ("src", "<i4"), ("number", "<i4"), ("chars", "<i4"), ("ncow", "<i4"),
+                 ("nphr", "<i4"), ("hash", "<u4"), ("marks", "u1"), ("besides", "u1"), ("starts", "u1")]
 
 
 class Packer:
@@ -309,6 +322,7 @@ class Packer:
         packed 0 by the walk while another core worked them out (`Cores`)."""
         n = len(numbers) // 2
         if n:
+            np = _np()
             lines = np.frombuffer(self._lines, _LINE_COLUMNS, n, first * _LINE.size)
             try:
                 two = np.frombuffer(numbers, np.uint8).reshape(n, 2)
@@ -328,6 +342,7 @@ class Packer:
         Worked on the packed arrays' own widths (views of them, not copies), each piece let go once used: it runs at
         the end of a Generate, when the run holds the most it will (SPEC § 6.2's peak)."""
         from app import plan_rules
+        np = _np()
         if places is not None and len(places) != len(keys):
             raise ValueError(f"{len(places)} places for {len(keys)} rows")
         n_ids = len(self._keys)
@@ -405,6 +420,7 @@ class Packer:
 
 def _view(values, dtype):
     """A packed array as numpy sees it: a view while it has values (no copy), an empty array of that type else."""
+    np = _np()
     return np.frombuffer(values, dtype) if len(values) else np.zeros(0, dtype)
 
 
@@ -412,6 +428,7 @@ def _regroup(line, ids, order, n_lines):
     """A flat list of per-line ids (`line`: each one's line, ascending), -1 dropped, each line's ids ascending, lines
     taken in `order` -> (the ids, each taken line's start among them, one more at the end). One sort of one key a
     co-word (its line's place in `order`, then its id): the memory of two arrays the length of the ids, not six."""
+    np = _np()
     pos = np.full(n_lines, -1, np.int64)
     pos[order] = np.arange(len(order), dtype=np.int64)
     at = pos[line] if len(line) else np.zeros(0, np.int64)
@@ -433,6 +450,7 @@ def _regroup(line, ids, order, n_lines):
 
 def _pack_formulas(formulas):
     """[(own row or -1, clauses of rows)] -> (own, clauses a co-word, rows a clause, the rows) as int32 arrays."""
+    np = _np()
     own = np.array([f[0] for f in formulas], "<i4")
     ncl = np.array([len(f[1]) for f in formulas], "<i4")
     cl_len = np.array([len(c) for f in formulas for c in f[1]], "<i4")
@@ -456,6 +474,7 @@ class Table:
     def write(self, path):
         """Write the table whole through a temp file and `os.replace` -> its bytes. On any error the temp is removed,
         an older table stays as it was, and the error is raised for the caller to log."""
+        np = _np()
         blobs, cows, phrs = [], [], []
         for k in self.head["rows"]:
             cols, cow, phr = self._parts[k]
@@ -498,6 +517,7 @@ class Table:
     def formulas(self):
         """The co-words' formulas: (own row, clauses a co-word, rows a clause, the rows), int32 arrays."""
         if self._form is None:
+            np = _np()
             with open(self.path, "rb") as f:
                 f.seek(self._at[0] + self._at[1])
                 data = zlib.decompress(f.read(self._at[2]))
@@ -520,6 +540,7 @@ class Table:
             data = zlib.decompress(f.read(size))
         if len(data) != lines * _BYTES + 4 * (cows + phrs):
             raise ValueError("a block of the wrong size")
+        np = _np()
         cols, at = {}, 0
         for name, t in COLUMNS:
             cols[name] = np.frombuffer(data, t, lines, at)
@@ -739,11 +760,13 @@ def line_words(kept, no, tokens, text, language, people=frozenset(), counted=Non
 # sentences the walk read) and answers with two bytes a question; `settle` writes the answers into the packed lines in
 # the walk's order — the order workers finish in never matters. A file a worker reads otherwise than the walk did (its
 # lines' tokens or lengths differ) is answered here, read again as the walk reads it. One process when the PC has one
-# core, or the library is small (`token_index.pool_workers`' rule, *Use every core* included); every failure to start
-# is today's single-process path.
+# core, or under CORES_MIN_FILES files (`token_index.pool_workers`' rule after it, *Use every core* included); every
+# failure to start is today's single-process path.
 CORES_BATCH = 2000              # questions sent to a worker at a time (files are never split)
 CORES_MAX = 2                   # workers at most: one kept up at 2,000 files; 24 allowed spawned 15 on the zh root
 CORES_WAIT_S = 300              # a batch not answered in this long is answered here (a stuck worker never hangs it)
+CORES_MIN_FILES = 5000          # fewer files: one process (PROVISIONAL until the timed gate: 2,000 files and the zh
+                                # root gained nothing, a worker ~30 MB) — unless settings ask a number of processes
 _NUMBERS = struct.Struct("BB")
 _CORE = {}
 
@@ -806,14 +829,18 @@ def _cores_answer(batch):
 
 
 def cores_wanted(n_files):
-    """How many workers a walk of `n_files` files takes: `token_index.pool_workers`' rule (settings'
-    `index_pool_workers`, *Use every core*), at most CORES_MAX; 1 = this process alone."""
+    """How many workers a walk of `n_files` files takes: 1 (this process alone) under CORES_MIN_FILES files, else
+    `token_index.pool_workers`' rule (*Use every core*), at most CORES_MAX; settings' `index_pool_workers` N asks for
+    N at any size, as it does of the indexer."""
     from app import token_index
     try:
         from app import settings_manager
         setting = settings_manager.load_settings().get("index_pool_workers")
+        asked = int(setting) if setting is not None else None
     except Exception:
-        setting = None
+        setting = asked = None
+    if asked is None and n_files < CORES_MIN_FILES:
+        return 1
     return min(token_index.pool_workers(n_files, setting, every=token_index.every_core()), CORES_MAX)
 
 
@@ -822,8 +849,8 @@ class Cores:
     offered line asks `line(text, tokens, number)` — this object, whose `of_word(key)` / `of_span(a, b)` keep the
     question and answer (0, 0) — and `settle(packer, read, …)` before `Packer.finish` writes every answer in."""
 
-    def __init__(self, pool, blas=None):
-        self._pool, self._blas = pool, blas
+    def __init__(self, pool):
+        self._pool = pool
         self._sent = []                 # ([(path, questions, first line)], the worker's Future)
         self._batch, self._size = [], 0
         self._path, self._first, self._asked = None, 0, []
@@ -843,8 +870,6 @@ class Cores:
             import multiprocessing
             from concurrent.futures import ProcessPoolExecutor
             from app import token_index
-            blas = os.environ.get("OPENBLAS_NUM_THREADS")
-            os.environ["OPENBLAS_NUM_THREADS"] = "1"    # the workers' numpy: ~20 MB committed, not 750 (24 threads)
             pool = ProcessPoolExecutor(     # a worker that dies raises (BrokenProcessPool): its files answered here
                 size, mp_context=multiprocessing.get_context("spawn"), initializer=_cores_start,
                 initargs=(store.path, language, frozenset(people), token_index._library_switches(language)))
@@ -852,7 +877,7 @@ class Cores:
             print(f"Sentence table: one process ({e}).")
             return None
         print(f"Sentence table: the lines' words in {size} processes.")
-        return cls(pool, blas)
+        return cls(pool)
 
     def file(self, path, packer):
         """The next file's lines follow."""
@@ -949,7 +974,3 @@ class Cores:
                         process.terminate()
                 except Exception:
                     pass
-            if self._blas is None:
-                os.environ.pop("OPENBLAS_NUM_THREADS", None)
-            else:
-                os.environ["OPENBLAS_NUM_THREADS"] = self._blas

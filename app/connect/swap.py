@@ -609,11 +609,13 @@ def _start(steps, ledger, language, row, store_id, anki, out, count=None, state_
 def in_place_on(settings=None):
     """The learner's *Swap gives a card a better sentence* (`SETTING`): True = *Same card, new sentence*, False = *A new
     card* — the default until FS-2 lands its Settings row (the lead, 2026-11-23; FS-2's last commit makes decision 1's
-    True the default). Anything but True reads as the default: off."""
+    True the default). A value that isn't True or False reads as the default (`DEFAULT_SETTINGS`, the one place it
+    turns: FS-2)."""
+    from app import settings_manager
     if settings is None:
-        from app import settings_manager
         settings = settings_manager.load_settings()
-    return (settings or {}).get(SETTING) is True
+    value = (settings or {}).get(SETTING)
+    return value if isinstance(value, bool) else settings_manager.DEFAULT_SETTINGS[SETTING] is True
 
 
 def _sentence_of(info):
@@ -1246,15 +1248,18 @@ def spec_of(job_id, language):
 
 
 def status_of(conn, language, newest=5):
-    """The window's record (Connect's status, *Needs you*): {"made": [{"id", "word", "at"}] (the newest made swaps not
-    undone, newest first), "waits": [{"id", "word"}] (the asks with no other line)} — read-only on `conn`."""
+    """The window's record (Connect's status, *Needs you*): {"made": [{"id", "word", "at", "kind", "kind_why", "by"}]
+    (the newest made swaps not undone, newest first; `by` who asked: the flag, the journey, *Bad card* — FS-2's words),
+    "waits": [{"id", "word"}] (the asks with no other line)} — read-only on `conn`."""
     try:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'swaps'").fetchone():
             return {"made": [], "waits": []}
-        kinds = "kind" in {r[1] for r in conn.execute("PRAGMA table_info(swaps)")}
-        made = [{"id": r[0], "word": r[1], "at": r[2], "kind": r[3] or NEW_CARD, "kind_why": r[4]} for r in conn.execute(
-            f"SELECT id, word, updated_at, {'kind, kind_why' if kinds else 'NULL, NULL'} FROM swaps WHERE language = ? "
-            "AND state = ? ORDER BY id DESC LIMIT ?", (language, MADE, int(newest)))]
+        have = {r[1] for r in conn.execute("PRAGMA table_info(swaps)")}     # each ALTER of `ensure` is its own
+        kinds = ", ".join(c if c in have else "NULL" for c in ("kind", "kind_why"))
+        made = [{"id": r[0], "word": r[1], "at": r[2], "kind": r[3] or NEW_CARD, "kind_why": r[4], "by": r[5]}
+                for r in conn.execute(
+            f"SELECT id, word, updated_at, {kinds}, by FROM swaps WHERE language "
+            "= ? AND state = ? ORDER BY id DESC LIMIT ?", (language, MADE, int(newest)))]
         waits = [{"id": r[0], "word": r[1]} for r in conn.execute(
             "SELECT id, word FROM swaps WHERE language = ? AND state = ? ORDER BY id", (language, WAITS))]
     except Exception:

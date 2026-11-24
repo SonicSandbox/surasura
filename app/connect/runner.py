@@ -3706,6 +3706,8 @@ class Steps:
         else:
             self._after.pop(lang, None)
         self._serves(lang, got)
+        from app.connect import sentences
+        sentences.read_ahead(lang)          # the sentence choice at level >= 1: the table's head + the dates, now
         self._shelved = set()
         try:
             self.notes_gone(lang)

@@ -184,6 +184,51 @@ def test_ensure_an_audio_example_still_finds_a_heard_line_it_can_cut_when_the_fi
     assert [k.get("from") for k in kept] == [11]
 
 
+class _Decoded(list):
+    """One file's sentences as the token store hands them: a fresh list each decode, so a test can see it let go."""
+
+
+def _alive(monkeypatch, w):
+    """The token store's read side, noting at each decode how many earlier decodes are still held -> (reads, peak)."""
+    import weakref
+    reads, refs, peak = [], [], [0]
+
+    class Alive(Tokens):
+        def file_tokens(self, path):
+            peak[0] = max(peak[0], sum(1 for r in refs if r() is not None))
+            reads.append(os.path.splitext(os.path.basename(path))[0])
+            got = _Decoded(super().file_tokens(path))
+            refs.append(weakref.ref(got))
+            return got
+
+    monkeypatch.setattr(SS, "_tokens", lambda language: Alive(w.tokens))
+    return reads, peak
+
+
+@pytest.mark.parametrize("young", [False, True])
+@pytest.mark.parametrize("lang, key, word, long_line", CASES)
+def test_a_file_s_tokens_are_let_go_once_its_texts_are_read(monkeypatch, lang, key, word, long_line, young):
+    # why: the score kept every touched file's whole tokens for its call (for a line's text and its young words) —
+    # the list's call touches nearly every file: +337 MB at 2k. A file's texts (and, with young words, each line's
+    # youngest word) are all the walk reads: those are kept, the tokens let go at once; the answer the same
+    w = World(monkeypatch, lang)
+    lines = LINES[lang]
+    young_word = {"ja": "看板", "zh": "牛肉面"}[lang]
+    episodes = [(f"ep{n:02d}", [lines[n % 4]]) for n in range(1, 13)]
+    w.table(key, episodes, word, words={lines[2]: [word, young_word]})
+    for n in range(1, 13):
+        w.place(f"ep{n:02d}", n, ctx=0.5 - n / 100)
+    reads, peak = _alive(monkeypatch, w)
+    got = sentences.choose(lang, [key], dial=sentences.BEST, young={young_word: 1.0} if young else {})[key]
+    assert len(set(reads)) >= sentences.TOP, reads           # one call read many files
+    assert peak[0] == 0, (peak[0], reads)                     # none of them held when the next is read
+    # the answers the code before gave (ja: the young word's line, ep02's, among the leading four, lifted to the top;
+    # zh: its young line is fifth, past the four whose young words are read)
+    before = {("ja", False): [1, 4, 5, 2, 8, 9, 6, 12], ("ja", True): [2, 1, 4, 5, 8, 9, 6, 12],
+              ("zh", False): [1, 4, 5, 8, 2, 9, 12, 6], ("zh", True): [1, 4, 5, 8, 2, 9, 12, 6]}
+    assert [c.item_id for c in got] == before[(lang, young)]
+
+
 # --- a young word's lines ------------------------------------------------------------------------------------------ #
 
 def test_a_young_word_is_read_only_in_lines_it_can_lift_to_the_top(monkeypatch, tmp_path):

@@ -320,6 +320,18 @@ def _young(moment):
     return out
 
 
+def _youngest(tokens, young_of, by_lemma):
+    """A line's youngest word that is no row of the list: the highest of `young_of`'s weights among its tokens, 0 with
+    none (every weight is above 0: `_young`)."""
+    best = 0.0
+    for t in tokens or ():
+        if t and t[0] in young_of and t[0] not in by_lemma:
+            weight = young_of[t[0]]
+            if weight > best:
+                best = weight
+    return best
+
+
 def _moment_arrays(tab, moment, order, root, srcs=None, kept=None):
     """The moment as the cost's arrays, and {file: (path, normalised path, rel, kind, digest, Seen)} for the files
     `srcs` (None: every file); the list's order is `order` when one is handed in, else the table's `places`. `kept` (a
@@ -587,14 +599,21 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
         return tokens[0]
 
     def held(src):
+        """What the walk reads of a file, decoded once: its lines' texts and, with young words, each line's youngest
+        word that is no row — (texts, weights or None). Its tokens are let go at once: a list's call touches nearly
+        every file, and a file's tokens weigh ~18× its texts (E-REDRAW: +337 MB at 2k)."""
         at = files[src][1]
-        if at not in read:
+        got = read.get(at)
+        if got is None:
             cache = store()
             try:
-                read[at] = cache.file_tokens(at) if cache else []
+                sentences = cache.file_tokens(at) if cache else []
+                got = (tuple(str(s[0]).strip() for s in sentences),
+                       tuple(_youngest(s[1], young_of, by_lemma) for s in sentences) if young_of else None)
             except Exception:
-                read[at] = []
-        return read[at]
+                got = ((), None)
+            read[at] = got
+        return got
 
     def as_read(src):
         """Is the file the one the Generate read: there, its digest (path, time, size, kind) the table's — or, with
@@ -622,17 +641,14 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
             got = shown.get((files[src][2], number))
             if got is not None:
                 return got
-        sentences = held(src)
-        return str(sentences[number][0]).strip() if 0 <= number < len(sentences) else None
+        texts = held(src)[0]
+        return texts[number] if 0 <= number < len(texts) else None
 
     def young_in(src, number):
         """The youngest word the line holds that is no row of the list, read from the token store: a word known before
         the Generate is no co-word of the table (a row's young weight is the cost's, by its place)."""
-        sentences = held(src)
-        if not (0 <= number < len(sentences)):
-            return 0.0
-        return max((young_of.get(t[0], 0.0) for t in sentences[number][1] if t and t[0] not in by_lemma),
-                   default=0.0)
+        weights = held(src)[1]
+        return weights[number] if weights is not None and 0 <= number < len(weights) else 0.0
 
     same_line = None
     if never_rows:

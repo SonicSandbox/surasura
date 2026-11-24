@@ -134,6 +134,8 @@ def test_a_word_the_score_holds_no_line_of_in_the_file_keeps_the_cuts_own_rule(m
     assert [x["line_text"] for x in chosen["words"]] == [first]
     chosen = _cut(w, lang, "ep02", {word}, ranked=lambda keys: {key: [other]})   # the score's line is elsewhere
     assert [x["line_text"] for x in chosen["words"]] == [first]
+    chosen = _cut(w, lang, "ep02", {word}, ranked=lambda keys: {key: [other, best]})
+    assert [x["line_text"] for x in chosen["words"]] == [best], "a line of the score's, however far down, first"
 
 
 @pytest.mark.parametrize("lang, key, word, first, best, other", CASES)
@@ -179,8 +181,8 @@ def test_two_words_never_share_a_line_the_second_takes_its_scores_next():
 
 
 @pytest.mark.parametrize("lang, key, word, first, best, other", CASES)
-def test_the_scores_order_first_and_at_one_place_its_own_line_before_one_holding_it(monkeypatch, lang, key, word,
-                                                                                    first, best, other):
+def test_the_scores_order_first_and_at_one_place_its_own_line_before_one_holding_it(monkeypatch, tmp_path, lang, key,
+                                                                                    word, first, best, other):
     # why: the token store may keep one cue as two sentences, so the score's line can be inside a cue (Swap's
     # `same_line`): the score's order first; where one of its lines is both a cue and inside another, the cue that is
     # that line
@@ -189,6 +191,38 @@ def test_the_scores_order_first_and_at_one_place_its_own_line_before_one_holding
     assert [x["line_text"] for x in chosen["words"]] == [first]
     chosen = _cut(w, lang, "ep01", {word}, ranked=lambda keys: {key: [best, first]})
     assert [x["line_text"] for x in chosen["words"]] == [best + first], "the cue holding the score's first"
+    # one sentence holding the score's line, earlier and far from it (the cut's own rule would take it): the score's
+    # own line
+    lead = {"ja": "明日の", "zh": "你看，"}[lang]
+    path = tmp_path / "far.srt"
+    path.write_text(f"1\n00:00:10,000 --> 00:00:12,000\n{lead}{first}\n\n2\n00:01:00,000 --> 00:01:02,000\n{first}\n\n",
+                    encoding="utf-8")
+    read = cues.read(str(path), lang)
+    tokens = cues.tokens(read, lang)
+
+    def chosen(**kw):
+        return [x["line_text"] for x in pick.pick(read, tokens, lang, lambda k: k[0] != word, mode="unknown",
+                                                  **kw)["words"]]
+    assert chosen() == [lead + first], "the cut's own rule: the earliest"
+    assert chosen(**_ranked(lambda keys: {key: [sentences.norm_line(first)]})) == [first]
+
+
+def test_a_one_character_line_is_the_scores_line_too(tmp_path):
+    # why: with *Skip one-character words* off, a word can be said alone in a line of one character — still the
+    # score's line (only "one inside the other" needs two characters, as Swap's `same_line`)
+    path = tmp_path / "one.srt"
+    path.write_text("1\n00:00:01,000 --> 00:00:03,000\nそれは嘘だよね、きっと。\n\n"
+                    "2\n00:00:05,000 --> 00:00:06,000\n嘘！\n\n", encoding="utf-8")
+    analyzer.SANITIZE_JA = True
+    read = cues.read(str(path), "ja")
+    tokens = cues.tokens(read, "ja")
+    lie = next((t.lemma, t.reading) for t in tokens if t.lemma == "嘘")
+
+    def chosen(**kw):
+        got = pick.pick(read, tokens, "ja", lambda k: k[0] != "嘘", mode="unknown", skip_single=False, **kw)
+        return [x["line_text"] for x in got["words"]]
+    assert chosen() == ["それは嘘だよね、きっと。"], "the cut's own rule: the earliest"
+    assert chosen(**_ranked(lambda keys: {lie: ["嘘！"]})) == ["嘘！"]
 
 
 def test_a_book_cut_takes_the_scores_sentence(monkeypatch, tmp_path):

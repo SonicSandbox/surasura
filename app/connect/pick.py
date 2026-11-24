@@ -832,12 +832,11 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
         its line, (n, 1) one is inside the other (the token store may keep a cue as two sentences); (len, 0) none of
         them — for every use alike without `texts` (the cut's own rule)."""
         line = norm(o.cue)
-        if len(line) >= 2:
-            for n, text in enumerate(texts):
-                if text == line:
-                    return (n, 0)
-                if len(text) >= 2 and (text in line or line in text):
-                    return (n, 1)
+        for n, text in enumerate(texts):
+            if line and text == line:
+                return (n, 0)
+            if min(len(text), len(line)) >= 2 and (text in line or line in text):    # (`same_line`'s two at least)
+                return (n, 1)
         return (len(texts), 0)
 
     words, not_offered, taken = [], [], set()

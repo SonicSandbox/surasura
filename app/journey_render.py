@@ -29,6 +29,7 @@ import json
 import os
 import re
 import time
+from array import array
 from collections import namedtuple
 
 SHAPE = 1                       # the shape's version (SHAPE.md); a change is a NOTE to the page first
@@ -124,10 +125,11 @@ def _hira(text):
 
 
 def page_settings(settings):
-    """The head's `settings`: every row of SPEC §1.4 with its value at this render (`journey_settings.page_values`)."""
-    from app.services.journey_settings import page_values
+    """The head's `settings`: every row of SPEC §1.4 with its value at this render (`journey_settings.page_values`),
+    and ⌕'s switch and category (`journey_settings.lookup_values`: Settings' rows, not the page's ⚙)."""
+    from app.services.journey_settings import lookup_values, page_values
     values = page_values(settings)
-    return {name: values[key] for name, key in HEAD_SETTINGS.items()}
+    return {**{name: values[key] for name, key in HEAD_SETTINGS.items()}, **lookup_values(settings)}
 
 
 def sentences_of(row, per_word):
@@ -810,7 +812,7 @@ class Sources:
 
     def prepare(self, texts, rels):
         """Each ▶ line's answer, the page's lines in its order (`texts[i]` said in `rels[i]`; "" no source): [the timer's
-        memo answer [anchor, start, end], or None where nothing plays] — one memo lookup a line, so `build` reads the
+        memo answer — (start, end) made this render, [anchor, start, end] as read —, or None where nothing plays] — one memo lookup a line, so `build` reads the
         list rather than asking again (at 20,000 files a lookup costs ~3 µs: a second one was a slower warm render).
         A line the memo lacks is asked of the line reader a file at a time, and that file's lines let go before the
         next (J-TIMES: holding every subtitle's `cues.Timeline` to the render's end was 78 MB at 20,000 files); the
@@ -818,11 +820,11 @@ class Sources:
         `times` makes, so the same answers and the same memo."""
         hits = [None] * len(texts)
         timer = self.timer
-        # AnchorFinder's own (static_html_generator, J-CUT's file: a `forget` there once it is theirs): each file's
-        # memo entry, its lines, and the folder listings
-        entry_of = getattr(timer, "_entry", None)
-        if entry_of is None:
+        # AnchorFinder's own (static_html_generator): each file's memo answers, its lines let go, the folder listings
+        answers_in = getattr(timer, "answers", None)
+        if answers_in is None:
             return hits
+        answer = timer.answer
         media, smap = self.media, self.map
         answers_of, missing = {}, {}
         for i, rel in enumerate(rels):
@@ -830,26 +832,23 @@ class Sources:
                 continue
             answers = answers_of.get(rel)
             if answers is None:
-                answers = answers_of[rel] = entry_of((smap.get(rel) or {}).get("abs") or rel)["a"]                     if (media.get(rel) or ("",))[0] else False
+                answers = answers_of[rel] = answers_in((smap.get(rel) or {}).get("abs") or rel) \
+                    if (media.get(rel) or ("",))[0] else False
             if answers is False:
                 continue
             hit = answers.get(texts[i])
-            if isinstance(hit, list) and len(hit) == 3:
-                hits[i] = hit
+            if answer(hit) is not None:
+                hits[i] = hit                   # the memo's own answer (`build` reads its times: `AnchorFinder.answer`)
             else:
                 missing.setdefault(rel, []).append(i)
-        listings = getattr(timer, "_dirs", None)
-        if listings is not None:
-            listings.clear()                    # every file is checked: a later one lists its folder again
-        kept = getattr(timer, "_timelines", None)
+        timer.forget_listings()                 # every file is checked: a later one lists its folder again
         for rel, lines in missing.items():
             answers = answers_of[rel]
             for i in lines:
                 self.times(rel, texts[i])       # the line reader's answer, kept in `answers`
                 hit = answers.get(texts[i])
-                hits[i] = hit if isinstance(hit, list) and len(hit) == 3 else None
-            if kept is not None:
-                kept.pop((smap.get(rel) or {}).get("abs") or rel, None)
+                hits[i] = hit if answer(hit) is not None else None
+            timer.forget((smap.get(rel) or {}).get("abs") or rel)
         # Written now, before the meanings and the pitch, rather than at the render's end: its one string (10 MB at
         # 20,000 files) was the first render's peak there. The same memo — `build` asks nothing more.
         save = getattr(timer, "save_memo", None)
@@ -875,25 +874,9 @@ Render = namedtuple("Render", "head chunks blobs stones")
 #   head: dict · chunks: [bytes gz] · blobs: {name: bytes gz} · stones: dict
 
 
-def _plan_pcts(plan):
-    """{file name: *% known*} from the plan's per-file `prog` (the tokens known before any file over the tokens
-    counted) — the very count the window's rows read (`moves.Numbers`); None without a plan."""
-    if plan is None:
-        return None
-    try:
-        from app.path_utils import report_name
-        out = {}
-        for f, entry in enumerate(plan.files):
-            prog = plan.per_file[f]["prog"]
-            out.setdefault(report_name(entry[0]), _known_pct(prog[1], prog[0]))
-        return out
-    except Exception:
-        return None
-
-
-def _ahead(plan, names):
-    """{episode index: {(Word, Reading): count}} from the plan's per-file counts (`plan_engine.Plan`), for the
-    episodes it holds; None without a plan (each word's count ahead is then its count in its own episode)."""
+def _plan_files(plan):
+    """{file name: its index in the plan} (a name's first file), what `_plan_pcts` and `_ahead` look a page's episode
+    up by; None without a plan."""
     if plan is None:
         return None
     try:
@@ -901,19 +884,71 @@ def _ahead(plan, names):
         by_name = {}
         for f, entry in enumerate(plan.files):
             by_name.setdefault(report_name(entry[0]), f)
-        keys = plan.keys
+        return by_name
+    except Exception:
+        return None
+
+
+def _plan_pcts(plan, by_name=None):
+    """{file name: *% known*} from the plan's per-file `prog` (the tokens known before any file over the tokens
+    counted) — the very count the window's rows read (`moves.Numbers`); None without a plan. `by_name`: `_plan_files`'
+    (made here when not handed in)."""
+    if plan is None:
+        return None
+    try:
+        by_name = _plan_files(plan) if by_name is None else by_name
+        progs = getattr(plan.per_file, "prog", None)     # the counts table's (`plan_engine.read_counts`): no line made
         out = {}
+        for name, f in by_name.items():
+            prog = progs(f) if progs is not None else plan.per_file[f]["prog"]
+            out[name] = _known_pct(prog[1], prog[0])
+        return out
+    except Exception:
+        return None
+
+
+def _ahead(plan, names, word_eps, word_id, by_name=None):
+    """Each page word's count ahead -> array, one number a word: its uses in its own episode and the next AHEAD - 1,
+    from the plan's per-file counts (`plan_engine.Plan`, `Counts`), or -1 where its own episode has no count for it (no
+    line in the plan, or the word not met there: the page then shows its count in its own episode); None without a
+    plan. `names` the page's episodes' file names in order, `word_eps` each word's episode index (in word order),
+    `word_id` {(Word, Reading): its word index} (`build`'s); the plan's keys are distinct. At 20,000 files the
+    {episode: {key: count}} dicts this was, and the asked sets that cut them, were 12.5 MB of the render's peak (J-CUT
+    5's gate); here a window of AHEAD episodes' words at a time. `by_name`: `_plan_files`' (made here when not handed
+    in)."""
+    if plan is None:
+        return None
+    try:
+        by_name = _plan_files(plan) if by_name is None else by_name
+        n = len(word_eps)
+        kw = array("i", [-1]) * n                  # each word's key in the plan
+        for k, key in enumerate(plan.keys):
+            wid = word_id.get((key[0], key[1]))
+            if wid is not None and wid < n:
+                kw[wid] = k
+        out = array("i", [-1]) * n
+        order = sorted(range(n), key=word_eps.__getitem__)
+        lo = hi = 0
         for e, name in enumerate(names):
-            f = by_name.get(name)
+            while hi < n and word_eps[order[hi]] <= e:
+                hi += 1
+            while lo < hi and word_eps[order[lo]] <= e - AHEAD:
+                lo += 1
+            f = by_name.get(name) if lo < hi else None
             if f is None:
                 continue
-            line = plan.per_file[f]
-            counts = {}
+            line, uses = plan.per_file[f], {}
             for table in (line["main"], line["ph"]):
-                for k, n in zip(table[0::2], table[1::2]):
-                    key = (keys[k][0], keys[k][1])
-                    counts[key] = counts.get(key, 0) + n
-            out[e] = counts
+                for k, m in zip(table[0::2], table[1::2]):
+                    uses[k] = uses.get(k, 0) + m
+            for i in range(lo, hi):
+                wid = order[i]
+                m = uses.get(kw[wid]) if kw[wid] >= 0 else None
+                if word_eps[wid] == e:
+                    if m is not None:
+                        out[wid] = m
+                elif m and out[wid] >= 0:
+                    out[wid] += m
         return out
     except Exception:
         return None
@@ -949,7 +984,8 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
 
     # *% known*: the window's own figure (the plan's count), never the stats file's Coverage (%) — the plan when the
     # caller hands it in, else the store's 'last' snapshot (the same count, kept by that Generate); else none
-    plan_pcts = _plan_pcts(plan)
+    plan_files = _plan_files(plan)
+    plan_pcts = _plan_pcts(plan, plan_files) if plan_files is not None else None
 
     def add_ep(item_id, name, tier, kind, show, watched, cards, missing, pre, growth, last=None):
         coverage = plan_pcts.get(name) if plan_pcts is not None else _pct(last)
@@ -994,7 +1030,6 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
             kind = infer_source_type(name)
             add_ep(None, name, None, kind, show_of(f"n{name}", name, kind), False, 0, False, None, None)
             eps[-1][2] = shown_name(name)
-    ahead = _ahead(plan, [e[1] for e in eps])
     owners = anki_owners(priority if priority is not None else (rows or ()), language) if backlog else {}
     keys = set(backlog or ())
     seen, words, word_rows, word_id = set(), [], [], {}
@@ -1008,6 +1043,9 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
             word_id[key] = len(words)
             words.append((e, row))
         ep[7] = len(words) - ep[8]
+    # The count ahead, one number a word: its uses in its own episode and the next AHEAD - 1
+    ahead = _ahead(plan, [e[1] for e in eps], [e for e, _row in words], word_id, plan_files)         if plan_files is not None else None
+    del plan_files
 
     sources = sources or Sources(language)
     if not sources.ep_of:
@@ -1088,12 +1126,14 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
         found_lines = []
         for i in range(first[wid], first[wid + 1]):
             text, rel, hit = texts[i], rels[i], hits[i]
-            found_lines.append((text, rel) + ((hit[1], hit[2]) if hit is not None else
-                                              sources.times(rel, text) if rel else (None, None)))
+            if hit is None:
+                hit = sources.times(rel, text) if rel else (None, None)
+            elif type(hit) is not tuple:
+                hit = hit[1], hit[2]            # [anchor, start, end], as the memo was read
+            found_lines.append((text, rel) + hit)
         marks = marks_of(row, thresholds) | (8 if in_anki(row, keys, owners, language) else 0)
-        here = ahead.get(e, {}).get(key) if ahead else None
-        count = int(_num(row.get("Occurrences (File)"))) if here is None else sum(
-            (ahead.get(e + d) or {}).get(key, 0) for d in range(AHEAD))
+        here = ahead[wid] if ahead is not None else -1
+        count = int(_num(row.get("Occurrences (File)"))) if here < 0 else here
         try:
             pitched = pitch.of(word, reading, pinyin)
         except Exception:

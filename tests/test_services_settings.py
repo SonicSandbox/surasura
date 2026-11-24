@@ -25,7 +25,8 @@ from tests import services_helpers as h
 
 # --- where each setting belongs (row 1) ------------------------------------------------------------------------- #
 @pytest.mark.parametrize("key,language,expected", [
-    ("theme", "ja", "report"),                       # the report's own look
+    ("word_search_enabled", "ja", "report"),         # the report's own ⌕ (the v3 render reads it)
+    ("theme", "ja", "neither"),                      # the look: the v3 page applies it itself (J-CUT), never a render
     ("strategy", "zh", "analysis"),
     ("logic.names_kanji", "ja", "analysis"),          # analysis:ja — a Japanese run reads it…
     ("logic.names_kanji", "zh", "neither"),           # …a Chinese one never does
@@ -49,7 +50,8 @@ def test_every_placed_value_is_one_of_the_four_places():
 
 def test_stales_says_whether_a_change_makes_the_journey_stale():
     service = SettingsService()
-    assert service.stales(["theme"], "ja") is True                    # a re-render
+    assert service.stales(["word_search_enabled"], "ja") is True      # a re-render (⌕ is drawn by the render)
+    assert service.stales(["theme"], "ja") is False                   # the v3 page changes its look itself (J-CUT)
     assert service.stales(["telemetry_enabled", "open_count"], "ja") is False
     assert service.stales(["logic.ignore_names"], "zh") is False
 

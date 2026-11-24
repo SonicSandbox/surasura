@@ -38,9 +38,10 @@ from tests.test_services_replan_host import fired, gate  # noqa: F401 (fixtures)
 
 # --- the window's hook ---------------------------------------------------------------------------------------------- #
 @pytest.mark.parametrize("keys, told", [
-    (["theme"], 1),                                   # the theme row
-    (["logic.hide_audio_button"], 1),                 # a Journey switch (a logic key)
-    (["source_display", "zen_limit"], 1),             # two at once: one look
+    (["journey_meanings"], 1),                        # the one row the v3 render reads (Meanings)
+    (["line_player", "anki_backlog_on_generate"], 1), # two at once: one re-render
+    (["theme"], 0),                                   # a look the v3 page applies itself (J-CUT: the Redraw rule)
+    (["source_display", "zen_limit"], 0),             # the old page's (and a saved Zen look's): nothing on v3 reads it
     (["open_app_mode"], 0),                           # how it opens, read at the open: nothing to draw
     (["exclude_single"], 0),                          # an analysis key: the Generate button's mark says so
 ])
@@ -94,29 +95,64 @@ def themed(monkeypatch):
         w.close()
 
 
+def _page_theme(html):
+    """The journey's look as the v3 page was drawn with it (its head's `settings.theme`: night · light)."""
+    import json
+    import re
+    found = re.search(r'<script type="application/json" id="j-head">(.*?)</script>', html, re.S)
+    return json.loads(found.group(1))["settings"]["theme"] if found else None
+
+
+def _saved(settings, **values):
+    """The Settings page's save: the window's settings and settings.json, which the run and the v3 page read (its look
+    is `page_values(settings.json)`, its render signature `load_settings()`), never the window's copy in memory."""
+    import json
+    settings.values.update(values)
+    path = os.path.join(os.environ["SURASURA_TEST_ROOT"], "settings.json")
+    with open(path, encoding="utf-8") as f:
+        on_disk = json.load(f)
+    on_disk.update(values)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(on_disk, f, ensure_ascii=False)
+
+
 def _halves(settings, language):
     args = _themed_argv(settings, language)
     return analyzer.journey_is_current(args, language), analyzer.report_is_current(args, language)
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_theme_change_re_renders_the_journey_by_itself_and_re_analyses_nothing(language, themed, gate, fired):
+def test_a_look_change_draws_nothing_and_a_saved_zen_look_in_or_out_re_renders_only(language, themed, gate, fired):
+    # J-CUT (the Redraw rule): the v3 page applies its look itself, so moving between two looks moves no signature and
+    # writes no page; Zen (a saved look: Settings no longer offers it) is its own page, so Zen in or out re-renders —
+    # and re-analyses nothing. (The window's hook tells the keeper nothing for `theme`, placed neither: the press
+    # re-renders, the next test; here the keeper is told directly.)
     store, _ids, _names, root, _first = _kept_on(language)
     w = themed(language)
     settings = w.replan._settings
     assert _halves(settings.get(), language) == (True, True)
-    settings.values["theme"] = "Modern Light"
-    assert _halves(settings.get(), language) == (True, False), "the analysis current, the report not"
+    _saved(settings, theme="Modern Light")
+    assert _halves(settings.get(), language) == (True, True), "a look the page applies itself: nothing to draw"
+    _saved(settings, theme="Zen Mode")
+    assert _halves(settings.get(), language) == (True, False), "Zen in: the analysis current, the report not"
     w.replan.report_changed()
     assert fired.done(w.keeper)
     assert w.keeper.asked == 1 and h.until(lambda: w.launches.count() == 1, seconds=5), "one quiet run asked"
     said, html = _run(root, w.launches.runs[0])
     assert REUSED in said and RE_RENDER in said, "a re-render only"
-    assert "globalTheme = 'modern-light'" in html
+    assert _page_theme(html) is None and "zen" in html.lower(), "Zen's own page"
+    assert _halves(settings.get(), language) == (True, True)
+    _saved(settings, theme="Modern Light")
+    assert _halves(settings.get(), language) == (True, False), "Zen out: the v3 page again"
+    w.replan.report_changed()
+    assert fired.done(w.keeper)
+    assert h.until(lambda: w.launches.count() == 2, seconds=5)
+    said, html = _run(root, w.launches.runs[1])
+    assert REUSED in said and RE_RENDER in said and _page_theme(html) == "light", "the v3 page, in settings.json's look"
     assert _halves(settings.get(), language) == (True, True)
     w.replan.report_changed()                         # the same setting again: nothing left to draw
     assert fired.done(w.keeper)
-    assert w.keeper.asked == 1 and w.launches.count() == 1
+    assert w.launches.count() == 2
     store.close()
 
 
@@ -138,8 +174,8 @@ def test_journey_opens_after_a_re_render_when_only_a_report_setting_changed_and_
     w = themed(language)
     settings = w.replan._settings
     settings.values["logic"] = {"automation": False}  # D29 off: the keeper runs nothing, so the press is the one
-    settings.values["source_display"] = "full"
-    settings.values["theme"] = "Midnight (Vibrant)"
+    _saved(settings, line_player=False,               # a setting the v3 render reads (▶): a re-render
+           theme="Midnight (Vibrant)")                # (a look: drawn with it, never a reason to draw)
     opened = []
     t = _press(w, settings, opened)
     assert h.until(lambda: w.launches.count() == 1, seconds=20), "the press asked a run"
@@ -147,13 +183,13 @@ def test_journey_opens_after_a_re_render_when_only_a_report_setting_changed_and_
     said, html = _run(root, w.launches.runs[0])
     t.join(10)
     assert not t.is_alive() and opened == [None]
-    assert REUSED in said and RE_RENDER in said and "globalTheme = 'midnight-vibrant'" in html
+    assert REUSED in said and RE_RENDER in said and _page_theme(html) == "night"
     assert _halves(settings.get(), language) == (True, True)
     t = _press(w, settings, opened)                   # current now: opens at once, no run
     t.join(10)
     assert not t.is_alive() and w.launches.count() == 1
     settings.values["min_freq"] = 2                   # the analysis moves too (a full Generate's to do)
-    settings.values["theme"] = "Modern Light"
+    _saved(settings, theme="Modern Light")
     assert _halves(settings.get(), language)[0] is not True
     t = _press(w, settings, opened)
     t.join(10)

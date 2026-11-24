@@ -38,6 +38,10 @@ _BACKLOG = {"version": 1, "synced_at": "2026-09-23T10:00:00", "decks": ["TheBank
                       "1789711432548": {"word": "スルリ", "keys": ["スルリ", "するり"], "source": "", "freqsort": None}}}
 
 
+# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
+pytestmark = pytest.mark.usefixtures("journey_pre_cut")
+
+
 def _write_backlog(language="ja", data=None):
     folder = os.path.join(os.environ["SURASURA_TEST_ROOT"], "User Files", language)
     os.makedirs(folder, exist_ok=True)

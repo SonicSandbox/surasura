@@ -101,6 +101,10 @@ if _out:
 '''
 
 
+# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
+pytestmark = pytest.mark.usefixtures("journey_pre_cut")
+
+
 @pytest.fixture(autouse=True)
 def _the_childs_token_store(monkeypatch):
     """The window's questions are asked in this process of the store the Generate child wrote (under the test root, as
@@ -174,7 +178,7 @@ def _kept_on(language):
     store, ids, names = _library(language)
     store.set_library_options(keep_watched=True)
     first, said = _generate(root, language)
-    assert REUSED not in said and _stones(first) == {}
+    assert REUSED not in said and (first is None or _stones(first) == {}), "a full Generate (the old page: no stone)"
     return store, ids, names, root, first
 
 

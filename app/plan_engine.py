@@ -32,6 +32,7 @@ import bisect
 import gzip
 import io
 import json
+import os
 import sys
 import zlib
 from array import array
@@ -361,6 +362,270 @@ def candidates(path, language=None):
         return None
     return Candidates(header, tables["files"], tables["finished"], tables["keys"], tables["sentences"],
                       tables["cowords"], pools)
+
+
+Counts = namedtuple("Counts", "header files keys per_file")
+_COUNT_TABLES = (b'{"files":', b'{"keys":')
+_COUNT_LINES = _COUNT_TABLES + (b'{"f":',)
+_COUNT_MARK = max(len(mark) for mark in _COUNT_LINES)     # a line's first bytes that tell whether `counts` reads it
+_PIECE = 1 << 20                                          # the zipped bytes `counts` unzips at a time
+
+
+def counts(path):
+    """The plan file's per-file counts only, for the journey (J-CUT: each word's count ahead and each episode's *%
+    known*, `journey_render._ahead` / `_plan_pcts`) -> `Counts`: the header, `files` (each one's [path]), `keys`, and
+    `per_file` (each file's {"main", "ph", "prog"}); None when there is no readable plan of a format this engine reads.
+    Light where `load` is whole: the stream is unzipped a piece at a time and only these tables are kept — the rows,
+    the ties, the spellings, the example sentences and each file's `fs` are never held (at 20,000 files `load(pools=
+    False)` held ~130 MB more at the render's peak). No check that the plan is this run's or this library's: the caller
+    compares its header's `run_signature` (`analyzer._journey_plan`)."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        unzip, rest, header, files, keys, per_file = zlib.decompressobj(31), b"", None, [], [], []
+
+        def take(line):
+            nonlocal header
+            if header is None:
+                header = json.loads(line)
+                if not isinstance(header, dict) or header.get("format") not in FORMATS:
+                    raise PlanError("not a plan file this engine reads")
+            elif line.startswith(b'{"f":'):
+                found = json.loads(line)
+                if found["f"] != len(per_file):
+                    raise PlanError("the plan file's files are out of order")
+                per_file.append({"main": found["main"], "ph": found["ph"], "prog": found["prog"]})
+            elif line.startswith(_COUNT_TABLES):
+                (name, chunk), = json.loads(line).items()
+                if name == "files":
+                    files.extend([entry[0]] for entry in chunk)
+                else:
+                    keys.extend(chunk)
+
+        skip = False                                # inside a line the count never reads: dropped as it streams
+
+        def ended(piece):
+            nonlocal skip
+            if skip:
+                cut = piece.find(b"\n")
+                if cut < 0:
+                    return b""
+                piece, skip = piece[cut + 1:], False
+            return piece
+
+        for at in range(0, len(data), _PIECE):
+            lines = (rest + ended(unzip.decompress(data[at:at + _PIECE]))).split(b"\n")
+            rest = lines.pop()
+            for line in lines:
+                take(line)
+            if header is not None and len(rest) >= _COUNT_MARK and not rest.startswith(_COUNT_LINES):
+                rest, skip = b"", True
+        rest += ended(unzip.flush())
+        for line in rest.split(b"\n"):
+            if line:
+                take(line)
+        if header is None or len(per_file) != len(files):
+            raise PlanError("the plan file's files don't match its tables")
+    except (OSError, EOFError, zlib.error, ValueError, TypeError, KeyError, IndexError, AttributeError, PlanError):
+        return None
+    return Counts(header, files, keys, per_file)
+
+
+COUNTS_FILE = "plan_counts.bin"         # results/: the journey's counts, beside the plan (`CountsTable`)
+_NO_PHRASES = ()
+
+
+class CountsTable:
+    """The journey's counts, written once beside the plan by the pass that writes it (J-CUT, the lead's ruling): the
+    plan's own numbers, cut to what a page draws — each file's uses of the *listed* rows (main and phrases summed: the
+    only words a Generate's page or the redraw's can show; `journey_render._ahead` sums them so) and its `prog`'s first
+    two numbers, the tokens counted and those known before any file (*% known*, `_plan_pcts`). `analyzer.plan_lines`
+    hands each file's line here as it makes it; `write` puts the table beside the plan once that is written;
+    `read_counts` reads it as `counts` reads the plan. The file: one JSON line (the run, the keys, the files, the
+    arrays' lengths and CRC), then the arrays as 32-bit ints — at 20,000 files the render held 44 MB of the plan's
+    tables, and reading the table's 578,317 uses as JSON took 0.26 s."""
+
+    def __init__(self):
+        self._renumber, self.keys, self.files = {}, [], []
+        self.uses, self.at, self.total, self.baseline = array("i"), array("i", [0]), array("i"), array("i")
+
+    def start(self, keys, rows, names):
+        """The plan's keys, its rows (None: not listed) and its files' report names (`path_utils.report_name`, all the
+        journey reads of a file's path: the caller's, so the engine stays pure), before its first file's line."""
+        self.__init__()
+        for k, row in enumerate(rows):
+            if row is not None:
+                self._renumber[k] = len(self.keys)
+                self.keys.append([keys[k][0], keys[k][1]])
+        self.files = list(names)
+
+    def add(self, main, phrases, prog):
+        """One file's line as the plan has it ([k, uses, …] twice, its `prog`), in the plan's order."""
+        renumber, counts = self._renumber, {}
+        for table in (main, phrases):
+            for k, n in zip(table[0::2], table[1::2]):
+                j = renumber.get(k)
+                if j is not None:
+                    counts[j] = counts.get(j, 0) + n
+        for j, n in counts.items():
+            self.uses.extend((j, n))
+        self.at.append(len(self.uses))
+        self.total.append(prog[0])
+        self.baseline.append(prog[1])
+
+    def write(self, results_dir, run_signature):
+        """Write the table (atomically: a temp file, then `os.replace`) for the plan `run_signature` wrote. -> True,
+        or False (an old table stays, for its own run: never read for this one). Never raises."""
+        if len(self.total) != len(self.files):
+            return False
+        path = os.path.join(results_dir, COUNTS_FILE)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        try:
+            body = b"".join(a.tobytes() for a in _little(self.at, self.total, self.baseline, self.uses))
+            head = {"counts": 1, "run_signature": run_signature, "keys": self.keys, "files": self.files,
+                    "uses": len(self.uses), "crc": zlib.crc32(body)}
+            with open(tmp, "wb") as f:
+                f.write(json.dumps(head, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n")
+                f.write(body)
+            os.replace(tmp, path)
+            return True
+        except Exception:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return False
+
+
+def _little(*arrays):
+    """The arrays as the table keeps them, little-endian (copies on a big-endian machine)."""
+    if sys.byteorder == "little":
+        return arrays
+    out = []
+    for a in arrays:
+        a = array(a.typecode, a)
+        a.byteswap()
+        out.append(a)
+    return out
+
+
+class _Strings:
+    """Strings kept as one string and its offsets (`read_counts`: at 20,000 files the table's 30,399 keys as lists of
+    two strings were 7.3 MB of the render's peak, this ~1 MB) -> each one, made when asked."""
+    __slots__ = ("_text", "_at")
+
+    def __init__(self, strings):
+        self._text = "".join(strings)
+        self._at = array("i", [0])
+        n = 0
+        for one in strings:
+            n += len(one)
+            self._at.append(n)
+
+    def __len__(self):
+        return len(self._at) - 1
+
+    def __getitem__(self, i):
+        if not -len(self) <= i < len(self):
+            raise IndexError(i)
+        i %= len(self)
+        return self._text[self._at[i]:self._at[i + 1]]
+
+
+class _Names:
+    """`read_counts`' files, each read as `counts` gives one ([its path]): here its report name (`report_name`, the
+    journey's one use of the path), kept packed (`_Strings`) rather than a list a file."""
+    __slots__ = ("_names",)
+
+    def __init__(self, names):
+        self._names = _Strings(names)
+
+    def __len__(self):
+        return len(self._names)
+
+    def __getitem__(self, f):
+        return [self._names[f]]
+
+
+class _Keys:
+    """`read_counts`' keys, each read as `counts` gives one ([Word, Reading]), kept packed (`_Strings`)."""
+    __slots__ = ("_parts",)
+
+    def __init__(self, keys):
+        self._parts = _Strings([part for key in keys for part in key])
+
+    def __len__(self):
+        return len(self._parts) // 2
+
+    def __getitem__(self, k):
+        if not -len(self) <= k < len(self):
+            raise IndexError(k)
+        k %= len(self)
+        return [self._parts[2 * k], self._parts[2 * k + 1]]
+
+    def __iter__(self):
+        parts = self._parts
+        return ([parts[i], parts[i + 1]] for i in range(0, len(parts), 2))
+
+
+class _CountLines:
+    """`read_counts`' per-file lines, kept as the table's arrays and each read as `counts` gives a line: {"main": [k,
+    uses, …], "ph": (), "prog": (total, baseline)}."""
+    __slots__ = ("_uses", "_at", "_total", "_baseline")
+
+    def __init__(self, uses, at, total, baseline):
+        self._uses, self._at, self._total, self._baseline = uses, at, total, baseline
+
+    def __len__(self):
+        return len(self._total)
+
+    def __getitem__(self, f):
+        if f < 0:
+            f += len(self._total)
+        return {"main": self._uses[self._at[f]:self._at[f + 1]], "ph": _NO_PHRASES,
+                "prog": (self._total[f], self._baseline[f])}
+
+    def prog(self, f):
+        """A file's `prog` alone (`journey_render._plan_pcts` reads every file's: no line made for it)."""
+        return self._total[f], self._baseline[f]
+
+
+def read_counts(path, run_signature):
+    """The counts table `CountsTable.write` put beside the plan -> `Counts`, shaped as `counts` reads the plan (`files`
+    [[its report name]] — `report_name` of a name is the name —, `keys` [[Word, Reading]], `per_file`: each file's
+    {"main", "ph", "prog"}, the listed rows' uses under "main", `prog`'s first two numbers), so the journey reads
+    either alike; None when absent, damaged (its CRC, its
+    lengths, a key out of range), or another run's. Held lean for the render's peak (the lead's ruling: no cost bought
+    back elsewhere): the keys and names packed (`_Keys`, `_Names`), the uses 16-bit when every one fits."""
+    try:
+        with open(path, "rb") as f:
+            head = json.loads(f.readline())
+            body = f.read()
+        if not isinstance(head, dict) or head.get("counts") != 1 or not run_signature or \
+                head.get("run_signature") != run_signature or zlib.crc32(body) != head["crc"]:
+            return None
+        keys, files, n = head["keys"], head["files"], head["uses"]
+        if not all(isinstance(k, list) and len(k) == 2 for k in keys) or \
+                not all(isinstance(rel, str) for rel in files) or len(body) != 4 * (3 * len(files) + 1 + n):
+            return None
+        arrays, view, at = [], memoryview(body), 0
+        for size in (len(files) + 1, len(files), len(files), n):
+            a = array("i")
+            a.frombytes(view[at:at + 4 * size])
+            at += 4 * size
+            arrays.append(a)
+        view.release()
+        at, total, baseline, uses = _little(*arrays)
+        if at[0] != 0 or at[-1] != n or any(at[f] > at[f + 1] for f in range(len(files))) or \
+                any(d % 2 for d in (at[f + 1] - at[f] for f in range(len(files)))) or \
+                (n and not 0 <= min(uses[0::2]) <= max(uses[0::2]) < len(keys)):
+            return None
+        if n and max(uses) < 1 << 16 and min(uses) >= 0:
+            uses = array("H", uses)         # the narrower type when every key and count fits (2 bytes a number, not 4)
+        return Counts({"run_signature": run_signature, "counts": 1}, _Names(files), _Keys(keys),
+                      _CountLines(uses, at, total, baseline))
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError):
+        return None
 
 
 def _validate_pools(plan):

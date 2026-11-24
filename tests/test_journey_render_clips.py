@@ -116,6 +116,7 @@ def test_the_journey_gives_an_mkv_line_its_play_and_its_times_and_a_line_with_no
     assert len(out.head["dirs"]) == 1 and out.head["dirs"][0].startswith("file:///")
 
 
+@pytest.mark.usefixtures("journey_pre_cut")          # the old page (Zen's, the preview's): written only before the cut
 @pytest.mark.parametrize("language", ["ja", "zh"])
 def test_the_old_page_is_byte_for_byte_the_same_after_the_journey_is_drawn(tmp_path, language):
     # both pages share the ▶'s memos in results/ (line_media.json, line_times.json): the journey now looks the .mkv

@@ -29,6 +29,9 @@ def _make_fake_dist(root, version, cli=True):
             f.write(CLI_BYTES)
     with open(os.path.join(internal, "templates", "web_app.html"), "w", encoding="utf-8") as f:
         f.write("<h1>語彙の旅</h1>\n")
+    os.makedirs(os.path.join(internal, "templates", "journey"), exist_ok=True)     # the journey's folder (J-CUT)
+    with open(os.path.join(internal, "templates", "journey", "page.html"), "w", encoding="utf-8") as f:
+        f.write("<title>旅</title><!--JOURNEY-DATA-->\n")
     return final
 
 

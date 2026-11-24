@@ -17,6 +17,7 @@ signature (results/run_signature.txt) hashes the root itself and is proven apart
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -203,6 +204,10 @@ def child_env(root):
                LOCALAPPDATA=os.path.join(root, "localappdata"), PYTHONIOENCODING="utf-8", PYTHONHASHSEED="0",
                PYTHONPATH=REPO + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""))
     env.pop("SURASURA_DEBUG_WORD_STATS", None)
+    # Never this PC's Anki Miner (~/.anki_miner): the v3 page reads its dictionaries and Kanjium copy. conftest's guard
+    # sets one per test, but a module's `runs` is made before it, and --record runs with no guard at all (J-CUT G2:
+    # the Japanese pages' hashes were recorded with this PC's, and GitHub, which has none, wrote other pages).
+    env.setdefault("ANKI_MINER_HOME", os.path.join(root, "no-anki-miner"))
     return env
 
 
@@ -233,21 +238,52 @@ def _root_spellings(root):
     return sorted(forms, key=len, reverse=True)
 
 
+def _normal_parts(root):
+    """The root's spellings and the run signature, as output_hashes blanks them."""
+    spellings = [s.encode("utf-8") for s in _root_spellings(root)]
+    # The run signature hashes the root's path: written as <STAMP> where an output carries it (the journey's counts,
+    # plan_counts.bin, name the plan they were written with)
+    try:
+        with open(os.path.join(root, "results", "run_signature.txt"), "rb") as f:
+            stamp = f.read().strip()
+    except OSError:
+        stamp = b""
+    return spellings, stamp
+
+
+def _normal(name, data, spellings, stamp):
+    for s in spellings:
+        data = data.replace(s, b"<ROOT>")
+    if stamp:
+        data = data.replace(stamp, b"<STAMP>")
+    if name == "reading_list_static.html":     # the v3 page's head names its render time (`stamp`, ms)
+        data = re.sub(rb'"stamp":"\d+"', b'"stamp":""', data, count=1)
+        # and each episode's days (the growth row's added / done, the pre-studied mark): the store's UTC stamps of
+        # the run itself, so a run after midnight UTC is another page (11-23). The page writes no other clock.
+        data = re.sub(rb'"\d{4}-\d{2}-\d{2}"', b'"<DAY>"', data)
+    if name == "journey_words.json":           # the memo's pitch key names unidic's file by size and time:
+        data = re.sub(rb'"p_key":"[^"]*"', b'"p_key":""', data, count=1)   # this install's, not the run's
+    return data
+
+
+def normalised(root, name, data):
+    """`data`, the bytes of results/`name` from the run under `root`, as output_hashes hashes them."""
+    return _normal(name, data, *_normal_parts(root))
+
+
 def output_hashes(root):
     """{relative path under results/: sha256} of every file the run wrote there but NOT_COMPARED, the root's path
-    written as <ROOT>."""
+    written as <ROOT> (and the v3 page's render time and days blanked: `_normal`)."""
     results = os.path.join(root, "results")
     out = {}
-    spellings = [s.encode("utf-8") for s in _root_spellings(root)]
+    parts = _normal_parts(root)
     for folder, _dirs, files in os.walk(results):
         for name in files:
             if name in NOT_COMPARED or name.endswith(".tmp"):
                 continue
             path = os.path.join(folder, name)
             with open(path, "rb") as f:
-                data = f.read()
-            for s in spellings:
-                data = data.replace(s, b"<ROOT>")
+                data = _normal(name, f.read(), *parts)
             out[os.path.relpath(path, results).replace("\\", "/")] = hashlib.sha256(data).hexdigest()
     return dict(sorted(out.items()))
 

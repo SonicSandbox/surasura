@@ -6778,6 +6778,11 @@ def main():
         if _cores is not None:
             _file_words = None      # the workers read the kept counts themselves
 
+            def _read_again(path):  # a file no worker answered: read as the walk reads it
+                words = [None]
+                return _sentences_of(path, words), words[0]
+            _cores.reads(_read_again, language, _people)
+
         def _line_words(s_text, s_tokens, s_no):
             """The line's words for the table's two numbers: as the indexer counted them (sentence_table.KeptWords,
             E-INDEX), else counted here (sentence_table.LineWords) — the same numbers. Made once a line. A line it
@@ -8200,10 +8205,7 @@ def main():
             # by key as the plan's are). Never fails the run: without it a reader takes today's path.
             try:
                 if _cores is not None:
-                    def _read_again(path):
-                        words = [None]
-                        return _sentences_of(path, words), words[0]
-                    _cores.settle(_table, _read_again, language, _people)
+                    _cores.settle(_table)
                     _counted = _cores.counted
                 _signed.update((os.path.abspath(entry[0]), entry) for entry in (_sig_parts or {}).get("files") or ())
                 _listed_at = {}             # each row's place in the list just written (progressive_rows' order)

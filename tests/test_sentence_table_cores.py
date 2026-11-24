@@ -7,8 +7,9 @@ What these prove:
   - each answer a worker gives is the one the walk works out itself (`numbers_of` against `line_words` on every real
     line, every word and span); a line a worker reads otherwise than the walk did (other tokens, another length, no
     such sentence) gives no answer, and that file is answered by the walk, read as the walk reads it — the same bytes;
-  - a worker that dies, or a line offered without its question, fails the table at its write (the run's own warning),
-    never the run, and never hangs it; the workers end either way;
+  - a worker that dies, or a pool that breaks, leaves its files to the walk (the same bytes), never ends or hangs the
+    run; a line offered without its question fails the table at its write (the run's own warning); the workers end;
+    a song line (read by the walk with no words) is answered as the walk answers it;
   - one core, a small library, *Use every core* off or on, settings' `index_pool_workers` 0: the count follows
     `token_index.pool_workers`' rule, at most CORES_MAX, and 1 is today's one-process path; level 0 starts nothing.
 
@@ -154,7 +155,8 @@ def test_the_answers_are_written_in_the_walks_order_whatever_the_batches(real, m
     cores = st.Cores(pool)
     there = _walk(files, cores)
     assert bytes(there._lines) != bytes(here._lines)        # packed 0 until settled
-    cores.settle(there, lambda path: (files[path], None), language, people)
+    cores.reads(lambda path: (files[path], None), language, people)
+    cores.settle(there)
     assert bytes(there._lines) == bytes(here._lines)
     assert there._ids == here._ids and bytes(there._cow) == bytes(here._cow) and bytes(there._phr) == bytes(here._phr)
     assert pool.shut
@@ -171,22 +173,43 @@ def test_a_file_no_worker_could_answer_is_answered_by_the_walk_as_it_read_it(rea
     read = []
     cores = st.Cores(_Pool(files, language, frozenset(), none={"file02.srt", "file05.srt"}))
     there = _walk(files, cores)
-    cores.settle(there, lambda path: read.append(path) or (files[path], None), language, frozenset())
+    cores.reads(lambda path: read.append(path) or (files[path], None), language, frozenset())
+    cores.settle(there)
     assert read == ["file02.srt", "file05.srt"]
     assert bytes(there._lines) == bytes(here._lines)
 
 
-def test_a_worker_that_dies_fails_the_table_and_the_workers_end(real):
-    # why: a worker killed (memory, a crash) must not hang the Generate nor end it: the table's write fails (the run
-    # prints its warning and writes the rest), and no helper process is left behind
+@pytest.mark.parametrize("how", ["dies", "won't take work"])
+def test_a_worker_that_dies_or_a_pool_that_breaks_leaves_the_walk_to_answer_the_same_bytes(real, how):
+    # why: a worker killed (memory, a crash) or a pool that breaks must neither hang nor end the Generate: its files
+    # are answered by the walk itself, the table the same bytes, and no helper process is left behind
     language, lines = real
     files = _files(lines)
-    pool = _Pool(files, language, frozenset(), dies=True)
+    here = _walk(files, _Here(language, frozenset()))
+    pool = _Pool(files, language, frozenset(), dies=(how == "dies"))
+    if how != "dies":
+        def broken(*_a):
+            raise BrokenProcessPool("a worker died before")
+        pool.submit = broken
     cores = st.Cores(pool)
-    packer = _walk(files, cores)
-    with pytest.raises(BrokenProcessPool):
-        cores.settle(packer, lambda path: (files[path], None), language, frozenset())
+    cores.reads(lambda path: (files[path], None), language, frozenset())
+    there = _walk(files, cores)
+    cores.settle(there)
+    assert bytes(there._lines) == bytes(here._lines)
+    assert cores.here == len(files)
     assert pool.shut
+
+
+def test_a_song_line_the_walk_read_with_no_words_is_answered_as_the_walk_answers_it(real):
+    # why: the walk reads a song line with no tokens (songs out of the counts); the store keeps its words — the
+    # worker must answer it as the walk did, never send the whole file back to the walk
+    language, lines = real
+    no = next(i for i, (_t, tokens) in enumerate(lines) if len(tokens) > 3)
+    text, tokens = lines[no]
+    asked = [(no, 0, len(text), (tokens[0][0], tokens[0][1])), (no, 0, len(text), 0, 2)]
+    walk = st.line_words(None, no, (), text, language)
+    want = bytes([*walk.of_word(asked[0][3]), *walk.of_span(0, 2)])
+    assert st.numbers_of(lines, None, asked, language) == want
 
 
 def test_a_line_offered_without_its_question_fails_the_table_at_its_write(real):
@@ -199,7 +222,8 @@ def test_a_line_offered_without_its_question_fails_the_table_at_its_write(real):
     packer = _walk(files, cores)
     packer.add(("余分", "ヨブン"), 1, 0, 3, 1)                # the second file's: no question asked
     with pytest.raises(ValueError, match="without its question"):
-        cores.settle(packer, lambda path: (files[path], None), language, frozenset())
+        cores.reads(lambda path: (files[path], None), language, frozenset())
+        cores.settle(packer)
     assert pool.shut
 
 

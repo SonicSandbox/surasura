@@ -310,10 +310,12 @@ class Packer:
         n = len(numbers) // 2
         if n:
             lines = np.frombuffer(self._lines, _LINE_COLUMNS, n, first * _LINE.size)
-            two = np.frombuffer(numbers, np.uint8).reshape(n, 2)
-            lines["besides"] = two[:, 0]
-            lines["starts"] = two[:, 1]
-            del lines, two
+            try:
+                two = np.frombuffer(numbers, np.uint8).reshape(n, 2)
+                lines["besides"] = two[:, 0]
+                lines["starts"] = two[:, 1]
+            finally:
+                del lines           # the bytearray exported no longer: the walk may add again
 
     def finish(self, keys, row_of, clauses_of, own_row, key_order, phrase_row, sources, head, places=None):
         """-> the Table. `keys`: every list row's (word, reading), by row · `row_of(word key)` -> its row or None
@@ -740,7 +742,8 @@ def line_words(kept, no, tokens, text, language, people=frozenset(), counted=Non
 # core, or the library is small (`token_index.pool_workers`' rule, *Use every core* included); every failure to start
 # is today's single-process path.
 CORES_BATCH = 2000              # questions sent to a worker at a time (files are never split)
-CORES_MAX = 2                   # workers: the walk asks ~5 µs of work a line, so two keep ahead of it (the profile)
+CORES_MAX = 2                   # workers at most: one kept up at 2,000 files; 24 allowed spawned 15 on the zh root
+CORES_WAIT_S = 300              # a batch not answered in this long is answered here (a stuck worker never hangs it)
 _NUMBERS = struct.Struct("BB")
 _CORE = {}
 
@@ -757,6 +760,8 @@ def numbers_of(sentences, kept, asked, language, people=frozenset(), counted=Non
             if no >= n_lines:
                 return None
             text, tokens = sentences[no]
+            if not q[1]:
+                tokens = ()     # a song line the walk read with no words (`songs_left_out`): counted as it did
             held, line = no, (len(tokens), len(text))
             words = line_words(kept, no, tokens, text, language, people, counted)
         if q[1] != line[0] or q[2] != line[1]:
@@ -817,13 +822,15 @@ class Cores:
     offered line asks `line(text, tokens, number)` — this object, whose `of_word(key)` / `of_span(a, b)` keep the
     question and answer (0, 0) — and `settle(packer, read, …)` before `Packer.finish` writes every answer in."""
 
-    def __init__(self, pool):
-        self._pool = pool
+    def __init__(self, pool, blas=None):
+        self._pool, self._blas = pool, blas
         self._sent = []                 # ([(path, questions, first line)], the worker's Future)
         self._batch, self._size = [], 0
         self._path, self._first, self._asked = None, 0, []
-        self._line = self._wrong = None
+        self._line = self._wrong = self._packer = None
         self.counted = [0, 0]
+        self.here = 0                   # files a worker couldn't answer, answered here
+        self._read = self._language = self._people = None
 
     @classmethod
     def start(cls, n_files, store, language, people):
@@ -836,17 +843,20 @@ class Cores:
             import multiprocessing
             from concurrent.futures import ProcessPoolExecutor
             from app import token_index
-            pool = ProcessPoolExecutor(     # a worker that dies fails the table (BrokenProcessPool), never hangs it
+            blas = os.environ.get("OPENBLAS_NUM_THREADS")
+            os.environ["OPENBLAS_NUM_THREADS"] = "1"    # the workers' numpy: ~20 MB committed, not 750 (24 threads)
+            pool = ProcessPoolExecutor(     # a worker that dies raises (BrokenProcessPool): its files answered here
                 size, mp_context=multiprocessing.get_context("spawn"), initializer=_cores_start,
                 initargs=(store.path, language, frozenset(people), token_index._library_switches(language)))
         except Exception as e:
             print(f"Sentence table: one process ({e}).")
             return None
         print(f"Sentence table: the lines' words in {size} processes.")
-        return cls(pool)
+        return cls(pool, blas)
 
     def file(self, path, packer):
         """The next file's lines follow."""
+        self._packer = packer
         self._close_file(packer)
         self._path, self._first = path, len(packer)
 
@@ -864,9 +874,35 @@ class Cores:
     def _send(self):
         batch = self._batch
         if batch:
-            result = self._pool.submit(_cores_answer, [(path, asked) for path, asked, _first in batch])
+            result = None
+            if self._pool is not None:
+                try:
+                    result = self._pool.submit(_cores_answer, [(path, asked) for path, asked, _first in batch])
+                except Exception:
+                    result = None           # a broken pool: answered here, at `settle`
             self._sent.append((batch, result))
         self._batch, self._size = [], 0
+        while self._sent and self._sent[0][1] is not None and self._sent[0][1].done() and self._read is not None:
+            self._take(*self._sent.pop(0))  # answers in: their questions let go as the walk goes
+
+    def _take(self, batch, result, wait=0):
+        """One batch's answers written in; a file (or a batch) no worker answered, answered here."""
+        try:
+            answers = result.result(timeout=wait) if result is not None else None
+        except Exception:
+            answers = None
+        for i, (path, asked, first) in enumerate(batch):
+            numbers, counted = answers[i] if answers is not None else (None, [0, 0])
+            if numbers is None:
+                counted = [0, 0]
+                sentences, kept = self._read(path)
+                numbers = numbers_of(sentences, kept, asked, self._language, self._people, counted)
+                if numbers is None:
+                    raise ValueError(f"{path}: its lines are not the ones the walk read")
+                self.here += 1
+            self._packer.fill(first, numbers)
+            self.counted[0] += counted[0]
+            self.counted[1] += counted[1]
 
     def line(self, text, tokens, number):
         self._line = (number, len(tokens), len(text))
@@ -880,30 +916,40 @@ class Cores:
         self._asked.append(self._line + (a, b))
         return 0, 0
 
-    def settle(self, packer, read, language, people):
-        """Every answer written into `packer`'s lines; a file a worker couldn't answer is answered here from
-        `read(path)` -> (sentences, kept counts), as the walk reads it. The workers end."""
+    def reads(self, read, language, people):
+        """How a file no worker answered is read here: `read(path)` -> (sentences, kept counts), as the walk reads it."""
+        self._read, self._language, self._people = read, language, people
+
+    def settle(self, packer):
+        """Every answer written into `packer`'s lines (a file a worker couldn't answer, answered here). The workers
+        end."""
         try:
+            self._packer = packer
             self._close_file(packer)
             if self._wrong is not None:
                 raise ValueError(f"{self._wrong}: a line offered without its question")
             self._send()
-            for batch, result in self._sent:
-                for (path, asked, first), (numbers, counted) in zip(batch, result.result()):
-                    if numbers is None:
-                        counted = [0, 0]
-                        sentences, kept = read(path)
-                        numbers = numbers_of(sentences, kept, asked, language, people, counted)
-                        if numbers is None:
-                            raise ValueError(f"{path}: its lines are not the ones the walk read")
-                    packer.fill(first, numbers)
-                    self.counted[0] += counted[0]
-                    self.counted[1] += counted[1]
-            self._sent = []
+            while self._sent:
+                self._take(*self._sent.pop(0), wait=CORES_WAIT_S)
+            if self.here:
+                print(f"Sentence table: {self.here:,} files answered by the walk itself.")
         finally:
+            self._sent = []
             self.close()
 
     def close(self):
         pool, self._pool = self._pool, None
         if pool is not None:
-            pool.shutdown(wait=True, cancel_futures=True)
+            processes = list((getattr(pool, "_processes", None) or {}).values())   # (shutdown lets go of them)
+            pool.shutdown(wait=False, cancel_futures=True)   # a stuck worker never holds the run; each one ends with it
+            for process in processes:
+                try:
+                    process.join(5)
+                    if process.is_alive():
+                        process.terminate()
+                except Exception:
+                    pass
+            if self._blas is None:
+                os.environ.pop("OPENBLAS_NUM_THREADS", None)
+            else:
+                os.environ["OPENBLAS_NUM_THREADS"] = self._blas

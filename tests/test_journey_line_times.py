@@ -23,7 +23,7 @@ import os
 import pytest
 
 from app import analyzer, cues
-from app.static_html_generator import AnchorFinder, _intern_sources
+from app.static_html_generator import AnchorFinder
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESOURCES = os.path.join(PROJECT_ROOT, "tests", "Test Resources")
@@ -209,31 +209,28 @@ def test_a_files_encoding_and_line_ends_give_the_same_lines(tmp_path, encoding, 
 
 
 # --- the report ---------------------------------------------------------------------------------------------------- #
-def test_the_report_gives_a_subtitle_sentence_its_line_even_without_an_anchor(tmp_path):
-    """`At N` / `End N` come with or without a scroll-to-text anchor: どうぞ。 has no anchor, still a time."""
-    rec = {"Word": "どうぞ", "Context 1": "どうぞ。", "Src 1": "HighPriority/library_episode.ass",
-           "Context 2": "それでしたらこちらの用紙にお名前と住所を書いてください。",
-           "Src 2": "HighPriority/library_episode.ass"}
-    table, index = [], {}
-    source_map = {"HighPriority/library_episode.ass": {"name": "library_episode.ass", "type": "subtitle",
-                                                       "abs": EPISODE}}
-    _intern_sources([rec], source_map, table, index, finder=AnchorFinder(language="ja"))
-    assert "Frag 1" not in rec
-    assert (rec["At 1"], rec["End 1"]) == (109.3, 112.1)
-    assert (rec["At 2"], rec["End 2"]) == (103.0, 106.5)
-    assert not any(key.startswith("Context ") for key in rec if key not in ("Context 1", "Context 2")), \
-        "never a 'Context …' key: both templates read those as examples"
+def test_the_report_gives_a_subtitle_sentence_its_line_even_without_an_anchor():
+    """The journey page's ▶ times (`journey_render.Sources`, the old page's `_intern_sources` before J-RETIRE) come with
+    or without a scroll-to-text anchor: どうぞ。 has no anchor, still a time; each line its own."""
+    from app.journey_render import Sources
+    rel = "HighPriority/library_episode.ass"
+    sources = Sources("ja", source_map={rel: {"name": "library_episode.ass", "type": "subtitle", "abs": EPISODE}},
+                      media={rel: ("library_episode.mp4", "")}, timer=AnchorFinder(language="ja"))
+    assert sources.times(rel, "どうぞ。") == (109.3, 112.1)
+    assert sources.times(rel, "それでしたらこちらの用紙にお名前と住所を書いてください。") == (103.0, 106.5)
 
 
 def test_prose_has_no_line(ja_resources_dir):
-    """A book's sentence has no time: no `At` / `End`, as before."""
+    """A book's sentence has no time: a text is never a timed source, so the page asks it for no line."""
+    from app import static_html_generator as gen
+    from app.journey_render import Sources
     path = os.path.join(ja_resources_dir, "context_test.txt")
     sentence = _sentences(path, "ja")[0]
-    rec = {"Context 1": sentence, "Src 1": "HighPriority/context_test.txt"}
-    _intern_sources([rec], {"HighPriority/context_test.txt": {"name": "context_test.txt", "type": "text",
-                                                               "abs": path}},
-                    [], {}, finder=AnchorFinder(language="ja"))
-    assert "At 1" not in rec and "End 1" not in rec
+    rel = "HighPriority/context_test.txt"
+    assert "text" not in gen.TIMED_TYPES
+    sources = Sources("ja", source_map={rel: {"name": "context_test.txt", "type": "text", "abs": path}},
+                      timer=AnchorFinder(language="ja"))
+    assert sources.times(rel, sentence) == (None, None)
 
 
 def test_a_memo_from_before_the_line_reader_is_recomputed(tmp_path):

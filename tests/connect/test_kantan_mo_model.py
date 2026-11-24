@@ -109,14 +109,13 @@ def test_the_settings_page_has_one_study_order_row_and_no_words_to_make_cards_fr
 def test_the_journey_opens_on_the_study_orders_list_and_a_change_re_renders_only():
     # why: the old journey read the one study order too (F23): By leverage opened on the Priority List. Since the v3
     # cut-over (J-CUT) the journey's order is its page's view (the Order menu) and no part of its render reads the
-    # study order, so a change draws nothing (the Redraw rule); the old page keeps its tab code (Zen, the preview)
+    # study order, so a change draws nothing (the Redraw rule); web_app.html keeps its tab code (the YouTube preview's
+    # page; the old page and Zen that injected the order retired: J-RETIRE)
     from app import settings_placement
     assert settings_placement.PLACED["study_order"] == "neither"
     assert settings_placement.PLACED["connect_every_word"] == "neither"
     template = io.open(os.path.join("templates", "web_app.html"), encoding="utf-8").read()
     assert "globalStudyOrder === 'priority'" in template and "switchMainTab('priority')" in template
-    source = io.open(os.path.join("app", "static_html_generator.py"), encoding="utf-8").read()
-    assert "let globalStudyOrder = '{study_order}';" in source
 
 
 # --- 4. raising the level never mines an episode again --------------------------------------------------------------- #

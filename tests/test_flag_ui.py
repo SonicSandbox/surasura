@@ -51,24 +51,11 @@ class TestFlagUI(unittest.TestCase):
         self.assertEqual(self.app.lbl_flag.cget("text"), "🇯🇵")
         self.assertEqual(self.app.zh_script_frame.winfo_manager(), "")
 
-    def test_zen_slider_shown_only_for_zen_theme(self):
-        """The Zen Limit slider appears only when the Zen Mode theme is selected. Real-root test so
-        it exercises the actual <<ComboboxSelected>> binding — guards the regression where the
-        theme-SAVE binding replaced the zen-visibility binding (a second bind() without add='+')."""
-        def slider_shown():
-            return self.app.zen_limit_frame.winfo_manager() == "pack"
-
-        def select(theme):
-            self.app.combo_theme.set(theme)
-            self.app.combo_theme.event_generate("<<ComboboxSelected>>")
-            self.root.update()
-
-        select("Dark Flow")
-        self.assertFalse(slider_shown(), "slider must be hidden for a non-Zen theme")
-        select("Zen Mode")
-        self.assertTrue(slider_shown(), "slider must appear when Zen Mode is selected")
-        select("Modern Light")
-        self.assertFalse(slider_shown(), "slider must hide again when leaving Zen Mode")
+    def test_the_themes_offer_no_zen_and_have_no_zen_slider(self):
+        """J-RETIRE: Zen Mode and its Zen Limit slider are retired with the old journey page — the
+        journey's page reads its look from the theme, and Zen is no look of its own any more."""
+        self.assertNotIn("Zen Mode", tuple(self.app.combo_theme["values"]))
+        self.assertFalse(hasattr(self.app, "zen_limit_frame") or hasattr(self.app, "var_zen_limit"))
 
     def test_very_rare_band_hidden_when_identical_to_native(self):
         """The rarity slider drops a redundant band from the collapsed rare tail, keeping the RAREST

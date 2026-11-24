@@ -627,16 +627,16 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
         return got
 
     def as_read(src):
-        """Is the file the one the Generate read: there, its digest (path, time, size, kind) the table's — or, with
-        no digest (a watched or Finished source), its time and size the token store's?"""
+        """Is the file the one the Generate read: there, its digest (`sentence_table.source_digest`: its path in one
+        spelling, time, size, kind) the table's — or, with no digest (a watched or Finished source), its time and size
+        the token store's?"""
         if src not in there:
-            path, at, rel, kind, digest, _seen = files[src]
+            path, at, _rel, kind, digest, _seen = files[src]
             try:
                 st = os.stat(path)
                 if digest is not None:
-                    from app import plan_rules
-                    there[src] = any(plan_rules.file_digest([signed, [st.st_mtime, st.st_size], None, None, kinds])
-                                     == digest for signed in dict.fromkeys((os.path.join(root, rel), path))
+                    from app.sentence_table import source_digest
+                    there[src] = any(source_digest(path, [st.st_mtime, st.st_size], kinds) == digest
                                      for kinds in ((kind, None) if not kind else (kind,)))
                 else:
                     cache = store()

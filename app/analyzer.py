@@ -8186,8 +8186,9 @@ def main():
             _signed = {}
 
             def _source_digest(source):
-                """A source's own digest, as the plan's files carry it (`plan_rules.file_digest` of its run-signature
-                entry); a Finished file's as a set-aside file's is made (run_signature_parts' "reference")."""
+                """A source's own digest (`sentence_table.source_digest`: its path in one spelling, its stat and kind)
+                from its run-signature entry; a Finished file's as a set-aside file's is made (run_signature_parts'
+                "reference")."""
                 entry = _signed.get(source["abs"])
                 if entry is None:
                     try:
@@ -8196,7 +8197,7 @@ def main():
                     except OSError:
                         stat = None
                     entry = [source["abs"], stat, None, None, source["type"]]
-                return plan_rules.file_digest(entry)
+                return sentence_table.source_digest(entry[0], entry[1], entry[4])
 
             # The sentence table beside the plan, on the plan's rows, sources and co-words' rule (one rule, numbered
             # by key as the plan's are). Never fails the run: without it a reader takes today's path.

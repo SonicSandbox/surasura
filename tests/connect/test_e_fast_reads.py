@@ -485,3 +485,52 @@ def test_swap_asks_for_more_when_the_scores_one_line_is_in_a_file_outside_the_li
     first = sentences.choose(lang, [key], dial=sentences.BEST, young={}, top=1)[key]
     assert [c.item_id for c in first] == [None]     # the score's first line: outside the library
     assert swap._chosen(lang, {key}, set(), None, set(), None) == (2, LINES[lang][4])
+
+
+# --- the table's file check: one spelling of a file's path ------------------------------------------------------- #
+
+def _spelled_apart(root):
+    """The data folder as another process may spell it: forward slashes and the drive's other case on Windows (a
+    bench's `h:/…` beside the window's backslashes), a `.` part elsewhere — the same folder."""
+    if os.sep == "\\":
+        spelled = root.replace("\\", "/")
+        return spelled[0].swapcase() + spelled[1:] if spelled[1:2] == ":" else spelled
+    head, tail = os.path.split(root)
+    return os.path.join(head, ".", tail)
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_data_folder_the_generate_spelled_another_way_still_finds_every_file_and_the_same_lines(language,
+                                                                                                    monkeypatch):
+    # why: the table signs each file's path; a Generate that spelled the data folder `H:/…` and a reader that spells
+    # it `H:\…` (a bench, a tool) refused every line of every file — no sentence from a table that is right. The file
+    # is the same file: the word card and the score find it, and give the same lines, whichever way either spells it
+    from app import plan_engine, sentence_table, token_index
+    from app.path_utils import get_data_path
+    from tests import services_helpers as h
+    from tests.test_sentence_table import _generate_at, _seed
+    monkeypatch.delenv("SURASURA_SENTENCE_TABLE", raising=False)
+    results = _seed(language)
+    root = h.root()
+    store = os.path.join(root, "index", f"token_store_{language}.db")       # the Generate's (a child process)
+    monkeypatch.setattr(SS, "_tokens", lambda lang: token_index.open_reader(lang, store))
+    monkeypatch.setenv("SURASURA_TEST_ROOT", _spelled_apart(root))
+    generated = get_data_path(language)                     # the data folder as the Generate spells it
+    _generate_at(language, 1)
+    monkeypatch.setenv("SURASURA_TEST_ROOT", root)
+    data_dir = get_data_path(language)                      # and as this reader does
+    assert generated != data_dir and os.path.samefile(generated, data_dir)
+    table = sentence_table.open_table(os.path.join(results, sentence_table.TABLE_FILE), language=language)
+    plan = plan_engine.load(os.path.join(results, analyzer.PLAN_FILE))
+    files = range(len(plan.files))
+    assert plan.files and all(table.as_read(f, data_dir) for f in files)       # the word card's check (E-HOVER)
+    assert all(table.as_read(f, generated) for f in files)
+    keys = sorted(table.rows())
+    lines = {}
+    for spelled in (data_dir, generated):
+        got = SS.choose(language, keys, n=3, moment=SS.Moment(root=spelled), length=(10, 50), table=table)
+        # (each line names its file as the asker spells its folder: the same file)
+        lines[spelled] = {k: [x._replace(file=os.path.normcase(os.path.abspath(x.file))) for x in v]
+                          for k, v in got.items()}
+    assert sum(1 for got in lines[data_dir].values() if got) >= len(keys) // 2, "the rows' lines, read here"
+    assert lines[data_dir] == lines[generated]

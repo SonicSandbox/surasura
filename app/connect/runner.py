@@ -2528,6 +2528,13 @@ def _mine_batch(steps, ledger, lang, job, picked, todo, attempt):
     words, every *Try again* the same way: review r2 B2): a deck, a note type or fields Anki Miner can't use are its
     setup check's before each call (`anki_miner.preflight`: *Needs you*). What still fails for every word (a video
     ffmpeg can't read, a full disk) costs one run a word once, then the part fails as any (review r3 N2)."""
+    if job.get("kind") == SWAP and hasattr(steps, "swap_in_place"):
+        from app.connect import swap
+        row = swap.in_place_row(ledger, job["id"])  # FS-1: the old card rewritten in place, its reviews kept
+        done = steps.swap_in_place(lang, job, _part_read(steps, lang, job, picked), todo, attempt, ledger, row) \
+            if row is not None else None
+        if done is not None:
+            return done                     # None: it can't be rewritten (said once) — a new card, as any swap's
     if not _alone(ledger, job["id"]):
         return steps.mine(lang, job, _part_read(steps, lang, job, picked), todo, attempt)
     got, out, refused = {}, None, []
@@ -2694,6 +2701,14 @@ def _name_media_at_end(steps, ledger, lang, job):
         log.warning("Connect couldn't rename the media of a job that ended", exc_info=True)
 
 
+def _rewritten(ledger, job):
+    """FS-1: the notes a swap job rewrote in place (`swap.rewritten`), [] for every other job."""
+    if job.get("kind") != SWAP:
+        return []
+    from app.connect import swap
+    return swap.rewritten(ledger, job["id"])
+
+
 def _made(ledger, jid):
     """{word: [note id, …]} of the job's made outcomes."""
     made = {}
@@ -2709,7 +2724,9 @@ def _record_made(steps, ledger, lang, job, record):
     if not record:
         return
     try:
-        steps.record(lang, job, _made(ledger, job["id"]), _now() if job.get("kind") not in (LEVEL, SWAP) else None, _tag(job))
+        moved = _rewritten(ledger, job)         # FS-1: a card rewritten in place is this item's alone now
+        steps.record(lang, job, _made(ledger, job["id"]), _now() if job.get("kind") not in (LEVEL, SWAP) else None,
+                     _tag(job), **({"moved": moved} if moved else {}))
     except Wait as w:
         raise Wait(w.reason, w.look, "mining") from None
     _through(ledger, lang, "recording")
@@ -2880,8 +2897,9 @@ def _fill(steps, ledger, lang, job):
     if pending:                             # the names' tag, before anything else touches the notes (adversary #7)
         steps.tag_names(lang, pending)
         ledger.set_state(jid, "filling", tag_pending=None)
+    rewritten = [n for n in _rewritten(ledger, job) if n in set(ids)]
     try:
-        steps.fill(lang, job, ids)
+        steps.fill(lang, job, ids, **({"rewritten": rewritten} if rewritten else {}))
     except Wait as w:
         raise Wait(w.reason, w.look, "filling") from None
     except Skip as s:
@@ -3525,14 +3543,15 @@ class Steps:
             self._video_index = made
         return made[lang]
 
-    def record(self, lang, job, made, mined_at, batch):
+    def record(self, lang, job, made, mined_at, batch, moved=()):
         """The mining's one store write (receipt + made words): a busy store is looked at again, one that can't be
-        written is Needs you — the job never goes on without its record (G1.3-4 reads it)."""
+        written is Needs you — the job never goes on without its record (G1.3-4 reads it). `moved`: a swap job's
+        cards rewritten in place, taken out of the item they were first made from (`record_batch`)."""
         from app import library_store
         from app.connect import library
         with self._open(lang) as store:
             try:
-                library.record_batch(store, job["item_id"], made, mined_at, batch)
+                library.record_batch(store, job["item_id"], made, mined_at, batch, moved=moved)
             except library_store.StoreBusy:
                 raise Wait(LIBRARY_BUSY) from None
             except library_store.StoreReadOnly:
@@ -4275,11 +4294,7 @@ class Steps:
         fields = getattr(self._job_mapping(job), "fields", None) or self._export_fields(lang, job)
         if not lines or not fields:
             return None
-        pairing = self.pairing(lang, job) or {}
-        key = pairing.get("content_key")
-        if not key:
-            with self._open(lang) as store:
-                key = (store.item(job["item_id"]) or {}).get("rel_key") or f"item-{job['item_id']}"
+        key = self._media_key(lang, job)
         try:
             return media_names.rename(media_names.AnkiConnectMedia(self.url), lines, key, fields.get("audio"),
                                       None if audio else fields.get("picture"))    # the clip renamed (review AB-4)
@@ -4291,6 +4306,14 @@ class Steps:
             raise Wait(ANKI_SLOW, resume="mining") from None
         except anki_connect.AnkiError as e:
             raise _anki_wait(self.url, "mining", e) from None
+
+    def _media_key(self, lang, job):
+        """The episode's key its media are named by (`media_names`): hato's `content_key`, else the item's own."""
+        key = (self.pairing(lang, job) or {}).get("content_key")
+        if not key:
+            with self._open(lang) as store:
+                key = (store.item(job["item_id"]) or {}).get("rel_key") or f"item-{job['item_id']}"
+        return key
 
     def _job_mapping(self, job):
         """The field mapping this run's `mine` set — only for the job it mined; another job (resumed with nothing left
@@ -5059,6 +5082,77 @@ class Steps:
         done["outcomes"] = [got.get((w["word"], w["reading"])) or dict(_unsure(w), outcome=missing) for w in words]
         return done
 
+    def swap_in_place(self, lang, job, picked, words, attempt, ledger, row):
+        """FS-1 (the full Swap): the swap's word rendered on its line (`anki_miner.render_line`: nothing sent to Anki)
+        and its old card's sentence side rewritten in place (`swap.write_in_place`, the one field writer's replace
+        mode) -> the batch's answer, the old card's note made (the job's other steps — the media named by the line,
+        Backfill's ふりがな, the record — run as for any card); None when it can't be (no `render`, Anki Miner's refusal
+        of the line, the card gone or changed by hand since): the swap makes a new card instead, said once."""
+        from app.connect import anki_miner, power, runfile, swap
+        from app.cli import verbs
+        from app.cli.contract import CliError
+        miner = anki_miner.find(self.loaded)
+        if miner is None:
+            raise Skip("Anki Miner isn't installed")
+        run_dir = self.run_dir(job)
+        held = self._anki_miner_held(lang)
+        try:
+            setup = verbs._anki_miner_setup(self.loaded, lang, run_dir, held=held)
+        except CliError as e:
+            raise _wait_or_needs(e, "mining", self.url) from None
+        if setup is None:
+            raise Skip("Anki Miner isn't installed")
+        mapping = self._mapping = setup[2]
+        self._mapping_job = job.get("id")
+        now = self._settings(lang)
+        export = (held.get("set") or (None,) * 4)[3]
+        try:
+            got = anki_miner.render_line(miner, lang, _tag(job), picked["video"], picked["subtitle"], words, mapping,
+                                         self.loaded.get("connect_anki_miner_profile") or "Surasura", run_dir,
+                                         attempt=attempt, subtitle_offset=float(picked.get("offset") or 0.0),
+                                         known=setup[:2], show=self.show(lang, job),
+                                         word_audio=runfile.word_audio_on(now, lang),
+                                         workers=power.clip_cuts(now.get("connect_clip_cuts", power.AUTO),
+                                                                 own=power.profile_cuts(export)))
+        except anki_miner.AnkiMinerError as e:
+            held.clear()
+            if e.kind in ("no-render", "refused", "failed", "crashed", "timeout", "unreadable"):
+                swap.fall_back(ledger, row, swap.NO_RENDER if e.kind == "no-render" else None)
+                return None
+            raise _miner_wait_or_needs(e, self.url) from None
+        word = words[0] if words else None
+        rendered = got.get((word["word"], word["reading"])) if word else None
+        if rendered is None:
+            swap.fall_back(ledger, row, None)       # Anki Miner didn't find the word on that line: a new card
+            return None
+        from app import anki_connect, locks
+        from app.connect import media_names, sentence_audio
+        if not picked.get("reading"):           # a book's line has no clip; an audio episode's cover is shared (Z-16)
+            values, named = media_names.by_line(
+                rendered.get("fields"), {os.path.basename(p): p for p in rendered.get("files") or ()},
+                self._media_key(lang, job), word.get("line_start"), word.get("line_end"), word.get("line_text"),
+                mapping.fields.get("audio"), None if anki_miner.is_audio(picked.get("video")) else
+                mapping.fields.get("picture"))
+            rendered = dict(rendered, fields=values, named=named)  # named now: the rename after leaves it (its Undo)
+        learned = swap.learned_tag(ledger, row["old_note"], lambda: self._open(lang))     # decision 15
+        try:
+            kind, said = swap.write_in_place(swap.AnkiSwap(self.url), ledger, row, rendered, mapping,
+                                             swap.kept_folder(), learned=learned)
+        except sentence_audio.Reviewing:
+            raise Wait(REVIEWING, True, "mining") from None
+        except locks.Busy as e:
+            raise Wait(anki_connect.busy_message(e), True, "mining") from None
+        except anki_connect.AnkiError as e:
+            raise _anki_wait(self.url, "mining", e) from None
+        if kind is None:
+            raise Wait(said, True, "mining")        # the card open in Anki's editor: the same line once it is closed
+        if kind == swap.NEW_CARD:
+            swap.fall_back(ledger, row, said)
+            return None
+        outcome = dict(_unsure(word), outcome="made", note_id=int(said), mined_form=word["word"])
+        return {"outcomes": [outcome], "app": None, "doubt": False, "deck": getattr(mapping, "deck", None),
+                "in_place": True}
+
     def _mine_one(self, lang, job, picked, words, attempt, more=None, titles=None):
         from app.cli import verbs
         from app.cli.contract import CliError
@@ -5197,13 +5291,14 @@ class Steps:
         except anki_connect.AnkiError as e:
             raise _anki_wait(self.url, "mining", e) from None
 
-    def fill(self, lang, job, note_ids):
+    def fill(self, lang, job, note_ids, rewritten=()):
         from app.cli import verbs
         from app.cli.contract import CliError
         from app.connect import runfile
-        # the job's tag beside its notes: the source field (K40) is read from its run folder (adversary P2.4-A #8)
+        # the job's tag beside its notes: the source field (K40) is read from its run folder (adversary P2.4-A #8);
+        # `rewritten` (FS-1): cards a swap rewrote in place — their ふりがな filled studied or not (`run_named`)
         ns = SimpleNamespace(lang=lang, wait=WAIT_S, notes=",".join(str(n) for n in note_ids),
-                             tag=runfile.job_tag(_tag(job)), dry_run=False)
+                             tag=runfile.job_tag(_tag(job)), dry_run=False, rewritten=list(rewritten or ()))
         try:
             out = verbs.backfill(ns)
         except CliError as e:

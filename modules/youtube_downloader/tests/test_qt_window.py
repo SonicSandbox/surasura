@@ -1386,6 +1386,11 @@ def test_a_users_own_youtube_run_goes_first_and_the_rest_comes_after(main, rest_
     w = _start_download(main)
     assert wait_until(lambda: user["calls"], 10)                      # the user's own run took over
     assert wait_until(lambda: main.bar_line.full().endswith(S.REST_YIELDED), 5)
+    # FLAKES (twice on GitHub): the line was written straight into the bar, and the status line of the run it starts
+    # next took the slot one snapshot later (~14 ms here) — on a busy runner before the test looked, and for a learner
+    # before it could be read. Said as the shell says a line, it keeps the slot for its time over the next snapshot
+    main.show_status(main.services.status.snapshot())
+    assert main.bar_line.full().endswith(S.REST_YIELDED), main.bar_line.full()
     assert len(rest_run["handed"]) == 1                               # what came before is in the library
     rest_run["hold"] = None
     user["release"].set()

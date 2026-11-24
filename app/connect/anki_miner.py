@@ -1206,6 +1206,54 @@ def _working(run_dir, ids, had):
     return at
 
 
+RENDER = "render"                       # Z-10's verb (Anki Miner 3.11): a line's note built, nothing sent to Anki
+
+
+def render_line(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt=1,
+                subtitle_offset=0.0, timeout=MINE_TIMEOUT, known=None, show=None, word_audio=True, workers=None):
+    """FS-1 (the full Swap): Anki Miner's `render` of `words` (one swap's word, pick's shape) on their line — the same
+    run file `mine_batch` sends (`runfile.episode` / `build`), the verb `render`: Anki Miner builds each word's note
+    and copies its media into the run folder, and **sends nothing to Anki** (API.md, render; its source
+    `cli/api/runs.py` `_render_rows`), so no write lock is held. -> {(word, reading): {"fields": {Anki field: value},
+    "files": [absolute paths]}} for each word it rendered (one it didn't: absent). Raises AnkiMinerError: `no-render`
+    when this Anki Miner has no `render` (the swap then makes a new card: decision 12), as `mine_batch` does otherwise
+    (anki-closed, setup, refused, crashed, timeout)."""
+    info, profile = preflight(path, language, profile_name, known)
+    named = info.get("features")
+    if RENDER not in (named or ()):         # Z-10 is two names (`render`, `media`): this one is `render`
+        raise AnkiMinerError("no-render", "This Anki Miner can't render a line (3.11 or later can).", verdict=info)
+    if language == "zh" and (version_tuple(info.get("app")) or (0, 0, 0)) < ZH_FROM:
+        raise AnkiMinerError("setup", ZH_UPDATE, verdict=info)
+    run_id = f"{job}-{attempt}"
+    episode = runfile.episode(run_id, video, subtitle, runfile.word_requests(words, named, app=info.get("app")),
+                              tags=runfile.job_tag(job), subtitle_offset=subtitle_offset, audio=is_audio(video))
+    data = runfile.build(run_dir, language, [episode], profile=profile,
+                         run_config=runfile.config(mapping, info.get("app"), named, word_audio=word_audio,
+                                                   workers=workers))
+    run_path = runfile.write(os.path.join(run_dir, f"render-{attempt}.json"), data)
+    verdict = api(path, [RENDER, run_path], timeout=timeout)
+    run = next((r for r in verdict.get("runs") or () if isinstance(r, dict) and r.get("run_id") == run_id), None)
+    if run is None or not run.get("file"):
+        _result(verdict)                    # a refusal of the whole call: anki-closed, refused, setup …
+        raise AnkiMinerError("refused", (run or verdict).get("message") or "Anki Miner rendered nothing.")
+    result = read_result(run_dir, run_id, run["file"]) or {}
+    rows = result.get("words") or ()
+    files_dir = os.path.join(run_dir, run_id)
+    out = {}
+    for word, row in zip(words, outcomes(words, [dict(r, status="created" if r.get("status") == "rendered" else
+                                                       r.get("status")) for r in rows if isinstance(r, dict)],
+                                         False, named)):
+        if row["outcome"] != "made":
+            continue
+        got = next((r for r in rows if isinstance(r, dict) and r.get("status") == "rendered"
+                    and isinstance(r.get("fields"), dict)), None)
+        if got is not None:
+            out[(word["word"], word["reading"])] = {
+                "fields": dict(got["fields"]), "line_start": got.get("line_start"),
+                "files": [os.path.join(files_dir, *str(f).split("/")) for f in got.get("files") or ()]}
+    return out
+
+
 def _mine_call(path, run_dir, run_id, run_path, data, done, words, named, timeout, poll, cancelled, others=()):
     """`_mine_held`'s call to Anki Miner and the reading of its answer -> `done` (with `stopped`: a *Stop* cancelled
     the run). `others` (Kantan-SD 6): the call's other episodes, [(run id, its words, its results before the call)]

@@ -124,9 +124,17 @@ def test_the_deck_window_reads_the_deck_on_a_worker_and_shows_its_fields_and_fir
 
 def test_a_deck_that_isnt_there_is_said_by_the_read_on_a_worker(main, runs, tmp_path):
     """IK-59: the window's thread never looks at the disk; the worker's read says the deck can't be read."""
+    from PyQt6.QtCore import QThreadPool
+    from app.qt import bridge
     w = importers.open_deck(main)
     w.choose(str(tmp_path / "無い.apkg"))
-    assert wait_until(lambda: w.status.text().startswith(strings.IMPORTERS_READ_FAILED.split("{")[0]))
+    # FLAKES (open: once on GitHub, its neighbours ~50 ms each; never here — 150 runs beside 8 busy processes, the pool
+    # at 1, 2 and 4 threads: the answer in 28 ms at most). A red says what the next look needs: the pool's state, the
+    # read still owed or not, the window's line
+    pool = QThreadPool.globalInstance()
+    assert wait_until(lambda: w.status.text().startswith(strings.IMPORTERS_READ_FAILED.split("{")[0])), (
+        w.status.text(), w._reading, f"pool {pool.activeThreadCount()}/{pool.maxThreadCount()}",
+        f"answers owed {len(bridge._pending)}")
     assert w.deck is None and not w.go.isEnabled()
 
 

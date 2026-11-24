@@ -110,7 +110,9 @@ def test_a_headless_start_loads_no_qt_and_opens_nothing(tmp_path, argv):
     assert opened == [] and qt == []
 
 
-HEAVY = ("pandas", "numpy", "requests", "app.static_html_generator")
+HEAVY = ("pandas", "numpy", "requests", "app.static_html_generator",
+         "app.sentence_score", "app.sentence_table")     # (the sentence choice: Connect's process reads them, never the
+#                                                          window's start — SPEC § 6.3 row 16, at level 1 below)
 # Proof the duties ran: made (chores), their controls attached (duties), started, and the start's last timer rang (the
 # Rarity tables' warm-up at `chores.WARM_AT` reads the one-kanji table).
 RAN = ("app.services.chores", "app.qt.duties", "app.one_kanji_data")
@@ -135,6 +137,7 @@ def test_the_window_start_brings_in_no_pandas_numpy_or_requests(tmp_path):
                APPDATA=str(tmp_path / "appdata"), LOCALAPPDATA=str(tmp_path / "localappdata"),
                PYTHONUSERBASE=site.getuserbase())     # the packages installed for this user stay importable
     env.pop("SURASURA_NO_UI_TIMERS", None)            # the start's timers run (a chore at 1.5 s is the start's too)
+    env["SURASURA_SENTENCE_TABLE"] = "1"              # the sentence choice switched on: its table stays Connect's
     for gate in ("SURASURA_NO_AUTOINDEX", "SURASURA_NO_ANKI_SYNC", "SURASURA_NO_UPDATE_CHECK"):
         env[gate] = "1"                               # no indexer, Anki or GitHub from a test
     script = textwrap.dedent(f"""

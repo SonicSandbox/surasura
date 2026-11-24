@@ -650,7 +650,7 @@ def occurrences(cues, tokens, language, is_known, skip_single=True, phrase_set=N
 
 def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None, carded_source="anki",
          ignore_names=False, send_grammar=True, skip_single=True, phrase_set=None, readable=None, unsure=(),
-         sentence_length=None, view=None, young=None, never=None, swap=None):
+         sentence_length=None, view=None, young=None, never=None, swap=None, ranked=None):
     """The words of one subtitle to make cards from, and why the rest of its new words aren't sent:
     {"words": [...], "not_offered": [...]} (row 1.3.3's shapes). `is_known((lemma, reading))`: known or ignored, by the
     analyzer's rule; `readable(key)`: a word read through known words (`analyzer.LearningView`), no new word in a line.
@@ -678,7 +678,16 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
     `swap` (Kantan-SL, Swap's simple version: `app/connect/swap.py`): {"word", "reading" ("" for any), "avoid": [line
     texts], "line": a line text or None} — only that word is sent, whatever the mode, the list or its old card (it has
     one: that's the card being swapped); its `avoid` lines join `never` for it (the picker's one rule,
-    `sentences.same_line`); from `line` when the episode says it there (the learner's pick), else as any word."""
+    `sentences.same_line`); from `line` when the episode says it there (the learner's pick), else as any word.
+
+    `ranked` (the sentence choice at `plan_rules.SENTENCE_TABLE` >= 1: `sentences.lines_in` for this file): called once
+    with the words it may send -> {key: [line text, …]} the score's lines of each inside this file, best first, or
+    None; never for a Swap with its `line` (chosen already). The score weighs the Length and the cap itself, so its
+    order goes before `length` and `fits` here. The score chooses the line and the cut refuses what it can't make (SPEC § 11, overlap 78): of the lines its
+    refusals leave (sung, inside tsubasa's undetermined spans, Swap's old card's), the score's first it holds — its
+    line, or one inside the other (Swap's `same_line`), the same line first — after "a line no other word took" only
+    (no two cards share a sentence: PROVISIONAL); none of them there, or a word the score holds no line of, and its
+    own rule below, as today."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
     found, new_in = occurrences(cues, tokens, language, is_known, skip_single, phrase_set, readable, ignore_names,
@@ -805,6 +814,46 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
         candidates.append(key)
     candidates.sort(key=lambda k: (listed.get(k, len(listed)), met[k]))
 
+    order = None
+    if ranked is not None and candidates and not wanted:     # (Swap's line is chosen already: the learner's or the score's)
+        try:
+            order = ranked(candidates)
+        except Exception:                   # never the cut's fault: its own rule
+            order = None
+    order = order or {}
+    normed, said = {}, {}       # a cue's line, a score's text: each normalised once a pick
+
+    def norm(at):
+        if at not in normed:
+            normed[at] = sentences.norm_line(line_of(at))
+        return normed[at]
+
+    def scored(key):
+        """The score's lines of `key` (`norm_line`'s, best first) and {line: its first place}."""
+        texts = []
+        for t in order.get(key) or ():
+            if t not in said:
+                said[t] = sentences.norm_line(t)
+            texts.append(said[t])
+        at = {}
+        for n, text in enumerate(texts):
+            at.setdefault(text, n)
+        return texts, at
+
+    def placed(o, texts, at):
+        """Where the cue of `o` stands among the score's lines `texts` (best first): (n, 0) the nth is its line, (n, 1)
+        one is inside the other (the token store may keep a cue as two sentences), the earlier place first; (len, 0)
+        none of them — for every use alike without `texts` (the cut's own rule)."""
+        if not texts:
+            return (0, 0)
+        line = norm(o.cue)
+        exact = at.get(line) if line else None
+        for n in range(len(texts) if exact is None else exact):
+            text = texts[n]
+            if min(len(text), len(line)) >= 2 and (text in line or line in text):    # (`same_line`'s two at least)
+                return (n, 1)
+        return (len(texts), 0) if exact is None else (exact, 0)
+
     words, not_offered, taken = [], [], set()
     from app import anki_match
     for key in candidates:
@@ -837,9 +886,12 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             not_offered.append({"word": key[0], "reading": key[1], "orth": first.orth, "reason": reason,
                                 "why": REASONS[reason]})
             continue
-        # a line no other word took; the word on its own (not inside a rare compound, Kantan-MA); no other new word;
-        # audio the subtitle gives no reason to doubt; a card that fits the cap uncut (else the shortest); written out
-        best = min(usable, key=lambda o: (not taken.isdisjoint(span(o.cue)), o.inside, others(o) > 0, doubts(o.cue),
+        # a line no other word took; the score's line (`ranked`); the word on its own (not inside a rare compound,
+        # Kantan-MA); no other new word; audio the subtitle gives no reason to doubt; a card that fits the cap uncut
+        # (else the shortest); written out
+        texts, at = scored(key)
+        best = min(usable, key=lambda o: (not taken.isdisjoint(span(o.cue)), placed(o, texts, at), o.inside,
+                                          others(o) > 0, doubts(o.cue),
                                           not fits(o.cue),
                                           length(o.cue), 0 if fits(o.cue) else card(o.cue)[3],
                                           -_written_out(o.surface, key[0]), others(o), -fresh(o), o.cue))

@@ -151,6 +151,25 @@ hiddenimports += ['app.anki_db_import', 'app.extract']
 # Every child's stdout / stderr guard (Haya-CL 3.0.17): app_entry.py imports it at main()'s start.
 hiddenimports += ['app.child_io']
 
+
+def package_modules(package):
+    """Every module in `package`'s folder (from the project root; the package itself included), as import names."""
+    names = []
+    for root, _dirs, files in os.walk(os.path.join(project_root, *package.split('.'))):
+        for name in sorted(files):
+            if name.endswith('.py'):
+                rel = os.path.relpath(os.path.join(root, name[:-3]), project_root)
+                names.append(rel.replace(os.sep, '.').replace('.__init__', ''))
+    return names
+
+# What app/ loads by a name, which PyInstaller can't follow (3.0.18's second cut shipped without
+# app.connect.door_routes, app.connect.clips and app.services.prestudied, and the built journey page hid five of its
+# controls): the journey door's routes and readers (app/services/journey_door.py ROUTES / READERS, from app.services
+# and app.connect; RENDER_STAMP), and the window's Connect calls (`__import__(f"app.connect.{module}")`). Every module
+# of both packages is named, so a new route's module can't be missed; tests/test_packaging_config.py fails while a
+# module app/ loads by a name is not named here.
+hiddenimports += package_modules('app.services') + package_modules('app.connect') + ['app.journey_render']
+
 # --- The window's PyQt6 (S3.1 D17): app.qt and five Qt modules, every other PyQt6 module excluded -------------------
 # The window (app/qt/) is reached only through a function-level import in app_entry.py; naming it and its modules keeps
 # it in the build. Every other PyQt6 extension module the installed wheel carries (WebEngine, Qml, Multimedia, 3D, …)
@@ -169,11 +188,7 @@ if qt_spec is not None and qt_spec.submodule_search_locations:
         if qt_name.endswith('.pyd') and qt_module.startswith('Q') and qt_module not in qt_modules:
             qt_excludes.append('PyQt6.' + qt_module)
     qt_excludes += ['PyQt6.uic', 'PyQt6.lupdate']
-    for qt_root, _qt_dirs, qt_files in os.walk(os.path.join(project_root, 'app', 'qt')):
-        for qt_file in sorted(qt_files):
-            if qt_file.endswith('.py'):
-                rel = os.path.relpath(os.path.join(qt_root, qt_file[:-3]), project_root)
-                hiddenimports.append(rel.replace(os.sep, '.').replace('.__init__', ''))
+    hiddenimports += package_modules('app.qt')
     hiddenimports += ['PyQt6.sip'] + ['PyQt6.' + m for m in qt_modules]
 else:
     print("BUILD CONFIG: PyQt6 is not installed - the window falls back to the Tk dashboard")

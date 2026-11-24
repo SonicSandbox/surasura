@@ -89,6 +89,29 @@ def test_a_line_holding_one_of_the_librarys_people_gives_the_numbers_the_walk_co
     assert with_people >= 5 and compared >= 0.95 * len(lines)
 
 
+def test_a_person_whose_name_is_also_a_word_never_counted_stays_uncounted(real):
+    # why: a name table can hold a lemma the rule never counts (a grammar word, a mark: a nickname like ナル) — the
+    # person rule is asked only of a token the indexer counted, as LineWords' one pass asks it; asking it of every
+    # person's token would count a grammar word before a particle
+    language, lines = real
+    kept, never = _kept(lines, language), set()
+    for no, (text, tokens) in enumerate(lines):
+        words = kept.line(no, tokens, text)
+        if words is not None:
+            never.update(t[0] for i, t in enumerate(tokens) if not words.codes[words.start + i] & 1)
+    _grammar, particles, _helpers, titles = st._lists(language)
+    people = frozenset(never - set(particles) - set(titles) - set(st._COPULA))   # what follows a name stays itself
+    asked = 0
+    for no, (text, tokens) in enumerate(lines):
+        words = kept.line(no, tokens, text, people)
+        if words is None:
+            continue
+        assert _clipped(_answers(words, tokens)) == _clipped(_answers(st.LineWords(tokens, text, language, people),
+                                                                       tokens))
+        asked += isinstance(words, st.LineWords)
+    assert asked >= 50
+
+
 def test_a_sentence_a_name_table_joined_or_of_another_length_is_counted_at_the_walk(real):
     # why: Japanese name tables join a sentence's tokens as the store is read (names.apply_spans) — the indexed
     # tokens are then not the walk's, so the place of every word after the join would be another's

@@ -786,8 +786,8 @@ def line_words(kept, no, tokens, text, language, people=frozenset(), counted=Non
 CORES_BATCH = 2000              # questions sent to a worker at a time (files are never split)
 CORES_MAX = 2                   # workers at most: one kept up at 2,000 files; 24 allowed spawned 15 on the zh root
 CORES_WAIT_S = 300              # a batch not answered in this long is answered here (a stuck worker never hangs it)
-CORES_MIN_FILES = 5000          # fewer files: one process (PROVISIONAL until the timed gate: 2,000 files and the zh
-                                # root gained nothing, a worker ~30 MB) — unless settings ask a number of processes
+CORES_MIN_FILES = 8000          # fewer files: one process (the timed gate, E-CORES 2: the gain passes 5 % of a Generate
+                                # near here — 0.5 s at 2,000, 6.6 s at 20,000 — a worker ~38 MB) unless settings ask N
 _NUMBERS = struct.Struct("BB")
 _CORE = {}
 

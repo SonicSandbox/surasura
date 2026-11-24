@@ -64,6 +64,41 @@ def test_an_unknown_why_adds_nothing_and_never_breaks_the_card():
     assert entry.say == needs.STRINGS["swapped_say"]
 
 
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_bad_card_swap_says_its_old_card_was_deleted_never_that_you_flagged_it_or_that_it_comes_back(lang):
+    """*Bad card* (and *Parsing mistake · only this sentence*, through the same door) answers a card you DELETED: there
+    is no old card to flag, suspend or put back. Its *Needs you* card says so, and its Undo is its own: the new card
+    deleted (a copy kept), the old one stays deleted (what `swap.undo` does for it: `_old_back` finds no note)."""
+    word = WORDS[lang]
+    (entry,) = needs._swap_entries(_record(swap.NEW_CARD, by=swap.BY_BAD_CARD, word=word), frozenset())
+    assert entry.title == needs.STRINGS["swapped_title"].format(word=word)
+    assert entry.actions == ("undo_swap_deleted", "leave_swap")
+    assert entry.say == needs.STRINGS["swapped_say_deleted"]
+    assert "deleted" in entry.say and "copy" in entry.say
+    for wrong in ("flagged", "green", "suspended", "back in your reviews", "puts the old one back"):
+        assert wrong not in entry.say, wrong
+    assert entry.data == {"id": 7, "word": word}
+
+
+def test_a_bad_card_swaps_undo_button_and_its_line_say_the_old_card_stays_deleted():
+    """The window's Undo for it: the same `swap.act_undo` (it reads the swap's own row), its own tip and done line —
+    never the simple Swap's *the old one is back in your reviews*."""
+    pytest.importorskip("PyQt6")
+    from app.qt import needs as qneeds
+    from app.qt import strings
+    assert "undo_swap_deleted" in qneeds.ANSWERS
+    label, tip = strings.NEEDS_ACTIONS["undo_swap_deleted"]
+    assert label == "Undo" and "stays deleted" in tip and "reviews" not in tip
+    assert "stays deleted" in strings.NEEDS_SWAP_DELETED_UNDONE and "reviews" not in strings.NEEDS_SWAP_DELETED_UNDONE
+    pressed = []
+
+    class Window:
+        def _do_undo_swap(self, entry, line, name="undo_swap", undone=None):
+            pressed.append((entry, line, name, undone))
+    qneeds.NeedsYou._do_undo_swap_deleted(Window(), "the entry", None)
+    assert pressed == [("the entry", None, "undo_swap_deleted", strings.NEEDS_SWAP_DELETED_UNDONE)]
+
 @pytest.mark.parametrize("lang", ["ja", "zh"])
 def test_connects_record_says_who_asked_each_made_swap(tmp_path, lang):
     """`status_of` hands the window `by` (the flag, the journey, *Bad card*) with each made swap, so its words fit."""

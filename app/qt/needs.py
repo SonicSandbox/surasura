@@ -254,7 +254,8 @@ ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway",
            "dw_forget_all", "dw_keep_old",                             # mistakes only asks its follow-up: Kyou-DW 3)
            "dw_all_word_wrong", "dw_all_only_line",
            "undo_swap", "leave_swap", "leave_swap_wait",                                 # Kantan-SL
-           "undo_swap_same", "leave_swap_same")                                          # FS-2
+           "undo_swap_same", "leave_swap_same",                                          # FS-2
+           "undo_swap_deleted")                                                          # FS-2 2
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "generate_again",
                      "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
@@ -2744,6 +2745,10 @@ class NeedsYou(QObject):
 
     def _do_leave_swap_same(self, entry, line):
         self._do_leave_swap(entry, line, "leave_swap_same", strings.NEEDS_SWAP_SAME_LEFT)
+
+    # FS-2 2 (PROVISIONAL): a *Bad card*'s swap — the same `swap.act_undo`; its old card was deleted and stays so
+    def _do_undo_swap_deleted(self, entry, line):
+        self._do_undo_swap(entry, line, "undo_swap_deleted", strings.NEEDS_SWAP_DELETED_UNDONE)
 
     def _do_leave_swap_wait(self, entry, _line):
         def done(_n):

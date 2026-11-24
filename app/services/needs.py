@@ -354,6 +354,8 @@ STRINGS = {
                                  "sentence back."),
     "swapped_say_journey": ("The line you picked on the journey: the old card left your reviews when this one was "
                             "made. Undo deletes the new card (a copy is kept) and puts the old one back."),
+    # FS-2 2 (PROVISIONAL): *Bad card*'s (and *Only in this sentence*'s) swap — its old card was deleted, not flagged
+    "swapped_say_deleted": "You deleted its old card in Anki. Undo deletes this new card too (a copy is kept).",
     "swapped_why_hand": "You'd changed its sentence by hand, so it got a new card.",                 # decision 5
     "swapped_why_not_ours": "Surasura didn't make its card, so it got a new card.",                  # decision 6
     "swapped_why_render": "Update Anki Miner to keep the same card: this time it got a new card.",   # decision 12
@@ -1457,6 +1459,9 @@ def _swap_entries(connect, seen, answered=frozenset()):
         if made.get("kind") == _swap().IN_PLACE:       # FS-2: the same card, its own Undo (the old sentence back)
             title, actions = STRINGS["swapped_same_title"].format(word=word), ("undo_swap_same", "leave_swap_same")
             say = STRINGS["swapped_same_say_journey" if made.get("by") == _swap().BY_JOURNEY else "swapped_same_say"]
+        elif made.get("by") == _swap().BY_BAD_CARD:     # FS-2 2: a deleted card's — nothing to flag or put back
+            title, actions = STRINGS["swapped_title"].format(word=word), ("undo_swap_deleted", "leave_swap")
+            say = STRINGS["swapped_say_deleted"]
         else:                                          # a new card; why, once, when the setting asked for the same
             title, actions = STRINGS["swapped_title"].format(word=word), ("undo_swap", "leave_swap")
             why = _swap_why(made.get("kind_why"))

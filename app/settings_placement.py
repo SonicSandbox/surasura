@@ -13,14 +13,14 @@ import importlib.util
 
 # Since the journey v3 cut-over (J-CUT) a "report" setting is one the v3 render reads (`compute_render_signature`'s v3
 # list; ⌕'s word_search_* among them). The old page's looks and options — theme, source_display, words_per_day,
-# show_words_per_day, zen_limit, study_order, Speech's two, logic.inline_completed_files / hide_audio_button /
-# chunk_size — are "neither": the v3 page applies its looks itself and reads none of the rest. A saved Zen look still
-# re-renders on them (its signature keeps the old list), at the next press or Generate.
+# show_words_per_day, study_order, Speech's two, logic.inline_completed_files / hide_audio_button / chunk_size — are
+# "neither": the v3 page applies its looks itself and reads none of the rest. Zen (and its `zen_limit`) is retired whole
+# (J-RETIRE): a saved Zen look is one more look.
 PLACED = {
     "exclude_single": "analysis:ja", "open_app_mode": "neither", "theme": "neither", "strategy": "analysis",
     "target_coverage": "analysis", "split_length": "neither", "split_books_by": "neither", "target_language": "analysis",
     "zh_script": "analysis:zh", "telemetry_enabled": "neither", "words_per_day": "neither",
-    "show_words_per_day": "neither", "zen_limit": "neither", "onboarding_completed": "neither", "open_count": "neither",
+    "show_words_per_day": "neither", "onboarding_completed": "neither", "open_count": "neither",
     "only_i_plus_one": "analysis", "ensure_audio_example": "analysis",
     "add_graduated_words": "neither", "auto_update_enabled": "neither", "update_check_enabled": "neither", "skipped_version": "neither",
 "source_display": "neither", "word_search_enabled": "report", "line_player": "report",

@@ -366,7 +366,6 @@ ROWS = (
     _row("study_order", "level", "choice", ("study_order",), options=("content", "priority")),
     _row("strategy", "level", "choice", ("strategy",), options=("freq", "coverage")),
     _row("target_coverage", "level", "number", ("target_coverage",), sub=True, when=_coverage, bounds=(1, 100)),
-    _row("show_words_per_day", "level", "toggle", ("show_words_per_day",), adv=True),
     _row("min_count", "level", "number", ("logic.selection.min_count",), adv=True, bounds=(1, None)),
     _row("minutes_per_file", "level", "number", ("logic.selection.minutes_per_file",), adv=True, bounds=(1, None)),
     _row("auto_max_words", "level", "number", ("logic.selection.auto_max_words",), adv=True, bounds=(1, None)),
@@ -428,17 +427,14 @@ ROWS = (
 
     # Journey
     _row("theme", "reading", "select", ("theme",),
-         options=("Default (Dark)", "Dark Flow", "Midnight (Vibrant)", "Modern Light", "Zen Mode")),
+         options=("Default (Dark)", "Dark Flow", "Midnight (Vibrant)", "Modern Light")),
     _row("open_app_mode", "reading", "toggle", ("open_app_mode",)),
     _row("source_display", "reading", "choice", ("source_display",), options=("off", "icon", "filename", "full")),
     _row("word_search_enabled", "reading", "toggle", ("word_search_enabled",), when=_ja),   # Nadeshiko: Japanese
     _row("anki_backlog_on_generate", "reading", "toggle", ("anki_backlog_on_generate",), when=_anki_set_up),
-    _row("inline_completed_files", "reading", "toggle", ("logic.inline_completed_files",)),
-    _row("hide_audio_button", "reading", "toggle", ("logic.hide_audio_button",)),
     _row("line_player", "reading", "toggle", ("line_player",)),            # the journey's line player
     _row("word_search_category", "reading", "choice", ("word_search_category",),
          options=("all", "anime", "liveaction", "youtube"), adv=True, when=_ja),
-    _row("zen_limit", "reading", "number", ("zen_limit",), adv=True, bounds=(25, 125)),
     _row("enable_koe", "reading", "toggle", ("enable_koe",), adv=True, when=_KOE),
     _row("koe_door", "reading", "door", adv=True, sub=True, when=_KOE, door=("koe",),
          reaches=("koe_voice", "koe_model", "koe_style", "koe_temperature", "koe_daily_cap")),
@@ -544,14 +540,12 @@ NOT_SHOWN.update({key: "Reels: sunset (2026-09-22), excluded from every build" f
 
 
 # --- Journey v3 (J-SET; SPEC §1.4, the settings table and Sonic's answers 2026-11-22; words PROVISIONAL) ---------- #
-# Off until the cut-over (`journey_settings.v3()`: J-CUT turns the door on), and the page shows the rows above. On
-# (`use_v3`), the Journey section moves to App (before App's own section: its links stay the page's last block), the
-# page's rows take the old *Look* and *Where a sentence came from* rows' place (the same keys: `journey_settings` is the
-# one place for the keys, the choices and how an older value reads), *Up to* is *Sentences per word* (its key and
-# home), and the rows for what the new page doesn't have leave Settings — their keys stay in settings.json, read by the
-# YouTube preview's old page until it moves (`_V3_NOT_SHOWN`).
-_V3_GONE = ("source_display", "inline_completed_files", "hide_audio_button", "zen_limit", "enable_koe", "koe_door",
-            "show_words_per_day")
+# The only Settings since the old page and Zen retired (J-RETIRE, Sonic 2026-11-23; `_journey_rows`, below): the
+# Journey section is under App (before App's own section: its links stay the page's last block), the page's rows take
+# the old *Look* and *Where a sentence came from* rows' place (the same keys: `journey_settings` is the one place for
+# the keys, the choices and how an older value reads), *Up to* is *Sentences per word* (its key and home), and the old
+# page's own rows are gone — their keys stay in settings.json, read by the YouTube preview's old page (`_V3_NOT_SHOWN`).
+_V3_GONE = ("source_display", "enable_koe", "koe_door")     # Speech's two: the shelved Koe module's (D15)
 _V3_ROWS = ("journey_pitch", "journey_meanings", "journey_source", "journey_first_meeting", "journey_word_size",
             "journey_sentence_size", "journey_theme", "journey_keys")           # in the page's ⚙ order (SPEC §1.4)
 _OLD_PAGE = "retired from Settings by journey v3 (Sonic 2026-11-22): the YouTube preview's old page still reads it"
@@ -559,15 +553,8 @@ _V3_NOT_SHOWN = dict({
     "logic.inline_completed_files": _OLD_PAGE,
     "logic.hide_audio_button": _OLD_PAGE,
     "show_words_per_day": _OLD_PAGE,
-    "zen_limit": "retired with Zen Mode by journey v3 (Sonic 2026-11-22): the old page's Zen view reads it",
-}, **{key: "Speak sentences left the journey (D15): the YouTube preview's old page still speaks with it" for key in (
+}, **{key: "Speak sentences left the journey (D15): the shelved Koe module's own" for key in (
     "enable_koe", "koe_voice", "koe_model", "koe_style", "koe_temperature", "koe_daily_cap")})
-# Before the cut-over the page's new keys have no row: their defaults are what the page shows until J-CUT
-_PRE_V3_NOT_SHOWN = {key: "journey v3's page (J-SET): its row shows from the cut-over (J-CUT, `journey_settings.v3()`)"
-                     for key in ("journey_pitch", "journey_meanings", "journey_first_meeting", "journey_word_size",
-                                 "journey_sentence_size", "journey_keys")}
-_BEFORE_V3 = {}
-_V3 = False
 
 
 def _v3_rows(before):
@@ -600,21 +587,13 @@ def _v3_rows(before):
     return tuple(out)
 
 
-def use_v3(on):
-    """Journey v3's Settings (`on`) or the one before it: the heads, the sections, the rows and NOT_SHOWN. Called once
-    below with `journey_settings.v3()`; a test or a capture calls it to see the other, and back."""
-    global HEADS, HEAD_OF, SECTIONS, ROWS, ROW, NOT_SHOWN, _V3
-    if not _BEFORE_V3:
-        _BEFORE_V3.update(HEADS=HEADS, ROWS=ROWS, NOT_SHOWN=NOT_SHOWN)
-    _V3 = bool(on)
-    HEADS, ROWS, NOT_SHOWN = _BEFORE_V3["HEADS"], _BEFORE_V3["ROWS"], _BEFORE_V3["NOT_SHOWN"]
-    if _V3:
-        HEADS = tuple((head, tuple(s for s in sections if s != "reading")[:-1] + ("reading", sections[-1])
-                       if head == "app" else tuple(s for s in sections if s != "reading")) for head, sections in HEADS)
-        ROWS = _v3_rows(ROWS)
-        NOT_SHOWN = dict(NOT_SHOWN, **_V3_NOT_SHOWN)
-    else:
-        NOT_SHOWN = dict(NOT_SHOWN, **_PRE_V3_NOT_SHOWN)
+def _journey_rows():
+    """Journey v3's Settings, made once below from the rows above: the heads, the sections, the rows and NOT_SHOWN."""
+    global HEADS, HEAD_OF, SECTIONS, ROWS, ROW, NOT_SHOWN
+    HEADS = tuple((head, tuple(s for s in sections if s != "reading")[:-1] + ("reading", sections[-1])
+                   if head == "app" else tuple(s for s in sections if s != "reading")) for head, sections in HEADS)
+    ROWS = _v3_rows(ROWS)
+    NOT_SHOWN = dict(NOT_SHOWN, **_V3_NOT_SHOWN)
     HEAD_OF = {section: head for head, sections in HEADS for section in sections}
     SECTIONS = tuple(Section(id_, _ICONS[id_], S.SECTIONS[id_])
                      for id_ in ("setup",) + tuple(s for _head, sections in HEADS for s in sections))
@@ -659,9 +638,9 @@ def _decks(settings, language):
 
 
 def _one(settings, key, language):
-    """A key's value as its control shows it: a per-language key this language's entry; under journey v3 a key the
-    page shares as the page reads it (an old *Midnight* is Night: `journey_settings.stored_now`)."""
-    if _V3 and key in ("theme", "source_display", "logic.context.max_contexts"):
+    """A key's value as its control shows it: a per-language key this language's entry; a key the journey's page
+    shares as the page reads it (an old *Midnight* or *Zen Mode* is Night: `journey_settings.stored_now`)."""
+    if key in ("theme", "source_display", "logic.context.max_contexts"):
         from app.services import journey_settings
         return journey_settings.stored_now(settings, key)
     if key == "connect_backlog_cap":
@@ -1106,10 +1085,4 @@ def words_of(row, settings, language):
     return str(labels.get(found, found))
 
 
-# Journey v3 or the Settings before it (above): one switch, the cut-over's (`journey_settings.v3()`)
-def _journey_v3():
-    from app.services import journey_settings
-    return journey_settings.v3()
-
-
-use_v3(_journey_v3())
+_journey_rows()      # journey v3's Settings (above), the only ones since J-RETIRE

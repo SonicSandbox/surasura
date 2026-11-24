@@ -448,8 +448,6 @@ ROWS = {
                  "Level, or a target coverage of your content", "coverage mode strategy"),
     "target_coverage": ("Coverage", "The share of your content you aim to know", "Target coverage, in percent",
                         "coverage percent target"),
-    "show_words_per_day": ("Show target days on your journey", "", "Show 'Target Days' on your journey",
-                           "target days words per day"),
     "min_count": ("A word must appear at least", "", "Fewer appearances than this and a word is never listed",
                   "min count appear at least"),
     "minutes_per_file": ("Minutes per file", "For the “every N hours” estimate",
@@ -589,18 +587,13 @@ ROWS = {
     "A word whose card is already waiting in Anki is marked",
                                  "Mark words that already have a new card waiting.",
                                  "label backlog anki waiting card mark"),
-    "inline_completed_files": ("Show ‘Target met’ in place", "Met files keep their order instead of moving down",
-                               "Keep met files in order instead of moving them down", "target met inline completed"),
     # The journey's line player — PROVISIONAL words (the default is settings_manager's `line_player`)
     "line_player": ("Play a line's own audio",
                     "▶ plays the sentence from its episode, repeated with a pause.",
                     "Play each sentence's own audio on your journey, looped with a pause",
                     "play line audio loop repeat chorus listen pause"),
-    "hide_audio_button": ("Hide the audio button", "No speaker icon on your journey’s sentences",
-                          "Hide the speaker icon on your journey", "audio button speaker hide"),
     "word_search_category": ("Lookup examples from", "", "Which kind of sentences the lookup opens",
                              "lookup nadeshiko category anime"),
-    "zen_limit": ("Zen mode shows", "", "How many words Zen mode shows", "zen limit"),
     "enable_koe": ("Speak sentences (Gemini)", "On your own key; each sentence goes to Google to be spoken",
                    "Hear a sentence read aloud (Gemini key; sentence goes to Google).",
                    "speech speak koe gemini voice"),
@@ -737,7 +730,7 @@ OPTIONS = {
     "placing_rules": {"wait": "Wait here, in New arrivals", "top": "Top of Current", "after-show": "After its show",
                       "soon": "Soon", "goal": "Goal", "finished": "Finished"},
     "theme": {"Default (Dark)": "Default (Dark)", "Dark Flow": "Dark Flow", "Midnight (Vibrant)": "Midnight (Vibrant)",
-              "Modern Light": "Modern Light", "Zen Mode": "Zen Mode"},
+              "Modern Light": "Modern Light"},
     "source_display": {"off": "Hidden", "icon": "Icon", "filename": "File name", "full": "Icon + file name"},
     "word_search_category": {"all": "All", "anime": "Anime", "liveaction": "Live action", "youtube": "YouTube"},
     "text_size": {"S": "Small", "M": "Medium", "L": "Large"},
@@ -1138,8 +1131,8 @@ SWITCH_TURNING_ON = "Turning on Cards made for you…"
 SWITCH_TURNING_OFF = "Turning off Cards made for you…"
 
 
-# --- Journey v3's rows (J-SET; SPEC §1.4, the settings table; every word PROVISIONAL): shown only after the cut-over
-# (`settings_catalog.use_v3`). The page's ⚙ says the same names (templates/journey/).
+# --- Journey v3's rows (J-SET; SPEC §1.4, the settings table; every word PROVISIONAL): Settings' Journey rows
+# (`settings_catalog._journey_rows`). The page's ⚙ says the same names (templates/journey/).
 ROWS.update({
     "journey_pitch": ("Pitch and tones", "", "Each word's pitch accent, or its tones in Chinese",
                       "pitch accent tones chinese show hide f"),

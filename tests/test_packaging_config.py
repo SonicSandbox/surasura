@@ -121,8 +121,11 @@ def _loads_by_name():
     names, packages, sites = set(), set(), set()
 
     class Loads(ast.NodeVisitor):
-        def __init__(self, rel):
+        def __init__(self, rel, tree):
             self.rel, self.where = rel, ["<module>"]
+            self.loaders = {"import_module", "__import__"} | {   # (`from importlib import import_module as load`)
+                a.asname for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == "importlib"
+                for a in n.names if a.name == "import_module" and a.asname}
 
         def visit_FunctionDef(self, node):
             self.where.append(node.name)
@@ -134,9 +137,14 @@ def _loads_by_name():
         def visit_Call(self, node):
             f = node.func
             called = f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else None
-            if called in ("import_module", "__import__") and node.args:
-                arg = node.args[0]
-                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            args = list(node.args) + [k.value for k in node.keywords if k.arg in ("name", "package")]
+            if called in self.loaders and args:
+                arg = args[0]
+                package = args[1] if called != "__import__" and len(args) > 1 else None
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.startswith(".") \
+                        and isinstance(package, ast.Constant) and isinstance(package.value, str):
+                    names.add(package.value + arg.value)              # (a relative name and its package)
+                elif isinstance(arg, ast.Constant) and isinstance(arg.value, str) and not arg.value.startswith("."):
                     names.add(arg.value)
                 elif isinstance(arg, ast.JoinedStr) and arg.values and isinstance(arg.values[0], ast.Constant) \
                         and arg.values[0].value.endswith("."):
@@ -149,7 +157,8 @@ def _loads_by_name():
         for file in files:
             if file.endswith(".py"):
                 path = os.path.join(root, file)
-                Loads(os.path.relpath(path, PROJECT).replace(os.sep, "/")).visit(ast.parse(_source(path)))
+                tree = ast.parse(_source(path))
+                Loads(os.path.relpath(path, PROJECT).replace(os.sep, "/"), tree).visit(tree)
     return names, packages, sites
 
 

@@ -32,6 +32,10 @@ from tests.test_library_store_support import LANGUAGES, entry, migrated, names, 
 from tests.test_report_journey_stones import _function, _template
 
 
+# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
+pytestmark = pytest.mark.usefixtures("journey_pre_cut")
+
+
 def _library(language, watch, episodes=6, keep=False, inline=False, media=None):
     """Two shows of `episodes` episodes in NOW, the parts at the indexes `watch` (in the library's order) watched;
     `keep`: *Keep studying watched episodes* on; `inline`: *Show 'Target Met' inline*. -> (store, names, counted)."""

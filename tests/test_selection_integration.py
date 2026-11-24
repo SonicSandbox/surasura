@@ -123,7 +123,8 @@ def test_engine_revision_bump_forces_rerun_of_unchanged_inputs(env):
     assert csv.stat().st_mtime != m1, "an ENGINE_REVISION bump must force a real re-run"
 
 
-def test_render_signature_covers_everything_injected_into_the_report(env):
+@pytest.mark.usefixtures("journey_pre_cut")    # the old page's list (Zen's, the preview's): the v3 page reads none of
+def test_render_signature_covers_everything_injected_into_the_report(env):   # these (J-CUT; its own list: cutover tests)
     """Anything static_html_generator INJECTS must be in the render signature, or editing it leaves
     the report stale. words_per_day / show_words_per_day were injected but unlisted, so the
     'At N words a day...' estimate kept showing the old number."""
@@ -236,13 +237,15 @@ def test_presentation_args_do_not_invalidate_the_run(env):
 def _fake_render_writing_html(env):
     """A generate_static_html stand-in that actually creates the report file, so the analyzer's
     'does the HTML exist?' fast-path check behaves realistically without opening a real browser."""
-    def _fake(theme="default", app_mode=False, zen_limit=0, open_browser=True, language=None, marks=None):
+    def _fake(theme="default", app_mode=False, zen_limit=0, open_browser=True, language=None, marks=None,
+              found=None, tagger=None, plan=None):        # (the v3 render's tagger and plan: J-CUT)
         (env["results"] / "reading_list_static.html").write_text("<html></html>", encoding="utf-8")
         return marks            # the journey's stones it drew (none here: the run then reads them to sign)
     return _fake
 
 
-def test_skip_rerenders_when_theme_changes(env):
+@pytest.mark.usefixtures("journey_pre_cut")    # the old page's look: the v3 page applies a theme itself, no re-render
+def test_skip_rerenders_when_theme_changes(env):   # (J-CUT; Zen in or out still re-renders: test_journey_cutover)
     """Analysis skipped but PRESENTATION changed (theme): the report must be RE-RENDERED with the
     new theme (no re-analysis). This is what let the separate 'View' step be merged in."""
     from unittest.mock import patch

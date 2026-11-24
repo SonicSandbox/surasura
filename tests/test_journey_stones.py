@@ -40,6 +40,10 @@ REUSED = "Nothing affecting the analysis changed"
 WORDS = {"ja": ("冒険", "図書館", "文化祭"), "zh": ("冒险", "夜市", "挑战")}
 
 
+# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
+pytestmark = pytest.mark.usefixtures("journey_pre_cut")
+
+
 def _settings(language, **logic):
     """settings.json naming the report's language (the generator reads it there, as the dashboard has it)."""
     settings = {"target_language": language}
@@ -50,7 +54,10 @@ def _settings(language, **logic):
 
 
 def _payload(html):
-    return json.loads(re.search(r"let globalData = (\{.*?\});\n", html, re.S).group(1))
+    """The old page's data (`globalData`); None for the v3 page (J-CUT), which a test borrowing these helpers with the
+    cut on writes — a test that reads the old page's stones runs before the cut (`journey_pre_cut`)."""
+    found = re.search(r"let globalData = (\{.*?\});\n", html, re.S)
+    return json.loads(found.group(1)) if found else None
 
 
 def _report(root):

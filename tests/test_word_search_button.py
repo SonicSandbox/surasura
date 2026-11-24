@@ -16,6 +16,10 @@ import os
 import pytest
 
 
+# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
+pytestmark = pytest.mark.usefixtures("journey_pre_cut")
+
+
 @pytest.fixture
 def web_html(project_root):
     with open(os.path.join(project_root, "templates", "web_app.html"), encoding="utf-8") as f:

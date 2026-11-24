@@ -388,7 +388,7 @@ def test_r4_a_space_on_a_switch_repaints_only_inside_its_own_row(page):
 def test_r5_a_select_menu_opened_closed_and_opened_again_makes_no_widget(page):
     """A Select's menu opened by a click, closed, and opened again: the menu was built with the control, so the second
     open makes no widget."""
-    select = _in_view(page, page.rows["theme"]).controls[0]
+    select = _in_view(page, page.rows["sentences_per_word"]).controls[0]     # a Select (theme's left: J-CUT)
     assert isinstance(select, sc.Select)
     try:
         _click(select)

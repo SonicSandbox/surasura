@@ -60,8 +60,9 @@ def test_pending_is_either_half_never_the_analysis_alone(monkeypatch):
 
 @pytest.mark.parametrize("language", ["ja", "zh"])
 def test_after_a_generate_a_render_only_change_makes_the_keeper_pending_and_the_analysis_stays_current(language):
-    # why: the real halves after a real Generate — current, then a change only the report shows (words a day here; a
-    # stone with Keep studying on moves the same half), then the report gone
+    # why: the real halves after a real Generate — current, then a change only the report shows (the line player
+    # here: a setting the v3 render reads — words a day is the old page's and draws nothing since the cut-over; a stone
+    # with Keep studying on moves the same half), then the report gone
     h.seed_library(language)
     settings = h.write_settings(target_language=language)
     code, _lines = h.run_cli("generate", "--lang", language)
@@ -71,7 +72,7 @@ def test_after_a_generate_a_render_only_change_makes_the_keeper_pending_and_the_
     assert analyzer.journey_is_current(args, language) is True
     assert analyzer.report_is_current(args, language) is True
     assert keeper._is_pending() is False, "nothing moved: nothing to run"
-    settings = h.write_settings(target_language=language, words_per_day=12)
+    settings = h.write_settings(target_language=language, line_player=False)
     keeper = _keeper(language, settings)
     args = run_args.analyzer_args(settings, language)
     assert analyzer.journey_is_current(args, language) is True, "a render-only change: the analysis stays current"

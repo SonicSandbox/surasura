@@ -93,7 +93,12 @@ def test_junban_removed_the_plan_is_written_all_the_same(tmp_path):
                        text=True, encoding="utf-8", errors="replace")
     assert p.returncode == 0, p.stderr[-3000:]
     assert os.path.exists(_plan(root))
-    assert cases.output_hashes(root) == _base()[case]
+    # the v3 page and its word memo draw UniDic's pitch by Junban's own rule (`journey_render.Pitch._unidic`): without
+    # Junban, no UniDic pitch — by design (J-CUT) — so those two differ; every other output is the base's
+    got, base = cases.output_hashes(root), dict(_base()[case])
+    for name in ("reading_list_static.html", "journey_words.json"):
+        assert got.pop(name) and base.pop(name)
+    assert got == base
 
 
 def test_the_windows_up_to_date_check_asks_for_the_plan_too(tmp_path, monkeypatch):

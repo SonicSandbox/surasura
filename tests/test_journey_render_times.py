@@ -199,7 +199,8 @@ def test_each_folder_is_listed_once_and_no_listing_is_held_while_the_lines_are_r
     # listing saves), none held while the subtitles are read (the 31 MB at 20,000 files), no file's lines kept
     assert sorted(listed) == ["A", "B"] and timer._dirs == {} and timer._timelines == {}
     assert held and all(h == {} for h in held)
-    assert all(isinstance(hit, list) and len(hit) == 3 for hit in hits)
+    # each answer made this render held as (start, end), never a [None, start, end] list a line (J-TIMES's hand-off)
+    assert all(type(hit) is tuple and len(hit) == 2 for hit in hits)
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])
@@ -216,7 +217,7 @@ def test_the_lines_memo_is_written_once_with_every_answer_and_again_after_a_late
     assert all(len(entry["a"]) == len(LINES[language]) for entry in written.values())
     # every answer handed back is the timer's own, line for line (one lookup a line: `build` reads the list)
     fresh, _t = _sources(tmp_path / "data", language, source_map, media)
-    assert [tuple(hit[1:]) for hit in hits] == [fresh.times(rel, text) for text, rel in zip(texts, rels)]
+    assert [timer.answer(hit) for hit in hits] == [fresh.times(rel, text) for text, rel in zip(texts, rels)]
     assert sources.saved
     # a line prepare never asked: the line reader's answer, and the memo is written again at the render's end
     late = sources.times("A/ep01.srt", "まったく別の文。" if language == "ja" else "完全不同的句子。")
@@ -238,8 +239,11 @@ def test_a_line_the_memo_holds_as_a_damaged_answer_is_asked_again(tmp_path, lang
     again, timer = _sources(tmp_path, language, source_map, media)
     hits = again.prepare(texts, rels)
     # why: never a time served from a broken answer — the line reader's again, and the memo mended
-    assert hits[0][1:] == [1.2, 4.1 if language == "ja" else 3.8]
-    assert timer._entry(path)["a"][LINES[language][0]] == [None, 1.2, 4.1 if language == "ja" else 3.8]
+    assert timer.answer(hits[0]) == (1.2, 4.1 if language == "ja" else 3.8)
+    assert timer.answers(path)[LINES[language][0]] == (1.2, 4.1 if language == "ja" else 3.8)
+    timer.save_memo()
+    # written as the list it is read back as
+    assert json.loads(memo.read_text(encoding="utf-8"))[path]["a"][LINES[language][0]] ==         [None, 1.2, 4.1 if language == "ja" else 3.8]
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])

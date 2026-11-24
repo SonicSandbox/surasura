@@ -356,6 +356,63 @@ def test_two_shows_one_file_name_the_set_aside_episode_never_takes_the_counted_o
     store.close()
 
 
+def _page(root):
+    """The page's head and its chunks, as the report on disk holds them -> (head, [chunk])."""
+    with open(os.path.join(root, "results", "reading_list_static.html"), encoding="utf-8") as f:
+        html = f.read()
+    return (json.loads(HEAD.search(html).group(1)),
+            [json.loads(gzip.decompress(base64.b64decode(blob)).decode("utf-8")) for blob in CHUNK.findall(html)])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_shows_one_file_name_both_counted_each_episode_keeps_its_own_words_known_and_count_ahead(language):
+    # why (E-NAMES): the run's lists named a file only by its name, so with Show A's and Show B's 第01集 both counted,
+    # B's words, its *% known* and its count ahead were drawn on A's episode and B's own stood empty — the learner
+    # about to study Show B saw nothing to learn in it. Each episode is told by its path: the oracle is the run's own
+    # numbering (the progressive list's Sequence, the plan's per-file counts), never the name.
+    from app import plan_engine
+    from app.journey_render import AHEAD, _known_pct
+    root = os.environ["SURASURA_TEST_ROOT"]
+    _settings(language)
+    store, _ids, (one, two) = _same_named(language)
+    _generate(root, language)
+    head, chunks = _page(root)
+    eps = head["eps"]
+    assert [e[1] for e in eps] == [one, two, one, two], "each show's episodes in the library's order"
+
+    results = os.path.join(root, "results")
+    prog = pd.read_csv(os.path.join(results, "progressive_learning_list.csv"), encoding="utf-8-sig",
+                       keep_default_na=False)
+    listed = {n: list(zip(prog[prog["Sequence"] == n + 1]["Word"], prog[prog["Sequence"] == n + 1]["Reading"]))
+              for n in range(4)}
+    want = {n: [word for word, _reading in listed[n]] for n in range(4)}
+    assert want[2], "Show B's 第01集 has words first met in it (the samples are two different books)"
+    got = {n: [] for n in range(4)}
+    page_words = []
+    for chunk in chunks:
+        for w in chunk["w"]:
+            got[w[5]].append(w[0])
+            page_words.append(w)
+    assert got == want, "every episode holds the words first met in IT, Show B's 第01集 its own"
+
+    plan = plan_engine.counts(os.path.join(results, "plan.json.gz"))
+    assert [e[6] for e in eps] == [_known_pct(line["prog"][1], line["prog"][0]) for line in plan.per_file], \
+        "each episode's *% known* is its own file's"
+    key_of = {(k[0], k[1]): i for i, k in enumerate(plan.keys)}
+
+    def uses(f, k):
+        line = plan.per_file[f]
+        return sum(m for table in (line["main"], line["ph"]) for kk, m in zip(table[0::2], table[1::2]) if kk == k)
+
+    for w, (word, reading) in zip(page_words, (key for n in range(4) for key in listed[n])):
+        e, k = w[5], key_of[(word, reading)]
+        assert w[7] == sum(uses(f, k) for f in range(e, min(e + AHEAD, 4))), \
+            f"{w[0]}'s count ahead is its uses in its own episode and the next ones ({e})"
+    shown_on = {row[2] for chunk in chunks for row in chunk["src"]}
+    assert {0, 2} <= shown_on, "a line from Show B's 第01集 names B's episode as its source, A's line A's"
+    store.close()
+
+
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_stone_then_its_undo_then_keep_studying_on_through_real_generates(language):
     root = os.environ["SURASURA_TEST_ROOT"]

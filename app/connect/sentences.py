@@ -570,6 +570,8 @@ def known_since(language):
     lemma): the window's own rule (`word_marks.left_out`, what its numbers leave out at once) — so a sentence holding a
     word you marked since counts it known at once (SPEC § 5.4). {} when nothing was marked since, or unreadable."""
     try:
+        from app import sentence_score
+        sentence_score.numpy_one_thread()           # (before the table brings numpy in: its BLAS held to one thread)
         from app import sentence_table
         from app.path_utils import get_user_file
         from app.services import word_marks

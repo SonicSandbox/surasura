@@ -362,6 +362,27 @@ def test_the_table_module_imports_no_numpy_at_its_top_and_its_widths_are_numpys(
     assert np.dtype(st._LINE_COLUMNS).itemsize == st._LINE.size
 
 
+def test_a_process_whose_first_numpy_is_the_tables_holds_blas_to_one_thread(tmp_path, monkeypatch):
+    # why: a reader of the table's blocks (the word card's, Connect's) may meet numpy first through the table itself —
+    # that import goes through the one door too, and the variables are put back after it
+    import subprocess
+    import sys
+    from tests import services_helpers as h
+    for name in _BLAS:
+        monkeypatch.delenv(name, raising=False)
+    spy = tmp_path / "spy"
+    spy.mkdir()
+    (spy / "sitecustomize.py").write_text(_SPY % (_BLAS, str(spy)), encoding="utf-8")
+    code = ("import sys\nfrom app import sentence_table as st\nassert 'numpy' not in sys.modules\n"
+            "assert st._np() is sys.modules['numpy']\n")
+    done = subprocess.run([sys.executable, "-c", code], cwd=h.PROJECT_ROOT, capture_output=True, text=True,
+                          env=dict(os.environ, PYTHONPATH=str(spy) + os.pathsep + h.PROJECT_ROOT), timeout=120)
+    assert done.returncode == 0, done.stderr[-2000:]
+    (seen,) = [json.loads(p.read_text(encoding="utf-8")) for p in spy.glob("*.json")]
+    assert seen["numpy"] and seen["at_import"] == {n: "1" for n in _BLAS}
+    assert seen["after"] == {n: None for n in _BLAS}
+
+
 def _spied_generate(language, level, spy, monkeypatch, learner=None):
     """One Generate (6 files, 2 workers asked) with the spy in every process -> (its log, [each process's record])."""
     from tests import services_helpers as h

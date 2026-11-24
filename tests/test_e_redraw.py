@@ -329,6 +329,44 @@ def test_only_i_plus_one_at_release_2_lists_a_word_only_with_a_clean_line_by_the
           f"left off, {len(gained)} added) of {len(every)}")
 
 
+def test_only_i_plus_one_with_a_coverage_target_at_release_2_leaves_off_only_words_the_cut_reaches(run, tmp_path):
+    # why: the lead's ruling on coverage + *Only i+1* at release 2 — each round the reader is asked for the list after
+    # the coverage cut, so a word is left off for want of a clean line only if the cut reached it: every word left off
+    # ranks above the list's last word, and file_statistics.txt counts exactly those (a reader asked for every word,
+    # the cut skipped, would count words the list never reaches). When the words left cannot reach the target, the
+    # cut takes the whole list and every word is asked: the count is then every word left off
+    every = list(_columns(run.results))             # the same library at release 2, no target, *Only i+1* off
+    with open(os.path.join(run.results, "file_statistics.json"), encoding="utf-8") as f:
+        stats = json.load(f)
+    total, known = sum(s["Total Words"] for s in stats), sum(s["Known Count"] for s in stats)
+    now = known / total * 100
+    clean = _generated(run.language, tmp_path / "clean", extra_args=["--only-i-plus-one"])     # no target
+    with open(os.path.join(clean, "results", "priority_learning_list.csv"), encoding="utf-8-sig", newline="") as f:
+        uses = [int(r["Occurrences"]) for r in csv.DictReader(f)]
+    # a target the cut reaches inside the list *Only i+1* keeps, about a third of the way down where a whole percent
+    # allows (above today's coverage: else no list at all); else one the words left cannot reach
+    n = len(uses)
+    reach = [int((known + sum(uses[:i])) / total * 100) for i in list(range(max(1, n // 3), n)) + list(range(1, n // 3))]
+    target = next((t for t in reach if t > now), None) or int(now) + 1
+    root = str(tmp_path / "root")
+    cases.build(root, run.case)
+    out = cases.generate(root, run.case, extra_env=LEVEL_2,
+                         extra_args=["--only-i-plus-one", f"--target-coverage={target}"])
+    inside = "Successfully reached" in out          # the cut ends inside the list (else it took every word left)
+    assert inside or "Could only reach" in out, out[-1500:]
+    results = os.path.join(root, "results")
+    shown = _columns(results)
+    listed = list(shown)
+    assert listed and len(listed) < len(every), (target, len(listed), len(every))
+    assert all(cols and cols[0] for cols in shown.values()), "every word left on shows a sentence"
+    last = every.index(listed[-1])
+    assert [k for k in every[:last + 1] if k in shown] == listed, "the words above the list's last, less those left off"
+    left_off = last + 1 - len(listed) if inside else len(every) - len(listed)
+    assert _skipped(results) == left_off, (_skipped(results), left_off, target, inside)
+    print(f"Only i+1 + {target}% ({run.language}, the cut {'inside the list' if inside else 'took every word'}): "
+          f"{len(listed)} listed, {left_off} left off, of {len(every)}")
+
+
 def test_the_redraw_marker_names_its_day(moved):
     # why: SPEC § 7 row 36 — the redraw marker says the day it was drawn for (the local date), at level 2
     assert analyzer.redrawn_for(moved.results)["day"] == analyzer.drawn_day()
@@ -633,10 +671,15 @@ _NO_ANSWER = {
     "none": "from app import sentence_score\nsentence_score.choose = lambda *a, **k: None\n",
     "raises": ("from app import sentence_score\n\n\ndef _boom(*a, **k):\n"
                "    raise RuntimeError('a moment it cannot read')\n\n\nsentence_score.choose = _boom\n"),
+    # the first round answers (Only i+1 leaves off the words with no clean line), the second gives none: the words
+    # left off come back
+    "second": ("from app import sentence_score\n_real, _calls = sentence_score.choose, []\n\n\n"
+               "def _second(*a, **k):\n    _calls.append(1)\n    return _real(*a, **k) if len(_calls) == 1 else None\n"
+               "\n\nsentence_score.choose = _second\n"),
 }
 
 
-@pytest.mark.parametrize("how", ["none", "raises"])
+@pytest.mark.parametrize("how", ["none", "raises", "second"])
 def test_a_reader_with_no_answer_shows_no_sentences_and_leaves_no_word_off_with_only_i_plus_one(run, tmp_path, how):
     # why: the lens pass (failures) — the score answers None when it can't read (a table damaged inside its blocks, a
     # moment it can't read), and *Only i+1* took that for "no clean line" for every word: an empty list. A reader that

@@ -93,6 +93,8 @@ _AFTER_TE = frozenset(("て", "で", "って", "ちゃ", "じゃ"))
 _NAME_LINKS = frozenset(("・", "･", "＝", "="))     # フランク・ライアン: one name
 _NUMERALS = frozenset("〇一二三四五六七八九十百千万億兆")
 _KATAKANA = re.compile(r"[\u30a0-\u30ff]+")
+_LINK_1, _LINK_2, _LINK_3, _LINK_4 = sorted(_NAME_LINKS)     # asked of a line one by one: no regex call
+_ISALPHA = str.isalpha
 _LISTS = {}
 
 
@@ -119,20 +121,75 @@ class LineWords:
     """One line's two numbers for each word in it: how many words besides the word it says, and where the word starts
     (in characters). Made once a line, from the token store's tokens (lemma, reading, surface, spelling) and its text;
     `people`: the library's people's names (lemmas). A name of several pieces (フランク・ライアン, linked by ・ or =)
-    is one name, held by its first piece — and the word itself when the word is one of its pieces."""
-    __slots__ = ("keys", "at", "head", "counted", "total")
+    is one name, held by its first piece — and the word itself when the word is one of its pieces.
+
+    Made for every line the table keeps (a million at 20,000 files), so in one pass over the tokens, the tests done in
+    C where the language has them; a line that holds a name link (・ ･ ＝ =) takes `_linked`, the rule written out
+    whole. Both give the same numbers: tests/test_sentence_table_speed.py checks them on every line it has."""
+    __slots__ = ("tokens", "at", "head", "counted", "total")
 
     def __init__(self, tokens, text, language, people=frozenset()):
         grammar, particles, helpers, titles = _lists(language)
+        self.tokens = tokens
+        if _LINK_1 in text or _LINK_2 in text or _LINK_3 in text or _LINK_4 in text:   # a name link
+            self._linked(tokens, text, grammar, particles, helpers, titles, people)
+            return
+        pos, find = 0, text.find
+        at, counted, later = [], [], None
+        put, mark = at.append, counted.append
+        before = before_surface = None          # the token before's lemma and surface
+        for lemma, _reading, surface, _orth in tokens:
+            start = pos
+            a = find(surface, pos)
+            if a < 0:
+                a = pos                         # a token the line's text doesn't hold (a quote mark cut off): here
+            else:
+                pos = a + len(surface)
+            put(a)
+            if lemma in grammar or not (surface.isalpha() or any(map(_ISALPHA, surface))):
+                mark(False)                     # grammar · a mark
+            elif (lemma in helpers and before is not None and a == start and before_surface in _AFTER_TE
+                  and before in particles):
+                mark(False)                     # a helping verb right after て / で: 見ている, 来てくれる
+            elif len(surface) == 1 and a and (text[a - 1].isdigit() or text[a - 1] in _NUMERALS):
+                mark(False)                     # a counter after its number (the number is no token): 三人, ２０分
+            elif lemma in people:               # a person: counted unless a call, by what follows (below)
+                if later is None:
+                    later = []
+                later.append(len(counted))
+                mark(False)
+            else:
+                mark(True)
+            before, before_surface = lemma, surface
+        self.at, self.counted, self.head = at, counted, range(len(at))
+        if later is not None:
+            for i in later:
+                counted[i] = self._about(i, text, particles, titles, people)
+        self.total = sum(counted)
+
+    def _gap(self, text, i):
+        """The text between token i - 1 and token i (one the text doesn't hold ends where it starts)."""
+        a, surface = self.at[i - 1], self.tokens[i - 1][2]
+        return text[a + len(surface) if text.startswith(surface, a) else a:self.at[i]]
+
+    def _about(self, i, text, particles, titles, people):
+        """The person at token i is what the line is about — a particle or だ / です after the name and its titles —
+        not a call (the line's end, a mark, or a word with no particle after it)."""
+        tokens, j, n = self.tokens, i + 1, len(self.tokens)
+        while j < n and (tokens[j][0] in people or tokens[j][0] in titles) and not self._gap(text, j).strip():
+            j += 1                              # its title (ルーサー警部), or more of the name
+        return j < n and not self._gap(text, j).strip() and (tokens[j][0] in particles or tokens[j][0] in _COPULA)
+
+    def _linked(self, tokens, text, grammar, particles, helpers, titles, people):
+        """A line that may hold a name link: the rule written out whole (a name of several pieces is one)."""
         n, pos = len(tokens), 0
-        self.keys, self.at, ends = [], [], []
+        self.at, ends = [], []
         for lemma, reading, surface, _orth in tokens:
             a = text.find(surface, pos)
             if a >= 0:
                 pos = a + len(surface)
             else:
                 a = pos                         # a token the line's text doesn't hold (a quote mark cut off): here
-            self.keys.append((lemma, reading))
             self.at.append(a)
             ends.append(pos)
         at = self.at
@@ -166,17 +223,26 @@ class LineWords:
             counted[i] = True
         self.counted, self.total = counted, sum(counted)
 
+    @property
+    def keys(self):
+        """Each token's (lemma, reading)."""
+        return [(t[0], t[1]) for t in self.tokens]
+
     def _own(self, indices):
         return sum(self.counted[h] for h in {self.head[i] for i in indices})
 
     def of_word(self, key):
         """(words besides the word `key`, where it first starts)."""
-        mine = [i for i, k in enumerate(self.keys) if k == key]
-        return self.total - self._own(mine), self.at[mine[0]] if mine else 0
+        lemma, reading = key
+        mine = [i for i, t in enumerate(self.tokens) if t[0] == lemma and t[1] == reading]
+        if not mine:
+            return self.total, 0
+        return self.total - (self.counted[self.head[mine[0]]] if len(mine) == 1 else self._own(mine)), self.at[mine[0]]
 
     def of_span(self, a, b):
         """(words besides the set phrase on tokens a..b-1, where it starts)."""
-        return self.total - self._own(range(a, min(b, len(self.keys)))), self.at[a] if a < len(self.at) else 0
+        return self.total - self._own(range(a, min(b, len(self.tokens)))), self.at[a] if a < len(self.at) else 0
+
 
 # One block's columns, in the order written: (name, little-endian dtype). `src` is written as the step from the line
 # before (mostly 0) and read back whole.
@@ -185,16 +251,22 @@ COLUMNS = (("src", "<i4"), ("number", "<i4"), ("chars", "<u2"), ("marks", "u1"),
 _BYTES = sum(np.dtype(t).itemsize for _n, t in COLUMNS)
 
 
+# A line as the walk packs it (31 bytes, one `struct` call a line): its word's provisional id, its source, its place,
+# its length, how many co-words and phrases follow, its hash, its marks, besides, where the word starts.
+_LINE = struct.Struct("<iiiiiiIBBB")
+_LINE_COLUMNS = np.dtype([("word", "<i4"), ("src", "<i4"), ("number", "<i4"), ("chars", "<i4"), ("ncow", "<i4"),
+                          ("nphr", "<i4"), ("hash", "<u4"), ("marks", "u1"), ("besides", "u1"), ("starts", "u1")])
+
+
 class Packer:
-    """The walk's side: lines appended as the files are read, as compact arrays (no Python object per line)."""
+    """The walk's side: lines appended as the files are read, as compact bytes (no Python object per line) — one
+    `_LINE` a line, and the co-words' and phrases' ids one after another."""
 
     def __init__(self):
         self._ids, self._keys = {}, []          # any key (a word, a co-word) -> its provisional id; id -> key
-        self.word, self.src, self.number = array("i"), array("i"), array("i")
-        self.chars, self.marks, self.hash = array("i"), array("B"), array("I")
-        self.besides, self.starts = array("B"), array("B")
-        self.ncow, self.cow = array("i"), array("i")      # co-words: provisional ids
-        self.nphr, self.phr = array("i"), array("i")      # set phrases: the walk's own numbers
+        self._lines = bytearray()
+        self._cow, self._phr = array("i"), array("i")     # co-words: provisional ids · set phrases: the walk's numbers
+        self._held = ((), [])                   # the last line's co-words and their ids (a line offered for several words)
 
     def _id(self, key):
         found = self._ids.get(key)
@@ -204,25 +276,32 @@ class Packer:
         return found
 
     def __len__(self):
-        return len(self.word)
+        return len(self._lines) // _LINE.size
 
     def add(self, word, src, number, chars, text_hash, cowords=(), phrases=(), besides=0, starts=0, over=False):
         """One candidate line of `word` (the key its row is found by): sentence `number` of source `src`, `chars`
-        long, its text's `text_hash` (`plan_rules.text_hash_of`), its other new words `cowords` (keys) and set phrases
-        `phrases`, the words `besides` the word it says, where the word `starts`; `over` *Never longer than*."""
-        self.word.append(self._id(word))
-        self.src.append(src)
-        self.number.append(number)
-        self.chars.append(chars)
-        self.marks.append(OVER if over else 0)
-        self.hash.append(text_hash & 0xFFFFFFFF)
-        self.besides.append(min(besides, 255))
-        self.starts.append(min(starts, STARTS_PAST))
-        ids = [self._id(c) for c in cowords]
-        self.ncow.append(len(ids))
-        self.cow.extend(ids)
-        self.nphr.append(len(phrases))
-        self.phr.extend(phrases)
+        long, its text's `text_hash` (`plan_rules.text_hash_of`), its other new words `cowords` (keys: a collection
+        the caller does not change once passed, as the walk's sets) and set phrases `phrases`, the words `besides`
+        the word it says, where the word `starts`; `over` *Never longer than*."""
+        w = self._ids.get(word)
+        if w is None:
+            w = self._id(word)
+        held = self._held
+        if held[0] is cowords:
+            ids = held[1]
+        else:
+            get = self._ids.get
+            ids = [get(c) for c in cowords]
+            if None in ids:
+                ids = [self._id(c) for c in cowords]
+            self._held = (cowords, ids)
+        self._lines += _LINE.pack(w, src, number, chars, len(ids), len(phrases), text_hash & 0xFFFFFFFF,
+                                  OVER if over else 0, besides if besides < 255 else 255,
+                                  starts if starts < STARTS_PAST else STARTS_PAST)
+        if ids:
+            self._cow.extend(ids)
+        if phrases:
+            self._phr.extend(phrases)
 
     def finish(self, keys, row_of, clauses_of, own_row, key_order, phrase_row, sources, head, places=None):
         """-> the Table. `keys`: every list row's (word, reading), by row · `row_of(word key)` -> its row or None
@@ -230,60 +309,69 @@ class Packer:
         known from the start, left out) · `own_row(co-word key)` -> its own row or -1 · `key_order(co-word key)`:
         the order co-words are numbered in (the plan's `_coword_key`) · `phrase_row(phrase)` -> its row or None ·
         `sources`: [[rel, kind, digest]] · `head`: {engine, run_signature, language} · `places`: each row's place in
-        the list Generate wrote (the study order: 0 first), -1 off it; none given: every row -1."""
+        the list Generate wrote (the study order: 0 first), -1 off it; none given: every row -1.
+
+        Worked on the packed arrays' own widths (views of them, not copies), each piece let go once used: it runs at
+        the end of a Generate, when the run holds the most it will (SPEC § 6.2's peak)."""
         from app import plan_rules
         if places is not None and len(places) != len(keys):
             raise ValueError(f"{len(places)} places for {len(keys)} rows")
         n_ids = len(self._keys)
-        rows = np.full(n_ids, -1, np.int64)
+        rows = np.full(n_ids, -1, np.int32)
         for p, key in enumerate(self._keys):
             k = row_of(key)
             if k is not None and k >= 0:
                 rows[p] = k
-        word = _np(self.word, np.int64)
-        line_row = rows[word] if len(word) else np.zeros(0, np.int64)
+        lines = np.frombuffer(self._lines, _LINE_COLUMNS) if self._lines else np.zeros(0, _LINE_COLUMNS)
+        word, src, number, chars, ncow, nphr = (lines[c] for c in ("word", "src", "number", "chars", "ncow", "nphr"))
+        line_row = rows[word]
         keep = line_row >= 0
-        src, number = _np(self.src, np.int64), _np(self.number, np.int64)
         # every line once for its row, in (row, file, place) order — a line the walk offered twice is kept once
         order = np.lexsort((number, src, line_row))
         order = order[keep[order]]
         if len(order):
+            r, s, n = line_row[order], src[order], number[order]
             same = np.zeros(len(order), bool)
-            same[1:] = ((line_row[order][1:] == line_row[order][:-1]) & (src[order][1:] == src[order][:-1])
-                        & (number[order][1:] == number[order][:-1]))
+            same[1:] = (r[1:] == r[:-1]) & (s[1:] == s[:-1]) & (n[1:] == n[:-1])
             order = order[~same]
+            del r, s, n, same
 
         # co-words: only those a kept line names, numbered by key; known from the start (TRUE) left out
-        ncow, cow = _np(self.ncow, np.int64), _np(self.cow, np.int64)
-        cow_line = np.repeat(np.arange(len(ncow), dtype=np.int64), ncow)
+        cow = _view(self._cow, np.int32)
+        cow_line = np.repeat(np.arange(len(ncow), dtype=np.int32), ncow)
         used = np.zeros(n_ids, bool)
         used[cow[keep[cow_line]]] = True
-        formulas, final = [], np.full(n_ids, -1, np.int64)
+        formulas, final = [], np.full(n_ids, -1, np.int32)
         named = sorted((key_order(self._keys[p]), p) for p in np.flatnonzero(used).tolist())
         for _order, p in named:
             clauses = clauses_of(self._keys[p])
             if clauses != plan_rules.TRUE:
                 final[p] = len(formulas)
                 formulas.append((own_row(self._keys[p]), clauses))
-        cow_ids, cow_at = _regroup(ncow, final[cow] if len(cow) else cow, order)
+        cow_ids, cow_at = _regroup(cow_line, final[cow], order, len(ncow))
+        del cow, cow_line, used, final
 
-        nphr, phr = _np(self.nphr, np.int64), _np(self.phr, np.int64)
+        phr = _view(self._phr, np.int32)
         prow = {int(x): phrase_row(int(x)) for x in np.unique(phr).tolist()}
-        mapped = np.fromiter(((-1 if prow[x] is None else prow[x]) for x in phr.tolist()), np.int64, len(phr))
-        phr_ids, phr_at = _regroup(nphr, mapped, order)
+        mapped = np.fromiter(((-1 if prow[x] is None else prow[x]) for x in phr.tolist()), np.int32, len(phr))
+        phr_ids, phr_at = _regroup(np.repeat(np.arange(len(nphr), dtype=np.int32), nphr), mapped, order, len(nphr))
+        del phr, mapped
 
         line_row = line_row[order]
-        hashes = _np(self.hash, np.int64)[order]
+        hashes = lines["hash"][order]
         # the fingerprint: kept only where another line of the same word says the same words (never 0 then)
         if len(order):
-            _u, inverse, counts = np.unique((line_row << 32) | hashes, return_inverse=True, return_counts=True)
-            fp = np.where(counts[inverse] > 1, np.maximum(hashes, 1), 0)
+            _u, inverse, counts = np.unique((line_row.astype(np.int64) << 32) | hashes, return_inverse=True,
+                                            return_counts=True)
+            fp = np.where(counts[inverse] > 1, np.maximum(hashes, 1), 0).astype(np.uint32)
+            del _u, inverse, counts
         else:
             fp = hashes
-        cols = {"src": src[order], "number": number[order],
-                "chars": np.minimum(_np(self.chars, np.int64)[order], 0xFFFF), "marks": _np(self.marks, np.int64)[order],
-                "ncow": np.diff(cow_at), "nphr": np.diff(phr_at), "fp": fp,
-                "besides": _np(self.besides, np.int64)[order], "starts": _np(self.starts, np.int64)[order]}
+        cols = {"src": src[order], "number": number[order], "chars": np.minimum(chars[order], 0xFFFF),
+                "ncow": np.diff(cow_at), "nphr": np.diff(phr_at), "fp": fp}
+        for name in ("marks", "besides", "starts"):
+            cols[name] = lines[name][order]
+        del lines, word, src, number, chars, ncow, nphr, keep, hashes
         t = Table()
         with_lines, starts = np.unique(line_row, return_index=True)
         bounds = np.append(starts, len(line_row)).tolist()
@@ -301,23 +389,31 @@ class Packer:
         return t
 
 
-def _np(values, dtype):
-    return np.frombuffer(values, dtype=values.typecode and np.dtype(values.typecode)).astype(dtype) \
-        if len(values) else np.zeros(0, dtype)
+def _view(values, dtype):
+    """A packed array as numpy sees it: a view while it has values (no copy), an empty array of that type else."""
+    return np.frombuffer(values, dtype) if len(values) else np.zeros(0, dtype)
 
 
-def _regroup(counts, ids, order):
-    """A flat list of per-line ids (`counts` a line), -1 dropped, each line's ids ascending, lines taken in `order`
-    -> (the ids, each taken line's start among them, one more at the end)."""
-    line = np.repeat(np.arange(len(counts), dtype=np.int64), counts)
-    pos = np.full(len(counts), -1, np.int64)
+def _regroup(line, ids, order, n_lines):
+    """A flat list of per-line ids (`line`: each one's line, ascending), -1 dropped, each line's ids ascending, lines
+    taken in `order` -> (the ids, each taken line's start among them, one more at the end). One sort of one key a
+    co-word (its line's place in `order`, then its id): the memory of two arrays the length of the ids, not six."""
+    pos = np.full(n_lines, -1, np.int64)
     pos[order] = np.arange(len(order), dtype=np.int64)
-    at = pos[line] if len(line) else line
+    at = pos[line] if len(line) else np.zeros(0, np.int64)
+    del pos
     good = (ids >= 0) & (at >= 0)
     at, ids = at[good], ids[good]
-    by = np.lexsort((ids, at))
-    at, ids = at[by], ids[by]
-    starts = np.concatenate(([0], np.cumsum(np.bincount(at, minlength=len(order)), dtype=np.int64)))
+    del good
+    counts = np.bincount(at, minlength=len(order))
+    size = int(ids.max()) + 1 if len(ids) else 1
+    at *= size
+    at += ids
+    del ids
+    at.sort()
+    ids = (at % size).astype(np.int32)
+    del at
+    starts = np.concatenate(([0], np.cumsum(counts, dtype=np.int64)))
     return ids, starts
 
 

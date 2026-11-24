@@ -683,6 +683,9 @@ def plan(scope, session, settings, auto=False, status=None):
                 action = "language"
             elif session.language == "zh" and _KANA.search(note["word"] or ""):
                 action = "language"                     # S4: a word with kana is never Chinese
+            elif note.get("rewritten") and fill.key in MAKING:
+                if (note["fields"].get(field) or "").strip():
+                    action = "filled"       # a swap's new line: its own fills, studied or known, empty fields only
             elif (auto or cards == "new") and not note["new"]:
                 action = "studied"
             elif note["new"] and session.is_known(note["word"], connect.sentence_of(note)):
@@ -1047,9 +1050,11 @@ def source_edits(scope, source, note_type, field):
 
 
 def run_named(settings, session, note_ids, source=None, dry_run=False, run_id=None, wait=0.0, cancel=None,
-              on_wait=None, verb="Backfill (Connect)"):
+              on_wait=None, verb="Backfill (Connect)", rewritten=()):
     """Connect's Backfill of the notes `note_ids` names (`surasura-cli backfill`): new cards only, empty fields only —
     the automatic run's rules — in Backfill's one deck, and the source field (`source`: `(text, note type, field)`).
+    `rewritten` (FS-1, the full Swap): notes whose sentence a swap just rewrote in place — their card's own fills
+    (`MAKING`: the new line's ふりがな) are made studied or known too, still into empty fields only.
 
     §7.2: under the Anki-write lock; refused while a fill (the window's or a run of Connect's) never finished; each
     note re-read just before it is written, and one changed since the plan left alone; the run's own snapshot
@@ -1058,12 +1063,12 @@ def run_named(settings, session, note_ids, source=None, dry_run=False, run_id=No
     -> `{"ok", "message", "problems", "filled" (note ids), "skipped" ({reason: notes}), "planned", "undo", "busy"}`.
     Never raises."""
     if dry_run:
-        return _run_named(settings, session, note_ids, source, True, None)
+        return _run_named(settings, session, note_ids, source, True, None, rewritten)
     held, problem = anki_connect.take_writer(verb, _url(settings), wait, cancel, on_wait)
     if held is None:
         return _named_report(False, "Nothing was filled.", problems=[problem], busy=True)
     with held:
-        return _run_named(settings, session, note_ids, source, False, run_id)
+        return _run_named(settings, session, note_ids, source, False, run_id, rewritten)
 
 
 def _fields_put_back(language, deck):
@@ -1104,7 +1109,7 @@ def _named_report(ok, message, **extra):
     return report
 
 
-def _run_named(settings, session, note_ids, source, dry_run, run_id):
+def _run_named(settings, session, note_ids, source, dry_run, run_id, rewritten=()):
     url = _url(settings)
     language = session.language
     deck = _deck(settings)
@@ -1129,6 +1134,9 @@ def _run_named(settings, session, note_ids, source, dry_run, run_id):
     skipped = Counter()
     try:
         scope = gather_notes(url, settings, note_ids)
+        rewritten = {int(n) for n in rewritten or ()}
+        for note in scope["notes"]:
+            note["rewritten"] = note["id"] in rewritten
         kept, elsewhere = [], []
         put_back = {}                       # a deck whose fields you put back: none of these fills either (FT-1)
 

@@ -498,6 +498,7 @@ NOT_SHOWN = {
     "hints_seen": "state: the one-time hints shown, each per library (W-1's first watched mark)",
     "subs_with_hato": "the learner's one yes in Needs you (*Find them with hato*, NS-2; hato's card: 3.0.1's next step)",
     "subs_with_hato_zh": "the Chinese library's one yes in Needs you (*Find them with hato*, Zh-H)",
+    "swap_in_place": "off in the tree until FS-2 lands its Settings row (*Swap gives a card a better sentence*)",
     "open_count": "state: a launch counter",
     "paused": "state: the circles paused with a click at the bar's bottom left (Mado-PZ), resumed the same way",
     "skipped_version": "state: its way back is App's *Offer <version> again*",

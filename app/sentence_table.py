@@ -33,6 +33,7 @@ import re
 import struct
 import zlib
 from array import array
+from operator import itemgetter
 
 import numpy as np
 
@@ -555,3 +556,139 @@ def open_table(path, language=None, engine=None, run_signature=None):
         return t
     except (OSError, ValueError, KeyError, TypeError, AttributeError, struct.error, zlib.error):
         return None
+
+
+# --- The two numbers counted once, when a file is indexed (E-INDEX) ------------------------------------------------- #
+# The token store keeps, beside each file's tokens, what `LineWords` gives a line with no person in it (its `words`
+# column; `file_words` writes it in the indexer's own workers, while the switch is on): the line's total, and for each
+# token where it starts and whether it counts. The walk then asks only which tokens are the word (`KeptWords.of_word`)
+# — and, in a line holding one of the library's people (known only after a whole index), the person rule for those
+# tokens alone (`LineWords._about`, as the one pass asks it). A line holding a name link (the rule reads the people all
+# through) is kept as "count at the walk"; so is, at the walk, a sentence a name table joined as the store was read,
+# and every line of a row with none — each is counted by `LineWords` as before. The numbers, and the table's bytes,
+# are the same whichever way they came (tests/test_sentence_table_index.py).
+# Rebuilding the lists or changing the rule bumps WORDS_RULE too (a row of another rule reads as none: the walk
+# counts it) and, once the switch is on in the tree, token_index.SCHEMA_VERSION (every file indexed again).
+WORDS_RULE = 1
+_UNCOUNTED = 0xFFFF             # a line's total: counted at the walk
+_AT_MAX = 1 << 15               # a token's code: where it starts << 1 | counted, in two bytes (a longer line: the walk)
+_WORDS_HEAD = struct.Struct("<HI")      # the rule, the file's sentences; then each one's end, total and codes
+_LITTLE = struct.pack("=H", 1) == struct.pack("<H", 1)
+_FIRST = itemgetter(0)
+
+
+def file_words(sentences, language):
+    """-> bytes, the token store's `words` for a file's `sentences` ([(text, tokens)], as indexed): each line counted
+    by `LineWords` with no person, once. Never raises for a line: one it can't count is kept as "count at the walk"."""
+    ends, totals, codes = array("I"), array("H"), array("H")
+    for text, tokens in sentences:
+        try:
+            words = LineWords(tokens, text, language)
+            if type(words.head) is not range or words.total >= _UNCOUNTED or (words.at and words.at[-1] >= _AT_MAX):
+                raise ValueError        # a name link (the rule reads the people), or more than the columns hold
+            codes.extend([a << 1 | c for a, c in zip(words.at, words.counted)])
+            totals.append(words.total)
+        except Exception:
+            totals.append(_UNCOUNTED)
+        ends.append(len(codes))
+    if not _LITTLE:
+        for column in (ends, totals, codes):
+            column.byteswap()
+    return _WORDS_HEAD.pack(WORDS_RULE, len(totals)) + ends.tobytes() + totals.tobytes() + codes.tobytes()
+
+
+def read_file_words(raw, language, joined=()):
+    """The `FileWords` of a store row's `words` (decompressed) — or None: no row, another rule's, damaged."""
+    if not raw:
+        return None
+    try:
+        return FileWords(raw, language, joined)
+    except (ValueError, struct.error):
+        return None
+
+
+class FileWords:
+    """A file's lines as the indexer counted them (`file_words`); `joined`: the sentences a name table joined as the
+    store was read (their tokens are not the indexed ones)."""
+    __slots__ = ("ends", "totals", "codes", "joined", "n", "language")
+
+    def __init__(self, raw, language, joined=()):
+        rule, n = _WORDS_HEAD.unpack_from(raw)
+        if rule != WORDS_RULE:
+            raise ValueError("another rule's count")
+        at = _WORDS_HEAD.size
+        self.ends, self.totals, self.codes = array("I"), array("H"), array("H")
+        self.ends.frombytes(raw[at:at + 4 * n])
+        self.totals.frombytes(raw[at + 4 * n:at + 6 * n])
+        self.codes.frombytes(raw[at + 6 * n:])
+        if not _LITTLE:
+            for column in (self.ends, self.totals, self.codes):
+                column.byteswap()
+        if len(self.totals) != n or len(self.ends) != n or (self.ends[-1] if n else 0) != len(self.codes):
+            raise ValueError("cut short")
+        self.joined, self.n, self.language = joined, n, language
+
+    def line(self, no, tokens, text, people=frozenset()):
+        """The numbers of sentence `no`, whose text and tokens at the walk are `text` and `tokens` — a `KeptWords`, a
+        `LineWords` when a person is in it — or None: count it at the walk (`LineWords`), as before."""
+        if no >= self.n or no in self.joined:
+            return None
+        total = self.totals[no]
+        if total == _UNCOUNTED:
+            return None
+        start = self.ends[no - 1] if no else 0
+        if self.ends[no] - start != len(tokens):
+            return None
+        lemmas = list(map(_FIRST, tokens))
+        if people and not people.isdisjoint(lemmas):
+            return self._with_people(tokens, lemmas, text, start, people)
+        return KeptWords(tokens, lemmas, self.codes, start, total)
+
+    def _with_people(self, tokens, lemmas, text, start, people):
+        """A line holding a person: the kept numbers, with the person rule asked of its people's tokens alone — as
+        `LineWords`' one pass asks it of a token it would otherwise count."""
+        codes = self.codes[start:start + len(tokens)]
+        words = LineWords.__new__(LineWords)
+        words.tokens, words.at, words.head = tokens, [c >> 1 for c in codes], range(len(tokens))
+        counted = [c & 1 for c in codes]
+        _grammar, particles, _helpers, titles = _lists(self.language)
+        for i, lemma in enumerate(lemmas):
+            if counted[i] and lemma in people:
+                counted[i] = words._about(i, text, particles, titles, people)
+        words.counted, words.total = counted, sum(counted)
+        return words
+
+
+class KeptWords:
+    """`LineWords`' answers for a line with no person and no name link, from what the indexer kept: each token's code
+    (`codes[start + i]`) is where it starts << 1 | whether it counts."""
+    __slots__ = ("tokens", "lemmas", "codes", "start", "total")
+
+    def __init__(self, tokens, lemmas, codes, start, total):
+        self.tokens, self.lemmas, self.codes, self.start, self.total = tokens, lemmas, codes, start, total
+
+    def of_word(self, key):
+        """(words besides the word `key`, where it first starts)."""
+        lemma, reading = key
+        lemmas, tokens, codes, start = self.lemmas, self.tokens, self.codes, self.start
+        first, own, i = -1, 0, -1
+        index = lemmas.index
+        try:
+            while True:
+                i = index(lemma, i + 1)
+                if tokens[i][1] == reading:
+                    if first < 0:
+                        first = i
+                    own += codes[start + i] & 1
+        except ValueError:
+            pass
+        if first < 0:
+            return self.total, 0
+        return self.total - own, codes[start + first] >> 1
+
+    def of_span(self, a, b):
+        """(words besides the set phrase on tokens a..b-1, where it starts)."""
+        n, codes, start = len(self.lemmas), self.codes, self.start
+        if a >= n:
+            return self.total, 0
+        return self.total - sum(c & 1 for c in codes[start + a:start + min(b, n)]), codes[start + a] >> 1

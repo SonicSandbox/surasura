@@ -51,6 +51,22 @@ def test_every_run_counts_with_the_time_it_began_reading_anki(tmp_path, monkeypa
         assert ls.side_seen(count, start) and not ls.side_seen(count, ls._now()), "a receipt after it: never seen"
 
 
+def test_the_counts_time_is_never_later_than_a_store_stamp_taken_after_it(monkeypatch):
+    """FLAKES (GitHub, three times: the count's .927510 after the read's .927509): the count's time came from
+    `time.time()`'s float, the store's from the clock's integer. At this instant the float rounds up past a
+    microsecond the integer hasn't reached, so the count read 1 µs after a store stamp taken later — a file Connect
+    mined in that microsecond counted as seen. The one clock now: the count's time is the store's own."""
+    import time
+    from app import library_store as ls
+    instant = 1763894400927509889                        # (2025-11-23 UTC; the float reads .927510, the integer .927509)
+    monkeypatch.setattr(time, "time_ns", lambda: instant)
+    monkeypatch.setattr(time, "time", lambda: instant / 1e9)
+    monkeypatch.setattr(ls, "_NOW_LAST", [0])            # (the store's last stamp is this process's: never left here)
+    at = reposition._utc_now()
+    after = ls._now()
+    assert at.startswith("2025-11-23T10:40:00.92750") and at < after, (at, after)
+
+
 def test_with_side_by_side_off_no_time_is_counted(tmp_path, monkeypatch):
     """Off (no titles from the store): no count, and no time either — the run's stats as before."""
     monkeypatch.setattr(connect, "PINS", True)

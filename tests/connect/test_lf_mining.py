@@ -551,6 +551,7 @@ class _RealNames(FakeSteps):
 
     url = "http://127.0.0.1:8765"
     name_media = runner.Steps.name_media
+    _media_key = runner.Steps._media_key        # the episode's key, split out of name_media (FS-1)
 
     def _job_mapping(self, job):
         return SimpleNamespace(fields={"audio": "SentenceAudio", "picture": "Picture"})

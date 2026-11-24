@@ -49,6 +49,7 @@ from app.connect import sentences, swap_queue, tidy
 log = logging.getLogger("surasura-cli")
 
 SWAP_TAG = "surasura::swapped"
+LEARNED_PREFIX = "surasura::learned::"  # FS-1, decision 15: the episode a card was first made from (`learned_tag`)
 BY_SWAP, BY_BAD_CARD = "swap", "bad card"
 BY_JOURNEY, BY_ADD_NOW = "journey", "add now"   # the journey page's ⇄ and *Add now* (`door_routes`): the line pressed
 JOURNEY_TAKES_OLD = True        # a journey ⇄ is one out, one in: its old card suspended once the new one is made (the
@@ -64,6 +65,25 @@ GONE = "That swap can't be undone now."
 ALREADY = "That swap is undone already."
 NOT_MADE = "That swap's card isn't made yet."
 KEPT = "The new card stays: you've studied or changed it."
+# FS-1 (the full Swap, 3.1; SCOPE.md § 8, Sonic 2026-11-23): a swap's kind, decided when its job is made (`_kind_of`)
+IN_PLACE, NEW_CARD = "in place", "new card"
+SETTING = "swap_in_place"       # settings.json: True = *Same card, new sentence*; False (the default until FS-2) = *A new card*
+MARK = "（前の文）"               # before a kept translation of the old line, until Piyo writes the new one's (decision 2)
+CHANGED = "This card changed since the swap: nothing was undone."
+HAND_EDITED = "its sentence was changed by hand: a new card instead"     # decision 5 (the row's why, said once)
+NOT_CONNECTS = "Surasura didn't make that card: a new card instead"     # decision 6
+NO_RENDER = "Update Anki Miner to keep the same card: a new card instead"      # decision 12
+NOT_APPLIED = "Close the card in Anki's editor: Surasura rewrites it after."
+TOO_OLD = "That swap is too old to undo: its old clip and picture were kept 30 days."     # decision 7
+KEPT_DIR = "swap-kept"          # in Connect's folder: an in-place swap's old media, one folder a write (decision 7)
+# The sentence side (SCOPE § 1): the only roles an in-place swap writes — everything else of the note is the word's or
+# the learner's and is never written (an allow-list: a role not here is never touched)
+SENTENCE_SIDE = ("sentence", "audio", "picture")
+TRANSLATIONS = ("sentence_translation",)
+HINT = "Hint"                   # Lapis: the 翻訳 toggle (`card_translations.HINT`)
+FURIGANA = "SentenceFurigana"   # the layout's sentence furigana (AJT's colours): emptied, Backfill's ふりがな refills it
+# Anki Miner's source line (`<title> - 02 @ 00:17:27`): the source field is rewritten only while it holds one (decision 4)
+MINER_SOURCE = re.compile(r"^[^<>\[\]]* @ \d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\s*$")
 
 _SQL = """CREATE TABLE IF NOT EXISTS swaps (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,8 +114,15 @@ _SQL = """CREATE TABLE IF NOT EXISTS swaps (
 
 def ensure(ledger):
     ledger.conn.execute(_SQL)
-    if "took" not in {r[1] for r in ledger.conn.execute("PRAGMA table_info(swaps)")}:
+    have = {r[1] for r in ledger.conn.execute("PRAGMA table_info(swaps)")}
+    if "took" not in have:
         ledger.conn.execute("ALTER TABLE swaps ADD COLUMN took TEXT")   # a journey ⇄'s cards it suspended (JSON ids)
+    if "kind" not in have:      # FS-1: IN_PLACE / NEW_CARD (none: an ask from before, a new card as it was made)
+        ledger.conn.execute("ALTER TABLE swaps ADD COLUMN kind TEXT")
+    if "wrote" not in have:     # FS-1: the field writer's record of an in-place swap (`sentence_audio.replace`)
+        ledger.conn.execute("ALTER TABLE swaps ADD COLUMN wrote TEXT")
+    if "kind_why" not in have:  # FS-1: why a swap the setting would make in place makes a new card (said once)
+        ledger.conn.execute("ALTER TABLE swaps ADD COLUMN kind_why TEXT")
 
 
 def _now():
@@ -399,6 +426,7 @@ def look(steps, ledger, language, store_id=None, anki=None, files=None):
                                                ).fetchone():
         return out                          # nothing ever asked: an idle look writes nothing (S19)
     ensure(ledger)
+    _purge_kept()
     anki = anki if anki is not None else _anki(steps)
     _follow(ledger, language, entries)
     for row in _rows(ledger, "language = ? AND state = ?", (language, QUEUED)):
@@ -430,8 +458,39 @@ def look(steps, ledger, language, store_id=None, anki=None, files=None):
             log.warning("Swap: swap %s wasn't started this look", row["id"], exc_info=True)
     if out["made"]:
         _follow(ledger, language, _entries(language))  # a swap taken back while its job ran: never tagged
-    _tag_waiting(ledger, language, anki)
+    _tag_waiting(ledger, language, anki, flag=_swap_flag)
     return out
+
+
+def kept_folder():
+    """Where an in-place swap keeps the old clip and picture it replaced (`sentence_audio.replace`'s `keep_dir`)."""
+    from app.cli.verbs import _connect_folder
+    return os.path.join(_connect_folder(), KEPT_DIR)
+
+
+_PURGED = {}                    # kept_folder() -> when this process last purged it (`_purge_kept`)
+PURGE_EVERY_S = 12 * 60 * 60
+
+
+def _purge_kept():
+    """Decision 7: the kept copies go 30 days after they were written (the trash clock's rule and its one purge,
+    `path_utils.cleanup_trash_async`, by each file's time: a copy is written, never moved, so its clock starts then);
+    an Undo past it is refused (`TOO_OLD`). Never raises."""
+    try:
+        folder = kept_folder()
+        if os.path.isdir(folder) and time.time() - _PURGED.get(folder, 0) >= PURGE_EVERY_S:
+            _PURGED[folder] = time.time()           # a 30-day clock needs no look every few minutes
+            from app import path_utils
+            path_utils.cleanup_trash_async(folder)
+    except Exception:
+        log.info("Swap: the kept copies weren't looked at this time", exc_info=True)
+
+
+def _swap_flag():
+    """The learner's Swap flag (`review_loop.move_flags`), read when an in-place swap puts its card back in reviews."""
+    from app import settings_manager
+    from app.connect import review_loop
+    return review_loop.move_flags(settings_manager.load_settings())[review_loop.SWAP]
 
 
 def _entries(language):
@@ -522,15 +581,214 @@ def _start(steps, ledger, language, row, store_id, anki, out, count=None, state_
         out["waits"] += 1
         return
     item_id, text = picked
+    kind, kind_why = _kind_of(ledger, row, anki)
+    if kind is None:
+        return                              # the old card can't be read now: the next look decides
     with ledger.transaction():              # the job and its swap together: a job of kind swap never without its record
         job_id = ledger.queue_swap(language, item_id, row["word"], row.get("reading") or "", row["at"],
                                    store_id=store_id)
         if job_id is not None:
             _update(ledger.conn, row["id"], state=QUEUED, why=None, item_id=item_id, line=text, job_id=job_id,
-                    avoid=json.dumps(avoid, ensure_ascii=False))
+                    avoid=json.dumps(avoid, ensure_ascii=False), kind=kind, kind_why=kind_why)
     if job_id is None:
         return                              # the episode has an open job: tried again after it
     out["queued"] += 1
+
+
+def in_place_on(settings=None):
+    """The learner's *Swap gives a card a better sentence* (`SETTING`): True = *Same card, new sentence*, False = *A new
+    card* — the default until FS-2 lands its Settings row (the lead, 2026-11-23; FS-2's last commit makes decision 1's
+    True the default). Anything but True reads as the default: off."""
+    if settings is None:
+        from app import settings_manager
+        settings = settings_manager.load_settings()
+    return (settings or {}).get(SETTING) is True
+
+
+def _sentence_of(info):
+    """A note's sentence field's value (notesInfo's shape): `Sentence`, else the first field named like a sentence that
+    isn't its audio, furigana or translation (`_old_lines`' rule) — or None."""
+    fields = info.get("fields") or {}
+    for name in sorted(fields, key=lambda n: (n.lower() != "sentence", n)):
+        low = name.lower()
+        if "sentence" in low and not any(x in low for x in ("audio", "furigana", "translat", "hint")):
+            value = fields[name].get("value") if isinstance(fields[name], dict) else fields[name]
+            return value or ""
+    return None
+
+
+def _kind_of(ledger, row, anki, settings=None):
+    """The swap's kind when its job is made (decision 10: a waiting swap follows the setting then) -> (kind, why):
+    IN_PLACE only with the setting on, for the loop's flag or the journey's ⇄ (a *Bad card*'s card is gone: decision
+    11; *Add now* has none), on a card Connect made (decision 6) whose sentence still holds Connect's line (`same_line`
+    against its record: a card changed there by hand gets a new card, decision 5); else NEW_CARD with why. (None,
+    None) while Anki can't be read now (the next look decides)."""
+    if not in_place_on(settings) or row.get("by") not in (BY_SWAP, BY_JOURNEY) or not row.get("old_note"):
+        return NEW_CARD, None
+    made = [r[0] for r in ledger.conn.execute("SELECT sentence FROM outcomes WHERE note_id = ? AND outcome = 'made' "
+                                              "AND sentence IS NOT NULL", (int(row["old_note"]),)) if r[0]]
+    if not made:
+        return NEW_CARD, NOT_CONNECTS
+    if anki is None:
+        return None, None
+    try:
+        info = next((n for n in anki.notes([int(row["old_note"])]) or () if isinstance(n, dict) and n.get("noteId")),
+                    None)
+    except Exception:
+        log.info("Swap: the old card couldn't be read to choose the swap's kind", exc_info=True)
+        return None, None
+    if info is None:
+        return NEW_CARD, None               # deleted since the flag: nothing to rewrite
+    now = _sentence_of(info)
+    if now is None:
+        return NEW_CARD, None               # a note type with no sentence field: not one Swap rewrites
+    if not sentences.same_line(now, made):
+        return NEW_CARD, HAND_EDITED
+    return IN_PLACE, None
+
+
+def in_place_row(ledger, job_id):
+    """The in-place swap a job of kind `swap` is for (its `swaps` row, kind IN_PLACE, the job's own), or None — the
+    runner's batch renders it instead of mining (`runner.Steps.swap_in_place`)."""
+    if not ledger.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'swaps'").fetchone():
+        return None
+    ensure(ledger)
+    rows = _rows(ledger, "job_id = ? AND state = ? AND kind = ?", (int(job_id), QUEUED, IN_PLACE))
+    return rows[-1] if rows else None
+
+
+def fall_back(ledger, row, why):
+    """An in-place swap that can't rewrite its card makes a new card instead, said once (`why`: decisions 5, 6, 12)."""
+    _set(ledger, row["id"], kind=NEW_CARD, kind_why=why)
+
+
+def _values(info):
+    return {k: (v.get("value") if isinstance(v, dict) else v) or "" for k, v in (info.get("fields") or {}).items()}
+
+
+def new_fields(info, rendered, mapping):
+    """The old card's new sentence side (SCOPE § 1) from `render`'s note (`rendered` {Anki field: value}) -> {field:
+    value}: the sentence, its audio and picture (render's; a field render left out is emptied — a book's line has no
+    picture); the sentence furigana emptied (Backfill's ふりがな refills it; AJT's colours of the old line never stay
+    under a new sentence); the translation render's when it gives one, else the old one kept behind `MARK`; the source
+    field only while it holds what Anki Miner wrote (`MINER_SOURCE`, decision 4). Never another field: the word's side,
+    pitch, パターン / 例文, a ヒント, `Is*Card` (an allow-list)."""
+    have = _values(info)
+    out = {}
+    for role in SENTENCE_SIDE:
+        name = mapping.fields.get(role)
+        if name and name in have:
+            out[name] = str(rendered.get(name) or "")
+    furigana = mapping.fields.get("sentence_furigana") or FURIGANA
+    if furigana in have and have[furigana]:
+        out[furigana] = ""
+    for name in {mapping.fields.get(r) for r in TRANSLATIONS} | {HINT}:
+        if not name or name not in have:
+            continue
+        given = str(rendered.get(name) or "")
+        if given.strip():
+            out[name] = given
+        elif have[name].strip() and not have[name].startswith(MARK):
+            out[name] = MARK + have[name]
+    source = mapping.source
+    if source and source in have and source not in out and MINER_SOURCE.match(have[source] or "") \
+            and str(rendered.get(source) or "").strip():
+        out[source] = str(rendered[source])
+    return out
+
+
+def learned_tag(ledger, note, open_store):
+    """Decision 15 (*it keeps what it came from*: the episode you learned it from) -> the tag naming the episode a card
+    was first made from — `surasura::learned::<show>::s<season>e<episode>` (PROVISIONAL), lowercase: the show as its
+    `Surasura::from::` tag names it (`runfile.show_slug`), the episode as Connect places it in its show
+    (`library.part_of`, `s01e02`); an item with no place in a show (a book, a channel's video): `…::<show>` alone, its
+    file's name when it has no show — or None when the ledger or the store can't say (no tag, never a wrong one)."""
+    got = ledger.conn.execute("SELECT j.item_id FROM outcomes o JOIN jobs j ON j.id = o.job_id WHERE o.note_id = ? "
+                              "AND o.outcome = 'made' ORDER BY o.job_id, o.rowid LIMIT 1", (int(note),)).fetchone()
+    if got is None or got[0] is None or open_store is None:
+        return None
+    from app.connect import library, runfile
+    try:
+        store = open_store()
+        if store is None:
+            return None
+        with store:
+            item = store.item(int(got[0]))
+            if item is None:
+                return None
+            title = library.show_title(store, int(got[0]))
+            place = library.part_of(store, int(got[0]), item.get("rel_path"))
+    except Exception:
+        log.info("Swap: the episode a card was first made from couldn't be read", exc_info=True)
+        return None
+    name = title or os.path.splitext(os.path.basename(str(item.get("rel_path") or "")))[0]
+    show = runfile.show_slug(name).lower()
+    if not show:
+        return None
+    if not place:
+        return LEARNED_PREFIX + show
+    season, number = place
+    number = f"{int(number):02d}" if float(number).is_integer() else str(number)
+    return f"{LEARNED_PREFIX}{show}::s{int(season):02d}e{number}"
+
+
+def _first_in_place(ledger, row, info):
+    """Is this the card's first in-place swap (decision 15's tag written then, never changed after)? No other in-place
+    swap of the note standing, and no `LEARNED_PREFIX` tag on it (one its Undo took off is written again; one the
+    learner took off stays off)."""
+    if any(str(t).lower().startswith(LEARNED_PREFIX) for t in info.get("tags") or ()):
+        return False
+    return not ledger.conn.execute("SELECT 1 FROM swaps WHERE old_note = ? AND kind = ? AND wrote IS NOT NULL AND "
+                                   "state != ? AND id != ?",
+                                   (int(row["old_note"]), IN_PLACE, UNDONE, int(row["id"]))).fetchone()
+
+
+def write_in_place(anki, ledger, row, rendered, mapping, keep_dir, learned=None):
+    """The in-place swap's one write (the field writer's replace mode, `sentence_audio.replace`): the old card's
+    sentence side rewritten from `render`'s note (`rendered` {"fields", "files"}), only while each field still holds
+    what was read here, its old media kept in `keep_dir` first, tagged `SWAP_TAG` -> (IN_PLACE, the note id), or
+    (NEW_CARD, why) when the card can't be rewritten (gone, its sentence changed by hand since the look), or (None,
+    NOT_APPLIED) when Anki didn't keep the write (the note open in its editor: tried again). `learned`: the card's
+    first-episode tag (`learned_tag`), put on with the write at its first in-place swap only, and taken off by that
+    swap's Undo (the writer's record holds it); the learner's own tags are never touched."""
+    from app.connect import sentence_audio
+    note = int(row["old_note"])
+    writer = anki.field_writer() if hasattr(anki, "field_writer") else anki
+    if row.get("wrote"):
+        sentence_audio.settle(writer, ledger, row["wrote"])     # a write a kill or an error stopped: put back first
+    info = next((n for n in writer.notes([note]) or () if isinstance(n, dict) and n.get("noteId")), None)
+    if info is None:
+        return NEW_CARD, None
+    made = [r[0] for r in ledger.conn.execute("SELECT sentence FROM outcomes WHERE note_id = ? AND outcome = 'made' "
+                                              "AND sentence IS NOT NULL", (note,)) if r[0]]
+    if not sentences.same_line(_sentence_of(info) or "", made):
+        return NEW_CARD, HAND_EDITED
+    new = new_fields(info, rendered.get("fields") or {}, mapping)
+    have = _values(info)
+    files = {os.path.basename(p): p for p in rendered.get("files") or ()}
+    files.update(rendered.get("named") or {})          # the line's names (`media_names.by_line`): what is stored
+    named = [m for v in new.values() for m in sentence_audio.media_in(v)]
+    if not str(new.get(mapping.fields.get("sentence")) or "").strip() or             any(m not in files or not os.path.isfile(files[m]) for m in named):
+        return NEW_CARD, None                   # render gave no sentence, or a clip it didn't hand over: never written
+    media = {m: files[m] for m in named}
+    first = (learned,) if learned and _first_in_place(ledger, row, info) else ()
+    try:
+        got = sentence_audio.replace(writer, ledger, note, new, {f: have[f] for f in new}, media=media,
+                                     keep_dir=keep_dir, tag=SWAP_TAG, by=BY_SWAP, verb=VERB, extra=first,
+                                     on_record=lambda rid: _set(ledger, row["id"], wrote=rid),   # before Anki
+                                     loose=(mapping.fields.get("sentence_furigana") or FURIGANA,))  # Backfill's after
+    except BaseException as e:
+        if getattr(e, "sentence_audio_id", None):
+            _set(ledger, row["id"], wrote=e.sentence_audio_id)     # its record: settled when it is tried again
+        raise
+    if got.get("id"):
+        _set(ledger, row["id"], wrote=got["id"])    # tagged with its fields; `_tag_waiting` puts it back in reviews
+        return IN_PLACE, note
+    why = (got.get("skipped") or {}).get(note)
+    if why == sentence_audio.NOT_APPLIED:
+        _set(ledger, row["id"], wrote=None)     # its record closed undone: nothing of it on the card
+        return None, NOT_APPLIED
+    return NEW_CARD, HAND_EDITED if why == sentence_audio.CHANGED else None
 
 
 def _finish(ledger, language, row, out, state_of=None, anki=None):
@@ -549,12 +807,16 @@ def _finish(ledger, language, row, out, state_of=None, anki=None):
         twins = [row]
         for r in _rows(ledger, "language = ? AND word = ? AND state IN (?, ?) AND id != ?",
                        (language, row["word"], ASKED, WAITS, row["id"])):
+            if row.get("kind") == IN_PLACE and r.get("old_note") != row.get("old_note"):
+                continue                    # an in-place card is its own old card's: never another card's swap
             lines = json.loads(r["avoid"]) if r.get("avoid") else _old_lines(ledger, r, anki)
             if _same_word(r, row) and lines is not None and not sentences.same_line(row.get("line") or "", lines):
                 twins.append(r)
         for r in twins:
+            own = {"kind_why": row.get("kind_why")} if r["id"] == row["id"] else {}
+            own["wrote"] = row.get("wrote")             # a twin of an in-place swap (the same card): one write, one Undo
             _set(ledger, r["id"], state=MADE, why=None, new_note=note, job_id=row["job_id"], item_id=row["item_id"],
-                 line=row["line"])
+                 line=row["line"], kind=row.get("kind"), **own)
             _queue_made(language, r["ref"], note)
             out["made"] += 1
         return
@@ -573,9 +835,11 @@ def _finish(ledger, language, row, out, state_of=None, anki=None):
     out["waits"] += int(state == WAITS)
 
 
-def _tag_waiting(ledger, language, anki):
+def _tag_waiting(ledger, language, anki, flag=None):
     """The old cards of made swaps tagged `SWAP_TAG` (Swap's only write to them), under Anki's write lock and never while
-    you review; Anki closed or busy: looked at again. A deleted old card: nothing to tag."""
+    you review; Anki closed or busy: looked at again. A deleted old card: nothing to tag. An in-place swap (its tag
+    written with its fields) from the loop's flag: its card back in your reviews — unsuspended, its Swap flag off
+    (`flag()`: the learner's pick; decision 8) — a journey ⇄'s card was never out of them: nothing."""
     where = ("language = ? AND state = ? AND tagged = 0", (language, MADE))
     if anki is None or not _rows(ledger, *where):
         return
@@ -587,9 +851,17 @@ def _tag_waiting(ledger, language, anki):
             notes = sorted({int(r["old_note"]) for r in rows if r.get("old_note")})
             infos = [n for n in anki.notes(notes) if isinstance(n, dict) and n.get("noteId")] if notes else []
             have = {int(n["noteId"]) for n in infos}
+            back_flag = None
             for r in rows:
+                if r.get("kind") == IN_PLACE:
+                    if r.get("by") == BY_SWAP and r.get("old_note") and int(r["old_note"]) in have:
+                        if back_flag is None:
+                            back_flag = flag() if callable(flag) else GREEN
+                        _old_back(anki, r, keep_tag=True, flag=back_flag)
+                    continue
                 if r.get("by") == BY_JOURNEY and JOURNEY_TAKES_OLD:
                     _take_old(anki, ledger, r, infos)
+            have -= {int(r["old_note"]) for r in rows if r.get("kind") == IN_PLACE and r.get("old_note")}
             if have:
                 anki.add_tags(sorted(have), SWAP_TAG)
     except Exception:
@@ -619,6 +891,11 @@ def _take_old(anki, ledger, row, infos):
 # --------------------------------------------------------------------------- #
 class AnkiSwap(tidy.AnkiConnectTidy):
     """Swap's Anki: Tidy's adapter (reads, the writer, the package backup) plus tags, unsuspend and the flag."""
+
+    def field_writer(self):
+        """The one field writer's Anki (`sentence_audio.AnkiConnectNotes`): an in-place swap's write and its Undo."""
+        from app.connect import sentence_audio
+        return sentence_audio.AnkiConnectNotes(self.url)
 
     def add_tags(self, note_ids, tag):
         from app import anki_connect
@@ -678,6 +955,8 @@ def undo(anki, ledger, language, swap_id, open_store=None, ours=None, flag=GREEN
         raise tidy.Refused(NOT_MADE)
     if entry is not None and entry.get("state") == swap_queue.WAITING:
         _queue_made(language, row["ref"], row["new_note"])  # the queue's made write had failed: it takes it first
+    if row.get("kind") == IN_PLACE:
+        return _undo_in_place(anki, ledger, language, row, entry, open_store)
     others = _rows(ledger, "language = ? AND new_note = ? AND state = ? AND id != ?",
                    (language, row["new_note"], MADE, row["id"]))
     gone = not any(isinstance(n, dict) and n.get("noteId") for n in anki.notes([int(row["new_note"])]) or ())
@@ -706,6 +985,70 @@ def undo(anki, ledger, language, swap_id, open_store=None, ours=None, flag=GREEN
                 if swap_queue.undone(language, str(row["ref"])) is None:
                     raise RuntimeError(f"the swap queue's entry {row['ref']} isn't made: nothing was undone there")
     return {"undone": True, "word": row["word"]}
+
+
+def _undo_in_place(anki, ledger, language, row, entry, open_store=None):
+    """An in-place swap undone: the field writer's record put back (`sentence_audio.undo`: every old value, the old
+    clip and picture stored again, the tag off — only while every field still holds what the swap wrote, else
+    `CHANGED` and nothing changes); the swap job's made outcome for the card marked `undone` (the card's line is its
+    old one again for the deleted-card look and Swap's own avoid list); the card left in your reviews (decision 8);
+    then the queue's entry `undone` with the ledger's row in one step (a retry after the queue's write failed finds the
+    record undone already and only finishes); last, the store's made words: the card back under the item its line is
+    from again (`_store_back`). A kept copy past its 30 days: `TOO_OLD`, nothing changes."""
+    from app.connect import sentence_audio
+    writer = anki.field_writer() if hasattr(anki, "field_writer") else anki
+    rec = sentence_audio.record(ledger, row["wrote"]) if row.get("wrote") else None
+    if rec is None:
+        raise tidy.Refused(GONE)
+    if rec.get("state") != sentence_audio.UNDONE:
+        got = sentence_audio.undo(writer, ledger, row["wrote"], verb=VERB)
+        if got.get("refused") == sentence_audio.TOO_OLD:
+            raise tidy.Refused(TOO_OLD)
+        if got.get("kept") or not got.get("emptied"):
+            raise tidy.Refused(CHANGED)
+    with ledger.transaction():
+        _update(ledger.conn, row["id"], state=UNDONE)
+        ledger.conn.execute("UPDATE outcomes SET outcome = 'undone' WHERE job_id = ? AND note_id = ? AND outcome = "
+                            "'made'", (int(row["job_id"]), int(row["new_note"])))
+        if entry is not None and swap_queue.undone(language, str(row["ref"])) is None:
+            raise RuntimeError(f"the swap queue's entry {row['ref']} isn't made: nothing was undone there")
+    _store_back(ledger, row, open_store)
+    return {"undone": True, "word": row["word"], "kind": IN_PLACE}
+
+
+def rewritten(ledger, job_id):
+    """The notes a swap job rewrote in place (its in-place swaps' old cards, written) -> [note id]: the runner records
+    them under the job's item alone (`library.record_batch`'s `moved`) and hands them to Backfill as cards whose
+    sentence is new (`run_named`'s `rewritten`: a studied card's ふりがな refilled)."""
+    if not ledger.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'swaps'").fetchone():
+        return []
+    ensure(ledger)
+    return sorted({int(r[0]) for r in ledger.conn.execute(
+        "SELECT old_note FROM swaps WHERE job_id = ? AND kind = ? AND wrote IS NOT NULL AND old_note IS NOT NULL AND "
+        "state != ?", (int(job_id), IN_PLACE, UNDONE))})
+
+
+def _store_back(ledger, row, open_store):
+    """An undone in-place swap's card recorded under the item of the line it shows again (the note's newest made
+    outcome left, its first job's or an earlier swap's) and out of the swap job's (`library.record_batch`'s `moved`).
+    Tidiness of the record (the word stays made either way, G1.3-4): a store that can't be written now is logged."""
+    if open_store is None:
+        return
+    got = ledger.conn.execute("SELECT j.item_id, o.word, j.id FROM outcomes o JOIN jobs j ON j.id = o.job_id WHERE "
+                              "o.note_id = ? AND o.outcome = 'made' ORDER BY o.job_id DESC LIMIT 1",
+                              (int(row["new_note"]),)).fetchone()
+    if got is None or got[0] is None:
+        return
+    try:
+        from app.connect import library
+        store = open_store()
+        if store is None:
+            return
+        with store:
+            library.record_batch(store, int(got[0]), {got[1]: [int(row["new_note"])]}, None, ledger.tag_id(got[2]),
+                                 moved=[int(row["new_note"])])      # that job's batch, as its record named it
+    except Exception:
+        log.warning("Swap: the library's record of an undone swap's card wasn't moved back", exc_info=True)
 
 
 def _entry(language, row):
@@ -802,9 +1145,10 @@ def status_of(conn, language, newest=5):
     try:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'swaps'").fetchone():
             return {"made": [], "waits": []}
-        made = [{"id": r[0], "word": r[1], "at": r[2]} for r in conn.execute(
-            "SELECT id, word, updated_at FROM swaps WHERE language = ? AND state = ? ORDER BY id DESC LIMIT ?",
-            (language, MADE, int(newest)))]
+        kinds = "kind" in {r[1] for r in conn.execute("PRAGMA table_info(swaps)")}
+        made = [{"id": r[0], "word": r[1], "at": r[2], "kind": r[3] or NEW_CARD, "kind_why": r[4]} for r in conn.execute(
+            f"SELECT id, word, updated_at, {'kind, kind_why' if kinds else 'NULL, NULL'} FROM swaps WHERE language = ? "
+            "AND state = ? ORDER BY id DESC LIMIT ?", (language, MADE, int(newest)))]
         waits = [{"id": r[0], "word": r[1]} for r in conn.execute(
             "SELECT id, word FROM swaps WHERE language = ? AND state = ? ORDER BY id", (language, WAITS))]
     except Exception:

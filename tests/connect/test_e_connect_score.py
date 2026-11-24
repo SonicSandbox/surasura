@@ -177,6 +177,31 @@ def test_swap_three_presses_give_the_next_three_lines_best_first_never_the_old_c
     assert FESTIVAL not in presses
 
 
+def test_each_swap_press_is_the_scores_first_line_at_that_press_as_a_young_line_enters_the_young_window(monkeypatch):
+    # why: the lead's ruling 2 (2026-11-23, drill 2: three of five words' presses were not the static list's next
+    # three) — a press asks the score at its own moment, the lines moved away from banned; a line holding a young word
+    # is lifted only while it is among the first YOUNG_LINES the score walks, so once the lines ahead of it are banned
+    # it is lifted and comes sooner than the list before the presses said. Never a bug of Swap's: the score's own
+    w = World(monkeypatch)
+    guitar = "文化祭のライブでギターを弾くことになった。"
+    episodes = FIVE + [("ep06", [guitar])]
+    w.table(FEST, episodes, "文化祭", words={guitar: ["ギター"]})
+    for n, (name, _lines) in enumerate(episodes, 1):
+        w.place(name, n, ctx=0.5 - n / 10)
+    monkeypatch.setattr(sentences, "young_weights", lambda language, read=None: {"ギター": 1.0})
+    before = _texts(sentences.choose("ja", [FEST], dial=sentences.BEST)[FEST])
+    assert before.index(guitar) == SS.YOUNG_LINES          # past the young window: not lifted yet
+    from app.connect import swap
+    avoid, presses = {before[0]}, []
+    for _press in range(3):
+        at_press = sentences.choose("ja", [FEST], dial=sentences.BEST, never={FEST: set(avoid)})[FEST]
+        item, text = swap.choose_line("ja", FEST[0], avoid=avoid, reading=FEST[1])
+        assert text == at_press[0].text                    # the score's first line at the press
+        presses.append(text)
+        avoid.add(text)
+    assert presses == [before[1], guitar, before[2]] != before[1:4]
+
+
 def test_bad_card_takes_another_line_never_the_deleted_cards_or_its_episodes(monkeypatch):
     from app.connect import swap
     _five(monkeypatch)
@@ -392,7 +417,8 @@ def test_an_unwatched_episode_of_a_started_show_has_only_its_shows_date_and_a_fi
             return {v[0]: v[1:] for v in sentences._library("ja", store, scored=scored).values()}
         scored, today = marks(True), marks(False)
         assert scored[first][3] is False and scored[second][3] is True and scored[third][3] is True
-        assert scored[second][0] == today[second][0], "the context itself is Connect's, unchanged"
+        # (the fade reads the clock at each call: the two reads are milliseconds apart)
+        assert scored[second][0] == pytest.approx(today[second][0], abs=1e-6), "the context itself is Connect's"
         assert all(len(v) == 3 for v in today.values()), "level 0's answer: today's shape"
         with store._writing():
             store.conn.execute("UPDATE items SET tier = 'graduated' WHERE id = ?", (third,))
@@ -495,6 +521,36 @@ def test_the_mined_episodes_own_line_comes_back_beside_the_best_eight_when_it_is
     got = sentences.choose("ja", [FEST], here=w.path("ep01"), dial=sentences.BEST, young={})[FEST]
     assert len(got) == sentences.TOP + 1 and [c.here for c in got] == [False] * sentences.TOP + [True]
     assert got[-1].text == LONG_JA and got[-1].cost > got[0].cost and sentences.better(got[0], got[-1])
+
+
+def test_one_pick_builds_the_scores_setup_once_across_its_asks_and_chooses_the_same(monkeypatch):
+    # why: the lead's waste card (F6, 2026-11-23) — one pick asks the score more than once (the main ask, then the
+    # mined episode's own line apart; a growth ask when lines can't be cut): the rows' index and the moment's arrays
+    # are the same between them, so they are built once a pick — and the choices are the ones built afresh each ask
+    w = World(monkeypatch)
+    episodes = [(f"ep{n:02d}", [FESTIVAL]) for n in range(2, 11)] + [("ep01", [LONG_JA])]
+    w.table(FEST, episodes, "文化祭")
+    for n in range(1, 11):
+        w.place(f"ep{n:02d}", n)
+    real_choose, real_rows, real_known = SS.choose, SS._key_rows, SS.known_at
+    asks, built = [], {"rows": 0, "known": 0}
+
+    def counted(name, real):
+        def call(*a, **k):
+            built[name] += 1
+            return real(*a, **k)
+        return call
+    monkeypatch.setattr(SS, "_key_rows", counted("rows", real_rows))
+    monkeypatch.setattr(SS, "known_at", counted("known", real_known))
+    monkeypatch.setattr(SS, "choose", lambda *a, **k: (asks.append(k.get("only")), real_choose(*a, **k))[1])
+    got = sentences.choose("ja", [FEST], here=w.path("ep01"), dial=sentences.BEST, young={"準備": 0.5})[FEST]
+    assert len(asks) == 2 and asks[1] is not None           # the main ask, then the mined episode's own line
+    assert built == {"rows": 1, "known": 1}
+    # the same choices, and the same costs, as two asks that each build their own
+    monkeypatch.setattr(SS, "choose", lambda *a, memo=None, **k: real_choose(*a, **k))
+    fresh = sentences.choose("ja", [FEST], here=w.path("ep01"), dial=sentences.BEST, young={"準備": 0.5})[FEST]
+    assert [(c.text, c.file, c.cost, c.here) for c in got] == [(c.text, c.file, c.cost, c.here) for c in fresh]
+    assert got[-1].here and got[-1].text == LONG_JA
 
 
 def test_a_book_outside_the_store_is_weighed_as_a_book_with_no_audiobook(monkeypatch):

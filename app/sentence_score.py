@@ -293,9 +293,41 @@ def _young(moment):
     return out
 
 
-def _moment_arrays(tab, moment, order, root, srcs=None):
+def _moment_arrays(tab, moment, order, root, srcs=None, kept=None):
     """The moment as the cost's arrays, and {file: (path, normalised path, rel, kind, digest, Seen)} for the files
-    `srcs` (None: every file); the list's order is `order` when one is handed in, else the table's `places`."""
+    `srcs` (None: every file); the list's order is `order` when one is handed in, else the table's `places`. `kept` (a
+    pick's memo, `_kept`): the rows' arrays built at its first ask and each file's entry once, the files a later ask
+    adds read then (the lead's waste card F6) — the arrays handed back are a copy an ask may add to."""
+    import numpy as np
+    sources = tab.sources()
+    if kept is not None and "arrays" in kept:
+        arrays, placed_files = kept["arrays"], kept["files"]
+    else:
+        arrays, placed_files = _row_arrays(tab, moment, order), {}
+        arrays.update(ctx=np.zeros(len(sources)), show_only=np.zeros(len(sources), bool),
+                      hear=np.zeros(len(sources), np.int8))
+        if kept is not None:
+            kept["arrays"], kept["files"] = arrays, placed_files
+    ctx, show_only, hear = arrays["ctx"], arrays["show_only"], arrays["hear"]
+    files = moment.files or {}
+    base = os.path.join(root, "")
+    for s in (range(len(sources)) if srcs is None else srcs):
+        if s in placed_files:
+            continue
+        rel, kind, digest = sources[s]
+        path = rel if os.path.isabs(rel) else base + rel.replace("/", os.sep)
+        at = os.path.normcase(os.path.abspath(path))
+        seen = files.get(at) or Seen()
+        placed_files[s] = (path, at, rel, kind, digest, seen)
+        context = float(seen.context or 0.0)
+        ctx[s] = context if math.isfinite(context) else 0.0
+        show_only[s] = bool(seen.show_only)
+        hear[s] = _HEARD_CODE.get(seen.heard, 2)
+    return dict(arrays), placed_files
+
+
+def _row_arrays(tab, moment, order):
+    """The moment's arrays over the table's rows: the list's order, the words known since, the young words."""
     import numpy as np
     keys = tab.head["keys"]
     rows = len(keys)
@@ -326,24 +358,20 @@ def _moment_arrays(tab, moment, order, root, srcs=None):
     young_of = _young(moment)
     young = np.fromiter((young_of.get(keys[o][0], 0.0) if 0 <= o < rows else 0.0 for o in own.tolist()),
                         np.float64, len(own))
-    files = moment.files or {}
-    base = os.path.join(root, "")
-    sources = tab.sources()
-    ctx, show_only, hear = np.zeros(len(sources)), np.zeros(len(sources), bool), np.zeros(len(sources), np.int8)
-    placed_files = {}
-    for s in (range(len(sources)) if srcs is None else srcs):
-        rel, kind, digest = sources[s]
-        path = rel if os.path.isabs(rel) else base + rel.replace("/", os.sep)
-        at = os.path.normcase(os.path.abspath(path))
-        seen = files.get(at) or Seen()
-        placed_files[s] = (path, at, rel, kind, digest, seen)
-        context = float(seen.context or 0.0)
-        ctx[s] = context if math.isfinite(context) else 0.0
-        show_only[s] = bool(seen.show_only)
-        hear[s] = _HEARD_CODE.get(seen.heard, 2)
-    arrays = {"placed": placed, "placed_now": placed_now, "known_at": known_at(formulas, placed_now), "own": own,
-              "lemma": lemma, "ctx": ctx, "show_only": show_only, "hear": hear, "young": young}
-    return arrays, placed_files
+    return {"placed": placed, "placed_now": placed_now, "known_at": known_at(formulas, placed_now), "own": own,
+            "lemma": lemma, "young": young}
+
+
+def _kept(memo, tab, moment, order, root):
+    """A pick's memo (`choose`'s `memo`) for this table, moment, order and data folder — what its asks share, built at
+    the first and kept for the rest; emptied when any of the four differs from the asks before. None: no memo."""
+    if memo is None:
+        return None
+    was = memo.get("for")
+    if was is None or not (was[0] is tab and was[1] is moment and was[2] is order and was[3] == root):
+        memo.clear()
+        memo["for"] = (tab, moment, order, root)
+    return memo
 
 
 def _tie_ranks(sources, srcs=None):
@@ -379,7 +407,7 @@ def _ranked(total, number, tie, src, a, b):
 
 
 def choose(language, keys, *, n=1, moment, length, never=None, order=None, only=None, heard_first=False,
-           clean_only=False, shown=None, whole=False, table=None):
+           clean_only=False, shown=None, whole=False, table=None, memo=None):
     """The best `n` sentences of each list row asked, at `moment` -> {(lemma, reading): [Line, …]}, best first ([] for
     a row with no line it can use; a key that is no row of the list is left out: the caller's library search); None
     when there is no table for `language`, or one it cannot read — the caller takes today's path. "New when studied" is weighed by `order`
@@ -391,7 +419,8 @@ def choose(language, keys, *, n=1, moment, length, never=None, order=None, only=
     the best heard one whenever the word has one (*Ensure an audio example*) · `clean_only` only lines with no other
     new word (*Only i+1*) · `shown` {(rel, number): text} the kept text of lines already shown, read before the token
     store · `whole` every row of the table scored in one pass (the redraw) · `table` a table in memory (tests; inside
-    Generate)."""
+    Generate) · `memo` a dict one caller keeps across the asks of one pick (Connect's): the rows' index, the moment's
+    arrays, each file's place, check and text built once for its table and moment (`_kept`), the choices the same."""
     try:
         tab = table if table is not None else _table(language)
     except Exception:
@@ -400,27 +429,34 @@ def choose(language, keys, *, n=1, moment, length, never=None, order=None, only=
         return None
     try:
         return _choose(tab, language, keys, n, moment, length, never, order, only, heard_first, clean_only, shown,
-                       whole)
+                       whole, memo)
     except Exception:
         return None             # a table damaged inside its blocks, a moment it can't read: the caller's own path
 
 
-def _choose(tab, language, keys, n, moment, length, never, order, only, heard_first, clean_only, shown, whole):
+def _choose(tab, language, keys, n, moment, length, never, order, only, heard_first, clean_only, shown, whole,
+            memo=None):
     import numpy as np
     keys = list(dict.fromkeys(tuple(k) for k in keys or ()))
-    exact, by_lemma = _key_rows(tab.head["keys"])
-    asked = {key: k for key in keys for k in [_row_of(key, exact, by_lemma)] if k is not None}
-    out = {key: [] for key in asked}
-    if not asked:
-        return out
     root = moment.root
     if root is None:
         from app.path_utils import get_data_path
         root = get_data_path(language)
-    with_lines = set(tab.rows().values())
+    kept = _kept(memo, tab, moment, order, root)
+    shared = kept if kept is not None else {}
+    if "rows" not in shared:
+        shared["rows"] = _key_rows(tab.head["keys"])
+    exact, by_lemma = shared["rows"]
+    asked = {key: k for key in keys for k in [_row_of(key, exact, by_lemma)] if k is not None}
+    out = {key: [] for key in asked}
+    if not asked:
+        return out
+    if "with_lines" not in shared:
+        shared["with_lines"] = set(tab.rows().values())
+    with_lines = shared["with_lines"]
     columns = _take(tab, sorted(with_lines) if whole else sorted({k for k in asked.values() if k in with_lines}))
     srcs = np.unique(columns["src"]).tolist()
-    arrays, files = _moment_arrays(tab, moment, order, root, srcs)
+    arrays, files = _moment_arrays(tab, moment, order, root, srcs, kept)
     low, high = length
     spans = _spans(columns["row"])
     tie = _tie_ranks(tab.sources(), srcs)
@@ -435,7 +471,8 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
     r = rates()
 
     tokens = [None]
-    read, there, stamps = {}, {}, {}
+    # (a file's text, its check and its stamp: the same for every ask of one pick)
+    read, there, stamps = (shared.setdefault(name, {}) for name in ("read", "there", "stamps"))
 
     def store():
         if tokens[0] is None:

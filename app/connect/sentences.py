@@ -652,10 +652,11 @@ def _scored(language, keys, here_key, never, young, files, reach, books, ai, set
                       hear == AI_VOICE, line.number, round(cost, 4))
 
     heard_first = bool(settings.get("ensure_audio_example", False))
+    memo = {}       # what the score's asks of this pick share, built once (the lead's waste card F6)
 
     def ask(asked, n, within):
         return sentence_score.choose(language, asked, n=n, moment=moment, length=(low, high), never=never or None,
-                                     only=within, heard_first=heard_first)
+                                     only=within, heard_first=heard_first, memo=memo)
 
     out, asked, n = {}, list(keys), TOP
     while asked:

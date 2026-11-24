@@ -36,7 +36,10 @@ def run(request, tmp_path_factory):
     cases.build(root, case)
     with open(os.path.join(root, "settings.json"), "w", encoding="utf-8") as f:
         json.dump({"logic": {"context": {"max_chars": NEVER_LONGER}}}, f)
-    cases.generate(root, case, extra_env={"SURASURA_SENTENCE_TABLE": "2"})
+    # A level-1 Generate: the same table a level-2 one writes (the walk offers it the same lines), beside today's
+    # plan (format 4) with its own first sentences — today's answer these tests compare with. (A level-2 Generate's
+    # plan, format 5, keeps none: E-REDRAW part 2.)
+    cases.generate(root, case, extra_env={"SURASURA_SENTENCE_TABLE": "1"})
     results = os.path.join(root, "results")
     return types.SimpleNamespace(language=language, root=root, results=results,
                                  plan_path=os.path.join(results, analyzer.PLAN_FILE),

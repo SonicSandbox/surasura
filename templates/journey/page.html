@@ -1560,7 +1560,7 @@ function restoreView() {
   if (v) { if (v.id != null && ID_IX.has(v.id)) i = ID_IX.get(v.id); else if (v.name) i = EPS.findIndex((e) => e[1] === v.name); }
   if (location.hash.startsWith("#file=")) {                // the window's ↗: an episode's item (two shows' 第01集 are two), else its name
     const [file, ...more] = location.hash.slice(6).split("&"), name = decodeURIComponent(file), id = Number((more.find((p) => p.startsWith("id=")) || "").slice(3) || NaN);
-    const j = ID_IX.has(id) ? ID_IX.get(id) : EPS.findIndex((e) => e[1] === name);
+    const j = ID_IX.size && !Number.isNaN(id) ? (ID_IX.has(id) ? ID_IX.get(id) : -1) : EPS.findIndex((e) => e[1] === name);   // (an item it lacks: never its namesake)
     if (j >= 0) { i = j; v = null; }
   }
   if (i < 0) { i = startEp(); v = null; }

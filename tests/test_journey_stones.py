@@ -489,7 +489,7 @@ def test_the_windows_arrow_on_show_bs_first_episode_opens_show_bs_never_its_name
     from tests.journey_page_edge import Edge
     root = os.environ["SURASURA_TEST_ROOT"]
     _settings(language)
-    store, ids, (one, _two) = _same_named(language)
+    store, ids, (one, two) = _same_named(language)
     _generate(root, language)
     store.close()
     report = os.path.join(root, "results", gen.REPORT_NAME)
@@ -503,6 +503,13 @@ def test_the_windows_arrow_on_show_bs_first_episode_opens_show_bs_never_its_name
         edge.evaluate("localStorage.clear()")
         assert edge.open("file:///" + report.replace("\\", "/") + "?n=2#file=" + quote(one, safe=""))
         assert edge.evaluate("S.ep") == at[ids["A1"]], "the name alone (an older link): the name's first episode"
+        edge.evaluate("localStorage.clear()")
+        assert edge.open("file:///" + report.replace("\\", "/") + "?n=3")
+        itself = edge.evaluate("S.ep")
+        edge.evaluate("localStorage.clear()")
+        lacks = f"?n=4#file={quote(two, safe='')}&id={max(ids.values()) + 1}"
+        assert edge.open("file:///" + report.replace("\\", "/") + lacks)
+        assert edge.evaluate("S.ep") == itself != at[ids["B2"]], "an item the page lacks: where it opens by itself"
         # the window's way there: `open_report` hands the item to the page, through the small page beside it
         opened = []
         with patch.object(gen, "get_user_file", lambda name: os.path.join(root, name)), \

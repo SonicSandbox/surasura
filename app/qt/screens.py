@@ -221,10 +221,12 @@ class Page(QWidget):
                 return payload.media
         return None
 
-    def _play(self, episode, at=None):
+    def _play(self, episode, at=None, control=None):
         """▶ (a row's, an episode's, its ⋯ *Play*, a search hit's): one press (`press.open`) — the file's ▶ turns
         (`at`, else this list's `row_mark` at "play"; IK-2) from the frame of the press, then row 55's one lookup
-        (`media_to_open`) and the open, both on a worker; a second ▶ meanwhile does nothing. -> the press, or None."""
+        (`media_to_open`) and the open, both on a worker; a second ▶ meanwhile does nothing. `control`: a button
+        elsewhere that pressed it (the path card's *▶ Watch*, Mado-EZP): its arc turns instead of the row's, and the
+        press is the same one (`("play", id)`: a ▶ on either meanwhile does nothing). -> the press, or None."""
         media = self._media_of(episode)
         found = []
         services = getattr(self.window(), "services", None)
@@ -253,8 +255,10 @@ class Page(QWidget):
             named = path and "://" not in path                # (an online video's page: named by its episode)
             self.message.emit(strings.PLAY_FAILED.format(name=os.path.basename(path) if named else episode.label,
                                                          why=str(info[0])))
-        return qpress.open(self.window(), look, key=("play", episode.id), then=opened, failed=failed,
-                           at=at or qpress.row_mark(self.list, [episode.id], "play"), opener=opener)
+        if at is None and control is None:
+            at = qpress.row_mark(self.list, [episode.id], "play")
+        return qpress.open(self.window(), look, control=control, key=("play", episode.id), then=opened,
+                           failed=failed, at=at, opener=opener)
 
 
 class CurrentPage(Page):

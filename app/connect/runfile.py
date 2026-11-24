@@ -24,11 +24,16 @@ import json
 import math
 import os
 import re
+import time
 import unicodedata
 
 SCHEMA = 1
 MAX_BYTES = 8 * 1024 * 1024
 RUN_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+# A job's run file is written twice, seconds apart (the pick's, then the batch's), so the second replace can land on a
+# file another program is still reading (a virus check: [WinError 32], once in every eleven jobs of a timed mine) —
+# waited out as the library store's replace is (`library_store.REPLACE_BACKOFF`), 1.55 s at most, then the error
+REPLACE_BACKOFF = (0.05, 0.1, 0.2, 0.4, 0.8)
 TAG_PREFIX = "surasura::connect::"
 # Michi-NS (Q5 ✅ Sonic 2026-10-31): on every card mined from a subtitle Anki Miner made from the episode's audio
 # (`no_subs`, the record's verdict "transcribed"): a misheard word can happen, so the learner can find and check them
@@ -224,17 +229,79 @@ def no_cloze(text):
     return _CLOZE.sub("{\u200b{\\1", text) if isinstance(text, str) else text
 
 
-def episode(run_id, video, subtitle, words, tags="", subtitle_offset=0.0, audio=False, names=None):
+TIE_S = 0.005       # two Dialogue events this close at their start are one start to Anki Miner's `line_start`
+
+
+def _fold(text):
+    """NFKC with every whitespace run removed: how Anki Miner compares a `line_text` with a line (API.md)."""
+    return "".join(unicodedata.normalize("NFKC", text or "").split())
+
+
+def _events(subtitle, language):
+    """[(start s, its Text as the file writes it)] of an .ass / .ssa file's Dialogue events, in the file's order."""
+    from app import cues, path_utils
+    out, events, text_i, start_i = [], False, 9, 1
+    for line in path_utils.read_text(subtitle, language).split("\n"):
+        line = line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            events = line == "[Events]"
+        elif events and line.startswith("Format:"):
+            fields = [f.strip() for f in line[7:].split(",")]
+            if "Text" in fields and "Start" in fields:
+                text_i, start_i = fields.index("Text"), fields.index("Start")
+        elif events and line.startswith("Dialogue:"):
+            parts = line[len("Dialogue:"):].split(",", text_i)
+            start = cues._ass_time(parts[start_i]) if len(parts) > text_i else None
+            if start is not None and parts[text_i].strip():
+                out.append((cues.seconds(start), parts[text_i]))
+    return out
+
+
+def named_by_text(subtitle, words, features=(), language=None):
+    """AM-FIX (2026-11-23): `words` (the run file's entries), each named by its event's own text where its line's
+    start can't name it. A two-line caption written as two Dialogue events with one start (SubsPlease's) is one cue
+    to Surasura (`cues.read`) and two lines to Anki Miner, whose `line_start` names the earlier of a tie (API.md, "A
+    word"; 3.13 `cli/api/lines.py` `nearest_line`): a word on the later one came back `not_found` (FS-R: ~a third of
+    an episode's lines). Such an entry goes with `line_text` (that event's Text as written: Anki Miner names the
+    first line holding it, compared after its own cleaning) instead of `line_start` — only for an Anki Miner that
+    makes a word from its line (Z-2, `word-from-line`: it takes `line_text` on a subtitle's word), and only when no
+    earlier event holds that text too (the first line holding it is this one). Anything else as it is; a file that
+    can't be read changes nothing."""
+    if not from_line(features) or not str(subtitle or "").lower().endswith((".ass", ".ssa")) \
+            or not any(w.get("line_start") is not None for w in words):
+        return words
+    try:
+        events = _events(subtitle, language)
+    except (OSError, ValueError, IndexError):      # (IndexError: a Format line naming Start after Text)
+        return words
+    from app import analyzer
+    folded = [_fold(analyzer.ass_dialogue_text(text, language or "ja")) for _start, text in events]
+    out = []
+    for w in words:
+        at = w.get("line_start")
+        tied = [i for i, (start, _text) in enumerate(events) if at is not None and abs(start - at) <= TIE_S]
+        wanted = [_fold(x) for x in (w.get("surface"), w.get("word")) if _fold(x)] if len(tied) > 1 else []
+        holder = next((i for want in wanted for i in tied if want in folded[i]), None)
+        if holder is not None and holder != tied[0] and not any(folded[holder] in f for f in folded[:holder]):
+            w = {k: v for k, v in w.items() if k != "line_start"}
+            w["line_text"] = events[holder][1].strip()
+        out.append(w)
+    return out
+
+
+def episode(run_id, video, subtitle, words, tags="", subtitle_offset=0.0, audio=False, names=None, features=(),
+            language=None):
     """One episode of a run: its video and subtitle (absolute paths), the words, the job's tags, and the subtitle's
     offset from the fit check (0 until tsubasa's check is wired, P2.4) — always sent (IS:269). `audio` (Z-16): `video`
     is an audio file (`audio_file`, the clips cut from it), and the cards' Source names it as a video's does —
     `<its folder> — <its name>` (`series_name_override`: Anki Miner's own series for audio, `Audio`, names no show,
     so 順's one source-name rule couldn't tie the card to its file). `names` (Michi-YT): [folder, name] the Source
     names instead — an online title's video, fetched into Connect's own folder, carries its transcript's (each set
-    only when it holds a letter)."""
+    only when it holds a letter). `features` (`version`'s) and `language`: a word on a caption's later event of one
+    start is named by its text (`named_by_text`)."""
     out = {"run_id": run_id, ("audio_file" if audio else "video_file"): os.path.abspath(video),
            "subtitle_file": os.path.abspath(subtitle), "subtitle_offset": float(subtitle_offset), "tags": tags,
-           "words": list(words)}
+           "words": named_by_text(subtitle, list(words), features, language)}
     folder = os.path.basename(os.path.dirname(os.path.abspath(video))) if audio else ""
     if names:
         folder, name = (str(n or "") for n in names)
@@ -324,7 +391,9 @@ def _strings(value, where="run file"):
 
 def write(path, data):
     """Check `data`, then write it to `path` as strict UTF-8 without a BOM (K61), atomically (a temp file, then
-    os.replace); the folders it names (`run_dir`, the file's own) are made. Returns the path."""
+    os.replace); the folders it names (`run_dir`, the file's own) are made. Returns the path. The replace is tried
+    again while another program holds the file open (`REPLACE_BACKOFF`); still held after the last wait: the
+    PermissionError, the file there before left as it was and no temp file behind."""
     check(data)
     raw = json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8")      # strict: a surrogate raises above
     if len(raw) > MAX_BYTES:
@@ -336,8 +405,25 @@ def write(path, data):
         f.write(raw)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, path)
-    return path
+    return replace_held(tmp, path)
+
+
+def replace_held(tmp, path):
+    """os.replace(tmp, path), tried again while another program holds `path` open (a virus check reading a file just
+    written: `REPLACE_BACKOFF`) -> `path`. Still held after the last wait: the PermissionError, the file there before
+    left as it was and `tmp` removed. The run file's write and a subtitle's cleaned copy (`caption_clean.copy_for`)."""
+    for wait in REPLACE_BACKOFF + (None,):
+        try:
+            os.replace(tmp, path)
+            return path
+        except PermissionError:
+            if wait is None:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                raise
+            time.sleep(wait)
 
 
 def without_sentence_keys(data):

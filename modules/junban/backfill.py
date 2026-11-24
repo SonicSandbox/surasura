@@ -48,7 +48,7 @@ from app import anki_connect
 from app.anki_connect import AnkiError
 from app.path_utils import list_reader
 from app.unicode_ranges import KANA_LETTERS
-from modules.junban import ankiconnect, first_touch, match, pairs, reposition, touchup, undo
+from modules.junban import ankiconnect, connect, first_touch, match, pairs, reposition, touchup, undo
 
 # One fill: what it writes, and how the window offers it — `tip` on its tick box, and `help` behind its
 # "?": a title and short sections (a header, one plain line, an example), written for a 12-year-old
@@ -84,8 +84,25 @@ FILLS = (
               "One easy sentence → just that one."),
              ("On the card", "Hidden under the 例文 toggle, next to 翻訳.",
               "Tap 例文 to see them.")))),
+    # Kantan-PF (2026-11-21): what a card lacks when the AJT add-on didn't write it (an Anki window in front as the
+    # card was added) or Kanjium has no pitch for the word (`readings`). Japanese only; the field's own name found.
+    Fill("furigana", "ふりがな", "The reading over each kanji in the card's sentence, when it has none.",
+         ("SentenceFurigana",), ("ja",),
+         ("ふりがな — the reading over the sentence's kanji", (
+             ("Only if it's empty", "A card that already has its furigana keeps it.",
+              "距離を取った → 距離[きょり]を 取[と]った"),
+             ("On the card", "Tap or hover over the sentence to see it.", "距離 → きょり")))),
+    Fill("pitch", "アクセント", "The word's pitch accent, when the card has none.",
+         ("PitchPosition", "pitchPositions"), ("ja",),
+         ("アクセント — the word's pitch accent", (
+             ("One word only", "From the dictionary Surasura reads with. A phrase or a name is left empty.",
+              "分かり合う → 4   ·   あくまでも → (left empty)"),
+             ("On the card", "The word's colour shows its accent.", "虐め → 0 (flat, blue)")))),
 )
 FILL_KEYS = tuple(fill.key for fill in FILLS)
+# The fills a card Connect makes always gets, whatever Backfill's own ticks say (Kantan-PF: Connect never leaves its
+# card without furigana or pitch it could have): run in `run_named`, in any deck
+MAKING = ("furigana", "pitch")
 
 # 例文: how many sentences a card gets; how many words besides the card's own may be ones the learner
 # doesn't know (0: the user's "all known words, i+1 where the unknown word is the expression", 2026-09-24);
@@ -224,7 +241,7 @@ class Session:
         promote(self.language)          # a library set rebuilt in the background goes in before it is opened
         self.stores = []
         self.tokenize = None
-        self.is_known = lambda word: False
+        self.is_known = lambda word, sentence=None: False
         self.sentences = {}             # 例文: target -> [(others, text, surface, file)], best first
         self._looked_up = set()         # the targets already asked for, found or not
         self._words = None              # the analyzer's own tokenizer: a phrase as the store holds it
@@ -394,6 +411,16 @@ class Session:
             return value, reason
         if fill.key == "sentence":
             return self._sentence(note, field)
+        tagger = getattr(self._words, "tagger", None) if self.language == "ja" else None
+        if fill.key == "furigana" and tagger is not None:
+            from modules.junban import readings
+            sentence = _sentence_field(note["fields"])
+            if not match.normalize_word(sentence):
+                return "", "the card has no sentence"
+            return readings.sentence_furigana(sentence, tagger), None
+        if fill.key == "pitch" and tagger is not None:
+            from modules.junban import readings
+            return readings.pitch(note["word"], note.get("reading"), tagger)
         return "", "not available"
 
     def _sentence(self, note, field):
@@ -466,6 +493,12 @@ def _own_lines(fields, skip=None):
             if len(bare) >= SENTENCE_MIN:
                 lines.append(bare)
     return lines
+
+
+def _sentence_field(fields):
+    """The card's sentence, as its field holds it (markup and all): the field named Sentence, case aside (Lapis, Kiku,
+    Senren, Anki Miner Note) — "" when the note type has none."""
+    return next((value or "" for name, value in (fields or {}).items() if name.lower() == "sentence"), "")
 
 
 def _same_sentence(text, own):
@@ -650,12 +683,15 @@ def plan(scope, session, settings, auto=False, status=None):
                 action = "language"
             elif session.language == "zh" and _KANA.search(note["word"] or ""):
                 action = "language"                     # S4: a word with kana is never Chinese
+            elif note.get("rewritten") and fill.key in MAKING:
+                if (note["fields"].get(field) or "").strip():
+                    action = "filled"       # a swap's new line: its own fills, studied or known, empty fields only
             elif (auto or cards == "new") and not note["new"]:
                 action = "studied"
-            elif note["new"] and session.is_known(note["word"]):
+            elif note["new"] and session.is_known(note["word"], connect.sentence_of(note)):
                 action = "known"
-            elif (note["fields"].get(field) or "").strip() and not replace:
-                action = "filled"
+            elif (note["fields"].get(field) or "").strip() and (not replace or fill.key in MAKING):
+                action = "filled"           # ふりがな / アクセント never overwrite (AJT's colour, Anki Miner's pitch)
             decided.append((note, fill, field, action))
     for fill in fills:
         # What a fill needs is loaded once, for exactly the notes that will ask for it.
@@ -688,7 +724,10 @@ REASONS = {"fill": "fill", "replace": "replace", "phrase": "phrases", "not found
            "no field": "no field", "language": "other language", "language not set": "Language?",
            "studied": "studied",
            "known": "known", "filled": "already filled", "unchanged": "unchanged",
-           "no sentence": "no sentence", "not easy": "none easy", "the card's own": "only the card's"}
+           "no sentence": "no sentence", "not easy": "none easy", "the card's own": "only the card's",
+           # ふりがな / アクセント (Kantan-PF)
+           "the card has no sentence": "no sentence on it", "name": "name", "not a word": "not one word",
+           "reading differs": "another reading", "no pitch data": "no pitch data"}
 
 
 # What each label means, in a few plain words — behind the window's ⓘ.
@@ -705,7 +744,11 @@ REASON_HELP = {"replace": "Replace is ticked, so what's there is overwritten.",
                "unchanged": "Already says this.",
                "no sentence": "No sentence of a good length in your library.",
                "none easy": "Every sentence has another word you don't know yet.",
-               "only the card's": "The easy ones are all your card's own sentence."}
+               "only the card's": "The easy ones are all your card's own sentence.",
+               "no sentence on it": "The card has no sentence to read.",
+               "name": "A name: its accent is its own.", "not one word": "A sound or a part of a word.",
+               "another reading": "Your card reads it another way.",
+               "no pitch data": "Not in the dictionary Surasura reads with."}
 
 
 def reason(action):
@@ -1007,9 +1050,11 @@ def source_edits(scope, source, note_type, field):
 
 
 def run_named(settings, session, note_ids, source=None, dry_run=False, run_id=None, wait=0.0, cancel=None,
-              on_wait=None, verb="Backfill (Connect)"):
+              on_wait=None, verb="Backfill (Connect)", rewritten=()):
     """Connect's Backfill of the notes `note_ids` names (`surasura-cli backfill`): new cards only, empty fields only —
     the automatic run's rules — in Backfill's one deck, and the source field (`source`: `(text, note type, field)`).
+    `rewritten` (FS-1, the full Swap): notes whose sentence a swap just rewrote in place — their card's own fills
+    (`MAKING`: the new line's ふりがな) are made studied or known too, still into empty fields only.
 
     §7.2: under the Anki-write lock; refused while a fill (the window's or a run of Connect's) never finished; each
     note re-read just before it is written, and one changed since the plan left alone; the run's own snapshot
@@ -1018,12 +1063,12 @@ def run_named(settings, session, note_ids, source=None, dry_run=False, run_id=No
     -> `{"ok", "message", "problems", "filled" (note ids), "skipped" ({reason: notes}), "planned", "undo", "busy"}`.
     Never raises."""
     if dry_run:
-        return _run_named(settings, session, note_ids, source, True, None)
+        return _run_named(settings, session, note_ids, source, True, None, rewritten)
     held, problem = anki_connect.take_writer(verb, _url(settings), wait, cancel, on_wait)
     if held is None:
         return _named_report(False, "Nothing was filled.", problems=[problem], busy=True)
     with held:
-        return _run_named(settings, session, note_ids, source, False, run_id)
+        return _run_named(settings, session, note_ids, source, False, run_id, rewritten)
 
 
 def _fields_put_back(language, deck):
@@ -1064,7 +1109,7 @@ def _named_report(ok, message, **extra):
     return report
 
 
-def _run_named(settings, session, note_ids, source, dry_run, run_id):
+def _run_named(settings, session, note_ids, source, dry_run, run_id, rewritten=()):
     url = _url(settings)
     language = session.language
     deck = _deck(settings)
@@ -1082,23 +1127,45 @@ def _run_named(settings, session, note_ids, source, dry_run, run_id):
             return _named_report(False, "Nothing was filled.", unfinished=unfinished,
                                  problems=["The last fill did not finish. Press Restore first, then fill again."])
     settings = dict(settings, junban_backfill_cards="new", junban_backfill_replace=False)
+    # Kantan-PF: the card's furigana and pitch whatever the ticks say, and in any deck (MAKING)
+    making = dict(settings, junban_backfill_fills=list(MAKING))
+    ticked = _fills(settings)
+    settings = dict(settings, junban_backfill_fills=ticked + list(MAKING))
     skipped = Counter()
     try:
         scope = gather_notes(url, settings, note_ids)
-        kept = []
+        rewritten = {int(n) for n in rewritten or ()}
         for note in scope["notes"]:
-            if deck and not _in_deck(note["decks"], deck):
+            note["rewritten"] = note["id"] in rewritten
+        kept, elsewhere = [], []
+        put_back = {}                       # a deck whose fields you put back: none of these fills either (FT-1)
+
+        def held(name):
+            if name not in put_back:
+                put_back[name] = _fields_put_back(language, name)
+            return put_back[name]
+        for note in scope["notes"]:
+            if not deck or _in_deck(note["decks"], deck):
+                kept.append(note)
+            elif any(held(name) for name in note["decks"] or [""]):
                 skipped["other deck"] += 1
             else:
-                kept.append(note)
+                elsewhere.append(note)
         scope["notes"] = kept
         planned = plan(scope, session, settings, auto=True)
         edits = {note_id: dict(changes) for note_id, changes in planned["edits"].items()}
+        if elsewhere:
+            beyond = plan(dict(scope, notes=elsewhere), session, making, auto=True)
+            for note_id, changes in beyond["edits"].items():
+                edits.setdefault(note_id, {}).update(changes)
+            planned["rows"] += beyond["rows"]
+            skipped["other deck"] += sum(1 for note in elsewhere if note["id"] not in beyond["edits"])
         text, note_type, field = source or (None, None, None)
         for note_id, changes in source_edits(scope, text, note_type, field).items():
             edits.setdefault(note_id, {}).update(changes)
         for row in planned["rows"]:
-            if row[3] not in ("fill", "replace"):
+            # an always-fill you didn't tick says nothing of what it skipped (a note type without the field)
+            if row[3] not in ("fill", "replace") and (row[5] in ticked or row[5] not in MAKING):
                 skipped[reason(row[3])] += 1
     except AnkiError as e:
         return _named_report(False, "Nothing was filled.", problems=[str(e)],
@@ -1240,8 +1307,8 @@ def rebuild_command(language="ja", reinforce=False, db=None):
     extra = [] if language == "ja" else ["--language", language] + (["--reinforce"] if reinforce else [])
     if db:
         extra += ["--db", db]
-    if getattr(sys, "frozen", False):
-        return [sys.executable, "junban_patterns"] + extra, env, None
+    if getattr(sys, "frozen", False):           # headless: never a Critical Error box from an unseen child (3.0.17)
+        return [sys.executable, "junban_patterns", "--headless"] + extra, env, None
     env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
     return [sys.executable, "-m", "modules.junban.patterns_build"] + extra, env, root
 

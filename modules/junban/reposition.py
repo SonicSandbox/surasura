@@ -98,20 +98,11 @@ ORDER_FILES = {
     "priority": (PRIORITY_CSV_NAME, "priority learning list"),
 }
 
-# Where the cards the list does not have go (`junban_unlisted`, Junban_Backlog_Spec §11 / §12.2):
-#   "list_first" — the default, the panel's "List first": the list's words come first, because
-#       they are the ones frequent enough to learn now — and among them, each with its episode's
-#       words, the phrases the library meets as often as the list's words (a phrase is two words to
-#       the list, so it can never be on it); then every rarer card by its own sentence (i+1 first);
-#       known words last.
-#   "journey" — "List first" off: a word the list cut off is placed where the journey meets it,
-#       among the list's own words (§11.1 as first built).
-#   "back" — v1: every card the list does not have keeps its existing order behind the list's.
-# Anything else is refused in preflight rather than quietly treated as one of them — a setting that
-# silently does something other than what it says is worse than one that is missing. A new key, not
-# v1's `junban_unmatched`: every existing settings.json holds that one's old default.
+# 3.0.17's `junban_unlisted` (Junban_Backlog_Spec §11 / §12.2: "list_first" · "journey" · "back"), retired by the
+# mining model (Kyou-MO): your own cards off the list follow `junban_off_list` (`unlisted.choice`, which reads this
+# key while that one is unset), Surasura's follow Connect's *Cards for every new word* (`_every_word`). The default
+# stays for the 2.x Tk panel (`gui.py`).
 DEFAULT_UNLISTED = "list_first"
-SUPPORTED_UNLISTED = ("list_first", "journey", "back")
 
 # The "why" of a card placed as a list word because the user said it is one (§16): the same words
 # in the preview after a tick and in the run that reads the recorded answer.
@@ -172,13 +163,11 @@ def _word_fields(settings):
     return dict(overrides) if isinstance(overrides, dict) else {}
 
 
-def _unlisted(settings):
-    return str((settings or {}).get("junban_unlisted") or DEFAULT_UNLISTED).strip().lower()
-
-
-def _ready_first(settings):
-    """`junban_ready_first`: the panel's "i+1 first" (§17). Off unless explicitly switched on."""
-    return (settings or {}).get("junban_ready_first") is True
+def _every_word(settings):
+    """*Cards for every new word* (Connect's, Kantan-MO: `settings_manager.connect_every_word`): Surasura's cards past
+    your level are placed where you meet them, among the list's (Kyou-MO, F24); off, they go to the back."""
+    from app import settings_manager
+    return settings_manager.connect_every_word(settings)
 
 
 def _phrase_rows(settings, language):
@@ -195,13 +184,15 @@ def _phrases(settings):
 
 
 def _order(settings):
-    """`junban_order`, lowercased and trimmed — **not** validated. Preflight owns that.
+    """The study order — the list's `study_order` (Settings › Level; Kantan-MO, ROLES.md), else 順's old `junban_order`
+    — lowercased and trimmed — **not** validated. Preflight owns that.
 
     An unrecognised value reaches preflight as a problem rather than being quietly repaired here,
     for the same reason an unrecognised scope does: silently picking an order on the strength of a
     typo writes a real reordering the user never asked for.
     """
-    return str((settings or {}).get("junban_order") or DEFAULT_ORDER).strip().lower()
+    settings = settings or {}
+    return str(settings.get("study_order") or settings.get("junban_order") or DEFAULT_ORDER).strip().lower()
 
 
 def _only_markers(settings):
@@ -215,15 +206,17 @@ def _only_markers(settings):
 
 
 def _tiers(settings):
-    """Whether the run places cards by tiers — the cards not on the list "After it" or "Mixed in" (never "At the back"),
-    and no *Only words marked* pick (a marker filter keeps its promise: only the chosen words move)."""
-    return _unlisted(settings) in ("list_first", "journey") and not _only_markers(settings)
+    """Whether the run places cards by tiers: always, but for an *Only words marked* pick (a marker filter keeps its
+    promise: only the chosen words move). Since the mining model (Kyou-MO) *At the back* is only where your own cards
+    off the list go (`unlisted.choice`): the list's cards are still placed by tiers."""
+    return not _only_markers(settings)
 
 
 def first_applies(settings, language):
-    """Whether the "First" switches — `junban_phrases` and `junban_ready_first` — take part in a run for `settings`
-    and `language`: Japanese only, and only where the run places by tiers (`_tiers`). The one rule: the run asks it,
-    and so does the Settings page before it shows the two switches (Q31). Pure: no Anki, no file."""
+    """Whether *Idioms and set phrases* (`junban_phrases`) and the unlocking word first (always since Kyou-MO: no
+    switch) take part in a run for `settings` and `language`: Japanese only, and only where the run places by tiers
+    (`_tiers`). The one rule: the run asks it, and so does the Settings page before it shows *Idioms and set phrases*
+    (Q31). Pure: no Anki, no file."""
     return language == "ja" and _tiers(settings)
 
 
@@ -588,6 +581,8 @@ def _place_the_rest(cards, notes, language, settings, rank_of=None, answers=None
                                            getattr(getattr(tokenize, "__self__", None), "tagger", None),
                                            _singles(settings))
     skip = _skip(language, _singles(settings))
+    # Kyou-KN: a card's sentence is read once — its known test and its place by that sentence read the same text
+    read_once = _read_once(tokenize) if tokenize else None
 
     def unknown(token):
         return word_unknown(token[0], token[1], token[2])
@@ -624,7 +619,7 @@ def _place_the_rest(cards, notes, language, settings, rank_of=None, answers=None
         rank = _freqsort(fields)
         by_freq = rank if rank is not None else float("inf")
         beside = [] if needs else None
-        unknowns = (match.unknowns_beside(word, connect.sentence_of(note), tokenize, unknown, units, skip, beside)
+        unknowns = (match.unknowns_beside(word, connect.sentence_of(note), read_once, unknown, units, skip, beside)
                     if tokenize and word else None)
         if unknowns is None and note.get("unsure"):
             return "rest", (by_freq,), connect.UNSURE
@@ -662,13 +657,17 @@ def _place_the_rest(cards, notes, language, settings, rank_of=None, answers=None
         # too (65 kana-only; measured 2026-09-26) took a list slot — だいぶ on the loanword ダイブ's row,
         # 好き in 好く's Forms, ぐっと on a グッ row misread from ぐっちゃぐっちゃ. It leaves the list with
         # its key, so nothing later ("i+1 first", the touch-ups) places it there.
+        # Kyou-KN: a kana card is read in its own sentence (the one `find_unbolded` marked, with Connect's preview)
         word = card.get("word") or ""
+        sentence = connect.sentence_of((notes or {}).get(card.get("note")))
         if answered is None:
-            is_known = is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples)
+            is_known = is_known_word(word, known, known_lemmas, ignore, read_once, known_tuples, sentence=sentence)
         else:
-            is_known = answered.get(word)
+            memo = _known_key(word, sentence)
+            is_known = answered.get(memo)
             if is_known is None:
-                is_known = answered[word] = is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples)
+                is_known = answered[memo] = is_known_word(word, known, known_lemmas, ignore, read_once, known_tuples,
+                                                          sentence=sentence)
         if is_known:
             card.update(tier="known", sort=(), why="known", key="")
             continue
@@ -745,24 +744,27 @@ class _SentenceWords:
 
 
 def _ready_first_pass(cards, notes, rank_of, journey_of, order, language, settings, library=None):
-    """The panel's "i+1 first" (Junban_Backlog_Spec §17, the user 2026-09-24): a card placed with the
-    list whose OWN sentence holds a word from the list that comes AFTER it is not i+1 when it comes up.
+    """The unlocking word first (Junban_Backlog_Spec §17, the user 2026-09-24; always since the mining model, Kyou-MO —
+    no switch): a card placed with the list whose OWN sentence holds a word from the list that comes AFTER it is not
+    i+1 when it comes up.
 
       * When every such word has a new card of its own, and each of THOSE cards is i+1 right there —
         counting only the known words and what comes before the card in need, never that card itself
         (the loop: if 入れ替わり needs 従兄 and 従兄 needs 入れ替わり, neither moves) — they are brought
         forward to sit just before it: "bring the other word first AND THEN review the card right
         there".
-      * Otherwise the card waits with the cards of more new words ("multi"), fewest first.
+      * Otherwise (no card yet for the word, a chain, a loop) the card **keeps its list place** — an i+2 card, never
+        sent behind the list (ADVERSARY F16, Sonic 2026-11-21: a card whose other word can't come first keeps its
+        place); its reason says what it needs too.
 
     One pass, in list order, and no chains: a card brought forward never brings anything itself, and
     only the cards brought forward change what counts as learned for the cards after them — a card
-    that waits holds nobody back. A name counts like any other word, as the report counts it (the user,
+    that keeps its place holds nobody back. A name counts like any other word, as the report counts it (the user,
     2026-09-30) — unless Ignore names makes the library's names ignored words. Words too rare for the list
     never count (waiting would never teach them), nor do one-character words the list can't offer there, or the
     user's own answers to "Same word as one on your list?" (so a tick previews as the run writes, I5). A sentence
     is read as the list reads it (`_learning`; `library`: what the last Generate counted).
-    Returns `{"pulled", "held"}`; changes the cards' `sort`, `why`, `tier` in place.
+    Returns `{"pulled", "kept"}`; changes the cards' `sort` and `why` in place.
     """
     words = _SentenceWords(language, settings, library)
 
@@ -803,7 +805,7 @@ def _ready_first_pass(cards, notes, rank_of, journey_of, order, language, settin
         if card.get("key"):
             card_of.setdefault(card["key"], card)
 
-    learned, moved, pulled, held = set(), set(), 0, 0
+    learned, moved, pulled, kept = set(), set(), 0, 0
     for card in with_list:
         if card["card_id"] in moved:
             continue                                        # already brought forward: no chains
@@ -820,12 +822,8 @@ def _ready_first_pass(cards, notes, rank_of, journey_of, order, language, settin
                 break
             bring.append(other_card)
         if bring is None:
-            freq = _freqsort(((notes or {}).get(card.get("note")) or {}).get("fields") or {})
-            card.update(tier="multi", sort=(len(needed), freq if freq is not None else float("inf")),
-                        why="waits for " + "、".join(needed) + " · " + (card.get("why") or ""),
-                        fallback=None, held=True,
-                        waits=(tuple(needed), card.get("impact")))    # Kyou-A: the weave's, once picked
-            held += 1
+            card.update(why="needs " + "、".join(needed) + " too · " + (card.get("why") or ""))
+            kept += 1
             continue
         for n, other_card in enumerate(bring):
             other_card.update(sort=tuple(before) + (0, n), pulled=True,
@@ -835,7 +833,7 @@ def _ready_first_pass(cards, notes, rank_of, journey_of, order, language, settin
             pulled += 1
         # The move first: a phrase's own reason is long, and the column cuts the end off.
         card.update(sort=tuple(before) + (1,), why="after " + "、".join(needed) + " · " + (card.get("why") or ""))
-    return {"pulled": pulled, "held": held}
+    return {"pulled": pulled, "kept": kept}
 
 
 # The "not in your library" banner (§5.4, D9): a source with at least this many cards the library
@@ -844,7 +842,7 @@ def _ready_first_pass(cards, notes, rank_of, journey_of, order, language, settin
 BANNER_MIN = 10
 
 
-def is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples=None):
+def is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples=None, sentence=None):
     """Is a card's word one the learner already knows — 順's "known" tier (Junban_Backlog_Spec §5.5)?
 
     The word itself on the known or ignore lists, or ONE word — an ending written onto it aside
@@ -864,9 +862,19 @@ def is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples=None
 
     A word the dictionary keeps apart from the one it is read as is never known through it
     (`match.word_of_its_own`: 心する is no 心 + する, 揚げる no 上げる, ことに — 殊に — no 事 + に): only
-    as itself."""
+    as itself.
+
+    `sentence` (Kyou-KN, 2026-11-20): the card's own sentence field. A word written in kana alone (more than
+    one kana) is then read THERE, as Generate reads it (`match.card_word_in_sentence`, the ✓ chip's rule too): known when Generate would count that word
+    known (`known`) — まく in 水をまく is 撒く, never the 膜 it is alone nor the bare まく a known entry wrote; まみれ in
+    泥まみれ is 泥塗れ — or when an ignore line holds the card's word itself (the learner's own line for it). A card
+    the dictionary keeps apart from the sentence's word (ことに read 事 + に) is read as itself, as below; so is one
+    no sentence places."""
     if not word:
         return False
+    token = match.card_word_in_sentence(word, sentence, tokenize)
+    if token is not None:
+        return word in ignore or bool(known(token[0], token[1]))
     if word in known_lemmas or word in ignore:
         return True
     if tokenize:
@@ -880,9 +888,27 @@ def is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples=None
     return False
 
 
+def _read_once(tokenize):
+    """`tokenize`, each text's tokens kept for this one placement (a list each: its callers only read them)."""
+    read = {}
+
+    def tokens(text):
+        hit = read.get(text)
+        if hit is None:
+            hit = read[text] = list(tokenize(text))
+        return hit
+    return tokens
+
+
+def _known_key(word, sentence):
+    """A card's "known?" answer's key in a job's memo: a kana word's answer is its sentence's (`is_known_word`)."""
+    return (word, sentence or "") if _KANA_ONLY_RE.match(word or "") else word
+
+
 def known_test(language, settings, tokenizer=None):
-    """-> `is_known(word)` for a card's word, read the way `_place_the_rest` reads it. `tokenizer`
-    reuses a `JapaneseTokenizer` the caller already holds (one fugashi tagger per window, not two)."""
+    """-> `is_known(word, sentence=None)` for a card's word (and its sentence field), read the way `_place_the_rest`
+    reads it. `tokenizer` reuses a `JapaneseTokenizer` the caller already holds (one fugashi tagger per window, not
+    two)."""
     from app import analyzer
     analyzer.SANITIZE_JA = language == "ja"       # as every run sets it; see `_place_the_rest`
     known_tuples, known_lemmas, ignore = _known_sets(language, settings)
@@ -897,8 +923,10 @@ def known_test(language, settings, tokenizer=None):
         # Simplified list's 学习 (Patterns_Chinese_Spec.md §7, S7). Japanese is never converted.
         from app.zh_script import convert
         script = _script(settings)
-        return lambda word: is_known_word(convert(word or "", script), known, known_lemmas, ignore, tokenize)
-    return lambda word: is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples)
+        return lambda word, sentence=None: is_known_word(convert(word or "", script), known, known_lemmas, ignore,
+                                                         tokenize)
+    return lambda word, sentence=None: is_known_word(word, known, known_lemmas, ignore, tokenize, known_tuples,
+                                                     sentence=sentence)
 
 
 def _known_sets(language, settings):
@@ -980,6 +1008,25 @@ def _made_by_connect(language):
         return library.made_notes_of(language)
     except Exception:
         return {}
+
+
+def _asked_first(language, cards):
+    """Kyou-AF (journey v3 D3): the cards of `cards` you asked for from the journey (*Add now*), in the order you asked
+    (`swap.asked_first`, Connect's record; a note's cards by id) -> [card id] for `plan(asked=)`. [] without Connect's
+    record or when it can't be read just now: every card placed as before (the next run reads it again)."""
+    try:
+        from app.connect import swap
+        notes = swap.asked_first(language)
+    except Exception:
+        import logging
+        logging.getLogger("surasura-cli").info("Junban: the cards asked from the journey weren't read this run",
+                                               exc_info=True)
+        return []
+    if not notes:
+        return []
+    place = {note: index for index, note in enumerate(notes)}
+    return [card["card_id"] for card in sorted((card for card in cards if card.get("note") in place),
+                                               key=lambda card: (place[card["note"]], card["card_id"]))]
 
 
 def _journey_pending(language, csv_path=None):
@@ -1189,13 +1236,13 @@ def preflight(settings, probe=None):
                 problems.extend(served[0])
                 warnings.extend(served[1])
 
-    # `junban_unlisted` decides where the cards the list does not have are placed. Checked here so
-    # an unsupported value stops the run instead of being silently ignored.
-    placement = _unlisted(settings)
-    if placement not in SUPPORTED_UNLISTED:
+    # `junban_off_list` decides where your own cards the list does not have go (Kyou-MO). Checked here so an
+    # unsupported value stops the run instead of being silently ignored; unset ("") reads 3.0.17's keys.
+    placement = str((settings or {}).get("junban_off_list") or "").strip().lower()
+    if placement and placement not in unlisted.OFF_LIST:
         problems.append(
-            f"Junban can put the cards your list doesn't have after it, among it by your journey, or "
-            f"at the back of the queue — not {placement!r} (junban_unlisted).")
+            f"Junban can leave your cards that aren't on your list, put them at the back, or set them aside — "
+            f"not {placement!r} (junban_off_list).")
 
     # WP-M. An order this version does not know is refused rather than resolved: the two orders put
     # genuinely different words at the front of the queue, and guessing which one a typo meant would
@@ -1696,7 +1743,7 @@ def prepare(settings):
             thread.join()
         _memo_file("counts", library_map_path(), lambda: _library_counts(language), language)
         _memo_file("floor", library_map_path(), lambda: match.library_floor(library_map_path()), language)
-        if _unlisted(settings) == "journey":
+        if _every_word(settings):
             _memo_file("library", library_map_path(), lambda: match.load_library(library_map_path(), language), language)
         _known_memo(language, settings)
     except Exception:
@@ -1737,9 +1784,11 @@ def _per_day(url, decks):
 
 
 def _utc_now():
-    """Kyou-E: now, as the library store writes its times (UTC, microseconds: `library_store._now`'s shape)."""
-    t = time.time()
-    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + ".%06dZ" % int((t % 1) * 10 ** 6)
+    """Kyou-E: now, as the library store writes its times (UTC, microseconds) — its own clock, `library_store._now`:
+    a stamp from `time.time()`'s float could read 1 µs later than the store's taken after it (the float rounds up past
+    a microsecond the clock's integer hadn't reached: .927510 against .927509, FLAKES.md)."""
+    from app import library_store
+    return library_store._now()
 
 
 def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, out_read=None):
@@ -1843,15 +1892,20 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
     # one still not on it is left out, as before. ✅ E1.3-2: so is a pinned item's card Junban itself parked — by
     # Junban's lasting record of what it parked (P4.2.2, #9: never a card you suspended after Junban only tagged it).
     gathered = cards
-    parked_record = first_touch.parked(language) if parked_tag else None
+    # Kyou-KN (train 50's intent keeper, waste): the run's one read of the journal (`record`) carries the parked cards too
+    parked_record = ((record["parked"] if record is not None else first_touch.parked(language)) if parked_tag
+                     else None)
     if parked_record is not None and parked_record["since"] is None and not connect.unsuspends(settings, unattended,
                                                                                                acting=acting):
         # Kyou-PF: brought back only by the clean-up (*Set cards aside* off) — by the record alone: with none, a
         # tagged card you suspended yourself is never taken for one Junban parked (P1.4-adversary #3)
         parked_record = dict(parked_record, since=0)
+    # Kyou-MO (the mining model; ROLES.md: Junban only orders): the cards Surasura made — never set aside, so one Junban
+    # parked before comes back whatever the list says, and one past the list goes to the back, untouched (below)
+    made_ids = {card["card_id"] for card in cards if unlisted.surasuras(card.get("note"), detail["notes"])}
     cards, back = (connect.returning(cards, marks_of, language,
                                      pinned={i for g in pins or () for i in g} - _excluded(settings),
-                                     parked=parked_record, out=outs)
+                                     parked=parked_record, out=outs, made=made_ids)
                    if parked_tag else (cards, []))
     later_back = _later_back(gathered, back, parked_tag)
     if parked_tag and parked_key is not None:
@@ -1862,11 +1916,13 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
             parked_memo = None
     else:
         parked_memo = None
-    # Where the cards the list does not have go — see DEFAULT_UNLISTED. A marker filter (WP-N) keeps
-    # its promise instead: only the chosen words move, and everything else keeps its order at the back.
-    placement = _unlisted(settings)
+    # Where the cards the list does not have go (Kyou-MO, F24): yours as the one switch says (`unlisted.choice`:
+    # leave · back · aside); Surasura's where the journey meets them with *Cards for every new word* on ("journey"),
+    # else at the back. A marker filter (WP-N) keeps its promise instead: only the chosen words move, and everything
+    # else keeps its order at the back.
+    placement = unlisted.choice(settings)
     tiers = _tiers(settings)
-    journey = tiers and placement == "journey"
+    journey = tiers and bool(made_ids) and _every_word(settings)
     order = _order(settings)
     # "List first": a phrase joins the list's words, where the journey meets it, when the library
     # meets it as often as the list's own cut-off asks of a word. "journey": every word the list cut
@@ -1880,7 +1936,7 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
     library = (memo("library", library_map_path(), lambda: match.load_library(library_map_path(), language))
                if journey else {})
     floor = (memo("floor", library_map_path(), lambda: match.library_floor(library_map_path()))
-             if tiers and not journey else None)
+             if tiers else None)
     # And never below the bar the list's own words actually cleared: under the "coverage" selection
     # the map's min_count is only the pre-filter (2 by default) and greedy coverage cuts the list
     # further (analyzer.py:1713, :2011). Under the density band the two agree.
@@ -1934,7 +1990,7 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
             card["impact"] = impact(index.journey_of.get(key), rank_of[key])      # Kyou-A: the weave's "most useful"
         if key and index.journey_of.get(key):
             card["file"] = index.journey_of[key][0]     # #50: the show it's for (`show_tags`)
-        if not key and library:
+        if not key and library and card["card_id"] in made_ids:
             found = match.card_key(card["word"], library, language, None, reader, phrases=phrase_rows,
                                    verb=verb)[0]
             if found:
@@ -1956,9 +2012,10 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
                                       phrase_cache_path(), library_map_path())
         for card in unplaced:
             numbers = moved(phrases.get(card["word"]))
-            if numbers is None or (not journey and (floor is None or numbers[2] < floor)):
+            mixed = journey and card["card_id"] in made_ids     # Kyou-MO: Surasura's, *Cards for every new word* on
+            if numbers is None or (not mixed and (floor is None or numbers[2] < floor)):
                 continue                # too rare for the list's own bar: by its sentence, below
-            card["tier"] = "library" if journey else "phrase"
+            card["tier"] = "library" if mixed else "phrase"
             card["sort"] = journey_sort(order, numbers)
             card["impact"] = impact(numbers)
             card["file"] = numbers[0]
@@ -1979,6 +2036,15 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
                         known_memo=_known_memo(language, settings) if job is not None else None,
                         needs=bool(weave))
         banner = _banner(cards, detail["notes"], language)
+        # Kyou-MO (F4, F24): past the list, a card Surasura made goes to the back, untouched (its word left the list;
+        # *Cards for every new word* placed it above when on), and so do your own older cards under *At the back* / *Set
+        # aside* — in the order they had, behind every card placed (the ones you mined since Connect's first still go
+        # first: `mark_yours`, below). *Leave*: yours by their own sentence, as just placed.
+        for card in cards:
+            if card.get("key") or card.get("tier") in ("library", "phrase", "known"):
+                continue
+            if card["card_id"] in made_ids or placement != "leave":
+                card.update(tier="back", sort=(), why="at the back")
         # §16: one entry per card word for "Same word as one on your list?", and on each card the
         # place a tick gives it (`suggestion`) — the very place a recorded "yes" gives it in a run.
         for card in cards:
@@ -1994,11 +2060,11 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
                 "evidence": found["found"].evidence, "via": found["found"].via,
                 "excerpt": found["excerpt"], "answer": found["answer"], "card_ids": []})
             entry["card_ids"].append(card["card_id"])
-    # §17, "i+1 first": a list card whose own sentence is not ready gets the word it needs brought
-    # right before it, or waits. Before the plan, so the preview and the run are one pass (I5).
+    # §17, the unlocking word first (always, Kyou-MO): a list card whose own sentence is not ready gets the word it
+    # needs brought right before it, or keeps its place. Before the plan, so the preview and the run are one pass (I5).
     ready_first = (_ready_first_pass(cards, detail["notes"], rank_of, index.journey_of, order, language,
                                      settings, counted)
-                   if first_applies(settings, language) and _ready_first(settings) else None)
+                   if first_applies(settings, language) else None)
     # HC-N54: the cards you mined yourself since Connect's first go ahead of every other, in the order you mined them.
     yours = (connect.mark_yours(cards, detail["notes"], connect.first_connect_note(url), connect.own_tag(settings))
              if preview else [])
@@ -2014,8 +2080,10 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
     # as unmatched — the same pass, so the run writes the order the preview showed (I5).
     excluded = _excluded(settings)
     number = _numbering(language, decks, job, front)
+    asked = _asked_first(language, cards) if preview else None
     writes, stats = plan(cards, rank_of, exclude=excluded, number=number, pins=pins, out=set(outs), weave=weave,
-                         width=pin_feed.SIDE_WIDTH if weave else None)     # Kyou-B: two titles at a time
+                         width=pin_feed.SIDE_WIDTH if weave else None,     # Kyou-B: two titles at a time
+                         asked=asked)
     if side is not None and side[0] and files is not None:
         # Kyou-C: every title's count — the cards the weave could take (none in scope: 0) — for the host to record
         # (`pins.record_side`): the one rule the window, Connect's top N and Generate's order follow (`side_pair`).
@@ -2058,9 +2126,10 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
     # written before ENGINE_REVISION 11), so the words the list cut off wait at the back. "List
     # first": none to read the list's cut-off from, so the phrases go with the rarer cards — which is
     # nothing to mention when the phrases are switched off anyway.
-    stats["unlisted"] = placement
+    stats["unlisted"] = placement               # Kyou-MO: your own cards off the list — leave · back · aside
+    stats["mixed_in"] = journey                 # ...and Surasura's past your level, where you meet them
     stats["ready_first"] = ready_first
-    stats["library_missing"] = tiers and (not library if journey else phrases_on and floor is None)
+    stats["library_missing"] = tiers and ((journey and not library) or (phrases_on and floor is None))
     stats["banner"] = banner
 
     # The touch-ups are planned in the SAME pass as the writes, so the preview states what will
@@ -2238,17 +2307,26 @@ def _note_swept(settings, url, decks, stats, profile=None):
         stats["sweep"] = False
 
 
+def clear_words(flags, tags, done=False):
+    """Kyou-PF's clean-up in plain words (Kyou-KN; Sonic 2026-11-20: "clean it up and just go with it"; PROVISIONAL)
+    — `flags` cards losing Junban's purple flag, `tags` notes its `::later` tag, counted as cards (a note is a card
+    to the learner): " 3 cards are back on your list or already studied, so their purple flag and 'later' tag come
+    off." (`done`: "were … came off"); "" when neither. The preview (`junban_view.clear_clause`) and the run's
+    message (`_clear_clause`) say it alike."""
+    count = max(flags or 0, tags or 0)
+    if not count:
+        return ""
+    marks = " and ".join(name for name, n in (("purple flag", flags), ("'later' tag", tags)) if n)
+    one = count == 1
+    verb = ("was" if one else "were") if done else ("is" if one else "are")
+    comes = "came" if done else ("comes" if " and " not in marks else "come")
+    return (f" {count} card{'' if one else 's'} {verb} back on your list or already studied, so "
+            f"{'its' if one else 'their'} {marks} {comes} off.")
+
+
 def _clear_clause(done, tag):
-    """" Back on your list or studied: took the purple flag off 3 cards and the 'Surasura::later' tag off 2 notes." —
-    "" when nothing came off (Kyou-PF; words PROVISIONAL)."""
-    parts = []
-    if (done or {}).get("flag"):
-        count = len(done["flag"])
-        parts.append(f"took the purple flag off {count} card{'' if count == 1 else 's'}")
-    if (done or {}).get("tag"):
-        count = len(done["tag"])
-        parts.append(f"{'took ' if not parts else ''}the '{tag}' tag off {count} note{'' if count == 1 else 's'}")
-    return f" Back on your list or studied: {' and '.join(parts)}." if parts else ""
+    """What the clean-up took off, for the run's message (`clear_words`, said as done) — "" when nothing came off."""
+    return clear_words(len((done or {}).get("flag") or ()), len((done or {}).get("tag") or ()), done=True)
 
 
 def _moved_notes(writes, placements, note_by_card):
@@ -3280,7 +3358,7 @@ def _still_new(url, later, touchups=False):
         return later
     try:
         if not reading:
-            return None if ankiconnect.invoke("guiReviewActive", url, timeout=5) is True else later
+            return None if anki_connect.reviewing(url, errors=True) else later     # the one review check
         actions = [{"action": "cardsInfo", "params": {"cards": batch}} for batch in ankiconnect._chunks(cards, 250)]
         replies = ankiconnect.multi(actions + [{"action": "guiReviewActive"}], url)
     except AnkiError:
@@ -3288,8 +3366,8 @@ def _still_new(url, later, touchups=False):
     if not isinstance(replies, list) or len(replies) != len(actions) + 1:
         return None
     review = replies[-1]
-    if isinstance(review, dict) and review.get("error") is None and review.get("result") is True:
-        return None
+    if isinstance(review, dict) and review.get("error") is None and anki_connect.review_on(url, review.get("result")):
+        return None                                     # the one rule over the request's own answer
     rows = []
     for reply in replies[:-1]:
         if not isinstance(reply, dict) or reply.get("error") is not None or not isinstance(reply.get("result"), list):
@@ -3441,7 +3519,7 @@ def _put_back_out(url, settings, decks, read):
     try:
         got = answers(ankiconnect.multi([{"action": "cardsInfo", "params": {"cards": batch}} for batch in batches]
                                         + [{"action": "guiReviewActive"}], url), len(batches) + 1)
-        if got is not None and got[-1] is not True:
+        if got is not None and not anki_connect.review_on(url, got[-1]):     # the one rule over its own answer
             info = {row.get("cardId"): row for part in got[:-1] if isinstance(part, list)
                     for row in part if isinstance(row, dict) and row}
             notes = sorted({row.get("note") for row in info.values() if _is_int(row.get("note"))} | candidates)

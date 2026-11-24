@@ -39,7 +39,7 @@ Restore undoes it without touching the reorder's.
 import os
 
 from app import anki_connect
-from modules.junban import ankiconnect, connect, reposition, spaced
+from modules.junban import ankiconnect, connect, reposition, spaced, unlisted
 
 # What "reorder only" leaves out: every note or card write beyond the positions themselves.
 _POSITIONS_ONLY = {"junban_tag": "", "junban_tag_markers": False, "junban_write_frequency": False,
@@ -159,7 +159,7 @@ def _backfill_report(settings):
         url = reposition._url(settings)
         if not ankiconnect.probe(url).get("ok"):
             return "", False
-        if anki_connect.patient("guiReviewActive", url) is True:
+        if anki_connect.reviewing(url, errors=True):     # the one review check (its busy error as before)
             return "", False
         from modules.junban import backfill
         report = backfill.run_auto(settings)
@@ -187,7 +187,11 @@ def decide_actions(settings, positions_only=False):
     unattended = connect.preview_on(settings) and not connect.UNATTENDED_ACTIONS
     if positions_only or settings.get("junban_auto_actions") is not True or unattended:
         keep = {"junban_later_suspend"} if connect.suspends_unattended(settings) else set()
+        # Kyou-MO: *Set aside* places your cards off the list at the back as well as marking them — positions only
+        # keeps the place (*At the back*) and drops the marks, unless the suspend is kept (then still set aside)
+        placed = unlisted.choice(settings)
         settings.update({key: value for key, value in _POSITIONS_ONLY.items() if key not in keep})
+        settings["junban_off_list"] = "back" if placed == "aside" and not keep else placed
     return settings
 
 
@@ -231,7 +235,7 @@ def reorder(settings, list_current=None, positions_only=False, run_id=None, job=
         url = reposition._url(settings)
         if not ankiconnect.probe(url).get("ok"):
             return {"outcome": "anki-closed"}
-        if anki_connect.patient("guiReviewActive", url) is True:
+        if anki_connect.reviewing(url, errors=True):     # the one review check (its busy error as before)
             return {"outcome": "reviewing"}
         language = reposition._language(settings)
         if list_current is False or (list_current is None and reposition.list_is_stale(

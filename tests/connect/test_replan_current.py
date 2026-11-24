@@ -259,3 +259,19 @@ def test_its_key_moves_with_a_move_a_new_plan_and_another_run(lib):
     with open(stamp, "a", encoding="utf-8") as f:
         f.write("x")
     assert replan.key(store) != moved, "another run"
+
+
+def test_connects_as_ill_meet_it_walk_is_the_lists_own_order_of_first_meetings(lib):
+    # why (the duplication audit, row 6): *As I'll meet it* has two readers — Junban and the journey read the list's
+    # progressive rows, Connect's cap walks the library's order (`library.ahead`); they must name the episodes in one
+    # order, for the run's own order and after a move (the re-plan Connect mines from)
+    from app.connect import library
+    root, store = lib
+    for moved in (False, True):
+        if moved:
+            _move_later_to_top(store)
+        result = _current(store).result
+        firsts = list(dict.fromkeys(result.first[(r["Word"], r["Reading"])] for r in result.rows("content")))
+        walk = library.ahead(store)
+        assert firsts and set(firsts) <= set(walk), (firsts, walk)
+        assert [item for item in walk if item in set(firsts)] == firsts, (moved, firsts, walk)

@@ -110,29 +110,34 @@ def test_a_headless_start_loads_no_qt_and_opens_nothing(tmp_path, argv):
     assert opened == [] and qt == []
 
 
-HEAVY = ("pandas", "numpy", "requests", "app.static_html_generator")
+HEAVY = ("pandas", "numpy", "requests", "app.static_html_generator",
+         "app.sentence_score", "app.sentence_table")     # (the sentence choice: Connect's process reads them, never the
+#                                                          window's start — SPEC § 6.3 row 16, at level 1 below)
 # Proof the duties ran: made (chores), their controls attached (duties), started, and the start's last timer rang (the
 # Rarity tables' warm-up at `chores.WARM_AT` reads the one-kanji table).
 RAN = ("app.services.chores", "app.qt.duties", "app.one_kanji_data")
+TK = ("tkinter", "_tkinter", "tkinterdnd2")     # the 2.x windows' toolkit: no part of the window's start reaches it
 
 
 def test_the_window_start_brings_in_no_pandas_numpy_or_requests(tmp_path):
     """The start-light fix (2026-10-14): the real start — `app_entry.py`, the window, its first frame, the duties made
-    and started on their workers, the start's timers up to the Rarity warm-up, a few seconds idle — imports neither pandas nor numpy (asking
+    and started on their workers, the start's timers up to the Rarity warm-up (from the boot), a few seconds idle — imports neither pandas nor numpy (asking
     whether a journey exists imported the report's generator for its file name: pandas → numpy, whose OpenBLAS reserves
     a buffer per CPU thread — idle went from 65 MB to ~890 MB on a 24-thread desktop, ~360 MB on the laptop, budget
     ≤ ~250), nor requests (the heartbeat's module imported it at every start, ~0.1 s before the first frame: only a
-    heartbeat that is sent imports it now, on its own thread). What a wrong answer would cost: the laptop's budgets."""
+    heartbeat that is sent imports it now, on its own thread). Nor tkinter: the 2.x windows' ties to the window are
+    cut, and a start that loads it is a tie come back. What a wrong answer would cost: the laptop's budgets."""
     import site
     root = tmp_path / "root"
     root.mkdir()
     probe = tmp_path / "probe.json"
     entry = os.path.join(ROOT, "app_entry.py")
     env = dict(os.environ, PYTHONPATH=ROOT, SURASURA_TEST_ROOT=str(root), SURASURA_SHELL_PROBE=str(probe),
-               SURASURA_SHELL_PROBE_IDLE="4.5", TELEMETRY_ENV="dev", TELEMETRY_URL="",
+               SURASURA_SHELL_PROBE_IDLE="8", TELEMETRY_ENV="dev", TELEMETRY_URL="",
                APPDATA=str(tmp_path / "appdata"), LOCALAPPDATA=str(tmp_path / "localappdata"),
                PYTHONUSERBASE=site.getuserbase())     # the packages installed for this user stay importable
     env.pop("SURASURA_NO_UI_TIMERS", None)            # the start's timers run (a chore at 1.5 s is the start's too)
+    env["SURASURA_SENTENCE_TABLE"] = "1"              # the sentence choice switched on: its table stays Connect's
     for gate in ("SURASURA_NO_AUTOINDEX", "SURASURA_NO_ANKI_SYNC", "SURASURA_NO_UPDATE_CHECK"):
         env[gate] = "1"                               # no indexer, Anki or GitHub from a test
     script = textwrap.dedent(f"""
@@ -143,7 +148,8 @@ def test_the_window_start_brings_in_no_pandas_numpy_or_requests(tmp_path):
         except SystemExit:
             pass
         sys.stdout.write("\\n" + json.dumps([sorted(m for m in {HEAVY!r} if m in sys.modules),
-                                              sorted(m for m in {RAN!r} if m in sys.modules)]) + "\\n")
+                                              sorted(m for m in {RAN!r} if m in sys.modules),
+                                              sorted(m for m in sys.modules if m.split(".")[0] in {TK!r})]) + "\\n")
     """)
     proc = subprocess.run([sys.executable, "-c", script], cwd=str(root), env=env, capture_output=True, text=True,
                           timeout=120)
@@ -153,7 +159,11 @@ def test_the_window_start_brings_in_no_pandas_numpy_or_requests(tmp_path):
     log_file = root / "local" / "logs" / "app_debug_log.txt"
     log = log_file.read_text(encoding="utf-8")
     assert "Launching the window" in log
+    # booted first (Haya-LD): the duties start once the list from disk is drawn — an empty root's store is built
+    # first (~2 s here) — and the start's timers count from then, so the probe's idle is 8 s (it was 4.5)
+    assert "window (shell): booted" in log
     assert "duties not made" not in log and "duties at start" not in log
-    heavy, ran = json.loads(proc.stdout.strip().splitlines()[-1])
+    heavy, ran, tk = json.loads(proc.stdout.strip().splitlines()[-1])
     assert ran == sorted(RAN), "the duties were made, attached and started, and the warm-up rang"
     assert heavy == []
+    assert tk == [], "the window's start loaded the 2.x windows' toolkit"

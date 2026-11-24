@@ -467,11 +467,15 @@ class Host:
         try:
             for kind in KINDS:
                 if kind in run:
+                    began = time.monotonic()
                     try:
                         self._warm() if kind == "warm" else self._job(kind)
                     except Exception as e:          # a background job must never take the window down
                         self._tell(f"Re-ordering as you move stopped: {e}", fails=True)
+                    _log_took(self.language, kind, time.monotonic() - began)
+            began = time.monotonic()
             self._sync_step(force="sync-now" in run)
+            _log_took(self.language, "AnkiWeb sync", time.monotonic() - began)
             if self._done_at is not None and time.monotonic() >= self._done_at:
                 self._done_at = None
                 self._tell(UP_TO_DATE)
@@ -740,8 +744,8 @@ class Host:
         engine, ids = self._engine_for(store)
         ranked = sorted((order[key] + (item_id,) for key, item_id in self._plan_keys(ids) if key in order))
         result = engine.replan([(item_id, tier) for _rank, _place, tier, item_id in ranked])
-        mode = str(settings.get("junban_order") or "content").strip().lower()
-        rows = result.rows(mode if mode in ("content", "priority") else "content")
+        from app import settings_manager
+        rows = result.rows(settings_manager.study_order(settings))       # the list's study order (Kantan-MO)
         job = spaced.Job(automatic=True, rows=rows, cards=self._card_map(), places=places(self._plan, ids, result))
         report = self._write(settings, job, kind)
         _record_cards_out(store, report)                 # P4.1 L2
@@ -807,12 +811,15 @@ class Host:
         job.cards_out = True        # P4.1 L2: the host records what *Take its new cards out* changes (`_replan`)
         job.probe, self._probe = self._probe, None    # `_may_write`'s, this job's: the run asks Anki nothing again
         self._working(True)
+        began = time.monotonic()
         try:
             report = reposition.run(settings, progress=self._progress(job), refresh=False, wait=None,
                                     cancel=self._cancel, verb=VERB, job=job,
                                     on_wait=lambda holder: self._tell(anki_connect.waiting_line(holder)))
         finally:
             self._working(False)
+        _log_took(self.language, f"{kind}'s write to Anki ({len(report.get('written') or [])} cards)",
+                  time.monotonic() - began, at_least=0.0)
         self._sync_at = self._due_sync(settings)
         if report.get("stands_aside") or report.get("one_deck"):
             # FT C1: a put-back cleared this deck while the job waited for the lock — nothing written; the next job's
@@ -1081,6 +1088,22 @@ _HELPERS_LOCK = threading.Lock()
 
 
 # --- P4.1 L2: *Take its new cards out* (05 §5.7, D14) — the record Put back restores from ------------------------ #
+LOG_OVER_S = 1.0                # Haya-LD: a step of the helper's this long or longer gets a line in the app's log
+
+
+def _log_took(language, what, took, at_least=LOG_OVER_S):
+    """Haya-LD: one of the helper's steps and how long it took, in the app's log (a startup's timeline had the
+    helper's start and end, nothing between: its reads, its writes to Anki and its AnkiWeb sync told apart). Quick
+    steps (every focus's catch-up with nothing owed) leave no line. Never raises."""
+    if took < at_least:
+        return
+    try:
+        from app.path_utils import write_app_log
+        write_app_log(f"re-order ({language}): {what} took {took:.1f} s")
+    except Exception:
+        pass
+
+
 def _record_cards_out(store, report):
     """A job's *Take its new cards out* changes into the store's `anki_changes`, and the records its Put back restored
     closed (`pins.record`), whatever the run's outcome (what landed is recorded). Never raises: logged."""
@@ -1186,7 +1209,8 @@ class Remote:
         self._stopped = False
         self._last = ""
         self._web = ""
-        threading.Thread(target=self._run, name="replan-remote", daemon=True).start()
+        self._thread = threading.Thread(target=self._run, name="replan-remote", daemon=True)
+        self._thread.start()
 
     # --- Host's calls ---------------------------------------------------------------------------------------- #
 
@@ -1337,6 +1361,7 @@ class Remote:
         import subprocess
         from multiprocessing.connection import Client, Listener
         from app import library_store
+        from app.connect.power import popen_below_normal
         if library_store.update_staged():
             raise RuntimeError("an update is staged")
         key = secrets.token_bytes(32)
@@ -1344,10 +1369,12 @@ class Remote:
         answered = threading.Event()
         try:
             flags = 0x08000000 if sys.platform == "win32" else 0            # CREATE_NO_WINDOW
-            self._proc = subprocess.Popen(_helper_args(self.language, self._generate is not None),
-                                          env=_helper_env(listener.address, key), creationflags=flags,
-                                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                          stderr=subprocess.DEVNULL)
+            # below normal, as every background child of the window (Haya-CL 3.0.17: at normal it ran its minutes of
+            # re-order beside the window's start on Sonic's laptop, #8158GX); Anki's writes are Anki's own
+            self._proc = popen_below_normal(_helper_args(self.language, self._generate is not None),
+                                            env=_helper_env(listener.address, key), creationflags=flags,
+                                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL)
             with _HELPERS_LOCK:
                 _HELPERS.append(self._proc)
 
@@ -1436,6 +1463,11 @@ def helper_main(argv=None):
     parser.add_argument("--language", default="ja")
     parser.add_argument("--generate", action="store_true")
     args = parser.parse_args(argv)
+    if os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get("SURASURA_TEST_ROOT"):
+        # A test's helper with no test root would resolve the checkout's own library (`path_utils.get_user_data_path`:
+        # the source run's fallback) — its User Files are the user's: refused before anything is read
+        print("replan_helper: started by a test with no test root (SURASURA_TEST_ROOT): refused", file=sys.stderr)
+        return 3
     try:
         conn = Client(os.environ[ADDRESS_ENV], authkey=bytes.fromhex(os.environ[KEY_ENV]))
     except (KeyError, ValueError, OSError, EOFError) as e:

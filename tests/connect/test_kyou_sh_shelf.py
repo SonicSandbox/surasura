@@ -107,6 +107,9 @@ def _counting(monkeypatch, lang, notes, made, listed, theirs=None, pinned=(), cs
     cards' Word fields; `csv_rows` the last Generate's list in results/ (Orth / Forms) when given."""
     steps = runner.Steps({"connect_enabled": True, "anki_sync_decks": {lang: ["日本語::Mining"]}})
     steps._open = lambda _lang: contextlib.nullcontext(_Store())
+    # Kantan-MO (F22): your cards count only once Connect has made its first — note 0, made before every note here,
+    # waiting nowhere, when a test names no Connect card
+    made = dict(made) or {0: (99, "海原")}
     monkeypatch.setattr(shelf, "made_notes", lambda store: dict(made))
     monkeypatch.setattr(shelf, "pinned_items", lambda store: set(pinned))
     monkeypatch.setattr(anki_connect, "find_notes", lambda url, query: list(notes))

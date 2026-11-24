@@ -17,16 +17,31 @@ answers may change it). Qt-free: the Next card on Current (`app/qt/next_card.py`
   Miner before Connect kept a ledger — a mining session of this language that created cards, in Anki Miner's own
   `stats.db` (`_miner_cards`) — count as cards made; a later step's record is read whether or not the step
   applies now (a book lined up once, with none in Current today, is done — never offered as new).
-- **The panel's three lists** (`listed`): chapter 1's steps, done ones kept (to try again); chapter 2's useful or done
-  steps; and chapter 2's steps that can't apply yet (*Not for now*: no Anki, no book, no waiting video, too few episodes)
-  — never one whose module is missing or switched off (`offered`, S10).
+- **Four stages** (Mado-EZP, SPEC-r2 EZ2-1 / §0.9, Sonic ruled 2026-11-18; every word PROVISIONAL): the same steps,
+  grouped as *Your path* draws them — ① On board (setup: done once there is a library), ② First episode (`words`,
+  `watch`), ③ Automate (`cards`, `junban`, `backfill`; the review loop's step goes last here, WL-9), ④ Make it yours
+  (`yours`: which words get a card). `audiobook`, `hato` and `piyo` stay later steps, outside the stages. A step's
+  `chapter` keeps its card rule (chapter 1's comes back at the next start; a later one's *Not now* is for good);
+  `stage_states` says each stage's state for the string of four stones (`DONE` · `NOW` · `LATER`).
+- **The panel's one list** (`listed`): the stage to do now (its steps, and a later step useful now), the later stages
+  (and the later steps that can't apply yet: no Anki, no book, no waiting video, too few episodes), then what's done
+  (kept, to try again) — never a step whose module is missing or switched off (`offered`, S10).
 - **The Next card** (`next_card`): chapter 1's first undone step (*Not now* hides it until the next start — it is the
   loop itself); then *Your first cards are made*, once; then a chapter-2 step that has become useful and was never set
   aside (*Not now* there is for good: it lives on in ✦ → *Your path*). One at a time; never during setup.
+- **④ only for a new path** (`yours_card`, decided once at this code's first look): a path past chapter 1 then never
+  sees ④'s card — for it, *Make it yours* sits in ✦ only (round 1's #7). **For now no path sees it** (`YOURS_CARD`
+  off; Sonic 2026-11-20, train 51's keeper decision 1): ④ points at *Words to make cards from*, the choice the mining
+  model retires (Kantan-MO, `tracks/logic/work/mining-ordering/MODEL.md`), and its *Only i+1* is the off-list cards'
+  trap. The step stays in ✦'s list (to do, its line behind its ?) and the string; `yours_card` is still decided and
+  kept, so the switch back on gives each path the card its rule says. **Its row's press is back** since the mining
+  model (Kantan-MO, the lead 2026-11-21): ④'s *Do it* / *Again* opens Settings' *Level*, the one knob for which words
+  get cards (`YOURS_PRESS`); `has_press` gives it a press only while it opens there, never the retired choice.
 - **The glow** (`newly_useful`): a chapter-2 step useful and not yet seen in the panel lights the ✦ (with unseen news);
   never the first chapter's (the card carries those), never on a first run.
 - **State** in the guide's `guide.json` (per PC, never settings.json, never sent): `done`, `not_now`, `own_cards`,
-  `moments`, `first_ack`, `useful_seen` — through `guide.update_state` (one writer's lock, atomic, only on change).
+  `moments`, `first_ack`, `useful_seen`, `yours_card` — through `guide.update_state` (one writer's lock, atomic, only on
+  change).
 """
 import os
 import sqlite3
@@ -35,29 +50,49 @@ from collections import namedtuple
 
 FIRST, READY = "first", "ready"
 CHAPTERS = (FIRST, READY)
+BOARD, EPISODE, AUTOMATE, YOURS = "board", "episode", "automate", "yours"
+STAGES = (BOARD, EPISODE, AUTOMATE, YOURS)       # ① On board · ② First episode · ③ Automate · ④ Make it yours
+DONE, NOW, LATER = "done", "now", "later"        # a stage's state on the string
 BOOKS = ("book", "lightnovel")                   # a book an audiobook can line up with (never manga or text)
 
 Facts = namedtuple("Facts", "has_library journey_opened episodes_done cards_made own_cards junban anki_synced "
                             "junban_ordered backfilled book_in_current lined_up video_waiting hato_paired piyo_round "
-                            "journey_ready", defaults=(True,))
-# journey_ready: a journey is on disk (the header's *Journey ↗* shows) — step 1's Show me has a place
+                            "journey_ready yours_picked miner_found loop_read", defaults=(True, False, True, False))
+# journey_ready: a journey is on disk (the header's *Journey ↗* shows) — step 1's press has a page to open;
+# yours_picked: the learner chose which words get a card (the `yours` moment); miner_found: Anki Miner is here (the
+# cards step's press is *Make … cards*, else *Set up Anki Miner*)
 def _always(_f):
     return True
 
 
-Step = namedtuple("Step", "id chapter when done where offered", defaults=(_always,))
+Step = namedtuple("Step", "id chapter when done where offered stage", defaults=(_always, None))
 # offered: Facts -> bool, whether the step is this learner's at all (its module here and on); else never listed
+# where: where *Show me* lights the place its press also lives (only a look: it never presses); stage: its stage, or
+# None (a later step outside the four)
 PIYO_AFTER = 3                                  # episodes Done before Piyo is offered
+YOURS_CARD = False                              # ④'s Next card, off until the mining model re-points it (Sonic 11-20)
+YOURS_PRESS = "settings:level"                  # where ④'s press opens: Level, the one knob since the mining model
 
-# The table (EXPERIENCE.md §3). `when` / `done`: Facts -> bool. Chapter 1's steps are useful as soon as a library is.
+# The table (EXPERIENCE.md §3; the stages, SPEC-r2 §0.2 / §0.9). `when` / `done`: Facts -> bool. Chapter 1's steps are
+# useful as soon as a library is. `where`: `hero:<part>` Up Next's part, `circle:<name>` a footer circle, `settings:`.
+def _cards(f):
+    return f.cards_made or f.own_cards
+
+
 STEPS = (
-    Step("words", FIRST, lambda f: f.has_library and f.journey_ready, lambda f: f.journey_opened, "control:journey"),
-    Step("watch", FIRST, lambda f: f.has_library, lambda f: f.episodes_done >= 1, "help:current"),
-    Step("cards", FIRST, lambda f: f.has_library, lambda f: f.cards_made or f.own_cards, "settings:anki_miner"),
-    Step("junban", READY, lambda f: f.junban and f.anki_synced and (f.cards_made or f.own_cards),
-         lambda f: f.junban_ordered, "settings:junban", lambda f: f.junban),
+    Step("words", FIRST, lambda f: f.has_library and f.journey_ready, lambda f: f.journey_opened, "hero:journey",
+         stage=EPISODE),
+    Step("watch", FIRST, lambda f: f.has_library, lambda f: f.episodes_done >= 1, "hero:done", stage=EPISODE),
+    Step("cards", FIRST, lambda f: f.has_library, _cards, "circle:miner", stage=AUTOMATE),
+    Step("junban", READY, lambda f: f.junban and f.anki_synced and _cards(f),
+         lambda f: f.junban_ordered, "circle:junban", lambda f: f.junban, AUTOMATE),
     Step("backfill", READY, lambda f: f.junban and (f.cards_made or (f.own_cards and f.anki_synced)),
-         lambda f: f.backfilled, "settings:backfill_patterns", lambda f: f.junban),
+         lambda f: f.backfilled, "settings:backfill_patterns", lambda f: f.junban, AUTOMATE),
+    # WL-9 (Mado-LT, 3.0.18; PROVISIONAL words): the review loop, the last of stage ③ — useful once cards are in Anki,
+    # done once a sync read a move from the phone (the loop's record holds one)
+    Step("loop", READY, lambda f: _cards(f) and f.anki_synced, lambda f: f.loop_read, "settings:known_from_anki",
+         stage=AUTOMATE),
+    Step("yours", READY, _cards, lambda f: f.yours_picked, "settings:setup_mining", stage=YOURS),
     Step("audiobook", READY, lambda f: f.book_in_current, lambda f: f.lined_up, "tab:current@audiobook"),
     Step("hato", READY, lambda f: f.video_waiting, lambda f: f.hato_paired, "settings:hato"),
     Step("piyo", READY, lambda f: f.episodes_done >= PIYO_AFTER, lambda f: f.piyo_round, "settings:practice_ai"),
@@ -65,8 +100,10 @@ STEPS = (
 BY_ID = {s.id: s for s in STEPS}
 
 Status = namedtuple("Status", "step useful done offered", defaults=(True,))   # one step for this learner now
-Path = namedtuple("Path", "steps first_done card glow")            # what the card and the panel show
-# card: None, ("step", step id, n, of) for a step, or ("made",) for *Your first cards are made*
+Path = namedtuple("Path", "steps first_done card glow stages facts", defaults=((), None))   # the card's and panel's
+# card: None, ("step", step id, stages) for a step — `stages` the four stages' states (`stage_states`), () for a later
+# step outside them — or ("made",) for *Your first cards are made*. facts: the `Facts` it was read from (the shell
+# names the cards step's press from them: Anki Miner here or not)
 
 
 # --- the facts (a worker's) ----------------------------------------------------------------------------------------- #
@@ -225,7 +262,25 @@ def facts(language, settings, view, state, journey_ready=True):
         backfilled=junban and unless("backfill", _junban, language, "backfill"), book_in_current=book,
         lined_up=unless("audiobook", _lined_up), video_waiting=waiting,
         hato_paired=unless("hato", _hato_paired, language),
-        piyo_round=unless("piyo", _piyo_round, language), journey_ready=journey_ready)
+        piyo_round=unless("piyo", _piyo_round, language), journey_ready=journey_ready,
+        yours_picked="yours" in (state.get("moments") or {}),
+        miner_found=True if "cards" in ticked else safe(_miner_found, settings),
+        loop_read=unless("loop", _loop_read, language))
+
+
+def _loop_read(language):
+    """The review loop read a move from the phone (Known, Swap or Ignore): its record keeps the syncs that moved one."""
+    from app.connect import review_loop
+    return bool(review_loop.syncs(language))
+
+
+def _miner_found(settings):
+    """Anki Miner is here (`anki_miner.find`: the path chosen, else where its installer puts it; two file looks). A test
+    run looks only under an `ANKI_MINER_HOME` it set (never the developer's own), as `_miner_cards`."""
+    if os.environ.get("SURASURA_TEST_ROOT") and not os.environ.get("ANKI_MINER_HOME"):
+        return False
+    from app.connect import anki_miner
+    return bool(anki_miner.find(settings))
 
 
 # --- the path (pure) ------------------------------------------------------------------------------------------------- #
@@ -235,14 +290,49 @@ def statuses(f, state):
     return tuple(Status(s, bool(s.when(f)), s.id in ticked or bool(s.done(f)), bool(s.offered(f))) for s in STEPS)
 
 
+def stage_states(sts):
+    """The four stages' states, in order (`DONE` · `NOW` · `LATER`): ① On board is done (a path needs a library); a
+    stage is done once each of its offered steps is; the first stage not done is `NOW`, the rest `LATER`."""
+    out, now = [], False
+    for stage in STAGES:
+        steps = [st for st in sts if st.step.stage == stage and st.offered]
+        if all(st.done for st in steps):
+            out.append(DONE)
+        elif not now:
+            out.append(NOW)
+            now = True
+        else:
+            out.append(LATER)
+    return tuple(out)
+
+
 def listed(sts):
-    """The panel's three lists (Kantan-S2): chapter 1's steps (done ones kept, to try again); chapter 2's offered steps
-    useful now or done; chapter 2's offered steps that can't apply yet (*Not for now*). A step not offered (its module
-    missing or off) is in none."""
-    first = [st for st in sts if st.step.chapter == FIRST]
-    ready = [st for st in sts if st.step.chapter == READY and st.offered and (st.useful or st.done)]
-    later = [st for st in sts if st.step.chapter == READY and st.offered and not (st.useful or st.done)]
-    return first, ready, later
+    """The panel's one list (EZ2-1 / EZ2-3): -> (now stage or None, now, later, done) — the steps of the stage to do
+    now, and every later step useful and not done; the later stages' steps and the later steps that can't apply yet; the
+    done stages' steps and the later steps done (kept, to try again). A step not offered (its module missing or off) is
+    in none."""
+    states = dict(zip(STAGES, stage_states(sts)))
+    stage = next((s for s in STAGES if states[s] == NOW), None)
+    now, later, done = [], [], []
+    for st in sts:
+        if not st.offered:
+            continue
+        if st.step.stage is not None:
+            {NOW: now, LATER: later, DONE: done}[states[st.step.stage]].append(st)
+        elif st.done:
+            done.append(st)
+        elif st.useful:
+            now.append(st)
+        else:
+            later.append(st)
+    return stage, now, later, done
+
+
+def has_press(step_id):
+    """Whether a step's row in ✦ carries its own press (*Do it* / *Again*): ④'s only while it opens Level
+    (`YOURS_PRESS`, the mining model's one knob) or with its card (`YOURS_CARD`), so nothing leads to the retired
+    *Words to make cards from*."""
+    return step_id != "yours" or YOURS_CARD or YOURS_PRESS == "settings:level"
 
 
 def newly_done(sts, state):
@@ -258,22 +348,30 @@ def newly_useful(sts, state):
 
 
 def next_card(sts, state, later=()):
-    """The Next card: ("step", id, n, of) · ("made",) · None. `later`: chapter 1's steps set aside this run."""
+    """The Next card: ("step", id, stages) · ("made",) · None. `later`: chapter 1's steps set aside this run. `stages`:
+    the four stages' states for a step in one of them, () for a later step. ④'s step only on a path that was new
+    (`yours_card`)."""
     state = state or {}
     first = [st for st in sts if st.step.chapter == FIRST]
+    stages = stage_states(sts)
+
+    def card(st):
+        return ("step", st.step.id, stages if st.step.stage is not None else ())
     if not all(st.done for st in first):
-        for n, st in enumerate(first, 1):
+        for st in first:
             if not st.done:
-                return None if (st.step.id in later or not st.useful) else ("step", st.step.id, n, len(first))
+                return None if (st.step.id in later or not st.useful) else card(st)
         return None
     if not state.get("first_ack"):
         return ("made",)
     aside = set(state.get("not_now") or ())
+    if not (YOURS_CARD and state.get("yours_card")):   # a path past chapter 1 when the stages came: ④ in ✦ only
+        aside.add("yours")                             # (and every path while YOURS_CARD is off)
     if READY in later:                                 # a later step set aside this run: no other card until the next
         return None
     for st in sts:
         if st.step.chapter == READY and st.useful and not st.done and st.step.id not in aside:
-            return ("step", st.step.id, 0, 0)
+            return card(st)
     return None
 
 
@@ -281,7 +379,7 @@ def path(f, state, later=()):
     """`Path` for `Facts` `f`: every step's status, whether chapter 1 is done, the Next card and the glow."""
     sts = statuses(f, state)
     first_done = all(st.done for st in sts if st.step.chapter == FIRST)
-    return Path(sts, first_done, next_card(sts, state, later), bool(newly_useful(sts, state)))
+    return Path(sts, first_done, next_card(sts, state, later), bool(newly_useful(sts, state)), stage_states(sts), f)
 
 
 def look(language, settings, view, fresh=False, later=(), seen=False, journey_ready=True):
@@ -293,6 +391,10 @@ def look(language, settings, view, fresh=False, later=(), seen=False, journey_re
     f = facts(language, settings, view, state, journey_ready)
     if "path_started" not in state and f.has_library:
         state = _first_look(f)
+    if "yours_card" not in state and f.has_library:     # ④'s card: a path new when the stages came (once, kept)
+        first_done = all(st.done for st in statuses(f, state) if st.step.chapter == FIRST)
+        guide.update_state(lambda s: s if "yours_card" in s else dict(s, yours_card=not first_done))
+        state = guide.read_state()
     sts = statuses(f, state)
     done = newly_done(sts, state)
     if done:

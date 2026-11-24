@@ -9,6 +9,7 @@ import base64
 import bisect
 import hashlib
 import json
+import os
 import re
 import sys
 import unicodedata
@@ -309,6 +310,29 @@ def progressive_pass(files, known, lemmas, lemma_of, keep, rank, target_coverage
 
 
 # --------------------------------------------------------------------------------------------------------------- #
+# The sentence table (the sentence choice): one switch for the whole build
+# --------------------------------------------------------------------------------------------------------------- #
+# 0 off: Generate writes no table, every reader takes today's path, every file in results/ the same bytes as before.
+# 1 release 1: Generate writes the table beside today's tables; the card, Swap and Bad card ask the score.
+# 2 release 2: Generate writes the table alone; the list, the journey and the word card read it too.
+# Code asks `SENTENCE_TABLE >= 1` or `>= 2`, nothing finer. A flip is one commit: this number and the analyzer's
+# ENGINE_REVISION together (without the bump an unchanged library would reuse its old run and never get a table).
+# A child process (a Generate is one) takes it from SURASURA_SENTENCE_TABLE=0|1|2, read here once, at import: the
+# test harness's way to run a level; any other value is the tree's.
+SENTENCE_TABLE_LEVELS = (0, 1, 2)
+SENTENCE_TABLE = 0
+
+
+def sentence_table_level(environ=None, default=SENTENCE_TABLE):
+    """The switch's level for a process: SURASURA_SENTENCE_TABLE when it names a level, else `default` (the tree's)."""
+    raw = (os.environ if environ is None else environ).get("SURASURA_SENTENCE_TABLE", "").strip()
+    return int(raw) if raw in {str(level) for level in SENTENCE_TABLE_LEVELS} else default
+
+
+SENTENCE_TABLE = sentence_table_level()
+
+
+# --------------------------------------------------------------------------------------------------------------- #
 # Example sentences (F7, RP-11; Sonic 2026-11-06: "build it with the new version only. 60 is fine.")
 # --------------------------------------------------------------------------------------------------------------- #
 # A word's candidate sentences never depend on the order: the walk keeps, per list row, its first sentence in every
@@ -324,6 +348,22 @@ FINISHED_POOL = 15
 PER_FILE = 2
 NEAR_FILES = 10                 # the pick also weighs a row's first sentence in each of the next 10 files holding it
 NOT_FINISHED = 1 << 30          # a sentence's finish rank when it isn't from Finished content (0 = finished last)
+# *Sentences per word* (`logic.context.max_contexts`) 0 is All (J-SET, Sonic's "up to all you have"): a row shows every
+# sentence the list keeps for it — its first, the shortlist, Finished, the nearest files' — never none.
+ALL_CONTEXTS = 0
+
+
+def context_limit(max_contexts):
+    """The most sentences a row is given for *Sentences per word* `max_contexts`: the number itself, or under All
+    (`ALL_CONTEXTS`, or a hand-edited number below it) every candidate the list keeps (`ContextPicker.pick` stops at
+    its pool's end)."""
+    return max_contexts if max_contexts > ALL_CONTEXTS else 1 + POOL + FINISHED_POOL + NEAR_FILES + 1
+
+
+def context_columns(max_contexts, counts):
+    """How many Context / Src column pairs a list has: `max_contexts`, or under All as many as the row given the most
+    sentences has (`counts`: each row's number of sentences)."""
+    return max_contexts if max_contexts > ALL_CONTEXTS else max(counts, default=0)
 
 
 def order_free_key(short, long, cost, unknowns, text, where, text_hash=None):

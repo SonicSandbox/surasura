@@ -164,7 +164,10 @@ def test_at_text_size_large_no_control_runs_past_the_page_and_narrow_rows_stack(
     page._settle()
     widest = max(v.minimumSizeHint().width() for v in page.rows.values() if v.isVisibleTo(page))
     m = page.body.layout().contentsMargins()
-    width = page.nav_panel.width() + 1 + m.left() + m.right() + widest + extra + 4
+    # (+ the scroll bar's width, Mado-LT 5: the view is the page less the nav and the bar — the old widest row, the
+    # sync choices side by side, asked ~50 px more than the body needed, which hid the bar's 10)
+    bar = page.scroll.verticalScrollBar().sizeHint().width()
+    width = page.nav_panel.width() + 1 + m.left() + m.right() + widest + bar + extra + 4
     page.resize(width, 620)
     QApplication.processEvents()
     page._settle()
@@ -183,7 +186,7 @@ def test_at_text_size_large_no_control_runs_past_the_page_and_narrow_rows_stack(
 
 def test_a_row_stacks_its_words_above_its_control_when_narrow_and_goes_back_when_wide(qapp):
     page, store = make_page(ALL_ON, "ja", size=(1400, 700))
-    page.reveal("known_from_anki")          # a7: under Known words' More options now — opened to be laid out
+    page.reveal("known_from_anki")          # Mado-LT: Anki & mining's *Your daily loop* now (in the open; reveal kept)
     page._settle()
     QApplication.processEvents()
     view = page.rows["known_from_anki"]
@@ -280,7 +283,7 @@ def test_a_scroll_not_made_by_the_page_lets_the_held_reveal_go(qapp):
     assert bar.maximum() > 200
     # a late relayout's clamp (one event-loop turn) ignores any scroll: wait it out, or a loaded run sees it
     assert wait_until(lambda: not getattr(page, "_clamp", False), 5)
-    page._revealed = page.rows["max_contexts"]               # a reveal held while the build goes on
+    page._revealed = page.rows["sentences_per_word"]         # a reveal held while the build goes on
     bar.setValue(120)                                         # as Tab's ensureWidgetVisible does: not the page's own
     assert page._revealed is None
     assert store.calls == []
@@ -293,7 +296,7 @@ def test_a_relayouts_clamp_keeps_the_held_reveal_and_a_scroll_right_after_it_let
     bar = page.scroll.verticalScrollBar()
     top = bar.maximum()
     bar.setValue(top)
-    marker = page.rows["max_contexts"]
+    marker = page.rows["sentences_per_word"]                  # (max_contexts' row since the journey v3 cut-over)
     page._revealed = marker
     bar.setRange(0, top - 100)                                # a shorter page: Qt clamps the value, nobody scrolled
     assert bar.value() == top - 100 and page._revealed is marker
@@ -315,7 +318,7 @@ def test_the_pages_own_scrolls_keep_the_held_reveal(qapp):
 def test_hold_keeps_the_reader_in_place_when_a_row_above_grows(qapp):
     page, store = make_page(ALL_ON, "ja")
     bar = page.scroll.verticalScrollBar()
-    target = page.rows["max_contexts"]
+    target = page.rows["sentences_per_word"]                  # (max_contexts' row since the journey v3 cut-over)
     bar.setValue(page._y_in_body(target) - 50)
     page._settle()
     vp = page.scroll.viewport()
@@ -436,23 +439,21 @@ def test_your_own_cards_choice_writes_order_all_and_their_tag_stays_open_under_i
     assert _written(store, tag.controls[0], "immersion 日本語") == [{"junban_own_tag": "immersion 日本語"}]
 
 
-def test_phrases_and_i_plus_one_first_are_switches_hidden_for_chinese_and_at_the_back(qapp):
-    """Q31: two plain switches, each writing its own key; no "First" heading; gone at the back and for Chinese."""
+def test_phrases_is_a_switch_hidden_for_chinese_and_i_plus_one_first_is_gone(qapp):
+    """Q31: a plain switch writing its own key; no "First" heading; gone for Chinese. Kyou-MO: *i+1 first* has no row
+    (always on), and *At the back* — your own cards only now — keeps the phrases."""
     pytest.importorskip("modules.junban.reposition")     # Junban's rows show only with Junban installed (private)
-    page, store = make_page(dict(ALL_ON, junban_phrases=True, junban_ready_first=False), "ja")
-    phrases, ready = page.rows["junban_phrases"], page.rows["junban_ready_first"]
-    assert isinstance(phrases.controls[0], sc.Toggle) and isinstance(ready.controls[0], sc.Toggle)
-    assert phrases.controls[0].value() is True and ready.controls[0].value() is False
-    assert _written(store, ready.controls[0], True) == [{"junban_ready_first": True}]     # both on: they work together
+    page, store = make_page(dict(ALL_ON, junban_phrases=True), "ja")
+    phrases = page.rows["junban_phrases"]
+    assert "junban_ready_first" not in page.rows
+    assert isinstance(phrases.controls[0], sc.Toggle) and phrases.controls[0].value() is True
     assert _written(store, phrases.controls[0], False) == [{"junban_phrases": False}]
     store.land()
-    assert phrases.isVisibleTo(page) and ready.isVisibleTo(page)
-    store.outside({"junban_unlisted": "back"})
-    assert not phrases.isVisibleTo(page) and not ready.isVisibleTo(page)
-    store.outside({"junban_unlisted": "journey"})
-    assert phrases.isVisibleTo(page) and ready.isVisibleTo(page)
+    assert phrases.isVisibleTo(page)
+    store.outside({"junban_off_list": "back"})
+    assert phrases.isVisibleTo(page)
     store.outside({"target_language": "zh"})
-    assert not phrases.isVisibleTo(page) and not ready.isVisibleTo(page)
+    assert not phrases.isVisibleTo(page)
 
 
 def test_only_words_marked_is_glyph_tablets_again_writing_one_list(qapp):
@@ -484,7 +485,7 @@ def test_no_multi_pick_on_the_page_paints_a_choices_vein(qapp, monkeypatch):
     tablets = {view.row.id: c for view in page.rows.values() for c in view.controls
                if isinstance(c, sc.Tablets) and not c.is_list}
     assert set(tablets) == {"known_from_anki", "junban_only_markers"}
-    page.reveal("known_from_anki")              # a7: under Known words' More options — opened
+    page.reveal("known_from_anki")              # Mado-LT: Anki & mining's *Your daily loop* (reveal: scrolled to)
     page._settle()
     tablets = {k: c for k, c in tablets.items() if c.isVisibleTo(page)}   # Junban's show only with it installed
     assert "known_from_anki" in tablets
@@ -530,7 +531,8 @@ def test_picking_a_second_state_names_both_under_count_as_known_and_taking_it_of
         [{"known_from_anki": ["suspended", "marked"], "known_from_anki_chosen": True}]    # + Kantan-B3's marker: a pick
     store.land()
     assert view.help.text() == S.KNOWN_ALL_OF.format(states="Suspended + Marked")
-    assert _written(store, view.controls[0], ["marked"]) == [{"known_from_anki": ["marked"]}]
+    assert _written(store, view.controls[0], ["marked"]) == \
+        [{"known_from_anki": ["marked"], "known_from_anki_chosen": True}]     # beside every pick (Kotoba-WS2F)
     store.land()
     assert view.help.text() == catalog.ROW["known_from_anki"].help
     built, _store = make_page(dict(ALL_ON, connect_enabled=True, known_from_anki=["marked", "flag:2"]), "ja")
@@ -538,13 +540,20 @@ def test_picking_a_second_state_names_both_under_count_as_known_and_taking_it_of
 
 
 def test_the_moved_rows_open_where_they_now_live_and_search_finds_them(qapp):
-    """DIAGNOSIS 3 + 5: *Count as known in Anki* in Known words (its *More options*), *More video folders* in Anki &
-    mining's — each reached by a reveal and by a search for its old words."""
+    """DIAGNOSIS 3 + 5: *More video folders* in Anki & mining's *More options* — reached by a reveal and by a search for
+    its old words. *Count as known in Anki* moved again (Mado-LT, 3.0.18): it is the ✓ Known move card of Anki &
+    mining's *Your daily loop*, in the open — one home for one setting, so Known words keeps no second row of it."""
     page, _store = make_page(dict(ALL_ON, connect_enabled=True), "ja")
     page.reveal("known_from_anki")
     page._settle()
     assert page.rows["known_from_anki"].isVisibleTo(page)
-    assert page.rows["known_from_anki"].parent() is page.slabs["known"].adv
+    assert page.rows["known_from_anki"].parent() is page.slabs["anki"].main
+    assert [r.id for r in catalog.ROWS if "known_from_anki" in r.keys] == ["known_from_anki"]    # no second row
+    assert not [v for v in page.rows.values() if v.parent() is page.slabs["known"].adv]     # the old place: retired
+    page.search.edit.setText("count as known")            # its old name still finds it
+    page._settle()
+    assert page.rows["known_from_anki"].isVisibleTo(page)
+    page.search.edit.setText("")
     assert page.rows["connect_video_folders"].parent() is page.slabs["anki"].adv
     page.search.edit.setText("where videos")
     page._settle()
@@ -561,3 +570,93 @@ def test_every_choice_cards_line_fits_its_card_whole():
         if row.kind == "cards":
             for _v, _label, line in catalog.options(row, dict(ALL_ON), "ja"):
                 assert len(line) <= 80, (row.id, line)
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_every_choice_set_side_by_side_fits_the_narrowest_page(language):
+    """Mado-LT 4: a Choice sets its options side by side and never wraps, so one wider than the page widens the whole
+    page past its view (its right edge cut off, every row laid out and painted again). The narrowest is the window's
+    minimum at Large text: a 625 px column on Windows' fonts, where 66 characters over three options measured 602 px with
+    their row (2026-11-22; the suite's stand-in font measures about twice as wide, so the bound is in characters). A
+    longer one-of is a `select`."""
+    for row in catalog.ROWS:
+        if row.kind == "choice":
+            labels = [label for _v, label, _line in catalog.options(row, dict(ALL_ON), language)]
+            assert sum(map(len, labels)) <= 60, (row.id, labels)
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_sync_delay_is_a_list_that_keeps_a_held_value_and_never_widens_the_page(qapp, language):
+    """Mado-LT 4 (Anki & mining's *More options* repainted the page above its button): *Sync Anki after tomorrow's
+    cards change* set its three choices side by side — with 順's held *5 minutes after* a fourth — wider than a small
+    window's page at Large text, so opening the fold widened the page. A list now: the held value shown and kept until
+    another is picked, the fold opens with the page's width unchanged, a pick writes its one key."""
+    page, store = make_page(dict(ALL_ON, anki_sync_delay_min=5), language)
+    select = page.rows["anki_sync_delay_min"].controls[0]
+    assert isinstance(select, sc.Select)
+    assert [v for v, _l, _t in select._options] == [1, 0, "off", 5]
+    assert select.value() == 5 and select._options[3][1] == "5 minutes after"
+    width = page.body.width()
+    page.fold("anki")
+    page._settle()
+    assert page.rows["anki_sync_delay_min"].isVisibleTo(page)
+    assert page.body.width() == width                                   # the page never grew wider than it was
+    assert _written(store, select, 0) == [{"anki_sync_delay_min": 0}]
+
+
+# --- Mado-LT (3.0.18): *Your daily loop*'s three move cards pick live, one flag one move ---------------------------- #
+def _flags(control):
+    """A move card's picks: a Select's values, or Known's tablets' flags (as numbers)."""
+    if isinstance(control, sc.Select):
+        return [v for v, _l, _t in control._options]
+    return sorted(int(v[5:]) for v, _l, _t in control._options if str(v).startswith("flag:"))
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_move_cards_flag_picked_leaves_the_other_moves_lists_at_once_and_writes_its_one_key(qapp, language):
+    """WL mock 04: Swap and Ignore each pick a flag, Known its states; a flag one move holds is never another's pick.
+    Ignore moved to Purple: the write is that one key, and once it lands Swap's list and Known's tablets give Purple up
+    and take Red back — the moves' rows only are shown again (a redraw touches what changed), the controls kept."""
+    page, store = make_page(dict(ALL_ON, connect_enabled=True), language)
+    known, swap, ignore = (page.rows[r].controls[0] for r in ("known_from_anki", "loop_swap_flag", "loop_ignore_flag"))
+    assert isinstance(swap, sc.Select) and isinstance(ignore, sc.Select) and isinstance(known, sc.Tablets)
+    assert swap.value() == 3 and ignore.value() == 1                     # green and red by default
+    assert _flags(swap) == [2, 3, 4, 5, 6, 7] and _flags(ignore) == [1, 2, 4, 5, 6, 7] and _flags(known) == [2, 4, 5, 6, 7]
+    paints = dict(page.paints)
+    assert _written(store, ignore, 7) == [{"loop_ignore_flag": 7}]
+    store.land()
+    assert page.rows["loop_ignore_flag"].controls[0] is ignore and ignore.value() == 7
+    assert _flags(swap) == [1, 2, 3, 4, 5, 6] and swap.value() == 3      # Purple gone, Red free again
+    assert _flags(known) == [1, 2, 4, 5, 6]
+    changed = {r for r in page.paints if page.paints[r] != paints.get(r, 0)}
+    assert changed <= {"known_from_anki", "loop_swap_flag"}, changed       # Ignore itself already showed its pick
+    assert "loop_swap_flag" in changed and "known_from_anki" in changed
+
+
+def test_a_flag_known_picks_leaves_swap_and_ignore_and_a_flag_another_holds_is_never_offered(qapp):
+    """The same flag twice is refused where it is picked: Known's Orange leaves Swap's and Ignore's lists; a value
+    hand-edited onto another move's flag (Swap on red) is shown as it is, kept, and read as the default
+    (`review_loop.move_flags`)."""
+    page, store = make_page(dict(ALL_ON, connect_enabled=True), "ja")
+    known, swap, ignore = (page.rows[r].controls[0] for r in ("known_from_anki", "loop_swap_flag", "loop_ignore_flag"))
+    assert _written(store, known, ["suspended", "flag:2"]) == \
+        [{"known_from_anki": ["suspended", "flag:2"], "known_from_anki_chosen": True}]
+    store.land()
+    assert 2 not in _flags(swap) and 2 not in _flags(ignore)
+    assert 3 not in _flags(ignore) and 1 not in _flags(swap)             # each other's still out
+    edited, _store = make_page(dict(ALL_ON, connect_enabled=True, loop_swap_flag=1), "ja")
+    held = edited.rows["loop_swap_flag"].controls[0]
+    assert held.value() == 1                                              # shown as saved, never changed by the page
+    from app.connect import review_loop
+    assert review_loop.move_flags(_store.get()) == \
+        {review_loop.IGNORE: 1, review_loop.SWAP: 3}                     # ... read as Swap's default
+    assert _store.calls == []
+
+
+def test_swap_and_ignore_show_only_with_cards_made_for_you_and_known_always(qapp):
+    """Swap and Ignore are read only while *Cards made for you* is on (`anki_sync.read_known_signal`): off, only ✓ Known
+    shows in *Your daily loop*."""
+    page, _store = make_page(dict(ALL_ON, connect_enabled=False), "ja")
+    page._settle()
+    assert page.rows["known_from_anki"].isVisibleTo(page)
+    assert not page.rows["loop_swap_flag"].isVisibleTo(page) and not page.rows["loop_ignore_flag"].isVisibleTo(page)

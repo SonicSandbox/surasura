@@ -6,8 +6,22 @@ import threading
 import time
 from collections.abc import Mapping
 from typing import Any, Callable, Dict, Optional
-from app import locks
+from app import locks, plan_rules
 from app.path_utils import get_settings_path, read_text
+
+# *Length* (logic.context min_chars / preferred_max_chars, the length a learner likes best: the sentence choice's zone,
+# its spec § 4.6): its default's one home — every reader's fall-back asks `sentence_length_default()`. 14–25 once the
+# sentence table is on (plan_rules.SENTENCE_TABLE >= 1); 10–50 before, which a saved file may still hold unchosen
+# (`load_settings` reads it as today's; a learner's own pick carries `sentence_length_chosen`).
+OLD_SENTENCE_LENGTH = (10, 50)
+SENTENCE_LENGTH = (14, 25)
+SENTENCE_LENGTH_CHOSEN = "sentence_length_chosen"
+
+
+def sentence_length_default():
+    """*Length*'s default, (min_chars, preferred_max_chars), at this process's level of the sentence table."""
+    return SENTENCE_LENGTH if plan_rules.SENTENCE_TABLE >= 1 else OLD_SENTENCE_LENGTH
+
 
 # --- SETTINGS TEMPLATE (DEFAULTS) ---
 DEFAULT_SETTINGS = {
@@ -83,6 +97,20 @@ DEFAULT_SETTINGS = {
     # battery (Sonic, E3.2-1: 3 s, 30 s on a laptop's battery; advanced settings). No run or report reads them.
     "journey_settle_s": 3,
     "journey_settle_battery_s": 30,
+    # Journey v3's page settings (SPEC §1.4, J-SET; Settings › App › Journey and the page's ⚙, both through
+    # `app/services/journey_settings.py`, which also reads the three existing keys the page shares: `theme`,
+    # `source_display`, `logic.context.max_contexts`). Unused until the cut-over (J-CUT). Look settings, applied in the
+    # page — never in a signature (analyzer._NON_ANALYSIS_SETTINGS): *Pitch and tones* "shown" · "hidden" (until F);
+    # *Word size* / *Sentence size* "s" · "m" · "l"; *Keys* "qwerty" · "dvorak" · the learner's own {action: key};
+    # *Where you'll first meet it* (the sentence you first meet the word in, its own marked line) shown or not. A data
+    # setting, the render's (never a run's): *Meanings* "en" (JMdict / CC-CEDICT) · "yours_en" (yours, then English) · "yours"
+    # (J-CUT puts it in the render signature with the render that reads it).
+    "journey_pitch": "shown",
+    "journey_meanings": "en",
+    "journey_word_size": "m",
+    "journey_sentence_size": "m",
+    "journey_keys": "qwerty",
+    "journey_first_meeting": True,
     # Surasura Connect's preview switch (P2.1; docs/agent instructions/3.0/P1.5-connect/): off until the user turns it
     # on (2.x: an opt-in preview); with it off, `register` writes nothing. `placing_rules` = {source: target}: where a
     # program's drop goes instead of waiting in New arrivals (3.0 only, the store's `arrivals_on`; ✅ Q2-3, RD-S16:
@@ -104,7 +132,7 @@ DEFAULT_SETTINGS = {
     "anki_sync_auto": False,
     "anki_sync_decks": {},
     "anki_sync_fields": {},
-    "anki_sync_include_suspended": False,
+    "anki_sync_include_suspended": False,   # retired (Kotoba-WS2): folded into known_from_anki; read once, on load
     # "Label backlogged Anki words" (Settings -> Experience & UI; Junban_Backlog_Spec WP-B8): Generate
     # reads the new-card backlog of those decks, in the background, when Anki is running
     # (anki_sync.sync_backlog -> User Files/<lang>/anki_backlog.json), and the report marks each word
@@ -126,7 +154,20 @@ DEFAULT_SETTINGS = {
     # G1.3), where Anki Miner is ("" = found by its installer's key) and the Anki Miner profile Connect mines with.
     # Read only by
     # `surasura-cli pick` and Connect: never in a signature (analyzer._NON_ANALYSIS_SETTINGS).
+    # Retired by the mining model (Kantan-MO, 3.0.18): read only to carry a learner's pick over (`load_settings`) and
+    # by 2.x; Connect reads `connect_every_word`
     "connect_mine_words": "list",
+    # *Cards for every new word* (Kantan-MO, the mining model, MODEL.md Q1 (b)): off — Connect makes cards for your
+    # list (Level is what you learn); on — for every word of the episode you don't know, past your level too, counted
+    # toward the cap. `connect_every_word()` reads it; a file without it reads `connect_mine_words` == "unknown".
+    "connect_every_word": False,
+    # Kantan-SD (the sentence dial; PROVISIONAL default): which sentence a card is cut from — "best" anywhere in the
+    # library, or "nearest", the episode's own line (`app/connect/sentences.py`, `dial_of`)
+    "connect_sentence_dial": "best",
+    # The study order (Kantan-MO; ROLES.md: the list's): "content" — as you'll meet the words in your library;
+    # "priority" — by leverage first. Read by Connect (the cap's window), 順 (its order) and the journey (its list)
+    # through `study_order()`; a file without it reads 順's old `junban_order`.
+    "study_order": "content",
     "connect_send_grammar": True,
     "connect_anki_miner_path": "",
     "connect_anki_miner_profile": "Surasura",
@@ -197,6 +238,26 @@ DEFAULT_SETTINGS = {
     # yet writes every default (`_read_file_as_is`), so a saved ["suspended"] without it is the old default, never a
     # choice (`load_settings` reads today's). Written beside every pick (the Settings row, the 2.x panel).
     "known_from_anki_chosen": False,
+    # True once the learner set *Length* with the sentence table on (E-LENGTH): a saved 10–50 without it is the old
+    # default, never a choice (`load_settings` reads today's, at SENTENCE_TABLE >= 1). Written beside the row's change.
+    # Never in a signature: what it decides is the pair itself.
+    SENTENCE_LENGTH_CHOSEN: False,
+    # The review loop's two other moves (Mado-LT, 3.0.18; WL-46 / 46b, ruled 2026-11-20): the flag that, with the card
+    # suspended, means Ignore (1, red) and Swap (3, green) — Anki's flag numbers 1 … 7, picked on Settings' move cards.
+    # Read only through `review_loop.move_flags` (a bad value, or Swap on Ignore's flag, reads as the default); those
+    # two flags never count as known, suspended or not. Never in a signature: what they move is in the word lists.
+    "loop_ignore_flag": 1,
+    "loop_swap_flag": 3,
+    # FS-1 (the full Swap, 3.1; Sonic 2026-11-23, decision 1): what Swap does with a flagged card — True: *Same card,
+    # new sentence* (rewritten in place, its reviews kept), False: *A new card*. Read through `swap.in_place_on`, when
+    # a swap's job is made. Never in a signature: it decides how a card is written, never what a run counts.
+    # On by default since 3.0.18 (decision 1): a learner who never picked *Swap gives* gets *Same card*, an update too
+    # (`load_settings` reads an unpicked saved False, a first save's old default, as this default).
+    "swap_in_place": True,
+    # FS-2: True once the learner picked *Swap gives* (written beside the pick, `settings_catalog.change`) — a file
+    # holding `swap_in_place: false` with no pick is a first save's old default, read as today's (`load_settings`), so
+    # decision 1's flip reaches every install that never picked. State: no row, no signature.
+    "swap_in_place_chosen": False,
     "logic": {
         # D29 (3.0): the automation's switch. Off stops exactly three things: the re-order host (Anki re-ordered as
         # you move, with its AnkiWeb sync), the journey keeper's background Generate and AutoJunban's re-order. The
@@ -267,9 +328,9 @@ DEFAULT_SETTINGS = {
         "context": {
             "_comment": "min_chars/preferred_max_chars: ideal sentence length range. max_chars: hard cap — sentences longer than this are excluded from candidate examples (a word's own/original sentence is still kept as a fallback). recency_files: tiebreaker only — among sentences that are otherwise equal (same i+1 cost, same length) prefer the one whose other words you met in this file or up to N files earlier; 0 = same file only, -1 = disable.",
             "search_range": 20,
-            "min_chars": 10,
+            "min_chars": sentence_length_default()[0],
             "max_extra": 2,
-            "preferred_max_chars": 50,
+            "preferred_max_chars": sentence_length_default()[1],
             "max_contexts": 3,
             "max_chars": 150,
             "recency_files": 1
@@ -341,6 +402,35 @@ def _optional_module_defaults() -> Dict[str, Any]:
 _OLD_ZH_BOUNDARIES = "\u3002\uff01\uff1f!?\n\uff1b;\u2026\u2026"
 
 
+def _read_length(settings, held):
+    """E-LENGTH (spec § 4.6), only once the sentence table is on: *Length* as the file `held` (settings.json's dict)
+    says it — a pair it doesn't hold is today's default, and the old default saved unchosen (exactly 10 and 50 with no
+    `sentence_length_chosen`: a first save wrote every default) reads as today's; any other pair is the learner's
+    own, kept. Read so, never written (settings criteria 11). At level 0 nothing changes."""
+    if plan_rules.SENTENCE_TABLE < 1:
+        return
+    context = (settings.get("logic") or {}).get("context")
+    logic = held.get("logic") if isinstance(held, dict) else None
+    own = logic.get("context") if isinstance(logic, dict) else None
+    if not isinstance(context, dict):
+        return
+    own = own if isinstance(own, dict) else {}
+    low, high = sentence_length_default()
+    unchosen = (own.get("min_chars"), own.get("preferred_max_chars")) == OLD_SENTENCE_LENGTH
+    if unchosen and not held.get(SENTENCE_LENGTH_CHOSEN):
+        own = {}
+    def number(value):
+        return isinstance(value, int) and not isinstance(value, bool)
+    # an end the file holds past the default's other end pulls it along (14–25 is narrower than 10–50: a held low end
+    # of 30 must not sit above a high end of 25); a held value that isn't a number is left to its readers, as today
+    if "min_chars" not in own:
+        held_high = own.get("preferred_max_chars")
+        context["min_chars"] = min(low, held_high) if number(held_high) else low
+    if "preferred_max_chars" not in own:
+        held_low = own.get("min_chars")
+        context["preferred_max_chars"] = max(high, held_low) if number(held_low) else high
+
+
 class SettingsError(Exception):
     """settings.json exists but can't be read (`load_settings(strict=True)`)."""
 
@@ -351,6 +441,7 @@ def load_settings(strict: bool = False) -> Dict[str, Any]:
     defaults (the command line's `settings-unreadable`: a fallback a later save would write back, P0.3 05 §1)."""
     settings_path = get_settings_path()
     settings = copy.deepcopy(DEFAULT_SETTINGS)
+    held_length = {}
     # Optional modules contribute their own defaults, but only when importable.
     settings.update(_optional_module_defaults())
 
@@ -359,6 +450,7 @@ def load_settings(strict: bool = False) -> Dict[str, Any]:
             # Hand-edited too (the reveal gates): read in its own encoding (path_utils.read_text), or a
             # BOM from Notepad loaded the defaults — which the dashboard's next save then wrote over it.
             user_settings = json.loads(read_text(settings_path))
+            held_length = user_settings if isinstance(user_settings, dict) else {}
             # Deep merge for 'logic'
             if "logic" in user_settings and isinstance(user_settings["logic"], dict):
                 user_logic = user_settings["logic"]
@@ -378,14 +470,35 @@ def load_settings(strict: bool = False) -> Dict[str, Any]:
                 if key != "logic":
                     settings[key] = value
             settings["placing_rules"] = placing_rules(settings.get("placing_rules"))     # per key, as `logic`
+            # FS-2: *Swap gives* saved off without a pick (a first save wrote every default) reads as today's default
+            if user_settings.get("swap_in_place") is False and not user_settings.get("swap_in_place_chosen"):
+                settings["swap_in_place"] = DEFAULT_SETTINGS["swap_in_place"]
             # Kantan-B3: the old default of *Count as known in Anki*, saved without a pick (a first save wrote every
             # default), reads as today's default; a learner's own pick carries `known_from_anki_chosen`
             if user_settings.get("known_from_anki") == ["suspended"] and not user_settings.get("known_from_anki_chosen"):
                 settings["known_from_anki"] = copy.deepcopy(DEFAULT_SETTINGS["known_from_anki"])
+            # Kotoba-WS2: *Count suspended cards as known* folded into *Count as known in Anki* (Sonic 2026-11-19) — a
+            # learner who turned it on, and never picked the states, picked "a card I suspend counts": read as
+            # Suspended alone (their pick kept; nothing written: `anki_sync.counted_suspended` reads it). Only over a
+            # default the file holds (none, the old or today's): states picked before Kantan-B3's marker are kept
+            if (user_settings.get("anki_sync_include_suspended") is True
+                    and not user_settings.get("known_from_anki_chosen")
+                    and user_settings.get("known_from_anki", ["suspended"]) in (["suspended"], ["suspended", "marked"])):
+                settings["known_from_anki"] = ["suspended"]
+                settings["known_from_anki_chosen"] = True
+            # Kantan-MO (the mining model): a learner's picks carry over, read here and never written (settings
+            # criteria 11) — 順's *Order* is the study order; *Every new word* is *Cards for every new word* (*Your
+            # list* and *Only i+1* read as off: your list)
+            if "study_order" not in user_settings:
+                settings["study_order"] = study_order({"junban_order": user_settings.get("junban_order")})
+            if "connect_every_word" not in user_settings:
+                settings["connect_every_word"] = user_settings.get("connect_mine_words") == "unknown"
         except Exception as e:
             if strict:
                 raise SettingsError(f"settings.json can't be read: {e}") from e
             print(f"Warning: Could not load settings, using defaults: {e}")
+
+    _read_length(settings, held_length)
 
     # Sentence boundaries are user-editable, but a few characters are STRUCTURAL — without them
     # sentences simply never end. A saved settings.json overrides the defaults wholesale, so a user
@@ -754,6 +867,36 @@ def connect_on(settings) -> bool:
     (off)."""
     on = settings.get("connect_enabled") if hasattr(settings, "get") else False
     return bool(on) and automation(settings)
+
+
+STUDY_ORDERS = ("content", "priority")
+
+
+def study_order(settings) -> str:
+    """The study order (Kantan-MO; ROLES.md: the list's) as every reader takes it — "content" (as you'll meet it) or
+    "priority" (by leverage): `study_order`, else 順's old `junban_order` (a settings dict not read by `load_settings`),
+    else "content". Takes a settings dict, a window's frozen copy, or None."""
+    get = settings.get if hasattr(settings, "get") else (lambda _key: None)
+    for key in ("study_order", "junban_order"):
+        value = str(get(key) or "").strip().lower()
+        if value in STUDY_ORDERS:
+            return value
+    return "content"
+
+
+def connect_every_word(settings) -> bool:
+    """*Cards for every new word* (Kantan-MO): `connect_every_word` when it is a bool, else the retired *Words to make
+    cards from* on *Every new word* (`connect_mine_words` == "unknown"). Takes a settings dict, a frozen copy, or None
+    (off)."""
+    get = settings.get if hasattr(settings, "get") else (lambda _key: None)
+    value = get("connect_every_word")
+    return value if isinstance(value, bool) else get("connect_mine_words") == "unknown"
+
+
+def mine_mode(settings) -> str:
+    """Connect's pick mode (`app/connect/pick.py`'s MODES) from the settings: "unknown" with *Cards for every new
+    word* on, else "list" — the list (Level) decides (Kantan-MO; *Only i+1* retired)."""
+    return "unknown" if connect_every_word(settings) else "list"
 
 
 FINISH_CARDS = ("ask", "keep", "out")

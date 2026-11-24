@@ -212,7 +212,7 @@ def test_switching_on_when_the_file_already_says_on_moves_no_watermark(world, mo
     assert world.events[0][1] is False, "the reload ran on the GUI thread"
     assert rows.switch.toggle.value() is True and rows.switch.toggle.isEnabled()
     assert S.SWITCH_ALREADY_ON in world.bar.lines
-    assert page.rows["connect_mine_words"].isVisibleTo(page)
+    assert page.rows["connect_send_grammar"].isVisibleTo(page)
     assert store.calls == []
 
 
@@ -362,11 +362,13 @@ def test_tab_reaches_connects_switch_and_the_anki_miner_card_where_they_stand(wo
     chain = focus_chain(page)
     at = {w: i for i, w in enumerate(chain)}
     switch = first_focusable(page.rows["connect_enabled"])
-    assert at[rows.new_cards.field.edit] < at[switch] < at[first_focusable(page.rows["connect_mine_words"])]
+    assert at[rows.new_cards.field.edit] < at[switch] < at[first_focusable(page.rows["connect_send_grammar"])]
     miner = first_focusable(page.rows["anki_miner"])
     assert at[first_focusable(page.rows["enable_youtube_transcripts"])] < at[miner]
-    # (Fine-tune's order, EZ-4: Connections under App, after Journey and just before App's own rows)
-    assert at[first_focusable(page.rows["theme"])] < at[miner] < at[first_focusable(page.rows["text_size"])]
+    # (Fine-tune's order, EZ-4: Connections under App; since the journey v3 cut-over, J-CUT, the Journey section
+    # moves under App after Connections, before App's own rows: the card's buttons before the Journey's first row)
+    journey = first_focusable(page.rows["journey_pitch"])          # the Journey section's first row (v3)
+    assert at[miner] < at[journey] < at[first_focusable(page.rows["text_size"])]
 
 
 def test_a_painting_that_breaks_after_a_confirmed_write_still_saves_the_pace(world, monkeypatch, qt_errors):

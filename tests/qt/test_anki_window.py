@@ -301,7 +301,7 @@ def test_sync_is_an_anki_sync_job_and_a_second_press_while_it_runs_starts_nothin
     w.btn_sync.click()
     assert wait_until(lambda: gate.modes)
     assert w.busy() and w.status.text() == strings.ANKI_SYNCING
-    assert not w.chk_suspended.isEnabled(), "the scope never changes under a job (inv defect 4)"
+    assert not w.box_field1.isEnabled(), "the scope never changes under a job (inv defect 4)"
     w.on_sync()
     w.on_replace()                                         # the gates themselves, not only the buttons' state
     w.btn_sync.click()
@@ -595,8 +595,6 @@ def test_the_switches_save_their_own_key_and_the_first_pick_with_them(main, anki
     saved = _saved(main)
     assert saved["anki_sync_auto"] is True and saved["anki_auto_generate"] is True
     assert saved["anki_sync_decks"]["ja"] == ["TheBank"], "a first action saves the pick shown"
-    w.chk_suspended.click()
-    assert _saved(main)["anki_sync_include_suspended"] is True
 
 
 # --- the fix round (2026-10-14/15: IK-41…46, AD3-1…9) ------------------------------------------------------------ #
@@ -784,8 +782,8 @@ def test_the_heading_tip_never_promises_that_nothing_is_removed_beside_replace(m
 
 
 def test_a_scope_changed_while_the_first_probe_runs_is_the_scope_shown(main, anki, monkeypatch):
-    """AD3-3: Include suspended (or a deck) changed while the opening probe runs: its answer, read for the old scope,
-    is dropped and Anki read again for the new one."""
+    """AD3-3: a deck changed while the opening probe runs: its answer, read for the old scope, is dropped and Anki read
+    again for the new one."""
     _choose(main, decks=("TheBank", "Grammar"))
     w = _open(main, connect=False)
     gate, real, calls = threading.Event(), QAW.AW.read_probe, []
@@ -794,11 +792,10 @@ def test_a_scope_changed_while_the_first_probe_runs_is_the_scope_shown(main, ank
                                                                                                   *more))[2])
     w.refresh_connection()
     assert wait_until(lambda: calls)
-    w.chk_suspended.click()
     w.remove_deck("Grammar")
     gate.set()
     assert wait_until(lambda: w._connected and not w._probing, 10)
-    assert calls[-1] == (["TheBank"], True), "the answer shown was read for the new scope"
+    assert calls[-1] == (["TheBank"], w.suspended), "the answer shown was read for the new scope"
     assert set(w._counts) == {"TheBank"}
 
 
@@ -862,15 +859,52 @@ def test_restore_asks_again_when_a_sync_changed_the_total_meanwhile(main, anki, 
     assert wait_until(lambda: not w.busy())
 
 
-def test_include_suspended_saves_its_own_key_alone(main, anki, monkeypatch):
-    """IK-47 (S19): the switch writes its key; the decks and fields, unchanged, are not written again."""
+def test_the_suspended_cards_counted_are_count_as_known_in_ankis_and_follow_its_pick(main, anki):
+    """Kotoba-WS2: *Include suspended cards* folded into Settings' *Count as known in Anki* (its one home): the window
+    has no switch of its own, its sync reads the studied suspended cards in the picked states (default Suspended +
+    Marked; never red or green), and a pick made in Settings is the scope it reads next."""
+    from app import anki_sync
     _choose(main)
     w = _open(main)
-    writes = []
-    real = main.services.settings.set
-    monkeypatch.setattr(main.services.settings, "set", lambda *a, **k: (writes.append((a, sorted(k))), real(*a, **k))[1])
-    w.chk_suspended.click()
-    assert writes == [(({"anki_sync_include_suspended": True},), [])]
+    assert not hasattr(w, "chk_suspended")
+    assert w._snapshot()["suspended"] == anki_sync.counted_suspended(main.services.settings.get())
+    assert "is:suspended" in w.suspended and "tag:marked" in w.suspended and "-flag:1" in w.suspended
+    main.services.settings.set({"known_from_anki": ["suspended"], "known_from_anki_chosen": True})
+    assert wait_until(lambda: "tag:marked" not in w.suspended)
+    main.services.settings.set({"known_from_anki": []})
+    assert wait_until(lambda: w.suspended is False), "nothing picked: no suspended card counts"
+
+
+def test_automation_flipped_in_settings_moves_the_open_windows_suspended_scope(main, anki):
+    """Kotoba-WS2F (the keeper's F2): with *Make cards for me* on, D29's *Automation* (`logic.automation`) decides
+    whether Connect's signal reads the suspended cards or the window's sync counts them — an open window follows the
+    flip, never syncing with the scope it opened with."""
+    from app import anki_sync
+    _choose(main, connect_enabled=True, **{"logic.automation": False})
+    w = _open(main)
+    assert w.suspended is not False and "is:suspended" in w.suspended       # Connect's signal off: the sync counts
+    main.services.settings.set({"logic.automation": True})
+    assert wait_until(lambda: w.suspended is False), "the signal reads them now: the sync counts none"
+    assert w._snapshot()["suspended"] == anki_sync.counted_suspended(main.services.settings.get())
+    main.services.settings.set({"logic.automation": False})              # and back: the sync counts them again
+    assert wait_until(lambda: w.suspended is not False and "is:suspended" in w.suspended)
+    assert w._unsaved_pick is False                                       # a returning learner's decks: nothing new
+
+
+def test_a_settings_change_to_the_scope_never_saves_the_first_opens_deck_pick(main, anki):
+    """Kotoba-WS2F (the keeper's F3, S16): a pick made in Settings re-reads the window's scope, but the decks the first
+    open preselected stay unsaved until the learner acts in the window."""
+    w = _open(main)
+    assert w._unsaved_pick and w.decks == ["TheBank"]
+    asked = w._probe_seq
+    main.services.settings.set({"known_from_anki": ["suspended"], "known_from_anki_chosen": True})     # Settings' pick
+    assert wait_until(lambda: w.suspended is not False and "tag:marked" not in w.suspended)
+    assert wait_until(lambda: w._scope_asked > asked and w._scope_press is None), "Anki read for the new scope"
+    assert (_saved(main).get("anki_sync_decks") or {}).get("ja") is None, "the window's pick was never the learner's"
+    assert w._unsaved_pick
+    w.btn_sync.click()                                    # the learner's first action here: now it is saved
+    _idle(main, w)
+    assert _saved(main)["anki_sync_decks"]["ja"] == ["TheBank"]
 
 
 def test_while_its_job_waits_its_turn_the_line_says_so(main, anki):
@@ -934,8 +968,8 @@ def test_after_a_choice_was_saved_a_switch_still_saves_its_own_key_alone(main, a
     writes = []
     real = main.services.settings.set
     monkeypatch.setattr(main.services.settings, "set", lambda *a, **k: (writes.append((a, sorted(k))), real(*a, **k))[1])
-    w.chk_suspended.click()
-    assert writes == [(({"anki_sync_include_suspended": True},), [])]
+    w.chk_auto.click()
+    assert writes == [(({"anki_sync_auto": True},), [])]
 
 
 # --- round 8 row 45: every press reacts at once ------------------------------------------------------------------- #
@@ -978,7 +1012,7 @@ def test_two_scope_reads_keep_the_counts_marked_until_the_newer_answers(main, an
         return real(*args)
     monkeypatch.setattr(AW, "read_scope", held)
     w.remove_deck("Grammar")
-    w._suspended_changed(True)
+    main.services.settings.set({"known_from_anki": ["suspended"], "known_from_anki_chosen": True})   # Settings' pick
     assert wait_until(lambda: len(asked) == 2) and counts_marked()
     gates[0].set()                                        # the older read answers first
     QTest.qWait(200)

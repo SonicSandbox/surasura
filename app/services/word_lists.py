@@ -1,9 +1,20 @@
-"""The Ignore list and the Blacklist, read and changed (W3.3 P10; the window's spec 01 §1.2 n16, 08 decision 41).
+"""The Ignore list, read and changed (W3.3 P10; the window's spec 01 §1.2 n16, 08 decision 41), and the Blacklist
+merged into it once (Kotoba-WS2).
 
-The lists 2.x reads, one language at a time: `User Files/<lang>/IgnoreList.txt` and `Blacklist.txt` — every run reads
-both as ignored words (`analyzer.load_ignore_set`), each line a word, `#` comments and blank lines skipped. 2.x never
-wrote them (the dashboard opened IgnoreList.txt in the user's editor); the user edits them by hand, so a write here
-keeps every line it doesn't change, byte for byte.
+The list 2.x reads, one language at a time: `User Files/<lang>/IgnoreList.txt` — every run reads it as ignored words
+(`analyzer.load_ignore_set`), each line a word, `#` comments and blank lines skipped. 2.x never wrote it (the dashboard
+opened IgnoreList.txt in the user's editor); the user edits it by hand, so a write here keeps every line it doesn't
+change, byte for byte.
+
+**One Ignore** (Kotoba-WS2; Sonic 2026-11-19: Known · Ignore, everywhere): `Blacklist.txt` (2026-02, "for pesky parse
+issues") did exactly what the Ignore list does — every reader puts both into one set — so `merge_blacklist` folds it
+in once per language, at the start (`first_run.run`, beside the Graduated list's merge): each word the Ignore list
+doesn't name yet (as the run compares them, `_term`) appended as typed, the learner's own comments kept, under one
+marker line naming the file's hash (`BLACKLIST_MARK`: a start cut off between the write and the move adds nothing
+again); the Ignore list backed up first and written as every write here is; then the Blacklist moved to `.trash`
+(never purged). 2.x reads the Ignore list with every word (a 2.x start makes an empty Blacklist again: harmless — and
+any word typed into it is merged at the next start). Every reader still reads a Blacklist.txt that is there, as before:
+none of them changed.
 
 - `read(kind, language)` -> a `Listing`: the list's words as its lines hold them, in order. The Ignore list also shows
   KnownWord.json's IGNORED entries (Migaku's status: `source="known"`) as written, and, with Ignore names on, the
@@ -12,9 +23,14 @@ keeps every line it doesn't change, byte for byte.
   add always writes the list file: KnownWord.json stays the sync's, decision 41).
 - `remove(kind, language, words, source="list")` -> a `Change`: every line naming exactly that word (as the line holds
   it, trimmed) goes; `source="known"` takes KnownWord.json's IGNORED entries of that dictForm out instead.
-- **Known** (`kind="known"`, Kotoba-K): the words marked known in Surasura (KnownWord.json's `source: "Surasura"`
-  entries, `app/services/word_marks.py`) — read, added and taken off through `word_marks`, its rules; a word known any
-  other way (Anki, an import) is never one of them.
+- **Known** (`kind="known"`, Kotoba-K; *Your words*, Mado-LT 4): every word KnownWord.json counts known, however it
+  became known, and every word Still learning — once each, **newest first** by the date it became known (its first
+  known entry's `created`: KnownWord.json is append-only; an entry with no date, an old import's, after the dated ones
+  in the file's order, newest first too). Each `Entry` names its reading (the entry's own `secondary`, else the
+  reading the library uses it with most: the token store's `readings`; Japanese in hiragana), where it came from
+  (`origin`: `ORIGINS`, else "imported") and `created` (ms, None: no date); `source` "known", or "learning" for a word
+  Still learning. Added and marked through `word_marks`, its rules (the window's ✓: Still learning, `word_marks`'
+  "learning"); a word known any other way (Anki, an import) is never written here.
 - `words_in(text, language, kind)` -> the candidate words of pasted text, read by the library's own tokenizer
   (`analyzer.JapaneseTokenizer`: `join_affixes` with the library's tables; `ChineseTokenizer`: `chinese_cut` /
   `chinese_word`), each a `Candidate(word, spelling, status)`: `word` is the lemma (the identity everywhere, what a
@@ -40,27 +56,37 @@ Every write, the rules a user's list could be damaged by otherwise (CLAUDE.md §
     written.
 Qt-free and Tk-free: the window calls every function on a worker.
 """
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
 import threading
+import time
 from collections import namedtuple
 from dataclasses import dataclass, field
 
 from app import anki_sync, path_utils
 
-KINDS = {"ignore": "IgnoreList.txt", "blacklist": "Blacklist.txt"}
-KNOWN = "known"                     # Kotoba-K: the words marked known (word_marks), beside the two lists
+KINDS = {"ignore": "IgnoreList.txt"}
+KNOWN = "known"                     # Kotoba-K: the words marked known (word_marks), beside the Ignore list
 LISTS = tuple(KINDS) + (KNOWN,)
 # The first line of a list made here, as `path_utils.ensure_data_setup` makes it.
-HEADERS = {"ignore": "# Add words to ignore here (one per line)", "blacklist": "# {language} Blacklist"}
+HEADERS = {"ignore": "# Add words to ignore here (one per line)"}
 VERB = "Word lists"
+BLACKLIST = "Blacklist.txt"         # merged into the Ignore list once (`merge_blacklist`), then in `.trash`
+BLACKLIST_MARK = "# from Blacklist.txt"     # the merge's line in the Ignore list: "# from Blacklist.txt (<date>, <hash>)"
+BLACKLIST_HEADERS = ("# ja blacklist", "# zh blacklist", "# global blacklist")  # a new library's first line, lowercased
+BLACKLIST_VERB = "Blacklist merge"
 FIND_VERB = "word-lists-find"       # app_entry.py's verb for the paste's child
 FIND_TIMEOUT = 120.0                # s a paste's child may take before it is stopped (the arrivals worker's STUCK)
 
-Entry = namedtuple("Entry", "word source")                # source: "list" · "known" (KnownWord.json) · "names"
+# source: "list" · "known" (KnownWord.json) · "names" · "learning" (the Known tab: Still learning). Mado-LT 4:
+# reading, origin ("anki" · "surasura" · "imported") and created (ms) — the Known tab's; None elsewhere
+Entry = namedtuple("Entry", "word source reading origin created", defaults=(None, None, None))
+# where a known word came from, by its entry's `source` (anything else: "imported" — Migaku, Jiten, an Anki deck file)
+ORIGINS = {anki_sync.SOURCE: "anki", anki_sync.MARKED_SOURCE: "surasura", anki_sync.GRADUATED_SOURCE: "surasura"}
 Candidate = namedtuple("Candidate", "word spelling status")   # status: "new" · "listed" · "known" · "left_out"
 
 
@@ -209,8 +235,10 @@ def read(kind, language):
     """The list's words for the window (see the module docstring) -> a `Listing`."""
     listing = Listing()
     if kind == KNOWN:
-        from app.services import word_marks
-        listing.entries = [Entry(w, "list") for w, mark in word_marks.marks(language).items() if mark == "known"]
+        try:
+            listing.entries = _known_words(language)
+        except anki_sync._KnownFileError as e:
+            listing.error = str(e)
         return listing
     path = list_path(kind, language)
     try:
@@ -226,6 +254,55 @@ def read(kind, language):
         listing.entries += [Entry(w, "known") for w in _known_ignored(language)]
         listing.entries += [Entry(w, "names") for w in _names(language)]
     return listing
+
+
+def _known_words(language):
+    """The Known tab (see the module docstring) -> [Entry]. `anki_sync._KnownFileError` when the file can't be read."""
+    from app import practice
+    from app.services import word_marks
+    _data, words = anki_sync._read_known_file(language)
+    firsts = {}                     # NFKC word -> {"known": (index, entry) first known, "turned": … first turned}
+    for i, e in enumerate(words or ()):
+        word = str(e.get("dictForm") or "").strip() if isinstance(e, dict) else ""
+        if not word:
+            continue
+        state = "known" if anki_sync._is_known(e) else "turned" if word_marks._turned(e) else None
+        if state is not None:
+            firsts.setdefault(word_marks._norm(word), {}).setdefault(state, (i, e))
+    rows = []
+    for held in firsts.values():
+        i, e = held.get("known") or held["turned"]
+        rows.append((practice._created_ms(e.get("created")), i, Entry(
+            str(e.get("dictForm")).strip(), "known" if "known" in held else "learning",
+            str(e.get("secondary") or "").strip(), ORIGINS.get(e.get("source"), "imported"), None)))
+    rows.sort(key=lambda row: (row[0] is not None, row[0] or 0, row[1]), reverse=True)
+    out = [entry._replace(created=created) for created, _i, entry in rows]
+    missing = [entry.word for entry in out if not entry.reading]
+    found = _library_readings(language, missing) if missing else {}
+    if found:
+        out = [entry._replace(reading=found[entry.word]) if not entry.reading and entry.word in found else entry
+               for entry in out]
+    return out
+
+
+def _library_readings(language, words):
+    """{word: the reading the library uses it with most} from the token store ({}: none there, or it can't be read);
+    Japanese in hiragana, as an entry's own reading is written."""
+    try:
+        from app import token_index
+        store = token_index.open_reader(language)
+        if store is None:
+            return {}
+        try:
+            found = store.readings(words)
+        finally:
+            store.close()
+    except Exception:
+        return {}
+    if language == "ja":
+        from app.journey_render import _hira
+        found = {w: _hira(r) for w, r in found.items()}
+    return found
 
 
 def _known_ignored(language):
@@ -391,6 +468,150 @@ def _remove_known(language, words, change):
     change.done = found
 
 
+# --- the Blacklist, merged once (Kotoba-WS2) ---------------------------------------------------------------- #
+def _merge_counts(language):
+    return {"language": language, "listed": 0, "added": 0, "present": 0, "comments": 0, "backup": None,
+            "retired": None, "error": None}
+
+
+def _plain(text):
+    return text.strip().lstrip("\ufeff").strip()
+
+
+def merge_blacklist(language):
+    """`User Files/<language>/Blacklist.txt` merged into the Ignore list, once (see the module docstring) -> a dict of
+    counts: `listed` (the Blacklist's words), `added`, `present` (on the Ignore list already), `comments` (the
+    learner's own, kept), `backup` (the Ignore list's dated copy, or None), `retired` (where the Blacklist went in
+    `.trash`, or None), `error` (a plain sentence, or None: nothing was written when it is set before the move). No
+    Blacklist: every count 0, nothing done."""
+    result = _merge_counts(language)
+    black_path = os.path.join(path_utils.get_user_files_path(language), BLACKLIST)
+    if not os.path.isfile(black_path):
+        return result
+    try:
+        black = _File(black_path, language)
+        digest = hashlib.sha256(black.data()).hexdigest()[:12]         # the very bytes parsed (one read)
+    except Unreadable:
+        result["error"] = _unreadable(BLACKLIST)
+        return result
+    except OSError as e:
+        result["error"] = f"Your Blacklist could not be read, so nothing was changed ({e})."
+        return result
+    lines = _black_lines(black)
+    result["listed"] = sum(1 for line in lines if not line.startswith("#"))
+    if lines:
+        held, refused = anki_sync.hold_known_words(language, BLACKLIST_VERB)
+        if refused is not None:
+            result["error"] = refused[0]
+            return result
+        try:
+            if not _merge_held(language, lines, digest, result):
+                return result
+        finally:
+            if held is not None:
+                held.release()
+    try:
+        if _File(black_path, language).data() != black.data():         # saved meanwhile (an editor): its new words
+            result["error"] = "Your Blacklist changed while it was merged: it is merged again at the next start."
+            return result                                               # are merged next time, never moved unread
+        result["retired"] = path_utils.backup_to_trash(black_path, move=True)
+    except (OSError, Unreadable) as e:
+        result["error"] = (f"Your Blacklist's words are on your Ignore list; the Blacklist itself could not be "
+                           f"moved ({e}).")
+    return result
+
+
+def _merge_held(language, lines, digest, result):
+    """The Blacklist's `lines` appended to the Ignore list (the known-words lock held) -> True when the Ignore list is
+    as it should be."""
+    path = list_path("ignore", language)
+    try:
+        f = _File(path, language)
+    except Unreadable:
+        result["error"] = _unreadable(KINDS["ignore"])
+        return False
+    except OSError as e:
+        result["error"] = f"Your Ignore list could not be read, so nothing was changed ({e})."
+        return False
+    added = fold_blacklist(f, lines, digest, language, result)
+    if added is None:
+        return True                                 # merged already, or every word on the Ignore list: nothing to write
+    try:
+        result["backup"] = path_utils.backup_to_trash(path)
+    except OSError as e:
+        result["error"] = f"Nothing was changed: your Ignore list could not be backed up ({e})."
+        return False
+    try:
+        anki_sync._atomic_write_bytes(path, f.data())
+    except OSError as e:
+        result["error"] = f"Nothing was changed: your Ignore list could not be written ({e})."
+        return False
+    result["added"] = added
+    return True
+
+
+def _black_lines(black):
+    """A Blacklist `_File`'s words and the learner's own comments, trimmed, in the file's order (blank lines and the
+    header a new library's file began with left out)."""
+    lines = []
+    for text, _raw in black.lines:
+        line = _plain(text)
+        if line and not (line.startswith("#") and line.lower() in BLACKLIST_HEADERS):
+            lines.append(line)
+    return lines
+
+
+def fold_blacklist(f, lines, digest, language, result=None):
+    """The Blacklist's `lines` (`_black_lines`) added to the Ignore list's `_File` `f`, in memory -> the number of words
+    added, or None when nothing is to be written (`digest`'s marker is there already — a start cut off before the
+    move — or every line is on the list). `result`'s `present` / `comments` counted. The build's default Ignore list
+    is made by it too (`package_app.copy_default_lists`)."""
+    result = result if result is not None else _merge_counts(language)
+    have = set()
+    for text, _raw in f.lines:
+        line = _plain(text)
+        if line.startswith(BLACKLIST_MARK) and digest in line:
+            return None
+        word = _entry(line)
+        if word is not None:
+            have.add(_term(word, language))
+    new = []
+    for line in lines:
+        if line.startswith("#"):
+            new.append(line)
+            result["comments"] += 1
+        elif _term(line, language) in have:
+            result["present"] += 1
+        else:
+            have.add(_term(line, language))
+            new.append(line)
+    if not new:
+        return None
+    if not f.exists:
+        f.add([HEADERS["ignore"]])
+    f.add([f"{BLACKLIST_MARK} ({time.strftime('%Y-%m-%d')}, {digest})"] + new)
+    return sum(1 for line in new if not line.startswith("#"))
+
+
+def merged_default(ignore_path, black_path, language):
+    """The build's default Ignore list (`package_app.copy_default_lists`): the tree's Ignore list with its Blacklist
+    folded in -> its bytes. Raises `Unreadable` / OSError (the build stops)."""
+    f, black = _File(ignore_path, language), _File(black_path, language)
+    fold_blacklist(f, _black_lines(black), hashlib.sha256(black.data()).hexdigest()[:12], language)
+    return f.data()
+
+
+def merge_blacklists(languages=("ja", "zh")):
+    """`merge_blacklist` for each language -> {language: its counts}. One language's failure never stops the next."""
+    out = {}
+    for language in languages:
+        try:
+            out[language] = merge_blacklist(language)
+        except Exception as e:     # a start goes on: the Blacklist stays where it is (read as before), merged next time
+            out[language] = dict(_merge_counts(language), error=f"The Blacklist merge stopped ({e}).")
+    return out
+
+
 # --- pasted text ---------------------------------------------------------------------------------------------- #
 def words_in(text, language, kind="ignore"):
     """The words of `text` the list could take, in the order first met, each once -> [`Candidate`]. A word is marked
@@ -417,14 +638,13 @@ def words_in(text, language, kind="ignore"):
         p = os.path.join(user_files, name)
         return path_utils.read_text(p, language).splitlines() if os.path.isfile(p) else []
 
-    if kind == KNOWN:                               # the words marked known; the lists' words are left out
+    if kind == KNOWN:                               # the words marked known; the ignored words are left out
         from app.services import word_marks
         listed = {w for w, mark in word_marks.marks(language).items() if mark == "known"}
-        left_out = analyzer._list_words(lines(KINDS["ignore"]) + lines(KINDS["blacklist"]), script)
-    else:
-        other = "blacklist" if kind == "ignore" else "ignore"
+        left_out = analyzer._list_words(lines(KINDS["ignore"]) + lines(BLACKLIST), script)
+    else:                                           # a Blacklist not merged yet, or the Graduated list: ignored too
         listed = analyzer._list_words(lines(KINDS[kind]), script)
-        left_out = analyzer._list_words(lines(KINDS[other]) + lines("GraduatedList.txt"), script)
+        left_out = analyzer._list_words(lines(BLACKLIST) + lines("GraduatedList.txt"), script)
     ignored = analyzer.load_ignored_entries(user_files, script, language)
     if kind == "ignore":
         listed |= ignored

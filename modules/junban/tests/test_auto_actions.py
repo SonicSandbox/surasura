@@ -584,7 +584,8 @@ def test_a_review_starting_after_the_last_position_request_means_no_actions_this
         assert [entry["action"] for entry in last["params"]["actions"]] == ["cardsInfo", "guiReviewActive"], last
     else:
         assert last["action"] == "guiReviewActive", last
-    assert fake.requests[-1] is last, "asked last, just before the actions"
+    tail = fake.requests[-2:] if fake.requests[-1]["action"] == "guiCurrentCard" else fake.requests[-1:]
+    assert tail[0] is last, "asked last, just before the actions (then only the review's card: the one check's idle rule)"
     saved = undo.load("ja")
     assert saved["complete"] is True, saved
     assert not saved.get("suspended") and not saved.get("flags") and not saved.get("marker_tags")         and not saved.get("tags"), saved
@@ -616,6 +617,9 @@ def test_the_recheck_acts_only_on_a_sure_answer_with_no_review(monkeypatch, repl
             raise replies
         return replies
     monkeypatch.setattr(ankiconnect, "multi", multi)
+    # the request's own review answer is judged by the one rule (`anki_connect.review_on`): a review asks which card
+    # it shows (its idle rule) — Anki names none here
+    monkeypatch.setattr(reposition.anki_connect, "invoke", lambda action, url, **_params: None)
     checked = reposition._still_new("http://127.0.0.1:8765", _LATER)
     assert sent == [["cardsInfo", "guiReviewActive"]]
     assert (checked is _LATER) if acts else checked is None, checked
@@ -636,11 +640,12 @@ def test_with_touch_ups_only_one_review_question_and_nothing_else(monkeypatch, a
         if isinstance(answer, Exception):
             raise answer
         return answer
-    monkeypatch.setattr(ankiconnect, "invoke", invoke)
+    monkeypatch.setattr(reposition.anki_connect, "invoke", invoke)     # the one check asks through the app's client
     monkeypatch.setattr(ankiconnect, "multi", lambda *a, **k: pytest.fail("no read without cards to read"))
     nothing = {}
     checked = reposition._still_new("http://127.0.0.1:8765", nothing, touchups)
-    assert calls == ["guiReviewActive"] * asked
+    assert [c for c in calls if c == "guiReviewActive"] == ["guiReviewActive"] * asked
+    assert set(calls) <= {"guiReviewActive", "guiCurrentCard"}, "a review's card (the idle rule), nothing else"
     assert (checked is nothing) if acts else checked is None, checked
 
 

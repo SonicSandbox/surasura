@@ -304,11 +304,13 @@ def test_the_known_tab_lists_adds_and_takes_off_only_the_words_marked_known(lang
     word_marks.apply(lang, [(name, "ignore")])
     change = word_lists.add(word_lists.KNOWN, lang, [word, word])
     assert change.done == [word] and change.error is None
-    assert [e.word for e in word_lists.read(word_lists.KNOWN, lang).entries] == [word]
+    # Mado-LT 4: the Known tab is every known word, newest first — the one just marked on top, once
+    listed = [e.word for e in word_lists.read(word_lists.KNOWN, lang).entries]
+    assert listed[0] == word and listed.count(word) == 1 and name not in listed
     assert name in [e.word for e in word_lists.read("ignore", lang).entries]     # Ignore stays on the Ignore list
     change = word_lists.remove(word_lists.KNOWN, lang, [word, name])     # the Known tab's ✕: Known marks only
     assert change.done == [word] and change.skipped == [name]
-    assert word_lists.read(word_lists.KNOWN, lang).entries == []
+    assert word not in [e.word for e in word_lists.read(word_lists.KNOWN, lang).entries]     # its mark gone
     assert name in [e.word for e in word_lists.read("ignore", lang).entries]     # its Ignore line stays
 
 

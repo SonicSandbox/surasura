@@ -94,7 +94,7 @@ ANALYSED = tuple(t for t, v in TIERS.items() if v[2])                    # now, 
 # the run signature's "reference" part), `_mine_ids`, `text_lists`, `_moves_counted`, `_watched_aside`,
 # `_store_has_content`, `read_only_schedule` (the copy) and `watched_marks` (the journey's stones: the report's
 # `static_html_generator._journey_stones`, the render signature's `analyzer._stones_fingerprint`); outside,
-# `moves._set_aside` (the window's numbers) and Connect's `library.counting` / `library.counts` (`level._walk` beyond
+# `moves._set_aside` (the window's numbers) and Connect's `library.counting` / `library.counts` (`library.ahead` beyond
 # the line, a gap's `inbox._gone`; M-W1 — `level.watched_out` stays stricter, LF4-1). Not yet: the window's drawn
 # lines (`view_rows._mine_ids`, `drag.lines_for`).
 def _tiers_sql(tiers):
@@ -472,6 +472,7 @@ ARRIVAL_ANCHOR_SQL = ("SELECT id, ord FROM items WHERE work_id = ? AND +tier = '
 SHOW_IN_CURRENT_SQL = "SELECT id FROM items WHERE work_id = ? AND +tier IN ('now', 'soon') LIMIT ?"
 PROCESSED_SPLIT = "processed_split"   # meta: 1 once the one-time split of a 3.0.10 "Processed" title ran (Kura-PR2)
 HATO_FOLDERS_JOINED = "hato_folders_joined"   # meta: 1 once 3.0.16's `Hato/<series>` titles joined their shows (Kura-HJ)
+BOOK_TITLES_UNTAGGED = "book_titles_untagged"   # meta: 1 once books' `<name> (n)` titles were named <name> (Kura-AB5)
 LISTED_STATS = 4                 # an Add's files in one folder from which it lists the folder once (`_listed_stats`)
 FEED_KEEP = 24 * 3600            # s: the feed's tombstones (`gone`) are kept a day (L2.2 04 §4.1)
 LOG_KEEP_DAYS = 30               # the placement log keeps at most the trash clock's length
@@ -522,7 +523,7 @@ INT_META = ("epoch", "state_version", "order_version", "availability_version", "
             "analysed_order_version", "planned_order_version", "planned_pins_version",
             "last_export_version", "copy_dirty", "log_seq", "mine_line", "arrivals_on", "soon_line",
             "feed_floor", "search_fold", "keep_watched", "shows_joined", "specials_joined", "side_by_side",
-            "processed_split", "hato_folders_joined")
+            "processed_split", "hato_folders_joined", "book_titles_untagged")
 
 
 class StoreError(Exception):
@@ -795,11 +796,19 @@ _NOW_LAST = [0]                  # the last stamp `_now` gave, in microseconds
 _NOW_LOCK = threading.Lock()
 
 
+def _show_of(item_id, work_id, folder):
+    """Which show or book an item is of, as the window's rows read it (`view_rows._show_key`): its work, else its
+    folder, else itself — `w<id>` / `f<folder>` / `i<id>` (the journey's stones, `seen_dates`)."""
+    return f"w{work_id}" if work_id is not None else f"f{folder}" if folder else f"i{item_id}"
+
+
 def _now():
     """A sortable UTC time stamp with microseconds (`added_at`, `removed_at`, the log's `at`), never one this process
-    gave already (Windows' clock moves ~15 ms at a time: two Removes in one tick were one Removed entry, alpha 5)."""
+    gave already (Windows' clock moves ~15 ms at a time: two Removes in one tick were one Removed entry, alpha 5). The
+    clock's own integer (Flake-F4): `time.time() * 1e6` truncated a float that can sit just under a whole microsecond,
+    a stamp 1 µs before `datetime.now()` read at the same instant."""
     with _NOW_LOCK:
-        us = _NOW_LAST[0] = max(int(time.time() * 1e6), _NOW_LAST[0] + 1)
+        us = _NOW_LAST[0] = max(time.time_ns() // 1000, _NOW_LAST[0] + 1)
     secs, frac = divmod(us, 10 ** 6)
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(secs)) + ".%06dZ" % frac
 
@@ -1043,6 +1052,31 @@ ADDED_TABLES_SQL = (
       made_at  TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS made_lines_item ON made_lines (item_id)",
 )
+# Kura-GS (3.0.18; Sonic 2026-11-21, the journey's round 8: how much of an item the learner understood when it was
+# added vs now): what the learner understood of each item, then — a Generate's own figures for the file (its
+# progressive pass, the window's *% known*: `known` tokens known before any file over `counted`; `unknown`, the words
+# in it not known, each once) under one of three kinds: 'added' — the first Generate that counted it (`prior` 1: it
+# was in the library before the snapshots began, meta GROWTH_SINCE, so it is when they began, never a made-up *when
+# you added it*); 'done' — at its ✓ Done or its move to Finished, whichever came first (`_snap_done`: the newest
+# Generate's figures, then); 'last' — the newest Generate's (what a mark takes; never in the copy). 'added' and 'done'
+# are written once, never by an Undo, and outlive Remove (Put back keeps the id; an item added again is a new id, so
+# it starts fresh). A table added without a schema change (above): an older Surasura never reads it. The store only
+# records them (`record_growth`, `growth_of`); the Generate computes them, the window and the journey show them.
+GROWTH = "growth"
+GROWTH_SINCE = "growth_since"     # meta: when this store began keeping the snapshots (an item added before: `prior`)
+GROWTH_CHUNK = 2000               # items a `record_growth` write takes: ~42 ms of write lock at 20k, one commit's
+GROWTH_GAP_S = 0.005              # floor (Kura-GS3); then this pause, so a save waiting for the lock gets in (it
+                                  # tries every LOCK_RETRY: a lock taken again at once leaves it no gap)
+GROWTH_SQL = """CREATE TABLE IF NOT EXISTS growth (
+      item_id INTEGER NOT NULL,
+      kind    TEXT NOT NULL,
+      known   INTEGER NOT NULL,
+      counted INTEGER NOT NULL,
+      unknown INTEGER NOT NULL,
+      at      TEXT NOT NULL,
+      prior   INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (item_id, kind))"""
+ADDED_TABLES_SQL += (GROWTH_SQL,)
 
 # Indexes added without a schema change (SRC perf): an index changes no row and an older Surasura reads the store as it
 # was; a new store makes them in SCHEMA_SQL, an existing one at its first open by a writer (`_added_indexes`)
@@ -1082,6 +1116,36 @@ ADDED_HASH_SQL = (
       BEGIN UPDATE items SET content_sha256 = NULL WHERE id = NEW.id; END""",
 )
 ADDED_HASH = "items_hash_stale"
+# Kura-WD (3.0.18; Sonic's ruling, the mining-ordering model's step 4): when each item was marked watched — the Best sentence ranks a line
+# by how recently its learner saw it (tracks/logic/work/mining-ordering ADVERSARY.md F7). An added column, as the hash
+# (no row rewritten: NULL for every mark made before it, never a made-up date), written beside `watched` by every
+# command that writes the mark (`_dated`: stamped 0 → 1, cleared 1 → 0, a status value of its own so one Undo takes both
+# back, and the Undo puts a date back only with its mark: `_undo_status`), carried by the copy (ITEM_FIELDS), a Remove's
+# trash row and Repair. Its index, on the dated rows only, is the column's sign in the open's one schema read (as
+# ADDED_HASH is the hash's) — on the column alone: a 2.x store gets it before its upgrade adds `work_id`. An older
+# Surasura never reads it; a mark it writes leaves the date as it was, and every read goes through `watched != 0`.
+# Dropped as easily: DROP INDEX items_watched_at, then the column.
+ADDED_DATES_SQL = (
+    "ALTER TABLE items ADD COLUMN watched_at TEXT",
+    "CREATE INDEX IF NOT EXISTS items_watched_at ON items (watched_at) WHERE watched_at IS NOT NULL",
+)
+ADDED_DATES = "items_watched_at"
+# J-STORE (3.0.19; journey v3 SPEC §2): pre-studied — an episode or chapter whose words the learner went through before
+# watching or reading it. Two added columns, as the watched date's (no row rewritten, no schema version: an older
+# Surasura never reads them, and a row it writes keeps them): `prestudied_at`, when it was marked (NULL: it isn't), and
+# `prestudied_by`, how — NULL never touched, 'end' the journey's end card, 'press' a press, 'off' un-marked by a press
+# (an end card never marks it again: `set_prestudied`). Nothing else reads them: the order, the tiers, watched, Connect,
+# Junban and the cards stay as they are (a status write: state_version only). Carried by the copy (ITEM_FIELDS), a
+# Remove's trash row and Put back, Repair; a switch in place keeps the row. Made at a writer's first open
+# (`_added_prestudied`); the index, on the marked rows only, keeps the reader's look to them (`prestudied_marks`).
+# Dropped as easily: DROP INDEX items_prestudied_at, then the two columns.
+PRESTUDIED_SQL = (
+    "ALTER TABLE items ADD COLUMN prestudied_at TEXT",
+    "ALTER TABLE items ADD COLUMN prestudied_by TEXT",
+    "CREATE INDEX IF NOT EXISTS items_prestudied_at ON items (prestudied_at) WHERE prestudied_at IS NOT NULL",
+)
+PRESTUDIED_COLUMNS = ("prestudied_at", "prestudied_by")
+PRESTUDIED_BY = ("end", "press", "off")
 # F13b (3.0.1): which items' origins changed, logged by SQLite itself — whoever writes, an older Surasura too — so a
 # look reads only what changed since the origins it kept (`origins_kept`; reading every origin cost a look ~0.25–0.45 s
 # at 20k). One row an item an origin row (`pairings`, "src:") or an item's copy (`rel_path`, `availability`) changed:
@@ -1177,9 +1241,11 @@ SCHEMA_2_SQL = (
 FEED_POLL = 0.1                  # s: a window looks at `PRAGMA data_version` this often (its store worker)
 FEED_ITEM_FIELDS = ("id", "tier", "ord", "rel_path", "title", "parent_folder", "source_type", "availability",
                     "work_id", "piece_id", "watched", "mined_at", "pinned", "mine_asked", "graduated_at",
-                    "in_learning_order", "added_at", "feed_in", "mtime_ns")
+                    "in_learning_order", "added_at", "feed_in", "mtime_ns", "prestudied_at")
 #   mtime_ns (a7): the file's own date — a source's copy keeps its original's (`sources._dated`) — what
 #   `view_rows.still_arriving` reads beside `added_at` (a first look takes a whole show in at one time)
+#   prestudied_at (J-STONES): the date it was marked pre-studied — the stones' add; read as NULL on a store still
+#   without the column (`feed_item_cols`). `prestudied_by` isn't the window's: a press feeds only a changed date
 FEED_WORK_FIELDS = ("id", "title", "title_by_user", "titles", "folder_key", "anilist_id", "tmdb_id", "youtube_channel",
                     "media_type", "media_type_by", "cover_source", "cover_ref", "cover_path", "cover_fetched_at",
                     "cover_locked", "feed_in")
@@ -1202,16 +1268,18 @@ GROUP_REFUSED = "A group lives in Current, Soon or Goal: move these there first.
 # Every table but meta and items goes out in the copy generically (fields + rows, §6.7); `works` without its derived
 # columns (WORK_NOT_COPIED: a rebuild re-derives them)
 COPY_TABLES = ("roots", "pieces", "trash", "exclusions", "anki_links", "anki_changes", "pairings",
-               "placement_log", "made_words", "made_lines", "works")
+               "placement_log", "made_words", "made_lines", "works", GROWTH)     # growth: its 'last' rows stay out
 WORK_NOT_COPIED = ("search_key", "feed_in")
 # Meta keys the copy carries when the store holds them (beside epoch, log_seq, mine_line, arrivals_on and the readers)
 COPY_META_KEYS = ("soon_line", "auto_band", "rename_asks", "kept_apart", "show_groups",   # LM2
                   "keep_watched",                                                          # W-1
                   "audiobook_answers",                                                     # Hon, H-8
-                  "side_by_side")                                                          # Kyou-A
+                  "side_by_side",                                                          # Kyou-A
+                  GROWTH_SINCE)                                                            # Kura-GS
 ITEM_FIELDS = ("id", "root_id", "rel_path", "tier", "availability", "size", "mtime_ns", "added_at",
                "graduated_at", "piece_id", "watched", "mined_at", "pinned", "in_learning_order", "work_id",
-               "mine_asked")
+               "mine_asked", "watched_at")     # watched_at: Kura-WD (None where the store has no column yet)
+ITEM_FIELDS += PRESTUDIED_COLUMNS      # J-STORE (None where the store has no columns yet)
 
 # Forward-only upgrades: {from_version: function(store)}, each run inside one transaction after a .bak; filled
 # below, where the functions are (`_upgrade_1_to_2`)
@@ -1884,6 +1952,17 @@ def _note_id(value):
         return None
 
 
+def _prestudied_pair(values):
+    """J-STORE: (prestudied_at, prestudied_by) of a copy's item or a trash row's columns, as the store keeps them — a
+    value it can't hold (a hand-edited copy) read as never touched."""
+    at, by = values.get("prestudied_at"), values.get("prestudied_by")
+    at = at if isinstance(at, str) and at else None
+    by = by if by in PRESTUDIED_BY else None
+    if at is not None and by in ("end", "press"):
+        return at, by
+    return None, "off" if by == "off" else None
+
+
 def _chunks(seq, size):
     for i in range(0, len(seq), size):
         yield seq[i:i + size]
@@ -2090,6 +2169,7 @@ class _Command:
         self.walked = {}      # Kyou-D: an Undo's rows put back -> (recorded tier, recorded changed_in) (`_keep_line`)
         self.reworked = set() # items whose work changed: their pieces are re-checked too
         self.show_names = {}  # Kura-NA: {rel key: the show as written} of a look's files whose folder name is its cut
+        self.book_titles = {}  # Kura-AB5: {rel key: the book's name} of an EPUB's parts written to `<name> (n)/`
         self.hints = {}       # item_id -> the piece an undo puts it back in
         self.fed = set()      # items whose `feed_in` takes this version (L2.2 04 §4.1)
         self.fed_inline = set()  # … already written with their placement
@@ -2327,14 +2407,17 @@ class Store:
         self._held = False               # inside `held()`: closed at the span's end
         if role != "reader":
             self._added_indexes()
+            self._added_prestudied()
 
     def _added_indexes(self):
         """ADDED_INDEXES, made at the first open by a writer of a store made before them, under the write lock: one
         read of the schema at every other open. A store not made yet, a newer one, a damaged or busy one (or this
         process inside a write already) is left as it is: a later open makes them. Never a version or data change.
         A4K-7: the copies' hash column and its trigger too (ADDED_HASH_SQL), the column only where it isn't yet.
-        F13b: the origins' change log and its triggers (ORIGIN_LOG_SQL), with its reset mark."""
-        names = ("pairings",) + ADDED_INDEXES + (ADDED_HASH,) + ORIGIN_LOG
+        F13b: the origins' change log and its triggers (ORIGIN_LOG_SQL), with its reset mark. Kura-WD: the watched
+        date's column and its index (ADDED_DATES_SQL), as the hash's. Kura-GS: the growth snapshots' table, and when
+        this store began them (GROWTH_SINCE: every item already in it is `prior`)."""
+        names = ("pairings",) + ADDED_INDEXES + (ADDED_HASH, ADDED_DATES, GROWTH) + ORIGIN_LOG
         try:
             have = {r[0] for r in self.conn.execute(f"SELECT name FROM sqlite_master WHERE name IN "
                                                     f"({','.join('?' * (len(names) + len(REPLACED)))})",
@@ -2351,6 +2434,14 @@ class Store:
                     if sql.startswith("ALTER") and self._hash_column():   # another open made it meanwhile
                         continue
                     self.conn.execute(sql)
+                for sql in ADDED_DATES_SQL:
+                    if sql.startswith("ALTER") and self._dates_column():   # another open made it meanwhile
+                        continue
+                    self.conn.execute(sql)
+                if GROWTH not in have:
+                    self.conn.execute(GROWTH_SQL)
+                    if GROWTH_SINCE not in self._meta():
+                        self._set_meta({GROWTH_SINCE: _now()})
                 if not have.issuperset(ORIGIN_LOG) or stale:     # (its reset mark only with a trigger made)
                     for sql in ORIGIN_LOG_SQL:
                         self.conn.execute(sql)
@@ -2362,6 +2453,54 @@ class Store:
         if not getattr(self, "_hashes", False):              # a reader made with `Store.__new__` has none
             self._hashes = any(r[1] == "content_sha256" for r in self.conn.execute("PRAGMA table_info(items)"))
         return self._hashes
+
+    def _dates_column(self):
+        """Kura-WD: whether this store has `items.watched_at` yet (a busy first open leaves it to a later one)."""
+        if not getattr(self, "_dated_items", False):           # a reader made with `Store.__new__` has none
+            self._dated_items = any(r[1] == "watched_at" for r in self.conn.execute("PRAGMA table_info(items)"))
+        return self._dated_items
+
+    def _prestudied_column(self):
+        """J-STORE: whether this store has `items.prestudied_at` and `prestudied_by` yet (a busy first open leaves
+        them to a later one)."""
+        if not getattr(self, "_prestudied", False):            # a reader made with `Store.__new__` has none
+            names = {r[1] for r in self.conn.execute("PRAGMA table_info(items)")}
+            self._prestudied = set(PRESTUDIED_COLUMNS) <= names
+        return self._prestudied
+
+    def feed_item_cols(self):
+        """J-STONES: FEED_ITEM_FIELDS as a SELECT's columns — `prestudied_at` read as NULL on a store still without it
+        (a busy first open leaves the column to a later one), so every reader of the feed's rows reads either store."""
+        if self._prestudied_column():
+            return ", ".join(FEED_ITEM_FIELDS)
+        return ", ".join("NULL" if f == "prestudied_at" else f for f in FEED_ITEM_FIELDS)
+
+    def _make_prestudied(self):
+        """J-STORE: PRESTUDIED_SQL inside the caller's write — each column only where it isn't yet (another open may
+        have made it meanwhile), then the index."""
+        names = {r[1] for r in self.conn.execute("PRAGMA table_info(items)")}
+        for sql in PRESTUDIED_SQL:
+            if sql.startswith("ALTER") and sql.split()[5] in names:
+                continue
+            self.conn.execute(sql)
+        self._prestudied = False                # (read again when next asked: a write rolled back takes them back)
+
+    def _added_prestudied(self):
+        """J-STORE: the pre-studied columns and their index, made at the first open by a writer of a store made before
+        them, under the write lock — the watched date's way (`_added_indexes`), in a step of its own: one schema read
+        at every other open. A store not made yet, a newer one, a damaged or busy one (or this process inside a write
+        already) is left as it is: a later open makes them. Never a version or data change."""
+        try:
+            if self._prestudied_column() or self._wlock.depth:
+                return
+            if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'items'").fetchone():
+                return
+            if self.conn.execute("PRAGMA user_version").fetchone()[0] > STORE_SCHEMA:
+                return
+            with self._writing(wait=BUSY_AT_OPEN):
+                self._make_prestudied()
+        except (StoreError, sqlite3.Error):
+            self._prestudied = False
 
     def close(self):
         """Close the handle, never checkpointing outside the write lock (`_close`, §6.12). Inside `held()`, nothing
@@ -2864,10 +3003,10 @@ class Store:
         changed rows sit in (a piece's kind or name written feeds its rows: `_set_piece`). A piece no row names is gone.
         A group's `title` None: the window derives "<first item's work's title> + N more"; a run's title is never shown
         (its work's is)."""
-        item_cols = ", ".join(FEED_ITEM_FIELDS)
         work_cols = ", ".join(FEED_WORK_FIELDS)
         piece_cols = ", ".join(FEED_PIECE_FIELDS)
         with self._reading():
+            item_cols = self.feed_item_cols()
             meta = self._meta()
             version, now_epoch = meta["state_version"], meta["epoch"]
             full = seen is None or epoch != now_epoch or seen < int(meta.get("feed_floor") or 0)
@@ -3285,6 +3424,44 @@ class Store:
                                                          "folder_key": key if self._key_free(key, wid) else None})
             return change
 
+    def untag_book_titles(self):
+        """Kura-AB5 (11-20 report; Sonic's ruling), ONE time a library: a book's title that is its
+        parts' folder's free name `<name> (n)` (`book_title`: `<name>` its EPUB's own) becomes `<name>` — only a title
+        nobody named (`title_by_user`), all of whose items' records are that EPUB's parts, and only when no other
+        book of the library is called `<name>` (a subtitle's or a show's title of that name may stand beside it: its
+        kind tells them apart); the old name stays among its titles (search finds it). No item,
+        order or file touched. ONE command, its Change undone by `undo` (the works' value check); the mark set in it.
+        -> the Change, or None."""
+        if self._meta().get(BOOK_TITLES_UNTAGGED):
+            return None
+        with self._command("untag_book_titles", "sync") as cmd:
+            if self._meta().get(BOOK_TITLES_UNTAGGED):
+                return None
+            self._set_meta({BOOK_TITLES_UNTAGGED: 1})
+            change = None
+            for wid, title in self.conn.execute("SELECT id, title FROM works WHERE title_by_user = 0 AND title LIKE "
+                                                "'% (%)' ORDER BY id").fetchall():
+                epubs = {str((_json_dict(raw) or {}).get("origin") or "").rpartition("#")[0] for (raw,) in self.conn.execute(
+                    f"SELECT p.pairing FROM pairings p JOIN items i ON i.id = p.item_id WHERE i.work_id = ? AND "
+                    f"{_LIVE_ORIGIN}", (wid,))}
+                plain = {e for e in epubs if e and e.lower().endswith(".epub")}
+                if len(epubs) != 1 or len(plain) != 1:
+                    continue                             # (another kind of item, or two books in it: as it stands)
+                name = book_title(title, plain.pop())
+                if name == title or self.conn.execute(
+                        f"SELECT 1 FROM works w JOIN items i ON i.work_id = w.id JOIN pairings p ON p.item_id = i.id "
+                        f"WHERE w.title = ? AND w.id != ? AND {_LIVE_ORIGIN} AND lower(p.content_key) LIKE '%.epub#%' "
+                        f"LIMIT 1", (name, wid)).fetchone():
+                    continue                             # (another book of that name: as it stands)
+                if change is None:
+                    change = self._change(cmd, "untag_book_titles")
+                    change.works = {"rows": [], "items": [], "fields": [], "created": []}
+                w = self._work_row(wid)
+                titles = [t for t in json.loads(w["titles"] or "[]") if t != name]
+                self._set_work_fields(cmd, change, wid, {"title": name,
+                                                         "titles": _dumps(list(dict.fromkeys(titles + [title])))})
+            return change
+
     def _key_free(self, key, wid):
         """No title but `wid` holds this folder key."""
         return self.conn.execute("SELECT 1 FROM works WHERE folder_key = ? AND id != ?", (key, wid)).fetchone() is None
@@ -3682,6 +3859,7 @@ class Store:
         for column, value in (("in_learning_order", 1), ("watched", 0)):
             self.conn.executemany(f"UPDATE items SET {column} = ? WHERE id = ?",
                                   [(value, i) for i, c, *_r in status if c == column])
+        status += self._dated(status)                           # Kura-WD: the stones' dates go with them
         cmd.feed(i for i, *_r in status)
         cmd.touch(pins=any(c == "in_learning_order" for _i, c, *_r in status))
         change.status = list(change.status) + status
@@ -3900,8 +4078,9 @@ class Store:
             self._back_in_order(cmd, change, [i for i in moving if rows[i][1] == "graduated" and tier != "graduated"])
             # --- end P4.1 L2 ---
             if tier == "graduated":
-                self.conn.executemany("UPDATE items SET graduated_at = ? WHERE id = ?",
-                                      [(_now(), i) for i in moving])
+                stamp = _now()      # Kura-GS3 2: one stamp, the date and its snapshot's, so the Undo finds that press's
+                self.conn.executemany("UPDATE items SET graduated_at = ? WHERE id = ?", [(stamp, i) for i in moving])
+                self._snap_done(moving, stamp)                   # Kura-GS: what it understood as it finished
                 # --- W3.2 (IK-L2-3, A2 #28): an arrival to Finished is recorded as already watched (undone with it)
                 came = [i for i in moving if rows[i][1] == "arrivals"]
                 if came:
@@ -3910,6 +4089,7 @@ class Store:
                         if old != 1]
                     self.conn.executemany("UPDATE items SET watched = 1 WHERE id = ?",
                                           [(i,) for i, *_r in change.status])
+                    change.status += self._dated(change.status)     # Kura-WD: dated as watched, now
             cmd.touch({rows[i][1] for i in moving} | {tier})
             for item_id in moving:
                 cmd.event(item_id, "finished" if tier == "graduated" else "placed",
@@ -4414,6 +4594,12 @@ class Store:
                      cols.get("graduated_at"), self._piece_or_none(cols.get("piece_id")), cols.get("watched", 0),
                      cols.get("mined_at"), cols.get("pinned"), cols.get("in_learning_order", 1), work,
                      search_fold(title, self.language), cols.get("mine_asked")))
+                if cols.get("watched_at") is not None and self._dates_column():   # Kura-WD: seen on its own day
+                    self.conn.execute("UPDATE items SET watched_at = ? WHERE id = ?", (cols["watched_at"], r["item_id"]))
+                mark = _prestudied_pair(cols)
+                if mark != (None, None) and self._prestudied_column():           # J-STORE: as it was marked
+                    self.conn.execute("UPDATE items SET prestudied_at = ?, prestudied_by = ? WHERE id = ?",
+                                      mark + (r["item_id"],))
                 cmd.back.add(r["item_id"])
                 self._put(r["tier"], [r["item_id"]], self._restore_where(r), changed_in)
                 self.conn.executemany("INSERT OR IGNORE INTO pairings (content_key, item_id, pairing, paired_at) "
@@ -4556,7 +4742,10 @@ class Store:
             wid = self._same_show_folder(fk, rel, cmd, show=full)
         if wid is None:
             below = _below_tier(rel)
-            wid = self._new_work(full or folder_title(below), fk, cmd, titles=(below,))
+            # (Kura-AB5, 11-20 report: a book's title is its own name, never its folder's ` (n)` — the folder kept,
+            # names, so a search still finds it)
+            wid = self._new_work(full or cmd.book_titles.get(path_key(rel)) or folder_title(below), fk, cmd,
+                                 titles=(below,))
         if cache is not None:
             cache[fk] = wid
         return wid
@@ -5857,8 +6046,54 @@ class Store:
             cmd.feed(i for i, _ in changes)
             change = self._change(cmd, kind)
             change.status = [(i, column, old, value) for i, old in changes]
+            if column == "watched":
+                change.status += self._dated(change.status)     # Kura-WD: the marks' dates, on the same change
             cmd.touch(pins=pins, order=column == "watched" and self._moves_counted([i for i, _ in changes]))
             return change
+
+    def _dated(self, status):
+        """Kura-WD: the watched dates that go with the watched marks in `status` ((id, "watched", old, new) among the
+        rest), written now and returned as status values of their own, so the Undo's value check puts each back: a mark
+        set is dated now, a mark taken back loses its date. Nothing while the store has no column yet."""
+        marks = {i: bool(new) for i, column, _old, new in status if column == "watched"}   # (each a change)
+        if not marks or not self._dates_column():
+            return []
+        stamp, held = _now(), {}
+        for part in _chunks(list(marks), 500):
+            held.update(self.conn.execute(f"SELECT id, watched_at FROM items WHERE id IN ({','.join('?' * len(part))})",
+                                          part))
+        dated = [(i, "watched_at", held[i], stamp if on else None) for i, on in marks.items()
+                 if i in held and held[i] != (stamp if on else None)]
+        self.conn.executemany("UPDATE items SET watched_at = ? WHERE id = ?", [(new, i) for i, _c, _o, new in dated])
+        self._snap_done([i for i, _c, _o, new in dated if new is not None], stamp)      # Kura-GS
+        return dated
+
+    def _snap_done(self, ids, at):
+        """Kura-GS: each of `ids` just marked watched or moved to Finished keeps what the newest Generate counted of it
+        then (its 'last') as its 'done' snapshot, at `at` — once: a later mark (a re-watch, a Finished after a Done)
+        keeps the first; only the Undo of the press that made it takes it back (`_unsnap_done`, Kura-GS3). An item no
+        Generate counted yet has none. Inside the caller's write; a failure here is its own (SQLite takes back the one statement), never
+        the mark's or the move's — unless SQLite took back the whole write (a full disk, an I/O error: no transaction
+        left), when it is the write's: raised, so the rest of the move never saves line by line (G3, Kura-GS2)."""
+        try:
+            if not ids or not self._has_table(GROWTH):
+                return
+            for part in _chunks(list(ids), 500):
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO growth (item_id, kind, known, counted, unknown, at, prior) SELECT item_id, "
+                    f"'done', known, counted, unknown, ?, 0 FROM growth WHERE kind = 'last' AND item_id IN "
+                    f"({','.join('?' * len(part))})", [at] + part)
+        except sqlite3.Error:
+            if not self.conn.in_transaction:
+                raise
+
+    def _unsnap_done(self, marks):
+        """Kura-GS3 (Sonic 2026-11-22, OPEN 58a): the Undo of a ✓ Done takes back the 'done' snapshot that press made —
+        `marks` [(item id, the date its Done set)], the snapshot dated by that same stamp (`_dated`), so only that
+        press's: one an earlier Done made (a re-watch kept the first) stays, and an un-Done or a re-watch is never an
+        Undo (they keep it, as before). Inside the undo's write: the Undo is whole or not at all (F1)."""
+        if marks and self._has_table(GROWTH):
+            self.conn.executemany("DELETE FROM growth WHERE item_id = ? AND kind = 'done' AND at = ?", marks)
 
     def _moves_counted(self, ids):
         """W-1: does a watched mark (set or taken back) on `ids` move what counts? Only while `keep_watched` is off,
@@ -5890,13 +6125,113 @@ class Store:
             if not self.conn.execute(STONES_EXIST_SQL).fetchone()[0]:
                 return []
             keep = self._keep_watched()
-            return [(rel, tier, 1 if watched else 0, counts(tier, watched, keep),
-                     f"w{work}" if work is not None else f"f{folder}" if folder else f"i{item}", media)
+            return [(rel, tier, 1 if watched else 0, counts(tier, watched, keep), _show_of(item, work, folder), media)
                     for tier in ANALYSED
                     for item, rel, watched, work, folder, media in self.conn.execute(
                         "SELECT i.id, i.rel_path, i.watched, i.work_id, i.parent_folder, w.media_type FROM items i "
                         "LEFT JOIN works w ON w.id = i.work_id WHERE i.tier = ? AND i.availability != 'waiting' "
                         "ORDER BY i.ord, i.id", (tier,))]
+
+    def seen_dates(self):
+        """Kura-WD (Sonic 2026-11-21; the Best sentence's recency, ADVERSARY.md F7): when the learner last saw each
+        show — {show: {"watched_at", "finished", "finished_at"}} for every show with a watched item or an item in
+        Finished, any tier. `show` as `watched_marks`' (`_show_of`); `watched_at`: the newest date among its watched
+        items (None: marks made before the dates); `finished`: some of it is in Finished; `finished_at`: the newest
+        `graduated_at` among those (None: *Earlier*, or nothing in Finished). The store's UTC stamps (`_now`), which
+        sort as text. One read transaction."""
+        with self._reading():
+            at = "watched_at" if self._dates_column() else "NULL"
+            out = {}
+            for item, work, folder, tier, watched, seen, done in self.conn.execute(
+                    f"SELECT id, work_id, parent_folder, tier, watched, {at}, graduated_at FROM items "
+                    "WHERE watched != 0 OR tier = 'graduated'"):
+                row = out.setdefault(_show_of(item, work, folder),
+                                     {"watched_at": None, "finished": False, "finished_at": None})
+                if watched and seen is not None and (row["watched_at"] is None or seen > row["watched_at"]):
+                    row["watched_at"] = seen
+                if tier == "graduated":
+                    row["finished"] = True
+                    if done is not None and (row["finished_at"] is None or done > row["finished_at"]):
+                        row["finished_at"] = done
+            return out
+
+    def watched_dates(self, ids=None):
+        """Kura-WD: {item id: the date it was marked watched} of every watched item with a date (of `ids` only, when
+        given) — a file's own sighting, beside its show's (`seen_dates`). A mark made before the dates is not in it.
+        One read transaction."""
+        with self._reading():
+            if not self._dates_column():
+                return {}
+            sql = "SELECT id, watched_at FROM items WHERE watched != 0 AND watched_at IS NOT NULL"
+            if ids is None:
+                return dict(self.conn.execute(sql))
+            out = {}
+            for part in _chunks(list(dict.fromkeys(ids)), 500):
+                out.update(self.conn.execute(f"{sql} AND id IN ({','.join('?' * len(part))})", part))
+            return out
+
+    def set_prestudied(self, ids, on, why, pressed_at=None):
+        """J-STORE (journey v3 SPEC §2.2): mark `ids` pre-studied (`on`) or not — a status write (state_version only:
+        never the order, the tiers, watched or a card; no re-plan), one Change its Undo takes back (the pair's value
+        check, `_undo_prestudied`). `why`:
+          'end'   — the journey's end card reached: marks only an item never touched (`prestudied_by` NULL), so an
+                    un-mark sticks: the end card met again never marks it back. Never `on` False.
+          'press' — the learner's press, whatever came before: on dates it now ('press'; one already on keeps its date
+                    and how), off clears the date and keeps 'off'.
+        `pressed_at` (the store's UTC stamp, optional): when the press was made — one the page kept while Surasura was
+        closed. An item marked after it is left as it is (G4: a waiting press never erases newer work). An un-mark has
+        no date, so only a mark stops it. -> the Change, None when nothing changed (or the store has no columns yet)."""
+        if why not in ("end", "press") or (why == "end" and not on):
+            raise ValueError(f"set_prestudied: why={why!r}, on={on!r}")
+        ids = list(dict.fromkeys(ids))
+        if not ids or not self._prestudied_column():
+            return None
+        with self._command("set_prestudied") as cmd:
+            held = {}
+            for part in _chunks(ids, 500):
+                held.update((i, (at, by)) for i, at, by in self.conn.execute(
+                    f"SELECT id, prestudied_at, prestudied_by FROM items WHERE id IN ({','.join('?' * len(part))})",
+                    part))
+            stamp = _now()
+            changes = []
+            for i in ids:
+                if i not in held:
+                    continue
+                at, by = held[i]
+                if pressed_at is not None and at is not None and at > pressed_at:
+                    continue                                    # marked since that press was made
+                if on and (at is not None or (why == "end" and by is not None)):
+                    continue                                    # already on; or touched before, for the end card
+                new = (stamp, why) if on else (None, "off")
+                if (at, by) != new:
+                    changes.append((i, (at, by), new))
+            if not changes:
+                return None
+            self.conn.executemany("UPDATE items SET prestudied_at = ?, prestudied_by = ? WHERE id = ?",
+                                  [new + (i,) for i, _old, new in changes])
+            cmd.feed(i for i, old, new in changes if old[0] != new[0])    # the window reads the date only (F6)
+            change = self._change(cmd, "set_prestudied")
+            change.status = [(i, column, old[n], new[n]) for i, old, new in changes
+                             for n, column in enumerate(PRESTUDIED_COLUMNS)]
+            cmd.touch()
+            return change
+
+    def prestudied_marks(self, ids=None, by=False):
+        """J-STORE: {item id: the date it was marked pre-studied} of every item marked (of `ids` only, when given) —
+        with `by`, {item id: (date, how)}, how 'end' or 'press'. An un-marked item is not in it. Read by the stones and
+        the journey only (the render, the door's `state`); never in the render signature (S19: a press never redraws
+        the journey). One read transaction, through the index on the marked rows; {} on a store without the columns."""
+        with self._reading():
+            if not self._prestudied_column():
+                return {}
+            sql = "SELECT id, prestudied_at, prestudied_by FROM items WHERE prestudied_at IS NOT NULL"
+            rows = []
+            if ids is None:
+                rows = self.conn.execute(sql).fetchall()
+            else:
+                for part in _chunks(list(dict.fromkeys(ids)), 500):
+                    rows += self.conn.execute(f"{sql} AND id IN ({','.join('?' * len(part))})", part).fetchall()
+        return {i: (at, how) if by else at for i, at, how in rows}
 
     # --- the library's options (L2.2 04 §4.2): the Soon line, the mine line, New arrivals ------------ #
 
@@ -6050,9 +6385,87 @@ class Store:
             anchor, before = spot
             return self.move([item_id], tier, before_id=anchor if before else None,
                              after_id=None if before else anchor, by=by, explicit=explicit, in_order=False) is not None
-        # a rule's target is exactly that (Kura-EO D-1, PROVISIONAL): its *Top of Current* the very top — *After its
-        # show* is the rule that follows the show
+        # Kura-SO (Sonic 2026-11-19; train 44's keeper, D-2): a new episode joins its own show in episode order where
+        # the rule places it, never ahead of an earlier episode (6 lands after 5) — Current read as one order for *Top
+        # of Current*, Soon's own rows for *Soon* (never above the Soon line: a show only in NOW gives Soon's first
+        # slot, below it), 6+ Months for *Goal*. Nothing of its show there to follow: the rule's own place (*Top of
+        # Current* the very top, Kura-EO D-1). An item with no episode order (a channel's video) goes after what is
+        # already there (`_after_all`).
+        if self._names_order(item_id, record):
+            spot = self._after_show(item_id, record, {item_id}, ordered=True,
+                                    zone=CURRENT if tier == "now" else (tier,), named=True)
+            if spot is not None:
+                into, before_id, after_id = spot
+                return self.move([item_id], into, before_id=before_id, after_id=after_id, by=by, explicit=explicit,
+                                 in_order=False) is not None
+        else:
+            spot = self._after_all(item_id, tier)
+            if spot is not None:
+                return self.move([item_id], spot[0], after_id=spot[1], by=by, explicit=explicit,
+                                 in_order=False) is not None
         return self.move([item_id], tier, by=by, explicit=explicit, in_order=False) is not None
+
+    def place_by_rule(self, item_id, where, record, by):
+        """Connect's placing of an arrival by its source's rule (`connect.rules.apply`: hato's register through the
+        command line, a held drop on resume) as `register` places one (`_place_one`), in one command: logged as the
+        source's, explicit (D30). -> True when it moved."""
+        with self._command("place", by):
+            return self._place_one(item_id, where, record, by, 1)
+
+    def _names_order(self, item_id, record):
+        """Does an arrival name its place in an order: an episode (its record's, else its file name's: Kura-SO), a
+        place in a list (Mado-Q), or a folder's file (its show's run, S3)?"""
+        return self._episode_named(item_id, record) is not None or list_place(record) is not None or (
+            isinstance(record, dict) and record.get("producer") == SOURCE_PRODUCER)
+
+    def _episode_named(self, item_id, record):
+        """(season, episode) of an item for `after-show`'s reading: its record's (`_episode`), else the number its file
+        name reads (Kura-SO: "it probably says it in the name"; `episode_names.identity`, its season or the first) — a
+        folder's origin record is read by its show's run instead (`_in_run`) — or None."""
+        found = _episode(record)
+        if found is not None or (isinstance(record, dict) and record.get("producer") == SOURCE_PRODUCER):
+            return found
+        row = self.conn.execute("SELECT rel_path FROM items WHERE id = ?", (item_id,)).fetchone()
+        if row is None:
+            return None
+        from app.episode_names import identity
+        name = identity(row[0])
+        if isinstance(name.episode, bool) or not isinstance(name.episode, (int, float)):
+            return None
+        return (name.season if isinstance(name.season, int) else 1, name.episode)
+
+    def _numbers_by_name(self, ids, episodes, season):
+        """(Kura-SO) The episode number each of `ids` (a title's rows whose records name none: a 2.x library's, an Add's)
+        reads in its file name, put in `episodes` — when its season is `season` or names none. Stops at the first that
+        reads none (the order is read only when every row has one: a long 2.x title isn't parsed for nothing)."""
+        if not ids:
+            return
+        from app.episode_names import identity
+        for part in _chunks(ids, 500):
+            for item_id, rel in self.conn.execute(
+                    f"SELECT id, rel_path FROM items WHERE id IN ({','.join('?' * len(part))})", part):
+                name = identity(rel)
+                if isinstance(name.episode, bool) or not isinstance(name.episode, (int, float)) or \
+                        name.season not in (None, season):
+                    return
+                episodes[item_id] = name.episode
+
+    def _after_all(self, item_id, tier):
+        """(Kura-SO, Sonic 2026-11-19: "if they are adding it now ... it would come after the content that they have")
+        Where a placing rule puts an item that names no order (a channel's single video): (tier, the row it goes
+        after) — the end of Soon or 6+ Months; for *Top of Current* after its own title's last row in Current
+        (PROVISIONAL: never above its channel's video there) — or None: the rule's own place (an empty Soon or 6+
+        Months, a title with nothing in Current: the very top). Never inside a group (LM11)."""
+        if tier in ("soon", "goal"):
+            row = self.conn.execute("SELECT id, tier FROM items WHERE tier = ? AND id != ? ORDER BY ord DESC, id DESC "
+                                    "LIMIT 1", (tier, item_id)).fetchone()
+        else:
+            work = self.conn.execute("SELECT work_id FROM items WHERE id = ?", (item_id,)).fetchone()
+            rows = [] if work is None or work[0] is None else self.conn.execute(
+                "SELECT id, tier, ord FROM items WHERE work_id = ? AND +tier IN ('now', 'soon') AND id != ?",
+                (work[0], item_id)).fetchall()
+            row = max(rows, key=lambda r: (TIERS[r[1]][3], r[2], r[0])) if rows else None
+        return None if row is None else (row[1], self._past_group(row[0]))
 
     def place(self, item_ids, where, by="user", explicit=None, after_id=None):
         """`place --where` (04 §4.2): `soon` — the first slot below the Soon line; `after-show` — after the title's
@@ -6174,15 +6587,18 @@ class Store:
         other = found[0][0] if found else None
         return (other, anchor) if before else (anchor, other)
 
-    def _after_show(self, item_id, record, excl=(), ordered=False):
+    def _after_show(self, item_id, record, excl=(), ordered=False, zone=CURRENT, named=False):
         """Where `after-show` puts an item (HC-N6, ✅ P2.1-2, Q4-9): (tier, before_id, after_id), or None (it stays).
         Its title's other items, by the episode numbers their records name (the same season: an item whose record
-        names another season is another show's, as `connect/rules.py` read it before Decision 1); without numbers,
+        names another season is another show's, as `connect/rules.py` read it before Decision 1) — a folder's file's
+        record its K4 number, and one naming none the number its file name reads (Kura-SO) — ; without numbers,
         after the title's last item in Current. LM11 (G4): never inside a group — after it (before it, when the
-        anchor is the row it goes before), in a piece of its own (`_past_group`). `ordered` (`_into_show`): only a
-        place read from the order (episode numbers, a list's places, a folder's run) — never the last item's
-        fallback or Q4-9's top: None then."""
-        spot = self._show_spot(item_id, record, excl, ordered)
+        anchor is the row it goes before), in a piece of its own (`_past_group`). `ordered` (`_into_show`, a placing
+        rule's target): only a place read from the order (episode numbers, a list's places, a folder's run) — never
+        the last item's fallback or Q4-9's top: None then — among the title's items in `zone` (Current, or 6+ Months
+        for a *Goal* rule: `_place_one`). `named` (a placing rule's): an item whose record names no episode is read by
+        its file name's (`_episode_named`)."""
+        spot = self._show_spot(item_id, record, excl, ordered, zone, named)
         if spot is None:
             return None
         tier, before_id, after_id = spot
@@ -6238,12 +6654,12 @@ class Store:
                 out[item_id] = found[1]
         return out
 
-    def _show_spot(self, item_id, record, excl, ordered=False):
-        """`_after_show`'s reading of the title's rows (`ordered`: see there)."""
+    def _show_spot(self, item_id, record, excl, ordered=False, zone=CURRENT, named=False):
+        """`_after_show`'s reading of the title's rows (`ordered`, `zone`, `named`: see there)."""
         work = self.conn.execute("SELECT work_id FROM items WHERE id = ?", (item_id,)).fetchone()
         if work is None or work[0] is None:
             return None
-        mine = _episode(record)
+        mine = self._episode_named(item_id, record) if named else _episode(record)
         if ordered and mine is None and list_place(record) is None and not (
                 isinstance(record, dict) and record.get("producer") == SOURCE_PRODUCER):
             return None              # (`_into_show`: nothing names its place — a channel's video: no title read)
@@ -6254,22 +6670,22 @@ class Store:
         episodes, apart = {}, set()
         # `ordered` reads only the records of the title's items in Current (all it compares with: a long title's
         # Finished and 6+ Months records are never parsed on a move), and none without an episode of its own
-        within = " AND +tier IN ('now', 'soon')" if ordered else ""
+        within = f" AND +tier IN ({', '.join(repr(t) for t in zone)})" if ordered else ""
         for other, text in () if ordered and mine is None else self.conn.execute(
                 f"SELECT item_id, pairing FROM pairings p WHERE item_id IN (SELECT id FROM items WHERE work_id = ?"
                 f"{within}) AND {_PREFERRED_ROW}", (work[0],)):
             try:
-                ep = _episode(json.loads(text))
+                ep = _record_episode(json.loads(text))
             except ValueError:
                 continue
-            if ep is not None and (mine is None or ep[0] == mine[0]):
+            if ep is not None and (mine is None or ep[0] in (None, mine[0])):
                 episodes[other] = ep[1]
             elif ep is not None:
                 apart.add(other)
         others = [r for r in others if r[0] not in apart]
         if not others:
             return None
-        current = [r for r in others if r[1] in CURRENT]
+        current = [r for r in others if r[1] in zone]
         if not current:
             if not ordered and all(r[1] in ("graduated", "goal") for r in others):
                 return ("now", None, None)                      # Q4-9: a finished title's new episode leads Current
@@ -6288,6 +6704,8 @@ class Store:
         if found is not None:            # Mado-Q: a playlist's video in its list's order (`_series_spot`'s reading)
             row, before = found
             return (row[1], row[0], None) if before else (row[1], None, row[0])
+        if mine is not None:
+            self._numbers_by_name([r[0] for r in current if r[0] not in episodes], episodes, mine[0])
         if mine is not None and all(r[0] in episodes for r in current):
             earlier = [r for r in current if episodes[r[0]] < mine[1]]
             if earlier:
@@ -7261,6 +7679,99 @@ class Store:
             if values:
                 self._set_meta(values)
 
+    def record_growth(self, figures):
+        """Kura-GS: a Generate's figures for the files it counted, {rel_path: (known, counted, unknown)} (its
+        progressive pass: the tokens known before any file, the tokens counted, the words not known, each once) —
+        each item's 'last'; an item with no 'added' yet takes them as its 'added' too, `prior` when the store held it
+        before it began the snapshots (GROWTH_SINCE; a store with no such date yet starts them now: every item
+        `prior`). A file the store no longer holds (moved or removed meanwhile) is passed by. Bookkeeping: no version
+        moves; a new 'added' sets `copy_dirty` (the copy carries it). A file it counted no words of keeps nothing: no
+        snapshot until it has words, and one that had words keeps its last count's, dated (Kura-GS2). Only what changed is
+        written; the files read to items in a read transaction first, then written `GROWTH_CHUNK` items a write, each its
+        own (`join_same_shows`' way: Kura-GS3), the lock let go `GROWTH_GAP_S` between them so a move or a Done waits
+        one chunk, never the set. An item's 'last' and 'added' go in one write: a reader between two sees each item's
+        older figures or this Generate's, whole. A write that fails is taken back whole and raises; the ones before it
+        stay (bookkeeping: the next full Generate writes what is missing, 'added' once); a 'last' is replaced only by a
+        newer Generate's (two writing by turns never set it back); a reset or a rebuild meanwhile (another store id or
+        epoch) ends it: the ids it read are the old library's. -> the 'added' written."""
+        if not figures:
+            return 0
+        with self._reading():
+            have = self._has_table(GROWTH)
+            meta = self._meta()
+            since, library = meta.get(GROWTH_SINCE), (meta.get("store_id"), meta.get("epoch"))
+            items = {key: (i, added) for key, i, added in self.conn.execute("SELECT rel_key, id, added_at FROM items")}
+            last = {r[0]: r[1:] for r in self.conn.execute(
+                "SELECT item_id, known, counted, unknown FROM growth WHERE kind = 'last'")} if have else {}
+            added = {r[0] for r in self.conn.execute(
+                "SELECT item_id FROM growth WHERE kind = 'added'")} if have else set()
+        at = _now()
+        todo = []                           # (its 'last' or None, its 'added' or None), an item each
+        for rel, fig in figures.items():
+            hit = items.get(path_key(rel))
+            if hit is None:
+                continue
+            item, added_at = hit
+            fig = (int(fig[0]), int(fig[1]), int(fig[2]))
+            if fig[1] <= 0:
+                continue                    # Kura-GS2: a file it counted no words of has no figure yet (never 0 of 0)
+            put_last = (item,) + fig + (at,) if last.get(item) != fig else None
+            put_added = None
+            if item not in added:
+                put_added = (item,) + fig + (at, 0 if since is not None and (added_at or "") > since else 1)
+            if put_last or put_added:
+                todo.append((put_last, put_added))
+        made = 0
+        for start in range(0, len(todo), GROWTH_CHUNK):
+            if start:
+                time.sleep(GROWTH_GAP_S)
+            part = todo[start:start + GROWTH_CHUNK]
+            with self._writing():
+                meta = self._meta()
+                if (meta.get("store_id"), meta.get("epoch")) != library:
+                    break                   # a reset or a rebuild meanwhile: these ids are another library's
+                self.conn.execute(GROWTH_SQL)
+                values = {}
+                if GROWTH_SINCE not in meta:
+                    values[GROWTH_SINCE] = at
+                self.conn.executemany("INSERT INTO growth (item_id, kind, known, counted, unknown, at) VALUES "
+                                      "(?, 'last', ?, ?, ?, ?) ON CONFLICT (item_id, kind) DO UPDATE SET known = "
+                                      "excluded.known, counted = excluded.counted, unknown = excluded.unknown, at = "
+                                      "excluded.at WHERE excluded.at > growth.at", [r for r, _a in part if r])
+                n = self.conn.executemany("INSERT OR IGNORE INTO growth (item_id, kind, known, counted, unknown, "
+                                          "at, prior) VALUES (?, 'added', ?, ?, ?, ?, ?)",
+                                          [a for _r, a in part if a]).rowcount
+                if n:
+                    values["copy_dirty"] = int(meta.get("copy_dirty") or 0) + 1
+                if values:
+                    self._set_meta(values)
+            made += n
+        return made
+
+    def growth_of(self, ids=None, kinds=("added", "done")):
+        """Kura-GS: {item id: {kind: {"known", "counted", "unknown", "at", "prior"}}} of every item with a snapshot of
+        `kinds` (of `ids` only, when given) — 'added' (`prior`: kept from when the snapshots began, not from its add),
+        'done' (its ✓ Done or its move to Finished), 'last' (the newest Generate's) on asking. A Remove's item keeps
+        its own (Put back brings them back). One read transaction; {} on a store without the table yet."""
+        with self._reading():
+            if not self._has_table(GROWTH):
+                return {}
+            kinds = tuple(kinds)
+            sql = (f"SELECT item_id, kind, known, counted, unknown, at, prior FROM growth "
+                   f"WHERE kind IN ({','.join('?' * len(kinds))})")
+            rows = []
+            if ids is None:
+                rows = self.conn.execute(sql, kinds).fetchall()
+            else:
+                for part in _chunks(list(dict.fromkeys(ids)), 500):
+                    rows += self.conn.execute(f"{sql} AND item_id IN ({','.join('?' * len(part))})",
+                                              kinds + tuple(part)).fetchall()
+        out = {}
+        for item, kind, known, counted, unknown, at, prior in rows:
+            out.setdefault(item, {})[kind] = {"known": known, "counted": counted, "unknown": unknown, "at": at,
+                                              "prior": bool(prior)}
+        return out
+
     def record_planned(self, order_version, pins_version):
         """At the end of a successful re-plan (2.6; Haya's E2.2). Keeps the larger values."""
         with self._writing():
@@ -7421,17 +7932,27 @@ class Store:
                         return self._skipped(cmd, max(1, len(change.trash_ids)))
                 rows = self.trash_rows(change.trash_ids)
                 waiting = [r["id"] for r in rows if not r["restored_at"]]
+                replaced = getattr(change, "replaced", None)            # Kura-AB5: a new version's Replace
                 if not waiting:
                     if folder is not None:
                         out = self._change(cmd, "undo")
                         out.folder_dropped = True
                         return out
-                    return self._skipped(cmd, len(change.trash_ids))
-                explicit = {it["id"]: it.get("explicit", 1) for it in change.items}
-                out = self.restore(waiting, rel_paths, by="undo", kind="undo",
-                                   explicit_of=lambda i: explicit.get(i, 1))
-                out.folder_dropped = folder is not None
+                    if replaced is None:
+                        return self._skipped(cmd, len(change.trash_ids))
+                    out = self._change(cmd, "undo")     # Kura-AB7 (R8): every old part put back first — its rest still
+                else:                                   # undone below (the new parts' title and place, the audiobook)
+                    explicit = {it["id"]: it.get("explicit", 1) for it in change.items}
+                    out = self.restore(waiting, rel_paths, by="undo", kind="undo",
+                                       explicit_of=lambda i: explicit.get(i, 1))
+                    out.folder_dropped = folder is not None
                 skipped = [t for t in change.trash_ids if t not in waiting]
+                if replaced is not None:
+                    left = self._undo_replaced(cmd, replaced)            # (the ids it skipped: changed since)
+                    undone = [i for i, _w, _n in replaced.works["items"]] + (
+                        [replaced.audiobook["item"]] if replaced.audiobook else [])
+                    out.replaced_back = any(i not in left for i in undone)   # a new part or the pair back (`_refused`)
+                    skipped += left
             elif kind == "relink":
                 out, skipped = self._undo_relink(cmd, change)
             elif kind in ("finish", "put_back_finished"):
@@ -7462,6 +7983,8 @@ class Store:
                             cmd.hints[item_id] = piece      # (else settling folds one beside its own into it)
                     _o, more = self._undo_works(cmd, change)
                     skipped = list(skipped) + [i for i in more if i not in skipped]
+            elif change.status and all(s[1] in PRESTUDIED_COLUMNS for s in change.status):   # J-STORE
+                out, skipped = self._undo_prestudied(cmd, change)
             elif change.status:
                 out, skipped = self._undo_status(cmd, change)
             elif change.works is not None:
@@ -7520,20 +8043,59 @@ class Store:
         the value the change set."""
         out = self._change(cmd, "undo")
         skipped, back = [], []
+        marked = {s[0] for s in change.status if s[1] == "watched"}
         for item_id, column, old, new in change.status:
+            if column == "watched_at" and item_id in marked:
+                continue        # Kura-WD: a date goes back with its mark, below — never a value skipped of its own
             row = self.conn.execute(f"SELECT {column} FROM items WHERE id = ?", (item_id,)).fetchone()
             if row is None or row[0] != new:
                 skipped.append(item_id)
             else:
                 back.append((column, old, item_id))
+        # Kura-WD: a mark put back puts its date back with it (never a mark 0 left with a later Done's date); a mark
+        # left as it is (changed since) keeps its date too
+        restored = {i for c, _o, i in back if c == "watched"}
+        back += [("watched_at", old, i) for i, c, old, _n in change.status if c == "watched_at" and i in restored]
         for column, old, item_id in back:
             self.conn.execute(f"UPDATE items SET {column} = ? WHERE id = ?", (old, item_id))
+        self._unsnap_done([(i, new) for i, c, _o, new in change.status if c == "watched_at" and i in restored and new])
         cmd.feed(i for _c, _o, i in back)
         if back:
             cmd.touch(pins=any(c in ("pinned", "in_learning_order") for c, _o, _i in back),   # P4.1 L2 (T-4)
                       order=self._moves_counted([i for c, _o, i in back if c == "watched"]))   # W-1
-            news = {s[0]: s[3] for s in change.status}
-            out.status = [(i, c, news[i], o) for c, o, i in back]
+            news = {(s[0], s[1]): s[3] for s in change.status}  # (an item may hold several: watched + its date)
+            out.status = [(i, c, news[(i, c)], o) for c, o, i in back]
+        return out, skipped
+
+    def _undo_prestudied(self, cmd, change):
+        """J-STORE: the value check (§6.11) on each item's pair — its date and how it was set — put back together where
+        the item still holds both values the change wrote, else left as it is (one item skipped, never one of its two
+        values): an Undo puts back how the mark was set (an end card's, a press's, an un-mark). Its own Undo the same."""
+        out = self._change(cmd, "undo")
+        pairs = {}
+        for item_id, column, old, new in change.status:
+            pairs.setdefault(item_id, {})[column] = (old, new)
+        if not self._prestudied_column():
+            return out, list(pairs)
+        held = {}
+        for part in _chunks(list(pairs), 500):
+            held.update((i, (at, by)) for i, at, by in self.conn.execute(
+                f"SELECT id, prestudied_at, prestudied_by FROM items WHERE id IN ({','.join('?' * len(part))})", part))
+        skipped, back = [], []
+        for item_id, values in pairs.items():
+            old = tuple(values.get(c, (None, None))[0] for c in PRESTUDIED_COLUMNS)
+            new = tuple(values.get(c, (None, None))[1] for c in PRESTUDIED_COLUMNS)
+            if held.get(item_id) != new:
+                skipped.append(item_id)
+            else:
+                back.append((item_id, old, new))
+        self.conn.executemany("UPDATE items SET prestudied_at = ?, prestudied_by = ? WHERE id = ?",
+                              [old + (i,) for i, old, _n in back])
+        cmd.feed(i for i, old, new in back if old[0] != new[0])           # the date only, as the press (F6)
+        if back:
+            cmd.touch()
+            out.status = [(i, column, new[n], old[n]) for i, old, new in back
+                          for n, column in enumerate(PRESTUDIED_COLUMNS)]
         return out, skipped
 
     def _undo_pieces(self, cmd, change):
@@ -7586,6 +8148,11 @@ class Store:
         for it in ok:
             seqs[cur[it["id"]][1]].remove(it["id"])
         info = {it["id"]: it for it in items}
+        # Kura-GS3 2 (Sonic 2026-11-22): the Undo of a move to Finished takes back the 'done' snapshot that press made,
+        # as the Done's does (`_unsnap_done`): dated by the stamp of the Finished date it set — the row unchanged since
+        # (the value check) still holds it — so a Done's or an earlier Finish's snapshot (kept, written once) stays
+        self._unsnap_done([(it["id"], cur[it["id"]][8]) for it in ok if cur[it["id"]][1] == "graduated"
+                           and it["tier"] != "graduated" and cur[it["id"]][8] is not None])
         _walk_back(seqs, items, okset, one)
         self._write_seqs(seqs, ords, okset, lambda i: info[i]["changed_in"])
         cmd.walked.update({i: (info[i]["tier"], info[i]["changed_in"]) for i in okset})
@@ -7616,7 +8183,8 @@ class Store:
             for name in COPY_TABLES:
                 if name not in present:                            # an added table this store hasn't made yet
                     continue
-                c = self.conn.execute(f"SELECT * FROM {name} ORDER BY rowid")
+                c = self.conn.execute(f"SELECT * FROM {name}" + (" WHERE kind != 'last'" if name == GROWTH else "")
+                                      + " ORDER BY rowid")
                 fields = [d[0] for d in c.description]
                 keep = [n for n, f in enumerate(fields) if not (name == "works" and f in WORK_NOT_COPIED)]
                 tables[name] = {"fields": [fields[n] for n in keep],
@@ -7651,7 +8219,7 @@ class Store:
             "format": COPY_FORMAT, "store_schema": STORE_SCHEMA, "store_id": meta["store_id"],
             "version": meta["state_version"], "content_sha": None,
             "graduated": by_tier["graduated"], "arrivals": by_tier["arrivals"], "meta": lib_meta,
-            "items": {"fields": list(ITEM_FIELDS), "rows": [[r[f] for f in ITEM_FIELDS] for r in rows]},
+            "items": {"fields": list(ITEM_FIELDS), "rows": [[r.get(f) for f in ITEM_FIELDS] for r in rows]},
             "tables": tables}
         if waiting:
             doc["surasura_library"]["waiting"] = waiting
@@ -7910,8 +8478,9 @@ def _ensure_schema(store):
                                           "AND name NOT LIKE 'sqlite_%'").fetchone()[0]
             if existing:
                 raise StoreError("a library database without a schema version; left alone")
-            for sql in SCHEMA_SQL + SCHEMA_2_SQL + ADDED_HASH_SQL + ORIGIN_LOG_SQL:   # A4K-7, F13b: at once
+            for sql in SCHEMA_SQL + SCHEMA_2_SQL + ADDED_HASH_SQL + ADDED_DATES_SQL + ORIGIN_LOG_SQL:   # A4K-7, F13b, WD
                 store.conn.execute(sql)
+            store._make_prestudied()                                                       # J-STORE
             store.conn.execute(f"PRAGMA user_version = {STORE_SCHEMA}")
     return version
 
@@ -8034,6 +8603,18 @@ def _rule_for(record, rules):
         if target in PLACING_TARGETS:
             return source, target
     return None
+
+
+def _record_episode(record):
+    """(season, episode) a record names for `after-show`'s reading: its show's (`_episode`), else a folder's origin
+    record's K4 `episode` (Kura-SO: a show a folder scan brought in, joined by hato's or the browser's next one) with
+    no season (None: it never sets an item apart) — or None."""
+    found = _episode(record)
+    if found is None and isinstance(record, dict) and record.get("producer") == SOURCE_PRODUCER:
+        number = record.get("episode")
+        if isinstance(number, (int, float)) and not isinstance(number, bool):
+            return (None, number)
+    return found
 
 
 def _episode(record):
@@ -8322,6 +8903,11 @@ def _write_image(store, image, meta):
     now = _now()
     for sql in ADDED_TABLES_SQL:
         conn.execute(sql)
+    if not store._dates_column():               # Kura-WD: a rebuild in place of a store a busy open left without it
+        for sql in ADDED_DATES_SQL:
+            conn.execute(sql)
+    if not store._prestudied_column():          # J-STORE: the same, for the pre-studied columns
+        store._make_prestudied()
     tables = image["tables"]
     roots = tables.get("roots")
     if roots and roots["rows"]:
@@ -8359,12 +8945,17 @@ def _write_image(store, image, meta):
                      item["added_at"] or now, item["graduated_at"],
                      item["piece_id"] if item["piece_id"] in piece_ids else None, item["watched"] or 0,
                      item["mined_at"], item["pinned"], 1 if item["in_learning_order"] is None else item["in_learning_order"],
-                     item.get("work_id") if item.get("work_id") in work_ids else None, item.get("mine_asked")))
+                     item.get("work_id") if item.get("work_id") in work_ids else None, item.get("mine_asked"),
+                     item.get("watched_at")))
     conn.executemany(
         "INSERT INTO items (id, root_id, rel_path, rel_key, tier, ord, entry, title, parent_folder, source_type, "
         "availability, size, mtime_ns, changed_in, added_at, graduated_at, piece_id, watched, mined_at, pinned, "
-        "in_learning_order, work_id, mine_asked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-        "?, ?)", rows)
+        "in_learning_order, work_id, mine_asked, watched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+        "?, ?, ?, ?, ?, ?, ?, ?)", rows)
+    marked = [_prestudied_pair(item) + (item["id"],) for item in image["items"]       # J-STORE: as each was marked
+              if item.get("prestudied_by") is not None]
+    conn.executemany("UPDATE items SET prestudied_at = ?, prestudied_by = ? WHERE id = ?",
+                     [m for m in marked if m[:2] != (None, None)])
     have = {r[0] for r in rows}
     for name in ("anki_links", "pairings"):
         t = tables.get(name)
@@ -8372,7 +8963,7 @@ def _write_image(store, image, meta):
             col = t["fields"].index("item_id")
             kept = {"fields": t["fields"], "rows": [r for r in t["rows"] if r[col] in have]}
             _insert_rows(conn, name, kept)
-    for name in ("made_words", "made_lines"):                   # outlive Remove: an item or its trash row
+    for name in ("made_words", "made_lines", GROWTH):           # outlive Remove: an item or its trash row
         t = tables.get(name)
         if t and t["rows"]:
             col = t["fields"].index("item_id")
@@ -8390,6 +8981,8 @@ def _write_image(store, image, meta):
     log_high = conn.execute("SELECT COALESCE(MAX(id), 0) FROM placement_log").fetchone()[0]
     _set_seq(conn, "placement_log", max([log_high, int(meta.get("log_seq", 0))] + [int(m) for m in marks]))
     store._set_meta(meta)
+    if GROWTH_SINCE not in meta:            # Kura-GS: a copy from before the snapshots — its items are all `prior`
+        store._set_meta({GROWTH_SINCE: now})                    # (an item it carried without a date is `now`'s)
     _seed_schema2(store, int(meta["state_version"]))           # works, pieces, search keys, the feed (L2.2 02 §2.6)
 
 
@@ -8665,8 +9258,8 @@ def _rebuild(store, user_files_dir, doc, read_stat, keep_store_id=None):
         if keep_store_id:
             for sql in ADDED_TABLES_SQL:                         # an added table this store may not have made yet
                 store.conn.execute(sql)
-            for name in ("anki_links", "pairings", "made_words", "made_lines", "placement_log", "trash", "exclusions",
-                         "anki_changes", "gone", "items", "pieces", "works", "roots", "meta"):
+            for name in ("anki_links", "pairings", "made_words", "made_lines", GROWTH, "placement_log", "trash",
+                         "exclusions", "anki_changes", "gone", "items", "pieces", "works", "roots", "meta"):
                 store.conn.execute(f"DELETE FROM {name}")
         _write_image(store, image, meta)
         _line_after_build(store, meta.get("soon_line"))       # a 3.0 copy's line, else its tiers'
@@ -8920,6 +9513,7 @@ def _store_reimport(self, doc, read_stat, own=False, force=False):
         for it in items.values():
             if it.new_tier == "graduated":
                 self.conn.execute("UPDATE items SET graduated_at = ? WHERE id = ?", (now, it.id))
+        self._snap_done([it.id for it in items.values() if it.new_tier == "graduated"], now)   # Kura-GS
         cmd.touch(changed_tiers | {it.tier for it in items.values() if it.new_entry is not None or it.new_rel})
         self._set_meta({"last_export_stat": read_stat,
                         "reimport_note": _dumps({"count": count, "total": total, "at": now})})
@@ -9261,7 +9855,7 @@ def _build(db_path, language, data_dir, user_files_dir, from_folders, retry):
 def maintain(language, data_dir=None, user_files_dir=None, from_folders=False, repair=False,
              check_integrity=False, export=True, retry=False, lock=None):
     """The helper (§6.7): under the maintenance lock, (1) build if needed, (2) check the copy for an
-    outside change, (3) export if behind. Dialog-free; exits 0 did something · 3 nothing to do · 4 needs
+    outside change, (3) export if behind — and once more before it ends if a write landed meanwhile (EXPORT_AGAIN). Dialog-free; exits 0 did something · 3 nothing to do · 4 needs
     the user · 5 busy (another holder, or an update staged) · 1 failed. The analyzer runs steps 1–2
     in-process (`export=False`)."""
     from app.path_utils import get_data_path, get_user_files_path
@@ -9353,26 +9947,83 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
             did = bool(store.join_hato_folders()) or did
         except Exception as exc:                # as above: the next run tries again
             _log(db_path, f"join_hato_folders failed: {type(exc).__name__}: {exc}")
+        try:
+            did = bool(store.untag_book_titles()) or did
+        except Exception as exc:                # as above: the next run tries again
+            _log(db_path, f"untag_book_titles failed: {type(exc).__name__}: {exc}")
+        if export:
+            # once more before the lock goes (F2): a write that landed while this run worked — Connect's, the
+            # analyzer's, whose own ask for a helper was skipped because this one was at work — reaches the copy now,
+            # never only at the next trigger
+            for _again in range(EXPORT_AGAIN):
+                if not store.export_due():
+                    break
+                did = export_copy(store) or did
         store.checkpoint()
         return EXIT_DONE if did else EXIT_NOTHING
     finally:
         store.close()
 
 
+_spawned = {}                   # language -> the helper this process started last (its Popen)
+# A helper someone pressed for (2.x's *Repair* / *Try again*, train 53's intent keeper F2): never skipped beside one at
+# work — it waits for the lock itself (MAINT_WAIT), as before
+PRESSED_HELPER = frozenset({"--repair", "--retry"})
+EXPORT_AGAIN = 3                # the helper's export looked at again this many times at most before it ends (F2)
+_owed = set()                   # languages a spawn was skipped for while one ran: `take_owed` (the window's watch)
+
+
+def maintain_running(language, data_dir=None):
+    """Is a helper (or any holder of the maintenance lock: an analyzer's in-process steps, the Content Manager's)
+    at work on `language` now — one this process started that hasn't ended, or the lock held? A look: a missing lock
+    file is free, nothing is created. Never raises."""
+    proc = _spawned.get(language)
+    try:
+        if proc is not None and proc.poll() is None:
+            return True
+        from app.path_utils import get_data_path
+        db_path = library_db_path(language, data_dir or get_data_path(language))
+        if not os.path.exists(db_path + ".lock"):
+            return False
+        probe = MaintenanceLock(db_path)
+        try:
+            return not probe.try_acquire()
+        finally:
+            probe.close()
+    except Exception:
+        return False
+
+
+def take_owed(language):
+    """Was a spawn for `language` skipped while one ran (`spawn_maintain`)? -> True once, then forgotten."""
+    if language in _owed:
+        _owed.discard(language)
+        return True
+    return False
+
+
 def spawn_maintain(language, *extra):
     """Start the helper detached and untracked (§6.7: not in `active_processes`, so closing the dashboard
     doesn't kill it), with the same arguments frozen and from source. Spawns nothing while an update is
-    staged. Returns the Popen, or None."""
+    staged, nor while one is at work already (Haya-LD, a 3.0.16 problem report: five started within 50 s of a start —
+    the window's start and focus, the analyzer's read, the idle trigger — each a program's start, then a 10 s wait
+    for the lock and exit 5): the ask is remembered (`take_owed`), and what it would have done the running one, or
+    the next trigger, does. Returns the Popen, or None."""
     import subprocess
     if update_staged():
+        return None
+    if maintain_running(language) and not set(extra) & PRESSED_HELPER:
+        _owed.add(language)
         return None
     flags = 0
     if sys.platform == "win32":
         flags = 0x00000008 | 0x00000200 | 0x08000000   # DETACHED_PROCESS | NEW_PROCESS_GROUP | NO_WINDOW
     from app.connect.power import popen_below_normal          # a7: background work, below the window
-    return popen_below_normal(_helper_args(language, "maintain", *extra), env=_helper_env(), creationflags=flags,
+    proc = popen_below_normal(_helper_args(language, "maintain", *extra), env=_helper_env(), creationflags=flags,
                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                               start_new_session=(sys.platform != "win32"))
+    _spawned[language] = proc
+    return proc
 
 
 def _helper_args(language, command, *extra):
@@ -10768,15 +11419,11 @@ def _origin_record(root_id, origin, f):
               "size": f.get("size"), "mtime_ns": f.get("mtime_ns"), "sha256": f.get("sha256"),
               "show": {"title": str(f.get("show") or "")}}
     for key in ("video_path", "video_size", "video_key", "episode", "chapter",    # chapter: a book's part's place
-                "audiobook"):                                   # (`extract.book_split`, Hon); an audiobook's (H-7)
+                "audiobook",                                    # (`extract.book_split`, Hon); an audiobook's (H-7)
+                "new_version_of"):                              # Kura-AB5: the book this EPUB may replace (B3 3)
         if f.get(key) is not None:                              # files, length and pairing: `audiobooks.record`
             record[key] = f[key]
     return record
-
-
-def _store_copy_dirty(self):
-    """Bookkeeping the copy carries (§6.6): no version moves, the next export writes it."""
-    self._set_meta({"copy_dirty": self._meta().get("copy_dirty", 0) + 1})
 
 
 def _store_not_a_source(self, path):
@@ -11919,6 +12566,8 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
                 p = prepared[rel] = self._prepare([rel], None, "Source")[0]
             if rel is not None and f.get("show_name"):   # Kura-NA: its title goes by the show uncut (`_folder_work`)
                 cmd.show_names[path_key(rel)] = str(f["show_name"])
+            if rel is not None and f.get("book_title"):  # Kura-AB5: an EPUB's parts in `<name> (n)/`: named <name>
+                cmd.book_titles[path_key(rel)] = str(f["book_title"])
             back = bool(f.get("let_back") and f.get("audiobook"))   # Kura-AB5 (#429): its folder picked for its book
             if back:
                 self._let_audiobook_back(key, f.get("let_back_from"), out)
@@ -14065,7 +14714,6 @@ Store.settle_editions = _store_settle_editions
 Store.pending_editions = _store_pending_editions
 Store.other_groups = _store_other_groups
 
-Store._copy_dirty = _store_copy_dirty
 Store._not_a_source = _store_not_a_source
 Store.add_source = _store_add_source
 Store.sources = _store_sources
@@ -14161,13 +14809,19 @@ def _store_audiobook_rows(self, item_id=None):
 
 
 def _store_audiobooks(self, every=False):
-    """[{item_id, key, audiobook}] of every audiobook item, one each (its first live record: an item holding the same
-    audiobook from two sources keeps them alike, `pair_audiobook`) — what a look weighs again (one read); `every`: each
-    live record (a6: an item's files in each source, its transcript's claim found by any of them)."""
+    """[{item_id, key, audiobook, book_gone}] of every audiobook item, one each (its first live record: an item holding
+    the same audiobook from two sources keeps them alike, `pair_audiobook`) — what a look weighs again (one read);
+    `every`: each live record (a6: an item's files in each source, its transcript's claim found by any of them).
+    `book_gone` (Kura-AB5): its record names a book no longer in the library (`book_gone`) — free, as one alone."""
     with self._reading():
-        out = {}
+        out, gone = {}, {}
         for k, i, r in self._audiobook_rows():
-            out.setdefault(k if every else i, {"item_id": i, "key": k, "audiobook": r["audiobook"]})
+            if (k if every else i) in out:
+                continue
+            book = r["audiobook"].get("book")
+            if i not in gone:                    # Kura-AB5: its book removed — free (`book_gone`), one read an item
+                gone[i] = self._book_gone(book)
+            out[k if every else i] = {"item_id": i, "key": k, "audiobook": r["audiobook"], "book_gone": gone[i]}
         return list(out.values())
 
 
@@ -14233,6 +14887,34 @@ def _store_audiobook_place(self, book):
     rows = [r for r in rows if r[1] != "graduated"] or rows     # beside the parts still read, never into Finished
     last = max(rows, key=lambda r: (TIERS[r[1]][3], r[2], r[0]))
     return last[3], last[1], last[0]
+
+
+def _store_book_gone(self, book):
+    """Kura-AB5 (11-20 report): has the book an audiobook's record names left the library — no part of it is an item any
+    more (removed: its rows went, the record's `book` stayed)? Such an audiobook is free: offered to any book, taken by
+    a pick or a folder's look with no *now with 「…」* (read side, so a library from before is covered; Put back pairs
+    them again by itself). False for no `book`. Read only."""
+    if not isinstance(book, dict):
+        return False
+    ids = sorted(self._audiobook_parts(book))
+    for chunk in _chunks(ids, 500):
+        if self.conn.execute(f"SELECT 1 FROM items WHERE id IN ({','.join('?' * len(chunk))}) LIMIT 1",
+                             chunk).fetchone():
+            return False
+    return True
+
+
+def book_title(title, epub):
+    """Kura-AB5 (11-20 report; Sonic's ruling: never the `(2)`): a book's title without the library's folder suffix
+    — `<name> (n)`, the free folder name its parts were written to when `Library/<name>/` held other bytes
+    (`sources`' extraction) — when `<name>` is its EPUB's own (clean) name; any other title as it is (`<book> (2)` a
+    learner or a shop named so: a second volume, never cut)."""
+    from app import extract
+    m = re.fullmatch(r"(.+) \((\d+)\)", title or "")
+    if m is None or not isinstance(epub, str) or not epub:
+        return title
+    stem = os.path.splitext(os.path.basename(epub))[0]
+    return m.group(1) if m.group(1) in (stem, extract.clean_name(stem)) else title
 
 
 def _store_pair_audiobook(self, item_id, book=None, ask=None, answer=None, stale=False, by=SOURCE_PRODUCER,
@@ -14432,7 +15114,7 @@ def _store_book_audiobooks(self, item_id):
                     f"AND instr(p.content_key, '#') > 0 AND NOT (p.content_key >= ? AND p.content_key < ?) AND "
                     f"lower(p.content_key) LIKE '%.epub#%' LIMIT 1", (title[1], lo, lo[:-1] + "$")).fetchone():
                 title = None                             # two books in one title: this one named by its file
-            title = (title[0] if title else None) or os.path.splitext(os.path.basename(epub))[0]
+            title = book_title((title[0] if title else None) or os.path.splitext(os.path.basename(epub))[0], epub)
         lone, seen, paired, elsewhere = [], set(), False, []
         for _k, ab_id, rec in self._audiobook_rows():
             ab = rec.get("audiobook") or {}
@@ -14442,12 +15124,14 @@ def _store_book_audiobooks(self, item_id):
             paired = paired or here
             asked_here = isinstance(ask, dict) and isinstance(ask.get("epub"), str) and \
                 path_key(os.path.abspath(ask["epub"])) == path_key(os.path.abspath(epub))
-            if isinstance(book, dict) and not here and ab_id not in seen and \
+            gone = isinstance(book, dict) and not here and ab_id not in seen and self._book_gone(book)
+            if isinstance(book, dict) and not here and not gone and ab_id not in seen and \
                     self.conn.execute("SELECT 1 FROM items WHERE id = ?", (ab_id,)).fetchone():
                 seen.add(ab_id)                          # Kura-AB4 (#419's diagnosis): with another book —
                 elsewhere.append((ab_id, ab, str(book.get("title") or "")))     # listed only for this very title
                 continue
-            if ab_id in seen or ab.get("book") or (ask and not asked_here):
+            # (Kura-AB5, 11-20 report: one whose book was removed is free — offered as one alone)
+            if ab_id in seen or (ab.get("book") and not gone) or (ask and not asked_here):
                 continue
             seen.add(ab_id)
             if self.conn.execute("SELECT 1 FROM items WHERE id = ?", (ab_id,)).fetchone():
@@ -14463,13 +15147,208 @@ def _store_book_audiobooks(self, item_id):
         ask = ab.get("ask")
         return (not isinstance(ask, dict), bool(no), -audiobooks._title_level(forms, a_forms),
                 search_fold(ab.get("title") or ""), ab_id)
-    others = [(ab_id, ab, other) for ab_id, ab, other in elsewhere if audiobooks.same_book_title(title, other)]
+    mine = list(dict.fromkeys([title, os.path.splitext(os.path.basename(epub))[0]]))
+
+    def alike(ab, other):                    # Kura-AB5: by every name of this book, against its book's and its own
+        theirs = [other] + list(ab.get("titles") or ()) + ([ab["title"]] if ab.get("title") else [])
+        return any(audiobooks.same_book_title(m, t) for m in mine for t in theirs if m and t)
+    others = [(ab_id, ab, other) for ab_id, ab, other in elsewhere if alike(ab, other)]
     return {"epub": os.path.abspath(epub), "title": title, "paired": paired,
             "audiobooks": [{"item_id": ab_id, "title": ab.get("title") or "", "n": len(ab.get("files") or ()),
                             "seconds": ab.get("seconds")} for ab_id, ab in sorted(lone, key=rank)] +
             [{"item_id": ab_id, "title": ab.get("title") or "", "n": len(ab.get("files") or ()),
               "seconds": ab.get("seconds"), "elsewhere": other}
              for ab_id, ab, other in sorted(others, key=lambda e: (search_fold(e[1].get("title") or ""), e[0]))]}
+
+
+def _store_book_items(self, item_id):
+    """Kura-AB5 (Sonic's yes, 11-20 report: the old version took three Removes — its parts were three rows): the
+    whole book the item `item_id` is a part of -> {epub, title, ids: [every item of it still in the library — its
+    EPUB's parts (`<epub>#<n>`), whatever their tier or row; a split book's `all`]}, or None (no part of a book).
+    Read only, one read."""
+    with self._reading():
+        origin = next((_json_dict(raw) or {} for (raw,) in self.conn.execute(
+            f"SELECT p.pairing FROM pairings p WHERE p.item_id = ? AND {_LIVE_ORIGIN} AND "
+            f"instr(p.content_key, '#') > 0 ORDER BY p.content_key LIMIT 1", (item_id,))), None)
+        if origin is None or not _EPUB_PART.search(origin.get("origin") or ""):
+            split = self.split_book(item_id)
+            if split is None:
+                return None
+            return {"epub": split["path"], "title": split["title"], "ids": list(split["all"])}
+        epub = origin["origin"].rsplit("#", 1)[0]
+        lo = SOURCE_KEY + path_key(os.path.abspath(epub)) + "#"
+        ids = sorted({i for (i,) in self.conn.execute(
+            f"SELECT p.item_id FROM pairings p WHERE p.content_key >= ? AND p.content_key < ? AND {_LIVE_ORIGIN}",
+            (lo, lo[:-1] + "$"))})
+        row = self.conn.execute("SELECT w.title FROM items i JOIN works w ON w.id = i.work_id WHERE i.id = ?",
+                                (item_id,)).fetchone()
+    title = book_title((row[0] if row else None) or os.path.splitext(os.path.basename(epub))[0], epub)
+    return {"epub": os.path.abspath(epub), "title": title, "ids": ids}
+
+
+def _store_new_version_of(self, item_id):
+    """Kura-AB5 (Sonic's yes: a new version replaces the old one, keeping its name and audiobook; New arrivals asks
+    once): the book in the library the book `item_id` is a part of may replace — the look's mark on its records
+    (`new_version_of`: the same folder, the same `dc:title`) — while that book still has a part here and this one is
+    still a title apart from it -> {old: {epub, title, ids, replaced, kept}, new: {epub, title, ids}}, else None.
+    Kura-AB6: `replaced` / `kept` the old book's parts *Replace* takes out / keeps (`replace_parts`); a book with
+    nothing unread is no replacement (None). Read only."""
+    new = self.book_items(item_id)
+    if new is None:
+        return None
+    with self._reading():
+        marks = {(_json_dict(raw) or {}).get("new_version_of") for (raw,) in self.conn.execute(
+            f"SELECT p.pairing FROM pairings p WHERE p.item_id = ? AND {_LIVE_ORIGIN}", (item_id,))}
+    marks = {m for m in marks if isinstance(m, str) and m and not _same_epub(m, new["epub"])}
+    if len(marks) != 1:
+        return None
+    old_epub = marks.pop()
+    lo = SOURCE_KEY + path_key(os.path.abspath(old_epub)) + "#"
+    with self._reading():
+        part = self.conn.execute(f"SELECT p.item_id FROM pairings p WHERE p.content_key >= ? AND p.content_key < ? AND "
+                                 f"{_LIVE_ORIGIN} ORDER BY p.content_key LIMIT 1", (lo, lo[:-1] + "$")).fetchone()
+    old = self.book_items(part[0]) if part else None
+    if old is None or set(old["ids"]) & set(new["ids"]):
+        return None
+    with self._reading():
+        works = {r[0] for r in self.conn.execute(
+            f"SELECT DISTINCT work_id FROM items WHERE id IN ({','.join('?' * len(new['ids']))})", new["ids"])}
+        olds = {r[0] for r in self.conn.execute(
+            f"SELECT DISTINCT work_id FROM items WHERE id IN ({','.join('?' * len(old['ids']))})", old["ids"])}
+    if works & olds:
+        return None                                      # (one title already: nothing to replace)
+    with self._reading():
+        old["replaced"], old["kept"] = self.replace_parts(old_epub)
+        placed = self._parts_place(old["replaced"])
+    if placed is None:
+        return None                                      # Kura-AB6: every part read (or each unread one waits)
+    return {"old": old, "new": new}
+
+
+def _store_replace_book(self, new_epub, old_epub, trashed_paths=None, by="user"):
+    """Kura-AB5 (Sonic's yes, B3 3): the new version `new_epub` replaces the old `old_epub` — ONE command, ONE Undo:
+    its parts join the old book's title (the old one's name kept) where the old book's last part stands, in that tier,
+    in their own order; the old book's audiobook is the new one's (`_picked_book`: its key, parts and place); then the
+    old book's parts are removed as *Remove…* removes them (`remove`: the trash rows — their files moved by the caller,
+    `trashed_paths` — the Removed list). The change is that remove's (kind `remove`: the window's writer moves the
+    files back on its Undo); `change.replaced` holds the rest, undone by the value check (`_undo_replaced`). -> the
+    Change, or None (either book not here, or one title already, or nothing unread).
+    Kura-AB6 (Sonic 2026-11-20: keep the Finished parts and their dates, replace only the unread): only the old book's
+    unread parts go (`replace_parts`); a Finished or ✓ Done part stays as it is — its title, tier, place, date and
+    mark — and "the old book's last part" is the last of those that go."""
+    with self._command("remove", by) as cmd:
+        new_ids = self._epub_ids(new_epub)
+        old_ids, _kept = self.replace_parts(old_epub)
+        placed = self._parts_place(old_ids)
+        if not old_ids or not new_ids or placed is None or set(old_ids) & set(new_ids):
+            return None
+        work, tier, last = placed
+        marks = ",".join("?" * len(new_ids))
+        moved = [(i, w, work) for i, w in self.conn.execute(
+            f"SELECT id, work_id FROM items WHERE id IN ({marks}) ORDER BY id", new_ids).fetchall()]
+        if any(w == work for _i, w, _n in moved):
+            return None
+        heard = next(((ab_id, rec["audiobook"]) for _k, ab_id, rec in self._audiobook_rows()
+                      if isinstance((rec.get("audiobook") or {}).get("book"), dict) and
+                      _same_epub(rec["audiobook"]["book"].get("epub"), old_epub)), None)    # (one audiobook a book)
+        sub = self._change(cmd, "audiobook_pick")
+        # every row it moves recorded where it stands now, before anything moves (its Undo walks them back from there)
+        self._before(sub, list(self._rows(new_ids + ([heard[0]] if heard else [])).values()))
+        emptied = sorted({w for _i, w, _n in moved if w is not None})
+        sub.works = {"rows": [self._work_row(w) for w in emptied], "items": moved, "fields": [], "created": []}
+        self.conn.executemany("UPDATE items SET work_id = ? WHERE id = ?", [(work, i) for i, _w, _n in moved])
+        cmd.reworked.update(i for i, _w, _n in moved)
+        cmd.fed_works.update(emptied + [work])
+        cmd.feed(new_ids)
+        self._put(tier, new_ids, ("after", last), cmd.version)
+        sub.audiobook = None
+        picked = self._picked_book(new_epub, heard[1]) if heard else None
+        if picked is not None:
+            ab_id, book = heard[0], picked[0]
+            said = self.audiobook_answers()
+            sub.audiobook = {"records": [(k, json.dumps(r, sort_keys=True, ensure_ascii=False))
+                                         for k, _i, r in self._audiobook_rows(ab_id)],
+                             "answer": (book["key"], said.get(book["key"])), "item": ab_id}
+            self.pair_audiobook(ab_id, book=book, answer=(book["key"], True), by=by)
+        change = self.remove(old_ids, trashed_paths, by=by)
+        if change is None:
+            raise StoreConflict("the old version left meanwhile")
+        change.replaced = sub
+        return change
+
+
+def _store_epub_ids(self, epub):
+    """The live items of the EPUB `epub` (its `<epub>#<n>` origins), in its parts' order (part 1 first)."""
+    lo = SOURCE_KEY + path_key(os.path.abspath(epub)) + "#"
+    rows = self.conn.execute(f"SELECT p.content_key, p.item_id FROM pairings p WHERE p.content_key >= ? AND "
+                             f"p.content_key < ? AND {_LIVE_ORIGIN}", (lo, lo[:-1] + "$")).fetchall()
+
+    def number(key):
+        tail = key.rpartition("#")[2]
+        return int(tail) if tail.isdigit() else 0
+    return list(dict.fromkeys(i for _k, i in sorted(rows, key=lambda r: (number(r[0]), r[1]))))
+
+
+def _store_replace_parts(self, epub):
+    """Kura-AB6 (Sonic 2026-11-20): the live parts of the old version `epub` a *Replace* takes out, and the ones it
+    keeps -> (replaced, kept), each in the parts' order. Kept: a part the learner has read — Finished (its date, the
+    Best ranking's) or ✓ Done (PROVISIONAL: read, not yet Finished); the rest — in progress or not begun — is
+    replaced. One read (inside the caller's `_reading()` or write)."""
+    ids = self._epub_ids(epub)
+    read = set()
+    for chunk in _chunks(ids, 500):
+        read.update(i for (i,) in self.conn.execute(
+            f"SELECT id FROM items WHERE id IN ({','.join('?' * len(chunk))}) AND (tier = 'graduated' OR watched != 0)",
+            chunk))
+    return [i for i in ids if i not in read], [i for i in ids if i in read]
+
+
+def _store_parts_place(self, ids):
+    """(work, tier, the last part's id) of the parts `ids` — the last by tier, then place (`_audiobook_place`'s rule,
+    over these parts alone) — or None (none here, or each waits)."""
+    rows = []
+    for chunk in _chunks(sorted(ids), 500):
+        rows += self.conn.execute(f"SELECT id, tier, ord, work_id FROM items WHERE id IN ({','.join('?' * len(chunk))}) "
+                                  f"AND availability != 'waiting' AND work_id IS NOT NULL", chunk).fetchall()
+    if not rows:
+        return None
+    last = max(rows, key=lambda r: (TIERS[r[1]][3], r[2], r[0]))
+    return last[3], last[1], last[0]
+
+
+def _store_undo_replaced(self, cmd, sub):
+    """`replace_book`'s rest undone, after its Remove's rows are back (the remove's own Undo): the audiobook's records
+    and answer as they were (on each live record still paired with the new version), the new version's parts back in
+    their own title (the title the move emptied, back) and their places. By the value check: what changed since
+    stays. -> the item ids skipped."""
+    skipped = []
+    said = sub.audiobook
+    if said:
+        key = said["answer"][0]
+        before = {k: (json.loads(v).get("audiobook") or {}) for k, v in said["records"]}
+        back = []
+        for content_key, _i, rec in self._audiobook_rows(said["item"]):
+            now = rec.get("audiobook") or {}
+            if not (isinstance(now.get("book"), dict) and now["book"].get("key") == key):
+                continue
+            was = before.get(content_key) or next(iter(before.values()), {})
+            back.append((json.dumps(dict(rec, audiobook=dict(now, book=was.get("book"), ask=was.get("ask"))),
+                                    sort_keys=True, ensure_ascii=False), content_key))
+        if back:
+            self.conn.executemany("UPDATE pairings SET pairing = ? WHERE content_key = ?", back)
+            row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (AUDIOBOOK_ANSWERS,)).fetchone()
+            answers = (_json_dict(row[0]) if row else None) or {}
+            if said["answer"][1] is None:
+                answers.pop(key, None)
+            else:
+                answers[key] = said["answer"][1]
+            self._set_meta({AUDIOBOOK_ANSWERS: _dumps(answers), "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
+            cmd.feed([said["item"]])
+        else:
+            skipped.append(said["item"])
+    _o, more = self._undo_works(cmd, sub)
+    _o, again = self._replace(cmd, sub)
+    return skipped + [i for i in list(more) + list(again) if i not in skipped]
 
 
 # Kura-TX (B1; PROVISIONAL, the lead 2026-11-12 — Mattias's migrated books): a book 2.x split into `.txt` parts
@@ -14579,6 +15458,8 @@ def _store_pick_audiobook_book(self, item_id, epub, by="user", replace=False):
     with self._command("audiobook_pick", by) as cmd:
         rows = self._audiobook_rows(item_id)
         paired = (rows[0][2].get("audiobook") or {}).get("book") if rows else None
+        if isinstance(paired, dict) and not _same_epub(paired.get("epub"), epub) and self._book_gone(paired):
+            replace = True                       # Kura-AB5 (11-20 report): its book was removed — free, no *now with*
         if not rows or (isinstance(paired, dict) and (not replace or _same_epub(paired.get("epub"), epub))):
             return None
         picked = self._picked_book(epub, rows[0][2]["audiobook"], joined)
@@ -15029,6 +15910,7 @@ Store.audiobook_answers = _store_audiobook_answers
 Store.audiobook_asks = _store_audiobook_asks
 Store._audiobook_parts = _store_audiobook_parts
 Store._audiobook_place = _store_audiobook_place
+Store._book_gone = _store_book_gone
 Store.pair_audiobook = _store_pair_audiobook
 Store.answer_audiobook = _store_answer_audiobook
 Store.audiobooks_weighed = _store_audiobooks_weighed
@@ -15040,6 +15922,13 @@ Store.pick_audiobook_book = _store_pick_audiobook_book
 Store._picked_book = _store_picked_book
 Store.picked_for = _store_picked_for
 Store.book_audiobooks = _store_book_audiobooks
+Store.book_items = _store_book_items
+Store.new_version_of = _store_new_version_of
+Store.replace_book = _store_replace_book
+Store._epub_ids = _store_epub_ids
+Store._undo_replaced = _store_undo_replaced
+Store.replace_parts = _store_replace_parts
+Store._parts_place = _store_parts_place
 Store.split_book = _store_split_book
 Store.joined_book = _store_joined_book
 Store._undo_audiobook_pick = _store_undo_audiobook_pick
@@ -15155,7 +16044,7 @@ def repair_store(db_path, language, data_dir, user_files_dir, lock):
             item = {k: r.get(k) for k in ("id", "root_id", "rel_path", "rel_key", "tier", "size", "mtime_ns",
                                           "availability", "added_at", "graduated_at", "piece_id", "watched",
                                           "mined_at", "pinned", "in_learning_order", "changed_in", "work_id",
-                                          "mine_asked")}
+                                          "mine_asked", "watched_at") + PRESTUDIED_COLUMNS}
             item["entry"] = json.loads(r["entry"])
             image["items"].append(item)
     else:
@@ -15211,7 +16100,8 @@ RESET_WAIT = 2.0                  # s: another writer's commit is waited for thi
 # Emptied by the reset; `roots` stays (the folders he reads, their ids kept), and so does every exclusion but Remove's
 # — but never Connect's never-again sets (`made_words`, `made_lines`, G1.3-4: a word whose card he deleted is never made
 # again; item ids are never reused, so their stale ids meet no new item: I-R1 / LF-5)
-RESET_TABLES = ("anki_links", "pairings", "placement_log", "trash", "anki_changes", "gone", "items", "pieces", "works")
+RESET_TABLES = ("anki_links", "pairings", "placement_log", "trash", "anki_changes", "gone", "items", "pieces", "works",
+                GROWTH)          # Kura-GS: a fresh library's snapshots begin with it (`_reset_tables`' GROWTH_SINCE)
 # His library options (W-1's `keep_watched` too), and the log's numbering (+ readers)
 RESET_KEEP_META = ("mine_line", "arrivals_on", "keep_watched", "log_seq")
 # Why a reset is refused (nothing changed), in the window's words
@@ -15614,6 +16504,7 @@ def _reset_tables(store):
     for key in ("order_version", "availability_version", "pins_version"):
         meta[key] = int(old.get(key) or 0) + 1
     meta.update({k: v for k, v in old.items() if k in RESET_KEEP_META or k.startswith("reader")})
+    meta[GROWTH_SINCE] = _now()             # Kura-GS: what comes in from here is the fresh library's own
     store._set_meta(meta)
     _seed_schema2(store, meta["state_version"])         # the feed's floor and the search fold, as every build's
     _line_after_build(store)                            # nothing in Current: 25 (Q2-4)

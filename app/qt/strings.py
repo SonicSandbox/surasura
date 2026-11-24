@@ -119,6 +119,9 @@ ITEM_MENU = {
     "group": ("Group…", "Put these {n} into one row in Current\n• Undo takes them apart again"),
     # LM11b G3: on a group's ⋯ (IK-5), and *Same show as…* on a show's own row (IK-6)
     "rename": ("Rename…", "Give this group a name of its own (left empty, it is named after its shows again)"),
+    # Kura-AB5 (Sonic's yes, 11-20 report; PROVISIONAL words): a book's own name
+    "rename-book": ("Rename…", "Give this book a name of your own: search still finds it by its old one\n"
+                               "• Undo gives its old name back"),
     "ungroup": ("Ungroup", "Put each show back in a row of its own, where it is: nothing is lost\n"
                            "• Undo groups them again"),
     "same-show": ("Same show as…", "Make this part of another show: it and its new episodes go into that show "
@@ -143,6 +146,9 @@ ITEM_RENAME_BODY = "Leave it empty to name it after its shows again."
 ITEM_RENAME_YES = "Rename"
 ITEM_RENAME_YES_TIP = "Give the group this name"
 ITEM_RENAMED = "Renamed {title} to {name}"
+ITEM_RENAME_BOOK_ASK = "Rename this book"                       # Kura-AB5 (PROVISIONAL)
+ITEM_RENAME_BOOK_BODY = "Search still finds it by its old name."
+ITEM_RENAME_BOOK_YES_TIP = "Give the book this name"
 ITEM_RENAME_CLEARED = "{title} is named after its shows again"
 ITEM_SAME_SHOW_PICK = "{title} · {where}"
 ITEM_SAME_SHOW_PICK_TIP = "Make this part of {title} (asks first)"
@@ -181,6 +187,13 @@ ITEM_REMOVE_YES = "Remove {n} files"
 ITEM_REMOVE_YES_ONE = "Remove 1 file"
 ITEM_REMOVE_YES_TIP = "Remove it; files go to the trash for 30 days."
 ITEM_REMOVED = "{title} is in Removed for 30 days"     # Kantan-B4: + the toast's *Removed…*
+# Kura-AB5 (Sonic's yes, 11-20 report: a book in three rows took three Removes; PROVISIONAL words): the whole book
+ITEM_REMOVE_BOOK_ASK = "Remove 「{title}」?"
+ITEM_REMOVE_BOOK_BODY = "All its {n} parts go to the trash for 30 days. Undo puts them back where they were."
+ITEM_REMOVE_BOOK_YES = "Remove the whole book"
+ITEM_REMOVE_BOOK_YES_TIP = "Remove every part of it, in every row, as one: one Undo puts it all back"
+ITEM_REMOVE_BOOK_ONLY = "Only this row's {k} parts"
+ITEM_REMOVE_BOOK_ONLY_TIP = "Remove just the parts in this row; the rest of the book stays"
 SEAM_LABEL = "✂ Split here"
 SEAM_TIP = "✂ Split here\n• Click to make {rest} a part of its own"
 JOIN_LABEL = "Join as one show"                  # only after the hand holds on the part (`item_menu.JOIN_REST_MS`)
@@ -392,6 +405,12 @@ NEEDS_UPDATE_TITLE = "Install the update"
 NEEDS_UPDATE_LINE = "Surasura v{version} is ready to install"
 NEEDS_UPDATE_FAILED_TITLE = "The update didn't finish"
 UPDATED = "Updated to v{version} ✓"
+# The review loop's payoff (Kyou-LR; the WL mocks' 03-payoff-toast; PROVISIONAL): after a known-words sync that read
+# your moves in Anki — ✓ Known · ⇄ Swap · ✕ Ignore — once, with Undo (that sync's moves; your cards stay as they are)
+LOOP_PAYOFF = "From your phone: {known} known · {swap} to swap · {ignored} ignored"
+LOOP_PAYOFF_TIP = "Saved in Surasura: delete known and ignored cards in Anki freely."
+LOOP_UNDONE = "Put back: your phone's moves are undone"
+LOOP_UNDO_FAILED = "Couldn't undo your phone's moves just now."
 
 # Closing while an Anki write runs (E20: it finishes its batch first, and a line says so) — the bar's one line, and
 # the reason a job asked for meanwhile waits.
@@ -539,7 +558,11 @@ MINE_AGAIN_TIP = ("Make this episode's cards again: the words whose cards you de
                   "\n• Undo takes the ask back")
 MINE_AGAIN_ASKED = "{label}: mined again next · only the cards that aren't in Anki now"
 UNMINED_ENTRY = "Words it won't mine again…"
-UNMINED_ENTRY_TIP = "The words of this episode whose cards you deleted in Anki: allow one again"
+UNMINED_ENTRY_TIP = "This episode's words with no card: deleted, or ones it couldn't make"
+# Kantan-MA (a tester's report 2026-11-21: *Mine again* made no card and said nothing; PROVISIONAL words): the words of
+# an episode Connect couldn't make a card for, each with why (`ledger.left_of`)
+UNMINED_LEFT = "Not made from this episode"
+UNMINED_LEFT_LINE = "{word} · {why}"
 UNMINED_NAME = "Words Surasura won't mine again"
 UNMINED_LINE = "Cards you deleted in Anki. Surasura never makes these words again, unless you allow one."
 UNMINED_LINE_OF = "Cards of {label} you deleted in Anki. Surasura never makes these words again, unless you allow one."
@@ -632,7 +655,11 @@ WORDS_EPISODE_TITLE = "{title} · {ep}"
 WORDS_MENU = "Its words"
 WORDS_MENU_TIP = "The words you'll meet in it, kept open"
 # Kotoba-K: Known / Ignore on the kept card (leans PROVISIONAL)
-WORDS_MARK_GLYPH = {"known": "✓", "ignore": "⊘"}
+WORDS_MARK_GLYPH = {"known": "✓", "ignore": "⊘", "learning": "○"}     # Mado-LT: ○ Still learning (violet, accent-2)
+# Mado-LT (WL ⑦, PROVISIONAL): an In Anki word's lit ✓ cleared — the toast, its Undo the write's own
+WORDS_STILL_LEARNING = "{word}: still learning"
+WORDS_LEARNING_TIP = "Known through Anki\n• Click: still learning — you don't really know it yet"
+WORDS_STILL_LEARNING_TIP = "Surasura keeps it still learning until you Suspend + Mark its card again"
 WORDS_MARK_TIP = {"known": "Known: you know it\n• Leaves your list as known · click again to undo",
                   "ignore": "Ignore: not a word to learn (a name, a noise)\n• Leaves your list, never known · click "
                             "again to undo"}
@@ -793,6 +820,7 @@ DRAG_PLACED = "{title} placed at #{n}"
 DRAG_PLACED_MINES = "{title} placed at #{n} · it mines itself"
 DRAG_SOON = "{title} → Soon · #{n}, after the first {files} files"
 DRAG_SOON_NO_COUNT = "{title} → Soon · #{n}"
+DRAG_SOON_SHOW = "{title} → Soon · with its show"     # Kura-SO: once saved in its show's episode order (never "#n")
 DRAG_GOAL = "{title} moved to Goal · its cards keep their place"
 DRAG_FINISHED = "{title} finished · its cards stay put"
 DRAG_KEEP = "Keep"
@@ -917,8 +945,18 @@ TRAY_MENU = {
     "folder": ("Open its folder", "Show its files in Explorer"),
     "remove": ("Remove…", "Send its files to the trash (kept 30 days; Undo puts them back). Asks first"),
 }
+# Kura-AB5 (Sonic's yes, 11-20 report; PROVISIONAL words): a new version of a book here (the same folder and title)
+#   Kura-AB6 (Sonic 2026-11-20: keep the Finished parts and their dates, replace only the unread; PROVISIONAL words):
+#   the tip is TRAY_REPLACE[1] with {gone} (TRAY_REPLACE_GONE) and {kept} (TRAY_REPLACE_KEPT, "" when none) filled
+TRAY_REPLACE = ("Replace 「{old}」", "A new version of 「{old}」: it takes its name, its place and its audiobook"
+                                     "{gone}{kept}\n• Undo puts it all back")
+TRAY_REPLACE_GONE = {1: "\n• The old one's unread part goes to Removed for 30 days",
+                     0: "\n• The old one's {n} unread parts go to Removed for 30 days"}
+TRAY_REPLACE_KEPT = {1: "\n• The part you've read (Finished or ✓ Done) stays as it is, its date too",
+                     0: "\n• The {n} parts you've read (Finished or ✓ Done) stay as they are, their dates too"}
+TRAY_REPLACED = "The new version is 「{old}」 now · the old one's unread parts are in Removed for 30 days"
 TRAY_SORT_ALL = "Sort them all…"            # Mado-O: the sort screen, New arrivals' full view
-TRAY_SORT_ALL_TIP = ("Every new title large, one at a time: Current, Soon, Goal, Finished or Ignore, by a key each.\n"
+TRAY_SORT_ALL_TIP = ("Every new title large, one at a time: Current, Soon, Goal, Finished or Remove, by a key each.\n"
                      "• Anything you don't sort stays here")
 TRAY_PLACED = {
     "top": "{title} is at the top of Current",
@@ -950,7 +988,8 @@ TRAY_LOADING_TIP = "Arrivals are loading into the list; the first are here."
 TRAY_TITLES = "{n} titles"                            # the picks or a group, named in a toast or a drag
 TRAY_PICKS_MENU_NAME = "What you can do with the {n} picked"
 TRAY_PICKS_MENU = {
-    "top": ("Up next", "Put all {n} at the top of Current, in the tray's order"),
+    "top": ("Up next", "Put all {n} at the top of Current, in the tray's order\n• Episodes of a show already "
+                       "there join it in episode order"),                     # Kura-SO
     "soon": ("Soon", "Move all {n} to Soon, in the tray's order"),
     "goal": ("Goal", "Move all {n} to Goal"),
     "finished": ("Finished", "Record all {n} as finished: you've watched them already"),
@@ -967,10 +1006,15 @@ GOAL_TILE_MORE = "⋯"
 GOAL_TILE_MORE_NAME = "What you can do with {title}"
 GOAL_TILE_MORE_TIP = "What you can do with {title}: move, open its folder, remove (Enter)."
 GOAL_MENU_ITEMS = {
-    "top": ("Move to the top", "Bring {first} up to the top of Current; the rest stays in Goal"),
-    "top-all": ("Move to the top", "Bring it up to the top of Current"),
-    "soon": ("Move to Soon", "Bring {first} up to the top of Soon; the rest stays in Goal"),
-    "soon-all": ("Move to Soon", "Bring it up to the top of Soon"),
+    # Kura-SO (train 44's keeper, note 4): the top unless its show is there — then in episode order
+    "top": ("Move to the top", "Bring {first} up to the top of Current; the rest stays in Goal\n• An episode "
+                               "of a show already there joins it in episode order"),
+    "top-all": ("Move to the top", "Bring it up to the top of Current\n• An episode of a show already there "
+                                   "joins it in episode order"),
+    "soon": ("Move to Soon", "Bring {first} up to the top of Soon; the rest stays in Goal\n• An episode of a "
+                             "show already there joins it in episode order"),
+    "soon-all": ("Move to Soon", "Bring it up to the top of Soon\n• An episode of a show already there joins "
+                                 "it in episode order"),
     "finished": ("Move to Finished", "Move all of it to Finished: you're done with it"),
     "folder": ("Open its folder", "Show its files in File Explorer"),
     "remove": ("Remove…", "Send its {n} files to the trash (kept 30 days). You're asked first"),
@@ -982,6 +1026,9 @@ GOAL_UP_SHOW = "{title} {first} moved up from Goal · in Current with its show �
 GOAL_UP_ALL_SHOW = "{title} moved up from Goal · in Current with its show"
 GOAL_SOON = "{title} {first} → Soon · #{n} · the rest stays in Goal"
 GOAL_SOON_ALL = "{title} → Soon · #{n}"
+# Kura-SO (train 44's keeper, note 3): the same, once saved, when the store put it in its show's episode order there
+GOAL_SOON_SHOW = "{title} {first} → Soon · with its show · the rest stays in Goal"
+GOAL_SOON_ALL_SHOW = "{title} → Soon · with its show"
 GOAL_REMOVE_ASK = "Remove {title}?"
 GOAL_REMOVE_BODY = "Its {n} files go to the trash, kept for 30 days. Undo puts them back."
 GOAL_REMOVE_BODY_ONE = "Its file goes to the trash, kept for 30 days. Undo puts it back."
@@ -1288,8 +1335,6 @@ ANKI_SENTENCES = ("This field holds sentences: every word in it counts as known.
                   "{field}.")                                       # a9r2: a word field holding sentences (⭐ lead)
 ANKI_SENTENCES_PLAIN = ("This field holds sentences: every word in it counts as known. For the card's own word, choose "
                         "the field that holds it.")
-ANKI_SUSPENDED = "Include suspended cards"
-ANKI_SUSPENDED_TIP = "Studied-then-suspended cards count as known. Off by default."                                    # a7 (A7S-1/8): Settings' words
 ANKI_AUTO = "Sync automatically when Anki is running"
 ANKI_AUTO_TIP = "Adds new known words by itself when Anki is open."
 ANKI_GENERATE = "Generate when Anki adds known words"
@@ -1583,6 +1628,42 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "put_back_shelf": ("Put back", "Unsuspend them in Anki and take the surasura::shelf tag off: they wait with your "
                                    "new cards again"),
     "leave_shelf": ("Leave them", "They stay set aside, and this stops asking until more are set aside"),
+    # Kyou-SH2 (PROVISIONAL): Tidy, said
+    "undo_tidy": ("Undo", "Put those cards back in Anki from the copy Surasura kept, each in its own deck"),
+    "leave_tidy": ("OK", "They stay deleted; this goes until the next tidy"),
+    # Kyou-DW (PROVISIONAL): a deleted card asks why (WL-35's four chips); the old deletes, once
+    "dw_known": ("Known", "You know this word: it counts as known"),
+    "dw_ignore": ("Ignore", "Not a word to learn: it goes on your Ignore list"),
+    "dw_parsing": ("Parsing mistake", "Surasura cut this word wrong: it asks one more thing, the word or only this "
+                                      "sentence"),
+    "dw_bad": ("Bad card", "The word is fine, the card wasn't: a new card from another sentence"),
+    "dw_all_known": ("All known", "Every card here: you know their words"),
+    "dw_all_ignore": ("Ignore all", "Every card here: not words to learn"),
+    "dw_all_parsing": ("All parsing mistakes", "Every card here: cut wrong; it asks one more thing, for all of them"),
+    # Kyou-DW 3 (PROVISIONAL): Parsing mistake's follow-up — either way the sentence goes in Send report's list and is
+    # never used again; only *Only in this sentence* mines the word again
+    "dw_word_wrong": ("The word is wrong", "It's no word at all: it's ignored and never mined again; the sentence goes "
+                                           "in Send report's list for us"),
+    "dw_only_line": ("Only in this sentence", "The word is real, this sentence read it wrong: a new card from another "
+                                              "sentence; this one goes in Send report's list and is never used again"),
+    "dw_all_word_wrong": ("The words are wrong", "Every card here: no words at all; ignored, never mined again, their "
+                                                 "sentences in Send report's list"),
+    "dw_all_only_line": ("Only in these sentences", "Every card here: real words read wrong; new cards from other "
+                                                    "sentences, these in Send report's list and never used again"),
+    "dw_all_bad": ("All bad cards", "Every card here: a new card for each word from another sentence"),
+    "dw_leave": ("Leave them", "They stay deleted and are never made again; this card goes"),
+    "dw_forget": ("Forget", "Forget this delete: its card may be made again once the word is cut right"),
+    "dw_forget_all": ("Forget all", "Forget every delete here: their cards may be made again"),
+    "dw_keep_old": ("Keep them", "They all stay deleted; this card goes for good"),
+    # Kantan-SL (PROVISIONAL): Swap, said
+    "undo_swap": ("Undo", "Delete the new card (Surasura keeps a copy) and put the old card back in your reviews"),
+    "leave_swap": ("OK", "Keep the new card"),
+    "leave_swap_wait": ("OK", "They keep waiting for another sentence; this asks again for a new one"),
+    # FS-2 (PROVISIONAL): the full Swap, said — the same card
+    "undo_swap_same": ("Undo", "Put the old sentence, audio and picture back on the same card"),
+    "leave_swap_same": ("OK", "Keep the new sentence"),
+    # FS-2 2 (PROVISIONAL): *Bad card*'s swap — its old card was deleted
+    "undo_swap_deleted": ("Undo", "Delete the new card (Surasura keeps a copy); the old one stays deleted"),
     "open_logs": ("Open the logs folder",
     "Open the folder where Surasura keeps its logs, to look at them or send them"),
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
@@ -1701,6 +1782,50 @@ NEEDS_CARDS_LEFT = "Left where they are · Surasura's new cards still go to its 
 NEEDS_SHELF_BACK = "Put back · they wait with your new cards again"        # Kyou-SH (PROVISIONAL)
 NEEDS_SHELF_NOT_BACK = "Not put back: {why}"
 NEEDS_SHELF_LEFT = "Left set aside · one comes back by itself when its word comes up"
+NEEDS_TIDY_BACK = "Put back · {n} cards are in Anki again"                    # Kyou-SH2 (PROVISIONAL)
+NEEDS_TIDY_BACK_ONE = "Put back · the card is in Anki again"
+NEEDS_TIDY_NOT_BACK = "Not put back: {why}"
+NEEDS_TIDY_LEFT = "OK · they stay deleted; a word made again if it climbs back"
+NEEDS_TIDY_SKIPPED = " · {k} left out: their words have new cards"           # Kyou-SH3 (PROVISIONAL, F5)
+NEEDS_TIDY_SKIPPED_ONE = " · 1 left out: its word has a new card"
+NEEDS_TIDY_UNSAVED_LEFT = "OK · nothing was deleted"                           # Kyou-SH3 (PROVISIONAL, F4)
+# Kyou-DW (PROVISIONAL): a deleted card's answer, said (each with Undo in its toast)
+NEEDS_ABOUT_NAME = "About {title}"
+NEEDS_DELETED_DONE_ONE = {
+    "known": "「{word}」 is known",
+    "ignore": "「{word}」 is ignored",
+    "parsing": "「{word}」 is ignored · its sentence is in Send report's list",
+    "bad": "A new card for 「{word}」 from another sentence is on its way",
+    "line": "A new card for 「{word}」 from another sentence is on its way · this one is in Send report's list",
+}
+NEEDS_DELETED_DONE = {
+    "known": "{n} words are known",
+    "ignore": "{n} words are ignored",
+    "parsing": "{n} words are ignored · their sentences are in Send report's list",
+    "bad": "New cards for {n} words from other sentences are on their way",
+    "line": "New cards for {n} words from other sentences are on their way · these are in Send report's list",
+}
+NEEDS_DELETED_NONE = "nothing to change"
+NEEDS_DELETED_NOT = "Nothing changed: {why}"
+NEEDS_DELETED_SKIPPED_ONE = " · 「{word}」 left: {why}"
+NEEDS_DELETED_SKIPPED = " · {n} left as they were"
+NEEDS_DELETED_UNFLAGGED = " · Send report's list is full, so a sentence wasn't added"
+NEEDS_DELETED_UNDONE = "Undone · asked again"
+NEEDS_DELETED_NOT_UNDONE = "Not undone: {why}"
+NEEDS_DELETED_LEFT = "OK · they stay deleted"
+NEEDS_FORGOT_ONE = "「{word}」 forgotten · its card may be made again"
+NEEDS_FORGOT = "{n} deletes forgotten · their cards may be made again"
+NEEDS_FORGET_REFUSED = "Your library can't be changed just now · try again in a moment"
+NEEDS_OLD_KEPT = "OK · they all stay deleted"
+NEEDS_SWAP_UNDONE = "Undone · the new card is gone and the old one is back in your reviews"     # Kantan-SL (PROVISIONAL)
+NEEDS_SWAP_NOT_UNDONE = "Not undone: {why}"
+NEEDS_SWAP_LEFT = "OK · the new card stays"
+NEEDS_SWAP_WAIT_LEFT = "OK · they wait for another sentence"
+NEEDS_SWAP_SAME_UNDONE = "Undone · the card has its old sentence back"                      # FS-2 (PROVISIONAL)
+NEEDS_SWAP_SAME_LEFT = "OK · the new sentence stays"
+NEEDS_SWAP_DELETED_UNDONE = "Undone · the new card is gone; the old one stays deleted"            # FS-2 2 (PROVISIONAL)
+# FS-2, decision 11 (PROVISIONAL): after *Bad card*, while Swap gives the same card — a deleted card's reviews are gone
+NEEDS_BAD_CARD_FLAG = " · Next time, flag it instead: the same card keeps its reviews"
 NEEDS_SHOWS_NOT_ADDED = "Nothing was added: your library can't be changed just now · try again in a moment"
 NEEDS_FIRST_CARDS_AUTOMATION_OFF = "automatic actions are off in Settings; turn them on, then ask again"
 NEEDS_ITS_NEW = "{name} joins your library as a new file"
@@ -1729,11 +1854,21 @@ NEEDS_AUDIOBOOK_FOLDER = "A folder on your computer…"
 NEEDS_AUDIOBOOK_FOLDER_TIP = ("Its folder joins your library's folders, and the audiobook in it joins this book "
                               "(of several, the one named like it)")         # Kura-AB4 (PROVISIONAL)
 NEEDS_AUDIOBOOK_FOLDER_TITLE = "The folder of 「{book}」's audiobook"
+NEEDS_AUDIOBOOK_FILE = "An audio file on your computer…"       # Kura-AB5 (Sonic's yes, 11-20 report; PROVISIONAL words)
+NEEDS_AUDIOBOOK_FILE_TIP = ("The audiobook that file belongs to joins this book — the one exact pick when a folder "
+                            "holds several audiobooks")
+NEEDS_AUDIOBOOK_FILE_TITLE = "An audio file of 「{book}」's audiobook"
 NEEDS_AUDIOBOOK_READING = "Reading {name} for 「{book}」's audiobook…"
 # Kura-AB4 (PROVISIONAL): what the folder picked for a book's audiobook held, once it was read
 NEEDS_AUDIOBOOK_WITH = ("The audiobook in {name} is with 「{other}」: pick it for 「{book}」 under Pick its "
                         "audiobook…")
 NEEDS_AUDIOBOOK_NONE_IN = "No audiobook in {name} yet: once one is there, it joins 「{book}」"
+# Kura-AB5 (11-20 report; PROVISIONAL): the folder's audiobooks are with books of other titles — named, never "none"
+NEEDS_AUDIOBOOK_OTHER = ("The audiobook in {name} is with 「{other}」: to give it to 「{book}」, pick one of its files "
+                         "under Pick its audiobook… → An audio file…")
+NEEDS_AUDIOBOOK_OTHERS = ("{n} audiobooks in {name} are with other books: pick one of 「{book}」's files under Pick its "
+                          "audiobook… → An audio file…")
+NEEDS_AUDIOBOOK_FILE_NONE = "{name} isn't part of an audiobook Surasura can read (20 minutes of audio or more)"
 NEEDS_AUDIOBOOK_SEVERAL_IN = ("{n} audiobooks in {name}: pick 「{book}」's under Pick its audiobook… (or the book's "
                               "⋯ → Its audiobook…)")
 # Kura-AB4 (PROVISIONAL): + Add → A folder…, an audiobook in it whose names are like a book's (H-8's question open)
@@ -2062,7 +2197,8 @@ REMOVED_BROUGHT_BACK_ONE = "A removed file of {name} is back in your library"
 PICKS_TITLES = "{n} titles"                           # the picks named in a toast, the drag's card and the question
 PICKS_MENU_NAME = "What you can do with the {n} picked"
 PICKS_MENU = {
-    "top": ("Up next", "Put all {n} at the top of Current, in the list's order"),
+    "top": ("Up next", "Put all {n} at the top of Current, in the list's order\n• Episodes of a show already "
+                       "there join it in episode order"),                     # Kura-SO
     "soon": ("Soon", "Move all {n} to Soon, in the list's order"),
     "goal": ("Goal", "Move all {n} to Goal"),
     "finished": ("Finished", "Move all {n} to Finished: you're done with them\n• Then choose whether their new cards "
@@ -2135,7 +2271,7 @@ HELP_CARDS = {
 }
 HELP_ALSO = {
     "current": "Its cards wait while Anki is closed",
-    "cards": "Stops when: Anki closed · day's limit · Stop · row below line.",
+    "cards": "Stops when: Anki closed · Surasura closed · day's limit · Stop · row below line.",
     "finished": "Finishing never marks a word known",
     "moving": "Undo: the toast's Undo, or Ctrl+Z",
     "arrivals": "A show's next episode joins it by itself",
@@ -2169,8 +2305,6 @@ HELP_SETTINGS = "Open its settings"
 HELP_SETTINGS_TIP = "Settings, at this part"
 HELP_ALL = "All help"
 HELP_ALL_TIP = "Every help card, by area"
-HELP_TOUR = "What runs by itself"
-HELP_TOUR_TIP = "A short tour: each thing Surasura does by itself, one card each"
 HELP_GUIDE = "Online guide"
 HELP_GUIDE_TIP = "The guide on GitHub, in your browser"
 HELP_CLOSE = "Close"
@@ -2240,33 +2374,41 @@ GUIDE_SHOW_ME_TIP = "Where to try it\n• Click: go there, lit up"
 GUIDE_SHOW_ME_NAME = "Show me: {text}"
 GUIDE_NOT_HERE = "That isn't on this screen right now."
 # --- end the feature guide
-# --- the feature guide's path (Hoshi-S PR 2, Kantan-X's model; app/qt/next_card.py, app/qt/guide.py — PROVISIONAL)
-GUIDE_TIP_PATH = "What's new, and your path\n• Click: open them"
-GUIDE_TAB_NEWS = "What's new"
-GUIDE_TAB_NEWS_TIP = "This update's changes, yours first"
-GUIDE_TAB_PATH = "Your path"
-GUIDE_TAB_PATH_TIP = "The steps to your first cards, and what's worth trying next"
-PATH_CHAPTERS = {"first": "YOUR FIRST CARDS", "ready": "WHEN YOU'RE READY"}
-PATH_DONE = "✓ DONE"
+# --- the feature guide's path (Hoshi-S PR 2, Kantan-X's model; Mado-EZP's four stages, SPEC-r2 EZ2-1 / §0.2: every
+# step acts from its own card; app/qt/next_card.py, app/qt/guide.py — every word PROVISIONAL)
+GUIDE_TIP_PATH = "Your path, and what's new\n• Click: open them"
+GUIDE_PATH_HEADING = "Your path"
+GUIDE_PATH_NAME = "Your path, and what's new"
+PATH_STAGES = {"board": "On board", "episode": "First episode", "automate": "Automate", "yours": "Make it yours"}
+PATH_STAGE_NAME = "{stage}: {state}"                # a stone of the string, for screen readers
+PATH_STAGE_STATES = {"done": "done", "now": "now", "later": "later"}
+PATH_STRING_NAME = "Your path: {stages}"
+PATH_NOW = "TO DO · {stage}"                         # the panel's one list: the stage to do now (never "NOW":
+PATH_NOW_LATER = "TO DO"                             # 2.x's tier word) … (every stage done: later steps useful now)
+PATH_NEWS = "NEW FOR YOU · {version}"                # … this update's notes …
+PATH_LATER = "LATER ON YOUR PATH"                    # … the later stages, and steps that can't apply yet …
+PATH_DONE = "DONE"                                   # … and what's done, to do again
 PATH_TICK = "✓"
-PATH_COUNT = "{n} OF {total}"
 PATH_TICK_NAME = "{title}: done"
 PATH_OPEN_NAME = "{title}: not done yet"
+PATH_DO = "Do it"                                    # a step's own press, in the panel
+PATH_DO_NAME = "{press}: {title}"                    # … for screen readers
+PATH_AGAIN = "Again"                                 # … a done step's, to do it again
 # Kantan-S2 (Sonic 2026-11-13: past steps to try again, steps that can't apply now; no subtitles — a step's line is
 # behind its ?; every word PROVISIONAL)
 PATH_ABOUT_NAME = "About {title}"                    # a step's ? (its line), for screen readers
-PATH_AGAIN_TIP = "Done. Do it again any time\n• Click: go there, lit up"
-PATH_SHOW_ME_TIPS = {    # a step whose own press is elsewhere than where Show me lands: its tip names it (S2 r1 #4)
-    "audiobook": "On Current: the book's ⋯ → Its audiobook…\n• Click: go there.",
-}
-PATH_THEN = {            # said in the bar once Show me lands, where the step's own press is elsewhere (S2 r2 #1)
+PATH_THEN = {            # said in the bar once a press lands where the step's own press is elsewhere (S2 r2 #1)
     "audiobook": "Open the book's ⋯ → Its audiobook… to line it up",
 }
-PATH_LATER = "NOT YET"                               # chapter 2's steps that can't apply yet
 PATH_LATER_NAME = "{title}: not yet. {when}"
-PATH_WHEN = {            # id -> when a later step applies (its ? while it can't yet)
+PATH_WHEN = {            # id -> when a step applies (its ? while it can't yet)
+    "words": "Once your journey is made",
+    "watch": "Once a show is in your library",
+    "cards": "Once a show is in your library",
     "junban": "Once Anki is connected and has your cards",
     "backfill": "Once you have cards in Anki",
+    "loop": "Once your cards are in Anki and synced",
+    "yours": "Once your first cards are made",
     "audiobook": "Once a book is in Current",
     "hato": "Once a new episode waits for its subtitles",
     "piyo": "Once three episodes are Done",
@@ -2274,26 +2416,64 @@ PATH_WHEN = {            # id -> when a later step applies (its ? while it can't
 PATH_STEPS = {           # id -> (title, the line behind its ?)
     "words": ("See the words before you watch", "Open them, each with a line from the episode."),
     "watch": ("Watch it, then press Done", "Its words count as seen, and the next episode moves up."),
-    "cards": ("Get cards made for you", "Anki Miner makes a card for each new word: the line, its audio and a picture. "
+    "cards": ("Cards made for you", "Anki Miner makes a card for each new word: the line, its audio and a picture. "
               "It's free and needs Anki open."),
     "junban": ("Put Anki's new cards in your order", "順 orders them by how often your shows use each word."),
     "backfill": ("Let your cards show how each word is used",
                  "Your cards can carry the word's usual patterns (パターン) and more lines from your shows (例文)."),
+    # Mado-LT (WL-9, PROVISIONAL words): the ? line is the loop's sheet — one line, the moves by what you do
+    "loop": ("Tell Surasura from your phone", "In Anki, suspend a card and mark it, or flag it: Surasura follows at the "
+             "next sync. Once synced, delete freely."),
+    "yours": ("Pick which words get a card", "Which words Anki Miner makes cards from: its choice in Settings."),
     "audiobook": ("Line up a book with its audiobook",
     "Its cards get the narrator's voice: the book's ⋯ → Its audiobook…"),
     "hato": ("Get subtitles for a video that has none", "hato finds them, on your yes."),
     "piyo": ("Practise your words with your AI", "Piyo ぴよ chats with you using the words you're learning."),
 }
+# each step's own press (§0.2: it does the step, from the card or the panel) -> (words, its hover)
+PATH_PRESS = {
+    "words": ("Open {ep}'s words ↗", "Your journey, in the browser, on this episode\n• Click: open it"),
+    "words-any": ("Open your words ↗", "Your journey, in the browser\n• Click: open it"),
+    "watch": ("▶ Watch {ep}", "Plays it, as Up Next's ▶ does\n• Click: play it"),
+    "done": ("✓ Done", "Watched it: its words count as seen\n• Click: mark it Done, as Up Next's Done does"),
+    "mine": ("Make {title}'s cards", "Anki Miner makes this episode's cards now (Undo in its toast)\n• Click: start"),
+    "mine-any": ("Make your top episode's cards", "Anki Miner makes the top episode's cards now (Undo in its toast)\n"
+                                                   "• Click: start"),
+    "cards-on": ("Turn on cards made for you", "Anki Miner makes cards for your top episodes, by itself\n"
+                                               "• Click: turn it on"),
+    "automation": ("Let things run by themselves", "Cards are made only while Run things by themselves is on\n"
+                                                   "• Click: its switch in Settings"),
+    "miner": ("Set up Anki Miner", "Anki Miner makes your cards. It's free\n• Click: set it up, here"),
+    "junban": ("Preview my deck", "順's window: today's order beside yours, before anything moves\n• Click: open it"),
+    "junban-again": ("See what it did", "順's window: its last run, with Undo\n• Click: open it"),
+    "backfill": ("Preview", "Backfill's window: what it would fill, before anything is written\n• Click: open it"),
+    "loop": ("See your moves", "What Suspend + Mark and each flag mean\n• Click: its place in Settings"),
+    "yours": ("Pick your cards", "Which words get a card\n• Click: its choice in Settings"),
+    "audiobook": ("Go to your book", "On Current: the book's ⋯ → Its audiobook…\n• Click: go there"),
+    "hato": ("Set up hato", "hato finds subtitles on your yes\n• Click: its place in Settings"),
+    "piyo": ("Set up Piyo", "Piyo chats with your AI using your words\n• Click: its place in Settings"),
+}
+PATH_DO_TIPS = {         # a step's *Do it* in the panel -> what its press does
+    "words": "Opens your journey on Up Next's episode\n• Click: open it",
+    "watch": "Plays Up Next's episode\n• Click: play it",
+    "cards": "Makes the top episode's cards (or sets Anki Miner up first)\n• Click: do it",
+    "junban": "Opens 順's window: your deck's order, before anything moves\n• Click: open it",
+    "backfill": "Opens Backfill's window: what it would fill, before anything is written\n• Click: open it",
+    "loop": "What Suspend + Mark and each flag mean\n• Click: its place in Settings",
+    "yours": "Which words get a card\n• Click: its choice in Settings",
+    "audiobook": "On Current: the book's ⋯ → Its audiobook…\n• Click: go there",
+    "hato": "hato finds subtitles on your yes\n• Click: its place in Settings",
+    "piyo": "Piyo chats with your AI using your words\n• Click: its place in Settings",
+}
+PATH_NO_EPISODE = "No episode is up next yet."       # the bar, when a step's press needs Up Next's episode
 NEXT_NAME = "Your next step"
 NEXT_ABOUT_NAME = "About this step"                  # the card's ? (its line), for screen readers
-NEXT_FIRST = "NEXT · {n} of {total} to your first cards"
+NEXT_STAGE = "NEXT · {stage}"                        # the eyebrow over the four stones
 NEXT_READY = "NEW FOR YOU"
 NEXT_SHOW_ME = "Show me"
-NEXT_SHOW_ME_TIP = "Where to do it\n• Click: go there, lit up"
+NEXT_SHOW_ME_TIP = "Where this press also lives, for next time\n• Click: light it up (nothing is pressed)"
 NEXT_NOT_NOW = "Not now"
 NEXT_NOT_NOW_TIP = "Set this step aside\n• It stays in ✦ → Your path"
-NEXT_SET_UP_MINER = "Set up Anki Miner"
-NEXT_SET_UP_MINER_TIP = "Anki Miner makes your cards\n• Click: its place in Settings"
 NEXT_OWN_CARDS = "I make my own cards"
 NEXT_OWN_CARDS_TIP = "You mine cards by hand\n• Click: this step counts as done"
 NEXT_MADE = "✓ YOUR FIRST CARDS ARE MADE"
@@ -2302,3 +2482,29 @@ NEXT_MADE_LINE = "From here, Surasura shows a next step only when one becomes us
 NEXT_OK = "OK"
 NEXT_OK_TIP = "Put this card away"
 # --- end the feature guide's path
+# --- the flagged sentences in Send report (journey v3 SPEC §4, J-FLAGS; words PROVISIONAL)
+REPORT_FLAGS_ONE = "1 sentence you flagged goes with your next report."
+REPORT_FLAGS_N = "{n} sentences you flagged go with your next report."
+REPORT_FLAGS_LINE_TIP = "Sentences you flagged on your journey page\n• Send report shows each one before it goes"
+REPORT_FLAGS_HEADING = "Sentences you flagged: untick one to leave it out of this report"
+REPORT_FLAGS_TIP = ("Each ticked sentence goes with this report\n• Click or Space: tick or untick\n"
+                    "• Unticked: left out this time, still flagged for your next report")
+REPORT_FLAGS_NAME = "Sentences you flagged"
+REPORT_FLAG_REASONS = {"parsing": "Parsing looks wrong", "too_long": "Too long", "bad_audio": "Bad audio",
+                       "wrong_sentence": "Wrong sentence for this word", "other": "Other"}
+REPORT_FLAG_NOTE = "Note: {note}"
+REPORT_FLAG_SPLIT = "Surasura read it as: {split}"
+REPORT_FLAG_ROW_NAME = "{state}: {line}"           # a line, for screen readers
+REPORT_FLAG_TICKED = "Goes"
+REPORT_FLAG_UNTICKED = "Left out"
+REPORT_FLAGS_NONE_TIP = "Nothing is ticked and no report is saved, so there's nothing to send"
+# --- end the flagged sentences in Send report
+
+# --- J-STONES (3.0.19; journey v3 SPEC §2.4): pre-studied on the window's stones, and *1 card* (the plural fix)
+ROWS_STONE_STATE_ONE = " · 1 card in Anki"                 # `ROWS_STONE_STATE["raw"]` for one card: never *1 cards*
+ROWS_STONE_PRE = "\n✧ Pre-studied on {date}"              # a stone's tip: its words gone through before it was watched
+ROWS_STONE_PRE_NAMES = "✧ Pre-studied: {names}"            # a cut group's, the ore's or a Finished row's hover
+ROWS_STONE_PRE_JOIN = " · "
+ROWS_STONE_PRE_MORE = " …"                                 # past ROWS_STONE_PRE_SHOWN names
+ROWS_STONE_PRE_SHOWN = 6
+# --- end J-STONES

@@ -38,8 +38,9 @@ import unicodedata
 from collections import namedtuple
 from collections.abc import Mapping
 
-from app import settings_manager
+from app import plan_rules, settings_manager
 from app.connect import settings_values
+from app.connect import known_signal, review_loop
 from app.qt import settings_strings as S
 from app.services import tools_found
 
@@ -50,8 +51,8 @@ Row = namedtuple("Row",
 MODULES = ("modules.junban", "modules.koe", "modules.youtube_downloader", "modules.irodori")
 LANGUAGES = ("ja", "zh")
 PER_LANGUAGE = ("connect_backlog_cap", "connect_video_folders")
-SYNC_SUSPENDED = "anki_sync_include_suspended"      # a9.1: also written by *Count as known in Anki* (`_wanted`)
 CHOSEN = "known_from_anki_chosen"                    # Kantan-B3: written beside its pick (`change`)
+SWAP_CHOSEN = "swap_in_place_chosen"                 # FS-2: written beside *Swap gives*' pick (`change`)
 
 # Fine-tune's three heads (Mado-EZA: EZ-4, SPEC-r2 §0.5; PROVISIONAL): the sections under Cards · Library · App, in the
 # page's order — Your setup above them all (Essentials takes it later); Connections under App until Tools takes it
@@ -95,6 +96,7 @@ FILLED_BY = {
     "keep_watched": _STORE,                     # --- W-1: the library's *Keep studying watched episodes*
     "new_cards_from": _STORE,                   # --- Kyou-A: the library's *Learn two shows at once* (Mado-PZ2)
     "remove_downloaded_covers": _LIVE,          # --- W3.2 L3
+    "connect_tidy": _LIVE,                      # --- Kyou-SH2: *Tidy now*
     "practice_ai": _LIVE,                       # --- A6: the practice server's setup, one Copy per AI app
     "ai_audio": "modules.irodori.qt_settings",  # --- Iro-AA: the AI voice's beta (its switch, Install, Remove)
 }
@@ -164,8 +166,8 @@ _JUNBAN_ON = _all(_JUNBAN, _on("enable_junban"))
 
 
 def _first_applies(settings, language, ctx):
-    """Q31: whether *Idioms and set phrases* and *i+1 first* take part in Junban's reorder — Junban's own rule
-    (`reposition.first_applies`, the one its run asks: Japanese, "After it" or "Mixed in", no *Only words marked*
+    """Q31: whether *Idioms and set phrases* takes part in Junban's reorder — Junban's own rule
+    (`reposition.first_applies`, the one its run asks: Japanese, no *Only words marked*
     pick); Junban absent or failing: never (the rows hide)."""
     try:
         from modules.junban.reposition import first_applies
@@ -175,6 +177,28 @@ def _first_applies(settings, language, ctx):
 
 
 _JUNBAN_FIRST = _all(_JUNBAN_ON, _first_applies)
+
+
+def _off_list(settings):
+    """Kyou-MO: the switch for your own cards not on the list as Junban reads it (`unlisted.choice`: 3.0.17's keys
+    while it is unset); "leave" when Junban is absent or failing."""
+    try:
+        from modules.junban import unlisted
+        return unlisted.choice(settings)
+    except Exception:
+        return "leave"
+
+
+def _aside(settings, language, ctx):
+    return _off_list(settings) == "aside"
+
+
+ASIDE_TICKS = ("junban_later_flag", "junban_later_suspend")
+
+
+def _off_list_set(settings):
+    """Has the learner (or setup) written the switch itself? Unset, `unlisted.choice` reads 3.0.17's keys."""
+    return str(value_of(settings, "junban_off_list") or "").strip().lower() in ("leave", "back", "aside")
 _CONNECT = _on("connect_enabled")
 _KOE = _all(_module("modules.koe"), lambda settings, language, ctx: "koe_revealed" in ctx)
 _YOUTUBE = _module("modules.youtube_downloader")
@@ -192,14 +216,24 @@ def _update_check(settings, language, ctx):
     return settings_manager.update_check_on(settings)
 
 
-def _signal(settings, language, ctx):
-    """Whether Known from Anki runs (`settings_manager.connect_on`, the one rule it obeys): *Count as known in Anki*
-    shows, and writes the sync's switch, only then (a9.1)."""
-    return settings_manager.connect_on(settings)
-
-
 def _needs_miner(settings, language, ctx):
     return "looked" in ctx and not _connect_switch(settings, language, ctx)
+
+
+# --- the review loop's moves (Mado-LT) ------------------------------------------------------------------------------ #
+MOVE_FLAGS = tuple(range(1, 8))             # Anki's flags 1 … 7 (red, orange, green, blue, pink, turquoise, purple)
+MOVE_ROWS = ("known_from_anki", "loop_swap_flag", "loop_ignore_flag")     # the three move cards, in order
+
+
+def taken_flags(row, settings):
+    """The picks `row` can't take now: the flags the other moves hold (as the reader reads them, `move_flags`) —
+    Known's as its terms ("flag:3"), Swap's and Ignore's as numbers."""
+    flags = review_loop.move_flags(settings)
+    known = set(known_signal.terms(settings))
+    if row.id == "known_from_anki":
+        return {f"flag:{n}" for n in flags.values()}
+    other = flags[review_loop.IGNORE if row.id == "loop_swap_flag" else review_loop.SWAP]
+    return {other} | {int(t[5:]) for t in known if t.startswith("flag:")}
 
 
 # --- the rows ------------------------------------------------------------------------------------------------------ #
@@ -226,14 +260,6 @@ ROWS = (
     _row("anki_auto_generate", "known", "toggle", ("anki_auto_generate",), sub=True, when=_road("anki")),
     _row("known_import", "known", "door", sub=True, when=_road("import"), door=("migaku", "jiten", "apkg_known")),
     _row("words_to_leave_out", "known", "door", door=("word-lists",)),
-    # a9.1 (Sonic: "anything redundant we don't want"): one question, one row — the sync's switch while Known from
-    # Anki can't run, Connect's *Count as known in Anki* while it can (`_signal`: Make cards for me and Automation on;
-    # it reads every suspended card, new ones too); each key keeps its meaning — unpicking Suspended there turns the
-    # sync's off too (`_wanted`), and its line says when the sync's still counts more than it shows (`help_line`)
-    _row("anki_sync_include_suspended", "known", "toggle", ("anki_sync_include_suspended",), adv=True,
-         group="counts_as_known", when=lambda settings, language, ctx: not _signal(settings, language, ctx)),
-    _row("known_from_anki", "known", "tablets", ("known_from_anki",), adv=True,
-         group="counts_as_known", options=tuple(term for term, _label in settings_values.KNOWN), when=_signal),
 
     # Anki & mining
     _row("anki_connection", "anki", "status"),
@@ -241,19 +267,39 @@ ROWS = (
     _row("new_cards_from", "anki", "custom"),          # Kyou-A: the library's option, a switch the store draws
     _row("connect_enabled", "anki", "custom", ("connect_enabled",), when=_connect_switch),  # P5: Connect's switch
     _row("connect_needs_miner", "anki", "status", when=_needs_miner),                        # row 13: until it's found
-    _row("connect_mine_words", "anki", "cards", ("connect_mine_words",), options=("list", "unknown", "i1"),
-         group="from_library", when=_CONNECT),
-    _row("mine_line", "anki", "custom", when=_CONNECT),                                     # P6: the store's line
+    _row("mine_line", "anki", "custom", when=_CONNECT, group="from_library"),               # P6: the store's line
     _row("connect_send_grammar", "anki", "toggle", ("connect_send_grammar",), when=_CONNECT),
+    # Kantan-SD (the mining model's sentence dial; PROVISIONAL words): which sentence each card is cut from
+    _row("connect_sentence_dial", "anki", "choice", ("connect_sentence_dial",), options=("best", "nearest"),
+         when=_CONNECT),
     # Zh-C (CLAUDE.md §1): Chinese cards' word audio — the word sent to Google — only while this is on
     _row("connect_zh_word_audio", "anki", "toggle", ("connect_zh_word_audio",), when=_all(_CONNECT, _zh)),
     _row("connect_open_anki", "anki", "choice", ("connect_open_anki",), options=(False, True), when=_CONNECT),
     _row("connect_backlog_cap", "anki", "number", ("connect_backlog_cap",), when=_CONNECT, bounds=(0, 5000)),
+    _row("connect_tidy", "anki", "action", sub=True, when=_CONNECT),        # Kyou-SH2: *Tidy now* (PROVISIONAL)
     _row("connect_trust_timing", "anki", "toggle", ("connect_trust_timing",), when=_CONNECT),
+    # Mado-LT (3.0.18; WL mock 04, PROVISIONAL words): *Your daily loop* — the three moves, one formula each: the move =
+    # what you do to its card in Anki. Known is *Count as known in Anki* (Kotoba-WS2: *Count suspended cards as known*
+    # folded in; one key, always shown — with Make cards for me and Automation on, Connect's signal reads every card in
+    # the picked states, off the known-words sync reads the studied ones, `anki_sync.counted_suspended`), moved here
+    # from Known words' More options (one home). Swap and Ignore: a suspended card's flag, read only while Connect is
+    # on (`anki_sync.read_known_signal`); a flag one move holds is never another's pick (`options`), and the reader
+    # decides what a clash means (`review_loop.move_flags`)
+    _row("known_from_anki", "anki", "tablets", ("known_from_anki",), group="loop",
+         options=tuple(term for term, _label in settings_values.KNOWN)),
+    _row("loop_swap_flag", "anki", "select", ("loop_swap_flag",), options=MOVE_FLAGS, when=_CONNECT),
+    # FS-2 (the full Swap, SCOPE § 4; PROVISIONAL words): what Swap gives the card — Swap's own setting (ROLES.md),
+    # under its flag: *Same card, new sentence* rewrites it in place, *A new card* is the simple Swap
+    _row("swap_in_place", "anki", "choice", ("swap_in_place",), options=(True, False), sub=True, when=_CONNECT),
+    _row("loop_ignore_flag", "anki", "select", ("loop_ignore_flag",), options=MOVE_FLAGS, when=_CONNECT),
     # Kantan-B2 (PROVISIONAL): the words whose cards you deleted in Anki, never made again — each with *Allow again*
     _row("unmined_words", "anki", "door", when=_CONNECT, door=("unmined-words",)),
     # Michi-T1 (Sonic 2026-11-17; PROVISIONAL words): every episode's audio heard before its cards, under More options
     _row("connect_spot_every_episode", "anki", "toggle", ("connect_spot_every_episode",), adv=True, when=_CONNECT),
+    # Kantan-MO (the mining model, PROVISIONAL words): your level decides which words get cards; this makes cards for
+    # every new word of an episode, past your level too (they count toward *Keep up to*) — *Words to make cards from*
+    # retired
+    _row("connect_every_word", "anki", "toggle", ("connect_every_word",), adv=True, when=_CONNECT),
     # Michi-LP (PROVISIONAL words): how many clips Anki Miner cuts at once — Automatic (this PC's number), or yours
     _row("connect_clip_cuts", "anki", "select", ("connect_clip_cuts",), options=("auto", 1, 2, 3, 4, 5, 6), adv=True,
          when=_CONNECT),
@@ -262,7 +308,10 @@ ROWS = (
     _row("junban_order_all", "anki", "choice", ("junban_order_all",), options=(False, True), group="in_anki",
          when=_all(_CONNECT, _JUNBAN)),
     _row("junban_own_tag", "anki", "text", ("junban_own_tag",), sub=True, when=_all(_CONNECT, _JUNBAN)),
-    _row("anki_sync_delay_min", "anki", "choice", ("anki_sync_delay_min",), adv=True, group="anki"),
+    # Mado-LT 4: a list, not three side by side — its longest words, and a held fourth (順's *5 minutes after*), set
+    # side by side at Large text were wider than a small window's page: opening the fold widened the page past its
+    # view (its right edge cut off) and laid and painted it all again
+    _row("anki_sync_delay_min", "anki", "select", ("anki_sync_delay_min",), adv=True, group="anki"),
     _row("automation", "anki", "toggle", ("logic.automation",), adv=True),
     _row("journey_settle_s", "anki", "number", ("journey_settle_s",), adv=True, bounds=(0, None)),
     _row("journey_settle_battery_s", "anki", "number", ("journey_settle_battery_s",), adv=True, bounds=(0, None)),
@@ -276,15 +325,15 @@ ROWS = (
     # a9.1: Junban's window has one door, here (it held *Preview order* on a row of its own too)
     _row("junban_scope", "junban", "choice", ("junban_scope",), options=("deck", "all"), when=_JUNBAN_ON,
          door=("junban",), reaches=("junban_deck", "junban_word_fields")),
-    _row("junban_order", "junban", "choice", ("junban_order",), options=("content", "priority"), when=_JUNBAN_ON),
-    _row("junban_unlisted", "junban", "choice", ("junban_unlisted",), options=("list_first", "journey", "back"),
-         when=_JUNBAN_ON),
-    # Q31: two switches that work together, never a pick-one row (Japanese only; nothing to do at the back)
+    # Q31 (Japanese only); the unlocking word first is no switch since the mining model (Kyou-MO: always)
     _row("junban_phrases", "junban", "toggle", ("junban_phrases",), when=_JUNBAN_FIRST),
-    _row("junban_ready_first", "junban", "toggle", ("junban_ready_first",), when=_JUNBAN_FIRST),
-    _row("junban_later_tag", "junban", "toggle", ("junban_later_tag",), group="not_on_list", when=_JUNBAN_ON),
-    _row("junban_later_flag", "junban", "toggle", ("junban_later_flag",), when=_JUNBAN_ON),
-    _row("junban_later_suspend", "junban", "toggle", ("junban_later_suspend",), when=_JUNBAN_ON),
+    # Kyou-MO (F24, PROVISIONAL words): one switch for your own cards not on the list — Leave · At the back · Set
+    # aside (Surasura's are never set aside); under Set aside, what it does beside its tag
+    _row("junban_off_list", "junban", "choice", ("junban_off_list",), options=("leave", "back", "aside"),
+         group="not_on_list", when=_JUNBAN_ON),
+    _row("junban_later_flag", "junban", "toggle", ("junban_later_flag",), sub=True, when=_all(_JUNBAN_ON, _aside)),
+    _row("junban_later_suspend", "junban", "toggle", ("junban_later_suspend",), sub=True,
+         when=_all(_JUNBAN_ON, _aside)),
     _row("junban_auto_reorder", "junban", "toggle", ("junban_auto_reorder",), when=_JUNBAN_ON),
     _row("junban_auto_actions", "junban", "toggle", ("junban_auto_actions",), when=_JUNBAN_ON),
     _row("put_back", "junban", "door", when=_JUNBAN, door=("put-back",)),
@@ -304,6 +353,10 @@ ROWS = (
          when=_JUNBAN_ON),
     _row("backfill_sentence", "backfill", "toggle", ("junban_backfill_fills",), options=("sentence",),
          when=_JUNBAN_ON),
+    _row("backfill_furigana", "backfill", "toggle", ("junban_backfill_fills",), options=("furigana",),
+         when=_JUNBAN_ON),
+    _row("backfill_pitch", "backfill", "toggle", ("junban_backfill_fills",), options=("pitch",),
+         when=_JUNBAN_ON),
     # a9.1: Backfill's window has one door, here (it had three: the deck, Preview, the fields)
     _row("junban_backfill_cards", "backfill", "choice", ("junban_backfill_cards",), options=("all", "new"),
          when=_JUNBAN_ON, door=("backfill",),
@@ -313,6 +366,8 @@ ROWS = (
 
     # Level (New words a day went to Anki & mining's *New cards a day*: G1.2-5)
     _row("level", "level", "slider", ("logic.selection.band", "logic.selection.auto")),
+    # Kantan-MO (ROLES.md: the list's): one study order for Connect, 順 and the journey (順's *Order* moved here)
+    _row("study_order", "level", "choice", ("study_order",), options=("content", "priority")),
     _row("strategy", "level", "choice", ("strategy",), options=("freq", "coverage")),
     _row("target_coverage", "level", "number", ("target_coverage",), sub=True, when=_coverage, bounds=(1, 100)),
     _row("show_words_per_day", "level", "toggle", ("show_words_per_day",), adv=True),
@@ -442,7 +497,10 @@ NOT_SHOWN = {
     "setup_seen": "state: the version whose setup pages were seen (the wizard, WZ-8)",
     "setup_passed": "state: the setup pages saved before setup finished (the wizard)",
     "known_from_anki_chosen": "state: written beside *Count as known in Anki*'s pick (Kantan-B3)",
+    "sentence_length_chosen": "state: written beside *Length*'s pick once the sentence table is on (E-LENGTH)",
+    "anki_sync_include_suspended": "retired (Kotoba-WS2): folded into *Count as known in Anki*, read once on load",
     "hints_seen": "state: the one-time hints shown, each per library (W-1's first watched mark)",
+    "swap_in_place_chosen": "state: written beside *Swap gives*'s pick (FS-2), so the default's flip reaches the rest",
     "subs_with_hato": "the learner's one yes in Needs you (*Find them with hato*, NS-2; hato's card: 3.0.1's next step)",
     "subs_with_hato_zh": "the Chinese library's one yes in Needs you (*Find them with hato*, Zh-H)",
     "open_count": "state: a launch counter",
@@ -450,12 +508,17 @@ NOT_SHOWN = {
     "skipped_version": "state: its way back is App's *Offer <version> again*",
     "youtube_risk_acknowledged": "the downloader's own one-time ask",
     "add_graduated_words": "retired with Graduate (D23)",
+    "connect_mine_words": "retired by the mining model (Kantan-MO): Level + *Cards for every new word*; read once",
+    "junban_order": "retired by the mining model (Kantan-MO): the list's *Study order*; read when it isn't saved",
     "index_pool_workers": "speed only: every file's tokens are the same either way",
     "koe_port": "settings.json only: the speech helper's port",
     "irodori_voice": "settings.json only: the AI voice's pack (one ships; Sonic's own voice later is a second pack)",
     "junban_show_tags": "settings.json only: Junban's show labels, off for a positions-only run",
     "junban_replan_preview": "2.x's preview: 3.0 writes the plan always",
     "junban_replan_language": "2.x's preview: 3.0 writes the plan always",
+    # Kyou-MO (the mining model): folded into *Your own cards* (`junban_off_list`), read while it is unset, and by 2.x
+    "junban_unlisted": "3.0.17's *Cards too rare for your list go*: read only while *Your own cards* is unset",
+    "junban_later_tag": "3.0.17's tag tick: *Set aside* always tags; read only while *Your own cards* is unset",
     "junban_replan_deck": "2.x's preview: 3.0 writes the plan always",
     "logic.chunk_size": "settings.json only (A5)",
     "logic.weights.high": "settings.json only (A5)",
@@ -482,6 +545,84 @@ NOT_SHOWN.update({key: "Reels: sunset (2026-09-22), excluded from every build" f
     "enable_reels", "reels_context_cues", "reels_exclude_numerals", "reels_exclude_proper_nouns", "reels_ffmpeg_dir",
     "reels_gap_seconds", "reels_max_folder_gb", "reels_max_unknown", "reels_open_player", "reels_output_dir",
     "reels_subsync_path", "reels_words_per_part")})
+
+
+# --- Journey v3 (J-SET; SPEC §1.4, the settings table and Sonic's answers 2026-11-22; words PROVISIONAL) ---------- #
+# Off until the cut-over (`journey_settings.v3()`: J-CUT turns the door on), and the page shows the rows above. On
+# (`use_v3`), the Journey section moves to App (before App's own section: its links stay the page's last block), the
+# page's rows take the old *Look* and *Where a sentence came from* rows' place (the same keys: `journey_settings` is the
+# one place for the keys, the choices and how an older value reads), *Up to* is *Sentences per word* (its key and
+# home), and the rows for what the new page doesn't have leave Settings — their keys stay in settings.json, read by the
+# YouTube preview's old page until it moves (`_V3_NOT_SHOWN`).
+_V3_GONE = ("source_display", "inline_completed_files", "hide_audio_button", "zen_limit", "enable_koe", "koe_door",
+            "show_words_per_day")
+_V3_ROWS = ("journey_pitch", "journey_meanings", "journey_source", "journey_first_meeting", "journey_word_size",
+            "journey_sentence_size", "journey_theme", "journey_keys")           # in the page's ⚙ order (SPEC §1.4)
+_OLD_PAGE = "retired from Settings by journey v3 (Sonic 2026-11-22): the YouTube preview's old page still reads it"
+_V3_NOT_SHOWN = dict({
+    "logic.inline_completed_files": _OLD_PAGE,
+    "logic.hide_audio_button": _OLD_PAGE,
+    "show_words_per_day": _OLD_PAGE,
+    "zen_limit": "retired with Zen Mode by journey v3 (Sonic 2026-11-22): the old page's Zen view reads it",
+}, **{key: "Speak sentences left the journey (D15): the YouTube preview's old page still speaks with it" for key in (
+    "enable_koe", "koe_voice", "koe_model", "koe_style", "koe_temperature", "koe_daily_cap")})
+# Before the cut-over the page's new keys have no row: their defaults are what the page shows until J-CUT
+_PRE_V3_NOT_SHOWN = {key: "journey v3's page (J-SET): its row shows from the cut-over (J-CUT, `journey_settings.v3()`)"
+                     for key in ("journey_pitch", "journey_meanings", "journey_first_meeting", "journey_word_size",
+                                 "journey_sentence_size", "journey_keys")}
+_BEFORE_V3 = {}
+_V3 = False
+
+
+def _v3_rows(before):
+    """The rows under journey v3, from the rows before it (`before`)."""
+    from app.services import journey_settings as J
+    new = {
+        "journey_pitch": _row("journey_pitch", "reading", "choice", ("journey_pitch",),
+                              options=J.CHOICES["journey_pitch"]),
+        "journey_meanings": _row("journey_meanings", "reading", "choice", ("journey_meanings",),
+                                 options=J.CHOICES["journey_meanings"]),
+        "journey_source": _row("journey_source", "reading", "choice", ("source_display",),
+                               options=tuple(J.stored("source_display", v) for v in J.CHOICES["source_display"])),
+        "journey_first_meeting": _row("journey_first_meeting", "reading", "toggle", ("journey_first_meeting",)),
+        "journey_word_size": _row("journey_word_size", "reading", "choice", ("journey_word_size",),
+                                  options=J.CHOICES["journey_word_size"]),
+        "journey_sentence_size": _row("journey_sentence_size", "reading", "choice", ("journey_sentence_size",),
+                                      options=J.CHOICES["journey_sentence_size"]),
+        "journey_theme": _row("journey_theme", "reading", "choice", ("theme",),
+                              options=tuple(J.stored("theme", v) for v in J.CHOICES["theme"])),
+        "journey_keys": _row("journey_keys", "reading", "choice", ("journey_keys",), options=J.CHOICES["journey_keys"]),
+    }
+    out = []
+    for row in before:
+        if row.id == "theme":                   # the section's first row: the page's rows in its place
+            out += [new[id_] for id_ in _V3_ROWS]
+        elif row.id == "max_contexts":          # the same key and home, renamed, 1–10 or All (table Q3, Q8)
+            out.append(_row("sentences_per_word", "sentences", "select", (J.SENTENCES,), options=J.SENTENCE_CHOICES))
+        elif row.id not in _V3_GONE:
+            out.append(row)
+    return tuple(out)
+
+
+def use_v3(on):
+    """Journey v3's Settings (`on`) or the one before it: the heads, the sections, the rows and NOT_SHOWN. Called once
+    below with `journey_settings.v3()`; a test or a capture calls it to see the other, and back."""
+    global HEADS, HEAD_OF, SECTIONS, ROWS, ROW, NOT_SHOWN, _V3
+    if not _BEFORE_V3:
+        _BEFORE_V3.update(HEADS=HEADS, ROWS=ROWS, NOT_SHOWN=NOT_SHOWN)
+    _V3 = bool(on)
+    HEADS, ROWS, NOT_SHOWN = _BEFORE_V3["HEADS"], _BEFORE_V3["ROWS"], _BEFORE_V3["NOT_SHOWN"]
+    if _V3:
+        HEADS = tuple((head, tuple(s for s in sections if s != "reading")[:-1] + ("reading", sections[-1])
+                       if head == "app" else tuple(s for s in sections if s != "reading")) for head, sections in HEADS)
+        ROWS = _v3_rows(ROWS)
+        NOT_SHOWN = dict(NOT_SHOWN, **_V3_NOT_SHOWN)
+    else:
+        NOT_SHOWN = dict(NOT_SHOWN, **_PRE_V3_NOT_SHOWN)
+    HEAD_OF = {section: head for head, sections in HEADS for section in sections}
+    SECTIONS = tuple(Section(id_, _ICONS[id_], S.SECTIONS[id_])
+                     for id_ in ("setup",) + tuple(s for _head, sections in HEADS for s in sections))
+    ROW = {row.id: row for row in ROWS}
 
 
 # --- reading ------------------------------------------------------------------------------------------------------- #
@@ -522,7 +663,11 @@ def _decks(settings, language):
 
 
 def _one(settings, key, language):
-    """A key's value as its control shows it: a per-language key this language's entry."""
+    """A key's value as its control shows it: a per-language key this language's entry; under journey v3 a key the
+    page shares as the page reads it (an old *Midnight* is Night: `journey_settings.stored_now`)."""
+    if _V3 and key in ("theme", "source_display", "logic.context.max_contexts"):
+        from app.services import journey_settings
+        return journey_settings.stored_now(settings, key)
     if key == "connect_backlog_cap":
         return settings_values.cap_of(plain(value_of(settings, key)), language)
     if key == "connect_video_folders":
@@ -531,6 +676,8 @@ def _one(settings, key, language):
     found = plain(value_of(settings, key))
     if key == "known_from_anki" and isinstance(found, str):
         found = [found]
+    if key == "junban_off_list":                # Kyou-MO: as Junban reads it, 3.0.17's keys while it's unset
+        return _off_list(settings)
     if key == "junban_only_markers":            # IK-5: read as Junban reads it, one reader (a hand-edited "Star" is ✦)
         from app.anki_match import normalize_markers
         found = list(normalize_markers(found))
@@ -555,8 +702,8 @@ def help_line(row, settings, language):
             line = S.KNOWN_FLAGS.format(flags=" + ".join(names.get(t, t) for t in flags))
         elif len(picked) > 1:
             line = S.KNOWN_ALL_OF.format(states=" + ".join(names.get(t, t) for t in picked))
-        if _one(settings, SYNC_SUSPENDED, language) is True and picked != ["suspended"]:
-            line = f"{line}. {S.KNOWN_SYNC_TOO}" if line else S.KNOWN_SYNC_TOO
+        if held & set(known_signal.not_known_flags(settings)):  # the loop's Ignore / Swap flag: it counts no card
+            line = S.KNOWN_RED_GREEN
         if line:
             return line
     if row.id == "connect_needs_miner":          # what it needs is a state, in sight; what you get behind its ? (S2)
@@ -599,6 +746,9 @@ def options(row, settings, language):
     if row.id == "anki_sync_delay_min":
         return tuple((v, label, "") for label, v in settings_values.sync_choices(value_of(settings, row.keys[0])))
     labels, lines = S.OPTIONS.get(row.id, {}), S.OPTION_LINES.get(row.id, {})
+    if row.id in MOVE_ROWS:                     # Mado-LT: a flag another move holds is never this one's pick
+        taken = taken_flags(row, settings)
+        return tuple((v, labels.get(v, str(v)), lines.get(v, "")) for v in (row.options or ()) if v not in taken)
     if row.id == "connect_clip_cuts":           # Michi-LP: Automatic names what it picks on this PC now
         from app.connect import power
         labels = dict(labels, auto=S.CLIP_CUTS_AUTO.format(n=power.clip_cuts()))
@@ -676,7 +826,11 @@ def reachable():
 
 # Kantan-T: a row whose line reads more than its own keys and reaches — *Which cards*' deck follows 順's recorded pair
 # (`setup_wizard.junban_deck`: a deck recorded for the other language is no deck here)
-LINE_READS = {"junban_scope": ("junban_replan_deck", "junban_replan_language")}
+LINE_READS = {"junban_scope": ("junban_replan_deck", "junban_replan_language"),
+              # Mado-LT: the moves' picks leave out each other's flags (`options`), Known's line names a clash
+              "known_from_anki": ("loop_ignore_flag", "loop_swap_flag"),
+              "loop_swap_flag": ("loop_ignore_flag", "known_from_anki"),
+              "loop_ignore_flag": ("loop_swap_flag", "known_from_anki")}
 
 
 def lines_for(keys):
@@ -764,7 +918,9 @@ def _per_language(row, settings, language, new):
 
 def change(row, settings, language, new):
     """What a control's new value writes: `(changes, update)` — `changes` {key: value}, only the row's own keys and only
-    those whose value isn't already what the settings hold (`{}` for none; a row holding no setting never writes);
+    those whose value isn't already what the settings hold (`{}` for none; a row holding no setting never writes; a
+    *Count as known in Anki* pick carries `CHOSEN` beside it; with the sentence table on, a *Length* change writes both
+    ends and `sentence_length_chosen`);
     `update` None, or for a per-language key the function that re-applies this language's entry onto the file's value at
     write time. `new` by kind: a bool, a value, a number; `range` a (low, high) pair; `tablets` the picks (a list
     value's values, or several bool keys' keys on — a {key: bool} dict too); `list` the items; the level a band name (a hand
@@ -782,13 +938,22 @@ def change(row, settings, language, new):
     current = value(row, settings, language)
     if len(row.keys) == 1:
         current = {row.keys[0]: current}
-    rides = row.id == "known_from_anki" and _signal(settings, language, None)
-    if rides:                                   # a9.1: the sync's switch rides along (`_wanted`), never shown here
-        current[SYNC_SUSPENDED] = bool(_one(settings, SYNC_SUSPENDED, language))
-    keys = set(row.keys) | ({SYNC_SUSPENDED} if rides else set())
-    out = {key: v for key, v in wanted.items() if key in keys and current.get(key) != v}
-    if row.id == "known_from_anki" and row.keys[0] in out and _one(settings, CHOSEN, language) is not True:
-        out[CHOSEN] = True                      # Kantan-B3: a pick, never read as an old default again
+    out = {key: v for key, v in wanted.items() if key in row.keys and current.get(key) != v}
+    if row.id == "known_from_anki" and row.keys[0] in out:
+        # Kantan-B3: a pick, never read as an old default again — written on every pick, even when the loaded settings
+        # already say True: the old switch's fold sets it in memory only (Kotoba-WS2F, the keeper's F1)
+        out[CHOSEN] = True
+    if row.id == "swap_in_place" and out:          # FS-2: a pick, never a first save's old default (`load_settings`)
+        out[SWAP_CHOSEN] = True
+    if row.id == "sentence_length" and out and plan_rules.SENTENCE_TABLE >= 1:
+        # E-LENGTH: a Length set with the sentence table on is the learner's own, never read as the old default again —
+        # the pair as the row shows it (one end changed must not leave the file's other end on an old default)
+        out = {key: wanted[key] for key in row.keys}
+        out[settings_manager.SENTENCE_LENGTH_CHOSEN] = True
+    if row.id in ASIDE_TICKS and out and not _off_list_set(settings) and _off_list(settings) == "aside":
+        # Kyou-MO: unset, the switch is read from 3.0.17's ticks — a tick changed under *Set aside* pins it, so the
+        # untick never flips it to *Leave*
+        out["junban_off_list"] = "aside"
     return out, None
 
 
@@ -827,12 +992,7 @@ def _wanted(row, settings, language, new):
         return {key: bool(v) for key, v in picked.items()}
     key = keys[0]
     if row.id == "known_from_anki":
-        # a9.1: one row for both answers — the picks are Connect's; the sync's switch (studied cards, then suspended)
-        # stays on only while Suspended alone is picked, so a card is never counted on an answer the row no longer
-        # shows (it is never turned on from here: that is its own row's, with Make cards for me off)
-        picked = settings_values.known_value(set(new or ()))
-        held = bool(_one(settings, SYNC_SUSPENDED, language))
-        return {key: picked, SYNC_SUSPENDED: held and picked == ["suspended"]}
+        return {key: settings_values.known_value(set(new or ()))}
     if row.kind == "tablets":
         return {key: [v for v in row.options if v in set(new or ())]}
     if row.id == "placing_rules":
@@ -950,3 +1110,12 @@ def words_of(row, settings, language):
     if row.kind == "number":
         return str(found)
     return str(labels.get(found, found))
+
+
+# Journey v3 or the Settings before it (above): one switch, the cut-over's (`journey_settings.v3()`)
+def _journey_v3():
+    from app.services import journey_settings
+    return journey_settings.v3()
+
+
+use_v3(_journey_v3())

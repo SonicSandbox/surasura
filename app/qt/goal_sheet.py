@@ -21,6 +21,8 @@ updates its tiles in place and never animates it again.
   from a picked tile carries them all.
 - **It closes** on ✕, Esc and Back (the shell's `EscapeRouter`), a click outside it (G1: the sheet itself, Goal's bar —
   whose click toggles it — its ⋯ menu and the Remove question are not outside), and when Current is left.
+- **A search hit opens it at a title** (`show_work`, the shell's `show_goal`; Mado-SH): opened (never closed when it is
+  open), the title's tile scrolled into view; the search washes it.
 
 Nothing here reads or writes the store: the tiles come from the reader's view, every command goes through the window's
 writer (`drag.DragController._give`: its toast, Undo and E4's refusal).
@@ -464,6 +466,16 @@ class GoalSheet(motion.Overlay):
     def rising(self):
         return self._spring is not None and self._spring.alive
 
+    def show_work(self, work_id):
+        """(Mado-SH) A search hit on a Goal title: the sheet opened (left open when it is) with the title's tile
+        scrolled into view. -> that tile, or None when Goal no longer holds the title."""
+        self.open()
+        tile = next((t for t in self.order if t.work is not None and t.work.work_id == work_id), None)
+        if tile is not None:
+            pad = round(SHEET["pad"] * _f())
+            self.scroll.ensureWidgetVisible(tile, 0, pad)
+        return tile
+
     def toggle(self):
         if self.isVisible():
             self.close()
@@ -704,7 +716,10 @@ class GoalSheet(motion.Overlay):
         if where == "top":                           # Kura-EO: saved in its show's episode order, its toast says so
             shown = (strings.GOAL_UP_SHOW if rest else strings.GOAL_UP_ALL_SHOW).format(title=work.title,
                                                                                         first=piece.line)
-            ticket.reword = lambda change: shown if getattr(change, "show_order", False) else None
+        else:                                        # Kura-SO: *Soon* too — its "#n" is wrong once it joined its show
+            shown = (strings.GOAL_SOON_SHOW if rest else strings.GOAL_SOON_ALL_SHOW).format(title=work.title,
+                                                                                            first=piece.line)
+        ticket.reword = lambda change: shown if getattr(change, "show_order", False) else None
         seq = moves._give(ticket, command)
         if seq is not None:
             self.seeking = (ids[0], time.monotonic() + SHEET["seek-s"])

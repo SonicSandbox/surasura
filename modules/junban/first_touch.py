@@ -500,17 +500,33 @@ def parked(language):
     collection's. Reads only; never raises. A journal that is there but can't be read is the safe side (adversary
     AD-2): no card is Junban's, so none comes back by the record — never the tag rule, which would bring back a card
     you suspended."""
+    return _parked(_record_lines(language))
+
+
+def _record_lines(language):
+    """The journal's lines for a lasting record (`parked`, `flagged`), or None when the journal is there but can't be
+    read — each record's safe side."""
     path = os.path.join(folder(language), JOURNAL)
     try:
         if os.path.exists(path):
             open(path, "rb").close()
     except OSError:
-        return {"cards": set(), "named": set(), "notes": set(), "since": 0}
-    lines = journal(language)
-    state = _state(lines)
+        return None
+    return journal(language)
+
+
+def _since(lines):
     times = [line.get("ms") for line in lines if _whole(line.get("ms"))]
+    return min(times) if times else None
+
+
+def _parked(lines, state=None):
+    """`parked`'s answer from the journal's `lines` (None: unreadable) — `state`, their `_state`, when already read."""
+    if lines is None:
+        return {"cards": set(), "named": set(), "notes": set(), "since": 0}
+    state = _state(lines) if state is None else state
     return {"cards": set(state["suspended"]), "named": set(state["touched"]),
-            "notes": {note_id for _tag, note_id in state["tags"]}, "since": min(times) if times else None}
+            "notes": {note_id for _tag, note_id in state["tags"]}, "since": _since(lines)}
 
 
 # --- Kyou-PF (Sonic 2026-11-20): Junban's own purple flags, and the first clean-up ------------------------------- #
@@ -521,25 +537,21 @@ def flagged(language):
     """Kyou-PF: the purple flags Junban put on, by this lasting record -> {"cards": {card: the flag to put back} for
     every card whose last journalled flag is Junban's purple; "named": every card a flag line names (one whose purple
     a Restore or a clean-up took off since, or you flagged between two of Junban's writes, is not Junban's now);
-    "since": the first line's time in ms, or None (no journal yet); "swept": `swept`'s answer, from the same read}.
-    Every profile's lines, as `parked`. A journal that is there but can't be read is the safe side: no flag is
-    Junban's (`since` 0), and no clean-up done."""
+    "since": the first line's time in ms, or None (no journal yet); "swept": `swept`'s answer, and "parked":
+    `parked`'s, both from the same read}. Every profile's lines, as `parked`. A journal that is there but can't be read
+    is the safe side: no flag is Junban's (`since` 0), no clean-up done, and `parked`'s own safe side."""
     from modules.junban.unlisted import FLAG_PURPLE
-    path = os.path.join(folder(language), JOURNAL)
-    try:
-        if os.path.exists(path):
-            open(path, "rb").close()
-    except OSError:
-        return {"cards": {}, "named": set(), "since": 0, "swept": False}
-    lines = journal(language)
-    flags = _state(lines)["flags"]
-    times = [line.get("ms") for line in lines if _whole(line.get("ms"))]
+    lines = _record_lines(language)
+    if lines is None:
+        return {"cards": {}, "named": set(), "since": 0, "swept": False, "parked": _parked(None)}
+    state = _state(lines)
+    flags = state["flags"]
     # Junban flags only an unflagged card (`unlisted.plan`): a chain that starts from purple began with a clean-up of a
     # purple it put on before this record (`junbans_flag`'s fallback) — no flag of its own before it, as there
     return {"cards": {card: (0 if before == FLAG_PURPLE else before) for card, (before, last) in flags.items()
                       if last == FLAG_PURPLE},
-            "named": set(flags), "since": min(times) if times else None,
-            "swept": any(line.get(SWEPT) is True for line in lines)}
+            "named": set(flags), "since": _since(lines),
+            "swept": any(line.get(SWEPT) is True for line in lines), "parked": _parked(lines, state)}
 
 
 def junbans_flag(card_id, record, carries_later):

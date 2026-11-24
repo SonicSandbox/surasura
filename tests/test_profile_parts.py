@@ -34,6 +34,8 @@ CALL_SITES = {
     "app/connect/kick.py": 3,
     "app/connect/known_signal.py": 1,
     "app/connect/ledger.py": 1,
+    "app/connect/review_loop.py": 1,              # Kyou-LR: the loop's record (local data "connect", PARTS)
+    "app/connect/swap_queue.py": 1,               # Kyou-LR: the swap queue (local data "connect", PARTS)
     "app/diagnose.py": 1,             # Piyo's diagnose: reads the saved reports' folder (persistent_root, never made)
     "app/import_2x.py": 2,
     "app/library_move.py": 2,         # 3.0.1: its record and library.json, both in the local root
@@ -59,6 +61,7 @@ CALL_SITES = {
     "app/services/first_run.py": 1,
     "app/services/generate.py": 1,
     "app/services/guide.py": 1,       # the feature guide's guide.json (PARTS: install, moves with Start over)
+    "app/services/hato_update.py": 1,  # Hato-UP: hato_update.json (PARTS: install, stays)
     "app/services/journey.py": 1,
     "app/services/library_reader.py": 1,
     "app/services/moves.py": 1,
@@ -76,8 +79,6 @@ CALL_SITES = {
     "modules/junban/patterns_build.py": 1,
     "modules/junban/patterns_package.py": 1,
     "modules/junban/undo.py": 1,
-    "modules/koe/keystore.py": 1,
-    "modules/koe/server.py": 1,
     "modules/youtube_downloader/downloader_view.py": 1,
     "modules/youtube_downloader/ytdlp_manager.py": 1,
 }
@@ -170,13 +171,10 @@ def _writers():
         out.append((f"the {lang} library store", ls.library_db_path(lang, path_utils.get_data_path(lang)), False))
     try:
         from modules.junban import backlog_shows, patterns_build, undo
-        from modules.koe import keystore, server
         from modules.youtube_downloader import downloader_view, ytdlp_manager
-    except ImportError:                                  # a public checkout: no modules/
+    except ImportError:                                  # a checkout without modules/
         return out
     out += [
-        ("Koe's key", keystore._path(), False),
-        ("Koe's usage", server._usage_path(), False),
         ("Junban's backlog shows", backlog_shows.path("ja"), False),
         ("Junban's runs", undo.runs_folder("ja"), True),
         ("パターン", patterns_build.default_db_path("ja"), False),

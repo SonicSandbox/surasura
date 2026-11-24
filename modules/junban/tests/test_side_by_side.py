@@ -71,7 +71,7 @@ class _Session:
     def __init__(self, language):
         self.language = language
 
-    def is_known(self, word):
+    def is_known(self, word, sentence=None):
         return False
 
     def prepare(self, fill, notes, status=None, young=()):
@@ -101,8 +101,8 @@ def _plan(fake, language, **over):
 # --- S3, S4: which note type is which language -------------------------------------------------- #
 def test_both_fills_are_offered_in_chinese_and_japanese():
     # WP-Z9, the switch: a Chinese session is offered パターン and 例文 — which note types each reaches is
-    # S3's, below.
-    assert [fill.languages for fill in backfill.FILLS] == [("ja", "zh"), ("ja", "zh")]
+    # S3's, below. ふりがな and アクセント (Kantan-PF) are Japanese's only.
+    assert [fill.languages for fill in backfill.FILLS] == [("ja", "zh"), ("ja", "zh"), ("ja",), ("ja",)]
 
 
 def test_a_collection_with_lapis_and_a_chinese_note_type_fills_each_from_its_own_language():

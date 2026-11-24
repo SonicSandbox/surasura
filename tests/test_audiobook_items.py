@@ -48,8 +48,9 @@ def _lines(language):
         return [ln for ln in f.read().splitlines() if ln.strip()]
 
 
-def _epub(path, title, language="ja", repeat=20):
-    """A real EPUB titled `title`: three chapters of the test resources' sentences (about 8,000 characters in all)."""
+def _epub(path, title, language="ja", repeat=20, chapters=3):
+    """A real EPUB titled `title`: three chapters (`chapters`) of the test resources' sentences (about 8,000 characters
+    in all at the defaults)."""
     from ebooklib import epub
     book = epub.EpubBook()
     book.set_identifier("hon-" + title)
@@ -57,7 +58,7 @@ def _epub(path, title, language="ja", repeat=20):
     book.set_language(language)
     body = "".join(f"<p>{ln}</p>" for ln in _lines(language)) * repeat
     items = []
-    for n in range(1, 4):
+    for n in range(1, chapters + 1):
         c = epub.EpubHtml(title=f"第{n}章", file_name=f"c{n}.xhtml", lang=language)
         c.content = f"<html><body>{body}</body></html>"
         book.add_item(c)

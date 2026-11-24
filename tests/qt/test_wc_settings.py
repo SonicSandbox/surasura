@@ -155,8 +155,12 @@ def test_r1_r4_more_options_lays_the_page_out_once_and_repaints_nothing_above_it
     nothing above the button repainted but the scroll bar (the page's length changed), nothing made. *Fewer options*
     the same. (found.md F2: the slabs laid out twice and repainted whole; the first open also showed the options' box
     at a default 100 × 30 over the section's head before the layout placed it.)"""
+    from app.qt import settings_catalog as catalog
     bar = wc.rect_in_window(page.scroll.verticalScrollBar())
-    section = next(s for s, slab in page.slabs.items() if not slab.more_row.isHidden() and s not in page.folds())
+    # Mado-LT (3.0.18): the first fold was Known words' (one row, *Count as known in Anki*, now the ✓ Known move card in
+    # the open). Measured as before: the first fold of one row. (Anki & mining's ten: the test after this one.)
+    section = next(s for s, slab in page.slabs.items() if not slab.more_row.isHidden() and s not in page.folds()
+                   and len([r for r in catalog.rows(s) if r.adv and r.id in page.rows]) == 1)
     more = _in_view(page, page.slabs[section].more)
     unit = wc.one_pass(page.body, page)
     try:
@@ -171,6 +175,31 @@ def test_r1_r4_more_options_lays_the_page_out_once_and_repaints_nothing_above_it
     finally:
         if section in page.folds():
             page.fold(section)
+        wc.settle()
+
+
+def test_r1_r4_anki_and_minings_more_options_repaints_nothing_above_its_button(page):
+    """The same rule on Anki & mining's fold, the page's longest. Mado-LT 4: it repainted above its button — its *Sync
+    Anki after tomorrow's cards change* set its three choices side by side, wider than the page's view, so opening the
+    fold widened the whole page (every row laid and painted again, its right edge cut off). Measured on Windows' own
+    fonts it happened at Large text with a held fourth choice (`test_settings_page_fixes`); the suite's wider font shows
+    it with the three. The row is a list now: never wider than its longest choice."""
+    bar = wc.rect_in_window(page.scroll.verticalScrollBar())
+    more = _in_view(page, page.slabs["anki"].more)
+    assert "anki" not in page.folds()
+    unit = wc.one_pass(page.body, page)
+    try:
+        for _ in range(2):                                                 # open, then close: both measured
+            top = wc.rect_in_window(more).top()
+            below = QRect(0, top, page.width(), page.height() - top)
+            with wc.measure(page) as w:
+                page.fold("anki")
+            assert w.paints_outside_rect(below, bar) == [], w.report()
+            assert w.hints <= unit * wc.PASS_SLACK, (unit, w.report())
+            assert w.created == 0 and w.deleted == 0, w.report()
+    finally:
+        if "anki" in page.folds():
+            page.fold("anki")
         wc.settle()
 
 
@@ -213,9 +242,12 @@ SEARCH_LAYERS = 12                  # today's most: ~9 viewports of paint summed
 SEARCH_MOVES = wc.MOVES_PER_PASS    # found.md F3: a row moved 7–8 times by one keystroke, the paused layouts resumed
 #                                     deepest first (each moved its rows again); one pass from the top since. Unpaused
 #                                     (a9.1's lag): 38
-_PAST_ITS_VIEW = pytest.mark.xfail(strict=True, raises=AssertionError,
+# (Mado-LT 5: not strict — since *Sync Anki after…* is a list the page is narrower and the keystroke moves a slab 3
+# times on a page that never laid that search out, at most 2 after this file's stale-screen test typed it: it passes
+# in the file's company, fails alone)
+_PAST_ITS_VIEW = pytest.mark.xfail(strict=False, raises=AssertionError,
                                    reason="WC found.md F3 (what is left): the keystroke that makes the page longer than "
-                                          "its view (the scroll bar comes in) still moves a slab 5–6 times (was 7)")
+                                          "its view (the scroll bar comes in) still moves a slab 3 times (was 5–6, 7)")
 
 
 @pytest.mark.parametrize("typed", [pytest.param("a", marks=_PAST_ITS_VIEW), "an", "", "zzzz", "片仮名"])
@@ -356,7 +388,7 @@ def test_r4_a_space_on_a_switch_repaints_only_inside_its_own_row(page):
 def test_r5_a_select_menu_opened_closed_and_opened_again_makes_no_widget(page):
     """A Select's menu opened by a click, closed, and opened again: the menu was built with the control, so the second
     open makes no widget."""
-    select = _in_view(page, page.rows["theme"]).controls[0]
+    select = _in_view(page, page.rows["sentences_per_word"]).controls[0]     # a Select (theme's left: J-CUT)
     assert isinstance(select, sc.Select)
     try:
         _click(select)
@@ -398,7 +430,9 @@ def test_r4_a_level_sliders_arrow_key_repaints_its_own_row_and_lays_nothing_out(
 # --- R3: a folder taken off a list by its cross ------------------------------------------------------------------ #
 def test_r3_a_folders_cross_removes_that_folder_alone_and_repaints_only_inside_its_row(page):
     """The cross on the first folder tablet of the video-folders list: that folder alone goes (the other stays), its
-    row repainted, nothing above it, no widget made."""
+    row repainted, nothing above it, no widget made. (Mado-LT 5: since *Sync Anki after…* is a list the page is
+    narrower, and the two folders wrap: the row loses a line, what is under it moves up and repaints. Before, every row
+    above it in view repainted too: the slab's boxes, laid out inside their old height, handed the slack to a row.)"""
     opened = "anki" not in page.folds()
     tablets = before = None
     try:
@@ -415,13 +449,16 @@ def test_r3_a_folders_cross_removes_that_folder_alone_and_repaints_only_inside_i
         assert len(two) >= 2, two
         cross = tablets._parts()[0][4]
         assert cross is not None
+        top = wc.rect_in_window(view).top()
+        below = QRect(0, top, page.width(), page.height() - top)
+        bar = wc.rect_in_window(page.scroll.verticalScrollBar())
         with wc.measure(page) as w:
             QTest.mouseClick(tablets, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
                              QPointF(cross.center()).toPoint())
             wc.rest(150)
         assert tablets.value() == two[1:], (two, tablets.value(), w.report())
         assert w.painted > 0, w.report()
-        assert w.paints_outside(view) == [], w.report()
+        assert w.paints_outside_rect(below, bar) == [], w.report()
         assert w.created == 0, w.report()
     finally:
         if tablets is not None and before is not None:

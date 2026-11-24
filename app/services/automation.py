@@ -68,8 +68,10 @@ WHY_JUNBAN_GENERATE = "Generate ended, and Re-order after Generate is on"
 WHY_BACKLOG = "Generate reads Anki's new cards"
 LANGUAGES = {"ja": "Japanese", "zh": "Chinese"}
 
-State = namedtuple("State", "sync language added known message junban seq shows", defaults=(None,))
+State = namedtuple("State", "sync language added known message junban seq shows payoff", defaults=(None, None))
 #   shows (Michi-C): the shows behind the backlog's last offer, as a short digest — a new one asks *Needs you* again
+#   payoff (Kyou-LR): the review loop's last sync that moved something — (language, sync id, known, swap, ignored) —
+#   the window's *From your phone* toast, once, with its Undo (`Automation.undo_payoff`)
 # What `level` reads (IK-28): only a write of one of these reads the token store again for the bar's level chip.
 LEVEL_KEYS = ("logic.selection", "logic.names_recurring", "logic.names_kanji", "logic.names_work_terms", "zh_script")
 
@@ -285,7 +287,7 @@ class AutoSync:
         self._last = now
         decks = list((settings.get("anki_sync_decks") or {}).get(language) or [])
         fields = list((settings.get("anki_sync_fields") or {}).get(language) or [])
-        suspended = bool(settings.get("anki_sync_include_suspended", False))
+        suspended = anki_sync.counted_suspended(settings)      # Kotoba-WS2: Count as known in Anki's picks
         o.registry.submit("anki-sync", SYNC_LABEL, automatic=not asked, on_quit="detach",
                           start=lambda job: o.thread(self._work, job, language, settings, decks, fields, suspended),
                           cause=None if asked else (cause or causes.Cause(WHY_BACK, time.time(), "known")))
@@ -310,8 +312,10 @@ class AutoSync:
             problem = str(e)
             print(f"Anki sync skipped: {e}")
         failed = (result is None and not closed) or (result is not None and bool(result.error))
-        job.finish(ok=not failed, message=problem or (result.error if result is not None else None))
-        self.ended(result, language, closed, problem)
+        try:                                        # its end told first, the job live meanwhile (Flake-F4: a forced
+            self.ended(result, language, closed, problem)     # sync in between started a second beside it)
+        finally:
+            job.finish(ok=not failed, message=problem or (result.error if result is not None else None))
 
     def ended(self, result, language, closed=False, problem=None):
         """(The sync's own thread.) Every sync's end, automatic or by hand (`Automation.anki_synced`: the Anki window's
@@ -327,6 +331,10 @@ class AutoSync:
         elif result.error:
             o.publish(sync=FAILED, message=result.error)
         elif language == o.language:
+            loop = getattr(result, "loop", None)
+            if loop:                                # your phone's moves: the toast's line, once (its sync id)
+                o.publish(payoff=(language, loop.get("sync"), loop.get("known", 0), loop.get("swap", 0),
+                                  loop.get("ignored", 0)))
             o.publish(sync=SYNCED, added=result.added, known=result.total_known, message=None)
             if language != o.language:          # switched as it was said: the open language's count, read after it
                 o.worker.put(o._read_known)
@@ -694,6 +702,26 @@ class Automation:
         if not self.closed:
             self.worker.put(self.sync.maybe, bool(force), False,
                             causes.Cause(WHY_SESSION if force else WHY_BACK, time.time(), "known"))
+
+    def undo_payoff(self, language, sync_id, then=None):
+        """The *From your phone* toast's Undo (Kyou-LR): that sync's moves put back (`review_loop.undo`: the word lists
+        only, never a card), then the known words' count read again and the journey asked again. `then(answer)` on the
+        worker: the undo's answer, or None when it failed (said in the log). Any thread; returns at once."""
+        def work():
+            answer = None
+            try:
+                from app.connect import review_loop
+                answer = review_loop.undo(language, sync_id)
+            except Exception as e:
+                print(f"{self.worker.name}: the review loop's Undo failed: {e}")
+            if answer and answer.get("undone"):
+                self._read_known()
+                self.recheck()
+            if then is not None:
+                then(answer)
+        if self.closed or not self.worker.put(work):
+            if then is not None:
+                then(None)
 
     def sync_now(self, then=None):
         """A sync the user asked for (a click on the bar's known-words count, Q30): the automatic sync's own job,

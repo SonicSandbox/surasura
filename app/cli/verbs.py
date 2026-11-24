@@ -323,15 +323,17 @@ def _reading(loaded, lang):
 
 def _sentence_length(loaded):
     """The learner's *Length* and *Never longer than* for example sentences (logic.context min_chars /
-    preferred_max_chars / max_chars, the analyzer's own fallbacks 10 / 50 / 150) as a book's pick reads them -> (min,
-    preferred max, cap); a value that isn't a whole number ≥ 0 is its default, a max below the min the min, a cap of 0
-    none. Based on the approach in #372 by Mattias."""
+    preferred_max_chars / max_chars; fall-backs *Length*'s default, `settings_manager.sentence_length_default`, and
+    150) as a book's pick reads them -> (min, preferred max, cap); a value that isn't a whole number ≥ 0 is its default,
+    a max below the min the min, a cap of 0 none. Based on the approach in #372 by Mattias."""
     context = ((loaded or {}).get("logic") or {}).get("context") or {}
 
     def number(key, default):
         value = context.get(key, default)
         return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else default
-    low, high, cap = number("min_chars", 10), number("preferred_max_chars", 50), number("max_chars", 150)
+    from app.settings_manager import sentence_length_default     # *Length*'s one default (E-LENGTH)
+    low, high = sentence_length_default()
+    low, high, cap = number("min_chars", low), number("preferred_max_chars", high), number("max_chars", 150)
     high = max(low, high)
     return low, high, max(high, cap) if cap else 0
 
@@ -549,7 +551,7 @@ def known_sync(args):
         # the one sync order (`anki_sync.sync_all`): the studied words, the new cards, then Known from Anki (P2.4:
         # only with Connect on)
         result, signal = anki_sync.sync_all(lang, url, decks, fields, loaded,
-                                            include_suspended=bool(loaded.get("anki_sync_include_suspended", False)),
+                                            include_suspended=anki_sync.counted_suspended(loaded),
                                             full=args.full, progress=contract.emit_progress)
         if result.error:
             raise CliError("failed", result.error)
@@ -802,7 +804,8 @@ def _junban_auto(args, lang, junban_settings, auto, job=None, current=None, posi
     if planned:
         # the re-plan IS the list for the store's order (parity with a full Generate on the plan columns, 05 §1)
         from modules.junban import spaced
-        mode = str(junban_settings.get("junban_order") or "content").strip().lower()
+        from app import settings_manager
+        mode = settings_manager.study_order(junban_settings)       # the list's study order (Kantan-MO)
         job = spaced.Job(automatic=True, rows=current.rows(mode), places=current.places)
         list_current = True
     else:
@@ -1081,7 +1084,7 @@ def backfill(args):
     if anki_session is not None:
         anki_session.begin(url, fill_settings)       # S1 before the notes are read (P2.3; a dry run never syncs)
     try:
-        if anki_connect.patient("guiReviewActive", url) is True:
+        if anki_connect.reviewing(url, errors=True):     # the one review check (its busy error as before)
             raise CliError("anki-busy", "You're reviewing in Anki. Surasura fills once you've finished.")
         if ids is None:
             ids = anki_connect.find_notes(url, f'"tag:{anki_connect.escape_query(args.tag)}"')
@@ -1097,7 +1100,8 @@ def backfill(args):
     session = filling.Session(fill_settings)
     try:
         report = filling.run_named(fill_settings, session, ids, source=source, dry_run=args.dry_run, run_id=run_id,
-                                   wait=args.wait or 0.0, verb="surasura-cli backfill")
+                                   wait=args.wait or 0.0, verb="surasura-cli backfill",
+                                   **({"rewritten": args.rewritten} if getattr(args, "rewritten", None) else {}))
     finally:
         session.close()
     if report.get("reviewing") or (report.get("busy") and _reviewing(report)):
@@ -1173,6 +1177,30 @@ def _listed(args, lang):
     return out
 
 
+_COUNTED = {}      # the last Generate's counts, kept while its library_frequency.json is the same file (`_counted`)
+
+
+def _counted(lang):
+    """(uses per word, the list's cut-off) the last Generate counted (`analyzer.library_counts`), so Connect's pick
+    reads a rare compound as the list did (Kantan-MA: 大衆 counted only in 大衆食堂) — (None, 0) for Chinese, before
+    the first Generate, for another language's results, or a file that can't be read now (each word is then itself).
+    Read once while the file is unchanged: a run's every episode asks."""
+    if lang != "ja":
+        return None, 0
+    from app import analyzer
+    path = os.path.join(_results_dir(), "library_frequency.json")
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None, 0
+    stamp = (lang, path, st.st_mtime_ns, st.st_size)
+    held = _COUNTED.get("now")                          # one (stamp, answer) pair, replaced whole: two threads safe
+    if held is None or held[0] != stamp:
+        counts, floor = analyzer.library_counts(path, lang)
+        held = _COUNTED["now"] = (stamp, (counts, floor or 0) if counts is not None else (None, 0))
+    return held[1]
+
+
 def _known_test(lang, tokenizer, script):
     """`is_known((lemma, reading))` by the analyzer's rule (the YouTube preview's): known, or on an ignore list."""
     from app import analyzer
@@ -1186,11 +1214,20 @@ def _known_test(lang, tokenizer, script):
             raise CliError("bad-data", "Your known words (KnownWord.json) can't be read; nothing was changed.",
                            detail=str(e), need="known-words-unreadable") from None
     tuples, lemmas = cached
-    ignore = set()
-    for name in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"):
-        ignore |= analyzer.load_simple_list(os.path.join(folder, name), script, lang)
-    ignore |= analyzer.load_ignored_entries(folder, script, lang)
+    ignore = _ignored(lang, script) | analyzer.load_simple_list(os.path.join(folder, "GraduatedList.txt"), script, lang)
     return lambda key: key in tuples or key[0] in lemmas or key[0] in ignore
+
+
+def _ignored(lang, script):
+    """The words the learner left out (the Ignore list, an old Blacklist, the ignored entries) — `_known_test`'s, and
+    Swap's *why* a swap is dropped (Kantan-SL: "ignored" over "known")."""
+    from app import analyzer
+    from app.path_utils import get_user_files_path
+    folder = get_user_files_path(lang)
+    ignore = set()
+    for name in ("IgnoreList.txt", "Blacklist.txt"):
+        ignore |= analyzer.load_simple_list(os.path.join(folder, name), script, lang)
+    return ignore | analyzer.load_ignored_entries(folder, script, lang)
 
 
 def _job_id(args):
@@ -1199,6 +1236,19 @@ def _job_id(args):
     if not runfile.RUN_ID.fullmatch(f"{job}-9999"):           # room for any attempt's run id
         raise CliError("usage", "A job name may hold only letters, digits, - and _ (at most 60).")
     return job
+
+
+def _swap_spec(job, lang):
+    """Kantan-SL: the swap a `--job` names (Connect's ledger id of a job of kind `swap`) -> `pick`'s `swap`, else None.
+    Read-only; a ledger that can't be read is refused, as `_level_job` refuses it."""
+    if not job or not str(job).isdigit():
+        return None
+    import sqlite3
+    from app.connect import swap
+    try:
+        return swap.spec_of(int(job), lang)
+    except sqlite3.Error as e:
+        raise CliError("failed", f"Connect's ledger can't be read for job {job}: {e}") from None
 
 
 def _level_job(job, lang):
@@ -1335,14 +1385,16 @@ def pick(args):
     only the run file, under local data (`connect/runs/<job>/`). Connect's book or text (Z-9, never on the command
     line: `reading`, the file Anki Miner reads): the words of the item's text (`file`), each with its sentence."""
     from app import cues
-    from app.connect import pick as picking, runfile
+    from app.connect import pick as picking, runfile, sentences
     loaded = settings()
     lang = language(args, loaded)
     require_set_up(lang)
-    mode = args.words or loaded.get("connect_mine_words") or "list"
+    # Kantan-MO: the list (Level) decides, and *Cards for every new word* (`connect_every_word`) adds the rest;
+    # `--words` still names any of pick's modes
+    from app import settings_manager
+    mode = args.words or settings_manager.mine_mode(loaded)
     if mode not in MINE_WORDS:
-        raise CliError("bad-data", f"Surasura's setting connect_mine_words is {mode!r}: it must be list, unknown or "
-                                   "i1.", need="mine-words-setting")
+        raise CliError("bad-data", f"--words is {mode!r}: it must be list, unknown or i1.", need="mine-words-setting")
     if not os.path.isfile(args.file):
         raise CliError("bad-data", f"There's no subtitle at {args.file}.")
     if args.video is not None and not os.path.isfile(args.video):
@@ -1353,10 +1405,19 @@ def pick(args):
     if listed is None:
         listed = _listed(args, lang)
     level_job = _level_job(args.job, lang)
+    # Kantan-SD 6 (Connect's runner, never on the command line): the words a job cuts from this episode's lines though
+    # it mines another (`runner._borrow`) — picked as a Best sentence's own job picked them, by name
+    only = getattr(args, "only", None)
+    if only:
+        from app.connect import level
+        level_job = {"kind": "level", "source": level.BEST, "words": [tuple(key) for key in only]}
     if level_job is not None:
         # P2.2, a level raise (HC-N38): the job names the newly listed words; only they go to Anki Miner, by the list
         from app.connect import level
         mode, listed = "list", (level.restrict(listed, level_job) if listed is not None else None)
+    swap = None if level_job is not None else _swap_spec(args.job, lang)
+    if swap is not None:
+        mode = "unknown"            # Kantan-SL: a swap's one word, whatever the list holds (`pick`'s `swap`)
     if mode == "list" and listed is None:
         raise CliError("not-set-up", f"There's no {lang} list yet: Generate first, then pick again.", language=lang)
 
@@ -1372,7 +1433,9 @@ def pick(args):
             subtitle = None
             read, tokens = cues.reading(args.file, lang, script, tokenizer)
         else:
-            subtitle = caption_clean.copy_for(args.file, run_dir, lang)
+            # (another episode's copy in a folder of its own: two shows' subtitles can share one file name)
+            aside = getattr(args, "aside", None)
+            subtitle = caption_clean.copy_for(args.file, os.path.join(run_dir, aside) if aside else run_dir, lang)
             read = cues.read(args.file, lang)
     except (OSError, UnicodeDecodeError, ValueError) as e:
         raise CliError("bad-data", f"The {'text' if book else 'subtitle'} can't be read: {e}") from None
@@ -1397,7 +1460,9 @@ def pick(args):
     # deleted is never made again unless you ask), counted as carded — never on the command line (no flag)
     keys = set(keys) | set(getattr(args, "made", None) or ())
     from app import analyzer
-    view = analyzer.LearningView(known=is_known)            # the one learning rule (no counts: no rare compounds)
+    # the one learning rule, with the list's own counts (Kantan-MA): a rare compound counts toward its free parts
+    view = analyzer.LearningView(*_counted(lang), known=is_known)
+    young = sentences.young_weights(lang)
     chosen = picking.pick(read, tokens, lang, is_known, mode=mode, listed=listed, carded=keys, carded_source=source,
                           readable=view.readable if lang == "ja" else None,
                           ignore_names=bool((loaded.get("logic") or {}).get("ignore_names", False)),
@@ -1406,7 +1471,15 @@ def pick(args):
                           # Tsu-U: Connect's pick hands in tsubasa's undetermined spans of a copy it had re-timed in
                           # parts (never on the command line): no card from a line inside one
                           unsure=getattr(args, "unsure", None) or (),
-                          sentence_length=_sentence_length(loaded) if book else None)
+                          sentence_length=_sentence_length(loaded) if book else None,
+                          view=view if lang == "ja" else None,
+                          # Kantan-SD: the young words break a last tie; `never` (Swap's old card's sentence, never on
+                          # the command line) is a line the word isn't cut from again; Kantan-SL: a swap's one word
+                          # (its old card's lines join `never`)
+                          young=young, never=getattr(args, "never", None), swap=swap,
+                          # the sentence choice (level >= 1): the score's lines of the words in this file, which the
+                          # cut takes first (None at level 0: the cut's own rule)
+                          ranked=lambda asked: sentences.lines_in(lang, asked, args.file, young=young))
     out.update(chosen, cards_from=source)
     if setup is not None:
         info, profile, mapping = setup
@@ -1416,7 +1489,7 @@ def pick(args):
             word["sent"] = runfile.entries(word, named)         # the names the run file carries (Z-2: one a word)
         if not chosen["words"]:
             out["skipped"] = "no words to make cards from"
-        else:
+        elif not only:      # (the runner writes the one run file of a job whose lines come from several episodes)
             if book:
                 episode = runfile.reading_episode(f"{job}-1", book, runfile.word_requests(chosen["words"], named,
                                                                                          book=True),
@@ -1424,7 +1497,7 @@ def pick(args):
             else:
                 episode = runfile.episode(f"{job}-1", args.video, subtitle,
                                           runfile.word_requests(chosen["words"], named, app=info.get("app")),
-                                          tags=runfile.job_tag(job))
+                                          tags=runfile.job_tag(job), features=named, language=lang)
             data = runfile.build(run_dir, lang, [episode], profile=profile,
                                  run_config=runfile.config(mapping, info.get("app"), named,
                                                            word_audio=runfile.word_audio_on(loaded, lang)))

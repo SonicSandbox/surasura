@@ -18,6 +18,10 @@ tracks/window/reviews/hover-w-mock-2026-11-14.html, hover-w-register.md.
   know it; Ignore — not a word to learn), a second click on the lit one clears it. A marked word stays in place,
   dimmed, with its mark after it, until the card closes; the counts follow as the numbers do (no Generate first).
   *I know all of these* in the foot marks the title's every *New here* word known, then reads *Undo* for that one batch.
+- **Still learning** (Mado-LT, 3.0.18; WL ⑦, mocks 07 / 07b — PROVISIONAL): an *In Anki* word is known through Anki,
+  so its ✓ shows lit; a click on the lit ✓ makes it Still learning (`word_marks`' rule, Kyou-LR's: the sync never reads
+  it known again from that card), painted at once with ○ after it, then a toast says so with *Undo*. A click on its
+  ✓ again makes it known again. What each Anki word is now (`word_marks.states`) is read once when the card is kept.
 
 Built once per window (`R5`: an open sets words, makes no widget); every colour a theme token; nothing decided here.
 """
@@ -98,8 +102,8 @@ class _Sheet(QWidget):
             if mark is not None:
                 glyph = strings.WORDS_MARK_GLYPH[mark]
                 TEXT.draw(p, it.rect.right() + round(3 * fz()), it.y_mid, glyph, "badge",
-                          _adv(glyph, "badge") + 2, c("accent") if mark == "known" else c("overlay-ink-dim"),
-                          elide=False)
+                          _adv(glyph, "badge") + 2, c("accent") if mark == "known" else c("accent-2")
+                          if mark == "learning" else c("overlay-ink-dim"), elide=False)
             if it.more is not None and it is self.card.hot_more:
                 p.fillRect(QRect(it.rect.left(), it.rect.bottom() - 1, it.rect.width(), 1), c("accent"))
         self.card.paint_pair(p)
@@ -137,9 +141,14 @@ def faded_q(q, alpha):
 
 
 def markable(word):
-    """A word the card can mark: a list word of New here or Learned on the way (`title_words.CardWord`), never one of
-    Anki's (its card says what it is)."""
-    return hasattr(word, "label") and hasattr(word, "reading")
+    """A word the card can mark: a list word of New here or Learned on the way (`title_words.CardWord`), or (Mado-LT)
+    one of *In Anki*'s (`anki_word`: known through Anki — its ✓ lit, a click on it makes it Still learning)."""
+    return (hasattr(word, "label") and hasattr(word, "reading")) or anki_word(word)
+
+
+def anki_word(word):
+    """An *In Anki, not mature yet* word (`title_words.AnkiWord`)."""
+    return hasattr(word, "leech") and hasattr(word, "word")
 
 
 class _Pair:
@@ -187,6 +196,8 @@ class WordPeek(motion.Overlay):
         self.hot_word = self.picked_word = None
         self.hot_more = None
         self.marked = {}                       # Kotoba-K: {word: "known" | "ignore"} marked on this card while open
+        #                                        (Mado-LT: "learning" too, an In Anki word made Still learning here)
+        self.anki_states = {}                  # Mado-LT: {In Anki word: "learning" | "ignore"} as read when kept
         self.hot_item = None                   # the kept card's hovered markable word (its ✓ / ⊘ under it)
         self.hot_pair = None                   # ... and the cell under the pointer
         self.anchor = QRect()
@@ -241,7 +252,7 @@ class WordPeek(motion.Overlay):
             self.sentences, self.hot_word, self.picked_word, self.hot_more = None, None, None, None
             self._sentences_key = None
             self.card = None
-            self.marked, self.all_done = {}, None
+            self.marked, self.all_done, self.anki_states = {}, None, {}
         if card is not None:
             self.card = card
         self.kept = bool(kept) or (same and self.kept and self.isVisible())
@@ -341,7 +352,9 @@ class WordPeek(motion.Overlay):
             tips = getattr(self, "tooltips", None)
             if tips is not None:
                 if pair is not None:
-                    tips.request(self.sheet, pair.rect, strings.WORDS_MARK_TIP[pair.mark])
+                    lit = anki_word(pair.word) and pair.mark == "known" and self.lit(pair.word) == "known"
+                    tips.request(self.sheet, pair.rect, strings.WORDS_LEARNING_TIP if lit       # Mado-LT
+                                 else strings.WORDS_MARK_TIP[pair.mark])
                 else:
                     tips.hide_part_unless(self.sheet, QPoint(-1, -1))
         changed = False
@@ -359,7 +372,11 @@ class WordPeek(motion.Overlay):
         if isinstance(item, _Pair):
             word = item.word.word
             before = self.marked.get(word)
-            mark = None if before == item.mark else item.mark                    # the lit side again: cleared
+            if anki_word(item.word):                  # Mado-LT: known through Anki — its lit ✓ cleared is Still
+                lit = self.lit(item.word)             # learning, its lit ⊘ cleared is known again
+                mark = ("learning" if item.mark == "known" else "known") if lit == item.mark else item.mark
+            else:
+                mark = None if before == item.mark else item.mark                # the lit side again: cleared
             self.set_marks({word: mark})
             self.mark_asked.emit([(word, mark, before)])
             return
@@ -373,6 +390,19 @@ class WordPeek(motion.Overlay):
                 self.update(self._sentence_rect())
 
     # --- Known / Ignore (Kotoba-K) ------------------------------------------------------------------------------ #
+    def lit(self, word):
+        """The side of `word`'s ✓ / ⊘ that shows lit: its mark on this card, else (an In Anki word) known unless it is
+        Still learning or ignored now; None: neither."""
+        mark = self.marked.get(word.word)
+        if anki_word(word) and word.word not in self.marked:
+            mark = self.anki_states.get(word.word, "known")
+        return None if mark == "learning" else mark
+
+    def set_anki_states(self, states):
+        """{word: "learning" | "ignore" | None}: what each In Anki word is now (read when the card was kept)."""
+        self.anki_states = {w: m for w, m in states.items() if m in ("learning", "ignore")}
+        self.sheet.update()
+
     def set_marks(self, marks):
         """{word: mark or None} painted at once (a press reacts in its own frame; the write follows)."""
         for word, mark in marks.items():
@@ -408,7 +438,7 @@ class WordPeek(motion.Overlay):
         if item is None or not self.kept:
             return
         r = self._pair_rect(item)
-        lit = self.marked.get(item.word.word)
+        lit = self.lit(item.word)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setPen(QPen(c("line-hi"), 1))
         p.setBrush(c("raised"))
@@ -560,8 +590,11 @@ class WordPeek(motion.Overlay):
         gap = round(11 * f)
         x = 0
         placed = 0
+        # Mado-LT: kept, an In Anki word can carry its mark (drawn after it): its room kept before the next word
+        mark = (max(_adv(g, "badge") for g in strings.WORDS_MARK_GLYPH.values()) + round(3 * f)) if self.kept else 0
         for text, ink, word, extra in entries:
-            w = _adv(text, WORD_ROLE) + (_adv(extra[0], extra[1]) + round(3 * f) if extra else 0)
+            room = mark if word is not None and anki_word(word) else 0
+            w = _adv(text, WORD_ROLE) + room + (_adv(extra[0], extra[1]) + round(3 * f) if extra else 0)
             if one_line:
                 left = total - placed - 1
                 more_w = _adv(strings.WORDS_MORE.format(n=left), "row-sub") + gap if left > 0 else 0
@@ -571,7 +604,7 @@ class WordPeek(motion.Overlay):
                 x, y = 0, y + word_h
             items.append(_Item(QRect(x, y, _adv(text, WORD_ROLE), word_h), text, WORD_ROLE, ink, word=word))
             if extra:
-                ex = x + _adv(text, WORD_ROLE) + round(3 * f)
+                ex = x + _adv(text, WORD_ROLE) + room + round(3 * f)
                 items.append(_Item(QRect(ex, y, _adv(extra[0], extra[1]), word_h), extra[0], extra[1],
                                    c("overlay-ink-dim")))
             x += w + gap
@@ -770,13 +803,17 @@ class PeekHost(QObject):
     `title_words.TitleWords` or None; `view()`: the view the rows were built from (for the titles of what's taught where)."""
 
     def __init__(self, parent, provider, view, tooltips=None, router=None, open_journey=None, mark=None, undo=None,
-                 say=None):
+                 say=None, states=None, toast=None):
         super().__init__(parent)
         self.card = WordPeek(parent)
         self.provider, self.view, self.tooltips, self.open_journey = provider, view, tooltips, open_journey
         # Kotoba-K: `mark(marks)` / `undo()` write (a worker's: they block) and answer a `word_marks.Marked`; `say(line)`
         # the bar's (a failure). Without them the card marks nothing (no ✓ / ⊘, no *I know all of these*).
         self.mark, self.undo, self.say = mark, undo, say
+        # Mado-LT: `states(words)` (a worker's: `word_marks.states`) — what each In Anki word is now, read once a kept
+        # card; `toast(message, undo)` the window's toast (Still learning's line and its Undo).
+        self.states, self.toast = states, toast
+        self._states_key = None                    # the kept card whose In Anki words were read
         self.card.tooltips = tooltips
         self.card.mark_asked.connect(self._mark)
         self.card.all_known.clicked.connect(self._all_known)
@@ -844,6 +881,7 @@ class PeekHost(QObject):
         self._grace.stop()
         self._pending = None
         card = self._cards.get(row.key)
+        self._states_key = None                                # each keep reads its In Anki words again (Mado-LT)
         self.card.show_for(row, anchor, card, kept=True)       # pending painted first: the press reacts at once
         self._ask(row)                                         # always asked again: a move, a Generate since (r1 #2)
 
@@ -868,6 +906,18 @@ class PeekHost(QObject):
             return
         self._cards = {key: card}
         self.card.set_card(card)
+        self._read_states(key, card)
+
+    def _read_states(self, key, card):
+        """Mado-LT: a kept card's In Anki words read once for what they are now (Still learning, ignored), on the card's
+        write queue (after any mark on its way)."""
+        if (self.states is None or not self.card.kept or self._key() != key or self._states_key == key
+                or not isinstance(card.anki, tuple) or not card.anki):
+            return
+        self._states_key = key
+        words = [a.word for a in card.anki]
+        self._write(self.states, (words,), lambda answer: self.card.set_anki_states(answer)
+                    if isinstance(answer, dict) and self._here(key) else None)
 
     def _show_now(self):
         if self._pending is None:
@@ -912,7 +962,11 @@ class PeekHost(QObject):
             self.card.set_marks(before)
             return
         key = self._key()
-        self._write(self.mark, (list(sent.items()),), lambda answer: self._marked(answer, key, sent, before))
+        anki = {a.word for a in self.card.card.anki} if self.card.card is not None and isinstance(
+            self.card.card.anki, tuple) else set()
+        # Mado-LT: an In Anki word made known again on the card is its loop mark cleared (known through Anki again)
+        write = [(w, None if m == "known" and w in anki else m) for w, m in sent.items()]
+        self._write(self.mark, (write,), lambda answer: self._marked(answer, key, sent, before))
 
     def _write(self, fn, args, then):
         """`fn(*args)` on the card's one write queue — the writes land in the order they were clicked (a review's
@@ -957,8 +1011,31 @@ class PeekHost(QObject):
             if self.say is not None:
                 self.say(strings.WORDS_MARK_FAILED.format(why=error))
             return
+        learning = [w for w, m in sent.items() if m == "learning" and any(
+            d[0] == w and d[2] == "learning" for d in result.done)]
+        if learning and self.toast is not None:
+            undo_id = result.undo_id
+            self.toast(strings.WORDS_STILL_LEARNING.format(word="、".join(learning)),
+                       lambda: self._undo_learning(undo_id, learning, key, before))
         if self._here(key):
             self._again()
+
+    def _undo_learning(self, undo_id, words, key, before):
+        """Still learning's toast's *Undo*: that write put back (`word_marks.undo` by its id), the card's words as they
+        were if it still shows them Still learning."""
+        if self.undo is None or undo_id is None:
+            return
+
+        def then(result):
+            error = result if isinstance(result, str) else result.error
+            if error is not None:
+                if self.say is not None:
+                    self.say(strings.WORDS_MARK_FAILED.format(why=error))
+                return
+            if self._here(key) and result.done:            # (an id no longer held undoes nothing: shown as it is)
+                self.card.set_marks({w: before.get(w) for w in self._still({w: "learning" for w in words})})
+                self._again()
+        self._write(self.undo, (undo_id,), then)
 
     def _all_known(self, _checked=False):
         """*I know all of these*: the title's every unmarked *New here* word known, in one write; then the button is

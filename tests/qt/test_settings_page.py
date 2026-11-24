@@ -202,8 +202,7 @@ def test_every_visible_control_writes_exactly_its_keys_and_a_per_language_one_ke
     page, store = make_page(ALL_ON, language)
     open_all_folds(page)
     walked = set()
-    # (a9.1: Automation's switch, walked, brings *Count suspended cards as known* in for *Count as known in Anki* —
-    # one row each way — after the walk passed its place)
+    # (Kotoba-WS2: *Count as known in Anki* is one row either way: no walked switch brings one in)
     shown_at_start = {v.row.id for v in shown_views(page) if v.controls}
     # backwards: a row's switch comes before the rows it shows, so the rows are walked while they show
     for view in reversed(shown_views(page)):
@@ -234,12 +233,15 @@ def test_every_visible_control_writes_exactly_its_keys_and_a_per_language_one_ke
                 assert catalog.value(row, on_file, language) == control.value(), row.id
             else:
                 assert given_update is None
-                assert set(changes) == set(expected) and set(changes) <= set(row.keys), (row.id, changes)
+                # Kantan-B3's marker rides beside *Count as known in Anki*'s pick (a pick, never an old default)
+                # (and FS-2's beside *Swap gives*': the default's later flip reaches only who never picked)
+                beside = {"known_from_anki": {catalog.CHOSEN}, "swap_in_place": {catalog.SWAP_CHOSEN}}.get(row.id, set())
+                assert set(changes) == set(expected) and set(changes) <= set(row.keys) | beside, (row.id, changes)
                 assert changes == expected
             store.land()
     shown_at_end = {v.row.id for v in shown_views(page) if v.controls}
     late = shown_at_end - shown_at_start - walked
-    assert late <= {"anki_sync_include_suspended"}, late                  # the one row a walked switch brings in
+    assert late == set(), late                                             # no row a walked switch brings in
     assert walked >= shown_at_end - late - {"target_language"}
     assert len(walked) > 60, walked
     # the language last: one key, and the page follows it once it lands
@@ -554,12 +556,18 @@ def test_search_reads_japanese_words_and_opens_a_fold_where_a_row_matches_then_r
     assert page.folds() == {"level"}
     page.search.edit.setText("例文")                       # a label in Japanese: Backfill's fills
     assert page.rows["backfill_sentence"].isVisibleTo(page)
-    page.search.edit.setText("suspended")                 # Known words' + row, its fold closed by the user
-    assert page.rows["known_from_anki"].isVisibleTo(page)    # (Connect on: the one *What counts as known* row)
-    assert not page.rows["anki_sync_include_suspended"].isVisibleTo(page)
-    assert page.slabs["known"].adv.isVisibleTo(page)
+    # Mado-LT (3.0.18): *Count as known in Anki* moved out of Known words' More options to Anki & mining's *Your daily
+    # loop* (the ✓ Known move card, in the open: one home, the old place retired), so the fold this search opens is
+    # now Anki & mining's, by *More video folders*' old words — the rule pinned is the same: a match opens the fold
+    page.search.edit.setText("suspended")                 # the ✓ Known move card still answers its old words
+    assert page.rows["known_from_anki"].isVisibleTo(page)    # the one *Count as known* row (Kotoba-WS2, Mado-LT)
+    assert page.rows["known_from_anki"].parent() is page.slabs["anki"].main
+    assert "anki_sync_include_suspended" not in page.rows
+    page.search.edit.setText("where videos")              # Anki & mining's More options row, its fold closed
+    assert page.rows["connect_video_folders"].isVisibleTo(page)
+    assert page.slabs["anki"].adv.isVisibleTo(page)
     page.search.edit.setText("")
-    assert not page.slabs["known"].adv.isVisibleTo(page)  # closed again: as the user left it
+    assert not page.slabs["anki"].adv.isVisibleTo(page)   # closed again: as the user left it
     assert page.slabs["level"].adv.isVisibleTo(page) and page.folds() == {"level"}
     assert page.rows["names_katakana"].group.isVisibleTo(page)
 
@@ -711,9 +719,9 @@ def test_a_write_that_turns_a_switch_shows_and_hides_its_rows(qapp, monkeypatch)
     monkeypatch.setattr(windows, "OPENERS", windows.OPENERS + [
         windows.Opener("put-back", "Put Anki back", "tip", windows.always, lambda shell: None)])
     page, store = make_page(ALL_ON, "ja")
-    assert page.rows["connect_mine_words"].isVisibleTo(page)
+    assert page.rows["connect_send_grammar"].isVisibleTo(page)
     store.outside({"connect_enabled": False})
-    assert not page.rows["connect_mine_words"].isVisibleTo(page)
+    assert not page.rows["connect_send_grammar"].isVisibleTo(page)
     store.outside({"enable_junban": False})
     assert not page.slabs["backfill"].isVisibleTo(page) and not page.nav["backfill"].isVisibleTo(page)
     assert page.rows["put_back"].isVisibleTo(page)        # Put Anki back stays (N3)
@@ -843,7 +851,7 @@ def test_a_reveal_before_the_build_ends_has_its_slab_built_first(qapp):
     assert wait_until(lambda: page.built, 20)
     QApplication.processEvents()
     assert page.built_order[0] == "sentences"
-    assert _at_third(page, page.rows["max_contexts"])     # kept in place while the slabs above it were built
+    assert _at_third(page, page.rows["sentences_per_word"])   # kept in place while the slabs above it were built
 
 
 @pytest.mark.parametrize("setting", ["full", "reduced"])
@@ -1031,10 +1039,21 @@ def test_a_rows_description_waits_behind_its_question_mark_and_shows_on_hover_fo
     assert store.calls == []
 
 
+@pytest.fixture
+def settings_pre_cut():
+    """The Settings before the journey v3 cut-over (`use_v3(False)`), for a row only they hold — Speech's (D15: speaking
+    left the journey; the YouTube preview's old page still reads its key); back to the switch's own after (J-CUT)."""
+    catalog.use_v3(False)
+    yield
+    catalog.use_v3(catalog._journey_v3())
+
+
 @pytest.mark.parametrize("row_id", ["known_import", "update_check_enabled", "telemetry_enabled", "covers_download",
                                     "remove_downloaded_covers", "practice_ai", "enable_koe"])
-def test_a_line_the_learner_must_read_before_pressing_stays_in_sight_without_a_question_mark(qapp, row_id):
+def test_a_line_the_learner_must_read_before_pressing_stays_in_sight_without_a_question_mark(qapp, row_id, request):
     """What leaves this computer, what replaces or deletes for good: read before the press, never hidden."""
+    if row_id == "enable_koe":
+        request.getfixturevalue("settings_pre_cut")      # Speech's row: the Settings before the cut-over only
     data = dict(ALL_ON, known_road="import")
     page, _store = make_page(data, "ja")
     if row_id == "known_import":

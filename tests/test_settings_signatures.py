@@ -21,6 +21,7 @@ import copy
 import json
 import os
 import queue
+import re
 import shutil
 import threading
 from types import SimpleNamespace
@@ -224,7 +225,7 @@ def _junban_panel_save(**changes):
     panel = SimpleNamespace(scope=_Var(s["junban_scope"]), deck=_Var(s["junban_deck"]),
                             _order_value=lambda: s["junban_order"], _unlisted_value=lambda: s["junban_unlisted"],
                             _phrases_value=lambda: s["junban_phrases"],
-                            _ready_first_value=lambda: s["junban_ready_first"],
+                            _ready_first_value=lambda: s.get("junban_ready_first") is True,   # retired (Kyou-MO)
                             _only_marker_values=lambda: tuple(s["junban_only_markers"]),
                             _touchup_settings=lambda: {k: s[k] for k in JUNBAN_TOUCHUPS},
                             _replan_values=lambda: {},      # E3.1's row: saved only once touched
@@ -240,24 +241,6 @@ def _backfill_save(**changes):
     window = SimpleNamespace(_choices=lambda: {k: s[k] for k in BACKFILL_KEYS}, _write=MagicMock())
     BackfillGui._save(window)
     window._write.assert_not_called()
-
-
-def _architect_launch(words_per_day=None):
-    from modules.immersion_architect.gui import ImmersionArchitectGui
-    s = settings_manager.load_settings()
-    window = SimpleNamespace(wpd_var=_Var(words_per_day or s.get("words_per_day", 5)))
-    ImmersionArchitectGui._apply_words_per_day(window)
-
-
-def _speech_save(**changes):
-    from modules.koe.gui import KoeSettingsGui
-    s = dict(settings_manager.load_settings(), **changes)
-    window = SimpleNamespace(var_key=_Var(""), var_voice=_Var(s["koe_voice"]), var_model=_Var(s["koe_model"]),
-                             var_style=_Var(s["koe_style"]), var_temp=_Var(str(s["koe_temperature"])),
-                             var_cap=_Var(str(s["koe_daily_cap"])), _float=KoeSettingsGui._float,
-                             _int=KoeSettingsGui._int, app=None, _set_status=MagicMock())
-    with patch("modules.koe.server.restart"):
-        KoeSettingsGui._save(window)
 
 
 def _onboarding_complete(language="ja"):
@@ -279,7 +262,6 @@ JUNBAN_KEYS = ("junban_scope", "junban_deck", "junban_order", "junban_unlisted",
                "junban_ready_first", "junban_only_markers") + JUNBAN_TOUCHUPS
 BACKFILL_KEYS = ("junban_backfill_deck", "junban_backfill_cards", "junban_backfill_replace", "junban_backfill_fills",
                  "junban_backfill_fields", "junban_backfill_note_languages")
-SPEECH_KEYS = ("koe_voice", "koe_model", "koe_style", "koe_temperature", "koe_daily_cap")
 
 
 @pytest.fixture
@@ -417,18 +399,16 @@ def test_junban_panel_save_keeps_the_journey_current(library, start_dashboard):
     assert _journey_current("ja") is True, "and so does the dashboard's next save"
 
 
-def test_backfill_and_architect_saves_keep_the_journey_current(library, start_dashboard):
-    """The same for Anki Backfill's choices and the Immersion Architect's launch (it saves the words a day)."""
+def test_backfill_saves_keep_the_journey_current(library, start_dashboard):
+    """The same for Anki Backfill's choices."""
     pytest.importorskip("modules.junban.backfill_gui")
-    pytest.importorskip("modules.immersion_architect.gui")
     app = start_dashboard()
     app.save_settings(skip_ui=True)
     _seed_generate("ja")
-    for save in (_backfill_save, _architect_launch):
-        save()
-        assert _journey_current("ja") is True, f"{save.__name__} that changes nothing leaves the list up to date"
-        app.save_settings(skip_ui=True)
-        assert _journey_current("ja") is True, f"and so does the dashboard's next save ({save.__name__})"
+    _backfill_save()
+    assert _journey_current("ja") is True, "a Backfill save that changes nothing leaves the list up to date"
+    app.save_settings(skip_ui=True)
+    assert _journey_current("ja") is True, "and so does the dashboard's next save"
 
 
 def test_a_file_with_its_defaults_written_out_generates_byte_identical_output(library):
@@ -463,6 +443,10 @@ def test_a_file_with_its_defaults_written_out_generates_byte_identical_output(li
         for name in sorted(os.listdir(results)):
             with open(os.path.join(results, name), "rb") as f:
                 written[name] = f.read()
+        # The v3 journey's head names its render time (`stamp`, ms since the epoch): the rest of the page byte for byte
+        if "reading_list_static.html" in written:
+            written["reading_list_static.html"] = re.sub(rb'"stamp":"\d+"', b'"stamp":""',
+                                                         written["reading_list_static.html"], count=1)
         outputs.append(written)
 
     first, second = outputs
@@ -652,25 +636,35 @@ def test_rarity_or_coverage_reaches_the_run_through_its_args(library):
 
 
 # === 4. The report's own settings ================================================================================== #
-@pytest.mark.parametrize("path, value", [
-    ("logic.inline_completed_files", True),
-    ("logic.hide_audio_button", True),
-    ("logic.chunk_size", 100),
-    ("logic.priority_markers.priority_threshold", 0.6),
-    ("logic.priority_markers.priority_min", 5),
-    ("logic.priority_markers.lopsided_threshold", 0.9),
+@pytest.mark.parametrize("path, value, v3_reads", [
+    ("logic.inline_completed_files", True, False),
+    ("logic.hide_audio_button", True, False),
+    ("logic.chunk_size", 100, False),
+    ("logic.priority_markers.priority_threshold", 0.6, True),
+    ("logic.priority_markers.priority_min", 5, True),
+    ("logic.priority_markers.lopsided_threshold", 0.9, True),
 ])
-def test_report_only_logic_settings_re_render_and_never_re_analyze(library, path, value):
+def test_report_only_logic_settings_re_render_and_never_re_analyze(library, monkeypatch, path, value, v3_reads):
     """"Show 'Target Met' inline", "Hide Audio Button", the page size and the ✦ / ⚖ thresholds: the templates read them
     from the logic block the report embeds, and no run reads them. Changing one re-renders the report (about 3 s) —
-    never a full analysis (about 13 s on a large library)."""
-    _write({"target_language": "ja"})
-    before = {lang: _signatures(lang) for lang in LANGUAGES}
-    _write(_with(path, value))
-    for lang in LANGUAGES:
-        run, render = _signatures(lang)
-        assert run == before[lang][0], f"{lang}: no new analysis"
-        assert render != before[lang][1], f"{lang}: a new report"
+    never a full analysis (about 13 s on a large library). Since the v3 cut-over (J-CUT) the journey's render reads only
+    the thresholds (its ✦ / ⚖ marks): the old page's three re-render it only before the cut (SURASURA_DOOR=0; Zen keeps
+    the old list too) and draw nothing on v3 (the Redraw rule)."""
+    for door in ("0", None):
+        if door:
+            monkeypatch.setenv("SURASURA_DOOR", door)
+        else:
+            monkeypatch.delenv("SURASURA_DOOR", raising=False)
+        _write({"target_language": "ja"})
+        before = {lang: _signatures(lang) for lang in LANGUAGES}
+        _write(_with(path, value))
+        for lang in LANGUAGES:
+            run, render = _signatures(lang)
+            assert run == before[lang][0], f"{lang}: no new analysis"
+            if door or v3_reads:
+                assert render != before[lang][1], f"{lang}: a new report"
+            else:
+                assert render == before[lang][1], f"{lang}: nothing on the v3 page reads it"
 
 
 # === 5. Each language's own settings =============================================================================== #
@@ -711,9 +705,11 @@ def test_the_chinese_run_signature_ignores_japanese_only_switches(library):
 
 
 # === 6. Speech's port ============================================================================================== #
-def test_koe_port_re_renders_only_while_speech_is_on(library):
+def test_koe_port_re_renders_only_while_speech_is_on(library, monkeypatch):
     """The report embeds Speech's port to reach its helper — only while Speech is on. Then a new port is a new report;
-    with Speech off, the report holds no port and nothing changes. Never a new analysis."""
+    with Speech off, the report holds no port and nothing changes. Never a new analysis. The old page's (before the v3
+    cut-over: SURASURA_DOOR=0; Zen's too): the v3 page has no Speech (SPEC § 7)."""
+    monkeypatch.setenv("SURASURA_DOOR", "0")
     _write({"target_language": "ja", "koe_port": 8787})
     off = _signatures("ja")
     _write({"target_language": "ja", "koe_port": 8790})
@@ -800,7 +796,7 @@ def _dashboard_style_file():
     return settings
 
 
-@pytest.mark.parametrize("window", ["junban", "backfill", "architect", "speech", "onboarding", "youtube"])
+@pytest.mark.parametrize("window", ["junban", "backfill", "onboarding", "youtube"])
 def test_module_windows_write_only_their_own_keys(library, speech_sandbox, window):
     """Each window that saves settings.json writes its own keys onto the file as it is — never the loaded settings,
     which carry every default and every installed module's: those put back the retired key the dashboard drops (a full
@@ -815,10 +811,6 @@ def test_module_windows_write_only_their_own_keys(library, speech_sandbox, windo
         "backfill": ("modules.junban.backfill_gui", lambda: _backfill_save(
             junban_backfill_deck="日本語::Mining", junban_backfill_fills=["sentence"]),
             {"junban_backfill_deck": "日本語::Mining", "junban_backfill_fills": ["sentence"]}, BACKFILL_KEYS),
-        "architect": ("modules.immersion_architect.gui", lambda: _architect_launch(12), {"words_per_day": 12},
-                      ("words_per_day",)),
-        "speech": ("modules.koe.gui", lambda: _speech_save(koe_voice="Iapetus", koe_temperature=0.9),
-                   {"koe_voice": "Iapetus", "koe_temperature": 0.9}, SPEECH_KEYS),
         "onboarding": ("app.onboarding_gui", lambda: _onboarding_complete("zh"), {"target_language": "zh"},
                        ("target_language",)),
         "youtube": ("modules.youtube_downloader.gui", lambda: _youtube_ack(True), {"youtube_risk_acknowledged": True},
@@ -827,8 +819,6 @@ def test_module_windows_write_only_their_own_keys(library, speech_sandbox, windo
     module, save, expected, own = saves[window]
     pytest.importorskip(module)
     before = _dashboard_style_file()
-    if window == "speech":
-        before["enable_koe"] = False                     # Speech's window opens only once Speech is revealed
     settings_manager.save_settings(before)               # as every save writes it (no hide_satoru without the module)
     before = _read()
 
@@ -838,8 +828,7 @@ def test_module_windows_write_only_their_own_keys(library, speech_sandbox, windo
     assert set(after) - set(before) <= set(own), "nothing new but the window's own keys"
     assert {k: v for k, v in after.items() if k not in own} == {k: v for k, v in before.items() if k not in own}, \
         "every other key exactly as it was"
-    if window != "speech":
-        assert not [key for key in after if key.startswith("koe_")], "no Speech key for someone who never turned it on"
+    assert not [key for key in after if key.startswith("koe_")], "no Speech key for someone who never turned it on"
     assert "reinforce_segmentation" not in after
 
 
@@ -882,7 +871,9 @@ FLIPS = {"theme": "Modern Light", "strategy": "coverage", "target_language": "zh
          "logic.selection.band": "rare", "logic.selection.bands_ppm": {"very_rare": 3},
          "logic.sentence_boundaries.ja": "。｡．！？!?\n…",
          "logic.sentence_boundaries.zh": "。｡！？!?\n；",
-         "anki_sync_decks": {"ja": ["日本語::Mining"]}, "anki_sync_fields": {"ja": ["Expression"]}}
+         "anki_sync_decks": {"ja": ["日本語::Mining"]}, "anki_sync_fields": {"ja": ["Expression"]},
+         "study_order": "priority",
+         "journey_meanings": "yours_en"}       # a value the page offers ("enx" reads as the default, English)
 
 
 def _flip(path, value):

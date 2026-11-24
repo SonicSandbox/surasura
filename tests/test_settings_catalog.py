@@ -9,6 +9,7 @@ licences ask for wherever the data goes.
 The catalog reads no library: the values here are settings as a user's file holds them (real deck names, real folders).
 """
 import ast
+import contextlib
 import importlib.util
 import os
 import subprocess
@@ -29,6 +30,18 @@ EVERYTHING = frozenset(catalog.MODULES) | {"koe_revealed", "hato_found", "miner_
 NOTHING = frozenset()
 
 
+@contextlib.contextmanager
+def _settings_pre_cut():
+    """The Settings before the journey v3 cut-over (`use_v3(False)`), for what only they hold: Speech's rows (D15: speaking
+    left the journey with the old page; the YouTube preview's old page still reads its keys) — back to the switch's own
+    after (J-CUT)."""
+    catalog.use_v3(False)
+    try:
+        yield
+    finally:
+        catalog.use_v3(catalog._journey_v3())
+
+
 def _found(name):
     try:
         return importlib.util.find_spec(name) is not None
@@ -37,8 +50,11 @@ def _found(name):
 
 
 # rows that read a module's own data (its options, its defaults) are checked where the modules are: the local --all;
-# GitHub's checkout has none of them (the page then never shows those rows: `found` leaves them out)
-WITH_MODULES = pytest.mark.skipif(not all(_found(m) for m in catalog.MODULES),
+# GitHub's checkout has none of them (the page then never shows those rows: `found` leaves them out). Koe is shelved
+# (3.0.18): no checkout holds it, and its rows read no module data (only the ctx: `modules.koe` + `koe_revealed`), so
+# it is not waited for.
+SHELVED = {"modules.koe"}
+WITH_MODULES = pytest.mark.skipif(not all(_found(m) for m in catalog.MODULES if m not in SHELVED),
                                   reason="the optional modules aren't in this checkout (the local --all runs this)")
 
 
@@ -86,12 +102,12 @@ def test_one_list_settings_switches_sit_together_or_the_one_place_rule_fails(mon
     them, they are two places a person has to find — the check says so."""
     assert _switches_apart() == {}
     rows = list(catalog.ROWS)
-    i = next(n for n, row in enumerate(rows) if row.id == "backfill_sentence")
+    i = next(n for n, row in enumerate(rows) if row.id == "backfill_pitch")
     moved = rows.pop(i)
     monkeypatch.setattr(catalog, "ROWS", tuple(rows[:i + 1] + [moved] + rows[i + 1:]))      # a row between them
     assert "junban_backfill_fills" in _switches_apart()
     monkeypatch.setattr(catalog, "ROWS", tuple(rows[:i] + [moved._replace(section="junban")] + rows[i:]))
-    assert _switches_apart()["junban_backfill_fills"][-1] == ("backfill_sentence", "junban")
+    assert _switches_apart()["junban_backfill_fills"][-1] == ("backfill_pitch", "junban")
 
 
 def _owner(key):
@@ -201,8 +217,12 @@ def test_every_door_opens_a_registered_window_or_one_still_to_come():
     registered = {opener.name for opener in windows.OPENERS}
     waiting = catalog.pending(registered)
     assert "nobody" not in waiting.values(), f"doors no opener holds and nothing brings: {waiting}"
-    assert set(catalog.PENDING_OPENERS) <= catalog.doors()
     assert {"frequency-lists", "sentence-dictionary"} <= registered and not set(waiting) & registered
+    doors = catalog.doors()
+    with _settings_pre_cut():      # Speech's door (koe) is on the Settings before the cut-over only (D15)
+        assert "nobody" not in catalog.pending(registered).values()
+        doors |= catalog.doors()
+    assert set(catalog.PENDING_OPENERS) <= doors
 
 
 def test_settings_held_by_a_window_are_reached_through_its_door_row():
@@ -217,8 +237,10 @@ def test_settings_held_by_a_window_are_reached_through_its_door_row():
     for opener in ("junban", "backfill"):
         assert [row.id for row in catalog.ROWS if opener in row.door] == [
             "junban_scope" if opener == "junban" else "junban_backfill_cards"]
-    for key in ("koe_voice", "koe_model", "koe_style", "koe_temperature", "koe_daily_cap"):
-        assert reached[key] == "koe_door" and key not in catalog.NOT_SHOWN
+    with _settings_pre_cut():                  # Speech's window and its door row: the Settings before the cut-over (D15)
+        speech = {key: row.id for row in catalog.ROWS for key in row.reaches}
+        for key in ("koe_voice", "koe_model", "koe_style", "koe_temperature", "koe_daily_cap"):
+            assert speech[key] == "koe_door" and key not in catalog.NOT_SHOWN
     for row in catalog.ROWS:
         if row.reaches:
             # (a program row reaches its program, which its own picker writes: Sonic 2026-11-05)
@@ -272,6 +294,8 @@ def test_each_rows_change_writes_its_own_keys_and_nothing_else(language):
         # *Count as known in Anki*'s one rider here: Kantan-B3's marker, beside a pick (the sync's switch rides only
         # with Connect on, `_wanted`)
         riders = {catalog.CHOSEN} if row.id == "known_from_anki" else set()
+        riders |= {"junban_off_list"} if row.id in catalog.ASIDE_TICKS else set()     # Kyou-MO: the switch's pin
+        riders |= {catalog.SWAP_CHOSEN} if row.id == "swap_in_place" else set()      # FS-2: *Swap gives*' marker
         assert set(changes) <= set(row.keys) | riders, f"{row.id} wrote {sorted(changes)}"
         assert (update is not None) == (row.keys[0] in catalog.PER_LANGUAGE), row.id
         for key in changes:
@@ -302,11 +326,14 @@ def test_toggles_choices_numbers_and_text_write_their_value():
     settings = {"target_language": "ja", "logic": {"names_kanji": True}}
     assert catalog.change(catalog.ROW["names_kanji"], settings, "ja", False) == ({"logic.names_kanji": False}, None)
     assert catalog.change(catalog.ROW["zh_script"], settings, "zh", "t") == ({"zh_script": "t"}, None)
-    assert catalog.change(catalog.ROW["connect_mine_words"], settings, "ja", "i1")[0] == {"connect_mine_words": "i1"}
+    assert catalog.change(catalog.ROW["connect_every_word"], settings, "ja", True)[0] == {"connect_every_word": True}
+    assert catalog.change(catalog.ROW["study_order"], settings, "ja", "priority")[0] == {"study_order": "priority"}
     assert catalog.change(catalog.ROW["connect_open_anki"], settings, "ja", True)[0] == {"connect_open_anki": True}
-    assert catalog.change(catalog.ROW["theme"], settings, "ja", "Modern Light")[0] == {"theme": "Modern Light"}
-    # a number past its bounds is held to them (2.4's spinbox: 1–10 sentences, a coverage of at most 100 %)
-    assert catalog.change(catalog.ROW["max_contexts"], settings, "ja", 40)[0] == {"logic.context.max_contexts": 10}
+    # the look and *Sentences per word*: the journey v3 rows (J-CUT) write the keys the old rows wrote
+    assert catalog.change(catalog.ROW["journey_theme"], settings, "ja", "Modern Light")[0] == {"theme": "Modern Light"}
+    assert catalog.change(catalog.ROW["sentences_per_word"], settings, "ja", 5)[0] == {"logic.context.max_contexts": 5}
+    assert catalog.change(catalog.ROW["sentences_per_word"], settings, "ja", 0)[0] == {"logic.context.max_contexts": 0}
+    # a number past its bounds is held to them (2.4's spinbox: a coverage of at most 100 %)
     assert catalog.change(catalog.ROW["target_coverage"], settings, "ja", "95")[0] == {"target_coverage": 95}
     # typed text is kept without the spaces around it (Junban's own windows strip it too)
     assert catalog.change(catalog.ROW["junban_own_tag"], settings, "ja", "  immersion ")[0] == \
@@ -347,7 +374,9 @@ def test_tablets_write_a_list_in_the_settings_order_or_only_the_bool_keys_that_f
     # several bool keys: a switch each, only its own key written
     flag = catalog.ROW["junban_later_flag"]
     assert catalog.change(flag, {}, "ja", True) == ({"junban_later_flag": True}, None)
-    assert catalog.change(flag, {"junban_later_flag": True}, "ja", False)[0] == {"junban_later_flag": False}
+    # (Kyou-MO: the flag that made an unset switch read *Set aside*, unticked, pins it — never flips it to *Leave*)
+    assert catalog.change(flag, {"junban_later_flag": True}, "ja", False)[0] == {"junban_later_flag": False,
+                                                                                  "junban_off_list": "aside"}
 
 
 @WITH_MODULES
@@ -377,17 +406,18 @@ def test_your_own_cards_is_one_choice_and_their_tag_sits_under_it_never_greyed()
 
 
 @WITH_MODULES
-def test_phrases_and_i_plus_one_first_are_two_switches_for_japanese_not_at_the_back():
-    """Q31: one row of two pills under "First" read as pick one; they work together. Two plain switches, each its own
-    key, hidden for Chinese and with "At the back" (Junban's reorder uses neither there)."""
-    for row_id in ("junban_phrases", "junban_ready_first"):
+def test_phrases_is_a_switch_for_japanese_and_i_plus_one_first_is_no_switch_any_more():
+    """Q31: *Idioms and set phrases* is a plain switch, its own key, hidden for Chinese (Junban's reorder doesn't use
+    it there). Kyou-MO: the unlocking word always comes first — *i+1 first* has no row, and *At the back* (your own
+    cards only now) no longer hides the phrases."""
+    assert "junban_ready_first" not in catalog.ROW and "junban_ready_first" not in S.ROWS
+    for row_id in ("junban_phrases",):
         row = catalog.ROW[row_id]
         assert (row.kind, row.keys, row.group) == ("toggle", (row_id,), None)
         assert catalog.change(row, {row_id: False}, "ja", True) == ({row_id: True}, None)
         assert catalog.change(row, {row_id: True}, "ja", False) == ({row_id: False}, None)
-        for unlisted in ("list_first", "journey"):
+        for unlisted in ("list_first", "journey", "back"):
             assert row_id in _shown({"junban_unlisted": unlisted}, "ja"), (row_id, unlisted)
-        assert row_id not in _shown({"junban_unlisted": "back"}, "ja")
         assert row_id not in _shown({}, "zh")
         assert row_id not in _shown({"enable_junban": False}, "ja")
         # IK-3: Junban's own rule — a marker filter moves only the chosen words, so neither switch is asked then
@@ -395,7 +425,36 @@ def test_phrases_and_i_plus_one_first_are_two_switches_for_japanese_not_at_the_b
         assert row_id not in _shown({"junban_only_markers": ["Reading"]}, "ja")      # hand-edited, read as Junban does
         assert row_id in _shown({"junban_only_markers": ["sparkle"]}, "ja")         # no mark Junban knows: no filter
     assert "junban_first" not in catalog.ROW and "junban_first" not in S.ROWS
-    assert catalog.ROW["junban_ready_first"].label.startswith("i+1 first: ")
+
+
+@WITH_MODULES
+def test_your_own_cards_not_on_the_list_are_one_switch_with_set_asides_two_ticks_under_it():
+    """Kyou-MO (F24): *Cards too rare for your list go* and the three ticks are one row — *Leave them · At the back ·
+    Set aside* — shown as Junban reads the file (3.0.17's keys while it is unset); the flag and suspend ticks show only
+    under *Set aside*, and the tag tick is gone (set aside always tags)."""
+    row = catalog.ROW["junban_off_list"]
+    assert (row.kind, row.keys, row.options, row.group) == ("choice", ("junban_off_list",), ("leave", "back", "aside"),
+                                                            "not_on_list")
+    assert not {"junban_unlisted", "junban_later_tag"} & set(catalog.ROW)
+    assert catalog.value(row, {}, "ja") == "leave"
+    assert catalog.value(row, {"junban_unlisted": "back"}, "ja") == "back"
+    assert catalog.value(row, {"junban_later_suspend": True}, "ja") == "aside"
+    assert catalog.value(row, {"junban_off_list": "leave", "junban_later_suspend": True}, "ja") == "leave"
+    for tick in ("junban_later_flag", "junban_later_suspend"):
+        assert catalog.ROW[tick].sub is True
+        assert tick not in _shown({}, "ja")
+        assert tick in _shown({"junban_off_list": "aside"}, "ja")
+        assert tick in _shown({"junban_later_flag": True}, "ja"), "an old file's set aside shows its ticks"
+        assert tick not in _shown({"junban_off_list": "back", "junban_later_flag": True}, "ja")
+    assert catalog.change(row, {}, "ja", "aside") == ({"junban_off_list": "aside"}, None)
+    # Unset, the switch is read from the old ticks: unticking the flag that made it *Set aside* pins it, so it stays
+    # set aside (never flips to *Leave*); the value shown picked again writes nothing (S19)
+    old = {"junban_later_flag": True}
+    assert catalog.change(row, old, "ja", "aside") == ({}, None)
+    flag = catalog.ROW["junban_later_flag"]
+    assert catalog.change(flag, old, "ja", False) == ({"junban_later_flag": False, "junban_off_list": "aside"}, None)
+    assert catalog.change(flag, dict(old, junban_off_list="aside"), "ja", False) == ({"junban_later_flag": False},
+                                                                                     None)
 
 
 @WITH_MODULES
@@ -407,8 +466,8 @@ def test_the_first_switches_ask_junbans_own_rule_and_hide_when_it_cant_be_asked(
     monkeypatch.setattr(reposition, "first_applies", lambda settings, language: asked.append(language) or False)
     assert "junban_phrases" not in _shown({}, "ja") and asked
     monkeypatch.setitem(sys.modules, "modules.junban.reposition", None)          # an import that fails
-    assert not {"junban_phrases", "junban_ready_first"} & _shown({}, "ja")
-    assert "junban_order" in _shown({}, "ja")                                    # the rest of Junban's rows stay
+    assert "junban_phrases" not in _shown({}, "ja")
+    assert "junban_scope" in _shown({}, "ja")                                    # the rest of Junban's rows stay
 
 
 @WITH_MODULES
@@ -430,7 +489,7 @@ def test_no_multi_pick_reads_as_a_pick_one():
     assert all(len(row.keys) == 1 and row.options for row in tablets), [row.id for row in tablets]
     assert {row.id for row in tablets} == {"known_from_anki", "junban_only_markers"}
     member = [row for row in catalog.ROWS if catalog._member(row)]
-    assert {row.id for row in member} == {"backfill_patterns", "backfill_sentence"}
+    assert {row.id for row in member} == {"backfill_patterns", "backfill_sentence", "backfill_furigana", "backfill_pitch"}
     assert all(len(row.options) == 1 for row in member)
 
 
@@ -560,7 +619,8 @@ def test_values_read_dotted_paths_per_language_entries_and_defaults_from_a_froze
     assert catalog.value(catalog.ROW["anki_decks"], settings, "zh") == []
     assert catalog.value(catalog.ROW["automation"], settings, "ja") is True             # D29's default: on
     assert catalog.value(catalog.ROW["connect_backlog_cap"], settings, "zh") == 80
-    assert catalog.value(catalog.ROW["enable_koe"], settings, "ja") is False            # absent: off
+    with _settings_pre_cut():                                      # Speech's row: before the cut-over only (D15)
+        assert catalog.value(catalog.ROW["enable_koe"], settings, "ja") is False        # absent: off
     assert catalog.value(catalog.ROW["known_road"], settings, "ja") == "anki"
     assert catalog.value(catalog.ROW["known_road"], settings, "zh") == "import"
 
@@ -621,17 +681,24 @@ def test_japanese_rows_hide_for_chinese_and_the_script_shows_only_for_chinese():
 
 @WITH_MODULES
 def test_module_rows_hide_without_their_module():
-    without = {row for row in _shown({"enable_koe": True}, "ja", frozenset({"koe_revealed"}))}
-    for row_id in ("enable_junban", "junban_scope", "put_back", "backfill_patterns", "enable_youtube_transcripts",
-                   "enable_youtube_preview", "enable_koe", "koe_door", "setup_cards"):
-        assert row_id not in without, row_id
-        assert row_id in _shown({"enable_koe": True}, "ja"), row_id
+    def check(row_ids):
+        without = {row for row in _shown({"enable_koe": True}, "ja", frozenset({"koe_revealed"}))}
+        for row_id in row_ids:
+            assert row_id not in without, row_id
+            assert row_id in _shown({"enable_koe": True}, "ja"), row_id
+    check(("enable_junban", "junban_scope", "put_back", "backfill_patterns", "enable_youtube_transcripts",
+           "enable_youtube_preview", "setup_cards"))
+    with _settings_pre_cut():                  # Speech's rows: the Settings before the cut-over only (D15)
+        check(("enable_koe", "koe_door"))
 
 
 def test_speech_shows_only_once_revealed_in_settings_json():
     """The reveal gate (`koe.is_revealed`: the key present in the file): its module alone shows nothing."""
-    assert not {"enable_koe", "koe_door"} & _shown({}, "ja", frozenset(catalog.MODULES))
-    assert {"enable_koe", "koe_door"} <= _shown({"enable_koe": False}, "ja", EVERYTHING)
+    with _settings_pre_cut():                  # Speech's rows: the Settings before the cut-over only (D15)
+        assert not {"enable_koe", "koe_door"} & _shown({}, "ja", frozenset(catalog.MODULES))
+        assert {"enable_koe", "koe_door"} <= _shown({"enable_koe": False}, "ja", EVERYTHING)
+    if catalog._V3:                            # the cut-over's: not even revealed
+        assert not {"enable_koe", "koe_door"} & _shown({"enable_koe": False}, "ja", EVERYTHING)
 
 
 @WITH_MODULES
@@ -646,13 +713,15 @@ def test_junban_rows_follow_its_switch_but_put_anki_back_stays_and_backfill_leav
 
 
 def test_connects_rows_show_only_with_its_switch_on():
-    connect_rows = {"connect_mine_words", "mine_line", "connect_send_grammar", "connect_open_anki",
-                    "connect_backlog_cap", "known_from_anki", "connect_video_folders", "connect_trust_timing",
+    connect_rows = {"connect_every_word", "mine_line", "connect_send_grammar", "connect_open_anki",
+                    "connect_backlog_cap", "connect_video_folders", "connect_trust_timing",
                     "junban_own_tag", "junban_order_all", "connect_anki_miner_profile"}
     assert not connect_rows & _shown({}, "ja")
     assert connect_rows <= _shown({"connect_enabled": True}, "ja")
-    # the switch itself, the sync minute, the automation switch and the address show either way
-    assert {"connect_enabled", "anki_sync_delay_min", "automation", "anki_connect_url"} <= _shown({}, "ja")
+    # the switch itself, the sync minute, the automation switch, the address and (Kotoba-WS2) *Count as known in
+    # Anki* show either way
+    assert {"connect_enabled", "anki_sync_delay_min", "automation", "anki_connect_url", "known_from_anki"} <= \
+        _shown({}, "ja")
     assert "junban_own_tag" not in _shown({"connect_enabled": True}, "ja", frozenset({"koe_revealed"}))
 
 
@@ -750,7 +819,10 @@ def test_reveal_targets_and_written_keys_find_their_rows():
     assert catalog.locate("mine_line") == ("anki", "mine_line")
     assert catalog.locate("soon_line") == ("content", "soon_line")
     assert catalog.locate("logic.names_kanji") == ("parsing", "names_kanji")
-    assert catalog.locate("koe_voice") == ("reading", "koe_door")
+    with _settings_pre_cut():                                   # Speech's door: the Settings before the cut-over
+        assert catalog.locate("koe_voice") == ("reading", "koe_door")
+    if catalog._V3:                                             # the cut-over's: no row reaches it (NOT_SHOWN)
+        assert catalog.locate("koe_voice") is None and "koe_voice" in catalog.NOT_SHOWN
     assert catalog.locate("app_theme") is None
     assert catalog.rows_for(["logic.selection.auto"]) == ["level"]
 
@@ -822,14 +894,24 @@ def _credits_before_the_move():
         return None
 
 
+# Lines added to the credits since 2.4, each with the data it credits (a new shipped table must be credited).
+ADDED_SINCE_2_4 = (
+    "• KANJIDIC2 (EDRDG), with JMdict and CC-CEDICT — CC BY-SA 4.0: the journey's English meanings and each kanji's meanings and readings (app/gloss_ja_data.py, app/gloss_zh_data.py, app/kanji_data.py). Those tables are shared under the same licence.\n",
+)
+
+
 def test_the_credits_are_2_4s_text_byte_for_byte_and_the_tk_window_still_reads_them():
     from app import credits, dictionary_data
     import app.main as main_module
     before = _credits_before_the_move()
     if before is None:
         pytest.skip("git history isn't readable here")
-    assert credits.DATA_CREDITS == before
-    assert credits.data_credits() == before.replace("{jmdict}", dictionary_data.JMDICT_CREATED or "unknown")
+    now = credits.DATA_CREDITS
+    for line in ADDED_SINCE_2_4:
+        assert line in now
+        now = now.replace(line, "", 1)
+    assert now == before
+    assert credits.data_credits() == credits.DATA_CREDITS.replace("{jmdict}", dictionary_data.JMDICT_CREATED or "unknown")
     assert main_module.DATA_CREDITS is credits.DATA_CREDITS
     assert main_module.data_credits is credits.data_credits
 
@@ -916,7 +998,7 @@ def test_make_cards_for_me_waits_for_anki_miner_as_one_line_that_says_so():
     assert "connect_enabled" not in before_look and "connect_needs_miner" not in before_look
     on = _shown({"connect_enabled": True}, "ja", NO_MINER)
     assert "connect_enabled" in on and "connect_needs_miner" not in on
-    assert {"connect_mine_words", "mine_line"} <= on                       # Connect's own rows follow its switch
+    assert {"connect_every_word", "mine_line"} <= on                       # Connect's own rows follow its switch
     row = catalog.ROW["connect_needs_miner"]
     assert row.section == "anki" and row.keys == () and row.label == "Cards made for you"
     assert row.help == S.CARDS_WHY and row.tip                       # what you get: behind its ? (Kantan-S2)
@@ -963,45 +1045,33 @@ def test_B2_7_one_look_says_which_tools_are_here_and_one_rule_when_make_cards_is
 CONNECT_ON = {"connect_enabled": True}
 
 
-def test_what_counts_as_known_is_one_row_each_way_never_two_answers_on_screen():
-    """DIAGNOSIS 3 put *Count as known in Anki* beside *Count suspended cards as known* — still two answers to one
-    question (Sonic, a9.1: "anything redundant we don't want"). Now one row shows at a time under *What counts as
-    known*: the sync's switch while Make cards for me is off, Connect's states while it is on; each key keeps its
-    meaning."""
-    ids = [r.id for r in catalog.ROWS]
-    row, suspended = catalog.ROW["known_from_anki"], catalog.ROW["anki_sync_include_suspended"]
-    assert (row.section, row.adv, row.kind, row.keys) == ("known", True, "tablets", ("known_from_anki",))
-    assert ids.index("known_from_anki") == ids.index("anki_sync_include_suspended") + 1
-    assert suspended.group == row.group == "counts_as_known"                     # either one under the group name
-    on, off = _shown(CONNECT_ON, "ja"), _shown({}, "ja")
-    assert "known_from_anki" in on and "anki_sync_include_suspended" not in on
-    assert "anki_sync_include_suspended" in off and "known_from_anki" not in off
-    # the "and": in sight whenever two states are picked (`help_line`), and in the tip; the ? line says the default
-    # (Kantan-B3)
-    assert "every state you pick" in row.tip and "Suspended + Marked" in row.help
-    assert "Studied, then suspended" in suspended.tip                          # (EZ-12: the why went for 12 words)
-    # A7S-1: the sync reads studied cards only (`-is:new`); the signal reads new ones too — each row says which
-    assert "New cards you suspend never count" in suspended.tip and "New cards count too" in row.tip
-    # neither names the other any more: they never stand together
-    assert "Count as known in Anki" not in suspended.tip and "Count suspended cards as known" not in row.tip
+def test_what_counts_as_known_is_one_row_always_shown_and_red_or_green_is_never_a_pick():
+    """Kotoba-WS2 (Sonic 2026-11-19): *Count suspended cards as known* folded into *Count as known in Anki* — one row, one
+    key, shown with Make cards for me on or off (off, the known-words sync reads its picks for the studied cards:
+    `anki_sync.counted_suspended`). Red and green are the review loop's Ignore and Swap (WL-46 / 46b): never a pick.
+    Mado-LT (3.0.18): the row is the loop's ✓ Known move card, moved to Anki & mining (one home); the picks leave out
+    the loop's two flags as they are now (red and green by default)."""
+    row = catalog.ROW["known_from_anki"]
+    assert (row.section, row.adv, row.kind, row.keys) == ("anki", False, "tablets", ("known_from_anki",))
+    assert row.group == "loop" and "anki_sync_include_suspended" not in catalog.ROW
+    assert "known_from_anki" in _shown(CONNECT_ON, "ja") and "known_from_anki" in _shown({}, "ja")
+    picks = [v for v, _label, _line in catalog.options(row, {}, "ja")]
+    assert picks == ["suspended", "marked", "flag:2", "flag:4", "flag:5", "flag:6", "flag:7"]
+    assert "every state you pick" in row.tip and len(row.tip.split()) <= 12 and "Suspended + Marked" in row.help
+    assert "anki_sync_include_suspended" in catalog.NOT_SHOWN                      # retired, read once on load
 
 
 @pytest.mark.parametrize("held, picks, wanted", [
-    # the sync's switch on (set with Connect off), Suspended alone still picked: it stays, nothing written for it
-    (True, ["suspended"], {}),
-    # Suspended unpicked: the sync stops counting suspended cards too — never a count on an answer no longer shown
-    (True, [], {"known_from_anki": [], "anki_sync_include_suspended": False, "known_from_anki_chosen": True}),
-    # Suspended AND Marked ("and"): the sync's every-suspended-card count would break the "and" — off with it
-    (True, ["marked", "suspended"], {"known_from_anki": ["suspended", "marked"],
-                                      "anki_sync_include_suspended": False, "known_from_anki_chosen": True}),
-    # off stays off: this row never turns the sync's switch on (that is its own row's, with Connect off)
-    (False, ["suspended"], {}),
-    (False, ["marked"], {"known_from_anki": ["marked"], "known_from_anki_chosen": True}),
+    (["suspended"], ["suspended"], {}),                                           # unchanged: nothing written
+    (["suspended"], [], {"known_from_anki": [], "known_from_anki_chosen": True}),
+    (["suspended"], ["marked", "suspended"], {"known_from_anki": ["suspended", "marked"], "known_from_anki_chosen": True}),
+    (["suspended", "marked"], ["marked"], {"known_from_anki": ["marked"], "known_from_anki_chosen": True}),
 ])
-def test_count_as_known_in_anki_turns_the_syncs_switch_off_when_its_answer_no_longer_holds(held, picks, wanted):
+def test_count_as_known_in_anki_writes_its_own_key_alone_never_the_retired_switch(held, picks, wanted):
     row = catalog.ROW["known_from_anki"]
-    settings = dict(CONNECT_ON, known_from_anki=["suspended"], anki_sync_include_suspended=held)
-    assert catalog.change(row, settings, "ja", picks)[0] == wanted
+    for connect in (CONNECT_ON, {}):
+        settings = dict(connect, known_from_anki=held, anki_sync_include_suspended=True)
+        assert catalog.change(row, settings, "ja", picks)[0] == wanted
 
 
 def test_count_as_known_in_anki_with_the_syncs_switch_unwritten_reads_it_as_off():
@@ -1020,27 +1090,28 @@ def test_count_as_known_in_ankis_line_names_every_state_picked_so_an_and_is_neve
     flagged = dict(CONNECT_ON, known_from_anki=["flag:4", "marked", "suspended"])
     assert catalog.help_line(row, flagged, "zh") == ("Counts only cards that are Suspended + Marked + Flag 4 (Blue), "
                                                      "all at once")                # in the setting's order
-    two_flags = dict(CONNECT_ON, known_from_anki=["flag:3", "suspended", "flag:1"])
-    assert catalog.help_line(row, two_flags, "ja") == ("A card has one flag at a time: Flag 1 (Red) + Flag 3 (Green) "
+    two_flags = dict(CONNECT_ON, known_from_anki=["flag:4", "suspended", "flag:2"])
+    assert catalog.help_line(row, two_flags, "ja") == ("A card has one flag at a time: Flag 2 (Orange) + Flag 4 (Blue) "
                                                        "counts no card")           # A7S-7: never a match
+    red_green = dict(CONNECT_ON, known_from_anki=["flag:3", "suspended", "flag:1"])
+    assert catalog.help_line(row, red_green, "ja") == S.KNOWN_RED_GREEN          # Kotoba-WS2: they win
     for one in (["suspended"], [], "marked", ["suspended", "flag:33"]):        # a term it doesn't know is no state
         assert catalog.help_line(row, dict(CONNECT_ON, known_from_anki=one), "ja") == row.help, one
     assert catalog.help_line(catalog.ROW["connect_backlog_cap"], two, "ja") == catalog.ROW["connect_backlog_cap"].help
 
 
-def test_words_to_make_cards_from_says_your_list_is_i_plus_one_and_the_rest_and_only_i_plus_one_another_set():
-    """DIAGNOSIS 4 (Sonic: "worth mentioning that it is i+1 AND the other stuff so people don't see i+1 and jump on
-    it"): `pick.py`'s *Your list* takes every listed word, an i+1 line first; *Only i+1* any word with one, list or not.
-    Both Settings (3.0's and 2.x's Tk panel) read one copy of the words."""
-    row = catalog.ROW["connect_mine_words"]
-    lines = {v: line for v, _label, line in catalog.options(row, CONNECT_ON, "ja")}
-    assert lines["list"].startswith("i+1 and more") and "every unknown word on your list" in lines["list"]
-    assert "the list's order" in row.tip                  # A7S-2: i+1 picks each card's line, never the words' order
-    # Kyou-UL (words PROVISIONAL, 2026-11-19): it says some of its cards are for words not on your list
-    assert lines["i1"] == "Only words with an i+1 line, list or not: some won't be on your list."
-    assert "i+1 first, then the rest" in row.help and "Only i+1" in row.help    # (EZ-12's shorter line)
-    assert S.OPTION_LINES[row.id] == {v: line for v, _l, line in settings_values.WORDS}
-    assert S.OPTIONS[row.id] == {v: label for v, label, _line in settings_values.WORDS}
+def test_cards_for_every_new_word_is_one_switch_under_more_options_and_the_study_order_is_the_lists():
+    """Kantan-MO (the mining model): *Words to make cards from* (Your list / Every new word / Only i+1) is retired —
+    Level decides, *Cards for every new word* (a switch under Connect's More options, counted in the cap) adds the
+    rest; 順's *Order* is the list's *Study order*, in Settings › Level, shown with or without 順."""
+    row = catalog.ROW["connect_every_word"]
+    assert (row.section, row.kind, row.adv, row.keys) == ("anki", "toggle", True, ("connect_every_word",))
+    assert "connect_every_word" in _shown(CONNECT_ON, "ja") and "connect_every_word" not in _shown({}, "ja")
+    assert "Keep up to" in row.help and len(row.tip.split()) <= 12
+    order = catalog.ROW["study_order"]
+    assert (order.section, order.kind, order.options) == ("level", "choice", ("content", "priority"))
+    assert S.OPTIONS["study_order"] == {"content": "As I’ll meet it", "priority": "By leverage"}
+    assert "study_order" in _shown({}, "ja") and "connect_mine_words" not in catalog.ROW
 
 
 def test_more_video_folders_is_an_extra_under_more_options_that_says_the_library_is_always_searched():
@@ -1056,7 +1127,9 @@ def test_more_video_folders_is_an_extra_under_more_options_that_says_the_library
                                            ("more video", "connect_video_folders"),
                                            ("suspended", "known_from_anki"),
                                            ("count as known", "known_from_anki"),
-                                           ("i+1", "connect_mine_words")])
+                                           ("i+1", "connect_every_word"),
+                                           ("every new word", "connect_every_word"),
+                                           ("leverage", "study_order"), ("junban order", "study_order")])
 def test_the_moved_rows_are_found_by_search_under_their_old_and_new_words(query, row_id):
     assert row_id in catalog.find(query, CONNECT_ON, "ja", EVERYTHING)
 
@@ -1080,7 +1153,9 @@ JUNBAN_SWITCH_ON = {"enable_junban": True}
     ("restore", "junban_backfill_cards", JUNBAN_SWITCH_ON),
     ("extract", "split_length", {}), ("add from", "enable_youtube_transcripts", {}),
     ("preview a video", "enable_youtube_preview", {}),
-    ("suspended", "anki_sync_include_suspended", {}), ("count as known", "anki_sync_include_suspended", {}),
+    ("suspended", "known_from_anki", {}), ("count as known", "known_from_anki", {}),
+    ("count suspended cards as known", "known_from_anki", {}), ("include suspended", "known_from_anki", {}),
+    ("blacklist", "words_to_leave_out", {}), ("leave out", "words_to_leave_out", {}),
 ])
 def test_a_door_that_closed_is_found_under_its_old_words_where_its_way_still_is(query, row_id, settings):
     """Sonic (a9.1): "as simple to navigate as possible. Anything redundant we don't want" — the duplicate doors went
@@ -1103,31 +1178,23 @@ def test_the_closed_doors_are_gone_and_the_links_block_holds_three_pages_each_in
     assert "extract" not in catalog.doors() and "youtube-downloader" not in catalog.doors()   # + Add has them
 
 
-def test_count_as_known_follows_the_switch_known_from_anki_obeys_make_cards_for_me_and_automation():
-    """Review B1 (a9.1): Known from Anki runs only while Make cards for me AND Automation are on
-    (`settings_manager.connect_on`). With Automation off the tablets would do nothing — the sync's own switch shows
-    instead, and nothing the tablets could write touches it."""
+def test_count_as_known_shows_with_automation_off_too_its_picks_read_by_the_sync():
+    """Review B1 (a9.1) still holds for Connect's signal (it runs only while Make cards for me AND Automation are on);
+    Kotoba-WS2: with Automation off the row stays — the known-words sync reads its picks for the studied cards."""
     off = dict(CONNECT_ON, logic={"automation": False}, anki_sync_include_suspended=True)
-    shown = _shown(off, "ja")
-    assert "anki_sync_include_suspended" in shown and "known_from_anki" not in shown
+    assert "known_from_anki" in _shown(off, "ja")
     row = catalog.ROW["known_from_anki"]
     assert catalog.change(row, off, "ja", ["marked"])[0] == \
-        {"known_from_anki": ["marked"], "known_from_anki_chosen": True}             # the sync's untouched
+        {"known_from_anki": ["marked"], "known_from_anki_chosen": True}
 
 
-def test_count_as_known_says_when_the_syncs_hidden_switch_counts_more_than_its_picks():
-    """Review S2 (a9.1): a settings.json from before (or the Anki window's checkbox) can hold the sync's switch on
-    beside picks that aren't Suspended alone — the screen never claims less than is counted: the line says so."""
+@pytest.mark.parametrize("held", [["suspended", "flag:1"], ["flag:3"], ["marked", "flag:1"]])
+def test_a_pick_saved_with_red_or_green_says_it_counts_no_card(held):
+    """Kotoba-WS2: red (Ignore) and green (Swap) never count as known, so a pick saved before that names one counts no
+    card — the line says so, never silent."""
     row = catalog.ROW["known_from_anki"]
-    marked = dict(CONNECT_ON, known_from_anki=["marked"], anki_sync_include_suspended=True)
-    assert catalog.help_line(row, marked, "ja") == S.KNOWN_SYNC_TOO
-    two = dict(marked, known_from_anki=["suspended", "marked"])
-    assert catalog.help_line(row, two, "ja") == (S.KNOWN_ALL_OF.format(states="Suspended + Marked") + ". "
-                                                 + S.KNOWN_SYNC_TOO)
-    agrees = dict(marked, known_from_anki=["suspended"])
-    assert catalog.help_line(row, agrees, "ja") == row.help                    # the switch agrees: nothing to say
-    for odd in (None, "yes", 1):                                               # only a real True counts as on
-        assert catalog.help_line(row, dict(marked, anki_sync_include_suspended=odd), "ja") == row.help
+    assert catalog.help_line(row, dict(CONNECT_ON, known_from_anki=held), "ja") == S.KNOWN_RED_GREEN
+    assert catalog.help_line(row, dict(CONNECT_ON, known_from_anki=["suspended"]), "ja") == row.help
 
 
 def _every_string(value):
@@ -1161,3 +1228,52 @@ def test_every_settings_path_a_line_names_starts_at_a_section_the_page_has():
                         wrong.append((table.__name__, name, place[:40]))     # (a section's name whole, not a prefix)
     assert seen >= 15                      # the lines are still found (a change to the arrow would pass this silently)
     assert wrong == []
+
+
+# --- Mado-LT (3.0.18; WL mock 04, PROVISIONAL words): the loop's three move cards ------------------------------------ #
+def test_the_three_move_cards_sit_together_in_anki_and_mining_known_swap_ignore():
+    # why: one formula, one block (*Your daily loop*), in the mock's order; Swap and Ignore are read only while Connect
+    # is on (`read_known_signal`), so their cards show only then — Known's always (the plain sync reads it too)
+    # (FS-2: Swap's own setting, *Swap gives*, is indented under its card — a sub row, inside the block)
+    ids = [r.id for r in catalog.ROWS]
+    at = ids.index("known_from_anki")
+    block = [rid for rid in ids[at:at + 4] if not catalog.ROW[rid].sub]
+    assert block == list(catalog.MOVE_ROWS) == ["known_from_anki", "loop_swap_flag", "loop_ignore_flag"]
+    assert ids[at:at + 4] == ["known_from_anki", "loop_swap_flag", "swap_in_place", "loop_ignore_flag"]
+    for rid in catalog.MOVE_ROWS[1:]:
+        row = catalog.ROW[rid]
+        assert (row.section, row.adv, row.kind, row.keys) == ("anki", False, "select", (rid,))
+        assert rid in _shown(CONNECT_ON, "ja") and rid not in _shown({}, "ja")
+        assert len(row.tip.split()) <= 12 and row.help and rid in settings_placement.PLACED
+    assert [catalog.ROW[r].label for r in catalog.MOVE_ROWS] == ["✓ Known", "⇄ Swap", "✕ Ignore"]
+    assert "delete freely" in catalog.ROW["loop_ignore_flag"].help
+
+
+def test_a_moves_picks_never_offer_a_flag_another_move_holds():
+    # why: one flag on a suspended card must mean one move (the reader's rule, `review_loop.move_flags`)
+    settings = {"loop_ignore_flag": 7, "known_from_anki": ["suspended", "flag:2"]}
+    picks = {r: [v for v, _l, _line in catalog.options(catalog.ROW[r], settings, "ja")] for r in catalog.MOVE_ROWS}
+    assert picks["loop_swap_flag"] == [1, 3, 4, 5, 6]                    # not Ignore's purple, not Known's orange
+    assert picks["loop_ignore_flag"] == [1, 4, 5, 6, 7]                  # not Swap's green, not Known's orange
+    assert "flag:7" not in picks["known_from_anki"] and "flag:3" not in picks["known_from_anki"]
+    assert "flag:1" in picks["known_from_anki"]                          # red is free once Ignore moved off it
+    labels = S.OPTIONS["loop_swap_flag"]
+    assert labels[3] == "Suspend + Green flag" and labels[1] == "Suspend + Red flag" and labels ==         S.OPTIONS["loop_ignore_flag"]
+
+
+@pytest.mark.parametrize("rid, value", [("loop_swap_flag", 2), ("loop_ignore_flag", 7)])
+def test_a_move_card_writes_only_its_own_key(rid, value):
+    # why: rule 11 — one key, one write; an unchanged pick writes nothing
+    changes, update = catalog.change(catalog.ROW[rid], {}, "ja", value)
+    assert changes == {rid: value} and update is None
+    changes, _update = catalog.change(catalog.ROW[rid], {rid: value}, "ja", value)
+    assert changes == {}
+
+
+def test_knowns_line_names_a_pick_the_loop_holds_now():
+    # why: a Known pick of a flag the loop took (picked before the move changed) counts no card: never silent
+    row = catalog.ROW["known_from_anki"]
+    line = catalog.help_line(row, {"known_from_anki": ["suspended", "flag:7"], "loop_ignore_flag": 7}, "ja")
+    assert line == S.KNOWN_RED_GREEN
+    assert catalog.help_line(row, {"known_from_anki": ["suspended", "flag:1"], "loop_ignore_flag": 7}, "ja") != S.KNOWN_RED_GREEN
+    assert set(catalog.lines_for(["loop_ignore_flag"])) == {"known_from_anki", "loop_swap_flag"}

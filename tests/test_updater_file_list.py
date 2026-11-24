@@ -29,6 +29,7 @@ EXE_OLD = b"MZ\x90\x00surasura-2.5.0-\xe8\xaa\x9e" * 16
 EXE_NEW = b"MZ\x90\x00surasura-2.5.1-\xe8\xaa\x9e" * 16
 DLL_NEW = b"MZ\x90\x00new-library-\xe6\x96\xb0" * 8
 TEMPLATE_NEW = "<h1>語彙の旅 2.5.1</h1>\n"
+JOURNEY_NEW = "<title>旅</title><!--JOURNEY-DATA-->\n"   # the journey v3 page (J-CUT): a nested folder
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PYTHON = sys.executable          # the install fixture points sys.executable at the fake Surasura.exe
 
@@ -55,12 +56,15 @@ def _test_release(folder, version="2.5.1", extra=True, files_override=None):
     stage = folder.parent / "stage"
     (stage / "templates").mkdir(parents=True, exist_ok=True)
     (stage / "templates" / "web_app.html").write_text(TEMPLATE_NEW, encoding="utf-8")
+    (stage / "templates" / "journey").mkdir(exist_ok=True)
+    (stage / "templates" / "journey" / "page.html").write_text(JOURNEY_NEW, encoding="utf-8")
     (stage / "Surasura.exe").write_bytes(EXE_NEW)
     (stage / "extra.dll").write_bytes(DLL_NEW)
     pkg = folder / f"Surasura_app_v{version}.zip"
     with zipfile.ZipFile(pkg, "w") as z:
         z.write(stage / "Surasura.exe", "Surasura.exe")
         z.write(stage / "templates" / "web_app.html", "templates/web_app.html")
+        z.write(stage / "templates" / "journey" / "page.html", "templates/journey/page.html")
         if extra:
             z.write(stage / "extra.dll", "extra.dll")
     files = files_override or [
@@ -119,6 +123,7 @@ def test_a_test_release_adds_a_file_named_only_in_its_list(install, local_releas
     assert updater.sha256_file(str(new)) == updater.sha256_file(str(local_release.parent / "stage" / "extra.dll"))
     assert (install / "Surasura.exe").read_bytes() == EXE_NEW          # …with the rest of the list
     assert (install / "_internal" / "templates" / "web_app.html").read_text(encoding="utf-8") == TEMPLATE_NEW
+    assert (install / "_internal" / "templates" / "journey" / "page.html").read_text(encoding="utf-8") == JOURNEY_NEW
     res = updater.consume_result()                                    # the relaunched app
     assert res["status"] == "success"
     assert new.exists() and not os.path.exists(updater.added_path())

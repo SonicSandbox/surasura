@@ -412,14 +412,15 @@ SORT_TITLE = "Where does each one go?"
 SORT_LINE = "Sort the one at the top. The next one comes up by itself."
 SORT_COUNT = "{n:,} left to sort"
 SORT_GROUPS = {"new": "NEW", "watched": "ALREADY WATCHED"}
-# (key, label, tip, the key's name on screen): Soon first, the one key that isn't an arrow (Sonic 2026-10-30)
+# (key, label, tip, the key's name on screen): Soon first, the one key that isn't an arrow (Sonic 2026-10-30); a title is
+# *Removed*, never *Ignored* — Ignore is a word's state (Kotoba-WS2, Sonic 2026-11-19; the word PROVISIONAL)
 SORT_CHOICES = (("soon", "Soon", "Below Current's Soon line: after what you're on now. It still counts toward your "
                                  "list.", "S"),
                 ("now", "Current", "Study it now: it goes to the top of Current.", "→"),
                 ("goal", "Goal", "Someday, in no order: what you'll get to later. It counts toward your list.", "↓"),
                 ("finished", "Finished", "Watched or read already: a record, and still a source of sentences. Its "
                                          "words stop pushing your list around.", "↑"),
-                ("ignore", "Ignore", "Never read its folder again, when the folder holds only this; otherwise it's "
+                ("ignore", "Remove", "Never read its folder again, when the folder holds only this; otherwise it's "
                                      "taken out of your library. Your files stay where they are; Undo brings it "
                                      "back.", "←"))
 SORT_UNDO = "Undo"
@@ -428,24 +429,22 @@ SORT_REST = "Put the rest in…"
 SORT_REST_TIP = "Put every remaining title here in one place. One Undo reverts."
 SORT_DONE = "Done"
 SORT_DONE_TIP = "Go on. Anything still here waits in New arrivals."
-SORT_TOUR = "See what Surasura does by itself"          # help cards (§6.6): Done, then the tour once the window is up
-SORT_TOUR_TIP = "Done — then a short tour, one card each."
 SORT_CLOSE_TIP = "Close. Anything still here waits in New arrivals.\n• Esc"
 SORT_RESORT_DONE_TIP = "Done sorting: on to Current. The rest waits in New arrivals.\n• Esc"   # Sort again
 SORT_DONE_TIPS = {"setup": SORT_DONE_TIP, "arrivals": SORT_CLOSE_TIP, "resort": SORT_RESORT_DONE_TIP}
 SORT_MORE = "and {n:,} more"
 SORT_EMPTY = "All sorted."
 SORT_PLACED = {"now": "{title} → Current", "soon": "{title} → Soon", "goal": "{title} → Goal",
-               "finished": "{title} → Finished", "ignore": "{title} ignored"}
+               "finished": "{title} → Finished", "ignore": "{title} removed"}
 SORT_REST_PLACED = "{n:,} titles → {place}"
 # Mado-O (alpha 8, Sonic 2026-10-31: "the ability to reset from the beginning")
 SORT_OVER = "Start sorting over"
-SORT_OVER_TIP = "Sort everything again from the top, ignored too. Undo restores it."
+SORT_OVER_TIP = "Sort everything again from the top, removed too. Undo restores it."
 SORT_OVER_ASK = "Start sorting over?"
-SORT_OVER_BODY = ("The {n:,} titles you sorted here go back to New arrivals, including the ones you ignored, and you "
+SORT_OVER_BODY = ("The {n:,} titles you sorted here go back to New arrivals, including the ones you removed, and you "
                   "start again from the top. A title you've moved since stays where you put it. Undo puts your "
                   "sorting back.")
-SORT_OVER_BODY_ONE = ("The title you sorted here goes back to New arrivals, even if you ignored it, and you start again "
+SORT_OVER_BODY_ONE = ("The title you sorted here goes back to New arrivals, even if you removed it, and you start again "
                       "from the top. Undo puts it back.")
 SORT_OVER_BODY_PLAIN = ("The {n:,} titles you sorted here go back to New arrivals, and you start again from the top. A "
                         "title you've moved since stays where you put it. Undo puts your sorting back.")

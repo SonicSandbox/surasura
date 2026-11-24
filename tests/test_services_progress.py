@@ -13,6 +13,7 @@ Real Japanese and Chinese files, the real analyzer as a child, each under the te
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -88,9 +89,17 @@ def _records(proc):
 
 
 def _outputs():
+    # the v3 journey's head names its render time (`stamp`, ms): blanked, as plan_file_cases' hashes do (J-CUT)
     folder = os.path.join(h.root(), "results")
-    return {name: hashlib.sha256(open(os.path.join(folder, name), "rb").read()).hexdigest()
-            for name in sorted(os.listdir(folder)) if os.path.isfile(os.path.join(folder, name))}
+    found = {}
+    for name in sorted(os.listdir(folder)):
+        if os.path.isfile(os.path.join(folder, name)):
+            with open(os.path.join(folder, name), "rb") as f:
+                data = f.read()
+            if name == "reading_list_static.html":
+                data = re.sub(rb'"stamp":"\d+"', b'"stamp":""', data, count=1)
+            found[name] = hashlib.sha256(data).hexdigest()
+    return found
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
@@ -131,7 +140,8 @@ def test_every_output_is_byte_identical_with_and_without_the_flag(lang):
     flagged = _analyzer(lang, "--progress-json", env=seed)
     assert flagged.returncode == 0
     assert _outputs() == without
-    assert len(without) == 13
+    # 13, and since the journey v3 cut-over (J-CUT) the page's counts (plan_counts.bin) and its word memo
+    assert len(without) == 15 and {"plan_counts.bin", "journey_words.json"} <= set(without), sorted(without)
 
 
 def test_the_flag_never_enters_the_run_signature():
@@ -173,6 +183,47 @@ def test_a_run_asked_to_stop_before_writing_stops_itself_and_writes_nothing(tmp_
     assert records[-1]["type"] == "error" and records[-1]["code"] == "cancelled"
     assert [r for r in records if r["type"] == "progress"] == []
     assert {k: v for k, v in _outputs().items() if k != "run_signature.txt"} == before
+
+
+def _closed_window_run(lang, env):
+    """The analyzer as the window starts it (`generate.command_line`, from source), its stdout a pipe this side closes
+    at once — the window closing first, as on Sonic's laptop (3.0.16, #8158GX). -> the exit code."""
+    from app import run_args, settings_manager
+    from app.services import generate
+    argv = run_args.analyzer_args(settings_manager.load_settings(), lang)
+    child_env = dict(os.environ, PYTHONPATH=h.PROJECT_ROOT, SURASURA_RESULTS_WAIT="forever", **env)
+    child_env.pop("PYTEST_CURRENT_TEST", None)
+    proc = subprocess.Popen(generate.command_line(argv + ["--no-open", "--progress-json"]), cwd=h.root(),
+                            env=child_env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    proc.stdout.close()                     # the window is gone before the child's first line
+    return proc.wait(timeout=600)
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_cancelled_run_whose_window_closed_ends_cancelled_never_on_an_error(tmp_path, lang):
+    """Haya-CL 3.0.17: the cancel line to a window that has gone raised `OSError: [Errno 22]` (Windows' closed pipe)
+    in the cancel's own handler — exit 1 with a traceback, and Surasura.exe's Critical Error box. Now a line to a
+    window that has gone goes nowhere: the run answers its cancel's exit code, its outputs as the last run left them."""
+    h.seed_library(lang)
+    h.write_settings({"target_language": lang, "anki_connect_url": "http://127.0.0.1:9"})
+    assert _analyzer(lang).returncode == 0
+    before = {k: v for k, v in _outputs().items() if k != "run_signature.txt"}
+    flag = tmp_path / "cancel.flag"
+    flag.write_text("cancel")
+    code = _closed_window_run(lang, {"SURASURA_FORCE_RUN": "1", "SURASURA_CANCEL_FILE": str(flag)})
+    assert code == analyzer.GENERATE_CANCELLED
+    assert {k: v for k, v in _outputs().items() if k != "run_signature.txt"} == before
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_window_gone_without_asking_stops_the_run_as_a_cancel_would(lang):
+    """No cancel file (the window crashed, or closed before it could ask): its pipe gone, the run stops at its next
+    cancel point as a cancel does — nothing of results/ written, the next Generate runs it again."""
+    h.seed_library(lang)
+    h.write_settings({"target_language": lang, "anki_connect_url": "http://127.0.0.1:9"})
+    assert _closed_window_run(lang, {"SURASURA_FORCE_RUN": "1"}) == analyzer.GENERATE_CANCELLED
+    assert not os.path.isdir(os.path.join(h.root(), "results")) or not any(
+        name.endswith(".csv") for name in os.listdir(os.path.join(h.root(), "results"))), "no list written"
 
 
 def test_the_cancel_point_holds_until_writing_and_never_after(tmp_path, monkeypatch):

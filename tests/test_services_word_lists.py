@@ -1,4 +1,5 @@
-"""The word lists service (W3.3 P10; n16: `app/services/word_lists.py`) — the Ignore list and the Blacklist read,
+"""The word lists service (W3.3 P10; n16: `app/services/word_lists.py`) — the Ignore list (the Blacklist merged into
+it once since Kotoba-WS2: `tests/test_blacklist_merge.py`) read,
 added to and taken from.
 
 What a wrong answer would cost: a user's hand-edited list rewritten (a comment, a blank line, a line end or a byte of
@@ -89,7 +90,7 @@ def test_add_to_a_utf16_list_writes_utf16_with_its_one_bom():
     path = _put(old)
     word_lists.add("ignore", "ja", ["準備"])
     assert _bytes(path) == old + "準備\r\n".encode("utf-16-le")
-    assert word_lists.read("ignore", "ja").entries[-1] == ("準備", "list")
+    assert word_lists.read("ignore", "ja").entries[-1][:2] == ("準備", "list")
 
 
 def test_add_to_a_cp932_list_writes_cp932():
@@ -112,22 +113,22 @@ def test_a_word_cp932_cant_hold_rewrites_the_list_in_utf8_and_loses_nothing():
 
 
 def test_add_to_a_gb18030_chinese_list_writes_gb18030():
-    text = "# zh Blacklist\r\n东西\r\n学习\r\n"
+    text = "# zh 忽略\r\n东西\r\n学习\r\n"
     old = text.encode("gb18030")
     assert path_utils._decoding(old, "zh")[1] == "gb18030"
-    path = _put(old, "blacklist", "zh")
-    word_lists.add("blacklist", "zh", ["夜市"])
+    path = _put(old, "ignore", "zh")
+    word_lists.add("ignore", "zh", ["夜市"])
     assert _bytes(path) == old + "夜市\r\n".encode("gb18030")
-    assert [e.word for e in word_lists.read("blacklist", "zh").entries] == ["东西", "学习", "夜市"]
+    assert [e.word for e in word_lists.read("ignore", "zh").entries if e.source == "list"] == ["东西", "学习", "夜市"]
 
 
 def test_a_missing_list_is_made_on_the_first_add_with_its_header():
-    path = word_lists.list_path("blacklist", "ja")
+    path = word_lists.list_path("ignore", "zh")
     assert not os.path.exists(path)
-    assert word_lists.read("blacklist", "ja").entries == []
-    change = word_lists.add("blacklist", "ja", ["冒険"])
-    assert change.done == ["冒険"] and change.backup is None
-    assert _bytes(path) == "# ja Blacklist\n冒険\n".encode("utf-8")
+    assert word_lists.read("ignore", "zh").entries == []
+    change = word_lists.add("ignore", "zh", ["夜市"])
+    assert change.done == ["夜市"] and change.backup is None
+    assert _bytes(path) == "# Add words to ignore here (one per line)\n夜市\n".encode("utf-8")
 
 
 def test_an_empty_list_takes_its_first_word_alone():
@@ -148,8 +149,8 @@ def test_a_word_already_on_the_list_or_given_twice_is_added_once():
 def test_a_chinese_line_is_compared_whole_as_the_run_reads_it():
     # The run cuts a Japanese line at its first space (食べる - to eat is 食べる), never a Chinese one.
     old = "东西 dōngxi\n".encode("utf-8")
-    path = _put(old, "blacklist", "zh")
-    change = word_lists.add("blacklist", "zh", ["东西"])
+    path = _put(old, "ignore", "zh")
+    change = word_lists.add("ignore", "zh", ["东西"])
     assert change.done == ["东西"]
     assert _bytes(path) == old + "东西\n".encode("utf-8")
 
@@ -209,9 +210,9 @@ def test_a_comment_is_never_removed_and_a_word_not_there_writes_nothing():
 
 
 def test_remove_from_a_missing_list_writes_nothing():
-    change = word_lists.remove("blacklist", "zh", ["东西"])
+    change = word_lists.remove("ignore", "zh", ["东西"])
     assert change.done == [] and change.skipped == ["东西"] and change.error is None
-    assert not os.path.exists(word_lists.list_path("blacklist", "zh"))
+    assert not os.path.exists(word_lists.list_path("ignore", "zh"))
 
 
 # --- one dated copy per file per session, before the write ------------------------------------------------------ #
@@ -226,12 +227,12 @@ def test_the_first_write_keeps_one_verified_copy_and_the_second_none():
     assert _bytes(first.backup) == old                              # the list as it was before any change
 
 
-def test_each_list_gets_its_own_copy():
+def test_each_language_s_list_gets_its_own_copy():
     _put("冒険\n".encode("utf-8"), "ignore")
-    _put("毎日\n".encode("utf-8"), "blacklist")
+    _put("夜市\n".encode("utf-8"), "ignore", "zh")
     a = word_lists.add("ignore", "ja", ["準備"])
-    b = word_lists.add("blacklist", "ja", ["準備"])
-    assert a.backup and b.backup and len(_trash()) == 2
+    b = word_lists.add("ignore", "zh", ["东西"])
+    assert a.backup and b.backup and len(_trash()) == 1 and len(_trash("zh")) == 1
 
 
 def test_the_copy_is_made_before_the_write(monkeypatch):
@@ -298,8 +299,8 @@ def test_read_gives_the_lines_as_written_in_order_comments_and_blanks_left_out()
     _put(LF_LIST.encode("utf-8"))
     listing = word_lists.read("ignore", "ja")
     assert listing.error is None
-    assert listing.entries == [("冒険", "list"), ("食べる - to eat", "list"), ("毎日", "list"),
-                               ("ストレート", "list")]
+    assert [e[:2] for e in listing.entries] == [("冒険", "list"), ("食べる - to eat", "list"), ("毎日", "list"),
+                                                ("ストレート", "list")]                # (+ Mado-LT 4's None fields)
 
 
 @pytest.fixture
@@ -316,13 +317,19 @@ def _known_entries(path):
         return json.load(f)
 
 
-def test_the_ignore_list_shows_knownword_ignored_entries_and_the_blacklist_doesnt(known_file):
+def test_the_ignore_list_shows_knownword_ignored_entries_and_the_known_tab_doesnt(known_file):
     _put("冒険\n".encode("utf-8"))
     entries = word_lists.read("ignore", "ja").entries
-    assert entries[0] == ("冒険", "list")
+    assert entries[0][:2] == ("冒険", "list")
     known = [e.word for e in entries if e.source == "known"]
     assert known[:3] == ["を", "は", "に"] and "良い" in known and len(known) == len(set(known))
-    assert all(e.source == "list" for e in word_lists.read("blacklist", "ja").entries)
+    known_tab = word_lists.read("known", "ja").entries            # Mado-LT 4: every known word, never an IGNORED one
+    with open(known_file, encoding="utf-8") as f:
+        held = [e for e in json.load(f)["words"] if isinstance(e, dict)]
+    only_ignored = ({e["dictForm"] for e in held if e.get("knownStatus") == "IGNORED"}
+                    - {e["dictForm"] for e in held if anki_sync._is_known(e)})
+    assert only_ignored and all(e.source in ("known", "learning") for e in known_tab)
+    assert not only_ignored & {e.word for e in known_tab}
 
 
 def test_removing_a_knownword_entry_takes_only_its_ignored_entries(known_file):
@@ -472,24 +479,25 @@ def test_words_in_gives_lemmas_shown_by_their_spelling(ja_resources_dir):
 
 def test_words_in_marks_listed_known_and_left_out(known_file):
     _put("冒険\n".encode("utf-8"), "ignore")
-    _put("灯台\n".encode("utf-8"), "blacklist")
+    with open(os.path.join(path_utils.get_user_files_path("ja"), "Blacklist.txt"), "wb") as f:
+        f.write("灯台\n".encode("utf-8"))                          # a Blacklist not merged yet: still ignored
     found = {c.word: c.status for c in word_lists.words_in("冒険の準備で灯台の砂時計を見る。", "ja")}
     assert found["冒険"] == "listed"                                 # on this list (known too: the list wins)
-    assert found["灯台"] == "left_out"                               # left out by the other list
+    assert found["灯台"] == "left_out"                               # ignored already, by the old Blacklist
     assert found["準備"] == "known"                                  # KNOWN in KnownWord.json
     assert found["砂時計"] == "new"
-    blacklist = {c.word: c.status for c in word_lists.words_in("冒険の灯台", "ja", "blacklist")}
-    assert blacklist == {"冒険": "known", "灯台": "listed"}         # the marks name the list asked about
+    known = {c.word: c.status for c in word_lists.words_in("冒険の灯台", "ja", "known")}
+    assert known == {"冒険": "known", "灯台": "left_out"}           # the Known tab: known from the file; ignored
 
 
 def test_words_in_reads_chinese_as_the_library_cuts_it(zh_resources_dir):
     with open(os.path.join(zh_resources_dir, "chinese_text_1.txt"), encoding="utf-8") as f:
         line = next(l for l in f.read().splitlines() if "孙中山" in l)
-    words = [c.word for c in word_lists.words_in(line, "zh", "blacklist")]
+    words = [c.word for c in word_lists.words_in(line, "zh", "ignore")]
     assert "孙中山" in words and "台湾" in words
     assert "，" not in words and "：" not in words                    # punctuation is no word
-    _put("台湾\n".encode("utf-8"), "blacklist", "zh")
-    found = {c.word: c.status for c in word_lists.words_in(line, "zh", "blacklist")}
+    _put("台湾\n".encode("utf-8"), "ignore", "zh")
+    found = {c.word: c.status for c in word_lists.words_in(line, "zh", "ignore")}
     assert found["台湾"] == "listed"
 
 

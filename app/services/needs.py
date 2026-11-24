@@ -70,6 +70,11 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   `shelf`; Connect no longer shelves at the cap — Sonic 2026-11-20 — so these are the cards an older version, or a
   show's *remove*, set aside) — *236 cards made for you are set aside.* · *Put back* (`connect/switch.put_back`: each restore point
   still holding cards) · *Leave them* (answered until the shelf takes more); only while Cards made for you is on.
+- **Tidy** (Kyou-SH2, PROVISIONAL): ONE card after Tidy deleted cards Connect made that you never studied (by itself past
+  1.5 × your limit, or your *Tidy now*; Connect's record's `tidied`, the newest not undone) — *12 unstudied cards
+  deleted, a copy kept.* · *Undo* (`connect/tidy.act_undo`: the backup put back, byte for byte) · *OK* (answered: this
+  tidy; the next asks again); only while Cards made for you is on. Kyou-SH3: a tidy whose backup didn't read back
+  (`tidy_unsaved`: nothing deleted) is ONE card too — *Nothing deleted: …* · *OK*.
 - **setup's first cards** (SRC S1 + D1, Sonic ✅ 2026-10-16): setup's first scan of the folders the shows and books are in
   logs nothing, so Connect makes no card for them by itself; once its sort screen put some in the mine line
   (`setup_wizard.sorted_offer`, Mado-O), it offers ONE line (`offer`, kept in the seen file): *Make cards for your first 20 episodes?* · *Not now* — either answer takes it off for good.
@@ -142,11 +147,17 @@ DECK_STRAYS = "deck-strays"           # Michi-DK: Connect's cards in another dec
 # list and you haven't said yes) and, per show, *Make them from the audio* (Anki Miner 3.11's `transcribe`)
 NO_SUBS = "no-subs"
 SHELVED = "shelved"                   # Kyou-SH (PROVISIONAL): cards Connect made sit on its shelf — said, Put back
+TIDIED = "tidied"                     # Kyou-SH2 (PROVISIONAL): Tidy deleted Connect's never-studied cards — said, Undo
+DELETED = "deleted"                   # Kyou-DW (PROVISIONAL): cards you deleted in Anki — asked why, an Undo each
+OLD_DELETES = "old-deletes"           # Kyou-DW (PROVISIONAL): the deletes from before it asked — forget them, once
+SWAPPED = "swapped"                   # Kantan-SL (PROVISIONAL): Swap made a card from another line — said, Undo
+SWAP_WAITS = "swap-waits"             # Kantan-SL (PROVISIONAL): a swap's word has no other line yet — said once
 FOLDER_MIN = 10                 # gone files (of two shows or more) before a folder is one card
 LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
          FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND, AUDIOBOOK_TRANSCRIPT, SETTINGS_FOLDER,
-         BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS, DECK_STRAYS, SHELVED)
+         BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS, DECK_STRAYS, SHELVED, TIDIED, DELETED, OLD_DELETES,
+         SWAPPED, SWAP_WAITS)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
 WIRED_LATER = frozenset(("make_cards", "try_again", "change_video"))   # (K1's *Start fresh*: `SourceLooks.fresh`)
@@ -171,7 +182,10 @@ CONNECT_ACTIONS = {"not-timed": ("check_again", "change_video", "mine_anyway"), 
                    # is on and installed (`NeedsYou.has`)
                    "book-audiobook": ("pick_audiobook", "ai_audio", "no_audiobook"),
                    # Kura-AB3 A2 (PROVISIONAL): a book lined up — its earlier text-only cards get the narrator's voice
-                   "book-add-audio": ("add_audio",)}
+                   "book-add-audio": ("add_audio",),
+                   # AM-FIX 2 (the lead's ruling 2): a swap an Anki Miner without `render` can't make — *Update*
+                   # (Michi-U's route: the approved release, asked first; `runner.SWAP_UPDATE_NEED`)
+                   "swap-update": ("update_miner",)}
 SEEN_VERSION = 1
 _NO_VIDEO_REASON = "No video: its video isn't on this computer (or isn't downloaded yet)."   # runner.NO_VIDEO's words
 
@@ -302,6 +316,56 @@ STRINGS = {
     "shelved_title_one": "A card made for you is set aside.",
     "shelved_say": ("Surasura suspended them in Anki (tagged surasura::shelf) when your card cap was full. It no longer "
                     "does that by itself. One comes back by itself when its word comes up."),
+    # Kyou-SH2 (PROVISIONAL): Tidy, said
+    # Kyou-SH3 (PROVISIONAL): deleted with a copy kept — never "set aside" (that is the old shelf's suspended cards)
+    "tidied_title": "{n:,} unstudied cards deleted, a copy kept.",
+    "tidied_title_one": "An unstudied card deleted, a copy kept.",
+    "tidied_say": ("More cards waited than 1.5 × your limit, so Surasura deleted the ones it made that you never "
+                   "studied, down to your limit, lowest in your study order first. A copy is kept: Undo puts them "
+                   "back."),
+    "tidied_say_now": ("You pressed Tidy now: Surasura deleted the cards it made past your limit that you never "
+                       "studied. A copy is kept: Undo puts them back."),
+    "tidy_unsaved_title": "Nothing deleted: the copy of {n:,} cards didn't save.",
+    "tidy_unsaved_title_one": "Nothing deleted: the copy of a card didn't save.",
+    # Kyou-DW (PROVISIONAL): a deleted card asks why (WL ⑧ / WL-35); the old deletes, once
+    "deleted_title_one": "A card you deleted · add a note",
+    "deleted_title": "{n:,} cards you deleted · add a note",
+    "deleted_title_many": "{n:,} cards you deleted · note a few",
+    "deleted_say": ("Surasura made these cards and you deleted them in Anki. Say why and it does the rest: Known and "
+                    "Ignore go to your word lists; Parsing mistake asks if the word is wrong (it's ignored) or only "
+                    "this sentence (a new card from another one) — either way the sentence goes in Send report's list "
+                    "for us and is never used again; Bad card makes a new card from another sentence. Leave any: it "
+                    "stays deleted and is never made again."),
+    # Kyou-DW 3 (PROVISIONAL): Parsing mistake's follow-up, one more line under its card's line (all: first on the card)
+    "deleted_how": "「{word}」: no word at all, or wrong only in this sentence?",
+    "deleted_how_all": "All {n:,}: no words at all, or wrong only in their sentences?",
+    "old_deletes_title_one": "A card you deleted before Surasura asked why",
+    "old_deletes_title": "{n:,} cards you deleted before Surasura asked why",
+    "old_deletes_say": ("If you deleted some because Surasura cut their words wrong, Forget lets their cards be made "
+                        "again once the cut is fixed. Keep them leaves every one deleted, and this card goes for "
+                        "good."),
+    "tidy_unsaved_say": ("Before deleting, Surasura reads back the copy it keeps of the cards. This copy was missing or "
+                         "damaged, so every card stays in Anki. It tries again next time."),
+    # Kantan-SL (PROVISIONAL): Swap, said
+    "swapped_title": "A new card for 「{word}」 from another sentence.",
+    "swapped_say": ("You flagged its old card green: the old card stays suspended in Anki, tagged surasura::swapped. "
+                    "Undo deletes the new card (a copy is kept) and puts the old one back in your reviews."),
+    # FS-2 (PROVISIONAL): the full Swap, said — the same card with a new sentence; a fall-back to a new card says why
+    "swapped_same_title": "「{word}」 has a better sentence, on the same card.",
+    "swapped_same_say": "You flagged it: it keeps its reviews and is back in them. Undo puts the old sentence back.",
+    "swapped_same_say_journey": ("The line you picked on the journey: the card keeps its reviews. Undo puts the old "
+                                 "sentence back."),
+    "swapped_say_journey": ("The line you picked on the journey: the old card left your reviews when this one was "
+                            "made. Undo deletes the new card (a copy is kept) and puts the old one back."),
+    # FS-2 2 (PROVISIONAL): *Bad card*'s (and *Only in this sentence*'s) swap — its old card was deleted, not flagged
+    "swapped_say_deleted": "You deleted its old card in Anki. Undo deletes this new card too (a copy is kept).",
+    "swapped_why_hand": "You'd changed its sentence by hand, so it got a new card.",                 # decision 5
+    "swapped_why_not_ours": "Surasura didn't make its card, so it got a new card.",                  # decision 6
+    "swapped_why_render": "Update Anki Miner to keep the same card: this time it got a new card.",   # decision 12
+    "swap_waits_title": "No other sentence for 「{word}」 yet.",
+    "swap_waits_title_many": "No other sentence yet for {n:,} words you swapped.",
+    "swap_waits_say": ("Your library says these words in one sentence only, the one on their card. Their new card is "
+                       "made once a new episode or book says them again."),
     "why_found": "→ …\\{name} ✓ found", "why_found_own": "→ …\\{name} ✓ found in its own folder ({k} more in your "
                                                          "video folders)",
     "why_found_named": "→ …\\{name} ✓ found: the one in a folder named like the show",
@@ -390,7 +454,7 @@ def item_key(item_id):
 def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(), asks=(), answered=frozenset(),
             mine_line=20, offers=frozenset(), cards_on=False, miner_found=True, gone_folders=(), settled=False,
             hidden=frozenset(), emptied=None, settings_folders=(), backlog=None, miner_update=None, no_subs=None,
-            generate_log=None, strays=None):
+            generate_log=None, strays=None, asking=frozenset()):
     """The page's entries in order (see the module's doc). `view`: the reader's `View` (None: no library); `failures`:
     `status` Entries (text, at, seen); `connect`: one language's Connect record (`read_connect`; None: Connect off);
     `seen` / `answered`: `read_seen` / `read_answered`; `offline_roots`: `find_offline`'s Roots; `asks`: `asks_of`'s
@@ -409,7 +473,9 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     (Michi-U): `miner_update(view)`'s answer — ONE line while titles wait only for the approved Anki Miner; `no_subs`
     (Michi-NS): `no_subs_offer`'s answer — ONE card while videos have no subtitle and a way to get one is here;
     `generate_log` (Kantan-B1): the window's Generate log, a Generate failure's hover (never its line); `strays`
-    (Michi-DK): `deck_strays`' answer — ONE card while Connect's cards are outside the deck Surasura shows."""
+    (Michi-DK): `deck_strays`' answer — ONE card while Connect's cards are outside the deck Surasura shows;
+    `asking` (Kyou-DW 3): the deleted cards whose *Parsing mistake* was pressed (note ids; the card's own key for
+    *All parsing mistakes*), each asked its follow-up (`_deleted_entries`)."""
     seen, answered, hidden = frozenset(seen or ()), frozenset(answered or ()), frozenset(hidden or ())
     rows = tuple(view.rows) if view is not None and view.mode == "store" else ()
     by_id = {e.id: (r, e) for r in rows for e in r.episodes}
@@ -473,6 +539,14 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     shelved = _shelf_entry(connect, seen, answered) if cards_on and connect else None    # Kyou-SH: Connect's restore
     if shelved is not None:
         out.append(shelved)
+    tidied = _tidy_entry(connect, seen, answered) if cards_on and connect else None     # Kyou-SH2: Tidy, said
+    if tidied is not None:
+        out.append(tidied)
+    unsaved = _tidy_unsaved_entry(connect, seen, answered) if cards_on and connect else None    # Kyou-SH3
+    if unsaved is not None:
+        out.append(unsaved)
+    out.extend(_deleted_entries(connect, seen, answered, asking) if cards_on and connect else ())    # Kyou-DW: why
+    out.extend(_swap_entries(connect, seen, answered) if cards_on and connect else ())    # Kantan-SL: Swap, said
     anki = _anki_entry(connect, seen) if cards_on else None    # Connect may run (it clears the line by itself: A-5)
     if anki is not None:
         out.append(anki)
@@ -516,7 +590,7 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
         out.append(Entry(key=f"connect:{n['id']}", kind=kind, title=title, lines=(),
                          actions=CONNECT_ACTIONS.get(kind, ()) + ("dismiss",), unseen=not n.get("seen_at"), say="",
                          data={"need_id": n["id"], "item_id": n.get("item"), "connect": True, "at": n.get("at"),
-                               **_episode_of(by_id, n.get("item"))}))
+                               **_episode_of(by_id, n.get("item")), **_update_version(kind)}))
     for gap in reversed((connect or {}).get("gaps") or ()):
         entry = _gap_entry(gap, seen)
         if entry.key not in answered:
@@ -524,6 +598,15 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     out = [e for e in out if e.kind == BULK or e.key not in hidden]
     out[lines_at:lines_at] = _reason_lines(out)
     return out
+
+
+def _update_version(kind):
+    """AM-FIX 2: the release a Connect line's *Update* asks for (`update_miner`, `NeedsPage._do_update_miner` reads it)
+    -> {"version"} for a line that offers it, else {}."""
+    if "update_miner" not in CONNECT_ACTIONS.get(kind, ()):
+        return {}
+    from app.connect import am_release
+    return {"version": am_release.APPROVED}
 
 
 def _episode_of(by_id, item_id):
@@ -1243,6 +1326,173 @@ def _shelf_entry(connect, seen, answered=frozenset()):
                  unseen=key not in seen, say=STRINGS["shelved_say"], data={"runs": runs, "cards": n})
 
 
+def _tidy_entry(connect, seen, answered=frozenset()):
+    """Kyou-SH2 (PROVISIONAL): ONE card after Tidy deleted cards — Connect's record's `tidied` (`status._tidied`: the
+    newest tidy not undone). Its key names that tidy, so *OK* holds until the next one; *Undo* is `tidy.act_undo`
+    with `data["id"]`."""
+    tidied = (connect or {}).get("tidied") or {}
+    n = int(tidied.get("cards") or 0)
+    if n <= 0 or not tidied.get("id"):
+        return None
+    key = f"{TIDIED}:{tidied['id']}:{tidied.get('at') or ''}"     # its time too: a ledger made again counts from 1
+    if key in answered:
+        return None
+    title = STRINGS["tidied_title_one"] if n == 1 else STRINGS["tidied_title"].format(n=n)
+    say = STRINGS["tidied_say_now"] if tidied.get("why") == "now" else STRINGS["tidied_say"]
+    return Entry(key=key, kind=TIDIED, title=title, lines=(), actions=("undo_tidy", "leave_tidy"),
+                 unseen=key not in seen, say=say, data={"id": int(tidied["id"]), "cards": n})
+
+
+DELETED_ACTIONS = ("dw_known", "dw_ignore", "dw_parsing", "dw_bad")       # a line's four chips (WL-35)
+DELETED_ALL = ("dw_all_known", "dw_all_ignore", "dw_all_parsing", "dw_all_bad")    # *Same for all*
+DELETED_MANY = 10                       # WL-27: this many or more is a mass delete (its title asks for a few)
+# Kyou-DW 3 (PROVISIONAL): *Parsing mistake*'s follow-up — The word is wrong · Only in this sentence, the look's guess
+# first (`connect.deleted.likely`: "line" → Only in this sentence first); never answered for the learner
+DELETED_HOW = f"{DELETED}-how"
+DELETED_HOW_ALL = "all"                 # the whole card's follow-up line (`deleted_how_key(None)`)
+HOW_ACTIONS = ("dw_word_wrong", "dw_only_line")
+HOW_ALL = ("dw_all_word_wrong", "dw_all_only_line")
+
+
+def deleted_line_key(note_id):
+    return f"{DELETED}:{int(note_id)}"
+
+
+def deleted_how_key(note_id):
+    """The follow-up line's key: one card's (`note_id`), or the whole card's (None)."""
+    return f"{DELETED_HOW}:{DELETED_HOW_ALL if note_id is None else int(note_id)}"
+
+
+def _first(actions, line_first):
+    return tuple(reversed(actions)) if line_first else actions
+
+
+def old_line_key(word):
+    return f"{OLD_DELETES}:{word}"
+
+
+def _deleted_text(word, sentence):
+    sentence = " ".join(str(sentence or "").split())
+    return f"「{word}」 {sentence}" if sentence else f"「{word}」"
+
+
+def _deleted_entries(connect, seen, answered=frozenset(), asking=frozenset()):
+    """Kyou-DW (PROVISIONAL): ONE quiet card for the cards you deleted that Surasura asks about (Connect's record's
+    `deleted.asked`: `connect.deleted.status_of`) — a line a card, each with Known · Ignore · Parsing mistake · Bad
+    card; two or more: the same four for all, and *Leave them* (each line answered: never asked again). A line
+    answered or left leaves the card (its key, `deleted_line_key`); a new delete joins it. Then ONE card, once, for
+    the deletes from before it asked (`deleted.old`): *Forget* a line (the store's `allow_again`), *Forget all*,
+    *Keep them* (answered for good). Kyou-DW 3: a card whose *Parsing mistake* was pressed (`asking`: its note id)
+    has one more line under its own — *The word is wrong* · *Only in this sentence*, the look's guess first
+    (`likely`); *All parsing mistakes* (`asking` holds the card's own key: a card that changed since — a line
+    answered, a new delete — asks again) asks it once, first on the card, for every card."""
+    rec = (connect or {}).get("deleted") or {}
+    out = []
+    asked = [a for a in rec.get("asked") or () if deleted_line_key(a["note_id"]) not in answered]
+    if asked:
+        lines = []
+        for a in asked:
+            lines.append(NeedLine(key=deleted_line_key(a["note_id"]), text=_deleted_text(a["word"], a.get("sentence")),
+                                  item_id=a.get("item_id"), label=a["word"], number=int(a["note_id"]), rel_path=None,
+                                  actions=DELETED_ACTIONS))
+            if int(a["note_id"]) in asking:
+                lines.append(NeedLine(key=deleted_how_key(a["note_id"]), text=STRINGS["deleted_how"].format(
+                    word=a["word"]), item_id=a.get("item_id"), label=a["word"], number=int(a["note_id"]),
+                    rel_path=None, actions=_first(HOW_ACTIONS, a.get("likely") == "line")))
+        n = len(asked)
+        key = f"{DELETED}:" + ",".join(str(int(a["note_id"])) for a in asked)
+        if n > 1 and key in asking:
+            # most cards' guess first (a tie: The word is wrong)
+            line_first = 2 * sum(1 for a in asked if a.get("likely") == "line") > n
+            lines.insert(0, NeedLine(key=deleted_how_key(None), text=STRINGS["deleted_how_all"].format(n=n),
+                                     item_id=None, label="", number=None, rel_path=None,
+                                     actions=_first(HOW_ALL, line_first)))
+        lines = tuple(lines)
+        title = (STRINGS["deleted_title_one"] if n == 1 else
+                 STRINGS["deleted_title_many" if n >= DELETED_MANY else "deleted_title"].format(n=n))
+        whole = DELETED_ALL if n > 1 else ()
+        if n > 1 and key in asking:
+            whole = tuple(a for a in whole if a != "dw_all_parsing")    # its follow-up stands in its place
+        out.append(Entry(key=key, kind=DELETED, title=title, lines=lines,
+                         actions=whole + ("dw_leave",), unseen=key not in seen,
+                         say=STRINGS["deleted_say"], data={"notes": [int(a["note_id"]) for a in asked]}))
+    old = [o for o in rec.get("old") or () if OLD_DELETES not in answered and old_line_key(o["word"]) not in answered]
+    if old:
+        lines = tuple(NeedLine(key=old_line_key(o["word"]), text=_deleted_text(o["word"], o.get("sentence")),
+                               item_id=None, label=o["word"], number=None, rel_path=None, actions=("dw_forget",))
+                      for o in old)
+        n = len(lines)
+        title = STRINGS["old_deletes_title_one"] if n == 1 else STRINGS["old_deletes_title"].format(n=n)
+        out.append(Entry(key=OLD_DELETES, kind=OLD_DELETES, title=title, lines=lines,
+                         actions=(("dw_forget_all",) if n > 1 else ()) + ("dw_keep_old",),
+                         unseen=OLD_DELETES not in seen, say=STRINGS["old_deletes_say"],
+                         data={"words": [o["word"] for o in old]}))
+    return out
+
+
+def _tidy_unsaved_entry(connect, seen, answered=frozenset()):
+    """Kyou-SH3 (PROVISIONAL, F4): ONE card when Tidy's backup didn't read back — Connect's record's `tidy_unsaved`
+    (`status._tidy_unsaved`: nothing was deleted, every card home). Nothing to undo: *OK* only (answered: this
+    tidy)."""
+    unsaved = (connect or {}).get("tidy_unsaved") or {}
+    n = int(unsaved.get("cards") or 0)
+    if n <= 0 or not unsaved.get("id"):
+        return None
+    key = f"{TIDIED}:unsaved:{unsaved['id']}:{unsaved.get('at') or ''}"
+    if key in answered:
+        return None
+    title = STRINGS["tidy_unsaved_title_one"] if n == 1 else STRINGS["tidy_unsaved_title"].format(n=n)
+    return Entry(key=key, kind=TIDIED, title=title, lines=(), actions=("leave_tidy",), unseen=key not in seen,
+                 say=STRINGS["tidy_unsaved_say"], data={"id": int(unsaved["id"]), "cards": n, "unsaved": True})
+def _swap():
+    from app.connect import swap
+    return swap
+
+
+def _swap_why(why):
+    """FS-2: Connect's reason a swap the setting would make in place made a new card (the record's `kind_why`) -> the
+    key of its words here; None for no reason, or one this version doesn't know."""
+    s = _swap()
+    return {s.HAND_EDITED: "swapped_why_hand", s.NOT_CONNECTS: "swapped_why_not_ours",
+            s.NO_RENDER: "swapped_why_render"}.get(why)
+
+
+def _swap_entries(connect, seen, answered=frozenset()):
+    """Kantan-SL (PROVISIONAL): one card a swap made (Connect's record's `swaps.made`, the newest not undone) — *Undo*
+    is `swap.act_undo` with `data["id"]`, *OK* holds for that swap — and ONE quiet card for every swap whose word has no
+    other line yet (`swaps.waits`; its key names them, so a new one asks again)."""
+    swaps = (connect or {}).get("swaps") or {}
+    out = []
+    for made in swaps.get("made") or ():
+        key = f"{SWAPPED}:{made['id']}:{made.get('at') or ''}"
+        if key in answered:
+            continue
+        word = made.get("word") or ""
+        if made.get("kind") == _swap().IN_PLACE:       # FS-2: the same card, its own Undo (the old sentence back)
+            title, actions = STRINGS["swapped_same_title"].format(word=word), ("undo_swap_same", "leave_swap_same")
+            say = STRINGS["swapped_same_say_journey" if made.get("by") == _swap().BY_JOURNEY else "swapped_same_say"]
+        elif made.get("by") == _swap().BY_BAD_CARD:     # FS-2 2: a deleted card's — nothing to flag or put back
+            title, actions = STRINGS["swapped_title"].format(word=word), ("undo_swap_deleted", "leave_swap")
+            say = STRINGS["swapped_say_deleted"]
+        else:                                          # a new card; why, once, when the setting asked for the same
+            title, actions = STRINGS["swapped_title"].format(word=word), ("undo_swap", "leave_swap")
+            why = _swap_why(made.get("kind_why"))
+            say = (STRINGS[why] + " " if why else "") + STRINGS[
+                "swapped_say_journey" if made.get("by") == _swap().BY_JOURNEY else "swapped_say"]
+        out.append(Entry(key=key, kind=SWAPPED, title=title, lines=(), actions=actions, unseen=key not in seen,
+                         say=say, data={"id": int(made["id"]), "word": made.get("word")}))
+    waits = list(swaps.get("waits") or ())
+    if waits:
+        key = f"{SWAP_WAITS}:" + ",".join(str(w["id"]) for w in waits)
+        if key not in answered:
+            title = (STRINGS["swap_waits_title"].format(word=waits[0].get("word") or "") if len(waits) == 1 else
+                     STRINGS["swap_waits_title_many"].format(n=len(waits)))
+            out.append(Entry(key=key, kind=SWAP_WAITS, title=title, lines=(), actions=("leave_swap_wait",),
+                             unseen=key not in seen, say=STRINGS["swap_waits_say"],
+                             data={"words": [w.get("word") for w in waits]}))
+    return out
+
+
 def badge(entries_):
     """The tab's number: the unseen entries (P1.2-1: a seen one stays listed and stops counting)."""
     return sum(1 for e in entries_ if e.unseen)
@@ -1256,6 +1506,8 @@ def answer_keys(thing):
         return [item_key(i) for i in (thing.data or {}).get("item_ids") or ()]
     if thing.kind == BACKLOG_SHOWS:
         return list((thing.data or {}).get("left") or ()) or [thing.key]       # one per show it held
+    if thing.kind == DELETED:
+        return [deleted_line_key(n) for n in (thing.data or {}).get("notes") or ()]    # each card: never asked again
     return [thing.key]
 
 

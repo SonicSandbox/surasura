@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 
 from app.connect import runfile
 
@@ -350,6 +351,9 @@ NO_LEDGER = "Connect hasn't made any cards here yet."
 NO_SHELF_RUN = "There's no shelf restore point with that name."
 NEEDS_JUNBAN = "Putting the shelf back needs Junban (順), which isn't installed."
 REVIEWING = "You're reviewing in Anki. Undo once you've finished."
+WAIT_FOR_WRITER_S = 120         # how long an undo keeps waiting for another program's Anki write (a few batches)
+RETRY_GAP_S = 1.0               # at least this long between two tries while another program writes to Anki
+UPDATE_WAITING = "Surasura is waiting to install an update; try again after it."
 WRITER_BUSY = "Another program is writing to Anki. Try again in a moment."
 RECORDS = "Connect's records couldn't be written just now: "
 
@@ -414,6 +418,59 @@ def act(settings, language, job=None, shelf_run=None, confirm=False, sync=None):
         raise CliError("anki-closed", f"Anki isn't open (or stopped answering): {e}") from None
     except (sqlite3.Error, OSError) as e:               # the ledger or the library locked, a disk refusing a write
         raise CliError("failed", RECORDS + (str(e).splitlines() or [type(e).__name__])[0][:160]) from None
+
+
+def _busy_writer(out):
+    return isinstance(out, Exception) and getattr(out, "code", None) == "busy" and \
+        (getattr(out, "context", None) or {}).get("lock") == "anki-writer"
+
+
+def writer_busy():
+    """Does a live program hold Anki's write lock? A lock file this process can't open is no program: its refusal is
+    said at once. Never raises."""
+    try:
+        from app import locks
+        return locks.in_use("anki-writer") and locks.unopenable("anki-writer") is None
+    except Exception:
+        return False
+
+
+def update_waits():
+    """Is an update waiting to install ("Update now": no Anki write may begin)? Never raises."""
+    try:
+        from app import updater
+        return updater.children_held()
+    except Exception:
+        return False
+
+
+def wait_for_writer(call, on_wait, busy=None, update=None):
+    """On a worker: `call()` (an `undo.act` that writes), tried again while a live program holds Anki's write lock —
+    at least RETRY_GAP_S apart, for up to WAIT_FOR_WRITER_S, `on_wait()` called once, as the wait starts. A refusal no
+    live program explains stops at once: an update waiting to install (UPDATE_WAITING), a lock file that can't be
+    opened (the act's own words). Every undo or put-back that writes waits here — the switch-off's (`switch.put_back`,
+    the 3.0 window's), the 2.x Connect window's — so no Qt path imports the Tk window for it."""
+    busy, update = busy or writer_busy, update or update_waits
+    deadline = time.monotonic() + WAIT_FOR_WRITER_S
+    said = False
+    while True:
+        if not said and busy():
+            said = True
+            on_wait()
+        try:
+            return call()
+        except Exception as e:
+            if not _busy_writer(e):
+                raise
+            if update():
+                from app.cli.contract import CliError
+                raise CliError("busy", UPDATE_WAITING, lock="anki-writer", held_by=None) from None
+            if not busy() or time.monotonic() >= deadline:
+                raise
+        if not said:
+            said = True
+            on_wait()
+        time.sleep(RETRY_GAP_S)
 
 
 def owe_sync(settings):

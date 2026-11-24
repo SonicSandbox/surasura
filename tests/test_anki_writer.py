@@ -165,7 +165,8 @@ def test_after_a_wait_the_user_reviewing_refuses():
     fake = _Anki(reviewing=True)
     held, problem = _after_wait(fake)
     assert held is None and problem == anki_connect.REVIEWING
-    assert fake.actions == ["guiReviewActive"]
+    # the one review check: the reviewer open, then the card it shows (OPEN 40's idle rule; this fake names none)
+    assert fake.actions == ["guiReviewActive", "guiCurrentCard"]
     assert locks.held_in_process(anki_connect.WRITER_LOCK) is None
 
 

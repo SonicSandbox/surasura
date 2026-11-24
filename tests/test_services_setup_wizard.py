@@ -120,7 +120,9 @@ def test_card_order_writes_the_consent_the_recorded_pair_the_deck_and_the_three_
     answers = {"keep_in_order": True, "deck": deck, "later": later}
     _returned, before, after = _saved_through_service("order", answers, language)
     assert _changed(before, after) == {"junban_auto_actions", replan_preview.DECK, replan_preview.LANGUAGE,
-                                       "junban_deck", "junban_later_tag", "junban_later_flag", "junban_later_suspend"}
+                                       "junban_deck", "junban_later_tag", "junban_later_flag", "junban_later_suspend",
+                                       "junban_off_list"}
+    assert after["junban_off_list"] == ("leave" if later == "leave" else "aside")    # Kyou-MO: the one switch
     assert after["junban_auto_actions"] is True
     assert (after[replan_preview.DECK], after[replan_preview.LANGUAGE], after["junban_deck"]) == (deck, language, deck)
     assert (after["junban_later_tag"], after["junban_later_flag"], after["junban_later_suspend"]) == flags
@@ -513,21 +515,7 @@ def test_a_library_of_only_new_arrivals_is_nothing_to_count_never_counting_for_g
     assert numbers is not None and numbers.get("bands"), "a title in Current: counted"
 
 
-# --- the Content Manager and Generate --------------------------------------------------------------------------- #
-def test_the_content_manager_opens_as_a_child_job_for_the_language(monkeypatch):
-    from app.services import tools
-    asked = []
-    monkeypatch.setattr(tools, "command", lambda argv, frozen=None: asked.append(list(argv)) or [
-        sys.executable, "-c", "print('閉じました')"])
-    registry, ended, done = JobRegistry(), [], threading.Event()
-    job = SW.open_content_manager(registry, "zh", lambda code: (ended.append(code), done.set()))
-    assert done.wait(20), "the child ended"
-    assert asked == [["content_importer_gui.py", "--language", "zh"]]
-    assert job.kind == "child" and job.on_quit == "detach" and ended == [0]
-    with pytest.raises(ValueError):
-        SW.open_content_manager(registry, "fr")
-
-
+# --- Generate -------------------------------------------------------------------------------------------------- #
 def test_generate_asks_the_windows_generate_and_says_whether_it_was_taken():
     class Services:
         def __init__(self, answer):

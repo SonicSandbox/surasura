@@ -1699,7 +1699,7 @@
                 <b>Left</b> : Previous Word<br>
                 <b>Up / Down</b> : Toggle Sentences<br>
                 <b>v</b> : Play Context Audio<br>
-                <b>z</b> : Ignore Word<br>
+                <b>z</b> : Hide Word Here<br>
                 <b>w</b> : Mark File Complete<br>
                 <b>s</b> : Cycle Show Filter<br>
                 <b>/</b> : Search This Report
@@ -1789,6 +1789,48 @@
     </script>
 
     <script>
+        // The journey's door (app/door.py; #385's, split out): the window opens this page through a one-time page that
+        // hands it the door's port and this session's token in the address (`#door=<port>.<token>`, then the page's
+        // own `file=…`). Taken out of the address before anything reads it (never left in the bar or the history) and
+        // kept for this tab only, so a reload keeps it. Opened any other way: no door, and a press says so.
+        const SURASURA_DOOR = (function () {
+            let door = null;
+            const m = /^#door=(\d+)\.([A-Za-z0-9_-]+)(?:&(.*))?$/.exec(location.hash);
+            if (m) {
+                door = { port: Number(m[1]), token: m[2] };
+                const rest = m[3] ? '#' + m[3] : '';
+                try { history.replaceState(null, '', location.href.split('#')[0] + rest); }
+                catch (e) { location.replace(rest || '#'); }
+                try { sessionStorage.setItem('surasura-door', JSON.stringify(door)); } catch (e) {}
+            } else {
+                try { door = JSON.parse(sessionStorage.getItem('surasura-door') || 'null'); } catch (e) {}
+            }
+            return door && door.port && door.token ? door : null;
+        })();
+
+        // One call through the door -> its JSON answer, or {ok: false, offline: true, why}: 'unopened' (this page
+        // wasn't opened from Surasura, or Surasura was opened again since: an old token), 'closed' (no answer). Asked
+        // only on a press: the page never waits on the app to open.
+        async function doorCall(route, body, ms) {
+            const door = SURASURA_DOOR;
+            if (!door) return { ok: false, offline: true, why: 'unopened' };
+            const ctl = new AbortController();
+            const timer = setTimeout(() => ctl.abort(), ms || 8000);
+            try {
+                const lang = (typeof globalLanguage !== 'undefined' && globalLanguage) ? globalLanguage : 'ja';
+                const r = await fetch(`http://127.0.0.1:${door.port}/v1/${route}`, {
+                    method: 'POST', headers: { 'Content-Type': 'text/plain' }, signal: ctl.signal,
+                    body: JSON.stringify(Object.assign({ token: door.token, lang: lang }, body || {})) });
+                if (r.status === 403) return { ok: false, offline: true, why: 'unopened' };
+                return await r.json();
+            } catch (e) {
+                return { ok: false, offline: e.name !== 'AbortError', why: 'closed',
+                         error: e.name === 'AbortError' ? 'Surasura took too long to answer.' : undefined };
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+
         let globalData = null;
         let ignoredWords = new Set();
         let originalPriorityCount = 0;
@@ -1854,7 +1896,7 @@
         }
 
         function clearIgnoredWords() {
-            if (confirm(`Are you sure you want to un-hide all ignored words for ${langSuffix}?`)) {
+            if (confirm(`Are you sure you want to un-hide all hidden words for ${langSuffix}?`)) {
                 ignoredWords.clear();
                 localStorage.removeItem(storageKey);
                 location.reload();
@@ -1928,8 +1970,8 @@
             if (!btnCopy) {
                 btnCopy = document.createElement('button');
                 btnCopy.id = 'btn-copy-ignore';
-                btnCopy.textContent = "Copy Ignored Words";
-                btnCopy.title = "Paste these into your ignored List";
+                btnCopy.textContent = "Copy Hidden Words";
+                btnCopy.title = "Paste these into Your words › Ignore in Surasura to ignore them everywhere";
                 btnCopy.onclick = copyIgnoredWords;
                 styleIgnoreButton(btnCopy);
                 container.appendChild(btnCopy);
@@ -2066,6 +2108,11 @@
                 }
 
                 await fetchData();
+                // The study order (Settings › Level, Kantan-MO): *By leverage* opens on the Priority List — never
+                // over a link that names where to open (#file=, #search=)
+                if (typeof globalStudyOrder !== 'undefined' && globalStudyOrder === 'priority' && !location.hash) {
+                    await switchMainTab('priority');
+                }
                 rsFromHash();
             } catch (e) {
                 console.error("Initialization Error:", e);
@@ -3250,7 +3297,7 @@
                 `<svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>` +
                 `</button>`;
             footer.innerHTML = `<div></div><div class="actions">` + searchBtnHtml +
-                `<button class="btn btn-ignore" title="Ignore (Hotkey: z)" onclick="ignoreWord('${safeLemma}', this)">Ignore</button></div>`;
+                `<button class="btn btn-ignore" title="Hide here: this page only (Hotkey: z)" onclick="ignoreWord('${safeLemma}', this)">Hide</button></div>`;
             el.appendChild(footer);
 
             // Sources (DOM Pruned)
@@ -3318,7 +3365,7 @@
 
                 // 3. Update Button State
                 const originalText = btnElement.textContent;
-                btnElement.textContent = "Ignored & Copied";
+                btnElement.textContent = "Hidden & Copied";
                 btnElement.classList.add('ignored');
                 btnElement.disabled = true;
 

@@ -24,6 +24,9 @@
   or out is one row inserted or removed, a new number repaints its row alone, and a closed tray does no row work (the
   view waits for `open`). Rows that share a title name their folder first on their line (K7: where the
   original sits, from the looks' answer — named by the reader on its thread, `view_rows._name_arrivals`, A4B-8).
+  A search hit opens it at an arrival (`seek`, the shell's `show_arrival`; Mado-SH): that row made the list's current
+  one (↓ goes on from it) and scrolled to as soon as it is on the list (a big tray's fill may bring it a step later),
+  and handed back to be washed once the tray shows.
 - **The numbers** (`ArrivalNumbers`): each arrival's files asked of the warm worker
   (`app/services/arrivals.ArrivalsWorker.estimate`) once each, when the arrival first shows, each with the piece's
   earlier files placed before it (IK-5) — the asks on a worker, never the window's thread; the answers kept by (item,
@@ -106,6 +109,15 @@ def number_text(arrival):
 
 
 MENU = ("top", "after-show", "soon", "goal", "finished", "folder", "remove")
+
+
+def replace_tip(got):
+    """*Replace 「…」*'s tip for `Store.new_version_of`'s answer `got` (Kura-AB6): how many of the old book's parts go to
+    Removed (the unread ones) and how many stay (the read ones; that line only when there are some)."""
+    gone, kept = len(got["old"]["replaced"]), len(got["old"]["kept"])
+    return strings.TRAY_REPLACE[1].format(
+        old=got["old"]["title"], gone=strings.TRAY_REPLACE_GONE[1 if gone == 1 else 0].format(n=gone),
+        kept=strings.TRAY_REPLACE_KEPT[1 if kept == 1 else 0].format(n=kept) if kept else "")
 
 
 def menu_entries(arrival, writable=True, reason=None, has_show=True):
@@ -1493,6 +1505,7 @@ class ArrivalsTray(motion.Overlay):
         self._fill_timer.timeout.connect(self._fill_step)
         self._fill_after_paint = False      # ... the first step waits for the list's first paint (fix3)
         self._by_key = None                 # (groups, {key: arrival}) — `arrival(key)`, made when asked
+        self._seeking = None                # Mado-SH: (key, found) — a search hit's row, until it is shown (`seek`)
         self.heads = {}                     # group kind -> (its head widget, its label, its button or None)
         self._head_objs = {}                # group kind -> its head's (kind, label) object (the same while unchanged)
         self._row_h = row_height()
@@ -1688,6 +1701,7 @@ class ArrivalsTray(motion.Overlay):
             self.paints += 1
             if self.isVisible():
                 self.place()
+            self._seek()                                       # (a search hit's row may have just come on)
         return changed
 
     def _fill_step(self):
@@ -1726,6 +1740,7 @@ class ArrivalsTray(motion.Overlay):
         self.loading.hide()
         if self.isVisible():
             self.place()
+        self._seek()                                           # (filled: a hit's row never on it is let go)
 
     def _heights(self):
         """The text size moved: an arrival's row height (the row header's default: every arrival's row with it, in
@@ -1752,6 +1767,42 @@ class ArrivalsTray(motion.Overlay):
     def filling(self):
         """A big tray's rows are still coming in (IK-6; tests, the bench)."""
         return self._filling
+
+    # --- Mado-SH: a search hit's arrival ------------------------------------------------------------------------- #
+    def seek(self, key, found=None):
+        """A search hit on the arrival `key` (the shell's `show_arrival`): its row made the list's current one and
+        scrolled to as soon as it is on the list; once the tray shows it, `found(the list's viewport, rect_of)` — the
+        row's place, asked again each time (a scroll, a view moving it; None once it is gone). The last hit wins."""
+        self._seeking = (key, found)
+        self._seek()
+
+    def _seek(self):
+        if self._seeking is None:
+            return
+        key, found = self._seeking
+        view = self.view
+        row = view.row_of(key)
+        if row < 0:
+            if self.isVisible() and not self._filling:
+                self._seeking = None                     # shown, filled, and not there (gone meanwhile): let it go
+            return
+        index = self.model.index(row, 0)
+        if view.currentIndex() != index:
+            view.setCurrentIndex(index)
+        view.scrollTo(index, QAbstractItemView.ScrollHint.PositionAtCenter)
+        if not self.isVisible():
+            return                                       # (still opening: shown and handed back at its show)
+        self._seeking = None
+        if found is None:
+            return
+
+        def rect_of():
+            if sip.isdeleted(view) or not view.isVisible():
+                return None
+            at = view.row_of(key)
+            return view.visualRect(view.model().index(at, 0)) if at >= 0 else None
+        found(view.viewport(), rect_of)
+    # --- end Mado-SH
 
     def _size_of(self, key):
         if key.startswith(HEAD):
@@ -2007,8 +2058,11 @@ class ArrivalsTray(motion.Overlay):
         super().showEvent(event)
         QApplication.instance().installEventFilter(self._away)
         self.inset.set_lit(True)
+        if self._seeking is not None:
+            QTimer.singleShot(0, lambda: None if sip.isdeleted(self) else self._seek())   # Mado-SH: once laid out
 
     def hideEvent(self, event):
+        self._seeking = None                             # (a hit's row not shown yet goes with it)
         super().hideEvent(event)
         QApplication.instance().removeEventFilter(self._away)
         if not self._dragging:
@@ -2016,6 +2070,7 @@ class ArrivalsTray(motion.Overlay):
 
     def closeEvent(self, event):
         self.clear_picks()
+        self._seeking = None                             # (closed while opening: never shown, nothing to wash)
         self._dragging = False
         self._drag_watch.stop()
         if self.fade is not None:
@@ -2355,8 +2410,66 @@ class ArrivalsTray(motion.Overlay):
         from app.qt import item_menu                                # --- Q7: *Never read this folder*, a list row's
         item_menu.offer_skip(self, list(a.item_ids), m, lambda folders: item_menu.skip_menu(
             m, folders, reason, lambda path: self.skip_folder(a, path)))     # own entry, once the looks' worker answers
+        if writable:
+            self.offer_replace(a, m)
         m.popup(at if at is not None else self._menu_at(key))
         return m
+
+    # --- Kura-AB5 (Sonic's yes, 11-20 report: a new version keeps the old one's name and audiobook; PROVISIONAL) - #
+    def offer_replace(self, arrival, m):
+        """A book that is a new version of one in the library (`Store.new_version_of`: the look's mark — the same
+        folder, the same `dc:title`) — read on a plain thread as ⋯ opens, through *Needs you*'s reader — gets ⋯'s first
+        entry *Replace 「…」* while this menu is still open. -> True when it was asked."""
+        read = getattr(getattr(self.win, "needs_you", None), "read_new_version", None)
+        ids = list(arrival.item_ids)
+        if read is None or not ids:
+            return False
+        from app.qt import bridge
+        self._replace_ask = getattr(self, "_replace_ask", 0) + 1
+        ask, relay, fill = self._replace_ask, bridge.Relay(self), getattr(m, "fills", None)
+
+        def found(got):
+            relay.deleteLater()
+            if (got and ask == self._replace_ask and self.last_menu is m and not sip.isdeleted(m) and m.isVisible()
+                    and getattr(m, "fills", None) == fill):
+                self.replace_entry(m, arrival, got)
+        relay.said.connect(found)
+
+        def ask_store():
+            try:
+                relay.call(read(ids[0]))
+            except Exception:
+                relay.call(None)
+        threading.Thread(target=ask_store, name="new-version", daemon=True).start()
+        return True
+
+    def replace_entry(self, m, arrival, got):
+        """*Replace 「…」* first in `m`. -> the action."""
+        from app.qt import drag
+        words = strings.TRAY_REPLACE[0]
+        act = drag.menu_action(m, words.format(old=got["old"]["title"]), lambda: self.replace(arrival, got))
+        act.setToolTip(replace_tip(got))
+        first = next(iter(m.actions()), None)
+        if first is not None:
+            m.insertAction(first, act)
+            m.insertSeparator(first)
+        else:
+            m.addAction(act)
+        return act
+
+    def replace(self, arrival, got):
+        """`Writer.replace_book`: the new version takes the old one's name, place and audiobook; the old one's unread
+        parts go to Removed (Kura-AB6: its read ones stay; the writer takes the store's own answer under its lock) —
+        one change, its toast's Undo puts it all back."""
+        from app.qt import drag, removed
+        moves = self._moves()
+        if moves is None or moves.refused() is not None:
+            return None
+        ticket = drag.Ticket(strings.TRAY_REPLACED.format(old=got["old"]["title"]), (arrival.key,),
+                             list(arrival.item_ids))
+        ticket.buttons = removed.door(self.win)
+        return moves._give(ticket, lambda t: moves.writer.replace_book(got["old"]["replaced"], got["new"]["epub"],
+                                                                       got["old"]["epub"], label=t))
 
     def skip_folder(self, arrival, path):
         """Q7 *Never read this folder*: `Writer.skip_folder` through the window's writer (`item_menu.give_skip`, a list

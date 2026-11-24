@@ -12,7 +12,10 @@ with Kura): from L3.1 `register` reads it itself and this step goes.
   next episode of a show in Current right after its previous one there, before its next one when only later episodes
   are; a show whose other episodes are all in Finished or 6+ Months → the top of Current, ✅ Q4-9; a show with
   episodes still waiting and none in Current, or none at all → it waits; the store's `place(where="after-show")`, by
-  the item's title) · `soon` / `goal` (the top of Soon / 6+ Months) · `finished`.
+  the item's title) · `soon` / `goal` (the top of Soon / 6+ Months) · `finished`. Kura-SO (Sonic 2026-11-19): `top`,
+  `soon` and `goal` never put a new episode ahead of an earlier one of its show there — it joins the show in episode
+  order (`top` / `soon` in Current, `goal` in 6+ Months) — and an item with no episode order goes after what is there
+  (the end of Soon / 6+ Months; `top`: after its own title's rows in Current) — the store's `place_by_rule`.
 
 One rule places an item, never two. Its placement is the user's own action (D30): logged `by` the source, explicit.
 """
@@ -53,9 +56,8 @@ def apply(store, item_id, record, settings):
         return target
     if target == "after-show":          # the store's own rule, as `register` and a folder's take-in place (Decision 1)
         return target if store.place([item_id], "after-show", by=source, explicit=1) is not None else None
-    library.place(store, item_id, {"top": "now"}.get(target, target), source=source, explicit=1,
-                  exact=True)               # (a rule's target is exactly that: its Top the very top, Kura-EO D-1)
-    return target
+    store.place_by_rule(item_id, target, record, source)    # as `register` places one: a new episode joins its
+    return target                                           # show in episode order there (Kura-SO)
 
 
 HELD_WAIT_S = 5.0       # how long the list's own write waits for a library another program is writing

@@ -11,9 +11,12 @@ shares nothing, so it never waits for another job — a Japanese and a Chinese w
 quit ends it). What the worker prints (a crash's traceback) goes to `arrivals-worker-<language>.log` in the logs folder,
 started again when it passes `LOG_CAP`. Requests are written and answers read on
 the client's own threads; each answer goes to its request's callback (or `on_answer`) on the reader thread — a window
-posts it to its own queue. The worker ends by itself after its idle minutes: the next request starts it again, and a
-request the ending worker never answered is sent once more to the new one. A worker that crashed answers each request
-it held with {"id", "error"}. Nothing here imports Qt, Tk, pandas or the analyzer (the import guard).
+posts it to its own queue. Haya-LD: each request waits for its turn before it is sent (`gentle.hold`: you reviewing in
+Anki, a busy computer, a heavier job on a gentle PC — the step between two estimates), and the worker's end is one
+line in the app's log (how long it lived, its exit, how many it answered, and why the window ended it). The worker
+ends by itself after its idle minutes: the next request starts it again, and a request the ending worker never
+answered is sent once more to the new one. A worker that crashed answers each request it held with {"id", "error"}.
+Nothing here imports Qt, Tk, pandas or the analyzer (the import guard).
 """
 import itertools
 import json
@@ -81,20 +84,24 @@ class ArrivalsWorker:
         self._pending = {}              # id -> [request, callback, times sent again]
         self._outbox = queue.Queue()    # ids to write, in the order asked
         self._job = None                # the live job (True while it is being made)
+        self._answered = 0              # answers the live worker gave (its end line)
+        self._pressed = set()           # Haya-LD: the ids a press asked (never held for a turn) not answered yet
         self._proc = None
         self._closed = False
 
     # --- asking ----------------------------------------------------------------------------------------------------- #
-    def estimate(self, path, placed=(), callback=None, piece=None):
+    def estimate(self, path, placed=(), callback=None, piece=None, pressed=False):
         """Ask for the estimate of the file at `path` (`placed`: the files placed since the plan, paths or
         {"path", "tier", "before", "after"}; or, with `piece` — a show's paths, one tuple its files' asks share — an
         index: the piece's first `placed` files, A4: held as the index and expanded only as it is written, so the
-        worker reads the same request and keeps its answer under the same key). -> the request's id, at once."""
+        worker reads the same request and keeps its answer under the same key). `pressed`: asked by a press (Finished's
+        *What if*): never held for a turn (Haya-LD) — it goes before the estimates waiting for one. -> the request's
+        id, at once."""
         if isinstance(placed, int) and not isinstance(placed, bool):
             return self._ask({"op": "estimate", "path": os.fspath(path), "placed": placed, "piece": piece or ()},
-                             callback)
+                             callback, pressed)
         placed = [os.fspath(p) if not isinstance(p, dict) else dict(p, path=os.fspath(p["path"])) for p in placed]
-        return self._ask({"op": "estimate", "path": os.fspath(path), "placed": placed}, callback)
+        return self._ask({"op": "estimate", "path": os.fspath(path), "placed": placed}, callback, pressed)
 
     def reload(self, callback=None):
         """Build the view again (it does so by itself when the plan or the known words change)."""
@@ -120,13 +127,18 @@ class ArrivalsWorker:
             return self._proc is not None
 
     # --- inside ----------------------------------------------------------------------------------------------------- #
-    def _ask(self, request, callback):
+    def _ask(self, request, callback, pressed=False):
         with self._lock:
             rid = next(self._ids)
             closed = self._closed
             if not closed:
                 self._pending[rid] = [dict(request, id=rid), callback, 0]
+                if pressed:
+                    self._pressed.add(rid)
                 self._outbox.put(rid)
+        if pressed and not closed:
+            from app.services import gentle       # Haya-LD: the worker's job goes through the gate for it
+            gentle.press(kind_of(self.language), True)
         if closed:
             self._deliver(callback, {"id": rid, "op": request.get("op"), "error": "the arrivals worker was stopped"})
             return rid
@@ -177,6 +189,7 @@ class ArrivalsWorker:
         if stop:
             _end_soon(proc)
         sent, sent_at, done, stuck = set(), {}, threading.Event(), False
+        began, self._answered = time.monotonic(), 0
         threading.Thread(target=self._read, args=(proc, done), name="arrivals-reader", daemon=True).start()
         while not done.is_set():
             try:
@@ -193,14 +206,29 @@ class ArrivalsWorker:
                 break
             if entry is None:
                 continue
+            from app.services import gentle       # Haya-LD: the step between two estimates waits for its turn
+            if rid not in self._pressed:            # (a press's never does)
+                # it stops waiting only for a press still to send (sent first: this goes back behind it); a press
+                # already sent and waiting for its answer leaves it waiting its turn — never taken and put back again
+                # at once, which spun a core while you waited (train 53's intent keeper, F1)
+                unsent = lambda: any(r not in sent for r in tuple(self._pressed))   # noqa: E731
+                gentle.wait_turn(kind_of(self.language), lambda: done.is_set() or job.cancelled or unsent(),
+                                 done.wait)
+                if done.is_set() or unsent():
+                    self._outbox.put(rid)           # never sent: after the press that came (or for the next worker,
+                    if done.is_set():               # `_ended`)
+                        break
+                    continue
             sent.add(rid)                           # before writing: a worker that ends now is asked again after
-            sent_at[rid] = now
+            sent_at[rid] = time.monotonic()         # (after its turn: a hold is no time the worker took to answer)
             try:
                 proc.stdin.write((json.dumps(_written(entry[0]), ensure_ascii=False) + "\n").encode("utf-8"))
                 proc.stdin.flush()
             except (OSError, ValueError):
                 break                               # it is ending: what it held is settled below
         done.wait()
+        _log_end(self.language, getattr(proc, "pid", None), time.monotonic() - began, proc.returncode, self._answered,
+                 "stuck: stopped" if stuck else "the window ended it" if job.cancelled or self._closed else None)
         self._ended(job, proc.returncode, sent, "The arrivals worker stopped answering." if stuck else None)
 
     def _read(self, proc, done):
@@ -214,6 +242,8 @@ class ArrivalsWorker:
                     continue
                 with self._lock:
                     entry = self._pending.pop(answer.get("id"), None)
+                    self._answered += entry is not None
+                self._unpress(answer.get("id"))
                 if entry is not None:
                     self._deliver(entry[1], answer)
         except (OSError, ValueError):
@@ -270,7 +300,19 @@ class ArrivalsWorker:
             return                                      # starting: `_run` sees it and ends it as below
         _end_soon(proc)
 
+    def _unpress(self, rid):
+        """A press's request answered (or failed): the gate's way through closes with the last one."""
+        with self._lock:
+            if rid not in self._pressed:
+                return
+            self._pressed.discard(rid)
+            last = not self._pressed
+        if last:
+            from app.services import gentle
+            gentle.press(kind_of(self.language), False)
+
     def _fail(self, rid, message):
+        self._unpress(rid)
         with self._lock:
             entry = self._pending.pop(rid, None)
         if entry is not None:
@@ -290,6 +332,16 @@ class ArrivalsWorker:
             callback(answer)
         except Exception as e:                          # a listener's fault never stops the reader
             print(f"Arrivals: a listener failed: {e}")
+
+
+def _log_end(language, pid, lived, code, answered, why):
+    """Haya-LD: the worker's end in the app's log — the startup's timeline had its start and no end."""
+    try:
+        from app.path_utils import write_app_log
+        write_app_log(f"arrivals worker ({language}, pid {pid}): ended after {lived:.1f} s (exit {code}), "
+                      f"{answered} answered" + (f": {why}" if why else ""))
+    except Exception:
+        pass
 
 
 def _written(request):

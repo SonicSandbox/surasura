@@ -334,56 +334,19 @@ def test_the_indexer_command_is_the_scripts_from_source():
 
 
 # --- Koe --------------------------------------------------------------------------------------------------------- #
-def test_koe_starts_when_revealed_and_on_and_stops_at_close(monkeypatch):
-    """`apply_koe_state` at the window's start; `on_closing`'s `koe.stop_server()` at close. A server this service
-    owns, never a job (it never ends); nothing written to settings.json."""
-    calls = _koe(monkeypatch)
-    settings = _Settings(enable_koe=True, source_display="off")
-    chores, registry, _p = _make(settings)
-    chores.started()
-    assert chores.worker.idle(5)
-    assert calls == ["start"] and chores.state().koe_port == 8787
-    assert settings.writes == [], "nothing automatic writes settings.json"
-    assert not [v for v in registry.snapshot() if v.kind == "koe"]
-    chores.close()
-    assert calls == ["start", "stop"] and chores.state().koe_port is None
-
-
-def test_koe_follows_its_switch(monkeypatch):
-    calls = _koe(monkeypatch)
-    settings = _Settings(enable_koe=False)
-    chores, _r, _p = _make(settings)
-    chores.koe_changed()
-    assert chores.worker.idle(5) and "start" not in calls
-    settings.values["enable_koe"] = True
-    chores.koe_changed()
-    assert chores.worker.idle(5) and calls[-1] == "start" and settings.flushes == 1
-    settings.values["enable_koe"] = False
-    chores.koe_changed()
-    assert chores.worker.idle(5) and calls[-1] == "stop" and chores.state().koe_port is None
-    chores.close()
-
-
-def test_koe_hidden_never_starts(monkeypatch):
-    """The reveal gate (`is_revealed`): `enable_koe` true but the line not the user's — nothing starts."""
-    calls = _koe(monkeypatch, revealed=False)
-    chores, _r, _p = _make(_Settings(enable_koe=True))
-    chores.started()
-    assert chores.worker.idle(5)
-    assert "start" not in calls
-    chores.close()
-
-
 def test_koe_absent_the_chores_still_run(monkeypatch, timers_on):
-    """RD-S10: the module removed — started, focus, close all run."""
+    """RD-S10: the module removed — started, focus, close all run, and nothing automatic writes settings.json."""
     monkeypatch.setitem(sys.modules, "modules.koe", None)
     timers = _Timers()
-    chores, registry, _p = _make(_Settings(enable_koe=True), timers=timers)
+    settings = _Settings(enable_koe=True)
+    chores, registry, _p = _make(settings, timers=timers)
     chores.started()
     chores.activated()
     chores.koe_changed()
     assert chores.worker.idle(5)
-    assert len(timers) == 5, "the indexer, the store's helper, Connect's notice, the warm-up, the helper's debounce"
+    assert len(timers) == 6, ("the indexer, the store's helper, Connect's notice, the warm-up, hato's daily update, the "
+                              "helper's debounce")
+    assert settings.writes == [], "nothing automatic writes settings.json"
     chores.close()
 
 
@@ -401,13 +364,41 @@ def test_each_start_chore_runs_once_per_start(monkeypatch, timers_on):
     chores.started()
     assert chores.worker.idle(5)
     assert notes == [1] and warm == []                      # not at once: its timer
-    assert sorted(t.delay for t in timers) == [C.START_INDEX, C.START_MAINTAIN, C.ARRIVALS_AT, C.WARM_AT]
+    assert sorted(t.delay for t in timers) == [C.START_INDEX, C.START_MAINTAIN, C.ARRIVALS_AT, C.WARM_AT, C.HATO_AT]
     assert C.WARM_AT > max(C.START_INDEX, C.START_MAINTAIN, C.ARRIVALS_AT)
     [t for t in timers if t.delay == C.WARM_AT][0].call()
     assert chores.worker.idle(5)
     assert warm == ["ja"]
     chores.close()
     assert all(t.cancelled for t in timers)
+
+
+def test_hatos_daily_update_starts_once_on_its_own_thread_and_ends_at_the_quit(monkeypatch, timers_on):
+    """Hato-UP: 20 s on, hato's daily look (`hato_update.start`) on its own thread — once a window, never for a closing
+    one — given the settings now and a stop the quit sets (`halt`, then `close`)."""
+    from app.services import hato_update
+    started = []
+    monkeypatch.setattr(hato_update, "start", lambda settings, stop: started.append((settings(), stop)) or "thread")
+    monkeypatch.setitem(sys.modules, "modules.koe", None)
+    timers = _Timers()
+    chores, _r, _p = _make(settings=_Settings(target_language="ja", update_check_enabled=True), timers=timers)
+    chores.started()
+    assert chores.worker.idle(5)
+    ring = [t for t in timers if t.delay == C.HATO_AT][0]
+    assert C.HATO_AT > C.WARM_AT and started == []
+    ring.call()
+    ring.call()                                                     # a second ring: still one thread
+    assert len(started) == 1 and started[0][0]["update_check_enabled"] is True
+    stop = started[0][1]
+    assert not stop.is_set()
+    chores.halt()
+    assert stop.is_set()
+    chores.close()
+    late, _r2, _p2 = _make(timers=_Timers())
+    late.halt()
+    late._hato_update()                                             # a timer that rang as the quit began
+    assert len(started) == 1
+    late.close()
 
 
 def test_under_test_no_timer_and_no_warm_up(monkeypatch):
@@ -681,20 +672,6 @@ def test_a_language_switch_reindexes_that_language(indexing_on, monkeypatch):
 
 
 # --- W3.5 worker K: the Haiku mutant list's survivors ------------------------------------------------------------ #
-def test_a_koe_start_queued_before_close_never_runs_after_it(monkeypatch):
-    """`_koe`'s closed check: the worker still runs what was queued before `close()`; a Koe start among it never
-    brings the helper back after the close stopped it (a port held after the window closed)."""
-    calls = _koe(monkeypatch)
-    chores, _r, _p = _make(_Settings(enable_koe=True))
-    hold = threading.Event()
-    chores.worker.put(hold.wait, 10)
-    chores.koe_changed()
-    chores.close()
-    hold.set()
-    assert chores.worker.idle(5)
-    assert "start" not in calls and calls[-1] == "stop" and chores.state().koe_port is None
-
-
 def test_after_close_no_trigger_arms_a_timer_or_asks_the_indexer(indexing_on, timers_on, monkeypatch):
     """`close()` marks the chores closed: a focus or a language switch after it arms no store-helper timer, and the
     indexer is refused as busy (`close()` leaves no timer)."""

@@ -248,7 +248,7 @@ PLAYABLE = (".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".oga", ".opus", ".flac", ".
 #   (Kiku-L). Not .mkv / .avi / .wmv / .ts / .flv, nor .mov (its codecs vary).
 
 
-def files(language, rel_paths, memo=None, explain=False):
+def files(language, rel_paths, memo=None, explain=False, cut_kinds=()):
     """{rel path: the file its lines play from, or None} for the journey page's ▶ (Kiku-L): the report's render asks
     once for every timed source it shows — at a cost the render barely feels where nothing can play (most anime
     libraries) and only while something changed where it can.
@@ -269,7 +269,10 @@ def files(language, rel_paths, memo=None, explain=False):
 
     `explain` (the badge is shown: its hover says why a line has no ▶): a source the gate keeps out answers the media
     file named as it is in one of its folders' listings (`_named_beside`: an `.mkv` the browser can't play), else
-    None — a hint from the listings already made, never a lookup."""
+    None — a hint from the listings already made, never a lookup.
+
+    `cut_kinds` (the journey's render, J-CLIP: the one cutter's videos, `runner.VIDEO_EXTENSIONS`): files of these
+    kinds pass the gate too — the journey's ▶ cuts a line the browser can't play (`clips`); the old page asks none."""
     from app import path_utils
     from app.services.view_rows import MEDIA_WORD
     rel_paths = list(dict.fromkeys(rel_paths))
@@ -277,6 +280,7 @@ def files(language, rel_paths, memo=None, explain=False):
     known, sources = _rows(language, rel_paths)
     data_dir = path_utils.get_data_path(language)
     listings, playable, digests, stamps, copies = {}, {}, {}, {}, {}
+    kinds = PLAYABLE + tuple(cut_kinds)
     gated = {}
     for rel in rel_paths:
         item_id, media, texts, rows = known.get(rel, _UNKNOWN)
@@ -285,8 +289,8 @@ def files(language, rel_paths, memo=None, explain=False):
     _list_all({p for places in gated.values() for p in places}, listings)
     asks = {}
     for rel, places in gated.items():
-        if any(_holds_playable(p, listings, playable) for p in places) or \
-                (not known.get(rel, _UNKNOWN)[3] and _index_playable(language, stamps)):
+        if any(_holds_playable(p, listings, playable, kinds) for p in places) or \
+                (not known.get(rel, _UNKNOWN)[3] and _index_playable(language, stamps, kinds)):
             asks[rel] = places
         elif explain:
             out[rel] = _named_beside(rel, places, listings)
@@ -433,11 +437,11 @@ def _listing(folder, listings):
     return names
 
 
-def _holds_playable(folder, listings, playable):
-    """Whether a folder holds a `PLAYABLE` file (its listing; the answer kept in `playable`)."""
+def _holds_playable(folder, listings, playable, kinds=PLAYABLE):
+    """Whether a folder holds a file of `kinds` (`PLAYABLE`; its listing; the answer kept in `playable`)."""
     if folder not in playable:
         names = _listing(folder, listings)
-        playable[folder] = bool(names) and any(n.endswith(PLAYABLE) for n in names)
+        playable[folder] = bool(names) and any(n.endswith(kinds) for n in names)
     return playable[folder]
 
 
@@ -468,13 +472,13 @@ def _named_beside(rel, places, listings):
     return None
 
 
-def _index_playable(language, stamps):
-    """Whether Connect's video index (as last saved) holds any `PLAYABLE` file — once a call."""
+def _index_playable(language, stamps, kinds=PLAYABLE):
+    """Whether Connect's video index (as last saved) holds any file of `kinds` (`PLAYABLE`) — once a call."""
     if "index_playable" not in stamps:
         try:
             from app.connect import videos
             dirs = videos.Index(language).data.get("dirs") or {}
-            stamps["index_playable"] = any(str(name).lower().endswith(PLAYABLE) for entry in dirs.values()
+            stamps["index_playable"] = any(str(name).lower().endswith(kinds) for entry in dirs.values()
                                            if isinstance(entry, dict) for name in (entry.get("videos") or {}))
         except Exception:
             stamps["index_playable"] = True             # unknown: look, as before the gate

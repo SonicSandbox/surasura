@@ -116,7 +116,7 @@ class _Anki:
         self.signals = []
         monkeypatch.setattr(anki_sync, "read_known_signal", lambda *a, **k: self.signals.append(a[0]))
 
-    def _sync(self, language, url, decks, fields, include_suspended=False, full=False):
+    def _sync(self, language, url, decks, fields, include_suspended=False, full=False, settings=None):
         with self.lock:
             self.syncs.append((language, tuple(decks)))
         if self.gate is not None:
@@ -346,6 +346,35 @@ def test_a_sync_reports_what_it_added_and_the_known_count(live, monkeypatch, lan
     assert (state.sync, state.added, state.known, state.language) == (A.SYNCED, 5, expected, lang)
     assert [s.sync for s in seen].count(A.SYNCING) == 1
     assert [s.seq for s in seen] == sorted(set(s.seq for s in seen)), "in order, each once"
+    auto.close()
+
+
+def test_a_syncs_job_stays_live_until_its_end_is_told_so_no_second_sync_starts_in_between(live, monkeypatch):
+    # FLAKES (Flake-F4, #610): the sync's thread ended its job, then told its end (`AutoSync.ended`: the bar's *synced*,
+    # the result's work queued). In between no sync was live: `_settle` read *syncing* (added 0), and a forced sync (a
+    # language switch) there started a second beside it. Held here by hand at that moment
+    h.seed_library("ja")
+    _synced_once("ja")
+    anki = _Anki(monkeypatch, added=5)
+    auto, registry, _c, _l = _make(_settings(anki_auto_generate=False))
+    real, telling, go = A.AutoSync.ended, threading.Event(), threading.Event()
+
+    def held(self, *a, **k):
+        telling.set()
+        go.wait(10)
+        return real(self, *a, **k)
+    monkeypatch.setattr(A.AutoSync, "ended", held)
+    auto.activated()
+    assert telling.wait(10)
+    try:
+        assert registry.live("anki-sync"), "the sync is live until its end is told"
+        auto.language_changed("ja")                      # a forced sync in that moment
+        assert auto.worker.idle(5)
+        assert len(anki.syncs) == 1, "never a second sync"
+    finally:
+        go.set()
+    _settle(auto, registry)
+    assert (auto.state().sync, auto.state().added) == (A.SYNCED, 5)
     auto.close()
 
 

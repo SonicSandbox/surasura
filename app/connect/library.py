@@ -113,11 +113,32 @@ def audiobook_files(store):
             for f in (r.get("audiobook") or {}).get("files") or () if isinstance(f, str) and f}
 
 
+def book_timing(epub):
+    """Kura-AB5 (11-20 report): the timed text beside the book `epub` (`audiobooks.book_timings`' rule: `<book>.srt` or
+    `<book>.ja.srt` beside it, no video of that name) — its path on this computer — or None (none there, the folder
+    unread). The paired audiobook's own timing when Hon found none (`audiobook_of_book`'s `book_timing`); read where
+    it is, never copied. Read only."""
+    from app import audiobooks
+    from app.connect import runner
+    if not isinstance(epub, str) or not epub:
+        return None
+    folder = os.path.dirname(os.path.abspath(epub))
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return None
+    videos = [n for n in names if n.lower().endswith(runner.VIDEO_EXTENSIONS) and not runner.mac_copy(n)]
+    got = audiobooks.book_timings(sorted(n for n in names if n.lower().endswith(".srt")), [os.path.basename(epub)],
+                                  videos)
+    return os.path.join(folder, sorted(got)[0]) if got else None
+
+
 def audiobook_of_book(store, epub):
     """Michi-AB Stage B: the audiobook Hon paired with the book `epub` (its record's `book`, sure or answered, naming
     that EPUB) -> {item_id, key (the pair's answer key: the line-up's), files (in order), title (the book's, as the
     pairing named it), lineup (the store's mark: `none` / `kept`, or None), timing (Kura-AB3: its transcript's copy,
-    `rel` in the library's data folder, while Hon found it this book's — `audiobooks.TIMING` — else None), seconds
+    `rel` in the library's data folder, while Hon found it this book's — `audiobooks.TIMING` — else None), book_timing
+    (Kura-AB5: with no `timing`, the book's own `.srt` beside its EPUB, `book_timing` — its path, else None), seconds
     (its length, as its tags or frames said, or None)}; None when
     no audiobook reads it (or its record holds no file). The first such item when two do. One read of the records."""
     from app import audiobooks, library_store
@@ -139,7 +160,8 @@ def audiobook_of_book(store, epub):
         return {"item_id": item_id, "key": key if isinstance(key, str) and key else None, "files": files,
                 "title": book.get("title") or ab.get("title") or os.path.splitext(os.path.basename(epub))[0],
                 "lineup": mark.get("status") if mark.get("key") == key else None,
-                "timing": rel if isinstance(rel, str) and rel else None, "seconds": ab.get("seconds")}
+                "timing": rel if isinstance(rel, str) and rel else None, "seconds": ab.get("seconds"),
+                "book_timing": None if isinstance(rel, str) and rel else book_timing(epub)}
     return None
 
 
@@ -160,6 +182,32 @@ def paired_books(store):
         if key not in seen:
             seen.add(key)
             out.append((os.path.abspath(epub), item_id, (book_of(store, epub) or {}).get("sha256")))
+    return out
+
+
+def paired_parts(store):
+    """Kyou-PB: every item that is a part of a book an audiobook is paired with (`paired_books`' records: sure or
+    answered) -> {item id: (the book's path — its EPUB, or a split book's joined `.txt` —, the audiobook's item id,
+    its record)}. The parts by the store's one rule for the items an audiobook reads (`Store._audiobook_parts`: the
+    EPUB's live parts `<epub>#<n>`, a split book's picked parts, else the part the pairing named) — a book held as
+    chapters has no item at its EPUB's own path. Each book once (its first audiobook, as `audiobook_of_book`). One
+    read of the records, one of each paired book's parts: never a read an item; no audiobook, no second read."""
+    from app import library_store
+    out, seen = {}, set()
+    with store._reading():
+        rows = store._audiobook_rows()
+        for _k, item_id, rec in sorted(rows, key=lambda r: r[1]):
+            ab = rec.get("audiobook") or {}
+            book = ab.get("book")
+            epub = book.get("epub") if isinstance(book, dict) else None
+            if not isinstance(epub, str) or not epub:
+                continue
+            key = library_store.path_key(os.path.abspath(epub))
+            if key in seen:
+                continue
+            seen.add(key)
+            for part in store._audiobook_parts(book) - {item_id}:
+                out.setdefault(part, (os.path.abspath(epub), item_id, ab))
     return out
 
 
@@ -293,6 +341,22 @@ def media_of(store, item):
         return None
     row = store.conn.execute("SELECT media_type FROM works WHERE id = ?", (work,)).fetchone()
     return row[0] if row else None
+
+
+def ahead(store):
+    """[item ids] still ahead of you, in the order you'll meet them: the top 20 (`mine_line`), then the rest of
+    Current (NOW, then Soon) and Goal in the store's order, each available on disk and counting (`counting`) — never
+    Finished, never New arrivals (not placed). The study order's *As I'll meet it* for Connect's cap (Kantan-MO; the
+    walk the level raise used before 3.0.18)."""
+    line = mine_line(store)
+    seen, out = set(line), list(line)
+    with store._reading():
+        for tier in ("now", "soon", "goal"):
+            for item_id in counting(store, tier):
+                if item_id not in seen:
+                    seen.add(item_id)
+                    out.append(item_id)
+    return out
 
 
 def counting(store, tier):
@@ -606,7 +670,7 @@ def store_id(store):
 # --------------------------------------------------------------------------- #
 # P2.4: Connect's one store write per batch (S-R-6, G1.1-10)
 # --------------------------------------------------------------------------- #
-def record_batch(store, item_id, made, mined_at, batch=None):
+def record_batch(store, item_id, made, mined_at, batch=None, moved=()):
     """A batch's receipt (N8, `mined_at`) and its made-words record (N15: `{word: [note id, …]}`) in **one short
     write**, as role `connect`'s command: the made-words table made inside the write before its rows (Kura's N15 note:
     `ADDED_TABLES_SQL`, no schema step), then the receipt joins the same transaction. A word recorded again gains its
@@ -615,24 +679,38 @@ def record_batch(store, item_id, made, mined_at, batch=None):
     can't be written. A word written moves `state_version` (P2.4 row 11, L3.3: a level job's batch has no receipt to
     move it, and the copy and the window read the step); a word whose note ids are all recorded already is not
     written again, and a level job's batch with nothing new takes no write at all (S19). The store rings its bell
-    after the commit (L3.2, `_writing`): nothing to ring here."""
+    after the commit (L3.2, `_writing`): nothing to ring here. `moved` (FS-1, the full Swap): notes whose sentence is
+    now this item's line (a card rewritten in place) — taken out of every other item's made words in the same write,
+    each row kept (its word stays made, G1.3-4; no receipt changes): one note, one item. A row that gains only moved
+    notes keeps its `made_at` (no card was made: an Undo's move back never dates the word to now)."""
     from app import library_store
-    if mined_at is None and _recorded(store, item_id, made):
+    moved = {int(n) for n in moved or ()}
+    if mined_at is None and not moved and _recorded(store, item_id, made):
         return                                  # a level job's batch with nothing new: no write lock taken (S19)
     at = mined_at or library_store._now()
     with store._command("receipt", by=READER) as cmd:
         for sql in library_store.ADDED_TABLES_SQL:
             store.conn.execute(sql)
         for word, note_ids in (made or {}).items():
-            row = store.conn.execute("SELECT note_ids FROM made_words WHERE item_id = ? AND word = ?",
+            row = store.conn.execute("SELECT note_ids, made_at FROM made_words WHERE item_id = ? AND word = ?",
                                      (item_id, word)).fetchone()
             had = list(json.loads(row[0])) if row else []
             ids = had + [n for n in note_ids if n not in had]
             if row is not None and ids == had:
                 continue                        # nothing new for this word: its row as it is
+            when = row[1] if row is not None and row[1] and {int(n) for n in ids if n not in had} <= moved else at
             store.conn.execute("INSERT OR REPLACE INTO made_words (item_id, word, note_ids, made_at, batch) "
-                               "VALUES (?, ?, ?, ?, ?)", (item_id, word, json.dumps(ids), at, batch))
+                               "VALUES (?, ?, ?, ?, ?)", (item_id, word, json.dumps(ids), when, batch))
             cmd.touch()
+        if moved:
+            for other, word, ids in store.conn.execute("SELECT item_id, word, note_ids FROM made_words WHERE item_id "
+                                                       "!= ?", (item_id,)).fetchall():
+                had = library_store._json_list(ids)
+                left = [n for n in had if not (str(n).lstrip("-").isdigit() and int(n) in moved)]
+                if left != had:
+                    store.conn.execute("UPDATE made_words SET note_ids = ? WHERE item_id = ? AND word = ?",
+                                       (json.dumps(left), other, word))
+                    cmd.touch()
         if mined_at is not None:                # a level job's batch keeps the item's first receipt
             store.receipt(item_id, mined_at)
 
@@ -725,12 +803,101 @@ def unmake(store, item_id, note_ids, words=()):
     return sorted(w for w, left in changed.items() if not left)
 
 
+def made_rows(store, note_ids):
+    """Tidy's backup of the library's record of `note_ids` (Kyou-SH2), read only -> {"words": [[item, word, note ids,
+    made_at, batch], …] (every made-words row holding one of them, whole), "receipts": {item: mined_at} (those rows'
+    items), "lines": [[note id, item, start_ms, end_ms, line_fp, made_at], …]} — what `remake` puts back."""
+    wanted = {int(n) for n in note_ids or ()}
+    out = {"words": [], "receipts": {}, "lines": []}
+    if not wanted or not store._has_table("made_words"):
+        return out
+    with store._reading():
+        for item_id, word, ids, made_at, batch in store.conn.execute(
+                "SELECT item_id, word, note_ids, made_at, batch FROM made_words"):
+            try:
+                held = [int(n) for n in json.loads(ids)]
+            except (ValueError, TypeError):
+                continue
+            if wanted & set(held):
+                out["words"].append([item_id, word, held, made_at, batch])
+        for item_id in sorted({r[0] for r in out["words"]}):
+            row = store.conn.execute("SELECT mined_at FROM items WHERE id = ?", (item_id,)).fetchone()
+            out["receipts"][str(item_id)] = row[0] if row else None
+        if store._has_table("made_lines"):
+            marks = sorted(wanted)
+            for at in range(0, len(marks), 500):
+                chunk = marks[at:at + 500]
+                out["lines"] += [list(r) for r in store.conn.execute(
+                    "SELECT note_id, item_id, start_ms, end_ms, line_fp, made_at FROM made_lines WHERE note_id IN "
+                    f"({','.join('?' * len(chunk))})", chunk)]
+    return out
+
+
+def word_notes(store, words):
+    """Tidy's Undo (Kyou-SH3, F5): the notes the made-words record holds now for each of `words`, whatever the
+    episode, read only -> {word: [note id, …]} (a word with no row: absent)."""
+    wanted = set(words or ())
+    out = {}
+    if not wanted or not store._has_table("made_words"):
+        return out
+    with store._reading():
+        for word, ids in store.conn.execute("SELECT word, note_ids FROM made_words"):
+            if word not in wanted:
+                continue
+            try:
+                out.setdefault(word, []).extend(int(n) for n in json.loads(ids))
+            except (ValueError, TypeError):
+                continue
+    return out
+
+
+def remake(store, made, id_map):
+    """Tidy's Undo (Kyou-SH2): `made_rows`' record put back for the notes in Anki again (`id_map` {old note id: its id
+    now}), in one short write as role `connect`'s command — each made-words row gains those notes again (a row gone is
+    written back as it was, made again meanwhile it keeps its own notes too), a receipt the tidy cleared comes back,
+    the notes' lines too. Nothing to change → nothing written (S19)."""
+    from app import library_store
+    back = {int(k): int(v) for k, v in (id_map or {}).items()}
+    if not back:
+        return
+    with store._command("receipt", by=READER) as cmd:
+        for sql in library_store.ADDED_TABLES_SQL:
+            store.conn.execute(sql)
+        for item_id, word, ids, made_at, batch in made.get("words") or ():
+            mine = [back[int(n)] for n in ids if int(n) in back]
+            if not mine:
+                continue
+            row = store.conn.execute("SELECT note_ids FROM made_words WHERE item_id = ? AND word = ?",
+                                     (item_id, word)).fetchone()
+            if row is None:
+                store.conn.execute("INSERT INTO made_words (item_id, word, note_ids, made_at, batch) VALUES "
+                                   "(?, ?, ?, ?, ?)", (item_id, word, json.dumps(mine), made_at, batch))
+            else:
+                had = [int(n) for n in json.loads(row[0] or "[]")]
+                ids_now = had + [n for n in mine if n not in had]
+                if ids_now == had:
+                    continue
+                store.conn.execute("UPDATE made_words SET note_ids = ? WHERE item_id = ? AND word = ?",
+                                   (json.dumps(ids_now), item_id, word))
+            cmd.touch()
+        for item_id, mined_at in (made.get("receipts") or {}).items():
+            row = store.conn.execute("SELECT mined_at FROM items WHERE id = ?", (int(item_id),)).fetchone()
+            if mined_at and row is not None and row[0] is None:
+                store.receipt(int(item_id), mined_at)
+        if store._has_table("made_lines"):
+            for note_id, item_id, start_ms, end_ms, line_fp, made_at in made.get("lines") or ():
+                if int(note_id) in back:
+                    store.conn.execute("INSERT OR IGNORE INTO made_lines (note_id, item_id, start_ms, end_ms, line_fp, "
+                                       "made_at) VALUES (?, ?, ?, ?, ?, ?)",
+                                       (back[int(note_id)], item_id, start_ms, end_ms, line_fp, made_at))
+
+
 def place(store, item_id, tier, before_id=None, after_id=None, source="user", explicit=None, exact=False):
     """Move one item (a drag), its events logged as `source`'s (explicit as the store's `move` decides, unless
     `explicit` says). Returns the store's Change, or None for a no-op. A place named exactly (`exact`: a program's
-    `place --position`, `--position 1` the very top; a placing rule's target — its *Top of Current* is the very top,
-    D-1, PROVISIONAL) or by an anchor is exactly that place; else (`place --to current` with no position) an episode
-    joins its show in episode order (`Store._into_show`, Kura-EO)."""
+    `place --position`, `--position 1` the very top) or by an anchor is exactly that place; else (`place --to current`
+    with no position) an episode joins its show in episode order (`Store._into_show`, Kura-EO). A placing rule's
+    target is the store's `place_by_rule` (Kura-SO)."""
     return store.move([item_id], tier, before_id=before_id, after_id=after_id, by=source, explicit=explicit,
                       in_order=not exact and before_id is None and after_id is None)
 

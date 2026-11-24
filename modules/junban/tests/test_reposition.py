@@ -534,14 +534,15 @@ def test_a_library_newer_than_the_list_warns_but_does_not_block(backlog, tmp_pat
 
 
 def test_preflight_refuses_an_unmatched_placement_this_version_cannot_do(backlog):
-    """`junban_unlisted` is honoured, not ignored: "tiers" and "back" exist, and a settings value
-    that silently does something else is worse than one that is missing."""
+    """`junban_off_list` (Kyou-MO) is honoured, not ignored: "leave", "back" and "aside" exist, and a settings value
+    that silently does something else is worse than one that is missing. Unset, it reads 3.0.17's keys."""
     with _patched(backlog):
-        checks = reposition.preflight(_settings(junban_unlisted="front"))
+        checks = reposition.preflight(_settings(junban_off_list="front"))
     assert checks["ok"] is False
-    assert any("back of the queue" in problem for problem in checks["problems"])
-    with _patched(backlog):
-        assert reposition.preflight(_settings(junban_unlisted="back"))["ok"] is True
+    assert any("set them aside" in problem for problem in checks["problems"])
+    for value in ("", "back", "aside"):
+        with _patched(backlog):
+            assert reposition.preflight(_settings(junban_off_list=value))["ok"] is True
 
 
 def test_preflight_refuses_a_tag_anki_would_split(backlog):
@@ -991,20 +992,32 @@ _LIBRARY = {"冒険|ボウケン": [5, 5, 0, 0, 1, 50, "冒険"], "散歩|サン
 _JOURNEY = [(1, "冒険", "冒険", 50, 5), (1, "散歩", "散歩", 20, 2), (3, "老婆", "老婆", 30, 3)]
 
 
+# Kyou-MO (the mining model, F24): the journey's placement of a word the list cut off is for Surasura's cards, with
+# Connect's *Cards for every new word* on — the cards here are Connect's.
+CONNECT_JOB_TAG = "surasura::connect::job-20261121-1"
+EVERY_WORD = {"connect_every_word": True}
+
+
+def _connects(notes):
+    for note in notes:
+        note["tags"] = [CONNECT_JOB_TAG]
+    return notes
+
+
 def test_a_word_the_list_cut_off_lands_where_the_journey_meets_it(tmp_path):
     """The user's D7: "identical to the journey they would experience". 引きずる (file 1, score 30)
     goes between file 1's 冒険 (50) and 散歩 (20); 眼鏡 (file 2) before file 3's 老婆; 須藤, in no
-    list and no library, keeps its place at the back."""
-    _results(tmp_path, progressive=_JOURNEY, library=_LIBRARY)
+    list and no library, keeps its place at the back. (Surasura's cards, *Cards for every new word* on: Kyou-MO.)"""
+    _results(tmp_path, progressive=_JOURNEY, library=_LIBRARY, floor=11)
     cards, notes, _ = _collection(["須藤", "老婆", "眼鏡", "散歩", "引きずる", "冒険"])
-    fake = FakeCollection(cards, notes)
+    fake = FakeCollection(cards, _connects(notes))
 
     with _patched(fake):
-        _writes, stats = reposition.dry_run(_settings(junban_order="content", junban_unlisted="journey"))
+        _writes, stats = reposition.dry_run(_settings(junban_order="content", **EVERY_WORD))
 
     assert [row.word for row in stats["order"]] == ["冒険", "引きずる", "散歩", "眼鏡", "老婆", "須藤"]
     assert [row.tier for row in stats["order"]][:5] == ["list", "library", "list", "library", "list"]
-    assert stats["order"][5].tier not in ("list", "library"), "須藤 is placed by its sentence, after"
+    assert stats["order"][5].tier == "back", "須藤, Surasura's and off the list, goes to the back untouched"
     assert (stats["matched"], stats["library"]) == (3, 2)
     assert stats["library_missing"] is False
     # How often, and where first — "library" alone said nothing. No library files here to name,
@@ -1018,8 +1031,8 @@ def test_rp10_a_word_the_list_cut_off_follows_its_file_through_the_new_order(tmp
     file 2) now goes before 引きずる (file 1), and its "why" names its file's new place."""
     _results(tmp_path, progressive=_JOURNEY, library=_LIBRARY)
     cards, notes, _ = _collection(["引きずる", "眼鏡"])
-    fake = FakeCollection(cards, notes)
-    settings = _settings(junban_order="content", junban_unlisted="journey")
+    fake = FakeCollection(cards, _connects(notes))
+    settings = _settings(junban_order="content", **EVERY_WORD)
 
     with _patched(fake):
         _writes, before = reposition.dry_run(settings)
@@ -1035,17 +1048,17 @@ def test_by_leverage_a_library_word_goes_by_its_score(tmp_path):
     before a listed word scoring 20."""
     _results(tmp_path, priority=[("冒険", "冒険", 50, 5), ("散歩", "散歩", 20, 2)], library=_LIBRARY)
     cards, notes, _ = _collection(["散歩", "引きずる", "冒険"])
-    fake = FakeCollection(cards, notes)
+    fake = FakeCollection(cards, _connects(notes))
 
     with _patched(fake):
-        _writes, stats = reposition.dry_run(_settings(junban_order="priority", junban_unlisted="journey"))
+        _writes, stats = reposition.dry_run(_settings(junban_order="priority", **EVERY_WORD))
 
     assert [row.word for row in stats["order"]] == ["冒険", "引きずる", "散歩"]
 
 
 def test_back_keeps_every_card_the_list_lacks_behind_the_list_as_before(tmp_path):
-    """`junban_unlisted: "back"` is v1's placement, still there for anyone who wants it."""
-    _results(tmp_path, progressive=_JOURNEY, library=_LIBRARY)
+    """`junban_unlisted: "back"` is v1's placement, still there for your own cards (read as *At the back*, Kyou-MO)."""
+    _results(tmp_path, progressive=_JOURNEY, library=_LIBRARY, floor=11)
     cards, notes, _ = _collection(["眼鏡", "散歩", "引きずる", "冒険"])
     fake = FakeCollection(cards, notes)
 
@@ -1057,15 +1070,15 @@ def test_back_keeps_every_card_the_list_lacks_behind_the_list_as_before(tmp_path
 
 
 def test_a_library_map_from_before_the_journey_numbers_places_nothing_and_says_so(tmp_path):
-    """A map written before ENGINE_REVISION 11 stops at the four counts: with "List first" off, the
+    """A map written before ENGINE_REVISION 11 stops at the four counts: with *Cards for every new word* on, the
     words the list cut off wait at the back, and the stats carry the reason for the panel to state."""
     _results(tmp_path, progressive=_JOURNEY,
              library={"引き摺る|ヒキズル": [1, 1, 0, 0], "冒険|ボウケン": [5, 5, 0, 0]})
     cards, notes, _ = _collection(["引きずる", "冒険"])
-    fake = FakeCollection(cards, notes)
+    fake = FakeCollection(cards, _connects(notes))
 
     with _patched(fake):
-        _writes, stats = reposition.dry_run(_settings(junban_order="content", junban_unlisted="journey"))
+        _writes, stats = reposition.dry_run(_settings(junban_order="content", **EVERY_WORD))
 
     assert [row.word for row in stats["order"]] == ["冒険", "引きずる"]
     assert stats["library"] == 0 and stats["library_missing"] is True
@@ -1084,10 +1097,10 @@ def test_a_phrase_card_is_placed_where_the_library_meets_that_run_of_words(tmp_p
     token_index.reconcile_language("ja", [episode])
     _results(tmp_path, progressive=[(1, "冒険", "冒険", 50, 5)], library=_LIBRARY)
     cards, notes, _ = _collection(["須藤", "恩を売る", "冒険"])
-    fake = FakeCollection(cards, notes)
+    fake = FakeCollection(cards, _connects(notes))
 
     with _patched(fake):
-        _writes, stats = reposition.dry_run(_settings(junban_order="content", junban_unlisted="journey"))
+        _writes, stats = reposition.dry_run(_settings(junban_order="content", **EVERY_WORD))
 
     assert [row.word for row in stats["order"]] == ["冒険", "恩を売る", "須藤"]
     assert stats["order"][1].tier == "library" and stats["order"][1].sort == (1, -10, -1, 1, 0)
@@ -1127,7 +1140,7 @@ def test_list_first_puts_every_word_on_the_list_before_any_word_it_cut_off(tmp_p
     assert [row.why for row in order][:3] == ["list #1", "list #2", "list #3"]
     assert {row.word for row in order[3:]} == {"須藤", "眼鏡", "引きずる"}
     assert all(row.tier in ("i+1", "multi", "rest") for row in order[3:]), "then by their sentence"
-    assert (stats["matched"], stats["library"], stats["unlisted"]) == (3, 0, "list_first")
+    assert (stats["matched"], stats["library"], stats["unlisted"]) == (3, 0, "leave")      # Kyou-MO: *Leave*
     assert stats["library_missing"] is False
 
 
@@ -1200,15 +1213,15 @@ def test_with_phrases_switched_off_every_phrase_card_waits_with_the_rest(tmp_pat
     ({}, "ja", True),                                             # the defaults: After it, nothing marked
     ({"junban_unlisted": "journey"}, "ja", True),
     ({"junban_unlisted": " Journey "}, "ja", True),               # read as the run reads it: trimmed, lowercased
-    ({"junban_unlisted": "back"}, "ja", False),                   # at the back: no tiers, neither switch is asked
+    ({"junban_unlisted": "back"}, "ja", True),                    # Kyou-MO: at the back is your own cards' only
     ({}, "zh", False),                                            # Japanese only (jieba cuts whole words)
     ({"junban_only_markers": ["star"]}, "ja", False),             # a marker filter: only the chosen words move
     ({"junban_only_markers": ["Reading"]}, "ja", False),          # a hand-edited mark, read as the filter reads it
     ({"junban_only_markers": ["sparkle"]}, "ja", True),           # no mark this version knows: no filter
 ])
 def test_first_applies_says_when_the_phrases_and_i_plus_one_first_switches_take_part(over, language, applies):
-    """Q31: the Settings page shows *Idioms and set phrases* and *i+1 first* only where a run uses them, by this one
-    rule — the run's own (`tiers`, Japanese) — never a second copy of it."""
+    """Q31: the Settings page shows *Idioms and set phrases* only where a run uses it (the unlocking word first is no
+    switch since Kyou-MO), by this one rule — the run's own (`tiers`, Japanese) — never a second copy of it."""
     assert reposition.first_applies(_settings(**over), language) is applies
 
 
@@ -2423,7 +2436,7 @@ def test_a_known_word_goes_last_even_where_the_list_has_a_key_for_it(tmp_path):
                    ("好き", "猫が<b>好き</b>だ。", 300, ""),
                    ("冒険", "明日から<b>冒険</b>に出かけよう。", 9000, "")])
 
-    for ready_first in (False, True):
+    for ready_first in (False, True):          # a 3.0.17 file's old switch, either way (Kyou-MO: always on)
         with _patched(fake):
             _writes, stats = reposition.dry_run(_settings(junban_ready_first=ready_first))
         assert [(row.word, row.tier, row.rank, row.why) for row in stats["order"]] == [
@@ -2604,7 +2617,8 @@ def _sentence_list(tmp_path, rows):
 
 
 # --------------------------------------------------------------------------- #
-# §17 — "i+1 first": the word a card's own sentence needs comes first, or the card waits
+# §17 — the unlocking word first (always, Kyou-MO): the word a card's own sentence needs comes first, or the card
+# keeps its place (ADVERSARY F16)
 # --------------------------------------------------------------------------- #
 def _mined_sentences(entries):
     """One Lapis card per `(word, its own sentence)`, mined in reverse — so every card has somewhere
@@ -2617,7 +2631,8 @@ def _mined_sentences(entries):
 
 
 def _ready(**over):
-    return _settings(junban_ready_first=True, **over)
+    """The unlocking word first is no switch since the mining model (Kyou-MO): every run's."""
+    return _settings(**over)
 
 
 def _order_of(stats):
@@ -2630,7 +2645,8 @@ def test_the_word_a_sentence_needs_comes_right_before_it_or_the_card_waits(tmp_p
       * 散歩's sentence has 眼鏡, which comes later — and 眼鏡's own card is i+1 at 散歩's spot
         (掛ける is not on the list, 毎日 is known), so 眼鏡 is brought right before 散歩;
       * 手紙's sentence has 眼鏡 too — already brought forward, so already learned: 手紙 stays;
-      * 冒険's sentence has 財布, which has no card of its own: 冒険 waits with the multi cards.
+      * 冒険's sentence has 財布, which has no card of its own: 冒険 keeps its list place (F16: never sent behind
+        the list), its reason saying what it needs.
     """
     _known(tmp_path, ["持つ", "行く", "毎日"])
     _sentence_list(tmp_path, [("冒険", 100, []), ("散歩", 90, []), ("手紙", 85, []), ("眼鏡", 80, []),
@@ -2641,15 +2657,15 @@ def test_the_word_a_sentence_needs_comes_right_before_it_or_the_card_waits(tmp_p
     with _patched(fake):
         _writes, stats = reposition.dry_run(_ready())
 
-    assert _order_of(stats) == [("眼鏡", "first, for 散歩 · list #4"), ("散歩", "after 眼鏡 · list #2"),
-                                ("手紙", "list #3"), ("冒険", "waits for 財布 · list #1")]
-    assert stats["order"][3].tier == "multi" and stats["order"][3].rank is None
-    assert stats["ready_first"] == {"pulled": 1, "held": 1}
+    assert _order_of(stats) == [("冒険", "needs 財布 too · list #1"), ("眼鏡", "first, for 散歩 · list #4"),
+                                ("散歩", "after 眼鏡 · list #2"), ("手紙", "list #3")]
+    assert stats["order"][0].tier == "list" and stats["order"][0].rank == 0
+    assert stats["ready_first"] == {"pulled": 1, "kept": 1}
 
 
 def test_two_cards_that_need_each_other_never_loop(tmp_path):
     """散歩 needs 眼鏡 and 眼鏡's sentence needs 散歩: 眼鏡 is not i+1 at 散歩's spot, so it is not
-    brought forward, and 散歩 waits. 眼鏡, after 散歩 on the list, counts 散歩 as learned and stays."""
+    brought forward, and 散歩 keeps its place. 眼鏡, after 散歩 on the list, counts 散歩 as learned and stays."""
     _known(tmp_path, ["持つ", "行く"])
     _sentence_list(tmp_path, [("散歩", 90, []), ("眼鏡", 80, [])])
     fake = _mined_sentences([("散歩", "散歩に眼鏡を持って行く。"), ("眼鏡", "眼鏡をかけて散歩に行く。")])
@@ -2657,12 +2673,12 @@ def test_two_cards_that_need_each_other_never_loop(tmp_path):
     with _patched(fake):
         _writes, stats = reposition.dry_run(_ready())
 
-    assert _order_of(stats) == [("眼鏡", "list #2"), ("散歩", "waits for 眼鏡 · list #1")]
-    assert stats["ready_first"] == {"pulled": 0, "held": 1}
+    assert _order_of(stats) == [("散歩", "needs 眼鏡 too · list #1"), ("眼鏡", "list #2")]
+    assert stats["ready_first"] == {"pulled": 0, "kept": 1}
 
 
 def test_a_card_brought_forward_never_brings_anything_itself(tmp_path):
-    """No chains: 散歩 needs 眼鏡, but 眼鏡's own sentence needs 財布 — so 散歩 waits rather than
+    """No chains: 散歩 needs 眼鏡, but 眼鏡's own sentence needs 財布 — so 散歩 keeps its place rather than
     pulling 財布 AND 眼鏡 in front of it. 眼鏡 is then judged on its own: 財布's card is i+1 at its
     spot, so 財布 comes right before 眼鏡."""
     _known(tmp_path, ["持つ", "行く"])
@@ -2673,9 +2689,9 @@ def test_a_card_brought_forward_never_brings_anything_itself(tmp_path):
     with _patched(fake):
         _writes, stats = reposition.dry_run(_ready())
 
-    assert _order_of(stats) == [("財布", "first, for 眼鏡 · list #3"), ("眼鏡", "after 財布 · list #2"),
-                                ("散歩", "waits for 眼鏡 · list #1")]
-    assert stats["ready_first"] == {"pulled": 1, "held": 1}
+    assert _order_of(stats) == [("散歩", "needs 眼鏡 too · list #1"), ("財布", "first, for 眼鏡 · list #3"),
+                                ("眼鏡", "after 財布 · list #2")]
+    assert stats["ready_first"] == {"pulled": 1, "kept": 1}
 
 
 def test_a_name_holds_a_card_back_like_any_word_unless_names_are_ignored(tmp_path):
@@ -2683,8 +2699,8 @@ def test_a_name_holds_a_card_back_like_any_word_unless_names_are_ignored(tmp_pat
     setting". 須藤 is on the list after 冒険, so 冒険 waits for it like any word, as the report counts it;
     コリアンタマー (a word the dictionary has never heard of) counts too — both used to pass for names here.
     With Settings' Ignore names on, the library's names are ignored words: 須藤 holds nothing back, while
-    コリアンタマー, which UniDic knows as no name, still does. パピルス is a word, and counts either way. And
-    with "i+1 first" off (the default) nothing about the order changes at all."""
+    コリアンタマー, which UniDic knows as no name, still does. パピルス is a word, and counts either way. A card
+    that waits keeps its list place (Kyou-MO)."""
     from app import token_index
     _known(tmp_path, ["行く"])
     _sentence_list(tmp_path, [("冒険", 100, []), ("散歩", 95, []), ("須藤", 90, []), ("コリアンタマー", 85, []),
@@ -2693,7 +2709,7 @@ def test_a_name_holds_a_card_back_like_any_word_unless_names_are_ignored(tmp_pat
 
     with _patched(fake):
         _writes, stats = reposition.dry_run(_ready())
-        assert _order_of(stats) == [("散歩", "waits for コリアンタマー · list #2"), ("冒険", "waits for 須藤 · list #1")]
+        assert _order_of(stats) == [("冒険", "needs 須藤 too · list #1"), ("散歩", "needs コリアンタマー too · list #2")]
 
     library = os.path.join(str(tmp_path), "village.txt")        # the library the names come from, indexed
     with open(library, "w", encoding="utf-8") as handle:
@@ -2703,20 +2719,18 @@ def test_a_name_holds_a_card_back_like_any_word_unless_names_are_ignored(tmp_pat
         json.dump({"logic": {"ignore_names": True}}, handle)
     with _patched(fake):
         _writes, stats = reposition.dry_run(_ready())
-        assert _order_of(stats) == [("冒険", "list #1"), ("散歩", "waits for コリアンタマー · list #2")]
+        assert _order_of(stats) == [("冒険", "list #1"), ("散歩", "needs コリアンタマー too · list #2")]
 
     fake = _mined_sentences([("冒険", "パピルスと冒険に行く。")])
     with _patched(fake):
         _writes, stats = reposition.dry_run(_ready())
-        assert _order_of(stats) == [("冒険", "waits for パピルス · list #1")], "a real word still counts"
-        assert stats["ready_first"] == {"pulled": 0, "held": 1}
-        _writes, stats = reposition.dry_run(_settings())
-    assert stats["ready_first"] is None
+        assert _order_of(stats) == [("冒険", "needs パピルス too · list #1")], "a real word still counts"
+        assert stats["ready_first"] == {"pulled": 0, "kept": 1}
 
 
 def test_a_letter_named_in_kana_holds_a_card_back_and_a_number_never_does(tmp_path):
     """The sentence's words are the analyzer's (analyzer.word_lemma): デルタ is a letter's name UniDic files
-    as the symbol δ — the word デルタ, on the list after 冒険, so 冒険 waits for it (as the one character δ it
+    as the symbol δ — the word デルタ, on the list after 冒険, so 冒険 needs it too (as the one character δ it
     was skipped); 二十 is a number, never a word, so even a list row for it holds nothing
     back and 散歩 stays where the list puts it."""
     _known(tmp_path, ["行く"])
@@ -2726,8 +2740,8 @@ def test_a_letter_named_in_kana_holds_a_card_back_and_a_number_never_does(tmp_pa
     with _patched(fake):
         _writes, stats = reposition.dry_run(_ready())
 
-    assert _order_of(stats) == [("散歩", "list #2"), ("冒険", "waits for デルタ · list #1")]
-    assert stats["ready_first"] == {"pulled": 0, "held": 1}
+    assert _order_of(stats) == [("冒険", "needs デルタ too · list #1"), ("散歩", "list #2")]
+    assert stats["ready_first"] == {"pulled": 0, "kept": 1}
 
 
 def test_a_sentence_that_says_its_own_word_twice_never_holds_the_card_back(tmp_path):
@@ -2757,8 +2771,8 @@ def test_the_preview_a_click_and_the_run_agree(tmp_path):
         _writes, clicked = replan(stats["order"], {FIRST_CARD + 2})       # 手紙 left alone
         report = reposition.run(_ready())
 
-    assert [row.word for row in clicked["order"]][:2] == ["眼鏡", "散歩"]
-    assert "冒険" in [row.word for row in clicked["order"] if row.tier == "multi"]
+    assert [row.word for row in clicked["order"]][:3] == ["冒険", "眼鏡", "散歩"]
+    assert [row.tier for row in clicked["order"]][:1] == ["list"], "冒険 keeps its list place (Kyou-MO)"
     assert report["ok"] is True
     assert sorted(report["written"]) == sorted(card_id for card_id, _due in writes)
     assert {card_id: due for card_id, due in fake.writes} == dict(writes), "the positions previewed"
@@ -2863,14 +2877,14 @@ def test_a_one_character_word_the_list_cant_offer_is_no_unknown_beside_the_card(
 
 
 def test_i_plus_one_first_waits_for_a_one_kanji_list_word_only_where_it_stands_on_its_own(tmp_path):
-    """"i+1 first" reads the card's sentence as the list does: 年 on the list after 撒く makes 撒く wait for it where
+    """The unlocking word first reads the card's sentence as the list does: 年 on the list after 撒く makes 撒く need it where
     年 stands on its own, never in 三年 (a count); スバル is no list word and blocks nothing."""
     _sentence_list(tmp_path, [("撒く", 100, []), ("年", 90, [])])
     _results(tmp_path)
     _known(tmp_path, ["餌", "明ける"])
     with _patched(_mined_sentences([("撒く", "年が明けて餌を<b>撒い</b>た。")])):
         _writes, stats = reposition.dry_run(_ready())
-    assert _order_of(stats) == [("撒く", "waits for 年 · list #1")]
+    assert _order_of(stats) == [("撒く", "needs 年 too · list #1")]
     with _patched(_mined_sentences([("撒く", "スバルは三年前に餌を<b>撒い</b>た。")])):
         _writes, stats = reposition.dry_run(_ready())
     assert _order_of(stats) == [("撒く", "list #1")]
@@ -2879,13 +2893,13 @@ def test_i_plus_one_first_waits_for_a_one_kanji_list_word_only_where_it_stands_o
 def test_i_plus_one_first_waits_for_the_listed_word_inside_a_rare_compound(tmp_path, compounds):
     """撒く's sentence holds 自動車学校, too rare for the list: it counts as 自動車 + 学校, and 自動車 comes later on
     the list with no card of its own — so 撒く waits for it (as one word, 自動車学校, nothing on the list would ever
-    teach it). With 自動 known, 自動車 is read through it and 撒く keeps its place."""
+    teach it) — keeping its list place. With 自動 known, 自動車 is read through it and 撒く needs nothing."""
     _sentence_list(tmp_path, [("撒く", 100, []), ("自動車", 90, [])])
     _results(tmp_path, library={"自動車学校|ジドウシャガッコウ": _map_entry(1)}, floor=3)
     _known(tmp_path, ["学校"])
     with _patched(_mined_sentences([("撒く", "自動車学校で餌を<b>撒い</b>た。")])):
         _writes, stats = reposition.dry_run(_ready())
-    assert _order_of(stats) == [("撒く", "waits for 自動車 · list #1")]
+    assert _order_of(stats) == [("撒く", "needs 自動車 too · list #1")]
 
     _known(tmp_path, ["学校", "自動"])
     with _patched(_mined_sentences([("撒く", "自動車学校で餌を<b>撒い</b>た。")])):

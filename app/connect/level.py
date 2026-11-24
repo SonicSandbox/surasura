@@ -1,48 +1,49 @@
-"""The level raise (P2.2 row 2.2.6; HC-N38 / N53; P1.5 06-edges E23, signed at G1.3-16).
+"""The level raise (P2.2 row 2.2.6; HC-N38 / N53; P1.5 06-edges E23) — since the mining model (Kantan-MO, 3.0.18;
+MODEL.md, ADVERSARY.md F1) a raise **never mines an episode again**.
 
-When the list gains words — the level raised by hand, or automatic rarity moving it — Connect mines **only the newly
-listed words**, skipping the words already mined, for the episodes it has already mined, **the top 20 first**. In 2.x
-only the top 20; on the 3.0 line (`BEYOND_LINE`, P4.1 C4, HC-N53's "the rest in the background") the top 20, then the
-rest of Current in its order, then Goal — never Finished (not analysed: the last Generate lists no word of it, D16 /
-D23) and never an item taken out of the learning order (`in_learning_order = 0`, D14), nor one missing from disk (the
-line's own rule, `_mine_ids`); a level job beyond the line is never dropped for being out of it (a `finished` or
-`removed` event still drops one not started, `inbox.keeps`);
-lowering the level mines nothing (N38: the words that left keep their cards, at the back); either way the deck is
-re-sorted (`resort_due`, paid by the runner's ordering step, P2.4).
+When the list gains words — the level raised by hand, or automatic rarity moving it — the newly listed words just join
+the study order: Connect cards them as it meets them in the episodes ahead, each up to the cap's window. Until 3.0.17
+a raise queued a `level` job for every already-mined episode (the top 20, then the rest of Current and Goal), each
+opening its video again for its newly listed words: on a big library, hundreds of Anki Miner jobs for one move of the
+slider (Sonic: a move to Rare must not mine a lot again). A `level` job queued before the update and not yet started is
+dropped by the runner (`runner.LEVEL_DROPPED`); one under way finishes, by its own words (`restrict`).
+
+Lowering the level mines nothing either (N38: the words that left keep their cards). Either way the deck is re-sorted
+(`resort_due`, paid by the runner's ordering step, P2.4): the list's words moved.
+
+**One exception, not a raise: new files.** A new episode placed on top is mined before its Generate, from the
+re-plan's list (`replan`'s "new-files"); the Generate after mining then lists words only that episode brought. Those
+episodes alone — mined in that run, before Connect's own Generate (`Ledger.mark_new_files`, taken here) — get a
+`level` job for their newly listed words (`NEW_FILES`, its source: the runner keeps it), as P4.1 C5 built it.
 
 - **Newly listed** = the list's keys now (`(Word, Reading)`: the pick's identity) minus the keys of the list Connect
-  last looked at (the ledger's `listed`). The first look records the list and mines nothing (✅ G1.1-2: from the
-  moment Connect is on, never your history); switched on again, `forget` makes the next look a first look. A look at
-  the same run signature does nothing.
-- **For whom:** each item of the top 20 (`library.mine_line`; on 3.0 the walk past it, `_walk`), in order, already
-  mined (its receipt, or a `done` job) and with no other job open: its newly listed words (the last Generate's
-  `file_words.json` for its file), minus every word Connect has ever made a card for in this language (`made_words`,
-  N15 — G1.3-4: a card you deleted is never made again automatically) → one `level` job naming just them. **One card
-  per word, the top first:** the jobs run in line order, and a job's pick skips a word that has a card by then (P2.4 refreshes the carded set between jobs) — so
-  a word is never held back from a lower episode by a higher one whose job ends up making no card. A job past its
-  start (picking … ordering) → the whole look waits, nothing recorded, and the next look sees the same raise.
-- **Only in the `list` mode** of *Which words become cards* (`connect_mine_words`, the default): the other two don't
-  read the list, so a level raise gives them nothing new. The list is recorded whatever the mode.
+  last looked at (the ledger's `listed`) — counted (`new`), never queued. The first look records the list (✅ G1.1-2:
+  from the moment Connect is on, never your history); switched on again, `forget` makes the next look a first look. A
+  look at the same run signature does nothing.
 
-Pure apart from the ledger it is handed and the store's reads (the top 20, receipts, made words); the caller reads
-the list under `results` (`app/cli/connect_verbs.py`). Light: the standard library only.
+Pure apart from the ledger it is handed; the caller reads the list under `results` (`app/cli/connect_verbs.py`).
+Light: the standard library only.
 """
 import os
 
 from app.connect import library
 from app.connect.ledger import Ledger
 
-# P4.1 C4 (the 3.0 line): a level raise mines all the already-mined content, past the top 20 (2.x-dev keeps False:
-# the top 20 only, as `PINS` is kept there)
-BEYOND_LINE = True
+
+# A level job for an episode mined before its own Generate (new files): kept by the runner, unlike a raise's
+NEW_FILES = "new-files"
+# Kantan-SD: a level job for a word whose best sentence is in this episode (the sentence dial's Best, `runner._best`)
+# — kept by the runner, watched or finished too (the context you remember is why it was chosen)
+BEST = "best-sentence"
+KEPT = (NEW_FILES, BEST)
 
 
-def check(store, language, listed, signature, file_words, mode="list", ledger=None):
+def check(store, language, listed, signature, file_words, ledger=None):
     """One look at the list -> {"queued": [item ids], "new": n newly listed, "first": bool, "waiting": bool}.
 
     `listed`: the list's keys `{(word, reading), …}` (None: no list of this language in `results/`); `signature`: the
     run that wrote it (`read_run_stamp`); `file_words`: `{file name: [lemma, …]}` (the last Generate's
-    `file_words.json`)."""
+    `file_words.json`). Queued only for the new-files exception (the module's docstring)."""
     out = {"queued": [], "new": 0, "first": False, "waiting": False}
     if listed is None or not signature:
         return out
@@ -55,6 +56,7 @@ def check(store, language, listed, signature, file_words, mode="list", ledger=No
             if recorded_signature == signature:
                 return out
             if recorded_signature is None:
+                ledger.take_new_files(language)  # a first look (Connect on again too) lists every word: none lacks its own
                 ledger.record_list(language, signature, now)
                 out["first"] = True
                 return out
@@ -62,15 +64,34 @@ def check(store, language, listed, signature, file_words, mode="list", ledger=No
                 out["waiting"] = True
                 return out
             new = now - recorded
-            out["new"] = len(new)
-            if new and mode == "list":
-                out["queued"] = _queue(store, language, ledger, new, file_words or {})
+            out["new"] = len(new)                # they join the study order: no episode is mined again (F1) ...
+            mined = ledger.take_new_files(language)
+            if new and mined:                    # ... but the new files Connect mined before its own Generate
+                out["queued"] = _queue(store, language, ledger, new, file_words or {}, mined)
             ledger.record_list(language, signature, now)
             ledger.owe_resort(language)
         return out
     finally:
         if own:
             ledger.close()
+
+
+def _queue(store, language, ledger, new, file_words, mined):
+    by_lemma = {}
+    for word, reading in new:
+        by_lemma.setdefault(word, set()).add((word, reading))
+    made = library.made_words_all(store)
+    queued = []
+    for item_id in mined:
+        item = store.item(item_id)
+        if not wants(item):
+            continue                        # taken out of the learning order (D14), or watched (#49): no level job
+        lemmas = set(file_words.get(os.path.basename(item.get("rel_path") or "")) or ())
+        words = {key for lemma in lemmas if lemma not in made for key in by_lemma.get(lemma, ())}
+        if words and ledger.queue_level(language, item_id, words, source=NEW_FILES,
+                                        store_id=library.store_id(store)) is not None:
+            queued.append(item_id)
+    return queued
 
 
 def forget(language, ledger=None):
@@ -85,25 +106,6 @@ def forget(language, ledger=None):
     finally:
         if own:
             ledger.close()
-
-
-def _queue(store, language, ledger, new, file_words):
-    by_lemma = {}
-    for word, reading in new:
-        by_lemma.setdefault(word, set()).add((word, reading))
-    made = library.made_words_all(store)
-    queued = []
-    for item_id in _walk(store):
-        if library.mined_at(store, item_id) is None and not ledger.mined(language, item_id):
-            continue                        # its first mining (when it runs) reads the list as it is now
-        item = store.item(item_id)
-        if not wants(item):
-            continue                        # taken out of the learning order (D14), or watched (#49): no level job
-        lemmas = set(file_words.get(os.path.basename(item.get("rel_path") or "")) or ())
-        words = {key for lemma in lemmas if lemma not in made for key in by_lemma.get(lemma, ())}
-        if words and ledger.queue_level(language, item_id, words, store_id=library.store_id(store)) is not None:
-            queued.append(item_id)
-    return queued
 
 
 # 3.0's rule (laptop round 8 #49, LF4-1 = A; Sonic 2026-10-22: "new words never come from a watched episode YET. This
@@ -125,27 +127,13 @@ def wants(item):
     return item is not None and item.get("in_learning_order") != 0 and not watched_out(item)
 
 
-def _walk(store):
-    """The items a raise looks at, in order: the top 20; on the 3.0 line (`BEYOND_LINE`) then the rest of Current
-    (NOW, then Soon) and Goal in the store's order, each available on disk and counting (`library.counting`, W-1's
-    one rule: a stone's episode while *Keep studying watched episodes* is off is passed, as the line passes it) —
-    never Finished, never New arrivals (not placed). `wants` still passes a watched one when the option is on (LF4-1)."""
-    line = library.mine_line(store)
-    if not BEYOND_LINE:
-        return line
-    seen, out = set(line), list(line)
-    with store._reading():
-        for tier in ("now", "soon", "goal"):
-            for item_id in library.counting(store, tier):
-                if item_id not in seen:
-                    seen.add(item_id)
-                    out.append(item_id)
-    return out
-
-
 def restrict(listed, job):
-    """A level job's list: only its words (`pick` sends Anki Miner nothing else). Any other job: `listed` as is."""
+    """A level job's list: only its words (`pick` sends Anki Miner nothing else) — a Best word not on the list
+    (*Cards for every new word*) after the listed ones. Any other job: `listed` as is."""
     if not job or job.get("kind") != "level":
         return listed
     only = set(job.get("words") or ())
-    return {key: rank for key, rank in (listed or {}).items() if key in only}
+    kept = {key: rank for key, rank in (listed or {}).items() if key in only}
+    if job.get("source") == BEST:
+        kept.update((key, len(listed or {})) for key in sorted(only - set(kept)))
+    return kept

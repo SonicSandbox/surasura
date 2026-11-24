@@ -5,7 +5,8 @@ Surasura chooses the words, Anki Miner makes the cards: every word is named, wit
 Anki Miner's own selection. Word identity is Surasura's: a word is its (lemma, reading), keyed by the analyzer's own
 tokenizers (`app/cues.py`), and a word only Surasura joins is sent whole (IS-R2).
 
-Which words (`connect_mine_words`, Mado's *Words to make cards from*):
+Which words (`settings_manager.mine_mode`: `list`, or `unknown` with *Cards for every new word* — Kantan-MO; `i1` only
+by `surasura-cli pick --words`):
 - `list`    — the episode's words on your Surasura list (the last Generate's), not known, with no card yet
 - `unknown` — every word Surasura reads in the episode that you don't know (Surasura's reading, ✅ G0.3-6)
 - `i1`      — only words with a line whose other words you all know
@@ -57,6 +58,7 @@ import re
 import unicodedata
 
 from app import analyzer
+from app.connect import sentences
 from app.cues import seconds
 
 MODES = ("list", "unknown", "i1")
@@ -112,6 +114,7 @@ REASONS = {
     "sung": "said only in a song line",
     # Tsu-U (based on Mattias's Tsubasa-sync #2): said only where a cut in the recording leaves the timing unsure
     "unsure": "said only near a cut in the recording, where its line's timing is unsure",
+    "only-line": "said only in the line its card already has",
 }
 
 
@@ -552,11 +555,39 @@ def _written_out(surface, lemma):
 
 
 class _Occurrence:
-    __slots__ = ("key", "cue", "front", "surface", "orth", "token", "phrase", "neighbours")
+    __slots__ = ("key", "cue", "front", "surface", "orth", "token", "phrase", "neighbours", "inside")
 
-    def __init__(self, key, cue, front, surface, orth, token, phrase, neighbours):
+    def __init__(self, key, cue, front, surface, orth, token, phrase, neighbours, inside=False):
         self.key, self.cue, self.front, self.surface, self.orth = key, cue, front, surface, orth
         self.token, self.phrase, self.neighbours = token, phrase, neighbours
+        self.inside = inside        # a part of a rare compound said here (`_credited`), not the word on its own
+
+
+class _Part:
+    """A piece of a joined word, shaped as the tagger's node is (`surface`, `feature`, `is_unk`), for the card front,
+    its reading and whether it is a name (`card_front`, `front_reading`, `predicted_class`, `_is_name`). A piece the
+    join made from is a word the tagger's dictionary knows (`JoinedWord` keeps no piece's own `is_unk`)."""
+    __slots__ = ("surface", "feature", "is_unk")
+
+    def __init__(self, surface, feature):
+        self.surface, self.feature, self.is_unk = surface, feature, False
+
+
+def _credited(token, credit):
+    """The Token of `credit` ((lemma, reading): a free part a rare compound's use counts for, `LearningView.credits`)
+    as `token` — the compound — writes it: the joined word's own piece (its surface and the tagger's reading of it),
+    else the lemma where the compound writes it so; None where the line doesn't write it at all (no card can be found
+    on that line)."""
+    from app.cues import Token
+    lemma, reading = credit
+    for surface, feature in getattr(token.node, "parts", None) or ():
+        base = feature.lemma or surface
+        base = analyzer._sanitize_term(base) if analyzer.SANITIZE_JA else base
+        if base == lemma and (feature.lForm or "") == reading:
+            return Token(lemma, reading, surface, surface, token.cue, token.sentence, _Part(surface, feature), surface)
+    if lemma in (token.written or ""):
+        return Token(lemma, reading, lemma, lemma, token.cue, token.sentence, None, lemma)
+    return None
 
 
 def _sentences(tokens):
@@ -569,13 +600,21 @@ def _sentences(tokens):
 
 
 def occurrences(cues, tokens, language, is_known, skip_single=True, phrase_set=None, readable=None,
-                ignore_names=False):
+                ignore_names=False, view=None):
     """Every use of a word the learner may be offered, in order, and each cue's new words: ([_Occurrence],
     {cue: {key}}). A word counts as the analyzer counts it — its script, a one-character word only where the list can
     offer it (`analyzer.unoffered`) — and a set phrase (Japanese, `phrase_set`) is an occurrence of its row. A new word
     is one the learner neither knows nor reads through known words (`readable`: `analyzer.LearningView`'s, the one
-    learning rule), nor a name while Ignore names is on."""
+    learning rule), nor a name while Ignore names is on.
+
+    `view` (Kantan-MA: an `analyzer.LearningView` with the last Generate's counts, Japanese): a compound too rare for
+    the list counts toward its free parts, as the list counted it (`credits`: 大衆食堂 said once is a use of 大衆) — each
+    such part is an occurrence too, marked `inside` (a line where the word stands on its own is taken first); and in its
+    line the compound is its parts (`units`), as the report reads it. Without one, every word is itself."""
     found, new_in = [], {}
+
+    def new(key):
+        return not is_known(key) and not (readable is not None and readable(key))
     for text, at in _sentences(tokens):
         sentence = [tokens[i][:4] for i in at]
         skip = analyzer.unoffered(text or "", sentence) if language == "ja" and skip_single else ()
@@ -587,9 +626,18 @@ def occurrences(cues, tokens, language, is_known, skip_single=True, phrase_set=N
             neighbours = (tokens[i - 1].surface if i > 0 and tokens[i - 1].cue == cue else None,
                           tokens[i + 1].surface if i + 1 < len(tokens) and tokens[i + 1].cue == cue else None)
             found.append(_Occurrence(key, cue, card_front(token), token.written, token.orth, token, False, neighbours))
-            if not is_known(key) and not (readable is not None and readable(key)) \
-                    and not (ignore_names and token.node is not None and _is_name(token.node)):
-                new_in.setdefault(cue, set()).add(key)
+            if ignore_names and token.node is not None and _is_name(token.node):
+                continue
+            fresh = [unit for unit in (view.units(key) if view is not None else (key,)) if new(unit)]
+            if fresh:
+                new_in.setdefault(cue, set()).update(fresh)
+            for credit in view.credits(key) if view is not None else ():
+                if analyzer.single_kind(credit, skip_single) == 1:
+                    continue                # a one-character word the list never offers (Generate's `_never`)
+                part = _credited(token, credit)
+                if part is not None:
+                    found.append(_Occurrence(credit, cue, card_front(part), part.written, part.orth, part, False,
+                                             neighbours, inside=True))
         if phrase_set is not None and language == "ja":
             from app import phrases
             for start, end, index in phrase_set.find(sentence, text or ""):
@@ -602,7 +650,7 @@ def occurrences(cues, tokens, language, is_known, skip_single=True, phrase_set=N
 
 def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None, carded_source="anki",
          ignore_names=False, send_grammar=True, skip_single=True, phrase_set=None, readable=None, unsure=(),
-         sentence_length=None):
+         sentence_length=None, view=None, young=None, never=None, swap=None, ranked=None):
     """The words of one subtitle to make cards from, and why the rest of its new words aren't sent:
     {"words": [...], "not_offered": [...]} (row 1.3.3's shapes). `is_known((lemma, reading))`: known or ignored, by the
     analyzer's rule; `readable(key)`: a word read through known words (`analyzer.LearningView`), no new word in a line.
@@ -617,10 +665,33 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
     `sentence_length` ((min, preferred max, never longer than) characters: the learner's *Length* and *Never longer
     than*, logic.context min_chars / preferred_max_chars / max_chars; PROVISIONAL lean, 2026-11-12: cards honour them
     too) ranks its sentences (`length`) where the 8 s cap ranks a video's lines — a preference only, never cut, a word
-    with only sentences outside it still sent. A video's lines never read it."""
+    with only sentences outside it still sent. A video's lines never read it.
+
+    `view` (Kantan-MA): the list's own `analyzer.LearningView` (the last Generate's counts), so a word the list counted
+    only inside a rare compound of this episode (大衆 in 大衆食堂) is found there (`occurrences`).
+
+    The sentence dial (Kantan-SD, `app/connect/sentences.py`): `young` ({lemma: weight}, `sentences.young_weights`)
+    breaks the last tie toward the line whose card also holds words you are still learning, the younger the more —
+    after every other rule; `never` ({key: {line text}}: Swap's old card's sentence) is a line the word is never cut
+    from again — a word with no other line is not sent (`only-line`).
+
+    `swap` (Kantan-SL, Swap's simple version: `app/connect/swap.py`): {"word", "reading" ("" for any), "avoid": [line
+    texts], "line": a line text or None} — only that word is sent, whatever the mode, the list or its old card (it has
+    one: that's the card being swapped); its `avoid` lines join `never` for it (the picker's one rule,
+    `sentences.same_line`); from `line` when the episode says it there (the learner's pick), else as any word.
+
+    `ranked` (the sentence choice at `plan_rules.SENTENCE_TABLE` >= 1: `sentences.lines_in` for this file): called once
+    with the words it may send -> {key: [line text, …]} the score's lines of each inside this file, best first, or
+    None; never for a Swap with its `line` (chosen already). The score weighs the Length and the cap itself, so its
+    order goes before `length` and `fits` here. The score chooses the line and the cut refuses what it can't make (SPEC § 11, overlap 78): of the lines its
+    refusals leave (sung, inside tsubasa's undetermined spans, Swap's old card's), the score's first it holds — its
+    line, or one inside the other (Swap's `same_line`), the same line first — after "a line no other word took" only
+    (no two cards share a sentence: PROVISIONAL); none of them there, or a word the score holds no line of, and its
+    own rule below, as today."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
-    found, new_in = occurrences(cues, tokens, language, is_known, skip_single, phrase_set, readable, ignore_names)
+    found, new_in = occurrences(cues, tokens, language, is_known, skip_single, phrase_set, readable, ignore_names,
+                                view)
     on_list = listed is not None                   # Michi-CK2: each word says whether it is on the list (None: no list)
     listed = listed or {}
     carded = carded or set()
@@ -707,8 +778,32 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
         n = len(line_of(at))
         return (int(bool(cap) and n > cap), int(n < low), int(n > high))
 
+    young = young or {}
+    never = {tuple(k): v for k, v in (never or {}).items() if v}
+    lemmas_in = {}
+    if young:
+        for t in tokens:
+            if t.lemma:
+                lemmas_in.setdefault(t.cue, set()).add(t.lemma)
+
+    def fresh(o):
+        """The young words a card cut from `o` holds besides its own, weighed (`young`); 0 without them."""
+        if not young:
+            return 0
+        held = set().union(*(lemmas_in.get(c, ()) for c in span(o.cue))) - {o.key[0]}
+        return sum(young.get(lemma, 0) for lemma in held)
+
+    wanted = None
+    if swap and swap.get("line"):
+        wanted = lambda o: sentences.same_line(line_of(o.cue), [swap["line"]])                # noqa: E731
     candidates = []
     for key, uses in by_key.items():
+        if swap:
+            if key[0] == swap["word"] and (not swap.get("reading") or key[1] == swap["reading"]) and not is_known(key):
+                candidates.append(key)
+                if swap.get("avoid"):
+                    never[key] = set(never.get(key) or ()) | set(swap["avoid"])
+            continue
         phrase = uses[0].phrase
         if is_known(key) or (phrase and key not in listed):
             continue
@@ -718,6 +813,46 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             continue
         candidates.append(key)
     candidates.sort(key=lambda k: (listed.get(k, len(listed)), met[k]))
+
+    order = None
+    if ranked is not None and candidates and not wanted:     # (Swap's line is chosen already: the learner's or the score's)
+        try:
+            order = ranked(candidates)
+        except Exception:                   # never the cut's fault: its own rule
+            order = None
+    order = order or {}
+    normed, said = {}, {}       # a cue's line, a score's text: each normalised once a pick
+
+    def norm(at):
+        if at not in normed:
+            normed[at] = sentences.norm_line(line_of(at))
+        return normed[at]
+
+    def scored(key):
+        """The score's lines of `key` (`norm_line`'s, best first) and {line: its first place}."""
+        texts = []
+        for t in order.get(key) or ():
+            if t not in said:
+                said[t] = sentences.norm_line(t)
+            texts.append(said[t])
+        at = {}
+        for n, text in enumerate(texts):
+            at.setdefault(text, n)
+        return texts, at
+
+    def placed(o, texts, at):
+        """Where the cue of `o` stands among the score's lines `texts` (best first): (n, 0) the nth is its line, (n, 1)
+        one is inside the other (the token store may keep a cue as two sentences), the earlier place first; (len, 0)
+        none of them — for every use alike without `texts` (the cut's own rule)."""
+        if not texts:
+            return (0, 0)
+        line = norm(o.cue)
+        exact = at.get(line) if line else None
+        for n in range(len(texts) if exact is None else exact):
+            text = texts[n]
+            if min(len(text), len(line)) >= 2 and (text in line or line in text):    # (`same_line`'s two at least)
+                return (n, 1)
+        return (len(texts), 0) if exact is None else (exact, 0)
 
     words, not_offered, taken = [], [], set()
     from app import anki_match
@@ -731,27 +866,35 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
         elif not send_grammar and (first.phrase.grammar if first.phrase else (
                 first.token.node is not None and first.token.node.feature.pos1 in GRAMMAR)):
             reason = "grammar"      # a grammar word, or a grammar expression's row (かもしれない: phrases.Phrase.grammar)
-        if reason is None:
+        if reason is None and not swap:
             spellings = {first.front, key[0], first.orth, first.surface}
             spellings |= {anki_match.fold_kana(s) for s in spellings if s} if language == "ja" else set()
             if not carded.isdisjoint(spellings):
                 reason = "has-card" if carded_source == "anki" else "in-backlog"
         heard = [o for o in uses if not cues[o.cue].sung and (mode != "i1" or others(o) == 0)]
         usable = [o for o in heard if timed(o)]
+        old = never.get(key)
+        other = [o for o in usable if not sentences.same_line(line_of(o.cue), old)] if old else usable
         if reason is None and not heard:
             reason = "sung"
         elif reason is None and not usable:
             reason = "unsure"
+        elif reason is None and not other:
+            reason = "only-line"
+        usable = ([o for o in other if wanted(o)] or other) if wanted else other
         if reason is not None:
             not_offered.append({"word": key[0], "reading": key[1], "orth": first.orth, "reason": reason,
                                 "why": REASONS[reason]})
             continue
-        # a line no other word took; no other new word; audio the subtitle gives no reason to doubt; a card that fits
-        # the cap uncut (else the shortest); written out
-        best = min(usable, key=lambda o: (not taken.isdisjoint(span(o.cue)), others(o) > 0, doubts(o.cue),
+        # a line no other word took; the score's line (`ranked`); the word on its own (not inside a rare compound,
+        # Kantan-MA); no other new word; audio the subtitle gives no reason to doubt; a card that fits the cap uncut
+        # (else the shortest); written out
+        texts, at = scored(key)
+        best = min(usable, key=lambda o: (not taken.isdisjoint(span(o.cue)), placed(o, texts, at), o.inside,
+                                          others(o) > 0, doubts(o.cue),
                                           not fits(o.cue),
                                           length(o.cue), 0 if fits(o.cue) else card(o.cue)[3],
-                                          -_written_out(o.surface, key[0]), others(o), o.cue))
+                                          -_written_out(o.surface, key[0]), others(o), -fresh(o), o.cue))
         taken.update(span(best.cue))
         cue = cues[best.cue]
         sent = [best.front]
@@ -768,6 +911,7 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             "predicted_class": (predicted_class(best.token, best.phrase, best.neighbours) if language == "ja"
                                 else None),
             "other_new": others(best),
+            "young": round(fresh(best), 4),     # Kantan-SD: the line's young words, weighed (the runner's Best: its own line)
             # Michi-CK2 (Sonic's lean A, 2026-11-18): on the list (at your level) or an i+1 word below it — the ✓
             # chip's hover counts each kind honestly (`card_chip`, from the job's `picked`)
             "listed": (key in listed) if on_list else None,

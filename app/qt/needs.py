@@ -248,13 +248,24 @@ ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway",
            "keep_waiting", "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows", "get_speech_model",
            "no_speech_model", "keep_together", "separate_them", "no_audiobook", "ai_audio",
            "move_cards", "leave_cards",                                                  # Michi-DK
-           "put_back_shelf", "leave_shelf")                                              # Kyou-SH
+           "put_back_shelf", "leave_shelf",                                              # Kyou-SH
+           "undo_tidy", "leave_tidy",                                                    # Kyou-SH2
+           "dw_all_known", "dw_all_ignore", "dw_all_bad", "dw_leave",  # Kyou-DW: the whole card (All parsing
+           "dw_forget_all", "dw_keep_old",                             # mistakes only asks its follow-up: Kyou-DW 3)
+           "dw_all_word_wrong", "dw_all_only_line",
+           "undo_swap", "leave_swap", "leave_swap_wait",                                 # Kantan-SL
+           "undo_swap_same", "leave_swap_same",                                          # FS-2
+           "undo_swap_deleted")                                                          # FS-2 2
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "generate_again",
                      "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
                      "make_from_audio", "find_with_hato", "find_with_hato_zh",     # Michi-NS: each a long ask
                      "add_audio",                                                  # Kura-AB3 A2: Anki written
-                     "change_video")                                               # Kantan-B5: a picker's start
+                     "change_video",                                               # Kantan-B5: a picker's start
+                     "dw_known", "dw_ignore", "dw_bad", "dw_forget",    # Kyou-DW: a line's own answer (Parsing
+                     "dw_word_wrong", "dw_only_line")                  # mistake only asks its follow-up: Kyou-DW 3)
+# Kyou-DW: the cards whose line stands behind a ? beside the title (the Qt guide: no visible line under a title)
+ABOUT_KINDS = frozenset((service.DELETED, service.OLD_DELETES))
 
 
 class NeedsCards(QWidget):
@@ -446,15 +457,33 @@ class NeedsCards(QWidget):
         box = QVBoxLayout(card)
         box.setContentsMargins(*pad)
         box.setSpacing(round(6 * f))
-        title = _label(e.title, "needstitle", card)
-        if e.kind == service.FAILURE and (e.data or {}).get("log"):
-            title.setToolTip(strings.NEEDS_FAILURE_LOG_TIP.format(path=e.data["log"]))   # Kantan-B1: never the line
-        box.addWidget(title)
-        if e.say:
-            box.addWidget(_label(e.say, "sheetline", card))
+        if e.kind in ABOUT_KINDS and e.say:         # Kyou-DW: its line behind a ? beside the title, never shown below
+            from app.qt.tooltip import AboutMark, FitTitle
+            head = QHBoxLayout()
+            head.setSpacing(round(6 * f))
+            title = FitTitle(e.title, card)
+            title.setObjectName("needstitle")
+            title.setTextFormat(Qt.TextFormat.PlainText)
+            title.setWordWrap(True)
+            title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
+            head.addWidget(title, 1000)
+            card.about = AboutMark(strings.HELP_MARK, card)
+            card.about.set_about(strings.NEEDS_ABOUT_NAME.format(title=e.title), e.say)
+            head.addWidget(card.about, 0, Qt.AlignmentFlag.AlignTop)
+            head.addStretch(1)
+            box.addLayout(head)
+        else:
+            title = _label(e.title, "needstitle", card)
+            if e.kind == service.FAILURE and (e.data or {}).get("log"):
+                title.setToolTip(strings.NEEDS_FAILURE_LOG_TIP.format(path=e.data["log"]))   # Kantan-B1: never the line
+            box.addWidget(title)
+            if e.say:
+                box.addWidget(_label(e.say, "sheetline", card))
         self.addon(card, box, e)
         by_line = dict(zip((ln.key for ln in e.lines), results or ())) if results else {}
         shown = FOLDER_LINES_SHOWN if e.kind in (service.FILES_FOLDER, service.LIBRARY_GONE) else LINES_SHOWN
+        if e.kind == service.DELETED:               # Kyou-DW 3: a follow-up line never pushes a card's line out
+            shown += sum(1 for ln in e.lines if ln.key.startswith(service.DELETED_HOW))
         for ln in e.lines[:shown]:
             row = QHBoxLayout()
             row.setSpacing(round(8 * f))
@@ -509,6 +538,37 @@ class NeedsCards(QWidget):
             acts.addWidget(more)
         box.addLayout(acts)
         return card
+
+
+def deleted_said(why, got, same_card=False):
+    """Kyou-DW (PROVISIONAL): an answer's line — what it did, and what it skipped and why. FS-2 (decision 11): *Bad
+    card* done while Swap gives the same card (`same_card`) says that a flag would have kept the reviews."""
+    done, skipped = list(got.get("done") or ()), list(got.get("skipped") or ())
+    words = list(dict.fromkeys(w for _n, w in done))
+    if words:
+        text = (strings.NEEDS_DELETED_DONE_ONE[why].format(word=words[0]) if len(words) == 1 else
+                strings.NEEDS_DELETED_DONE[why].format(n=f"{len(words):,}"))
+    elif got.get("error"):
+        text = strings.NEEDS_DELETED_NOT.format(why=got["error"])
+    else:
+        text = strings.NEEDS_DELETED_NONE
+    if skipped:
+        text += (strings.NEEDS_DELETED_SKIPPED_ONE.format(word=skipped[0][1], why=skipped[0][2]) if len(skipped) == 1
+                 else strings.NEEDS_DELETED_SKIPPED.format(n=f"{len(skipped):,}"))
+    if got.get("unflagged"):
+        text += strings.NEEDS_DELETED_UNFLAGGED
+    if why == "bad" and words and same_card:
+        text += strings.NEEDS_BAD_CARD_FLAG
+    return text
+
+
+def deleted_undone_said(out):
+    """Kyou-DW (PROVISIONAL): an Undo's line."""
+    out = out or {}
+    if out.get("done"):
+        return strings.NEEDS_DELETED_UNDONE
+    skipped = list(out.get("skipped") or ())
+    return strings.NEEDS_DELETED_NOT_UNDONE.format(why=skipped[0][2] if skipped else strings.NEEDS_DELETED_NONE)
 
 
 # --- the page's controller ---------------------------------------------------------------------------------------- #
@@ -681,6 +741,24 @@ def _default_books(opener, item_id):
                 pass
 
 
+def _default_read(opener, name, *args):
+    """Kura-AB5: `Store.<name>(*args)` through a store handle of this worker's own (closed after), or None."""
+    if opener is None or getattr(opener, "mode", None) != "store" or not hasattr(opener, "handle"):
+        return None
+    try:
+        store = opener.handle()
+        if store is None or not hasattr(store, name):
+            return None
+        return getattr(store, name)(*args)
+    finally:
+        close = getattr(opener, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:
+                pass
+
+
 def _default_audiobooks(opener, item_id):
     """Kura-AB2 *Pick its audiobook…*: the book part `item_id`'s book and the library's audiobooks with no book,
     likeliest first (`Store.book_audiobooks`), through a store handle of this worker's own (closed after)."""
@@ -774,6 +852,20 @@ def taken(ab):
     return {"replace": True} if ab.get("elsewhere") else {}
 
 
+def tidy_back_said(got):
+    """A tidy's Undo, said (*Needs you*'s *Undo* and Settings' *Put back…* alike): how many came back and how many were
+    left out (Kyou-SH3 F5: their words have cards again), or why none did."""
+    got = got or {}
+    if got.get("why") or got.get("say"):
+        return strings.NEEDS_TIDY_NOT_BACK.format(why=got.get("why") or got.get("say"))
+    n = int(got.get("back") or 0)
+    said = strings.NEEDS_TIDY_BACK_ONE if n == 1 else strings.NEEDS_TIDY_BACK.format(n=n)
+    k = len(got.get("skipped") or ())
+    if k:
+        said += (strings.NEEDS_TIDY_SKIPPED_ONE if k == 1 else strings.NEEDS_TIDY_SKIPPED.format(k=k))
+    return said
+
+
 class NeedsYou(QObject):
     """The page's entries and their actions, for one window (`win`: the shell)."""
     changed = pyqtSignal()                       # new entries painted (the tab's count follows)
@@ -807,6 +899,9 @@ class NeedsYou(QObject):
         self._landed = {}                        # A4A-11: key -> the first gather that reads its write (from it on
         #                                          the seen file alone says whether it is hidden)
         self._seen_jobs = collections.deque()    # A4A-8: the page's seen-file writes, one after another as pressed
+        self._dw_asking = set()                  # Kyou-DW 3: the deleted cards whose Parsing mistake asks its follow-up
+        #                                          (note ids; a card's own key: the whole card), kept while
+        #                                          the window is open: no time-out, never answered for the learner
         self.last_menu = None
         reader = getattr(win.services, "library", None)
         opener = getattr(reader, "opener", None)
@@ -815,6 +910,10 @@ class NeedsYou(QObject):
         self.read_asks = lambda: _default_asks(opener)
         self.read_books = lambda item_id: _default_books(opener, item_id)      # a5-2 (Hon)
         self.read_audiobooks = lambda item_id: _default_audiobooks(opener, item_id)   # Kura-AB2
+        # Kura-AB5: a book's every part (a list row's whole-book Remove) and the book a new version may replace (New
+        # arrivals' *Replace 「…」*), each on a worker
+        self.read_book = lambda item_id: _default_read(opener, "book_items", item_id)
+        self.read_new_version = lambda item_id: _default_read(opener, "new_version_of", item_id)
         # Michi-NS: *Make them from the audio*'s two steps, each on a worker (tests replace them)
         self.subs_ready = _subs_ready
         self.make_subs = lambda *args: _default_make(opener, *args)
@@ -1022,6 +1121,7 @@ class NeedsYou(QObject):
         library = self._library()
         emptied = self._emptied()
         gone_judged = gone_folders if self._gone_judged else None     # never pruned by a summary that judged none
+        asking = frozenset(self._dw_asking)
         log_path = getattr(getattr(self.win.services, "controller", None), "log_path", None)
         generate_log = log_path() if callable(log_path) else None      # Kantan-B1: a failed Generate's hover
 
@@ -1055,7 +1155,8 @@ class NeedsYou(QObject):
                                   miner_update=service.miner_update(view),    # Michi-U: Anki Miner out of date
                                   no_subs=service.no_subs_offer(view, settings),   # Michi-NS: videos, no subtitle
                                   strays=service.deck_strays(lang, settings),      # Michi-DK: outside its deck
-                                  generate_log=generate_log)                  # Kantan-B1: its path, in the hover
+                                  generate_log=generate_log,                  # Kantan-B1: its path, in the hover
+                                  asking=asking)                              # Kyou-DW 3: Parsing mistake's ask
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
 
@@ -1628,6 +1729,10 @@ class NeedsYou(QObject):
         act.setToolTip(strings.NEEDS_AUDIOBOOK_FOLDER_TIP)
         act.triggered.connect(lambda _c=False: self._audiobook_folder(got["title"], got["epub"]))
         m.addAction(act)
+        act = QAction(strings.NEEDS_AUDIOBOOK_FILE, m)               # Kura-AB5: by one of its files (Sonic's yes)
+        act.setToolTip(strings.NEEDS_AUDIOBOOK_FILE_TIP)
+        act.triggered.connect(lambda _c=False: self._audiobook_file(got["title"], got["epub"]))
+        m.addAction(act)
         self.last_menu = m
         control = self._control("pick_audiobook", entry)
         if control is not None and control.isVisible():
@@ -1659,6 +1764,23 @@ class NeedsYou(QObject):
         if folder and adder.read_folder(folder, book=book):
             self._say(strings.NEEDS_AUDIOBOOK_READING.format(name=os.path.basename(os.path.normpath(folder)),
                                                              book=title))
+
+    def _audiobook_file(self, title, epub=None):
+        """Kura-AB5 *An audio file on your computer…* (Sonic's yes, 11-20 report: a folder of several audiobooks' loose
+        files gave none): the audiobook the picked file belongs to is this book's — its folder read as *A folder…*
+        reads it (`Adder.read_folder`, the book's word with the file: `sources.scan`'s `book["file"]`), and only the
+        audiobook holding that file joins, whatever its names; one already in your library — alone, or with another
+        book — is picked for it (`_pick_audiobook`, its toast's Undo; `Adder._audiobooks_said`)."""
+        adder = getattr(self.win, "adder", None)
+        if adder is None or not epub:
+            return
+        from app.qt import windows                       # (Fresh-U row 11: never the program's own folder)
+        path = self.pick_file(strings.NEEDS_AUDIOBOOK_FILE_TITLE.format(book=title), windows.content_folder())
+        if not path:
+            return
+        path = os.path.abspath(path)
+        if adder.read_folder(os.path.dirname(path), book={"epub": epub, "title": title, "file": path}):
+            self._say(strings.NEEDS_AUDIOBOOK_READING.format(name=os.path.basename(path), book=title))
 
     def _do_no_audiobook(self, entry, _line):
         answer, kick, lang, read_settings = (self.connect_calls["book_audiobook"], self.connect_calls.get("kick"),
@@ -2440,6 +2562,199 @@ class NeedsYou(QObject):
             self._say(strings.NEEDS_SHELF_LEFT)
             self.refresh()
         self._press("leave_shelf", entry, service.answer, self.language, service.answer_keys(entry), then=done)
+
+    # Kyou-SH2 (PROVISIONAL): Tidy, said — *Undo* puts the tidy's backup back (`tidy.act_undo`: Anki's write lock,
+    # waiting up to its 10 s; on a worker)
+    def _do_undo_tidy(self, entry, _line):
+        from app.cli.contract import CliError
+        from app.connect import tidy
+        lang, read_settings = self.language, self.read_settings
+        tidy_id = (entry.data or {}).get("id")
+
+        def undo_it():
+            try:
+                return tidy.act_undo(read_settings() or {}, lang, tidy_id)
+            except CliError as e:
+                return {"why": e.message}
+
+        def done(got):
+            got = got or {}
+            if got.get("why") or got.get("say"):
+                self._stays("undo_tidy", entry)
+            self._say(tidy_back_said(got))
+            self.refresh()
+        self._press("undo_tidy", entry, undo_it, then=done)
+
+    def _do_leave_tidy(self, entry, _line):
+        unsaved = bool((entry.data or {}).get("unsaved"))       # Kyou-SH3: a tidy that deleted nothing
+
+        def done(_n):
+            self._say(strings.NEEDS_TIDY_UNSAVED_LEFT if unsaved else strings.NEEDS_TIDY_LEFT)
+            self.refresh()
+        self._press("leave_tidy", entry, service.answer, self.language, service.answer_keys(entry), then=done)
+
+    # Kyou-DW (PROVISIONAL): a deleted card asks why — each answer on a worker (`connect.deleted.answer`: the word
+    # lists' one writer, Send report's list, Swap's maker), said in a toast with its Undo (`deleted.undo`); a line's
+    # answer turns its own button, *Same for all* the card's
+    def _deleted_answer(self, name, entry, line, why):
+        from app.connect import deleted
+        lang, read_settings = self.language, self.read_settings
+        whole = line is None or line.number is None     # Same for all (its follow-up's line has no card of its own)
+        notes = list((entry.data or {}).get("notes") or ()) if whole else [line.number]
+
+        def answer_it():
+            got = deleted.answer(lang, notes, why)
+            if got["done"]:
+                service.answer(lang, [service.deleted_line_key(n) for n, _w in got["done"]])
+            return got
+
+        def done(got):
+            got = got or {}
+            if not got.get("done"):
+                self._stays(name, entry)
+            self.refresh()
+            from app.connect import swap
+            said = deleted_said(why, got, same_card=why == "bad" and swap.in_place_on(read_settings() or {}))
+            if not got.get("done") or not self._alive():
+                self._say(said)
+                return
+            back = [n for n, _w in got["done"]]
+            self._dw_asking.difference_update(back)
+            if whole:
+                self._dw_asking.discard(entry.key)
+
+            def undo_it():
+                out = deleted.undo(lang, back, settings=read_settings() or {})
+                service.unanswer(lang, [service.deleted_line_key(n) for n, _w in out["done"]])
+                return out
+
+            def undone(out):
+                self._say(deleted_undone_said(out))
+                self.refresh()
+            self.win.toasts.show(said, undo=lambda: bridge.run_in_worker(undo_it, then=undone, failed=self._failed))
+        self._press(name, entry, answer_it, then=done, line=line, goes=whole)
+
+    def _do_dw_known(self, entry, line):
+        self._deleted_answer("dw_known", entry, line, "known")
+
+    def _do_dw_ignore(self, entry, line):
+        self._deleted_answer("dw_ignore", entry, line, "ignore")
+
+    # Kyou-DW 3 (PROVISIONAL): Parsing mistake answers nothing yet — it asks one more thing, in one more line under
+    # its card's line (*All parsing mistakes*: once, first on the card): The word is wrong · Only in this sentence
+    def _ask_how(self, what):
+        self._dw_asking.add(what)
+        self.refresh()
+
+    def _do_dw_parsing(self, entry, line):
+        self._ask_how(line.number)
+
+    def _do_dw_word_wrong(self, entry, line):
+        self._deleted_answer("dw_word_wrong", entry, line, "parsing")
+
+    def _do_dw_only_line(self, entry, line):
+        self._deleted_answer("dw_only_line", entry, line, "line")
+
+    def _do_dw_all_word_wrong(self, entry, line):
+        self._deleted_answer("dw_all_word_wrong", entry, line, "parsing")
+
+    def _do_dw_all_only_line(self, entry, line):
+        self._deleted_answer("dw_all_only_line", entry, line, "line")
+
+    def _do_dw_bad(self, entry, line):
+        self._deleted_answer("dw_bad", entry, line, "bad")
+
+    def _do_dw_all_known(self, entry, _line):
+        self._deleted_answer("dw_all_known", entry, None, "known")
+
+    def _do_dw_all_ignore(self, entry, _line):
+        self._deleted_answer("dw_all_ignore", entry, None, "ignore")
+
+    def _do_dw_all_parsing(self, entry, _line):
+        self._ask_how(entry.key)                    # this card's set of cards: one that changes since asks again
+
+    def _do_dw_all_bad(self, entry, _line):
+        self._deleted_answer("dw_all_bad", entry, None, "bad")
+
+    def _do_dw_leave(self, entry, _line):
+        def done(_n):
+            self._say(strings.NEEDS_DELETED_LEFT)
+            self.refresh()
+        self._press("dw_leave", entry, service.answer, self.language, service.answer_keys(entry), then=done)
+
+    # the old deletes, once: *Forget* is the store's `allow_again` through the window's writer (one toast, one Undo:
+    # Undo keeps the word deleted and puts its line back on the card)
+    def _forget(self, name, entry, line, words, keys):
+        lang = self.language
+
+        def told(_ticket, event):
+            if event == "undone":
+                bridge.run_in_worker(lambda: service.unanswer(lang, keys), then=lambda _n: self.refresh(),
+                                     failed=self._failed)
+            elif event == "refused":
+                self.refresh()
+        said = (strings.NEEDS_FORGOT_ONE.format(word=words[0]) if len(words) == 1 else
+                strings.NEEDS_FORGOT.format(n=f"{len(words):,}"))
+        writer = self.win.services.writer
+        number = self._give(said, (), lambda t, w=list(words): writer.allow_again(w, label=t), told=told)
+        if number is None:
+            self._say(strings.NEEDS_FORGET_REFUSED)
+            return
+        self._press(name, entry, service.answer, lang, keys, then=lambda _n: self.refresh(), line=line,
+                    goes=line is None)
+
+    def _do_dw_forget(self, entry, line):
+        self._forget("dw_forget", entry, line, [line.label], [line.key])
+
+    def _do_dw_forget_all(self, entry, _line):
+        words = list((entry.data or {}).get("words") or ())
+        self._forget("dw_forget_all", entry, None, words, [service.old_line_key(w) for w in words] + [entry.key])
+
+    def _do_dw_keep_old(self, entry, _line):
+        def done(_n):
+            self._say(strings.NEEDS_OLD_KEPT)
+            self.refresh()
+        self._press("dw_keep_old", entry, service.answer, self.language, [entry.key], then=done)
+
+    # Kantan-SL (PROVISIONAL): Swap, said — *Undo* deletes the new card with a backup and puts the old one back to study
+    # (`swap.act_undo`: Anki's write lock, waiting up to its 10 s; on a worker)
+    def _do_undo_swap(self, entry, _line, name="undo_swap", undone=strings.NEEDS_SWAP_UNDONE):
+        from app.connect import swap
+        lang, read_settings = self.language, self.read_settings
+        swap_id = (entry.data or {}).get("id")
+
+        def done(got):
+            got = got or {}
+            if got.get("why"):
+                self._stays(name, entry)
+                self._say(strings.NEEDS_SWAP_NOT_UNDONE.format(why=got["why"]))
+            else:
+                self._say(undone)
+            self.refresh()
+        self._press(name, entry, lambda: swap.act_undo(read_settings() or {}, lang, swap_id), then=done)
+
+    def _do_leave_swap(self, entry, _line, name="leave_swap", left=strings.NEEDS_SWAP_LEFT):
+        def done(_n):
+            self._say(left)
+            self.refresh()
+        self._press(name, entry, service.answer, self.language, service.answer_keys(entry), then=done)
+
+    # FS-2 (PROVISIONAL): an in-place swap — the same `swap.act_undo` (it reads the swap's own kind), its own words
+    def _do_undo_swap_same(self, entry, line):
+        self._do_undo_swap(entry, line, "undo_swap_same", strings.NEEDS_SWAP_SAME_UNDONE)
+
+    def _do_leave_swap_same(self, entry, line):
+        self._do_leave_swap(entry, line, "leave_swap_same", strings.NEEDS_SWAP_SAME_LEFT)
+
+    # FS-2 2 (PROVISIONAL): a *Bad card*'s swap — the same `swap.act_undo`; its old card was deleted and stays so
+    def _do_undo_swap_deleted(self, entry, line):
+        self._do_undo_swap(entry, line, "undo_swap_deleted", strings.NEEDS_SWAP_DELETED_UNDONE)
+
+    def _do_leave_swap_wait(self, entry, _line):
+        def done(_n):
+            self._say(strings.NEEDS_SWAP_WAIT_LEFT)
+            self.refresh()
+        self._press("leave_swap_wait", entry, service.answer, self.language, service.answer_keys(entry), then=done)
 
     def synced(self):
         """A known-words sync ended (the automation's): Known from Anki's question may have come or gone."""

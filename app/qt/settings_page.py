@@ -315,9 +315,15 @@ class Slab(QWidget):
         box.addWidget(self.about)
         self.about.setVisible(False)
         self.main = QWidget(self)
+        # (Mado-LT 5) its rows' container and *More options*' paint nothing, as the column: resized (a row's height
+        # changed: a folder list's second line gone), only what moved repaints — never the rows above in view
+        self.main.setAttribute(Qt.WidgetAttribute.WA_StaticContents, True)
         self.main_box = QVBoxLayout(self.main)
         self.main_box.setContentsMargins(0, 0, 0, 0)
         self.main_box.setSpacing(0)
+        self.main_box.addStretch(1)                    # (rows go in before it: `place`) — and below: the slack a box laid
+        #                                                out inside its old height goes to a stretch, never to a row
+        #                                                (Mado-LT 5: one row's height changed moved every row above it)
         box.addWidget(self.main)
         self.more_row = QWidget(self)
         more = QHBoxLayout(self.more_row)
@@ -333,6 +339,7 @@ class Slab(QWidget):
         self.more_row.setVisible(False)
         self.adv = QWidget(self)
         self.adv.setObjectName("settingsadv")
+        self.adv.setAttribute(Qt.WidgetAttribute.WA_StaticContents, True)          # (as `main`, above)
         adv = QVBoxLayout(self.adv)
         adv.setContentsMargins(0, 0, 0, 0)
         adv.setSpacing(0)
@@ -341,7 +348,9 @@ class Slab(QWidget):
         self.adv_box.setContentsMargins(0, 0, 0, 0)
         self.adv_box.setSpacing(0)
         adv.addLayout(self.adv_box)
+        adv.addStretch(1)
         box.addWidget(self.adv)
+        box.addStretch(1)
         self.adv.setVisible(False)
         self.placed = {"main": [], "adv": []}          # catalog index of each widget placed, per container
         self._fold = None
@@ -1288,8 +1297,8 @@ class SettingsPage(QWidget):
             control = sc.Toggle(value, tooltip=tip, name=name)
         elif kind in ("choice", "cards", "select"):
             opts = list(catalog.options(row, settings, self.language))
-            if value not in [v for v, _l, _line in opts]:
-                opts.append((value, str(value), ""))       # a value no option names (hand-edited): shown, kept
+            if value not in [v for v, _l, _line in opts]:      # a value no option names (hand-edited), or a move's
+                opts.append((value, S.OPTIONS.get(row.id, {}).get(value, str(value)), ""))   # flag another took: kept
             tips = catalog.option_tips(row, settings)
             if kind == "cards":
                 control = sc.Cards([(v, label, line) for v, label, line in opts], value, tooltip=tip, name=name)
@@ -1339,6 +1348,16 @@ class SettingsPage(QWidget):
             view.set_words(row.label, catalog.help_line(row, settings, self.language))   # DIAGNOSIS 3), Junban's deck
         values = [value[row.keys[0]], value[row.keys[1]]] if row.kind == "slider" else [value]
         moved = False
+        if row.id in catalog.MOVE_ROWS and row.kind == "select":     # Mado-LT: another move took or freed a flag
+            opts = list(catalog.options(row, settings, self.language))
+            if value not in [v for v, _l, _line in opts]:
+                opts.append((value, S.OPTIONS.get(row.id, {}).get(value, str(value)), ""))   # held: shown, kept
+            tips = catalog.option_tips(row, settings)
+            moved = view.controls[0].set_options([(v, label, tips.get(v)) for v, label, _line in opts])
+        elif row.id in catalog.MOVE_ROWS and row.kind == "tablets":  # Known's states: as built (a flag held drops)
+            tips = S.OPTION_TIPS.get(row.id, {})
+            moved = view.controls[0].set_options(
+                [(v, label, tips.get(v)) for v, label, _line in catalog.options(row, settings, self.language)])
         if row.id in catalog.PROGRAM_ROWS:                 # the program's name on its choice, *Change…* once kept
             label, tip = catalog.program_label(row, settings)
             moved = view.controls[0].set_label("program", label, tip)
@@ -1495,6 +1514,12 @@ class SettingsPage(QWidget):
         view = self.rows.get(row.id)
         if view is not None and view.isVisible():
             self._wash(view)
+        # *Your path* ④: the learner picked which words get a card — since the mining model (Kantan-MO) the level, or
+        # *Cards for every new word* (*Words to make cards from* retired)
+        if {"logic.selection.band", "logic.selection.auto", "connect_every_word"} & set(written):
+            moment = getattr(self.shell, "path_moment", None)
+            if moment is not None:
+                moment("yours")
         if row.keys[0] in catalog.PER_LANGUAGE:
             old_value, language = catalog.control_value(row, before, self.language), self.language
 

@@ -13,12 +13,18 @@ its words once (`view_rows`). Qt-free (`tests/test_import_guard.py`); the rows s
   own worker — at the first frame, to the front at most once a minute, after a sync — and hands its words on,
   `studied`), and the words Connect made cards for that still have a note in Anki (the store's `made_words`, before
   the next sync puts them in the backlog). A hand-made card is counted once it is studied or synced; a card deleted
-  in Anki leaves at the next read or sync. A card's word is the token's lemma, exactly: a kana card of a kanji word
-  counts one fewer, never a wrong one (PROVISIONAL, accepted).
+  in Anki leaves at the next read or sync. A card's word is the token's lemma, exactly — and a card written in kana
+  alone is also the word its own sentence says it is (Kyou-KN, 2026-11-20: Junban's one rule,
+  `anki_match.card_word_in_sentence` — a まく card in 水をまく counts for 撒く; read once per card and sentence on this
+  worker, kept on disk as `reads`, so the tagger loads only for a card not read before). A kana card with no sentence
+  that places it counts by its letters alone, as before.
 - **On disk** (`card_chip_<lang>.json`, the local data folder): the studied words Anki last said and the last
   answers — Anki closed at the window's open, the chip keeps its count (PROVISIONAL: never jumps to 0), and the
   reader's first build after the first screen reads the last answers until this one answers. Written only when the
-  studied words changed, else at most every `SAVE_S` while answers move, and at the close.
+  studied words changed, else at most every `SAVE_S` while answers move, and at the close. An episode (or a row) this
+  session can't count yet — its file's counts not in the token store, as after an update builds the store again —
+  keeps its last answer until it is read, never its own cards alone, and is asked again at the reader's next build
+  (Kura-CC, 3.0.18: the count changed meaning across a restart).
 - **Answers:** {item_id: other} for an episode and {(item ids…): other} for a row of several — *other* is how many of
   its words have a card not made from it (its own cards are the row's count already). Beside them, {("level", key):
   (at, below)}: of the cards Connect made from it, how many words were on the list (*at your level*) and how many
@@ -49,12 +55,15 @@ def cache_path(language):
 
 
 def _backlog_words(language):
-    """The known-words sync's new cards' words (`anki_backlog.json`), or None when it can't be read."""
+    """The known-words sync's new cards' words (`anki_backlog.json`), or None when it can't be read — and, for a card
+    written in kana alone that kept its sentence (`anki_sync._note_sentence`), `(word, sentence)` beside its word."""
     from app import anki_sync
     notes = anki_sync.load_backlog(language).get("notes")
     if not isinstance(notes, dict):
         return set()
-    return {str(e["word"]) for e in notes.values() if isinstance(e, dict) and e.get("word")}
+    entries = [e for e in notes.values() if isinstance(e, dict) and e.get("word")]
+    return ({str(e["word"]) for e in entries}
+            | {(str(e["word"]), e["sentence"]) for e in entries if isinstance(e.get("sentence"), str) and e["sentence"]})
 
 
 def _backlog_stamp(language):
@@ -102,10 +111,11 @@ class Chips:
       An ask unlike the last one is looked at: a new file read, its made words read again when its cards moved.
     - `studied(words)` (any thread): the studied cards' words Anki just said (the word card's read); an empty answer
       where there were words keeps them (another profile, renamed decks — as the backlog keeps its last).
-    - `seeded()`: the last answers on disk (the reader's, before its first build); `answers()`; `close()`."""
+    - `seeded()`: the last answers on disk (the reader's, before its first build) — and this counter's, for each episode
+      or row it hasn't counted yet this session (Kura-CC); `answers()`; `close()`."""
 
     def __init__(self, language, on_change=None, worker=None, open_tokens=None, data_dir=None, read_made=None,
-                 read_backlog=None, backlog_stamp=None, cache_file=None, clock=None, read_listed=None):
+                 read_backlog=None, backlog_stamp=None, cache_file=None, clock=None, read_listed=None, tokenize=None):
         from app.services.automation import Worker
         self.language = language
         self.on_change = on_change
@@ -118,11 +128,13 @@ class Chips:
         self._backlog_stamp = backlog_stamp or _backlog_stamp
         self._cache_file = cache_file
         self._clock = clock or time.monotonic
+        self._tokenize = tokenize                  # Kyou-KN: the analyzer's, made on this worker when a kana card asks
         self._lock = threading.Lock()
         self._asks = {}                    # item_id -> its newest ask (rel_path, disk, cards)
         self._row_asks = set()             # the rows of several files asked
         self._owed = False
         self._studied_new = None           # the newest studied words handed in, not yet counted
+        self._said_new = None              # beside them: (word, sentence) of each kana card with its sentence
         self._busy = False
         self._closed = False
         self._loaded = False               # the disk's studied words read in (the worker's first round)
@@ -137,6 +149,9 @@ class Chips:
         self._ref = {}                     # word int -> how many sources hold a card of it (studied, backlog, made)
         self._studied = set()              # ints
         self._studied_words = None         # the words as Anki last said them (saved on disk)
+        self._studied_said = frozenset()   # their kana cards' (word, sentence), as last said (saved on disk)
+        self._reads = {}                   # (word, sentence) -> the word it is there, or "" (saved on disk: `reads`)
+        self._backlog_said = frozenset()   # the backlog's kana cards' (word, sentence)
         self._backlog = set()              # ints
         self._backlog_at = None
         self._out = {}                     # item_id / row key -> other
@@ -145,6 +160,10 @@ class Chips:
         self._dirty_at = None              # when the answers on disk fell behind
         self._handed = {}
         self._counted = False              # a round with asks ran: its answers are this session's (never the seed's)
+        self._seed = {}                    # the last answers on disk (`seeded`): an episode's or a row's stands until
+        #                                    this session counts it (Kura-CC: an update's token store built again)
+        self._unread = frozenset()         # the asked episodes whose file the token store held no count of: asked again
+        self._kept = {}                    # of `_seed`, what this session's answers carry (asked, not counted yet)
         self._failed = False               # this round's token store read failed (not a file it holds no count of)
         self._retry = None                 # the timer that tries a failed round again
         self.rounds = 0                    # (tests, the register's counts)
@@ -176,8 +195,9 @@ class Chips:
             except (TypeError, ValueError, IndexError, KeyError):
                 continue
         with self._lock:
-            if not self._handed:
+            if not self._handed:                       # (review) only before an answer: never over a count
                 self._handed = dict(out)
+                self._seed = {k: n for k, n in out.items() if not (type(k) is tuple and k[:1] == ("level",))}
         return out
 
     def want(self, asks, rows=()):
@@ -186,8 +206,8 @@ class Chips:
                 if ask is None:
                     if self._asks.pop(item_id, None) is not None:
                         self._owed = True
-                elif self._asks.get(item_id) != ask:
-                    self._asks[item_id] = ask
+                elif self._asks.get(item_id) != ask or item_id in self._unread:
+                    self._asks[item_id] = ask           # (Kura-CC) a file the token store hadn't counted: read again
                     self._owed = True
             fresh = set(rows) - self._row_asks
             if fresh:
@@ -207,11 +227,15 @@ class Chips:
         self._kick()
 
     def studied(self, words):
+        """`words`: the studied cards' words — or {word: Standing}, a kana card's sentence on its Standing (Kyou-KN)."""
+        said = frozenset((str(w), s.sentence) for w, s in words.items()
+                         if isinstance(getattr(s, "sentence", None), str) and s.sentence) \
+            if isinstance(words, dict) else frozenset()
         words = frozenset(str(w) for w in words or ())
         with self._lock:
-            if self._studied_new is None and words == self._studied_words:
+            if self._studied_new is None and words == self._studied_words and said == self._studied_said:
                 return                                 # (review H-W4) the same words as last read: no round
-            self._studied_new = words
+            self._studied_new, self._said_new = words, said
             self._owed = True
         self._kick()
 
@@ -249,8 +273,9 @@ class Chips:
                     self._owed = False
                     asks, rows = dict(self._asks), set(self._row_asks)
                     studied, self._studied_new = self._studied_new, None
+                    said, self._said_new = self._said_new, None
                 try:
-                    self._count(asks, rows, studied)
+                    self._count(asks, rows, studied, said)
                 except Exception as e:                 # (review H-F3) never half-applied: all counted again
                     print(f"Card chip: a count failed, counted again at the next ask ({e!r})")
                     self._reset()
@@ -265,11 +290,12 @@ class Chips:
         self._looked, self._files, self._inv, self._made = {}, {}, {}, {}
         self._rows, self._rows_of, self._ref, self._out, self._level = {}, {}, {}, {}, {}
         self._studied, self._backlog, self._backlog_at = set(), set(), None
+        self._backlog_said = frozenset()
         if self._studied_words is not None:
             with self._lock:
                 if self._studied_new is None:
-                    self._studied_new = self._studied_words
-            self._studied_words = None
+                    self._studied_new, self._said_new = self._studied_words, self._studied_said
+            self._studied_words, self._studied_said = None, frozenset()
 
     def _int(self, word):
         n = self._ids.get(word)
@@ -277,7 +303,32 @@ class Chips:
             n = self._ids[word] = len(self._ids)
         return n
 
-    def _count(self, asks, rows, studied):
+    def _read_in(self, said):
+        """(The worker.) The words kana cards are in their own sentences — {(word, sentence)} -> {word} — by Junban's
+        one rule (`anki_match.card_word_in_sentence`), each card and sentence read once (`reads`, kept on disk)."""
+        out = set()
+        for pair in said:
+            if pair not in self._reads:
+                from app import anki_match
+                try:
+                    token = anki_match.card_word_in_sentence(pair[0], pair[1], self._tokenizer())
+                except Exception as e:                 # no tagger: the card counts by its letters, read again later
+                    print(f"Card chip: a kana card's sentence couldn't be read ({e!r})")
+                    continue
+                self._reads[pair] = token[0] if token is not None else ""
+            if self._reads[pair]:
+                out.add(self._reads[pair])
+        return out
+
+    def _tokenizer(self):
+        """(The worker.) The analyzer's Japanese tokenizer, as the token store read the library (made once)."""
+        if self._tokenize is None:
+            from app import analyzer
+            analyzer.SANITIZE_JA = True
+            self._tokenize = analyzer.JapaneseTokenizer().tokenize
+        return self._tokenize
+
+    def _count(self, asks, rows, studied, said=None):
         window_idle.wait()                             # Up next 2: a round starts while the window rests
         self.rounds += 1
         self._failed = False
@@ -301,26 +352,36 @@ class Chips:
 
         if not self._loaded:                                   # the disk's studied words, once
             self._loaded = True
+            cache = self._read_cache()
+            for row in cache.get("reads") or ():
+                if isinstance(row, list) and len(row) == 3 and all(isinstance(x, str) for x in row):
+                    self._reads.setdefault((row[0], row[1]), row[2])
             if studied is None:
-                kept = self._read_cache().get("studied")
+                kept = cache.get("studied")
                 if isinstance(kept, list):
                     studied = frozenset(str(w) for w in kept)
-                    self._studied_words = studied
-                    new = {self._int(w) for w in studied}
+                    said = frozenset((row[0], row[1]) for row in cache.get("studied_said") or ()
+                                     if isinstance(row, list) and len(row) == 2 and all(isinstance(x, str) for x in row))
+                    self._studied_words, self._studied_said = studied, said
+                    new = {self._int(w) for w in studied | self._read_in(said)}     # (the memo: no tagger)
                     swap(self._studied, new)
                     self._studied = new
                     studied = None
-        if studied is not None and (studied or not self._studied_words) and studied != self._studied_words:
-            new = {self._int(w) for w in studied}
+        said = frozenset(said or ())
+        if studied is not None and (studied or not self._studied_words) and \
+                (studied != self._studied_words or said != self._studied_said):
+            new = {self._int(w) for w in studied | self._read_in(said)}
             swap(self._studied, new)
-            self._studied, self._studied_words = new, studied
+            self._studied, self._studied_words, self._studied_said = new, studied, said
             self._save(studied_moved=True)
         stamp = self._backlog_stamp(self.language)
         if stamp != self._backlog_at:
             words = self._read_backlog(self.language)
             if words is not None:
                 self._backlog_at = stamp
-                new = {self._int(w) for w in words}
+                pairs = frozenset(w for w in words if isinstance(w, tuple))
+                self._backlog_said = pairs
+                new = {self._int(w) for w in {w for w in words if isinstance(w, str)} | self._read_in(pairs)}
                 swap(self._backlog, new)
                 self._backlog = new
         # files that left (no longer mined, or no longer asked) — read or not: its made words held all the same
@@ -401,6 +462,9 @@ class Chips:
             full_rows |= self._rows_of.get(i, set())
         # the cards that came or went: one step each through the index (never a full recount)
         out = self._out
+        with self._lock:
+            seed = self._seed
+        counted = []                                           # let go of their seed once the round is through
         for w, d in flips.items():
             if not d:
                 continue
@@ -420,6 +484,7 @@ class Chips:
                 continue
             mine = self._made.get(i, frozenset())
             out[i] = sum(1 for w in words if w in on and w not in mine)
+            counted.append(i)                                  # counted this session: the last session's let go
         for key in full_rows:
             if key not in rows:
                 continue
@@ -427,11 +492,20 @@ class Chips:
             have = [self._files[i] for i in key if i in self._files]
             mine = frozenset().union(*(self._made.get(i, frozenset()) for i in key))
             self._rows[key] = mine
-            if not have:
-                out.pop(key, None)
+            if not have or (len(have) < len(key) and key in seed):
+                out.pop(key, None)                             # (a file not read yet: the last count stands)
                 continue
             words = set().union(*have)
             out[key] = sum(1 for w in words if w in on and w not in mine)
+            counted.append(key)
+        with self._lock:
+            for k in counted:                                  # (review: a round that fails before here keeps them)
+                seed.pop(k, None)
+            self._unread = frozenset(i for i in asks if i not in self._files)
+            # the last session's count for what this one hasn't counted yet (asked, no count): never its own cards
+            # alone until its file is read again, then the whole (Kura-CC)
+            self._kept = {k: n for k, n in seed.items()
+                          if k not in out and (k in rows if type(k) is tuple else k in asks)}
         if asks or self._counted:
             self._counted = True
             self._hand()
@@ -531,7 +605,8 @@ class Chips:
     def _answers(self):
         """The answers handed on: each count, and each split (lean A) — a row's the sum of its files', only while every
         file of it says one."""
-        out = dict(self._out)
+        out = dict(self._kept)
+        out.update(self._out)
         level = self._level
         for i, v in level.items():
             out[("level", i)] = v
@@ -589,6 +664,9 @@ class Chips:
             handed = dict(self._handed)
         record = {"v": CACHE_VERSION,
                   "studied": sorted(self._studied_words or ()),
+                  "studied_said": [list(pair) for pair in sorted(self._studied_said)],
+                  "reads": [[w, s, self._reads[(w, s)]] for w, s in sorted(self._studied_said | self._backlog_said)
+                            if (w, s) in self._reads],
                   "items": {str(k): n for k, n in handed.items() if not isinstance(k, tuple)},
                   "rows": {",".join(map(str, k)): n for k, n in handed.items()
                            if isinstance(k, tuple) and k[:1] != ("level",)},

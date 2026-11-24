@@ -63,8 +63,8 @@ enable_reels = modules.get("reels") is True
 enable_junban = modules.get("junban") is True
 enable_irodori = modules.get("irodori") is True
 
-# The Immersion Architect (悟) is deprecated (RD-D9) and out of every build from 2.5 on: kept on disk with
-# its own suite, dormant. The dashboard's button hides itself when the import fails. Revival steps:
+# The Immersion Architect (悟) is deprecated (RD-D9) and out of every build from 2.5 on; shelved in 3.0.18 (its folder
+# is no longer in the tree). Excluded still, so a restored folder can't reach a build. Revival steps:
 # docs/agent instructions/Immersion_architect_feature.md (its header).
 print("BUILD CONFIG: Excluding Immersion Architect module (sunset, RD-D9)")
 excluded_modules.append('modules.immersion_architect')
@@ -75,17 +75,17 @@ if not enable_youtube:
     print("BUILD CONFIG: Excluding YouTube Downloader module (build_config: youtube_downloader off)")
     excluded_modules.append('modules.youtube_downloader')
 
-# Speech (Koe) ships WITH the app when the build config names it — it is hidden at RUNTIME instead, appearing only
-# for a user who adds "enable_koe" to their settings.json — and when its folder exists (it is untracked, so an
-# open-source checkout simply doesn't have it).
+# Speech (Koe, shelved in 3.0.18: its folder is no longer in the tree) would ship WITH the app only when the build
+# config names it and its folder exists — it is hidden at RUNTIME instead, appearing only for a user who adds
+# "enable_koe" to their settings.json.
 if enable_koe and os.path.isdir(os.path.join(project_root, 'modules', 'koe')):
     print("BUILD CONFIG: Bundling Speech module (hidden at runtime unless the user adds enable_koe)")
 else:
     print("BUILD CONFIG: Speech module off or not present - excluding")
     excluded_modules.append('modules.koe')
 
-# Reels (sunset 2026-09-22): bundled only if the build config ever names it again. It carries a vendored copy of
-# SubsMatcher, so excluding it keeps that out of a build nobody asked it into.
+# Reels (sunset 2026-09-22, shelved in 3.0.18): bundled only if the build config ever names it again. It carries a
+# vendored copy of SubsMatcher, so excluding it keeps that out of a build nobody asked it into.
 if not enable_reels:
     print("BUILD CONFIG: Excluding Reels module (build_config: reels off)")
     excluded_modules.append('modules.reels')
@@ -133,6 +133,8 @@ hiddenimports = ['pandas', 'fugashi', 'tkinter', 'ebooklib', 'bs4', 'app.referen
                  'app.anki_connect', 'app.anki_sync', 'app.anki_sync_gui',
                  'app.zh_script', 'app.zh_script_data', 'app.names', 'app.katakana_data', 'app.name_data',
                  'app.jmdict_data', 'app.phrases', 'app.phrase_data', 'app.one_kanji_data']
+# The journey's meanings and kanji (J-DATA, app/journey_render.py), imported inside its functions too
+hiddenimports += ['app.gloss_ja_data', 'app.gloss_zh_data', 'app.kanji_data']
 # Every command app_entry.py dispatches to (S3.1 D17; tests/test_packaging_config.py reads app_entry.py and fails while
 # one is missing here): the window, the dashboard and each helper subcommand the programs start.
 hiddenimports += ['app.analyzer', 'app.epub_importer', 'app.migaku_db_importer_gui', 'app.jiten_db_importer_gui',
@@ -146,6 +148,8 @@ hiddenimports += ['app.import_2x', 'app.graduated_merge']
 # The 3.0 window's tools (W3.4 row 2): the .apkg known-words import and Extract, each a child of the window that
 # app_entry.py imports inside its branch.
 hiddenimports += ['app.anki_db_import', 'app.extract']
+# Every child's stdout / stderr guard (Haya-CL 3.0.17): app_entry.py imports it at main()'s start.
+hiddenimports += ['app.child_io']
 
 # --- The window's PyQt6 (S3.1 D17): app.qt and five Qt modules, every other PyQt6 module excluded -------------------
 # The window (app/qt/) is reached only through a function-level import in app_entry.py; naming it and its modules keeps

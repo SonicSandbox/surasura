@@ -20,7 +20,7 @@ LANGUAGES = ("ja", "zh")
 STAR_URL = "https://github.com/0xzerolight/anki_miner"
 STAR_FILE = "star.json"
 
-# connect_mine_words: (value, label, the line under it) — both Settings read these (`app/qt/settings_strings.py`). a7
+# connect_mine_words: (value, label, the line under it) — the 2.x Tk panel's (3.0's Settings retired the row: Kantan-MO). a7
 # (Sonic, DIAGNOSIS 4: "it is i+1 AND the other stuff"): *Your list* takes every listed word, in the list's order, each
 # on its i+1 line when it has one (A7S-2: i+1 picks the line, never the order);
 # *Only i+1* is another set (`pick.py`: any word with an i+1 line, on the list or not), never a stricter *Your list*

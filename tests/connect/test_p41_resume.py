@@ -103,7 +103,8 @@ def test_a_week_off_then_on_mines_nothing_of_the_week_and_the_next_raise_mines(o
         s.ask_mining([below[3]])
     assert _asked(below[3]) > watermark, "an ask made now is newer: Connect mines it"
     out = _check(AGAIN, "run-3", files)
-    assert out["queued"] == [a] and _level_jobs() == [a], "the next raise mines, its new word only"
+    # Kantan-MO (F1): the next raise counts its new word and mines no episode again
+    assert out["queued"] == [] and out["new"] == 1 and _level_jobs() == [], "the next raise: its new word only"
 
 
 def test_on_to_on_and_off_to_off_and_on_to_off_do_nothing():

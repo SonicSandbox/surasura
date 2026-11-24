@@ -263,8 +263,17 @@ Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("elsewhere"
 # words on the list and the i+1 words below it (`card_chip`'s ("level", key) answer); None: not split (a word picked
 # before the pick said so, or nothing made). Its hover says both while some are below
 Episode = namedtuple("Episode", Episode._fields + ("level",), defaults=tuple(Episode._field_defaults.values()) + (None,))
+# --- J-STONES (journey v3 SPEC §2.4): `prestudied`, when it was marked pre-studied (the store's `prestudied_at`, through
+# the feed), else None — the add its stone draws (`stone_plan.is_pre`) and its tip's line; None in a cache from before
+Episode = namedtuple("Episode", Episode._fields + ("prestudied",),
+                     defaults=tuple(Episode._field_defaults.values()) + (None,))
 Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("level", "string"),
                  defaults=tuple(Row._field_defaults.values())[:-1] + (None, None))
+# --- J-STONES: `prestudied`, the labels of the row's pre-studied files in order, made once as the row is (a Finished
+# row's cover sparkle and hover read it at each paint: never a walk of its files there); a cache from before lands its
+# `string` (None) here: () as it is read (`_row_from`). `string` stays last (what `to_cache` leaves unwritten)
+Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("prestudied", "string"),
+                 defaults=tuple(Row._field_defaults.values())[:-1] + ((), None))
 Arrival = namedtuple("Arrival", Arrival._fields + ("audio",), defaults=tuple(Arrival._field_defaults.values()) + ("",))
 
 
@@ -472,6 +481,9 @@ STRINGS = {
     "subline": "{lang} · {rows} in Current · {files} files", "subline_empty": "{lang} · nothing added yet",
     "pct": "{pct}% known", "new": "{n} new", "hero_stats": "{pct}% known · {n} new words",
     "pct_hero": "{pct}% of its words you won't need to learn",     # Kantan-B1: as Up next paints it (strings.py)
+    # Kura-GS (PROVISIONAL): the % hover's one growth line — what it was when added (`growth_line`); an item already
+    # in the library when the snapshots began says the day they began, never "when you added it"
+    "growth_added": "When you added it on {day}: {pct}%", "growth_since": "On {day}: {pct}%",
     "hero_stats_none": "not analysed yet",
     "acc_row": "{title} · {pct} · {new} · {status}", "acc_pct_none": "not analysed",
     "acc_hero": "Up next: {title} {ep} · {pct} · {new} · all of it: {status}",     # AD-9: the status is its row's
@@ -754,6 +766,23 @@ def day_label(stamp):
         return f"{MONTHS[int(stamp[5:7]) - 1][:3]} {int(stamp[8:10])}"
     except (ValueError, IndexError):
         return ""
+
+
+def growth_line(snapshots, added=None):
+    """Kura-GS: the % hover's growth line from an item's snapshots (`Store.growth_of`'s {kind: snapshot}) — its
+    'added' *% known* (known ÷ counted, as the row's own) and the day its first Generate counted it: *When you added it
+    on Nov 3: 81%* when that is the day it came in (`added`, its `added_at`), else *On Nov 21: 81%* — an item already in
+    the library when the snapshots began, or one first counted on a later day (it waited in New arrivals): never a
+    day it wasn't added. None without one (or nothing counted)."""
+    snap = (snapshots or {}).get("added")
+    if not snap or not snap.get("counted"):
+        return None
+    day = day_label(snap.get("at"))
+    if not day:
+        return None
+    then = not snap.get("prior") and (added is None or day_label(added) == day)
+    return STRINGS["growth_added" if then else "growth_since"].format(
+        day=day, pct=round(pct_of(snap["known"], snap["counted"])))
 
 
 def media_type_guess(counts, anilist_id=None, tmdb_id=None):
@@ -1260,7 +1289,8 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
                  disk=item.get("mtime_ns"), media=media, tracks=tracks_said, subs=subs,
                  online=item.get("source_type") if online else None, mined_at=item.get("mined_at"),
                  elsewhere=elsewhere.get(item["id"]) if elsewhere and mined else None,       # Michi-CK2
-                 level=elsewhere.get(("level", item["id"])) if elsewhere and mined else None)
+                 level=elsewhere.get(("level", item["id"])) if elsewhere and mined else None,
+                 prestudied=item.get("prestudied_at"))                                    # J-STONES
     asked = item.get("mine_asked")                    # asked again after it was mined: it mines again (Sonic's "unless asked")
     deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)
@@ -1657,7 +1687,8 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
                cards_out=any(it.get("in_learning_order", 1) == 0 for it in piece),     # --- W3.2 Q4
                audio=audio,                                                            # a5-2
                n_top=0 if finished else sum(1 for e in eps if counts_toward_top(e, tier, keep)),   # 3.0.1 item 12
-               elsewhere=away, level=level)                                            # Michi-CK2
+               elsewhere=away, level=level,                                            # Michi-CK2
+               prestudied=tuple(e.label for e in eps if e.prestudied))                 # J-STONES
 
 
 class RowCache:
@@ -2765,7 +2796,8 @@ def _row_from(data):
     r = r._replace(status=st, mark=mk, episodes=eps, chips=chips,
                    new_faded=bool(r.new_faded),                    # U-1 (U-A4): a cache from before held None there
                    cover=CoverRef(*r.cover) if r.cover else None,                  # W3.2 Q6
-                   works=tuple(r.works or ()))                                     # LM11b G1
+                   works=tuple(r.works or ()),                                     # LM11b G1
+                   prestudied=tuple(r.prestudied or ()))                           # J-STONES (JSON: a list)
     plan = stone_plan.plan(r.episodes, r.next_index, r.media, r.key, r.source == "hato")     # planned again, not kept
     return r._replace(string=(plan, max(stone_plan.tightest(plan), stone_plan.ahead(plan))))
 

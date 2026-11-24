@@ -27,6 +27,10 @@ from app import analyzer, phrases, sentence_corpus, token_index
 TEMPLATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates", "web_app.html")
 
 
+# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
+pytestmark = pytest.mark.usefixtures("journey_pre_cut")
+
+
 @pytest.fixture(scope="module")
 def tokenizer():
     analyzer.SANITIZE_JA = True

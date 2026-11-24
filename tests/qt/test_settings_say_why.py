@@ -84,7 +84,7 @@ def test_a_renamed_section_is_found_by_its_old_name_and_its_new_one(query, secti
 
 def test_a_word_of_a_new_section_name_alone_never_floods_the_search_with_its_rows():
     # (adversary r2 #1) "order" or "cards" looks for a setting, not for every row of Card order
-    settings = dict(ALL_ON, target_language="ja")
+    settings = dict(ALL_ON, target_language="ja", junban_off_list="aside")    # (Kyou-MO: the flag shows under it)
     ctx = frozenset(catalog.MODULES)
     assert "junban_later_flag" not in catalog.find("order", settings, "ja", ctx)
     assert "junban_later_flag" not in catalog.find("card", settings, "ja", ctx)      # (the name's first word alone)

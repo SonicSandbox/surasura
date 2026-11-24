@@ -344,6 +344,9 @@ IDENTITY_KEYS = {("app/path_utils.py", "_install_key"), ("app/library_store.py",
                  ("app/library_watch.py", "bell_key"), ("app/instance_name.py", "install_part")}
 NOT_AN_INSTALL = {
     ("app/analyzer.py", "_template_fingerprint"): "the two report templates' bytes",
+    ("app/services/word_lists.py", "merge_blacklist"): "the Blacklist's own bytes (its words): the merge's marker in "
+                                                       "the Ignore list, never a path",
+    ("app/services/word_lists.py", "merged_default"): "the program tree's default Blacklist's bytes, at build time",
     ("app/connect/fit_check.py", "version"): "one video's pairing record (its subtitle's size, time and sha256 with "
                                              "its path): one per video, kept in a job's pick, which no zip takes",
     ("app/connect/lineup.py", "spot_key"): "one subtitle's bytes with its audio's size and time: one per pair, kept "

@@ -3766,21 +3766,8 @@ class MasterDashboardApp:
         def task():
             nonlocal process
             self._flush_settings()          # every child reads settings.json: the newest choice first
-            # Dispatch Mapping for Frozen Environment
-            SCRIPT_MAP = {
-                'analyzer.py': 'analyzer',
-                'epub_importer.py': 'epub_importer',
-                'migaku_db_importer_gui.py': 'migaku_importer',
-                'jiten_db_importer_gui.py': 'jiten_importer',
-                'content_importer_gui.py': 'content_importer',
-                'static_html_generator.py': 'static_generator',
-                'migaku_converter.py': 'convert_db',
-                'anki_db_importer_gui.py': 'anki_importer',
-                'frequency_list_gui.py': 'frequency_list_manager',
-                'indexer.py': 'index',
-                'sentence_corpus.py': 'sentence_corpus'
-            }
-            
+            from app.services.tools import SCRIPT_MAP     # the frozen build's subcommand for each script: one map
+
             try:
                 from app.path_utils import is_frozen
                 
@@ -3978,7 +3965,8 @@ class MasterDashboardApp:
             return                      # a sync is already running (here or in the Anki window)
         self._last_anki_sync = now
         fields = list((s.get("anki_sync_fields") or {}).get(lang) or [])
-        suspended = bool(s.get("anki_sync_include_suspended", False))
+        from app import anki_sync as _known_sync
+        suspended = _known_sync.counted_suspended(s)            # Kotoba-WS2: Count as known in Anki's picks
 
         def work():
             result = None
@@ -4021,7 +4009,7 @@ class MasterDashboardApp:
                                      offer=seen["offer"], marked=seen["marked"], taken=seen["taken"],
                                      terms=seen["terms"])
         except Exception as e:
-            print(f"Known from Anki's window wasn't shown: {e}")
+            print(f"Count as known in Anki's window wasn't shown: {e}")
 
     def _maybe_backlog_sync(self):
         """Generate's own read of the Anki backlog (Junban_Backlog_Spec WP-B7): the new cards waiting

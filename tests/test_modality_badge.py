@@ -1,12 +1,12 @@
-"""The 文 reading badge and its "Show" filter option, in BOTH report templates.
+"""The 文 reading badge and its "Show" filter option, in the YouTube preview's page (templates/web_app.html), and the
+analyzer's verdict reaching the journey page (its word's marks).
 
 There is no JS engine in this suite, so these templates are string contracts: the tests assert the
 literal identifiers and classes survive. That is the established convention here (see
 test_sort_filter_feature.py / test_completed_files_feature.py), and it is what stops a rename from
 silently removing a feature from the shipped report.
 
-zen_app.html duplicates the marker rendering rather than importing it, so every assertion is made
-against both files on purpose — a badge added to only one template is invisible to Zen users.
+Zen's page (zen_app.html), which duplicated the marker, retired with the old journey page (J-RETIRE, 2026-11-23).
 """
 
 import os
@@ -14,19 +14,9 @@ import os
 import pytest
 
 
-# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
-pytestmark = pytest.mark.usefixtures("journey_pre_cut")
-
-
 @pytest.fixture
 def web_html(project_root):
     with open(os.path.join(project_root, "templates", "web_app.html"), encoding="utf-8") as f:
-        return f.read()
-
-
-@pytest.fixture
-def zen_html(project_root):
-    with open(os.path.join(project_root, "templates", "zen_app.html"), encoding="utf-8") as f:
         return f.read()
 
 
@@ -63,21 +53,6 @@ def test_light_theme_gets_a_readable_colour(web_html):
     assert "#7c4dff" in web_html
 
 
-def test_zen_renders_the_badge_too(zen_html):
-    """Zen duplicates the markers; a badge added only to web_app is invisible here."""
-    assert "--prio-reading" in zen_html
-    assert ".prio-reading" in zen_html
-    assert "data.Modality === 'reading'" in zen_html
-    assert "文</span>" in zen_html
-
-
-def test_zen_appends_rather_than_replaces_the_priority_icon(zen_html):
-    """Same additive rule as the web template — `+=`, not a reassignment."""
-    assert "prioIcon +=" in zen_html
-
-
-# --- the Show filter ------------------------------------------------------------------------- #
-
 def test_reading_is_a_filter_option(web_html):
     assert 'data-filter="reading"' in web_html
     assert "body.filter-reading .card:not(.is-reading)" in web_html
@@ -111,45 +86,21 @@ def test_filter_button_titles_name_every_state(web_html):
 
 # --- end to end ------------------------------------------------------------------------------- #
 
-def test_modality_column_survives_into_the_generated_report(tmp_path, monkeypatch, project_root):
-    """A column the analyzer writes is useless if the generator drops it before the browser.
-
-    Renders a report from a minimal CSV carrying real vocabulary and asserts the verdict arrives.
-    """
-    import pandas as pd
-    from app import static_html_generator
-
-    results = tmp_path / "results"
-    results.mkdir()
-
-    rows = [
-        # 覗き込む is a genuine reading word; 会社 is everyday speech.
-        {"Word": "覗き込む", "Reading": "ノゾキコム", "Tier": "Outside", "Score": 40,
-         "Occurrences": 12, "Count (High)": 12, "Count (Low)": 0, "Count (Goal)": 0,
-         "Modality": "reading", "Sources": "book.txt", "Context 1": "窓を覗き込む。"},
-        {"Word": "会社", "Reading": "カイシャ", "Tier": "Outside", "Score": 30,
-         "Occurrences": 9, "Count (High)": 9, "Count (Low)": 0, "Count (Goal)": 0,
-         "Modality": "", "Sources": "book.txt", "Context 1": "会社に行く。"},
+def test_modality_column_survives_into_the_journey_page():
+    """The analyzer's verdict reaches the journey page: a reading word's record carries the reading mark (bit 4 of
+    its marks, `journey_render.marks_of`), an everyday word's does not (the old page's payload before J-RETIRE)."""
+    import gzip
+    import json
+    from app import journey_render as jr
+    rows = [  # 覗き込む is a genuine reading word; 会社 is everyday speech.
+        {"Sequence": 1, "Source File": "book.txt", "Word": "覗き込む", "Reading": "ノゾキコム", "Modality": "reading",
+         "Occurrences (Global)": 12.0, "Occurrences (File)": 12.0, "Count (High)": 12.0, "Count (Low)": 0.0,
+         "Context 1": "窓を覗き込む。", "Src 1": "HighPriority/book.txt"},
+        {"Sequence": 1, "Source File": "book.txt", "Word": "会社", "Reading": "カイシャ", "Modality": "",
+         "Occurrences (Global)": 9.0, "Occurrences (File)": 9.0, "Count (High)": 9.0, "Count (Low)": 0.0,
+         "Context 1": "会社に行く。", "Src 1": "HighPriority/book.txt"},
     ]
-    pd.DataFrame(rows).to_csv(results / "priority_learning_list.csv", index=False,
-                              encoding="utf-8-sig")
-    prog = [dict(r, Sequence=1, **{"Source File": "book.txt", "Occurrences (Global)": r["Occurrences"],
-                                   "Occurrences (File)": r["Occurrences"]}) for r in rows]
-    pd.DataFrame(prog).to_csv(results / "progressive_learning_list.csv", index=False,
-                              encoding="utf-8-sig")
-
-    # The generator resolves its paths ONCE at import, so every one of them has to be redirected
-    # individually — patching RESULTS_DIR alone still writes the report into the real results/.
-    out = results / "reading_list_static.html"
-    monkeypatch.setattr(static_html_generator, "RESULTS_DIR", str(results))
-    monkeypatch.setattr(static_html_generator, "PRIORITY_CSV",
-                        str(results / "priority_learning_list.csv"))
-    monkeypatch.setattr(static_html_generator, "PROGRESSIVE_CSV",
-                        str(results / "progressive_learning_list.csv"))
-    monkeypatch.setattr(static_html_generator, "OUTPUT_FILE", str(out))
-
-    static_html_generator.generate_static_html(theme="Dark Flow", open_browser=False)
-
-    html = out.read_text(encoding="utf-8")
-    assert "Modality" in html, "the analyzer's verdict never reached the report payload"
-    assert "reading" in html
+    out = jr.build("ja", rows, [{"File": "book.txt", "Total Words": 20, "Known Count": 10, "Coverage (%)": 50.0}],
+                   stamp=1)
+    marks = {w[0]: w[6] for blob in out.chunks for w in json.loads(gzip.decompress(blob).decode("utf-8"))["w"]}
+    assert marks["覗き込む"] & 4 and not marks["会社"] & 4

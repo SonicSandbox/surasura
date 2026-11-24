@@ -123,33 +123,20 @@ def test_engine_revision_bump_forces_rerun_of_unchanged_inputs(env):
     assert csv.stat().st_mtime != m1, "an ENGINE_REVISION bump must force a real re-run"
 
 
-@pytest.mark.usefixtures("journey_pre_cut")    # the old page's list (Zen's, the preview's): the v3 page reads none of
-def test_render_signature_covers_everything_injected_into_the_report(env):   # these (J-CUT; its own list: cutover tests)
-    """Anything static_html_generator INJECTS must be in the render signature, or editing it leaves
-    the report stale. words_per_day / show_words_per_day were injected but unlisted, so the
-    'At N words a day...' estimate kept showing the old number."""
+def test_render_signature_covers_everything_injected_into_the_report(env):
+    """Anything the journey page is drawn from must be in the render signature, or editing it leaves the page stale
+    (words_per_day was once injected but unlisted). The old page's own (words a day, its source badge, Show 'Target
+    Met' inline, Hide Audio Button, the page size) left with it (J-RETIRE): the journey page reads none and they move
+    no signature (test_settings_signatures). Its own list: test_journey_cutover. Here the ✦ / ⚖ thresholds it reads
+    from the logic block — no run reads them, so the run signature leaves them out and each must re-render."""
+    import copy
     import types
-    args = types.SimpleNamespace(theme="Dark Flow", zen_limit=0)
+    from app import settings_manager
+    args = types.SimpleNamespace()
 
     def sig(**settings):
         with patch("app.settings_manager.load_settings", return_value=settings):
             return analyzer.compute_render_signature(args)
-
-    base = sig(words_per_day=5, show_words_per_day=True, source_display="off")
-    assert sig(words_per_day=20, show_words_per_day=True, source_display="off") != base, \
-        "changing Words Per Day must force a re-render"
-    assert sig(words_per_day=5, show_words_per_day=False, source_display="off") != base, \
-        "toggling 'Show Target Days' must force a re-render"
-    assert sig(words_per_day=5, show_words_per_day=True, source_display="icon") != base, \
-        "changing the source badge must force a re-render"
-    assert sig(words_per_day=5, show_words_per_day=True, source_display="off") == base, \
-        "identical presentation must NOT re-render"
-
-    # The report's own logic keys: the templates read them from the logic block the report embeds, and no run reads
-    # them, so the run signature leaves them out — each must re-render instead ("Show 'Target Met' inline", "Hide
-    # Audio Button", the page size, the ✦ / ⚖ thresholds).
-    import copy
-    from app import settings_manager
 
     def logic(**over):
         block = copy.deepcopy(settings_manager.DEFAULT_SETTINGS["logic"])
@@ -157,16 +144,14 @@ def test_render_signature_covers_everything_injected_into_the_report(env):   # t
             block[key] = dict(block[key], **value) if isinstance(block.get(key), dict) else value
         return block
 
-    shown = dict(words_per_day=5, show_words_per_day=True, source_display="off")
-    as_shipped = sig(**shown, logic=logic())
-    for over in ({"inline_completed_files": True}, {"hide_audio_button": True}, {"chunk_size": 100},
-                 {"priority_markers": {"priority_threshold": 0.6}}, {"priority_markers": {"priority_min": 4}},
+    as_shipped = sig(logic=logic())
+    for over in ({"priority_markers": {"priority_threshold": 0.6}}, {"priority_markers": {"priority_min": 4}},
                  {"priority_markers": {"lopsided_threshold": 0.9}}):
-        assert sig(**shown, logic=logic(**over)) != as_shipped, f"{over} must re-render"
-    assert sig(**shown, logic=logic(priority_markers={"_comment": "edited"})) == as_shipped, \
-        "a note to the reader of settings.json is no change to the report"
-    assert sig(**shown, logic=logic(hide_audio_button=False)) == as_shipped, \
-        "Hide Audio Button written at its default, as the dashboard saves it, is the same report as left out"
+        assert sig(logic=logic(**over)) != as_shipped, f"{over} must re-render"
+    assert sig(logic=logic(priority_markers={"_comment": "edited"})) == as_shipped,         "a note to the reader of settings.json is no change to the report"
+    for gone in ({"inline_completed_files": True}, {"hide_audio_button": True}, {"chunk_size": 100}):
+        assert sig(logic=logic(**gone)) == as_shipped, f"{gone}: the old page's, read by no page now"
+    assert sig(words_per_day=20, show_words_per_day=False, source_display="icon", logic=logic()) == as_shipped
 
 
 def test_run_signature_reruns_on_settings_change(env):
@@ -244,19 +229,8 @@ def _fake_render_writing_html(env):
     return _fake
 
 
-@pytest.mark.usefixtures("journey_pre_cut")    # the old page's look: the v3 page applies a theme itself, no re-render
-def test_skip_rerenders_when_theme_changes(env):   # (J-CUT; Zen in or out still re-renders: test_journey_cutover)
-    """Analysis skipped but PRESENTATION changed (theme): the report must be RE-RENDERED with the
-    new theme (no re-analysis). This is what let the separate 'View' step be merged in."""
-    from unittest.mock import patch
-    import app.static_html_generator as shg
-    with patch.object(shg, "generate_static_html", side_effect=_fake_render_writing_html(env)) as mock_gen, \
-         patch.object(shg, "open_report") as mock_open:
-        _run(env, ["--min-freq", "1", "--static", "--theme=world-class"])                   # cold: render
-        _run(env, ["--min-freq", "1", "--static", "--theme=modern-light"], clear=False)     # skip + theme changed
-    assert mock_gen.call_count == 2, "a theme change on an unchanged library must re-render"
-    assert mock_gen.call_args_list[1].kwargs["theme"] == "modern-light"
-    assert mock_open.call_count == 0
+# A theme change on an unchanged library re-renders nothing now: the journey page applies its look itself
+# (test_journey_cutover's `test_a_look_change_moves_no_signature_and_zen_is_one_more_look`; J-RETIRE).
 
 
 def test_skip_same_presentation_opens_without_rerender(env):

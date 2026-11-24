@@ -674,8 +674,8 @@ def range_text(media, numbers, count):
 
 
 # --- a8 (Sonic 2026-10-31: "even after opening up, it keeps the ones together … you can still expand those too but only
-# after an additional motion"): a run of watched parts folded into one line — the journey's (a6, `static_html_generator.
-# _journey_folds`) and an opened row's (`app/qt/rows.py`), one rule
+# after an additional motion"): a run of watched parts folded into one line — an opened row's (`app/qt/rows.py`; the
+# old journey page's a6 folds retired with it, J-RETIRE)
 Fold = namedtuple("Fold", "id start end label ids")
 #   id: ("fold", its first part's id) — never a file's id, so the window holds it where it holds an episode's (the hand's,
 #   the keyboard's line); start, end: its first and last part's place in the row; label: *Ep 1–40 watched*; ids: its

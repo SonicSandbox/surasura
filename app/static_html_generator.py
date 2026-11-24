@@ -4,10 +4,9 @@ import re
 import sys
 import json
 import urllib.parse
-import pandas as pd
 import webbrowser
 
-from app.path_utils import get_user_file, get_resource, SIDECAR_SUFFIX, read_text, report_name
+from app.path_utils import get_user_file, get_resource, SIDECAR_SUFFIX, read_text
 from app import settings_manager
 
 # Configuration
@@ -16,8 +15,6 @@ PROGRESSIVE_CSV = os.path.join(RESULTS_DIR, "progressive_learning_list.csv")
 PRIORITY_CSV = os.path.join(RESULTS_DIR, "priority_learning_list.csv")
 REPORT_NAME = "reading_list_static.html"
 OUTPUT_FILE = os.path.join(RESULTS_DIR, REPORT_NAME)
-# Resources (Templates)
-WEB_APP_FILE = get_resource(os.path.join("templates", "web_app.html"))
 
 def open_as_app(file_path):
     """
@@ -69,7 +66,7 @@ _HEAD_OPEN = '<script type="application/json" id="j-head">'
 
 def _journey_head(text):
     """A v3 page's head (`journey_render.elements`' first element, JSON) out of the page's text; None for any other
-    page (the old one, Zen's) or a head that doesn't read."""
+    page (one written before the cut-over, the YouTube preview's) or a head that doesn't read."""
     at = text.find(_HEAD_OPEN)
     if at < 0:
         return None
@@ -83,7 +80,7 @@ def _journey_head(text):
 
 def open_report(app_mode=False, file=None):
     """Open the ALREADY-generated report without re-rendering it — the fast path when neither the
-    analysis nor the presentation (theme / Zen limit / window) changed. Returns False if there is
+    analysis nor what the page draws (the render signature) changed. Returns False if there is
     no report on disk yet (caller should render instead). The file is looked for in `results` as it is now, where the
     window's journey check looks — never by the path fixed when this module was first imported (AD-4: a test's
     earlier root, whose report then opened a browser in the next test).
@@ -149,25 +146,6 @@ def compress_list_of_dicts(data_list):
         rows.append(row)
         
     return {"keys": keys, "rows": rows}
-
-def _html_pieces(template, injected, replacements=()):
-    """The report as the pieces it is written in: `template` with `injected` (the data and the settings, a list of
-    strings) in place of its "let globalData = null;", then each (old, new) of `replacements` made in every piece.
-
-    Never joined into one string: the data (tens of MB, ASCII) joined with text beyond Latin-1 (an emoji in a file
-    name, among the sources) became a string of four bytes a character, copied again by every replacement — some
-    300 MB at a Generate's peak. The same text as one string with the replacements made in it: no replaced text can run
-    across two pieces — `injected` starts with "let" and ends with ";", and the data in it follows a "= " and ends
-    with "}" (a JSON object), where neither replaced text (`<head>`, the heading) could go on: neither holds an "l"
-    after its "<", a ";" or a "}"."""
-    parts = template.split("let globalData = null;")
-    pieces = parts[:1]
-    for part in parts[1:]:
-        pieces += injected + [part]
-    for old, new in replacements:
-        pieces = [piece.replace(old, new) for piece in pieces]
-    return pieces
-
 
 def _load_source_map():
     """results/sources.json — {relative path: {name, type}} written by the analyzer. Absent for
@@ -357,7 +335,7 @@ class AnchorFinder:
         return -1
 
     # -- on-disk memo ------------------------------------------------------------------------- #
-    # A re-render (theme, Zen limit, Words Per Day) reruns this whole pass over unchanged files for
+    # A re-render (a setting the page draws, a template) reruns this whole pass over unchanged files for
     # unchanged sentences. Remembering the answers turns every render after the first into a lookup.
     #
     # Deliberately NOT stored as CSV columns from the analyzer: `source_display` is excluded from the
@@ -680,18 +658,6 @@ def shown_name(filename):
 from app.services.play import PLAYABLE  # noqa: E402
 
 
-def _shown_sources(lists, source_map):
-    """The timed sources (subtitles, transcripts) the report's lists name in their `Src N` columns — the only ones the
-    journey's ▶ looks a file up for (sources.json holds every file of the library)."""
-    shown = set()
-    for df in lists:
-        if df is None:
-            continue
-        for col in [c for c in df.columns if str(c).startswith("Src ")]:
-            shown.update(str(v) for v in df[col].dropna().unique())
-    return {rel for rel in shown if isinstance(source_map.get(rel), dict) and source_map[rel].get("type") in TIMED_TYPES}
-
-
 LINE_MEDIA_MEMO = "line_media.json"     # results/: `play.files`' answers kept between renders (the anchor memo's twin)
 LINE_TIMES_MEMO = "line_times.json"     # results/: a playable line's times with the badge off (`AnchorFinder.times`)
 TIMED_TYPES = ("subtitle", "audio")     # a source with timed lines: a subtitle; an audiobook's transcript (its item's)
@@ -767,85 +733,6 @@ def _line_media(language, rel_paths, memo_path=None, explain=False, cut_kinds=()
             except Exception as e:
                 print(f"Warning: could not save the lines' audio memo: {e}")
     return out, dirs
-
-
-def _intern_sources(records, source_map, table, index, finder=None, audio_probe=None, media=None, timer=None,
-                    plays=None):
-    """Replace every 'Src N' path in `records` with an index into `table` (built as we go).
-
-    The CSVs carry the readable relative path so exports stay human-readable, but a big library
-    repeats the same few hundred paths across tens of thousands of sentences — interning keeps the
-    injected payload to one small int per sentence instead of a full path string.
-
-    Table rows are compact arrays: [name, type, fullPath, groupLabel, videoLink] — five fields, a contract other
-    readers keep. The badge DISPLAYS `name`, HOVERS `groupLabel` (group/file — enough to place the sentence without a
-    wall of path), and COPIES `fullPath` (absolute), so the clipboard contents paste straight into Explorer. Results
-    made before sources.json carried absolute paths fall back to the relative one. The journey's ▶ (Kiku-L) keeps its
-    own table, `plays` ({row's place: [where, why not]}: `media`'s answer for the source, `_line_media`), only for
-    the sources that have one — never a field of the rows.
-
-    With a `finder`, each sentence also gets a `Frag N` — a snippet verified to occur exactly once
-    in the source file, which the report turns into a scroll-to-text link, and a timed file's sentence an
-    `At N` / `End N` — the seconds its lines start and end at, as Connect's line reader reads them (E5.1).
-    Without one (the badge off), a sentence whose source ▶ can play gets its `At N` / `End N` from `timer`
-    (`AnchorFinder.times`: no anchor looked for). Deliberately NOT named "Context …": both templates collect example
-    sentences with startsWith('Context ')."""
-    for rec in records:
-        for key in [k for k in rec if k.startswith("Src ")]:
-            val = rec.get(key)
-            if val is None or val == "" or (isinstance(val, float) and pd.isna(val)):
-                rec[key] = None
-                continue
-            val = str(val)
-            idx = index.get(val)
-            if idx is None:
-                idx = len(table)
-                index[val] = idx
-                meta = source_map.get(val, {})
-                abs_path = meta.get("abs") or val
-                # A video source (YouTube, bilibili.tv) gets a link, which turns the badge into
-                # one that opens the video (at the sentence's moment when the site allows it).
-                vid = ""
-                stype = meta.get("type") or ""
-                if stype in ("youtube", "bilibili"):
-                    side = finder.sidecar(abs_path) if finder is not None else None
-                    vid = _video_link(val, stype, side)
-                table.append([meta.get("name") or os.path.basename(val),
-                              meta.get("type") or "text",
-                              abs_path,
-                              _group_label(val),
-                              vid])
-                if media is not None and plays is not None and media.get(val):
-                    plays[idx] = list(media[val])
-            rec[key] = idx
-
-            n = key[4:]                                      # "Src 2" -> "2"
-            timed = timer is not None and plays is not None and bool((plays.get(idx) or ("",))[0])
-            sentence = rec.get(f"Context {n}") if (finder is not None or audio_probe is not None or timed) else None
-
-            if finder is not None:
-                if isinstance(sentence, str) and sentence:
-                    frag, at, end = finder.resolve(table[idx][2], sentence)
-                    if frag:
-                        rec[f"Frag {n}"] = frag
-                    # Subtitles/transcripts: when the sentence's lines start and end (Connect's line reader), shown
-                    # on hover and opened by a video's link — found with or without an anchor.
-                    if at is not None:
-                        rec[f"At {n}"] = at
-                        rec[f"End {n}"] = end
-            elif timed and isinstance(sentence, str) and sentence:
-                at, end = timer.times(table[idx][2], sentence)    # ▶ plays it: its times, never its anchor
-                if at is not None:
-                    rec[f"At {n}"] = at
-                    rec[f"End {n}"] = end
-
-            # Optional speech module: mark sentences whose audio is already on disk, so the badge
-            # can show that clicking will play instantly instead of pausing to generate. Named
-            # "Aud N", NOT "Context …" — both templates collect example sentences with
-            # startsWith('Context ') and would render such a column as another example.
-            if audio_probe is not None and isinstance(sentence, str) and sentence:
-                if audio_probe(sentence):
-                    rec[f"Aud {n}"] = 1
 
 
 def anki_backlog_keys(language, settings, list_path=None):
@@ -1147,137 +1034,17 @@ def _confirmed_keys(backlog, answers, listed=None, names=None):
             if word in words and pair.get("answer") == "yes" and pair.get("target")}
 
 
-def _journey_stones(data, file_order, stats_map, language, marks=None):
-    """The journey's stones (Sonic 2026-10-23): the library store's watched marks (`marks`, the run's; None: read now,
-    `analyzer.journey_marks`, one read) on the per-file report, matched by basename as the rest of it is. A counted
-    file that is watched (*Keep studying watched episodes* on) keeps its entry, plus `"watched": True` — every counted
-    file of that name watched. A watched file set aside (the option off) gets an entry of its own IN ITS PLACE in the
-    library's order, no counts: `{"filename", "watched": True, "aside": True, "words": [], "total_words": 0, "is_goal_content",
-    "unlisted": []}`, and its name in `file_order` at the same place (the inline Target Met order) — never one whose
-    name the report already shows (a counted file's, an earlier one's). No store, or no stone: nothing changes.
-    Returns the marks it drew from (`library_store.UNREAD` when they couldn't be read now): the run signs the report
-    with them (`analyzer.signed_render`)."""
-    if marks is None:
-        from app import analyzer
-        marks = analyzer.journey_marks(language)
-    if isinstance(marks, str):                  # library_store.UNREAD
-        print("Warning: the watched marks couldn't be read now; the journey is drawn without its stones")
-        return marks
-    if not marks:
-        return marks
-    place, watched_name = {}, {}
-    for n, (rel, _tier, watched, counted, *_show) in enumerate(marks):
-        if counted:
-            name = report_name(rel)
-            place.setdefault(name, n)
-            watched_name[name] = watched_name.get(name, True) and bool(watched)
-    for entry in data["progressive"] + data["completed_files"]:
-        if watched_name.get(entry["filename"]):
-            entry["watched"] = True
-    shown = set(stats_map) | {entry["filename"] for entry in data["progressive"]}
-    aside = []
-    for n, (rel, tier, watched, counted, *_show) in enumerate(marks):
-        name = report_name(rel)
-        if watched and not counted and name not in shown:
-            shown.add(name)
-            aside.append((n, name, tier == "goal"))
-    if not aside:
-        return marks
-
-    def in_place(items, name_of, make):
-        # each set-aside file before the first item the library orders after it, the rest at the end
-        out, k = [], 0
-        for item in items:
-            n = place.get(name_of(item))
-            while n is not None and k < len(aside) and aside[k][0] < n:
-                out.append(make(*aside[k][1:]))
-                k += 1
-            out.append(item)
-        out.extend(make(*a[1:]) for a in aside[k:])
-        return out
-
-    data["progressive"] = in_place(data["progressive"], lambda entry: entry["filename"], lambda name, goal: {
-        "filename": name, "watched": True, "aside": True, "words": [], "total_words": 0, "is_goal_content": goal,
-        "unlisted": []})
-    if file_order:
-        file_order[:] = in_place(file_order, lambda name: name, lambda name, _goal: name)
-    return marks
-
-
-def _journey_folds(data, file_order, marks, inline=False):
-    """A run of watched parts folded into one row (Sonic 2026-10-29, "fold run of watched into one row"; his rule of
-    2026-10-23 kept: each watched part stays in its place, with its stone). Two or more parts next to each other in the
-    library's order (`marks`, `_journey_stones`'), each watched, of one show or book (`show`: its work, else its folder)
-    and one tier, are one run; where two or more of one run sit next to each other in the journey's sidebar (the
-    template's order: `file_order` with *Show 'Target Met' inline* on, else the counted list), they are one fold: each
-    of their entries gets `"fold": k`, and `data["folds"][k]` its row's words — `{"label": "Ep 1–14 watched", "n": 14}`,
-    the range as the window's rows say it (`view_rows.range_text`: episodes, parts, videos). Rendering only: no word,
-    count or order changes, and an entry of one part alone stays as it is. A name two marks share (`01.srt` in two
-    shows: the report keys a file by its name) is never folded — its entry may be the other, unwatched one. Marks
-    without a show (an older reader) or none: no fold, the report as it was."""
-    if not marks or isinstance(marks, str):
-        return
-    from collections import Counter
-    from app.path_utils import infer_source_type
-    from app.services import view_rows
-    shared = {name for name, n in Counter(report_name(mark[0]) for mark in marks).items() if n > 1}
-    runs, run_of = [], {}                            # a8: the window's opened rows fold by the same rule (`watched_runs`)
-    for a, b in view_rows.watched_runs([(tier, tuple(show)) if watched and show else None
-                                        for _rel, tier, watched, _counted, *show in marks]):
-        show = marks[a][4:]
-        for rel in (mark[0] for mark in marks[a:b + 1]):
-            if report_name(rel) not in shared:
-                run_of[report_name(rel)] = (len(runs), rel)
-        runs.append(show[1] if len(show) > 1 else None)
-    if not runs:
-        return
-    entries = {entry["filename"]: entry for entry in data["progressive"]}
-    if inline and file_order:
-        done = {entry["filename"]: entry for entry in data.get("completed_files", ())}
-        sidebar = [entries.get(name) or done[name] for name in file_order if name in entries or name in done]
-    else:
-        sidebar = data["progressive"]
-    folds, group = [], []
-
-    def close():
-        if len(group) > 1:
-            rels = [run_of[entry["filename"]][1] for entry in group]
-            media = runs[run_of[group[0]["filename"]][0]] or view_rows.media_type_guess(
-                dict(Counter(infer_source_type(rel) for rel in rels)))
-            numbers = [n for n in (view_rows.episode_number(report_name(rel)) for rel in rels) if n is not None]
-            for entry in group:
-                entry["fold"] = len(folds)
-            folds.append({"label": view_rows.fold_label(media, numbers, len(group)), "n": len(group)})
-        group.clear()
-
-    for entry in sidebar:
-        run = run_of.get(entry["filename"])
-        if group and (run is None or run[0] != run_of[group[0]["filename"]][0]):
-            close()
-        if run is not None:
-            group.append(entry)
-    close()
-    if folds:
-        data["folds"] = folds
-
-
-# --- Journey v3 (the cut-over, J-CUT; SPEC §7, §8) ----------------------------------------------------------------- #
+# --- The journey: v3's page (J-CUT; SPEC §7, §8), for every look (J-RETIRE) ----------------------------------------- #
 # The journey is v3's page: J-DATA's data (`app/journey_render.py`) in J-PAGE's page (`templates/journey/`), written to
 # the same file (`REPORT_NAME`), so *Journey ↗*, a page open in a browser and its storage keep their name. The old page
-# (`web_app.html`) stays for the YouTube preview, which loads it and this module's helpers itself (Charter S10), and Zen
-# keeps `zen_app.html` and the data path below. Two renderers until the preview moves to v3 (the dup audit's row 13).
-ZEN_THEMES = ("Zen Mode", "zen-focus")         # the display name and the theme id both pick Zen (`analyzer.ZEN_THEMES`)
+# and Zen are retired whole (J-RETIRE, Sonic 2026-11-23): no look and no switch writes another page. The old page's
+# template (`web_app.html`) stays for the YouTube preview alone, which loads it and this module's helpers above
+# (`compress_list_of_dicts`, `AnchorFinder`, `_load_source_map`, `_group_label`, `_video_link`, `open_as_app`) itself
+# (Charter S10; the dup audit's row 13).
 JOURNEY_DIR = os.path.join("templates", "journey")
 JOURNEY_RAIL = "stepper"                       # SPEC §1.1b; D13: Stepper only at first launch, the rail stays swappable
 RAIL_MARK = "<!--JOURNEY-RAIL-->"              # where the page takes its rail, once (its data: `journey_render.MARKER`)
 JOURNEY_FILES = ("page.html", f"rail-{JOURNEY_RAIL}.css", f"rail-{JOURNEY_RAIL}.js")   # what the page is made of
-
-
-def journey_v3():
-    """Whether Generate writes the v3 page: the cut-over's one switch (`journey_settings.v3()`: the door's `ON`, or
-    `SURASURA_DOOR` for one run), so the page, its Settings rows and the door turn on and off together."""
-    from app.services import journey_settings
-    return journey_settings.v3()
 
 
 def journey_template():
@@ -1298,7 +1065,7 @@ def _write_journey(language, app_mode=False, open_browser=True, marks=None, tagg
     library store, the ▶'s memos), with the run's own fugashi `tagger` (speed row 1: the pitch makes no second one), in
     `journey_template()`, to `OUTPUT_FILE` (a temp file replaced: a page open in a browser is never half written).
     Returns the watched marks it was drawn with (`marks`: the run's; None: read now, one read, before the render reads
-    the store) for the run's render signature, as the old path's `_journey_stones` does."""
+    the store) for the run's render signature."""
     from app import journey_render
     if language is None:
         try:
@@ -1320,361 +1087,23 @@ def _write_journey(language, app_mode=False, open_browser=True, marks=None, tagg
     return marks
 
 
-def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_browser=True, language=None, marks=None,
-                         found=None, tagger=None, plan=None):
-    """Write the report. `language`: the run's (the analyzer's `--language`), whose journey's stones it draws (None:
-    settings.json's); `marks`: those stones as the run read them (None: read here). Returns the marks the journey was
-    drawn from — None for Zen or without a library store, `library_store.UNREAD` when they couldn't be read — for the
-    run's render signature (`analyzer.signed_render`). `found`: the run's own `resolve_found_files` list, when it has
-    one (F7's redraw: every library file stat'd once a run).
+def generate_static_html(app_mode=False, open_browser=True, language=None, marks=None, tagger=None, plan=None):
+    """Write the journey: v3's page (`_write_journey`) for every look — the look is applied in the page (J-SET), and
+    a look saved before it (Zen's too) reads as its new meaning (`journey_settings.page_value`). `language`: the run's
+    (the analyzer's `--language`; None: settings.json's); `marks`: the journey's stones as the run read them (None:
+    read here); `tagger`: the run's fugashi tagger, `plan`: the plan file, both for the render. Returns the marks the
+    journey was drawn from — None without a library store, `library_store.UNREAD` when they couldn't be read — for the
+    run's render signature (`analyzer.signed_render`)."""
+    print("Writing the journey (v3)...")
+    return _write_journey(language, app_mode=app_mode, open_browser=open_browser, marks=marks, tagger=tagger, plan=plan)
 
-    Since the cut-over (`journey_v3()`) every theme but Zen writes the v3 journey (`_write_journey`; `tagger`: the run's
-    fugashi tagger, `plan`: the plan file, both for the render); Zen writes `zen_app.html` from the data below."""
-    if theme not in ZEN_THEMES and journey_v3():
-        print("Writing the journey (v3)...")
-        return _write_journey(language, app_mode=app_mode, open_browser=open_browser, marks=marks, tagger=tagger,
-                              plan=plan)
-    print(f"Generating static HTML (Theme: {theme})...")
-
-    # Pre-load settings
-    try:
-        settings = settings_manager.load_settings()
-        target_lang = settings.get("target_language", "ja")
-    except Exception:
-        settings = {}
-        target_lang = "ja"
-    data = {
-        "progressive": [],
-        "priority": []
-    }
-
-    # Per-sentence source badge: build ONE interned table shared by both views (see _intern_sources).
-    source_map = _load_source_map()
-    source_table = []
-    source_index = {}
-    # Verifying scroll-to-text anchors means reading every source file, so only do it when the badge
-    # is actually switched on — a run with it off pays nothing.
-    from app.zh_script import effective as _effective_script
-    source_finder = (AnchorFinder(cache_path=os.path.join(RESULTS_DIR, "anchor_cache.json"),
-                                  script=_effective_script(target_lang, settings.get("zh_script")),
-                                  language=target_lang)
-                     if settings.get("source_display", "off") != "off" else None)
-
-    # The two lists, read once here: the journey's ▶ (Kiku-L) looks up, in one go before anything is interned, the file
-    # each timed source they show plays from (`play.files`: the window's ▶'s lookup); its lines' times are read only
-    # for those — with the badge off, by a times-only finder (no anchor, no other file).
-    lists = {}
-    for what, path in (("progressive", PROGRESSIVE_CSV), ("priority", PRIORITY_CSV)):
-        if os.path.exists(path):
-            try:
-                lists[what] = pd.read_csv(path)
-            except Exception as e:
-                print(f"Error loading {what} CSV: {e}")
-    # Its switch (`line_player`, Settings): off, none of this — no lookup, no times, the source table as before.
-    line_on = bool(settings.get("line_player", True))
-    line_media, line_dirs = _line_media(language or target_lang, _shown_sources(lists.values(), source_map),
-                                        os.path.join(RESULTS_DIR, LINE_MEDIA_MEMO),
-                                        settings.get("source_display", "off") != "off") if line_on else (None, [])
-    line_timer = None
-    line_plays = {}                           # the ▶'s own table: {source row's place: [where, why not]}
-    if source_finder is None and line_media and any(uri for uri, _why in line_media.values()):
-        # its own memo (`LINE_TIMES_MEMO`): the badge's anchor memo is never cut down to the playable files
-        line_timer = AnchorFinder(cache_path=os.path.join(RESULTS_DIR, LINE_TIMES_MEMO),
-                                  script=_effective_script(target_lang, settings.get("zh_script")),
-                                  language=target_lang)
-
-    # Optional speech module: which sentences already have generated audio. Gated on the badge
-    # being visible, since the badge is the only thing that would show it.
-    audio_probe = None
-    if settings.get("source_display", "off") != "off":
-        try:
-            import modules.koe as _koe_probe
-            audio_probe = _koe_probe.cached_probe(target_lang)
-        except Exception:
-            audio_probe = None
-
-    # Load File Statistics
-    STATS_JSON = os.path.join(RESULTS_DIR, "file_statistics.json")
-    stats_map = {}
-    if os.path.exists(STATS_JSON):
-        try:
-            with open(STATS_JSON, 'r', encoding='utf-8') as f:
-                stats = json.load(f)
-                for s in stats:
-                    stats_map[s["File"]] = s
-        except Exception as e:
-            print(f"Error loading stats JSON: {e}")
-
-    # Track overall order from statistics
-    all_files_order = []
-    if os.path.exists(STATS_JSON):
-        try:
-            with open(STATS_JSON, 'r', encoding='utf-8') as f:
-                stats = json.load(f)
-                all_files_order = [s["File"] for s in stats]
-        except: pass
-
-    # Which files are 6+ months content, for the sidebar's "6+" chip. The tier comes from where the
-    # file is SCHEDULED (the manifest's phase, via the analyzer's own resolve_found_files), never its
-    # folder — the same rule the analysis follows, so the chip agrees with the report it decorates.
-    # (It used to look for the file under User Files/<lang>/GoalContent, a folder that never exists,
-    # so the chip had never once appeared.) By basename, like the rest of the per-file report.
-    goal_files = set()
-    try:
-        from app import analyzer as _analyzer
-        goal_files = {os.path.basename(path) for path, label, _weight, _type
-                      in (found if found is not None else _analyzer.resolve_found_files(target_lang, verbose=False))
-                      if label == "GoalContent"}
-    except Exception as e:
-        print(f"Warning: could not read the library tiers for the report: {e}")
-
-    # Load Progressive
-    if "progressive" in lists:
-        try:
-            df = lists["progressive"]
-            # Group by Source File
-            files_order = df.groupby("Source File")["Sequence"].min().sort_values().index.tolist()
-            
-                
-            # Each file's rows in list order: the whole table turned into records once, then split by file —
-            # a table per file cost about a millisecond each, a second on a large library.
-            by_file = {}
-            for record in df.to_dict(orient="records"):
-                by_file.setdefault(record["Source File"], []).append(record)
-            for filename in files_order:
-                words = by_file[filename]
-                _intern_sources(words, source_map, source_table, source_index, source_finder,
-                                audio_probe, line_media, line_timer, line_plays)
-                compressed_words = compress_list_of_dicts(words)
-                
-                # Get total words from stats if available
-                total_words = stats_map.get(filename, {}).get("Total Words", 0)
-                
-                data["progressive"].append({
-                    "filename": filename,
-                    "words": compressed_words,
-                    "total_words": total_words,
-                    "is_goal_content": filename in goal_files,
-                    # The file's one-kanji words the list can't offer, most used first ([spelling, lemma, uses]) —
-                    # "Also in this file, not on your list" (analyzer § One-character words).
-                    "unlisted": stats_map.get(filename, {}).get("Not On List", []),
-                })
-        except Exception as e:
-            print(f"Error loading progressive CSV: {e}")
-
-    data["completed_files"] = []
-    
-    # specific progressive files
-    prog_filenames = {item["filename"] for item in data["progressive"]}
-    
-    # Find files in stats but not in progressive
-    for fname, fstat in stats_map.items():
-        if fname not in prog_filenames:
-            data["completed_files"].append({
-                "filename": fname,
-                "stats": fstat
-            })
-
-    # The journey's stones (Zen shows no journey: its report is what it was), the run's language's
-    drawn = None
-    if theme not in ("Zen Mode", "zen-focus"):
-        drawn = _journey_stones(data, all_files_order, stats_map, language or target_lang, marks)
-        _logic = settings.get("logic") if isinstance(settings.get("logic"), dict) else {}
-        _journey_folds(data, all_files_order, drawn, bool(_logic.get("inline_completed_files", False)))
-    for entry in data["progressive"] + data["completed_files"]:    # Fresh-U 13: what the sidebar shows (the key stays)
-        entry["name"] = shown_name(entry["filename"])
-
-    # Load Priority
-    if "priority" in lists:
-        try:
-            df = lists["priority"]
-            raw_priority = df.to_dict(orient="records")
-            _intern_sources(raw_priority, source_map, source_table, source_index, source_finder,
-                            audio_probe, line_media, line_timer, line_plays)
-            data["priority"] = compress_list_of_dicts(raw_priority)
-        except Exception as e:
-            print(f"Error loading priority CSV: {e}")
-
-    # Every source is resolved by now — persist so the next render is a lookup, not a rescan.
-    for finder in (source_finder, line_timer):
-        if finder is not None:
-            finder.save_memo()
-
-    data["file_order"] = all_files_order
-
-    # Zen Mode Limit (Slicing)
-    if "zen" in theme.lower() and zen_limit > 0:
-        print(f"Applying Zen Mode Limit: {zen_limit} words")
-        count = 0
-        new_progressive = []
-        for item in data["progressive"]:
-            if count >= zen_limit:
-                break
-            
-            if 'rows' in item["words"]:
-                # Compressed dictionary
-                words = item["words"]["rows"]
-            else:
-                words = item["words"]
-                
-            needed = zen_limit - count
-            
-            if len(words) > needed:
-                if 'rows' in item["words"]:
-                    item["words"]["rows"] = words[:needed]
-                else:
-                    item["words"] = words[:needed]
-                new_progressive.append(item)
-                count += needed
-                break
-            else:
-                new_progressive.append(item)
-                count += len(words)
-        
-        data["progressive"] = new_progressive
-
-    # 2. Read Template
-    # Accept the display name ("Zen Mode", from View Vocab Journey) and the theme id
-    # ("zen-focus", forwarded by the analyzer on Generate Journey) so both paths pick Zen.
-    if theme in ("Zen Mode", "zen-focus"):
-        WEB_APP_FILE = get_resource(os.path.join("templates", "zen_app.html"))
-    else:
-        WEB_APP_FILE = get_resource(os.path.join("templates", "web_app.html"))
-
-    if not os.path.exists(WEB_APP_FILE):
-        print(f"Error: Template file {WEB_APP_FILE} not found.")
-        return
-
-    with open(WEB_APP_FILE, "r", encoding="utf-8") as f:
-        html_content = f.read()
-
-    # 3. Inject Data, Theme, and Favicon
-    import base64
-    from app.path_utils import get_icon_path
-    
-    # Load Logic Settings for injection
-    logic_settings = {}
-    target_lang = "ja" # Default
-    theme_map = {
-        'Default (Dark)': 'default',
-        'Dark Flow': 'world-class',
-        'Midnight (Vibrant)': 'midnight-vibrant',
-        'Modern Light': 'modern-light',
-        'Zen Mode': 'zen-focus',
-        'default': 'default',
-        'world-class': 'world-class',
-        'midnight-vibrant': 'midnight-vibrant',
-        'modern-light': 'modern-light'
-    }
-    applied_theme = theme_map.get(theme, theme)
-
-    try:
-        settings = settings_manager.load_settings()
-        # D29's switch (3.0, `logic.automation`) is no template's: kept out, so the report is what it was without it
-        # (placed "neither": in no render signature).
-        logic_settings = {k: v for k, v in settings.get("logic", {}).items() if k != "automation"}
-        target_lang = settings.get("target_language", "ja")
-        
-        # If theme is 'default', try to load from settings and MAP it
-        if applied_theme == "default":
-            raw_theme = settings.get("theme", "default")
-            applied_theme = theme_map.get(raw_theme, 'default')
-    except Exception as e:
-        print(f"Warning: Could not load logic settings for HTML injection: {e}")
-
-    # Escape "</" so a literal "</script>" in user content (filenames / context sentences)
-    # cannot close the inline <script> block early and blank the whole report.
-    json_str = json.dumps(data).replace("</", "<\\/")
-    logic_json_str = json.dumps(logic_settings).replace("</", "<\\/")
-    words_per_day = settings.get("words_per_day", 5) if 'settings' in locals() else 5
-    show_words_per_day = settings.get("show_words_per_day", True) if 'settings' in locals() else True
-    # The study order (Kantan-MO): the journey opens on its list (By leverage: the Priority List)
-    study_order = settings_manager.study_order(settings if 'settings' in locals() else None)
-    # Per-sentence source badge: the interned table + the display mode chosen in Advanced Settings.
-    sources_json_str = json.dumps(source_table, ensure_ascii=False).replace("</", "<\\/")
-    # The line player's folders (`_line_media`: a playable source's [5] names one of them by its place).
-    line_dirs_json_str = json.dumps(line_dirs, ensure_ascii=False).replace("</", "<\\/")
-    line_plays_json_str = json.dumps({str(i): v for i, v in sorted(line_plays.items())},
-                                     ensure_ascii=False).replace("</", "<\\/")
-    # Word lookup button (⌕). Validated here rather than trusted, exactly like source_display: a
-    # hand-edited settings.json must not be able to put arbitrary text into the report's URL.
-    _ws = settings if 'settings' in locals() else {}
-    word_search_category = _ws.get("word_search_category", "all")
-    if word_search_category not in ("all", "anime", "liveaction", "youtube"):
-        word_search_category = "all"
-    word_search_json_str = json.dumps({
-        "enabled": bool(_ws.get("word_search_enabled", True)),
-        "category": word_search_category,
-    }, ensure_ascii=False).replace("</", "<\\/")
-    source_display = settings.get("source_display", "off") if 'settings' in locals() else "off"
-    if source_display not in ("off", "icon", "filename", "full"):
-        source_display = "off"
-
-    # Optional speech module: how the report reaches the local helper that speaks a sentence.
-    # Only ever the loopback port and a token — never the API key, which stays in the user's data
-    # folder so it can't be copied into every report ever generated. Absent module (or feature off)
-    # leaves this null and the badge behaves exactly as it always has.
-    koe_config = None
-    try:
-        import modules.koe as _koe        # not `from modules import koe` — see main.apply_koe_state
-        koe_config = _koe.report_config()
-    except Exception:
-        koe_config = None
-    koe_json_str = json.dumps(koe_config, ensure_ascii=False).replace("</", "<\\/")
-    # A set-aside watched file's panel: the window's own sentence for the rule (one place: `view_rows.STRINGS`)
-    from app.services.view_rows import STRINGS as rows_strings
-    watched_leaves_str = json.dumps(rows_strings["watched_leaves"], ensure_ascii=False).replace("</", "<\\/")
-    fold_tip_str = json.dumps(rows_strings["fold_tip"], ensure_ascii=False).replace("</", "<\\/")
-    anki_json_str = json.dumps(anki_backlog_keys(target_lang, settings if 'settings' in locals() else {},
-                                                 PRIORITY_CSV),
-                               ensure_ascii=False).replace("</", "<\\/")
-
-    injected = [
-        "let globalData = ", json_str,
-        f";\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalStudyOrder = '{study_order}';\n        let globalSources = {sources_json_str};\n        let globalLineDirs = {line_dirs_json_str};\n        let globalLinePlay = {line_plays_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};\n        let globalAnkiBacklog = {anki_json_str};\n        let globalWatchedLeaves = {watched_leaves_str};\n        let globalFoldTip = {fold_tip_str};"]
-    replacements = []
-
-    # Embed Icon as Favicon and Header Logo
-    icon_path = get_icon_path()
-    if os.path.exists(icon_path):
-        try:
-            with open(icon_path, "rb") as icon_file:
-                encoded_string = base64.b64encode(icon_file.read()).decode()
-                
-                # Injects favicon
-                favicon_tag = f'<link rel="icon" type="image/png" href="data:image/png;base64,{encoded_string}">'
-                replacements.append(("<head>", f"<head>\n    {favicon_tag}"))
-                
-                # Injects logo into header
-                logo_html = f'<img src="data:image/png;base64,{encoded_string}" alt="Logo" class="header-logo" style="height: 32px; width: 32px; margin-right: 15px; border-radius: 4px;">'
-                replacements.append(("<h1>Surasura List</h1>",
-                                     f'<div style="display:flex; align-items:center;">{logo_html}<h1>Surasura List</h1></div>'))
-        except Exception as e:
-            print(f"Warning: Could not embed icon in HTML: {e}")
-
-    # 4. Write Output
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        for piece in _html_pieces(html_content, injected, replacements):
-            f.write(piece)
-
-    print(f"Static HTML generated at: {OUTPUT_FILE}")
-    if not open_browser:
-        return drawn                # the dashboard's automatic Generate: written, not opened
-    if app_mode:
-        open_as_app(OUTPUT_FILE)
-    else:
-        url = f"file://{os.path.abspath(OUTPUT_FILE)}"
-        webbrowser.open(url)
-    return drawn
 
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--theme", default="default", help="Theme name")
     parser.add_argument("--app-mode", action="store_true", help="Launch in professional app mode")
-    parser.add_argument("--zen-limit", type=int, default=0, help="Limit words for Zen Mode")
-    args = parser.parse_args()
-    generate_static_html(theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit)
+    args, _unknown = parser.parse_known_args()     # an older argv's --theme / --zen-limit: no page of their own now
+    generate_static_html(app_mode=args.app_mode)
 
 if __name__ == "__main__":
     main()

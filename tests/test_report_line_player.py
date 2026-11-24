@@ -7,10 +7,11 @@ Three halves, each held here:
 - **Which file** (`play.files`, Qt-free): the window's ▶'s own lookup for each timed source the report shows, so the
   page and the window never disagree — but an audiobook plays its one file (its record's), and one of several files
   plays nothing (the transcript's times run across every file).
-- **The render** (`static_html_generator`): the source table's two new fields — the file's URI when a browser plays it,
-  else its extension (`.mkv`: the badge's hover says why) — and the line's times even with the sources hidden (they
-  were read only while the badge showed), from Connect's line reader, kept in the anchor memo.
-- **The page** (`templates/web_app.html`): read from the template the report embeds (no test may open a browser, the
+- **The render** (the journey page's, `journey_render.render` since J-RETIRE; the old page's `_intern_sources`
+  before): each line's source row carries its file's play (its folder's index and name), and a playable line its
+  times, from Connect's line reader, kept in the lines memo (`LINE_TIMES_MEMO`), never the old badge's anchor memo.
+- **The page** (`templates/web_app.html`, the YouTube preview's page since the journey's is v3's): read from the template
+  the report embeds (no test may open a browser, the
   harness refuses one): ▶ only where a line has a playable file and times, one `<audio>` and one bar made on first use,
   timers only, stopped by Esc / ■ / a redraw / the page hidden; its step rule `lpNext` mirrored here (as `rsNorm` is in
   test_report_search.py) — keep the two in step.
@@ -30,7 +31,6 @@ import urllib.parse
 import urllib.request
 from unittest.mock import patch
 
-import pandas as pd
 import pytest
 
 from app import path_utils, sources
@@ -49,10 +49,6 @@ NIGHT = os.path.join(RESOURCES, "zh", "night_market.srt")
 SHOW = "放課後の約束"                                   # a made-up show
 LINE_JA = "文化祭まで、あと三日しかないよ。"            # placed_episode.srt, cue 1: 00:00:01,000 --> 00:00:03,200
 LINE_ZH = "今天我们要去台北的夜市吃东西。"              # night_market.srt, cue 2: 00:00:04,100 --> 00:00:07,350
-
-
-# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
-pytestmark = pytest.mark.usefixtures("journey_pre_cut")
 
 
 @pytest.fixture(autouse=True)
@@ -449,24 +445,22 @@ def test_the_vbr_check_reads_past_a_big_cover_tag_and_never_raises(tmp_path):
 
 @pytest.mark.parametrize("source,sentence,times", [(PLACED, LINE_JA, (1.0, 3.2)), (NIGHT, LINE_ZH, (4.1, 7.35))])
 def test_with_the_sources_hidden_a_playable_lines_times_are_read_and_nothing_else(tmp_path, source, sentence, times):
-    """Before, a line's times came only with the badge (`source_display` on: off by default). Now a line ▶ can play
-    gets them always — from Connect's line reader, as the badge's — and no anchor is looked for (that reads the whole
-    file: only for the badge); a line whose source has no playable file gets nothing new."""
+    """A line ▶ can play gets its times — from Connect's line reader — and no anchor is looked for (that reads the
+    whole file: the old page's badge only); a line whose source has no playable file gets none. The journey page's
+    source rows (`journey_render.Sources`): [label, kind, ep, play, link, item]."""
+    from app import journey_render as jr
     language = "zh" if source == NIGHT else "ja"
     rel = f"Library/{SHOW}/{os.path.basename(source)}"
     other = f"Library/{SHOW}/other.srt"
     source_map = {rel: {"name": os.path.basename(source), "type": "subtitle", "abs": source},
                   other: {"name": "other.srt", "type": "subtitle", "abs": source}}
-    records = [{"Context 1": sentence, "Src 1": rel}, {"Context 1": sentence, "Src 1": other}]
-    timer = gen.AnchorFinder(cache_path=str(tmp_path / "anchor_cache.json"), language=language)
-    table, index, plays = [], {}, {}
-    gen._intern_sources(records, source_map, table, index, None, None,
-                        media={rel: ["0/a.mp4", ""], other: ["", ".mkv"]}, timer=timer, plays=plays)
-    assert (records[0]["At 1"], records[0]["End 1"]) == times
-    assert "Frag 1" not in records[0]
-    assert "At 1" not in records[1] and "End 1" not in records[1]
-    assert plays == {records[0]["Src 1"]: ["0/a.mp4", ""], records[1]["Src 1"]: ["", ".mkv"]}   # the ▶'s own table
-    assert [len(row) for row in table] == [5, 5]          # the source rows' contract: [name, type, path, group, link]
+    timer = gen.AnchorFinder(cache_path=str(tmp_path / gen.LINE_TIMES_MEMO), language=language)
+    timer.anchor = lambda *a, **k: pytest.fail("no anchor is looked for: the journey draws no deep link")
+    found = jr.Sources(language, source_map, media={rel: ("0/a.mp4", ""), other: ("", ".mkv")}, timer=timer)
+    assert found.times(rel, sentence) == times
+    assert found.times(other, sentence) == (None, None)
+    assert found.row(rel)[3] == "0/a.mp4" and found.row(other)[3] == ""          # the ▶'s own answer
+    assert [len(found.row(r)) for r in (rel, other)] == [6, 6]
 
 
 def test_times_kept_without_an_anchor_are_reused_and_the_badge_still_finds_its_anchor_later(tmp_path):
@@ -486,76 +480,58 @@ def test_times_kept_without_an_anchor_are_reused_and_the_badge_still_finds_its_a
     assert anchor and (start, end) == (1.0, 3.2)
 
 
-def _render(tmp_path, records_by_file, source_map, settings=None):
-    """A report rendered from these lists (the analyzer's CSVs, its sources.json) -> (globalData, globalSources)."""
+def _render(tmp_path, records_by_file, source_map, settings=None, language="ja"):
+    """The journey page's data (`journey_render.render`, the page every look writes since J-RETIRE) for these lists and
+    this sources.json -> (the render, {word: [(the line's text, its source row [label, kind, ep, play, link, item],
+    start, end), ...]}); a row's play is its URI as the page puts it together (`_uri` over the head's `dirs`)."""
+    import gzip
+    from app import journey_render as jr
+    from tests.test_journey_render_times import _facts
     results = tmp_path / "results"
     results.mkdir(parents=True, exist_ok=True)
     rows = []
     for seq, (filename, words) in enumerate(records_by_file.items(), 1):
         for w in words:
-            rows.append({"Sequence": seq, "Source File": filename, "Word": w["Word"], "Reading": "",
-                         "Tier": "Outside", "Score": 10, "Occurrences (Global)": 2, "Occurrences (File)": 2,
-                         "Count (High)": 0, "Count (Low)": 0, "Count (Goal)": 2, **w})
-    pd.DataFrame(rows).to_csv(results / "progressive_learning_list.csv", index=False, encoding="utf-8-sig")
-    pd.DataFrame([dict(r, Occurrences=2) for r in rows]).to_csv(results / "priority_learning_list.csv", index=False,
-                                                              encoding="utf-8-sig")
-    with open(results / "sources.json", "w", encoding="utf-8") as f:
-        json.dump(source_map, f, ensure_ascii=False)
-    out = results / "reading_list_static.html"
-    from app import settings_manager
-    real = settings_manager.load_settings
-    with patch.object(gen, "RESULTS_DIR", str(results)), \
-         patch.object(gen, "PRIORITY_CSV", str(results / "priority_learning_list.csv")), \
-         patch.object(gen, "PROGRESSIVE_CSV", str(results / "progressive_learning_list.csv")), \
-         patch.object(gen, "OUTPUT_FILE", str(out)), \
-         patch.object(settings_manager, "load_settings", lambda *a, **k: dict(real(*a, **k), **(settings or {}))):
-        gen.generate_static_html(theme="default", open_browser=False)
-    html = out.read_text(encoding="utf-8")
-    data = json.loads(re.search(r"let globalData = (\{.*?\});\n", html, re.S).group(1))
-    table = json.loads(re.search(r"let globalSources = (\[.*?\]);\n", html, re.S).group(1))
-    dirs = json.loads(re.search(r"let globalLineDirs = (\[.*?\]);\n", html, re.S).group(1))
-    plays = json.loads(re.search(r"let globalLinePlay = (\{.*?\});\n", html, re.S).group(1))
-    assert all(len(row) == 5 for row in table), "the source rows keep their five fields"
-    # for the asserts: each row with the ▶'s answer put after it, its URI as the page puts it together (`lpUri`)
-    return data, [row + ([_uri(plays[str(i)][0], dirs) if plays[str(i)][0] else "", plays[str(i)][1]]
-                         if str(i) in plays else ["", ""]) for i, row in enumerate(table)]
+            rows.append({"Sequence": seq, "Source File": filename, "Orth": w["Word"], "Forms": w["Word"],
+                         "Reading": "", "Score": 10, "Occurrences (Global)": 2, "Occurrences (File)": 2,
+                         "Count (High)": 1, "Count (Low)": 0, **w})
+    with patch.object(gen, "RESULTS_DIR", str(results)), patch.object(gen, "_load_source_map", lambda: source_map), \
+         patch.object(gen, "PRIORITY_CSV", str(results / "priority_learning_list.csv")):
+        out = jr.render(language, rows, priority=rows, stats=[{"File": f} for f in records_by_file],
+                        settings=dict(settings or {}), facts=_facts({}), stamp="s")
+    lines = {}
+    for chunk in out.chunks:
+        data = json.loads(gzip.decompress(chunk).decode("utf-8"))
+        for word in data["w"]:
+            for line in word[9] or ():
+                line = line + [None] * (4 - len(line))          # (a line's trailing Nones are left out)
+                src = list(data["src"][line[1]])
+                if src[3]:
+                    src[3] = _uri(src[3], out.head["dirs"])
+                lines.setdefault(word[0], []).append((line[0], src, line[2], line[3]))
+    return out, lines
 
 
-def _rows(compressed):
-    """`compress_list_of_dicts`'s rows as dicts, a field a row didn't have (None) left out."""
-    keys = compressed["keys"]
-    return [{k: v for k, v in zip(keys, r) if v is not None} for r in compressed["rows"]]
-
-
-@pytest.mark.parametrize("display", ["off", "icon"])
-def test_a_report_gives_each_playable_line_its_file_and_times_and_an_mkv_line_its_why(tmp_path, display):
-    """End to end, both badge settings: an episode with an .mp4 beside it plays (its URI, its line's times); one with
-    only an .mkv gets its why and no times with the badge off (nothing to play them with); a text gets neither."""
+def test_a_report_gives_each_playable_line_its_file_and_times_and_an_mkv_line_its_why(tmp_path):
+    """End to end: an episode with an .mp4 beside it plays (its URI, its line's times); a text gets neither. (An .mkv
+    line is cut by Connect since J-CLIP: test_journey_render_clips' test_the_journey_gives_an_mkv_line_its_play_...)"""
     rel_mp4, copies = _in_library("ja", SHOW, f"{SHOW} - 01.ja.srt")
     mp4 = _stand_in(os.path.join(copies, f"{SHOW} - 01.mp4"), b"\x00\x00\x00\x18ftypmp42")
-    rel_mkv, _ = _in_library("ja", SHOW, f"{SHOW} - 02.ja.srt")
-    _video(os.path.join(copies, f"{SHOW} - 02.mkv"))
     data_dir = path_utils.get_data_path("ja")
     rel_txt = "Library/本/本.txt"
     os.makedirs(os.path.join(data_dir, "Library", "本"), exist_ok=True)
     with open(os.path.join(data_dir, *rel_txt.split("/")), "w", encoding="utf-8") as f:
         f.write(LINE_JA)
     source_map = {r: {"name": r.rsplit("/", 1)[-1], "type": t, "abs": os.path.join(data_dir, *r.split("/"))}
-                  for r, t in ((rel_mp4, "subtitle"), (rel_mkv, "subtitle"), (rel_txt, "text"))}
-    data, table = _render(tmp_path, {
+                  for r, t in ((rel_mp4, "subtitle"), (rel_txt, "text"))}
+    _out, lines = _render(tmp_path, {
         f"{SHOW} - 01.ja.srt": [{"Word": "文化祭", "Context 1": LINE_JA, "Src 1": rel_mp4}],
-        f"{SHOW} - 02.ja.srt": [{"Word": "三日", "Context 1": LINE_JA, "Src 1": rel_mkv}],
-        "本.txt": [{"Word": "まで", "Context 1": LINE_JA, "Src 1": rel_txt}]}, source_map, {"source_display": display})
-    rows = {r["Word"]: r for f in data["progressive"] for r in _rows(f["words"])}
-    played, mkv, text = rows["文化祭"], rows["三日"], rows["まで"]
-    assert urllib.request.url2pathname(table[played["Src 1"]][5][len("file:"):]) == mp4
-    assert (played["At 1"], played["End 1"]) == (1.0, 3.2)
-    assert table[mkv["Src 1"]][5:] == ["", ".mkv"]          # its folder holds a playable episode: looked for, its why
-    assert table[text["Src 1"]][5:] == ["", ""]
-    assert ("At 1" in mkv) == (display != "off")                          # times for the badge only, as before
-    assert ("Frag 1" in played) == (display != "off")                     # the anchor: only for the badge
-    prio = {r["Word"]: r for r in _rows(data["priority"])}
-    assert (prio["文化祭"]["At 1"], prio["文化祭"]["End 1"]) == (1.0, 3.2)  # the priority view's lines play too
+        "本.txt": [{"Word": "まで", "Context 1": LINE_JA, "Src 1": rel_txt}]}, source_map)
+    [(_text, src, at, end)] = lines["文化祭"]
+    assert urllib.request.url2pathname(src[3][len("file:"):]) == mp4
+    assert (at, end) == (1.0, 3.2)
+    [(_text, src, at, end)] = lines["まで"]
+    assert src[3] == "" and (at, end) == (None, None)
 
 
 def test_an_audiobooks_transcript_line_plays_from_its_m4b_in_a_rendered_report(tmp_path):
@@ -570,16 +546,16 @@ def test_an_audiobooks_transcript_line_plays_from_its_m4b_in_a_rendered_report(t
     first = _lines("ja")[0]                              # the transcript's first cue: 00:00:02,000 --> 00:00:03,500
     source_map = {rel: {"name": rel.rsplit("/", 1)[-1], "type": "audio",
                         "abs": os.path.join(data_dir, *rel.split("/"))}}
-    data, table = _render(tmp_path, {rel.rsplit("/", 1)[-1]: [{"Word": "剣士", "Context 1": first, "Src 1": rel}]},
+    _out, lines = _render(tmp_path, {rel.rsplit("/", 1)[-1]: [{"Word": "剣士", "Context 1": first, "Src 1": rel}]},
                           source_map)
-    assert urllib.request.url2pathname(table[0][5][len("file:"):]) == os.path.abspath(m4b)
-    row = _rows(data["progressive"][0]["words"])[0]
-    assert (row["At 1"], row["End 1"]) == (2.0, 3.5)
+    [(_text, row, at, end)] = lines["剣士"]
+    assert urllib.request.url2pathname(row[3][len("file:"):]) == os.path.abspath(m4b)
+    assert (at, end) == (2.0, 3.5)
 
 
 def test_a_draw_with_the_badge_off_never_cuts_the_badges_anchor_memo(tmp_path):
-    """The times read for ▶ with the badge off are kept in their own memo (`LINE_TIMES_MEMO`): the badge's
-    `anchor_cache.json` keeps every file's anchors, so turning the badge on later reads nothing again."""
+    """The times read for ▶ are kept in their own memo (`LINE_TIMES_MEMO`): the old badge's `anchor_cache.json` is
+    never written by the journey, so every file's anchors in it stay as they were."""
     rel, copies = _in_library("ja", SHOW, f"{SHOW} - 31.ja.srt")
     _stand_in(os.path.join(copies, f"{SHOW} - 31.mp4"), b"\x00\x00\x00\x18ftypmp42")
     results = tmp_path / "results"
@@ -588,32 +564,31 @@ def test_a_draw_with_the_badge_off_never_cuts_the_badges_anchor_memo(tmp_path):
     (results / "anchor_cache.json").write_text(json.dumps(kept, ensure_ascii=False), encoding="utf-8")
     source_map = {rel: {"name": "x.srt", "type": "subtitle",
                         "abs": os.path.join(path_utils.get_data_path("ja"), *rel.split("/"))}}
-    data, table = _render(tmp_path, {f"{SHOW} - 31.ja.srt": [{"Word": "文化祭", "Context 1": LINE_JA, "Src 1": rel}]},
+    _out, lines = _render(tmp_path, {f"{SHOW} - 31.ja.srt": [{"Word": "文化祭", "Context 1": LINE_JA, "Src 1": rel}]},
                           source_map)
-    assert "At 1" in _rows(data["progressive"][0]["words"])[0]
+    assert lines["文化祭"][0][2:] == (1.0, 3.2)
     assert json.loads((results / "anchor_cache.json").read_text(encoding="utf-8")) == kept
     assert (results / gen.LINE_TIMES_MEMO).exists()
 
 
 def test_with_its_switch_off_the_journey_is_drawn_as_before_the_player(tmp_path, monkeypatch):
     """The Settings switch (*Play a line's own audio*, on by default): off, the render looks for no line's file and
-    reads no line's times — the source table's rows keep their five fields, no folder list — so the draw is what it
-    was before the line player, whatever the library holds; on (the default), an .mp4 line plays."""
+    reads no line's times — no play, no folder list — whatever the library holds; on (the default), an .mp4 line
+    plays."""
     rel, copies = _in_library("ja", SHOW, f"{SHOW} - 21.ja.srt")
     mp4 = _stand_in(os.path.join(copies, f"{SHOW} - 21.mp4"), b"\x00\x00\x00\x18ftypmp42")
     source_map = {rel: {"name": "x.srt", "type": "subtitle",
                         "abs": os.path.join(path_utils.get_data_path("ja"), *rel.split("/"))}}
     lists = {f"{SHOW} - 21.ja.srt": [{"Word": "文化祭", "Context 1": LINE_JA, "Src 1": rel}]}
-    data, table = _render(tmp_path / "on", lists, source_map)                 # the default: on
-    assert urllib.request.url2pathname(table[0][5][len("file:"):]) == mp4
+    _out, lines = _render(tmp_path / "on", lists, source_map)                 # the default: on
+    assert urllib.request.url2pathname(lines["文化祭"][0][1][3][len("file:"):]) == mp4
     from app import cues
     monkeypatch.setattr(play, "files", lambda *a, **k: pytest.fail("off: no line's file is looked for"))
     monkeypatch.setattr(cues, "timeline", lambda *a, **k: pytest.fail("off: no line's times are read"))
-    data, table = _render(tmp_path / "off", lists, source_map, {"line_player": False})
-    assert table[0][5:] == ["", ""]                                         # no ▶ answer at all
-    assert "At 1" not in _rows(data["progressive"][0]["words"])[0]
-    html = (tmp_path / "off" / "results" / "reading_list_static.html").read_text(encoding="utf-8")
-    assert "let globalLineDirs = [];" in html and "let globalLinePlay = {};" in html
+    out, lines = _render(tmp_path / "off", lists, source_map, {"line_player": False})
+    [(_text, src, at, end)] = lines["文化祭"]
+    assert src[3] == "" and (at, end) == (None, None)                       # no ▶ answer at all
+    assert out.head["dirs"] == []
 
 
 def test_the_switch_is_one_settings_row_on_by_default_with_its_words_in_one_place():
@@ -633,19 +608,8 @@ def test_the_switch_is_one_settings_row_on_by_default_with_its_words_in_one_plac
     assert PLACED["line_player"] == "report"
 
 
-def test_a_report_with_nothing_playable_looks_for_no_times_and_reads_no_file(tmp_path, monkeypatch):
-    """A library of .mkv episodes (most anime libraries) gains no ▶ — so its render reads no subtitle's lines at all
-    (the line reader is never asked): the journey opens as fast as before."""
-    rel_mkv, copies = _in_library("ja", SHOW, f"{SHOW} - 03.ja.srt")
-    _video(os.path.join(copies, f"{SHOW} - 03.mkv"))
-    source_map = {rel_mkv: {"name": "x.srt", "type": "subtitle",
-                            "abs": os.path.join(path_utils.get_data_path("ja"), *rel_mkv.split("/"))}}
-    from app import cues
-    monkeypatch.setattr(cues, "timeline", lambda *a, **k: pytest.fail("no line is read when nothing can play"))
-    data, table = _render(tmp_path, {f"{SHOW} - 03.ja.srt": [{"Word": "文化祭", "Context 1": LINE_JA,
-                                                               "Src 1": rel_mkv}]}, source_map)
-    assert table[0][5:] == ["", ""]                         # no badge shown: no why looked for either
-    assert "At 1" not in _rows(data["progressive"][0]["words"])[0]
+# A library with nothing playable reads no line (the old page's test_a_report_with_nothing_playable_...): on the
+# journey, test_journey_render_times' test_an_empty_library_and_no_playable_file_ask_nothing (an .mkv plays: J-CLIP).
 
 
 # --- the page: read from the template ------------------------------------------------------------------------------- #

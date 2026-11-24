@@ -4480,15 +4480,12 @@ def _journey_plan(args, run_signature, results_dir=None):
     """The plan file as the v3 journey reads it — each word's count ahead and each episode's *% known*
     (`journey_render._ahead`, `_plan_pcts`): one source every piece reads (J-CUT, the lead's ruling), read after it is
     written, so a Generate, its reuse and a redraw draw the same page. results/'s plan, numbers only (`pools=False`),
-    when it is whole and written by the run `run_signature` names; None for Zen, before the cut-over, or without such a
-    plan (the render then counts each word in its own episode). The counts table the Generate wrote beside the plan
+    when it is whole and written by the run `run_signature` names; None without such a plan (the render then counts
+    each word in its own episode). The counts table the Generate wrote beside the plan
     (`plan_engine.read_counts`: the listed rows' counts alone, the lead's ruling) when it is this run's, else only the
     plan's tables the count reads (`plan_engine.counts`, a plan from before the table: the whole plan held ~130 MB more
     at the render's peak at 20,000 files, J-CUT 3; its tables +109 MB over none). Never raises."""
-    if not run_signature or args.theme in ZEN_THEMES:
-        return None
-    from app.services import journey_settings
-    if not journey_settings.v3():
+    if not run_signature:
         return None
     from app import plan_engine
     results = results_dir or RESULTS_DIR
@@ -4677,12 +4674,11 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
             except ImportError:
                 import static_html_generator
             _html = os.path.join(RESULTS_DIR, "reading_list_static.html")
-            marks = None if args.theme in ZEN_THEMES else journey_marks(language)
+            marks = journey_marks(language)
             made = _made_fingerprint(language)
             rendering = time.time()
             drawn = static_html_generator.generate_static_html(
-                theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
-                open_browser=not args.no_open, language=language, marks=marks, found=found_files,
+                app_mode=args.app_mode, open_browser=not args.no_open, language=language, marks=marks,
                 plan=plan_engine.read_counts(os.path.join(RESULTS_DIR, plan_engine.COUNTS_FILE),   # the Generate's
                                              plan.header.get("run_signature")) or plan)   # figures (its counts table)
             report_failed = not _report_written(_html, rendering)
@@ -4944,10 +4940,8 @@ def _build_analysis_parser():
     parser.add_argument("--visualize", action="store_true", help="Launch visualizer after analysis")
     parser.add_argument("--static", action="store_true", help="Generate static HTML after analysis")
     parser.add_argument("--app-mode", action="store_true", help="Open the static report in a dedicated app window")
-    parser.add_argument("--theme", type=str, default="default", help="Theme for static HTML (default, world-class, modern-light, zen-focus)")
     parser.add_argument("--target-coverage", type=int, default=0, help="Target cumulative coverage percent (0-100)")
     parser.add_argument("--language", type=str, default="ja", help="Target language code (ja, zh)")
-    parser.add_argument("--zen-limit", type=int, default=0, help="Limit words for Zen Mode")
     parser.add_argument("--only-i-plus-one", action="store_true", help="Only include words with i+1 sentences")
     parser.add_argument("--ensure-audio-example", action="store_true", help="Give the last example slot to a sentence that has audio, when none of the chosen ones do")
     parser.add_argument("--context-min", type=int, default=None, help="Ideal sentence minimum words/characters")
@@ -5262,8 +5256,8 @@ def journey_is_current(args, language):
     known words and these analysis settings; False when it would not (or never ran); None when it cannot
     tell. The analyzer's OWN signature (`compute_run_signature` + the token store's last one + the results
     stamp), so the Generate button's state can never disagree with what Generate then does —
-    `_try_open_existing_report` asks exactly this before reopening. Presentation (theme, Zen limit) is not
-    part of it: that re-renders in a moment and needs no nudge.
+    `_try_open_existing_report` asks exactly this before reopening. What the page draws (the render signature) is
+    not part of it: that re-renders in a moment and needs no nudge.
 
     With a library store (Library_Store_Spec §7): the disk is synced first (a hato drop then turns the ✓
     off), and the list and its `order_version` are read in one transaction; the signature still decides —
@@ -5402,7 +5396,7 @@ def compute_run_signature(language, found_files, args, order_free=False, aside=(
     """The run-signature: a filesystem fingerprint of everything that affects the analysis OUTPUT
     (content files + their order/weights, known words, ignore/blacklist/graduated lists, frequency
     lists, the analysis-affecting settings, the analysis-affecting args, and the engine version).
-    Presentation (theme / app-mode / zen / words-per-day) is deliberately excluded. Returns the
+    Presentation (the page's looks / app-mode) is deliberately excluded. Returns the
     sha256 hex or None. SHARED by main() (decide the skip) and the dashboard (decide, in-process,
     whether Generate can just reopen the existing report without spawning the analyzer).
 
@@ -5466,7 +5460,8 @@ def settings_signature(settings, language):
     never changed), so a caller can sign a settings dict that differs from the file by one key (Connect's level
     look, P3.3: which band the plan was cut at)."""
     _NON_ANALYSIS_SETTINGS = {
-        "theme", "open_app_mode", "zen_limit",
+        "theme", "open_app_mode",
+        "zen_limit",                    # Zen's size (retired with Zen, J-RETIRE): an older settings.json still holds it
         "words_per_day", "show_words_per_day",
         "open_count", "skipped_version", "failed_update_version",
         "source_display",   # badge rendering only — re-renders (see compute_render_signature)
@@ -5668,9 +5663,9 @@ def compute_render_signature(args, marks=None, made=_READ_NOW):
     changes re-render instead of re-analyzing. SHARED with the dashboard's fast path so the two can
     never disagree about whether the existing report is still correct.
 
-    Anything static_html_generator INJECTS into the report belongs here. words_per_day /
-    show_words_per_day were injected but unlisted, so editing them left the report showing the old
-    "At N words a day..." estimate until something else forced a re-render.
+    Anything the journey's render reads belongs here (J-CUT: only what the v3 page's render reads; its looks are
+    applied in the page and read back through the door, J-SET's LOOKS). The page is v3's for every look (J-RETIRE): no
+    theme, no Zen and none of the old page's options are in it.
 
     `--app-mode` is deliberately excluded: it changes only HOW the browser opens the report, not a
     byte of its contents, so toggling it reopens the existing file instead of re-rendering.
@@ -5694,75 +5689,19 @@ def compute_render_signature(args, marks=None, made=_READ_NOW):
              _backlog_fingerprint(_language, "junban_pairs.json") if _backlog_on else None,
              (_made_fingerprint(_language) if made is _READ_NOW else made) if _backlog_on else None]
     _markers = {k: v for k, v in _markers.items() if k != "_comment"} if isinstance(_markers, dict) else _markers
-    if args.theme not in ZEN_THEMES:
-        # Journey v3 (J-CUT): only what its render reads — ⌕'s switch and category among them (the page's head). Its
-        # looks (the theme, the source's display and J-SET's) are applied in the page and read back through the door,
-        # and the old page's options (words a day, the study order's tab, Speech, the page size, its two switches, its
-        # templates) are read by no part of it, so a change of one draws nothing (the Redraw rule). A saved Zen look keeps the list below: Zen in or
-        # out re-renders. Read through `journey_settings.v3()`, never by importing the generator (pandas: the fast
-        # paths' cost); before the cut-over (or with SURASURA_DOOR=0) the old page's list, as it was.
-        from app.services import journey_settings as _journey_settings
-        if _journey_settings.v3():
-            _parts = ["journey v3", bool(_s.get("line_player", True)), _journey_settings.lookup_values(_s), *_anki,
-                      _markers]
-            _stones = _stones_fingerprint(_language, marks)
-            if _stones:
-                _parts.append(_stones)
-            _parts.append(_journey_fingerprint(_language, _s))
-            return json.dumps(_parts)
-    _parts = [
-        args.theme,
-        int(args.zen_limit or 0),
-        _s.get("source_display", "off"),
-        # Word lookup button: whether it renders at all, and which Nadeshiko category the link
-        # carries. Both are INJECTED into the report, so both must re-render — the same rule that
-        # words_per_day was missing above.
-        bool(_s.get("word_search_enabled", True)),
-        # The journey's line player: off, the render looks for no line's file and reads no line's times.
-        bool(_s.get("line_player", True)),
-        _s.get("word_search_category", "all"),
-        _s.get("words_per_day", 5),
-        bool(_s.get("show_words_per_day", True)),
-        # The study order (Kantan-MO): the journey opens on its list — INJECTED (`globalStudyOrder`), so re-render
-        settings_manager.study_order(_s),
-        # Speech (optional module) is INJECTED into the report — the helper endpoint, and which
-        # sentences already have audio. Toggling it must therefore re-render. Without this, turning
-        # speech on while the badge was already visible changed nothing in the signature, so the
-        # existing report was reused and its badges stayed mute. Absent module -> False, so this
-        # costs nothing for anyone who doesn't have it.
-        bool(_s.get("enable_koe", False)),
-        # "Label backlogged Anki words" (Junban_Backlog_Spec WP-B8): the switch, and — only while it
-        # is on — the backlog file the Anki sync keeps. Both are INJECTED, so a sync costs one
-        # re-render on the next Generate, never a re-analysis (§3 I3).
-        # …and the answers to Junban's "Same word as one on your list?": a "yes" labels its word too
-        # (Anki_Match_Consistency_Scope.md item 1), and Connect's record of the cards it made (F-6): a card is labelled
-        # on the row Connect made it for (static_html_generator._connect_rows, Japanese only), so a card made or
-        # deleted re-renders (`_anki`, above)
-        *_anki,
-        # The report's own logic keys, which the templates read from the logic block they embed
-        # (globalLogic): "Show 'Target Met' inline", "Hide Audio Button", the page size and the ✦ / ⚖
-        # thresholds. No run reads them, so compute_run_signature leaves them out: changing one
-        # re-renders, never re-analyzes. The report embeds the whole block, so a template that starts
-        # reading another logic key adds it here.
-        bool(_logic.get("inline_completed_files", False)),
-        bool(_logic.get("hide_audio_button", False)),
-        _logic.get("chunk_size", 50),
-        _markers,
-        # Speech's port: the report embeds it to reach the helper, but only while Speech is on.
-        _s.get("koe_port") if _s.get("enable_koe", False) else None,
-        # The templates themselves. Without this a template-only change (a new report tab, a CSS
-        # fix) was invisible to both fast paths: they reopened the old HTML until something else
-        # forced a re-render. Hashing makes it a cheap re-render, never a re-analysis.
-        _template_fingerprint(),
-    ]
-    # The journey's stones (static_html_generator._journey_stones): a stone with *Keep studying watched episodes* on,
-    # or a set-aside episode moved between counted ones, changes no run input but the report shows it. A part only
-    # while a stone is on the list, so a library with none keeps the signature it had. Zen (the generator's choice of
-    # template) shows no journey: no part, never read.
-    if args.theme not in ZEN_THEMES:
-        _stones = _stones_fingerprint(_language, marks)
-        if _stones:
-            _parts.append(_stones)
+    # Only what the v3 render reads — ⌕'s switch and category among them (the page's head). Its looks (the theme, the
+    # source's display and J-SET's) are applied in the page and read back through the door, and the old page's options
+    # (words a day, the study order's tab, Speech, the page size, its two switches) are read by no part of it, so a
+    # change of one draws nothing (the Redraw rule). "journey v3" first: no older page's signature ever matches it.
+    from app.services import journey_settings as _journey_settings
+    _parts = ["journey v3", bool(_s.get("line_player", True)), _journey_settings.lookup_values(_s), *_anki, _markers]
+    # The journey's stones (`_stones_fingerprint`): a stone with *Keep studying watched episodes* on, or a set-aside
+    # episode moved between counted ones, changes no run input but the page shows it. A part only while a stone is on
+    # the list, so a library with none keeps the signature it had.
+    _stones = _stones_fingerprint(_language, marks)
+    if _stones:
+        _parts.append(_stones)
+    _parts.append(_journey_fingerprint(_language, _s))
     return json.dumps(_parts)
 
 
@@ -5789,9 +5728,6 @@ def _journey_fingerprint(language, settings):
         return "journey unreadable"
 
 
-ZEN_THEMES = ("Zen Mode", "zen-focus")      # static_html_generator's choice of the Zen template (no journey)
-
-
 def journey_marks(language):
     """The journey's stones, read once from the library store (`library_store.read_watched_marks`): a list, None with
     no store, or `library_store.UNREAD` when it can't be read now (never raises)."""
@@ -5816,8 +5752,8 @@ def signed_render(args, drawn, written, made=_READ_NOW):
 
 def _stones_fingerprint(language, marks=None):
     """Short hash of the analysed tiers' watched items — each one's place in the library's order, path, tier, whether
-    it counts, and its show and typed media (a6: the journey's folds, `static_html_generator._journey_folds`: a part
-    put in another show, or a show typed anew, re-draws them) — `marks` (`journey_marks`'; None: read now, in one
+    it counts, and its show and typed media (the page's shows: a part put in another show, or a show typed anew,
+    re-draws them) — `marks` (`journey_marks`'; None: read now, in one
     read); None with no stone or no store, a part that matches nothing when they can't be read now (never raises)."""
     if marks is None:
         marks = journey_marks(language)
@@ -5851,9 +5787,9 @@ def _made_fingerprint(language):
         return None
 
 
-def _template_fingerprint(names=("web_app.html", "zen_app.html")):
-    """Short hash of the report's templates — both old pages, or `("journey",)`: the v3 page's folder (every file in
-    it, by name, sorted); a constant if they can't be read (never raises)."""
+def _template_fingerprint(names=("journey",)):
+    """Short hash of the journey's templates — `("journey",)`: the v3 page's folder (every file in it, by name,
+    sorted); a constant if they can't be read (never raises)."""
     h = hashlib.sha1()
     try:
         for name in names:
@@ -6413,12 +6349,12 @@ def main():
                 # Presentation fingerprint that decides whether the HTML must be RE-RENDERED (see
                 # compute_render_signature — shared with the dashboard so the two can't drift). The
                 # journey's stones are read once: the check and the re-render use the same marks.
-                _marks = None if args.theme in ZEN_THEMES else journey_marks(language)
+                _marks = journey_marks(language)
                 _made = _made_fingerprint(language)      # F-6: read once, before the report is drawn
                 _render_sig = compute_render_signature(args, marks=_marks, made=_made)
                 # Fast "same setting" path: if the presentation is ALSO unchanged, the existing
                 # report is already correct — just open it (no re-render, and pandas is never
-                # imported). Otherwise re-render with the new theme/Zen (still no re-analysis).
+                # imported). Otherwise re-render (still no re-analysis).
                 if os.path.exists(_html) and _store.get_meta("last_render_sig") == _render_sig:
                     print("Report already up to date - opening it.")
                     if not args.no_open:
@@ -6427,8 +6363,7 @@ def main():
                     print("Re-rendering report from existing results (presentation changed)...")
                     _rendering = time.time()
                     _drawn = static_html_generator.generate_static_html(
-                        theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
-                        open_browser=not args.no_open, language=language, marks=_marks,
+                        app_mode=args.app_mode, open_browser=not args.no_open, language=language, marks=_marks,
                         plan=_journey_plan(args, read_run_stamp(RESULTS_DIR)))     # the plan checked just above
                     _report_failed = not _report_written(_html, _rendering)
                     try:
@@ -8513,8 +8448,7 @@ def main():
             _rendering = time.time()
             _made = _made_fingerprint(language)          # F-6: read before the report is drawn, signed with it
             _drawn = static_html_generator.generate_static_html(
-                theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
-                open_browser=not args.no_open, language=language,
+                app_mode=args.app_mode, open_browser=not args.no_open, language=language,
                 tagger=tokenizer.tagger if language == "ja" else None,     # J-CUT: the journey's pitch, no 2nd tagger
                 plan=_journey_plan(args, _run_sig))      # the plan written just above, if it was
             _report_failed = not _report_written(os.path.join(RESULTS_DIR, "reading_list_static.html"), _rendering)

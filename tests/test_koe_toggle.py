@@ -59,10 +59,10 @@ class TestReportEmbedsNothingWithoutTheModule(unittest.TestCase):
             self.assertEqual(json.dumps(koe_config), "null")
 
     def test_template_treats_a_null_endpoint_as_speech_off(self):
-        """The shipped templates must read `globalKoe = null` as 'no speech', so a report rendered
-        without the module keeps the badge's original copy-path behaviour."""
+        """The YouTube preview's page (web_app.html; Zen's page retired, J-RETIRE) must read `globalKoe = null` as
+        'no speech', so a page rendered without the module keeps the badge's original copy-path behaviour."""
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        for name in ("web_app.html", "zen_app.html"):
+        for name in ("web_app.html",):
             with open(os.path.join(root, "templates", name), "r", encoding="utf-8") as f:
                 markup = f.read()
             self.assertIn("globalKoe", markup, f"{name} must read the injected endpoint")
@@ -74,7 +74,7 @@ class TestReportEmbedsNothingWithoutTheModule(unittest.TestCase):
         """The page talks only to 127.0.0.1. If a report ever called Google directly it would have
         to carry the credential, which is the whole reason the local helper exists."""
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        for name in ("web_app.html", "zen_app.html"):
+        for name in ("web_app.html",):
             with open(os.path.join(root, "templates", name), "r", encoding="utf-8") as f:
                 markup = f.read()
             self.assertNotIn("generativelanguage.googleapis.com", markup)
@@ -82,39 +82,8 @@ class TestReportEmbedsNothingWithoutTheModule(unittest.TestCase):
             self.assertIn("127.0.0.1", markup)
 
 
-# The old page's signature: speaking left the journey with it (D15) — the v3 page has no Speech, so the old renderer's
-# list is what this guards (it still draws the YouTube preview and Zen): pinned before the cut-over (J-CUT)
-@pytest.mark.usefixtures("journey_pre_cut")
-class TestSpeechIsPartOfThePresentationFingerprint(unittest.TestCase):
-    """Speech state is INJECTED into the report, so toggling it has to force a re-render.
-
-    Without this the badge could be left mute: with the source badge already visible, turning
-    speech on changed nothing the render signature looked at, so Generate reused the existing
-    report and its badges carried `globalKoe = null`.
-    """
-
-    def _signature(self, enable_koe):
-        from app import analyzer
-        args = analyzer.parse_analysis_args(["--theme=default"])
-        settings = {"source_display": "icon", "words_per_day": 5,
-                    "show_words_per_day": True, "enable_koe": enable_koe}
-        with patch("app.settings_manager.load_settings", return_value=settings):
-            return analyzer.compute_render_signature(args)
-
-    def test_toggling_speech_changes_the_render_signature(self):
-        self.assertNotEqual(self._signature(True), self._signature(False))
-
-    def test_signature_is_stable_when_speech_state_is_unchanged(self):
-        """It must only force a re-render on a real change — this runs on every Generate."""
-        self.assertEqual(self._signature(True), self._signature(True))
-
-    def test_absent_module_reads_as_speech_off(self):
-        """Without the module the key simply isn't in settings; that must not raise or churn."""
-        from app import analyzer
-        args = analyzer.parse_analysis_args(["--theme=default"])
-        with patch("app.settings_manager.load_settings", return_value={"source_display": "icon"}):
-            without_key = analyzer.compute_render_signature(args)
-        self.assertEqual(without_key, self._signature(False))
+# The old page's signature part for Speech retired with the old journey page (J-RETIRE): the journey page has no
+# Speech, so toggling it moves no signature (tests/test_settings_signatures.py holds that).
 
 
 class TestAnAbsentKoeIsANoOp(unittest.TestCase):

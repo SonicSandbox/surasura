@@ -1067,7 +1067,7 @@ def _write_journey(language, app_mode=False, open_browser=True, tagger=None, pla
     Returns the watched marks it was drawn with — the very read of the store the page draws from
     (`journey_render.store_facts`' `marks`: J-FIX 3, a mark between two reads was drawn but not signed) — for the run's
     render signature: None with no library store, `library_store.UNREAD` when a store is there and its read failed."""
-    from app import analyzer, journey_render
+    from app import journey_render
     if language is None:
         try:
             language = settings_manager.load_settings().get("target_language", "ja")
@@ -1077,7 +1077,7 @@ def _write_journey(language, app_mode=False, open_browser=True, tagger=None, pla
     if facts is not None:
         marks = facts.marks
     else:                                       # no store, or one that couldn't be read: never signed with stones
-        from app import library_store
+        from app import analyzer, library_store   # (here only: a run's analyzer is __main__, not loaded twice)
         marks = None if analyzer.journey_marks(language) is None else library_store.UNREAD
     out = journey_render.render(language, facts=facts, tagger=tagger if language == "ja" else None, plan=plan)
     path = OUTPUT_FILE                          # the old page's file and name (as `open_report` and the window find it)

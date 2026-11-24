@@ -19,6 +19,7 @@ import csv
 import gzip
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -580,3 +581,76 @@ def test_a_marker_of_another_day_is_not_current_only_at_release_2(tmp_path, monk
     monkeypatch.setattr(analyzer, "redrawn_for", lambda results: {"plan": "stamp", "run": "order",
                                                                   "day": analyzer.drawn_day()})
     assert analyzer.drawn_for(str(tmp_path)) == "order"
+
+
+@pytest.mark.parametrize("marker", ["yesterday", "none"])
+def test_generate_force_on_a_new_day_runs_whole_never_the_plans_redraw(run, marker):
+    # why: the lead's ruling 3 — `generate --force` stays whole. The new day's press (above) redraws from the plan;
+    # a forced Generate on that same new day, nothing changed, reads every file again as ever (the lens pass found
+    # the press's redraw taken ahead of the force)
+    root = _generated(run.language, run.tmp.mktemp(f"force-{marker}-{run.language}"))
+    results = os.path.join(root, "results")
+    if marker == "yesterday":
+        _mark_day(results, "2000-01-01")
+    else:
+        os.remove(os.path.join(results, analyzer.REDRAW_FILE))
+    out = cases.generate(root, run.case, extra_env=dict(LEVEL_2, SURASURA_FORCE_RUN="1"))
+    assert "Saved the sentence table" in out and "Redrew the journey" not in out, out[-1500:]
+    assert analyzer.redrawn_for(results)["day"] == analyzer.drawn_day(), "a Generate's own marker: today's"
+
+
+_STAMP = re.compile(rb'"stamp":"\d+"')
+_WRITTEN = ("priority_learning_list.csv", "progressive_learning_list.csv", "reading_list_static.html")
+
+
+def _written(results):
+    """The two lists' bytes and the journey page's (its render stamp blanked: two renders of one page differ there
+    alone)."""
+    out = {}
+    for name in _WRITTEN:
+        with open(os.path.join(results, name), "rb") as f:
+            out[name] = _STAMP.sub(b'"stamp":""', f.read(), count=1)
+    return out
+
+
+def test_a_new_days_press_writes_what_a_whole_generate_writes_that_day(run):
+    # why: the lead's ruling 3 — a Generate pressed on a new day with nothing changed may redraw from the plan only
+    # if the redraw writes the same journey sentences and list bytes as a whole Generate on that same day (same
+    # library, same clock: RP-2's libraries hold no watched date, so the score's moment reads no time)
+    root = _generated(run.language, run.tmp.mktemp(f"newday-{run.language}"))
+    results = os.path.join(root, "results")
+    _mark_day(results, "2000-01-01")
+    out = cases.generate(root, run.case, extra_env=LEVEL_2)
+    assert "Redrew the journey" in out, out[-1500:]
+    pressed = _written(results)
+    out = cases.generate(root, run.case, extra_env=dict(LEVEL_2, SURASURA_FORCE_RUN="1"))
+    assert "Saved the sentence table" in out, out[-1500:]
+    whole = _written(results)
+    assert [name for name in _WRITTEN if pressed[name] != whole[name]] == []
+
+
+_NO_ANSWER = {
+    "none": "from app import sentence_score\nsentence_score.choose = lambda *a, **k: None\n",
+    "raises": ("from app import sentence_score\n\n\ndef _boom(*a, **k):\n"
+               "    raise RuntimeError('a moment it cannot read')\n\n\nsentence_score.choose = _boom\n"),
+}
+
+
+@pytest.mark.parametrize("how", ["none", "raises"])
+def test_a_reader_with_no_answer_shows_no_sentences_and_leaves_no_word_off_with_only_i_plus_one(run, tmp_path, how):
+    # why: the lens pass (failures) — the score answers None when it can't read (a table damaged inside its blocks, a
+    # moment it can't read), and *Only i+1* took that for "no clean line" for every word: an empty list. A reader that
+    # raised stopped the Generate. Now the list keeps every word, with no sentences this time, and says so
+    spy = tmp_path / "no-answer"
+    spy.mkdir()
+    (spy / "sitecustomize.py").write_text(_NO_ANSWER[how], encoding="utf-8")
+    root = str(tmp_path / "root")
+    cases.build(root, run.case)
+    out = cases.generate(root, run.case, extra_args=["--only-i-plus-one"],
+                         extra_env=dict(LEVEL_2, PYTHONPATH=str(spy) + os.pathsep + cases.REPO))
+    assert "the list shows no sentences this time" in out, out[-1500:]
+    results = os.path.join(root, "results")
+    listed = _columns(results)
+    assert list(listed) == list(_columns(run.results)), "every word, as with Only i+1 off"
+    assert not any(listed.values()), "no sentences this time"
+    assert _skipped(results) == 0

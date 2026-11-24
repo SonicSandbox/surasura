@@ -5902,8 +5902,10 @@ def drawn_for(results_dir):
 def _drawn_another_day(results_dir, run_signature):
     """Release 2: the outputs are this very run's (the stamp's, nothing moved) but drawn on an earlier day, or with no
     marker (ruling 4) — so a Generate with nothing changed redraws the journey from the plan (seconds) rather than
-    reuse it as it was (SPEC § 7 rows 14, 36; decision 6). Never raises."""
-    if plan_rules.SENTENCE_TABLE < 2 or not run_signature or read_run_stamp(results_dir) != run_signature:
+    reuse it as it was (SPEC § 7 rows 14, 36; decision 6); `generate --force` (SURASURA_FORCE_RUN) runs whole, as
+    ever. Never raises."""
+    if (plan_rules.SENTENCE_TABLE < 2 or not run_signature or os.environ.get("SURASURA_FORCE_RUN")
+            or read_run_stamp(results_dir) != run_signature):
         return False
     marker = redrawn_for(results_dir)
     return marker is None or (marker.get("plan") == run_signature and marker.get("run") == run_signature
@@ -8040,7 +8042,20 @@ def main():
             _asked = [(r["Word"], r["Reading"]) for r in _rows]
             if valid_lrs is not None:
                 _asked = [key for key in _asked if key in valid_lrs]
-            _got = _chooser(_asked, _order) or {}
+            try:
+                _got = _chooser(_asked, _order)
+            except Exception as e:
+                print(f"Warning: could not read the sentence table ({e}).")
+                _got = None
+            if _got is None:
+                # The reader could not answer (a table damaged inside, a moment it can't read): the list shows no
+                # sentences this time, and no word is left off for want of one — the list again with every word.
+                print("Warning: the list shows no sentences this time.")
+                _chooser, _got = None, {}
+                if _left_off:
+                    _left_off = set()
+                    continue
+                break
             _empty = {key for key in _asked if not _got.get(key)} if ONLY_I_PLUS_ONE else None
             if not _empty:
                 break

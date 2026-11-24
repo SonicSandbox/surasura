@@ -2,7 +2,14 @@
 the full Swap, 3.1 #385, rewrites the old card in place from the same record). The review loop's ⇄ (Suspend + Green
 flag, WL-46b) queues the word (Kyou-LR's `swap_queue`); Swap makes it a NEW card from another line, through Connect's
 own maker — a job of kind `swap` (`ledger.SWAP`) that picks, cuts, fills and orders as every Connect card does, and so
-waits as every one does (never while you review, the cap, Anki closed): there is no second path into Anki.
+waits as every one does (never while you review, the cap, Anki closed): there is no second path into Anki — **but
+one, named** (AM-FIX, the lead's ruling 1, 2026-11-23): when the old card is of the note type Connect's cards are
+made in, Anki Miner's `mine` refuses the new card as the old card's duplicate (its check before adding: 3.13 and 3.5.0
+alike), so that card is added here, beside the old one (`add_new_card`: the old card's word side, `render`'s sentence side for the
+new line, AnkiConnect `addNote` with the duplicate allowed) — through Connect's own AnkiConnect writer
+(`app/anki_connect.py`, the field writer's lock), never a transport of its own, and in the same job, so it waits as
+any card does. An Anki Miner without `render` (older than 3.11) can't make that card: the swap waits on *Needs you*'s
+*Update Anki Miner to swap this card's sentence* (`UPDATE_TO_SWAP`), which leads to Connect's update offer.
 
 - **The one maker** (`make_card`): "a new card for this word from another line" — the swap queue's entries and Kyou-DW's
   *Bad card* both call it. It records the ask (Connect's ledger, table `swaps`) and wakes Connect; Connect's next look
@@ -12,7 +19,8 @@ waits as every one does (never while you review, the cap, Anki closed): there is
   **never a line the old card holds** (the picker's `sentences.same_line`, by its text: the old card's sentence from Connect's record, else
   from Anki). No picker yet, or no other line: the ask waits, said once on *Needs you* (`WAITS`), and is looked at
   again when the library has changed (`RETRY_S`).
-- **Made:** the swap queue's entry marked made with the new note (`swap_queue.made`: the pair old note → new note, the
+- **Made** (by the job's `mine`, or beside the old card — `add_new_card`, above): the swap queue's entry marked made
+  with the new note (`swap_queue.made`: the pair old note → new note, the
   record the full Swap reads); the old card stays as the learner left it (suspended, green) and gains the tag
   `surasura::swapped` (`SWAP_TAG`) — Swap's only write to it. Said on *Needs you*: *A new card for 「…」 · Undo · OK*.
   **The journey's ⇄** (`BY_JOURNEY`) is the same ask from the page, so it is one out, one in too: once its new card is
@@ -35,8 +43,8 @@ written with the queue's in one step (Undo: the queue's write inside the ledger'
 queue at every look (`_follow`: an entry the reader dropped — taken back, its sync undone — or a write that failed
 half-way). An ask with no queue entry (`ref` None) has the ledger's record only.
 Qt-free; Anki only through the adapter handed in (tests hand a fake).
-Qt-free; Anki only through the adapter handed in (tests hand a fake).
 """
+import base64
 import datetime
 import json
 import logging
@@ -73,6 +81,9 @@ CHANGED = "This card changed since the swap: nothing was undone."
 HAND_EDITED = "its sentence was changed by hand: a new card instead"     # decision 5 (the row's why, said once)
 NOT_CONNECTS = "Surasura didn't make that card: a new card instead"     # decision 6
 NO_RENDER = "Update Anki Miner to keep the same card: a new card instead"      # decision 12
+# AM-FIX 2 (the lead's ruling 2, 2026-11-23): an old card of Connect's note type with an Anki Miner without `render`
+# (3.5-3.10): its `mine` refuses the card as the old card's duplicate, so the swap waits on this, said once (`runner`)
+UPDATE_TO_SWAP = "Update Anki Miner to swap this card's sentence"
 NOT_APPLIED = "Close the card in Anki's editor: Surasura rewrites it after."
 TOO_OLD = "That swap is too old to undo: its old clip and picture were kept 30 days."     # decision 7
 KEPT_DIR = "swap-kept"          # in Connect's folder: an in-place swap's old media, one folder a write (decision 7)
@@ -658,6 +669,96 @@ def in_place_row(ledger, job_id):
     return rows[-1] if rows else None
 
 
+def new_card_row(ledger, job_id):
+    """AM-FIX: the simple swap a job of kind `swap` is for when it has an old card on record (its `swaps` row, the job's
+    own, not in place), or None — the runner's batch makes its card beside the old one (`add_new_card`) when that card
+    is of the note type Connect's cards are made in (`runner.Steps.swap_new_card`)."""
+    if not ledger.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'swaps'").fetchone():
+        return None
+    ensure(ledger)
+    rows = [r for r in _rows(ledger, "job_id = ? AND state = ?", (int(job_id), QUEUED))
+            if r.get("kind") != IN_PLACE and r.get("old_note")]
+    return rows[-1] if rows else None
+
+
+def twin_fields(info, rendered, mapping):
+    """AM-FIX: the simple swap's new card, made beside its old card of the same note type (`add_new_card`) -> {field:
+    value}: the old card's own fields — its word side (the word, its reading, definitions, word audio, pitch, with
+    their media already in Anki) — with the sentence side `render` gave for the new line (`new_fields`, the full Swap's
+    allow-list), the translation render's or none (never the old line's behind `MARK`), and the source render's (the
+    new line's episode)."""
+    out = _values(info)
+    out.update(new_fields(info, rendered, mapping))
+    for name in {mapping.fields.get(r) for r in TRANSLATIONS} | {HINT}:
+        if name and name in out and out[name].startswith(MARK):
+            out[name] = ""
+    source = mapping.source
+    if source and source in out and str(rendered.get(source) or "").strip():
+        out[source] = str(rendered[source])
+    return out
+
+
+def add_new_card(anki, info, rendered, mapping, tags):
+    """AM-FIX: the simple swap's new card beside its old card (`twin_fields`), in Connect's deck (`mapping.deck`) with
+    `tags` (the job's, as a mined card's) -> its note id. Anki Miner's `mine` can't make this one: its check before
+    adding refuses a note whose first field another note of its note type holds — the old card — and its
+    `allow_duplicate_cards` only narrows that to the deck (3.13 `services/anki_service.py` `_probe_duplicates`,
+    `services/anki_note_builder.py` `build_note`; 3.5.0 the same, drilled). So the note is added here, holding the
+    writer, never while you review, with the duplicate allowed (AnkiConnect `addNote`, `allowDuplicate`): the line's
+    clip and picture stored first under their names (`rendered["named"]` / `files`), and taken back out when Anki
+    refuses the note. A note of this job's already there (`tags[0]`, the job's own tag: an earlier try's `addNote` that
+    went through, its answer lost) is the answer: never a second card. Raises sentence_audio.Reviewing, the writer's
+    Busy, AnkiConnect's errors, ValueError (render gave no sentence, or a file its fields name can't be read: nothing
+    written)."""
+    from app.connect import sentence_audio
+    fields = rendered.get("fields") or {}
+    side = new_fields(info, fields, mapping)
+    files = {os.path.basename(p): p for p in rendered.get("files") or ()}
+    files.update(rendered.get("named") or {})
+    named = sorted({m for v in side.values() for m in sentence_audio.media_in(v)})
+    if not str(side.get(mapping.fields.get("sentence")) or "").strip() or \
+            any(m not in files or not os.path.isfile(files[m]) for m in named):
+        raise ValueError("render gave no sentence, or not the files it names")
+    try:
+        data = {}
+        for name in named:
+            with open(files[name], "rb") as f:
+                data[name] = base64.b64encode(f.read()).decode("ascii")
+    except OSError as e:
+        raise ValueError(f"a file render named can't be read: {e}") from None
+    values = twin_fields(info, fields, mapping)
+    writer = anki.field_writer()
+    if writer.reviewing():
+        raise sentence_audio.Reviewing()
+    with writer.writer(VERB):
+        if writer.reviewing():
+            raise sentence_audio.Reviewing()
+        mine = tags[0] if tags else ""
+        before = [int(n) for n in (anki.find_notes(f'"tag:{mine}"') if mine else ()) or ()
+                  if int(n) != int(info.get("noteId") or 0)]
+        if before:
+            return before[0]                        # an earlier try's note: its answer was lost, never a second card
+        stored = []
+        try:
+            for name in named:
+                got = writer.store(name, data[name])
+                got = got if isinstance(got, str) and got else name
+                stored.append(got)
+                if got != name:                     # Anki's name for it is the one written
+                    values = {k: v.replace(name, got) for k, v in values.items()}
+            note = {"deckName": mapping.deck, "modelName": info.get("modelName") or mapping.note_type,
+                    "fields": values, "tags": [t for t in tags if t], "options": {"allowDuplicate": True}}
+            return int(anki.add_note(note))
+        except BaseException:
+            for name in stored:                     # stored for a note Anki didn't take: none left behind
+                try:
+                    if not writer.users(name):
+                        writer.delete_media(name)
+                except Exception:
+                    log.info("Swap: a clip stored for a refused new card couldn't be taken out", exc_info=True)
+            raise
+
+
 def fall_back(ledger, row, why):
     """An in-place swap that can't rewrite its card makes a new card instead, said once (`why`: decisions 5, 6, 12)."""
     _set(ledger, row["id"], kind=NEW_CARD, kind_why=why)
@@ -897,6 +998,11 @@ class AnkiSwap(tidy.AnkiConnectTidy):
         """The one field writer's Anki (`sentence_audio.AnkiConnectNotes`): an in-place swap's write and its Undo."""
         from app.connect import sentence_audio
         return sentence_audio.AnkiConnectNotes(self.url)
+
+    def add_note(self, note):
+        """AM-FIX: a simple swap's new card added beside its old card (`add_new_card`) -> its note id."""
+        from app import anki_connect
+        return anki_connect.invoke("addNote", self.url, note=note)
 
     def add_tags(self, note_ids, tag):
         from app import anki_connect

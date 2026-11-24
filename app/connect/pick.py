@@ -682,7 +682,8 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
 
     `ranked` (the sentence choice at `plan_rules.SENTENCE_TABLE` >= 1: `sentences.lines_in` for this file): called once
     with the words it may send -> {key: [line text, …]} the score's lines of each inside this file, best first, or
-    None. The score chooses the line and the cut refuses what it can't make (SPEC § 11, overlap 78): of the lines its
+    None; never for a Swap with its `line` (chosen already). The score weighs the Length and the cap itself, so its
+    order goes before `length` and `fits` here. The score chooses the line and the cut refuses what it can't make (SPEC § 11, overlap 78): of the lines its
     refusals leave (sung, inside tsubasa's undetermined spans, Swap's old card's), the score's first it holds — its
     line, or one inside the other (Swap's `same_line`), the same line first — after "a line no other word took" only
     (no two cards share a sentence: PROVISIONAL); none of them there, or a word the score holds no line of, and its
@@ -820,24 +821,38 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
         except Exception:                   # never the cut's fault: its own rule
             order = None
     order = order or {}
-    normed = {}
+    normed, said = {}, {}       # a cue's line, a score's text: each normalised once a pick
 
     def norm(at):
         if at not in normed:
             normed[at] = sentences.norm_line(line_of(at))
         return normed[at]
 
-    def placed(o, texts):
-        """Where the cue of `o` stands among the score's lines `texts` (best first, `norm_line`'s): (n, 0) the nth is
-        its line, (n, 1) one is inside the other (the token store may keep a cue as two sentences); (len, 0) none of
-        them — for every use alike without `texts` (the cut's own rule)."""
-        line = norm(o.cue)
+    def scored(key):
+        """The score's lines of `key` (`norm_line`'s, best first) and {line: its first place}."""
+        texts = []
+        for t in order.get(key) or ():
+            if t not in said:
+                said[t] = sentences.norm_line(t)
+            texts.append(said[t])
+        at = {}
         for n, text in enumerate(texts):
-            if line and text == line:
-                return (n, 0)
+            at.setdefault(text, n)
+        return texts, at
+
+    def placed(o, texts, at):
+        """Where the cue of `o` stands among the score's lines `texts` (best first): (n, 0) the nth is its line, (n, 1)
+        one is inside the other (the token store may keep a cue as two sentences), the earlier place first; (len, 0)
+        none of them — for every use alike without `texts` (the cut's own rule)."""
+        if not texts:
+            return (0, 0)
+        line = norm(o.cue)
+        exact = at.get(line) if line else None
+        for n in range(len(texts) if exact is None else exact):
+            text = texts[n]
             if min(len(text), len(line)) >= 2 and (text in line or line in text):    # (`same_line`'s two at least)
                 return (n, 1)
-        return (len(texts), 0)
+        return (len(texts), 0) if exact is None else (exact, 0)
 
     words, not_offered, taken = [], [], set()
     from app import anki_match
@@ -874,8 +889,8 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
         # a line no other word took; the score's line (`ranked`); the word on its own (not inside a rare compound,
         # Kantan-MA); no other new word; audio the subtitle gives no reason to doubt; a card that fits the cap uncut
         # (else the shortest); written out
-        texts = [sentences.norm_line(t) for t in order.get(key) or ()]
-        best = min(usable, key=lambda o: (not taken.isdisjoint(span(o.cue)), placed(o, texts), o.inside,
+        texts, at = scored(key)
+        best = min(usable, key=lambda o: (not taken.isdisjoint(span(o.cue)), placed(o, texts, at), o.inside,
                                           others(o) > 0, doubts(o.cue),
                                           not fits(o.cue),
                                           length(o.cue), 0 if fits(o.cue) else card(o.cue)[3],

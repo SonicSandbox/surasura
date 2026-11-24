@@ -470,6 +470,96 @@ def test_a_new_arrivals_episode_still_gives_cards_before_the_next_generate(monke
     assert got[FEST] == [], "a row of the table: the score's answer (its one file is outside `files`)"
 
 
+def test_nearest_in_an_episode_the_table_holds_no_line_of_the_word_reads_it_as_today(monkeypatch):
+    # why: the table is the last Generate's; an episode it holds no line of the word in (a new arrival's, a file read
+    # again since) is read as today — the episode's own lines from the token store — never left with no sentence
+    from tests.connect.test_kantan_sd_dial import EASY, HARD, _key, _lemmas
+    from tests.connect.test_kantan_sd_dial import _library as indexed
+    (new,) = indexed("ja", {"新着第01話.txt": [EASY]}, known=_lemmas(EASY) - {"冒険"})
+    w = World(monkeypatch)
+    monkeypatch.setattr(sentences, "_library", lambda language, store=None, ai=False, only=None, scored=False: {})
+    key = _key(EASY, "冒険")
+    w.table(key, [("ep01", [HARD])], "冒険")          # a row of the table, its one line elsewhere
+    got = sentences.choose("ja", [key], here=new, dial=sentences.NEAREST, young={})[key]
+    assert _texts(got) == [EASY] and got[0].here and got[0].cost is None
+
+
+def test_the_mined_episodes_own_line_comes_back_beside_the_best_eight_when_it_is_not_among_them(monkeypatch):
+    # why: Best moves a word only for a strictly better sentence (`runner._best` compares the two by cost) — so the
+    # episode's own line is asked apart when the eight best are all elsewhere, and handed back with its own cost
+    w = World(monkeypatch)
+    episodes = [(f"ep{n:02d}", [FESTIVAL]) for n in range(2, 11)] + [("ep01", [LONG_JA])]
+    w.table(FEST, episodes, "文化祭")
+    for n in range(1, 11):
+        w.place(f"ep{n:02d}", n)
+    got = sentences.choose("ja", [FEST], here=w.path("ep01"), dial=sentences.BEST, young={})[FEST]
+    assert len(got) == sentences.TOP + 1 and [c.here for c in got] == [False] * sentences.TOP + [True]
+    assert got[-1].text == LONG_JA and got[-1].cost > got[0].cost and sentences.better(got[0], got[-1])
+
+
+def test_a_book_outside_the_store_is_weighed_as_a_book_with_no_audiobook(monkeypatch):
+    # why: the score hears a file it has no word of by its own clip; Connect knows a book or a text by its extension
+    # (`library.text_only`) — with no store (or a file it doesn't hold) a book's line is weighed silent, as today
+    from app.connect import library
+    w = World(monkeypatch)
+    w.table(FEST, [("book01", [FESTIVAL]), ("ep02", [FESTIVAL])], "文化祭")
+    real = library.text_only
+    monkeypatch.setattr(library, "text_only", lambda item: "book01" in str(item.get("rel_path")) or real(item))
+    got = sentences.choose("ja", [FEST], dial=sentences.BEST, young={})[FEST]
+    assert [(os.path.basename(c.file), c.audio) for c in got] == [("ep02.srt", True), ("book01.srt", False)]
+    assert got[1].cost - got[0].cost == pytest.approx(SS.HEARD_SILENT)
+
+
+def test_a_line_up_that_changes_between_picks_is_heard_as_it_is_now_while_the_dates_are_kept(monkeypatch):
+    # why: a line-up that finishes, is done again or loses its audio writes nothing to the library store, so the kept
+    # dates can't tell — each paired book's hearing is asked again at every pick (`lineup.reach`, its own cache)
+    from app.connect import lineup
+    w = World(monkeypatch)
+    monkeypatch.setattr(sentences, "_store_stamp", lambda language: ("store", (1, 1), None), raising=False)
+    w.table(FEST, [("book01", [FESTIVAL]), ("ep02", [FESTIVAL])], "文化祭")
+    w.place("ep02", 2)
+    record = {"book": {"key": "bk"}}
+    at = os.path.normcase(os.path.abspath(w.path("book01")))
+    w.info[at] = (1, 0.0, _said(FESTIVAL), True, False, ("book01", record))
+    now = {"reach": _said(FESTIVAL)}
+    monkeypatch.setattr(lineup, "reach", lambda audiobook: now["reach"] if audiobook is record else None)
+
+    def heard_book():
+        got = sentences.choose("ja", [FEST], dial=sentences.BEST, young={}, reach=lambda item: True)[FEST]
+        return {c.item_id: c.audio for c in got}[1]
+    assert heard_book() is True
+    now["reach"] = None                             # its audiobook moved away: no clip any more
+    assert heard_book() is False and w.reads == [True], "the dates kept (one read), the hearing asked again"
+    now["reach"] = _said(PREPARE)                   # lined up again: it says another line, not this one
+    assert heard_book() is False
+    now["reach"] = True                             # not lined up yet: its part's job lines it up first
+    assert heard_book() is True
+
+
+def test_an_empty_answer_from_the_store_is_never_kept(monkeypatch):
+    # why: a store busy at its open answers {} — kept, every pick of the next hour would weigh no dates at all
+    w = World(monkeypatch)
+    monkeypatch.setattr(sentences, "_store_stamp", lambda language: ("store", (1, 1), None), raising=False)
+    sentences._dates("ja", False)
+    w.place("ep01", 1, ctx=0.5)
+    info, _seen = sentences._dates("ja", False)
+    assert w.reads == [True, True] and info, "read again: the first answer was empty"
+
+
+def test_a_failure_on_the_scores_path_takes_todays_path(monkeypatch):
+    # why: the score's path never makes a pick worse than today's
+    w = World(monkeypatch)
+    w.table(FEST, [("ep01", [FESTIVAL])], "文化祭")
+
+    def broken(language, ai):
+        raise OSError("the store's disk went away")
+    monkeypatch.setattr(sentences, "_dates", broken)
+    today = []
+    monkeypatch.setattr(sentences, "_listed", lambda language: today.append(language) or (None, {}))
+    assert sentences.choose("ja", [FEST], dial=sentences.BEST, young={}, files=[]) == {FEST: []}
+    assert today == ["ja"]
+
+
 def test_what_the_moment_hands_the_score_is_connects_own(monkeypatch):
     # the score never reads the store, Anki or settings itself: the young words, the marks since and Length come in
     w = World(monkeypatch, settings={"logic": {"context": {"min_chars": 12, "preferred_max_chars": 40,

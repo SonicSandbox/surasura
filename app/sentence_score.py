@@ -495,7 +495,7 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
         from app.connect.sentences import same_line
     try:
         line_code = arrays["hear"].astype(np.int64)[src_a]
-        said = [s for s in srcs if files[s][5].said is not None]
+        said = [s for s in srcs if files[s][5].said is not None and (inside is None or files[s][1] in inside)]
         if said:
             # Kyou-PB: a lined-up book is heard line by line — its line-up's answer for each of its lines (the text
             # read as for a line returned), handed to the cost as one more array (the lead's ruling, 2026-11-23)

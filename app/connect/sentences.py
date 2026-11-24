@@ -190,7 +190,8 @@ def _library(language, store=None, ai=False, only=None, scored=False):
     {} with no store. `only`: the items of these paths alone ([rel_path], the data folder's, with either slash) — what a reader
     of a few candidates asks, so its read follows them, not the library. `scored` (the score's moment, `_moment`): each
     value also says whether its date is only its show's — an unwatched episode of a started show, not Finished (the
-    score's UNWATCHED) — and an unread chapter of a started book takes no show date: its place alone (the lead's
+    score's UNWATCHED) and, a paired book's, (its book's key, its audiobook's record: what `_heard_now` asks
+    `lineup.reach` again) — and an unread chapter of a started book takes no show date: its place alone (the lead's
     ruling on OPEN 78 a, 2026-11-23)."""
     from app.connect import library, lineup
     from app.path_utils import get_data_path
@@ -248,7 +249,7 @@ def _library(language, store=None, ai=False, only=None, scored=False):
                     reach[book[0]] = None
             got = reach.get(book[0]) if book is not None else None
             hear = got if isinstance(got, lineup.Reach) else heard(text, got is not None, ai)
-            out[key] = (item_id, context(seen, place.get(item_id), tier, now), hear, text) +                 ((show_only,) if scored else ())
+            out[key] = (item_id, context(seen, place.get(item_id), tier, now), hear, text) +                 ((show_only, book[:3:2] if book is not None else None) if scored else ())
         return out
     finally:
         if own:
@@ -517,26 +518,50 @@ def _store_stamp(language):
 def _dates(language, ai):
     """(`_library`'s answer with the show-only mark, the score's {path: Seen}) for the whole library, read once and
     kept between picks while the store's file is unchanged, an hour at most (days pass) — one read of the store was
-    nearly all of a pick's time (SPEC § 5.3)."""
-    from app import sentence_score
-    from app.connect import lineup
+    nearly all of a pick's time (SPEC § 5.3); a paired book's hearing asked again at every pick (`_heard_now`)."""
     stamp = _store_stamp(language)          # (before the read: a commit during it is read again next time)
     now = time.monotonic()
     hit = _DATES.get((language, ai))
     if hit is not None and stamp is not None and hit[0] == stamp and now - hit[1] < DATES_KEPT_S:
-        return hit[2], hit[3]
+        return _heard_now(hit[2], hit[3], ai)
     info = _library(language, None, ai, scored=True)
-    seen = {}
-    for at, v in info.items():
-        if isinstance(v[2], lineup.Reach):  # a lined-up book: heard line by line, its line-up's answer (Kyou-PB)
-            seen[at] = sentence_score.Seen(v[0], v[1], REAL, v[4], functools.partial(lineup.said, v[2]),
-                                           heard(True, False, ai))
-        else:
-            seen[at] = sentence_score.Seen(v[0], v[1], v[2], v[4])
-    if stamp is None:
+    seen = {at: _seen_of(v, ai) for at, v in info.items()}
+    if stamp is None or not info:           # (an empty answer — no store, or one busy at its open — is never kept)
         _DATES.pop((language, ai), None)
     else:
         _DATES[(language, ai)] = (stamp, now, info, seen)
+    return info, seen
+
+
+def _seen_of(v, ai):
+    """`_library`'s value -> the score's `Seen`: a lined-up book heard line by line, its line-up's answer (Kyou-PB)."""
+    from app import sentence_score
+    from app.connect import lineup
+    if isinstance(v[2], lineup.Reach):
+        return sentence_score.Seen(v[0], v[1], REAL, v[4], functools.partial(lineup.said, v[2]), heard(True, False, ai))
+    return sentence_score.Seen(v[0], v[1], v[2], v[4])
+
+
+def _heard_now(info, seen, ai):
+    """The kept dates with each paired book's hearing asked again (`lineup.reach`, once a book): a line-up that
+    finished, was done again or lost its audio since writes nothing to the store, so the stamp can't tell -> fresh
+    (info, seen) for those files, the kept ones as they are."""
+    from app.connect import lineup
+    paired = [at for at, v in info.items() if len(v) > 5 and v[5] is not None]
+    if not paired:
+        return info, seen
+    info, seen, reach = dict(info), dict(seen), {}
+    for at in paired:
+        v = info[at]
+        key, record = v[5]
+        if key not in reach:
+            try:
+                reach[key] = lineup.reach(record)
+            except Exception:       # a line-up's state not as written: no clip promised (`_library`'s rule)
+                reach[key] = None
+        got = reach[key]
+        info[at] = v[:2] + (got if isinstance(got, lineup.Reach) else heard(v[3], got is not None, ai),) + v[3:]
+        seen[at] = _seen_of(info[at], ai)
     return info, seen
 
 
@@ -696,8 +721,12 @@ def choose(language, keys, *, here=None, dial=None, never=None, young=None, file
     ai = ai_voice(settings, language)
     out = {key: [] for key in keys}
     nearest = dial == NEAREST and here_key
-    scored = _scored(language, keys, here_key, never, young, files, reach, books, ai, settings,
-                     only=[here_key] if nearest else None)
+    try:
+        scored = _scored(language, keys, here_key, never, young, files, reach, books, ai, settings,
+                         only=[here_key] if nearest else None)
+    except Exception:                       # the score's path never makes a pick worse than today's: today's
+        log.info("Connect: the sentence score wasn't asked (%s)", language, exc_info=True)
+        scored = None
     if scored:                              # (at level 0 None: nothing here runs)
         got = {key: c for key, c in scored.items() if c or not nearest}  # Nearest: an episode it holds no line of
         out.update(got)                                                   # is read as today

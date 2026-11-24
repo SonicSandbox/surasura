@@ -544,6 +544,11 @@ def test_a_lined_up_books_line_is_weighed_by_how_that_line_is_heard_not_its_file
     lines = SS.choose("ja", FEST, n=2, moment=lib.moment({"show/ch01.srt": SS.Seen(1, 0.0, SS.SILENT)}),
                       length=LENGTH, table=tab, shown=tab.shown())[FEST[0]]
     assert [(l.text, l.heard) for l in lines] == [(FESTIVAL, SS.SILENT), (SIGN, SS.SILENT)] and handed == [None]
+    # asked inside another file only (`only`: Nearest, the mined episode's own ask): its lines are never read for it
+    asked = []
+    moment = lib.moment({"show/ch01.srt": SS.Seen(1, 0.0, SS.REAL, False, lambda text: asked.append(text), unsaid)})
+    assert SS.choose("ja", FEST, n=2, moment=moment, length=LENGTH, table=tab, shown=tab.shown(),
+                     only=[lib.path("show/ep09.srt")]) == {FEST[0]: []} and asked == []
 
 
 def test_the_same_sentence_twice_is_shown_once(tmp_path):

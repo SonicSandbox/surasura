@@ -3,8 +3,8 @@ row: "a word's block, the lines of one file, the lowest place: a read of the tab
 
 On RP-2's real Japanese and Chinese libraries (tests/plan_file_cases.py), each through one full Generate at level 2
 with *Never longer than* at 30 characters, so that many a word's first sentence in a file is over it. What these prove:
-  - at level 2 `plan_engine.first_sentences` answers from the table beside the plan: the same sentence, for every word
-    and file, as the plan's own per-file first sentences — with those cut from the plan, so only the table can answer;
+  - at level 2 the word card's reader (`title_words.first_sentences` → `sentence_table.TableFirsts`) answers from
+    the table beside the plan: the same sentence, for every word and file, as the plan's own per-file first sentences — with those cut from the plan, so only the table can answer;
     the kept-open card shows the same words' sentences as before;
   - a first sentence over *Never longer than* is still the card's (the walk keeps it in the table, marked OVER);
   - a title with no table (none written, another run's, a damaged one) reads the plan as today; neither: nothing shown;
@@ -91,7 +91,7 @@ def test_the_word_cards_first_sentence_comes_from_the_table(run, tmp_path, monke
     cut = _plan_copy(run, str(tmp_path / "results"))
     assert plan_engine.first_sentences(cut) is None              # the cut plan alone has none
     _level(monkeypatch, 2)
-    firsts = plan_engine.first_sentences(cut, run.data_dir)
+    firsts = TW.first_sentences(cut, run.data_dir)
     assert firsts is not None and firsts.files[:n_files] == [entry[0] for entry in plan.files]
     st = os.stat(cut)
     assert firsts.key == (st.st_mtime_ns, st.st_size)            # the plan's stamp: the service's "same plan" check
@@ -141,7 +141,7 @@ def test_a_first_sentence_over_never_longer_than_is_still_the_cards(run, tmp_pat
         over += bool(cols["marks"][at[0]] & sentence_table.OVER)
     assert over >= 5, "the run's cap leaves some first sentences over it"
     _level(monkeypatch, 2)
-    firsts = plan_engine.first_sentences(_plan_copy(run, str(tmp_path / "results")), run.data_dir)
+    firsts = TW.first_sentences(_plan_copy(run, str(tmp_path / "results")), run.data_dir)
     assert _answers(firsts, n_files, n_rows) == today
 
 
@@ -152,22 +152,22 @@ def test_a_title_with_no_table_reads_the_plan_as_today_and_without_either_shows_
     n_files, n_rows = len(plan.files), len(plan.keys)
     today = _today(run, monkeypatch)
     _level(monkeypatch, 2)
-    whole = plan_engine.first_sentences(_plan_copy(run, str(tmp_path / "plain"), cut=False, table=False),
+    whole = TW.first_sentences(_plan_copy(run, str(tmp_path / "plain"), cut=False, table=False),
                                         run.data_dir)
     assert isinstance(whole, plan_engine.FirstSentences)
     assert [whole.of(f) for f in range(n_files)] == [today.of(f) for f in range(n_files)]
-    assert plan_engine.first_sentences(_plan_copy(run, str(tmp_path / "none"), table=False), run.data_dir) is None
+    assert TW.first_sentences(_plan_copy(run, str(tmp_path / "none"), table=False), run.data_dir) is None
     other = _plan_copy(run, str(tmp_path / "other"), header={"run_signature": "another run"})
-    assert plan_engine.first_sentences(other, run.data_dir) is None
+    assert TW.first_sentences(other, run.data_dir) is None
     unnamed = _plan_copy(run, str(tmp_path / "unnamed"), header={"run_signature": None})
-    assert plan_engine.first_sentences(unnamed, run.data_dir) is None     # no run named: no table is this plan's
+    assert TW.first_sentences(unnamed, run.data_dir) is None     # no run named: no table is this plan's
     engineless = _plan_copy(run, str(tmp_path / "engineless"), header={"engine": None})
-    assert plan_engine.first_sentences(engineless, run.data_dir) is None  # no engine named: never another engine's
+    assert TW.first_sentences(engineless, run.data_dir) is None  # no engine named: never another engine's
     damaged = _plan_copy(run, str(tmp_path / "damaged"))
     table = os.path.join(str(tmp_path / "damaged"), sentence_table.TABLE_FILE)
     with open(table, "r+b") as fh:
         fh.truncate(os.path.getsize(table) - 7)
-    assert plan_engine.first_sentences(damaged, run.data_dir) is None
+    assert TW.first_sentences(damaged, run.data_dir) is None
     numbers = _Numbers(run, eng)
     numbers.run = types.SimpleNamespace(**dict(vars(run), plan_path=_plan_copy(run, str(tmp_path / "none2"),
                                                                                   table=False)))
@@ -186,7 +186,7 @@ def test_a_file_changed_since_the_generate_shows_none_of_its_words_sentences(run
     plan, _eng = _engine(run)
     n_rows = len(plan.keys)
     _level(monkeypatch, 2)
-    firsts = plan_engine.first_sentences(_plan_copy(run, str(tmp_path / "results")), run.data_dir)
+    firsts = TW.first_sentences(_plan_copy(run, str(tmp_path / "results")), run.data_dir)
     every = range(n_rows)
     f = max(range(len(plan.files)), key=lambda i: len(firsts.of(i, every)))
     other = next(i for i in range(len(plan.files)) if i != f and firsts.of(i, every))
@@ -256,7 +256,7 @@ def test_a_table_replaced_since_it_was_opened_answers_nothing(run, tmp_path, mon
     every = range(len(plan.keys))
     _level(monkeypatch, 2)
     folder = str(tmp_path / "results")
-    firsts = plan_engine.first_sentences(_plan_copy(run, folder), run.data_dir)
+    firsts = TW.first_sentences(_plan_copy(run, folder), run.data_dir)
     f = next(i for i in range(len(plan.files)) if firsts.of(i, every))
     table = os.path.join(folder, sentence_table.TABLE_FILE)
     st = os.stat(table)
@@ -272,7 +272,7 @@ def test_a_damaged_block_gives_nothing_and_never_an_error(run, tmp_path, monkeyp
     plan, _eng = _engine(run)
     every = range(len(plan.keys))
     _level(monkeypatch, 2)
-    firsts = plan_engine.first_sentences(_plan_copy(run, str(tmp_path / "results")), run.data_dir)
+    firsts = TW.first_sentences(_plan_copy(run, str(tmp_path / "results")), run.data_dir)
     f = next(i for i in range(len(plan.files)) if firsts.of(i, every))
     for error in (TypeError("a head with a null size"), KeyError("chars"), ValueError("a block of the wrong size")):
         def broken(self, k, error=error):
@@ -311,7 +311,7 @@ def test_a_titles_words_read_each_words_block_once(run, tmp_path, monkeypatch):
     plan, _eng = _engine(run)
     every = range(len(plan.keys))
     _level(monkeypatch, 2)
-    firsts = plan_engine.first_sentences(_plan_copy(run, str(tmp_path / "results")), run.data_dir)
+    firsts = TW.first_sentences(_plan_copy(run, str(tmp_path / "results")), run.data_dir)
     files = list(range(len(plan.files)))
     one_by_one = {f: firsts.of(f, every) for f in files}
     asked = {f: sorted(one_by_one[f]) + [k for k in every if k not in one_by_one[f]][:3] for f in files}
@@ -329,6 +329,6 @@ def test_below_level_2_the_table_is_never_opened(run, tmp_path, monkeypatch, lev
     monkeypatch.setattr(sentence_table, "open_table", lambda *a, **k: opened.append(a))
     _level(monkeypatch, level)
     cut = _plan_copy(run, str(tmp_path / "results"))
-    assert plan_engine.first_sentences(cut, run.data_dir) is None
-    assert isinstance(plan_engine.first_sentences(run.plan_path, run.data_dir), plan_engine.FirstSentences)
+    assert TW.first_sentences(cut, run.data_dir) is None
+    assert isinstance(TW.first_sentences(run.plan_path, run.data_dir), plan_engine.FirstSentences)
     assert opened == []

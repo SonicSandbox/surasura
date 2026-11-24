@@ -13,7 +13,8 @@ Qt-free (`tests/test_import_guard.py`); the window paints what this says (`app/q
   sentences (`plan_engine.first_sentences`, read once per plan, F7's `fs` / `firsts`) and the token store's cached
   text — shown only when that text's hash is the plan's; an older plan, a word the list doesn't hold or a word from
   Anki only has none, and nothing is shown. At level 2 of the sentence table the same call reads the table beside the
-  plan instead (`plan_engine.TableFirsts`: the asked words' blocks only; their file checked by its digest).
+  plan instead (`first_sentences` → `sentence_table.TableFirsts`: the asked words' blocks only; their file checked by
+  its digest).
 
 Everything runs on this provider's own worker; `ask` / `sentences` answer through a callback (the window bridges it
 to its thread). Measured on 2k / 20k files: Hover-W's register (TheForge tracks/window/reviews/hover-w-register.md).
@@ -135,6 +136,28 @@ def counts_of(store, paths):
             lemma = key.split("|", 1)[0]
             out[lemma] = out.get(lemma, 0) + n
     return out
+
+
+def first_sentences(plan, data_dir):
+    """The word card's reader of each word's first sentence per file for the plan at `plan`: at level 2 of the sentence
+    table the table beside it (`sentence_table.table_firsts`: E-HOVER), else — or with no table of this plan's run —
+    the plan's own (`plan_engine.first_sentences`). None: neither."""
+    from app import plan_engine, plan_rules
+    if plan_rules.SENTENCE_TABLE >= 2:
+        from app import sentence_table
+        found = sentence_table.table_firsts(plan, data_dir)
+        if found is not None:
+            return found
+    return plan_engine.first_sentences(plan)
+
+
+def _table_stamp(plan):
+    """The sentence table's stamp beside `plan` at level 2 (`sentence_table.table_stamp`), else None."""
+    from app import plan_rules
+    if plan_rules.SENTENCE_TABLE < 2:
+        return None
+    from app import sentence_table
+    return sentence_table.table_stamp(plan)
 
 
 def sentence_of(sentences, number, text_hash, word, reading, phrase, chars=None):
@@ -287,8 +310,7 @@ class TitleWords:
         return out
 
     def _first_sentences(self, plan, key, data_dir=None):
-        from app import plan_engine
-        kept = (plan, key, data_dir, plan_engine.table_stamp(plan))    # (the table's stamp: level 2 only, E-HOVER)
+        kept = (plan, key, data_dir, _table_stamp(plan))    # (the table's stamp: level 2 only, E-HOVER)
         with self._lock:
             held = self._firsts
         if held is not None and held[0] == kept:
@@ -300,7 +322,7 @@ class TitleWords:
         except OSError:
             return None
         self.reads["firsts"] += 1
-        found = plan_engine.first_sentences(plan, data_dir)
+        found = first_sentences(plan, data_dir)
         if found is not None and found.key != key:
             found = None
         with self._lock:

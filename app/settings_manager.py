@@ -251,9 +251,9 @@ DEFAULT_SETTINGS = {
     # FS-1 (the full Swap, 3.1; Sonic 2026-11-23, decision 1): what Swap does with a flagged card — True: *Same card,
     # new sentence* (rewritten in place, its reviews kept), False: *A new card*. Read through `swap.in_place_on`, when
     # a swap's job is made. Never in a signature: it decides how a card is written, never what a run counts.
-    # Off in the tree until FS-2 lands its Settings row (the lead, 2026-11-23): off, every swap is the simple Swap;
-    # FS-2's last commit makes it True (decision 1's default).
-    "swap_in_place": False,
+    # On by default since 3.0.18 (decision 1): a learner who never picked *Swap gives* gets *Same card*, an update too
+    # (`load_settings` reads an unpicked saved False, a first save's old default, as this default).
+    "swap_in_place": True,
     # FS-2: True once the learner picked *Swap gives* (written beside the pick, `settings_catalog.change`) — a file
     # holding `swap_in_place: false` with no pick is a first save's old default, read as today's (`load_settings`), so
     # decision 1's flip reaches every install that never picked. State: no row, no signature.

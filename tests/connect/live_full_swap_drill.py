@@ -3,6 +3,8 @@ kept — and its Undo puts every field back (never run by the suites; by hand, u
 drill loads DevTest and puts the profile back at the end).
 
     python tests/connect/live_full_swap_drill.py --profile DevTest
+    ANKI_MINER_HOME=<a throwaway home> python tests/connect/live_full_swap_drill.py --profile DevTest \
+        --miner <Anki Miner 3.11+'s program> --episode "<the episode's video, without .mkv>"
 
 - Three Lapis cards as Connect makes them (DevTest, the drill's tag, each recorded made by a job in a scratch ledger),
   their old clip and picture in Anki's media. Card A is studied twice (`answerCards`), then Suspend + Green as the
@@ -12,6 +14,11 @@ drill loads DevTest and puts the profile back at the end).
   field writer's replace mode, the media named by the line, the first-episode tag); `render`'s answer is handed in as
   files in its shape — this PC's Anki Miner has no `render` (it needs 3.11) — then the job's batch ends as the runner
   ends it, Backfill's ふりがな runs for real (`run_named(rewritten=)`), and the next look puts A back in reviews.
+- `--miner` (FS-R): A's and C's new lines are two real lines of `--episode` (its `.mkv` and `.ja.ass`, read only) and
+  the write is Connect's own step, `runner.Steps.swap_in_place`: Anki Miner's real `render` of the word on its line
+  (that Anki Miner, its profile *Surasura*, the field mapping read from it), the media named by the line, then the
+  write. The cards are made in that mapping's fields. Each press is timed (`render` alone, and the step whole).
+  Refused without `ANKI_MINER_HOME` at a home of its own: the drill never runs Anki Miner on the learner's home.
 - Read back: each card's reps, interval, due, lapses and review log unchanged; only the sentence side changed, each
   value exactly as written (refuter R14: Anki keeps what it is given); the ふりがな filled; A unsuspended, flag off;
   C never out of reviews; the tags. Then *Undo* on A and C: every field back, the old media stored again, the first-
@@ -35,6 +42,36 @@ CARDS = {"A": ("約束", "明日の約束を忘れないでね。", "約束は�
          "B": ("気配", "誰かの気配がした。", "春の気配を感じる。"),
          "C": ("溜め息", "思わず溜め息が出た。", "彼は深い溜め息をついた。")}
 SIDE = ("Sentence", "SentenceFurigana", "SentenceAudio", "Picture", "MiscInfo", "Hint")
+# --miner: the new line is a real one of the episode (Bocchi the Rock! 02's .ja.ass), found by these words. (FS-R
+# read its not_found answers as half-width text — ﾗｲﾌﾞ, ｡ —; AM-FIX found the cause: a caption's later event of one
+# start, now named by its text, `runfile.named_by_text`. `--line B 必要 必要だから` drills such a line: made.)
+REAL = {"A": ("音楽", "音楽を聴くのが好きだ。", "好きな音楽の話"),
+        "B": ("社会", "社会の勉強をした。", "社会が怖い"),
+        "C": ("説明", "詳しい説明をお願いします。", "説明しよう")}
+
+
+def _fold_b(text):
+    """A field's text, markup out and NFKC, for comparing sentences."""
+    import re
+    import unicodedata
+    return "".join(unicodedata.normalize("NFKC", re.sub(r"<[^>]+>", "", text or "")).split())
+
+
+def media_names_in(ask, nid, mapping):
+    """The media a note's clip and picture fields name now (the drill's teardown deletes them)."""
+    from app.connect import sentence_audio
+    have = ask("notesInfo", notes=[nid])[0]["fields"]
+    return sentence_audio.media_in("".join((have.get(mapping.fields.get(r) or "") or {}).get("value") or ""
+                                           for r in ("audio", "picture")))
+
+
+def real_line(subtitle, wanted):
+    """The cue of `subtitle` whose text holds `wanted` -> (start s, end s, its text as cues.read gives it)."""
+    from app import cues
+    for cue in cues.read(subtitle, "ja"):
+        if wanted in cue.text:
+            return cues.seconds(cue.start), cues.seconds(cue.end), cue.text
+    sys.exit(f"STOP: no line of {subtitle} holds {wanted}")
 
 
 def say(*parts):
@@ -46,9 +83,22 @@ def main():
     ap.add_argument("--profile", required=True)
     ap.add_argument("--url", default="http://127.0.0.1:8765")
     ap.add_argument("--back-to", default="User 1", help="the profile loaded at the end (lane rules: Sonic's own)")
+    ap.add_argument("--miner", help="FS-R: Anki Miner's program (3.11+): render for real")
+    ap.add_argument("--episode", help="FS-R: the episode's video without .mkv (its .ja.ass beside it), read only")
+    ap.add_argument("--line", nargs=3, action="append", default=[], metavar=("CARD", "WORD", "FOUND_BY"),
+                    help="FS-R: card A, B or C's word and the words its new line of --episode is found by")
     a = ap.parse_args()
     if a.profile != "DevTest":
         sys.exit("REFUSED: the drill runs on the DevTest profile only")
+    if a.miner:
+        home = os.environ.get("ANKI_MINER_HOME") or ""
+        if not home or os.path.abspath(home) == os.path.abspath(os.path.expanduser("~/.anki_miner")):
+            sys.exit("REFUSED: --miner needs ANKI_MINER_HOME at a home of its own (never the learner's)")
+        if not (a.episode and os.path.isfile(a.episode + ".mkv") and os.path.isfile(a.episode + ".ja.ass")):
+            sys.exit("REFUSED: --miner needs --episode (its .mkv and .ja.ass)")
+        CARDS.update(REAL)
+        for key, word, found_by in a.line:
+            CARDS[key] = (word, f"{word}のことを考えた。", found_by)
     root = tempfile.mkdtemp(prefix="fs1-full-swap-")
     os.environ["SURASURA_TEST_ROOT"] = root
     os.environ.pop("SURASURA_NO_ANKI_SYNC", None)
@@ -128,6 +178,19 @@ def main():
             "Expression", "Sentence", "MiscInfo", None, None)
         media_dir = os.path.join(root, "media")
         os.makedirs(media_dir)
+        steps = None
+        if a.miner:                         # Connect's own step against that Anki Miner, its mapping read from it
+            from app.cli import verbs
+            loaded = {"connect_enabled": True, "connect_anki_miner_path": a.miner,
+                      "connect_anki_miner_profile": "Surasura", "anki_connect_url": a.url}
+            steps = runner.Steps(loaded)
+            got = verbs._anki_miner_setup(loaded, "ja", os.path.join(root, "setup"))
+            mapping = got[2]
+            out["miner"] = {"app": got[0].get("app"), "profile": got[1], "fields": dict(mapping.fields),
+                            "source": mapping.source}
+            out["lines"] = {k: real_line(a.episode + ".ja.ass", CARDS[k][2]) for k in CARDS}
+            for k, (_start, _end, text) in out["lines"].items():
+                CARDS[k] = (CARDS[k][0], CARDS[k][1], text)
         try:
             with c.store("ja") as s:
                 items = s.ids("now")[:3]
@@ -144,6 +207,8 @@ def main():
                                "SentenceAudio": f"[sound:{old_clip}]", "Picture": f'<img src="{old_pic}">',
                                "SentenceFurigana": "AJT[いろ]の 古[ふる]い 行[ぎょう]", "Hint": "the old line's",
                                "MiscInfo": f"Drill - 0{n + 1} @ 00:01:0{n}"})
+                if a.miner and mapping.source and mapping.source in have:
+                    values[mapping.source] = f"Drill - 0{n + 1} @ 00:01:0{n}"     # where this Anki Miner writes it
                 with anki_connect.writer("FS-1 full swap drill", wait=60):
                     nid = ask("addNote", note={"deckName": "DevTest", "modelName": "Lapis", "fields": values,
                                                "options": {"allowDuplicate": True},
@@ -167,7 +232,7 @@ def main():
                 with anki_connect.writer("FS-1 full swap drill", wait=60):
                     anki.set_flag([cards[key]], swap.GREEN)
                 swap_queue.add("ja", CARDS[key][0], cards[key], notes[key], f"drill-{run}-{key}")
-            b_now = "廊下の奥で誰かの<b>気配</b>を感じた。"                          # the learner rewrote the line
+            b_now = f"廊下の奥で誰かの<b>{CARDS['B'][0]}</b>を感じた。"              # the learner rewrote the line
             write("updateNoteFields", note={"id": notes["B"], "fields": {"Sentence": b_now}})       # a hand edit
             swap.make_card("ja", CARDS["C"][0], old_note=notes["C"], old_card=cards["C"], by=swap.BY_JOURNEY,
                            ledger=ledger, wake=False, state_of=lambda w, r: None)
@@ -181,7 +246,9 @@ def main():
             swap.choose_line = lambda language, word, *a_, **k: picks[word]
             swap.in_place_on = lambda settings=None: True
             try:
+                t_look = time.perf_counter()
                 out["look_1"] = swap.look(Steps(), ledger, "ja", anki=anki, files=5)
+                out["look_1_s"] = round(time.perf_counter() - t_look, 2)
             finally:
                 swap.choose_line = real_choose
             rows = {r["word"]: r for r in swap._rows(ledger, "language = 'ja'")}
@@ -189,11 +256,76 @@ def main():
             out["C_after_look_queue"] = ask("cardsInfo", cards=[cards["C"]])[0]["queue"]
             # --- the in-place writes (render's answer handed in), the batch's end, Backfill, the next look ------ #
             timed = {}
+
+            def finish(key, word, other, row):      # the job's batch ends as the runner ends it, then Backfill
+                job = ledger.job_by_id(row["job_id"])
+                t1 = time.perf_counter()
+                ledger.end_batch(job["id"], 1, "done", [{"word": word, "reading": "", "outcome": "made",
+                                                         "note_id": notes[key], "sentence": other}], deck="DevTest")
+                runner._record_made(runner.Steps({}), ledger, "ja", job, True)
+                base = {"target_language": "ja", "junban_url": a.url, "junban_chunk_size": 150,
+                        "junban_backfill_fills": ["patterns"], "junban_backfill_deck": "DevTest::elsewhere"}
+                session = backfill.Session(base)
+                try:
+                    got = backfill.run_named(base, session, [notes[key]], run_id=f"backfill-{run}-00{key == 'C'}",
+                                             verb="FS-1 drill", rewritten=swap.rewritten(ledger, job["id"]))
+                finally:
+                    session.close()
+                out[f"backfill_{key}"] = {k: got.get(k) for k in ("ok", "filled", "skipped")}
+                out[f"after_write_s_{key}"] = round(time.perf_counter() - t1, 2)
+                ledger.set_state(job["id"], "done")
+
+            renders = []
+            if a.miner:
+                from app.connect import anki_miner
+                real_render = anki_miner.render_line
+
+                def timed_render(*args, **kwargs):  # timed, its answer kept for the read-back
+                    t = time.perf_counter()
+                    answer = real_render(*args, **kwargs)
+                    renders.append({"s": round(time.perf_counter() - t, 2), "answer": answer})
+                    return answer
+                anki_miner.render_line = timed_render
             for key in ("A", "C"):
                 word, _line, other = CARDS[key]
                 row = swap.in_place_row(ledger, rows[word]["job_id"])
                 if row is None:
                     out[f"write_{key}"] = "not in place"
+                    continue
+                if a.miner:
+                    start, end, text = out["lines"][key]
+                    picked = {"video": a.episode + ".mkv", "subtitle": a.episode + ".ja.ass", "offset": 0.0}
+                    words = [{"word": word, "reading": "", "sent": [word], "line_start": start, "line_end": end,
+                              "line_text": text, "line_expansion": [0, 0]}]
+                    job = ledger.job_by_id(row["job_id"])
+                    t0 = time.perf_counter()
+                    for tries in range(1, 41):      # Anki's media sync after the profile loads: the job waits
+                        renders.clear()
+                        try:
+                            done = steps.swap_in_place("ja", job, picked, words, 1, ledger, row)
+                            break
+                        except runner.Wait as e:
+                            if tries == 40:
+                                raise
+                            out.setdefault(f"waits_{key}", []).append(str(e.reason)[:160])
+                            time.sleep(5)
+                            t0 = time.perf_counter()
+                            row = swap.in_place_row(ledger, rows[word]["job_id"]) or row
+                    timed[key] = round(time.perf_counter() - t0, 2)
+                    out[f"write_{key}_tries"] = tries
+                    out[f"render_{key}"] = {
+                        "s": [r["s"] for r in renders],
+                        "fields": {f: v for r in renders for one in r["answer"].values()
+                                   for f, v in one["fields"].items()},
+                        "files": [os.path.basename(f) for r in renders for one in r["answer"].values()
+                                  for f in one["files"]]}
+                    if done is None:
+                        out[f"write_{key}"] = ("fell back", swap._rows(ledger, "id = ?", (row["id"],))[0]["kind_why"])
+                        continue
+                    out[f"write_{key}"] = (swap.IN_PLACE if done.get("in_place") else None,
+                                           done["outcomes"][0]["note_id"] == notes[key], None)
+                    stored |= set(media_names_in(ask, notes[key], mapping))
+                    finish(key, word, other, row)
                     continue
                 clip, pic = os.path.join(media_dir, f"{word}_1_1.mp3"), os.path.join(media_dir, f"{word}_1_1.webp")
                 with open(clip, "wb") as f:
@@ -224,20 +356,49 @@ def main():
                 out[f"write_{key}_tries"] = tries
                 timed[key] = round(time.perf_counter() - t0, 2)
                 out[f"write_{key}"] = (kind, said == notes[key], learned)
-                job = ledger.job_by_id(row["job_id"])
-                ledger.end_batch(job["id"], 1, "done", [{"word": word, "reading": "", "outcome": "made",
-                                                         "note_id": notes[key], "sentence": other}], deck="DevTest")
-                runner._record_made(runner.Steps({}), ledger, "ja", job, True)
-                base = {"target_language": "ja", "junban_url": a.url, "junban_chunk_size": 150,
-                        "junban_backfill_fills": ["patterns"], "junban_backfill_deck": "DevTest::elsewhere"}
-                session = backfill.Session(base)
-                try:
-                    got = backfill.run_named(base, session, [notes[key]], run_id=f"backfill-{run}-00{key == 'C'}",
-                                             verb="FS-1 drill", rewritten=swap.rewritten(ledger, job["id"]))
-                finally:
-                    session.close()
-                out[f"backfill_{key}"] = {k: got.get(k) for k in ("ok", "filled", "skipped")}
-                ledger.set_state(job["id"], "done")
+                finish(key, word, other, row)
+            if a.miner:                         # B, hand edited: the simple Swap's new card, made for real, timed
+                word, _line, other = CARDS["B"]
+                start, end, text = out["lines"]["B"]
+                job = ledger.job_by_id(rows[word]["job_id"])
+                picked = {"video": a.episode + ".mkv", "subtitle": a.episode + ".ja.ass", "offset": 0.0}
+                words = [{"word": word, "reading": "", "sent": [word], "line_start": start, "line_end": end,
+                          "line_text": text, "line_expansion": [0, 0]}]
+                t0 = time.perf_counter()
+                for tries in range(1, 41):
+                    try:
+                        # AM-FIX: the batch's own step (`runner._mine_batch`): B's old card is a Lapis note of its
+                        # word, so a bare `mine` is refused as its duplicate (FS-R) — Swap makes it beside the old one
+                        done = runner._mine_batch(steps, ledger, "ja", job, picked, words, 1)
+                        break
+                    except runner.Wait as e:
+                        if tries == 40:
+                            raise
+                        out.setdefault("waits_B", []).append(str(e.reason)[:160])
+                        time.sleep(5)
+                        t0 = time.perf_counter()
+                timed["B_simple"] = round(time.perf_counter() - t0, 2)
+                got_b = (done.get("outcomes") or [{}])[0]
+                out["simple_B"] = {k: got_b.get(k) for k in ("outcome", "note_id", "mined_form", "filter")}
+                if got_b.get("note_id"):
+                    write("addTags", notes=[int(got_b["note_id"])], tags=drill_tag)     # torn down with the drill's
+                    stored |= set(media_names_in(ask, int(got_b["note_id"]), mapping))
+                    new_b = ask("notesInfo", notes=[int(got_b["note_id"])])[0]
+                    old_b = ask("notesInfo", notes=[notes["B"]])[0]
+                    nf, of = ({f: v["value"] for f, v in n["fields"].items()} for n in (new_b, old_b))
+                    sent = mapping.fields.get("sentence") or "Sentence"
+                    media = media_names_in(ask, int(got_b["note_id"]), mapping)
+                    out["new_B"] = {
+                        "a_new_note": int(got_b["note_id"]) != notes["B"],
+                        "word_side_the_old_cards": all(nf[f] == of[f] for f in ("Expression", "MainDefinition",
+                                                                              "Glossary") if f in nf),
+                        "sentence_the_new_line": _fold_b(nf.get(sent)) != _fold_b(of.get(sent)) and
+                        _fold_b(word) in _fold_b(nf.get(sent)), "sentence": nf.get(sent),
+                        "media_in_anki": {m: bool(write("retrieveMediaFile", filename=m)) for m in media},
+                        "job_tag": f"surasura::connect::{runner._tag(job)}".lower() in
+                        {x.lower() for x in new_b["tags"]},
+                        "deck": ask("getDecks", cards=ask("findCards", query=f"nid:{got_b['note_id']}")),
+                        "sentence_furigana": nf.get("SentenceFurigana")}
             out["write_seconds"] = timed
             time.sleep(1.5)
             try:

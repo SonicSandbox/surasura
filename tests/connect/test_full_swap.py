@@ -365,21 +365,29 @@ def test_a_swap_waiting_when_the_setting_is_switched_follows_it_when_its_job_is_
     swap.make_card("ja", CASES["ja"][0], old_note=900, old_card=9000, ledger=ledger, wake=False,
                    state_of=lambda w, r: None)
     assert IN_PLACE_ON({"swap_in_place": True}) and not IN_PLACE_ON({"swap_in_place": False})
-    assert not IN_PLACE_ON({}) and not IN_PLACE_ON({"swap_in_place": "yes"})       # anything else: the default, off
+    assert IN_PLACE_ON({}) and IN_PLACE_ON({"swap_in_place": "yes"})        # anything else: the default, on (decision 1)
     monkeypatch.setattr(swap, "in_place_on", lambda settings=None: False)
     monkeypatch.setattr(swap, "choose_line", lambda *a, **k: (7, CASES["ja"][2]))
     swap.look(Steps(), ledger, "ja", anki=anki, files=5)
     assert swap._rows(ledger, "language = ?", ("ja",))[-1]["kind"] == swap.NEW_CARD
 
 
-def test_with_the_default_off_every_swap_is_the_simple_swap_as_before(ledger, tmp_path, monkeypatch):
-    """The lead, 2026-11-23: `swap_in_place` is off in the tree until FS-2 lands its Settings row, so this lands
-    inert. With the settings as shipped, a flagged card Connect made — the one card the full Swap rewrites — gets
+def test_the_shipped_default_rewrites_a_flagged_connect_card_in_place(ledger):
+    """Decision 1 (FS-2's flip): *Same card, new sentence* is the default, so with the settings as shipped a flagged
+    card Connect made — its sentence still Connect's line — is a swap in place."""
+    from app import settings_manager
+    assert settings_manager.DEFAULT_SETTINGS[swap.SETTING] is True and IN_PLACE_ON() is True
+    anki = _card(Anki(), "ja")
+    _made_by_connect(ledger, "ja")
+    assert swap._kind_of(ledger, {"by": swap.BY_SWAP, "old_note": 900}, anki) == (swap.IN_PLACE, None)
+    assert swap._kind_of(ledger, {"by": swap.BY_JOURNEY, "old_note": 900}, anki) == (swap.IN_PLACE, None)
+
+
+def test_with_a_new_card_picked_every_swap_is_the_simple_swap_as_before(ledger, tmp_path, monkeypatch):
+    """*A new card* (the learner's pick): a flagged card Connect made — the one card the full Swap rewrites — gets
     the simple Swap's new card: its job mines (nothing rendered, nothing written over), nothing is handed to the
     record or to Backfill as rewritten, and the old card keeps every field and tag but the simple Swap's own."""
-    from app import settings_manager
-    monkeypatch.setattr(swap, "in_place_on", IN_PLACE_ON)
-    assert settings_manager.DEFAULT_SETTINGS[swap.SETTING] is False and IN_PLACE_ON() is False
+    monkeypatch.setattr(swap, "in_place_on", lambda settings=None: IN_PLACE_ON({swap.SETTING: False}))
     anki = _card(Anki(), "ja")
     anki.notes_[900]["tags"].append("my_own")
     fields_before = {k: dict(v) for k, v in anki.notes_[900]["fields"].items()}

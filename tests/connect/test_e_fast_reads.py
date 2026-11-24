@@ -532,5 +532,5 @@ def test_a_data_folder_the_generate_spelled_another_way_still_finds_every_file_a
         # (each line names its file as the asker spells its folder: the same file)
         lines[spelled] = {k: [x._replace(file=os.path.normcase(os.path.abspath(x.file))) for x in v]
                           for k, v in got.items()}
-    assert keys and sum(1 for got in lines[data_dir].values() if got) >= len(keys) // 2, "the rows' lines, read here"
+    assert sum(1 for got in lines[data_dir].values() if got) >= max(1, len(keys) // 2), "the rows' lines, read here"
     assert lines[data_dir] == lines[generated]

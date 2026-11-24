@@ -263,3 +263,25 @@ def test_the_chooser_reads_the_young_words_once_and_keeps_their_stamp(monkeypatc
     given = analyzer.ListSentences("ja", 3, table=table, young={})
     given([("食事", "しょくじ")], None)
     assert reads == ["ja"] and asked["young"] == {} and given.young_at is None
+
+
+def test_the_redraw_after_a_move_shows_the_cards_sentence_and_marks_the_young_words_it_drew_with(run):
+    # why: end to end, as the window runs it — a move, then the keeper's redraw (`--from-plan`) with Anki's young
+    # file there: the list it writes shows the card's first sentence for each word a young card moves, and its marker
+    # names those young words (so `moved_state` reads it as drawn until a sync moves them). Last in the module: it
+    # moves the fixture's library.
+    from tests.test_e_redraw import _columns, _move, _redraw
+    words = [w for _k, w in run.found]
+    young = _young_file(run.root, run.language, words)
+    try:
+        _move(run.root, run.language, "top")
+        out = _redraw(run.root, run.language)
+        assert "Redrew the journey" in out, out[-1500:]
+        marker = analyzer.redrawn_for(run.results)
+        assert marker.get("young") == analyzer.young_stamp({w: 1.0 for w in words}), marker
+        listed = _columns(run.results)
+        cards = _firsts(run, [k for k, _w in run.found])
+    finally:
+        os.remove(young)
+    for key, _word in run.found:
+        assert listed[key][1::-1] == cards[key]["card"], (run.language, key, listed[key][:2], cards[key])

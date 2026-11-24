@@ -181,7 +181,9 @@ def only_moved(settings, language, plan_path=None):
 def moved_state(settings, language, plan_path=None):
     """`only_moved`'s answer and more (F7): None — not only the order (a Generate); "owed" — only the order moved and
     the journey isn't drawn for it; "drawn" — only the order moved and the journey was redrawn for this very order
-    (the results' redraw marker, `analyzer.redrawn_for`, names this plan and this run signature): nothing to do."""
+    (the results' redraw marker, `analyzer.redrawn_for`, names this plan and this run signature — and, at release 2,
+    today: decision 6, a card's sentence weighs how well each episode is remembered, which fades by the day): nothing
+    to do."""
     try:
         from app import analyzer, library_store, plan_engine, plan_rules
         from app.path_utils import get_data_path, get_user_file, get_user_files_path
@@ -203,7 +205,10 @@ def moved_state(settings, language, plan_path=None):
             return None                     # nothing moved at all (a list file gone, the token store's run another's)
         if not plan_engine.only_order(header, language, *inputs):
             return None
-        return "drawn" if marker is not None and marker.get("run") == signature else "owed"
+        drawn = marker is not None and marker.get("run") == signature
+        if drawn and plan_rules.SENTENCE_TABLE >= 2 and marker.get("day") != analyzer.drawn_day():
+            drawn = False                   # release 2: drawn on another day — its remembered context has faded since
+        return "drawn" if drawn else "owed"
     except Exception as e:
         print(f"Journey: whether only the order moved couldn't be told ({e}); generating to be sure")
         return None

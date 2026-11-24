@@ -40,10 +40,14 @@ from collections import namedtuple
 
 from app import plan_rules
 
-FORMAT = 4                                 # the newest plan file this engine reads; FORMATS: every one it reads
-FORMATS = (1, 2, 3, 4)                     # 1 (2.x), 2 (3.0: `spell` and `phrase_entries`, E2.2 D8), 3 (F7: the rows'
-                                           # example-sentence pools, `finished`, `sentences`, `cowords`, `pools`, `fs`),
-                                           # 4 (each phrase row's dictionary spelling in `phrase_entries`: its `Kana`)
+# The newest plan file this engine reads; FORMATS: every one it reads — 1 (2.x), 2 (3.0: `spell` and
+# `phrase_entries`, E2.2 D8), 3 (F7: the rows' example-sentence pools, `finished`, `sentences`, `cowords`, `pools`,
+# `fs`), 4 (each phrase row's dictionary spelling in `phrase_entries`: its `Kana`), 5 (the sentence choice's release 2,
+# `plan_rules.SENTENCE_TABLE >= 2`: the sentences live in the sentence table beside the plan, `app/sentence_table.py`;
+# the plan's own pools and first sentences are never read, and a format-4 plan reads "Generate first", SPEC § 3.6)
+FORMAT = 5 if plan_rules.SENTENCE_TABLE >= 2 else 4
+FORMATS = (1, 2, 3, 4, 5)
+PICKS_IN_TABLE = 5                         # from this format on a row's sentences are the table's (`Engine.contexts`)
 TIERS = ("now", "soon", "goal")            # the analysed tiers, in the order a Generate reads them
 _SLOT = {"now": 0, "soon": 1, "goal": 2}
 _GAP = 1 << 40                             # room between two items' places: a move takes a place between its
@@ -110,8 +114,9 @@ def load(path, pools=True, trusted=False):
         raise PlanError(f"the plan file is damaged ({e.__class__.__name__})") from None
     if lines and lines[-1] == b"":
         lines.pop()
-    if not pools:
+    if not pools or _in_table(lines):
         lines = [line for line in lines if not line.startswith(_PICK_TABLES)]
+        pools = False
     try:
         decoded = [json.loads(line) for line in lines]
     except ValueError:
@@ -149,6 +154,15 @@ def load(path, pools=True, trusted=False):
                 firsts=_firsts_table(tables.get("firsts"), deep=not trusted))
     _validate(plan, deep=not trusted)
     return plan
+
+
+def _in_table(lines):
+    """Whether the plan's header says format 5 or later: its rows' sentences are the sentence table's, so its own
+    example-sentence tables (if a Generate still wrote them) are left undecoded, as in a lean load."""
+    try:
+        return json.loads(lines[0]).get("format", 0) >= PICKS_IN_TABLE if lines else False
+    except (ValueError, AttributeError, TypeError):
+        return False
 
 
 def _firsts_table(chunks, deep=True):
@@ -260,7 +274,7 @@ def _validate(plan, deep=True):
     ties = {tie[0]: tie for tie in plan.ties}
     # Format 2 and on: every listed word not in `ties` has its spelling counts (`spell`), and each phrase row names the phrase
     # whose entry holds it. A format-1 plan holds neither.
-    if h.get("format") in (2, 3, 4):
+    if h.get("format") in (2, 3, 4, 5):
         listed_untied = {k for k, row in enumerate(plan.rows) if row is not None and k not in ties}
         if set(plan.spell) != listed_untied or not all(_counts(o) and _counts(s) for o, s in plan.spell.values()):
             raise PlanError("the plan file's spell table is damaged")
@@ -276,6 +290,8 @@ def _validate(plan, deep=True):
     if h.get("format") in (3, 4):
         if plan.picks and deep:
             _validate_pools(plan)
+    elif h.get("format", 0) >= PICKS_IN_TABLE:
+        pass                                # (its sentences are the table's: a file's `fs`, if written, is never read)
     elif plan.sentences or plan.pools or plan.cowords or plan.finished or any("fs" in line for line in plan.per_file):
         raise PlanError("an older plan file holds example-sentence pools")
     if not deep:
@@ -749,6 +765,8 @@ def check(plan, language, engine, run_stamp, signature_parts, epoch=None, added=
     h = plan.header
     if h.get("language") != language:
         return ("generate-first", "language")
+    if plan_rules.SENTENCE_TABLE >= 2 and h.get("format") != FORMAT:
+        return ("generate-first", "format")             # (release 2: an older plan's sentences aren't the table's)
     if h.get("engine") != engine:
         return ("generate-first", "engine")
     if not h.get("run_signature") or h["run_signature"] != run_stamp:
@@ -1019,7 +1037,10 @@ class Engine:
         # F7: each file's listed rows and their first sentence there ([k, sentence id, …]): a row's Context 1 is its
         # first sentence in its first file, wherever the order puts that file, and those of the next NEAR_FILES
         # files holding it are candidates too (`contexts`).
-        self._fs = [array("i", line.get("fs", ()) if plan.picks else ()) for line in plan.per_file]
+        # Format 5: none — a row's sentences are the sentence table's, and a move reads no first sentence (SPEC § 6.1
+        # row 8).
+        in_table = plan.header.get("format", 0) >= PICKS_IN_TABLE
+        self._fs = [array("i", line.get("fs", ()) if plan.picks and not in_table else ()) for line in plan.per_file]
         self._ties = {tie[0]: tie for tie in plan.ties}
         # Each phrase row's dictionary spelling (format 4): its `Kana` is that of the spelling it shows
         # (`plan_rules.display_reading`, the Generate's rule). An older plan has none: `Kana` stays empty.
@@ -1040,7 +1061,7 @@ class Engine:
     # From scratch (02 §2): the referee
     # ----------------------------------------------------------------------------------------------------------- #
 
-    def replan(self, order, pins=None, pick=False, texts=None):
+    def replan(self, order, pins=None, pick=False, texts=None, chooser=None):
         """The order's live numbers from scratch. `order`: [(item_id, tier)] — the analysed tiers' items, NOW then
         Soon then 6+ Months, each in the store's order. An item the plan doesn't hold is a PlanError (the library
         changed: Generate first); a plan item not in `order` is dropped (it left the counted tiers, 02 §6: the
@@ -1048,7 +1069,7 @@ class Engine:
         self._numbers(order)
         if pins is not None:
             self.set_pins(pins)
-        return self.result(pick, texts)
+        return self.result(pick, texts, chooser)
 
     def _numbers(self, order):
         """The live numbers from scratch for `order` (replan's checks and work, without the result)."""
@@ -1494,11 +1515,12 @@ class Engine:
     # The result
     # ----------------------------------------------------------------------------------------------------------- #
 
-    def result(self, pick=False, texts=None):
+    def result(self, pick=False, texts=None, chooser=None):
         """The order's columns (02 §1): the live numbers as kept, the priority rows in rank order, and the progressive
         list and spelling ties worked out again for this order. Never for a numbers-only engine (its list can't be).
         `pick` (F7, a format-3 plan): the example sentences too — this order's re-pick (`contexts`), the Generate's
-        own; else (and for an older plan) they stay as the last Generate wrote them (D1)."""
+        own; else (and for an older plan) they stay as the last Generate wrote them (D1). A format-5 plan's are the
+        sentence table's, asked of `chooser` (`contexts`)."""
         if self.numbers_only:
             raise PlanError(f"the engine stands aside: {self.numbers_only}; its numbers only")
         plan, keys, rows = self.plan, self.plan.keys, self.plan.rows
@@ -1508,7 +1530,18 @@ class Engine:
         spelling = self._spelling
         score = [self._score(k) for k in range(self._n)]
         counts = self._counts
-        picked = (self.contexts(texts) if pick else None) or {}
+        rank = (lambda k: (score[k], self._occ[k]))
+        passes = list(plan_rules.progressive_pass((self._prog[f] for f in order), set(), set(),
+                                                  self._lemma.__getitem__, self._listed.__getitem__, rank))
+        # (format 5) each word's first row in this order's progressive list: the place the sentence table's own
+        # `places` are (what is taught before it when it is studied, `sentence_table.Table.places`)
+        self._study, at = {}, 0
+        for file_rows, _baseline, _total in (passes if pick and plan.header.get("format", 0) >= PICKS_IN_TABLE
+                                             else ()):
+            for row_ in file_rows:
+                self._study.setdefault(row_[0], at)
+                at += 1
+        picked = (self.contexts(texts, chooser) if pick else None) or {}
         # the columns: Sentences per word's number, or under All (0) as many as the row given the most has
         n_contexts = plan_rules.context_columns(plan.header.get("max_contexts") or 0, (
             len(picked.get(k, rows[k][6] if rows[k] is not None else ())) // 2 for k in range(self._n)))
@@ -1526,9 +1559,6 @@ class Engine:
             priority.append(out)
 
         progressive = []
-        rank = (lambda k: (score[k], self._occ[k]))
-        passes = plan_rules.progressive_pass((self._prog[f] for f in order), set(), set(),
-                                             self._lemma.__getitem__, self._listed.__getitem__, rank)
         for (f, (file_rows, baseline_pct, total)) in zip(order, passes):
             seq = seq_of[f]
             source = self._source[f]
@@ -1559,8 +1589,15 @@ class Engine:
             added=list(self._added), provisional=[item for item in self._added if item in self._reasons],
             reasons={item: list(gates) for item, gates in self._reasons.items()})
 
-    def contexts(self, texts=None):
-        """F7: every listed row's example sentences for this order — the Generate's pick (`plan_rules.ContextPicker`,
+    def contexts(self, texts=None, chooser=None):
+        """Format 5 (the sentence choice's release 2, SPEC § 5.2): the rows' sentences are the one reader's, over the
+        sentence table — handed over to `chooser(keys, order) -> {(Word, Reading): [Context 1, Src 1, …]}` (the
+        caller's: this module reads no table, store or settings), `keys` the listed rows in this order's rank order,
+        `order` {key: its first row in this order's progressive list} (the table's `places`: what is taught before a
+        word when it is studied; `result` works it out first); a row it leaves out keeps the last Generate's columns. A PlanError when there is no
+        chooser or it has no answer (no table: the caller Generates).
+
+        Before: F7: every listed row's example sentences for this order — the Generate's pick (`plan_rules.ContextPicker`,
         one rule) down this order's list, on the plan's order-free pools: {k: [Context 1, Src 1, …]}; None for a plan
         before format 3 or one read without them (`load(pools=False)`). Context 1 is a row's first sentence in its
         first file, and its first sentences in the next `near_files` files holding it are candidates beside its pools
@@ -1569,6 +1606,8 @@ class Engine:
         store); one unanswered shows empty. A sentence of a file that left the order is no candidate."""
         plan = self.plan
         h = plan.header
+        if h.get("format", 0) >= PICKS_IN_TABLE:
+            return self._chosen(chooser)
         if h.get("format") not in (3, 4) or not plan.picks:
             return None
         files, finished = plan.files, plan.finished
@@ -1653,6 +1692,19 @@ class Engine:
                 kept += (shown, where(st[plan_rules.SRC]))
             out[k] = kept
         return out
+
+    def _chosen(self, chooser):
+        """`contexts` for a format-5 plan: the listed rows, in rank order, handed to `chooser` -> {k: columns}."""
+        keys = self.plan.keys
+        ranked = [r[-1] for r in self._ranked]
+        asked = [(keys[k][0], keys[k][1]) for k in ranked]
+        study = getattr(self, "_study", None) or {}
+        order = {(keys[k][0], keys[k][1]): at for k, at in study.items()}
+        got = chooser(asked, order) if chooser is not None else None
+        if got is None:
+            raise PlanError("no sentence table to choose the sentences from: Generate first")
+        self.unread = 0
+        return {k: list(got[key]) for k, key in zip(ranked, asked) if key in got}
 
     def leave_out(self, lemmas):
         """Kotoba-K: the words marked Known or Ignore since the plan (`lemmas`: every such word now — the whole set,

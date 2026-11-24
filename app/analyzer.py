@@ -4218,9 +4218,11 @@ def _backfill_sidecars(results_dir):
 # (E1.3, E3.1). Written last, just before the run's stamp, atomically: a run that dies between the two leaves a plan
 # whose run_signature no stamp matches. Never fails a Generate.
 PLAN_FILE = "plan.json.gz"
-PLAN_FORMAT = 4                 # 2 (E2.2, D8): every list word's spelling counts (`spell`), its phrase rows' entries;
+PLAN_FORMAT = 5 if plan_rules.SENTENCE_TABLE >= 2 else 4
+                                # 2 (E2.2, D8): every list word's spelling counts (`spell`), its phrase rows' entries;
                                 # 3 (F7): the rows' example-sentence pools, so the order's re-pick is the Generate's;
-                                # 4: each phrase row's entry with its dictionary spelling (`Kana` where spellings tie)
+                                # 4: each phrase row's entry with its dictionary spelling (`Kana` where spellings tie);
+                                # 5 (release 2, `plan_engine.FORMAT`'s): the rows' sentences are the sentence table's
 _PLAN_CHUNK = 2000              # table rows per line: no one line's decode holds a reader's interpreter long
 _PLAN_TIERS = {"HighPriority": "now", "LowPriority": "soon", "GoalContent": "goal"}
 
@@ -4556,7 +4558,17 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
         order.append((rel.replace("\\", "/"), _PLAN_TIERS.get(label, "goal")))
     _progress("Picking sentences")
     eng = plan_engine.Engine(plan)
-    result = eng.replan(order, pick=True, texts=plan_texts(language, data_dir, store))
+    chooser = None
+    if plan.header.get("format", 0) >= plan_engine.PICKS_IN_TABLE:      # release 2: the one reader (SPEC § 5.2)
+        chooser = ListSentences(language, plan.header.get("max_contexts") or 0,
+                                bool(plan.header.get("only_i_plus_one")))
+    try:
+        result = eng.replan(order, pick=True, texts=plan_texts(language, data_dir, store), chooser=chooser)
+    except plan_engine.PlanError as e:
+        print(f"The journey can't be redrawn from the plan ({e}): generating.")
+        return None
+    if chooser is not None:
+        chooser.keep()                      # the text of the lines shown now: the next redraw reads only new ones
     if eng.unread:
         print(f"The journey can't be redrawn from the plan ({eng.unread} sentences' text can't be read): generating.")
         return None
@@ -4693,6 +4705,102 @@ class _LazyTagger:
         if self._tagger is None:
             self._tagger = JapaneseTokenizer().tagger
         return self._tagger(text)
+
+
+SHOWN_FILE = "shown.json.gz"    # release 2: the text of the lines the list shows, by the table's run (SPEC § 5.3)
+
+
+class ListSentences:
+    """The list's own sentences at release 2 (`plan_rules.SENTENCE_TABLE >= 2`; SPEC § 5.2, *Context 1…n* in the list
+    and the journey): every row asked of the one reader in one pass (`sentence_score.choose(whole=True)`) at the
+    moment Connect's card weighs — the library's dates and how each file is heard (`connect.sentences._dates`), the
+    learner's *Length* (`sentence_corpus.length_range`) — so the list shows what a card would get (decision 6). The
+    call is `plan_engine.Engine.contexts`' chooser: `(keys, order) -> {key: [Context 1, Src 1, …]}`, None with no
+    table for `language` (the caller Generates). `order` {key: its place}: the list's order when it is not the last
+    Generate's (None: the table's own). `max_contexts` *Sentences per word* (0: All, `plan_rules.context_limit`'s
+    ceiling); `clean_only` *Only i+1* (a row with no line left is []: the Generate leaves it out). What a Context
+    shows is the Generate's (`strip_verse_number`); a Src is the file's path from the data folder, as the plan's.
+    The text of the lines it shows is kept in results/`SHOWN_FILE` (`keep`) and read from there before the token
+    store the next time. Young words are not weighed: the list reads no Anki (PROVISIONAL, the prototype's)."""
+
+    def __init__(self, language, max_contexts, clean_only=False, results_dir=None, table=None):
+        self.language, self.n, self.clean_only = language, plan_rules.context_limit(max_contexts), clean_only
+        self.results_dir, self.table = results_dir or RESULTS_DIR, table
+        self.run, self.kept, self.read = None, {}, {}
+
+    def __call__(self, keys, order=None):
+        from app import sentence_score, sentence_corpus, sentence_table
+        from app.connect import sentences as connect_sentences
+        from app.path_utils import get_data_path
+        settings = settings_manager.load_settings()
+        _info, seen = connect_sentences._dates(self.language, connect_sentences.ai_voice(settings, self.language))
+        _lo, _hi, low, high = sentence_corpus.length_range(settings)
+        root = get_data_path(self.language)
+        tab = self.table
+        if tab is None:
+            tab = sentence_table.open_table(os.path.join(self.results_dir, sentence_table.TABLE_FILE),
+                                            language=self.language, engine=engine_id(),
+                                            run_signature=read_run_stamp(self.results_dir))
+            if tab is None:
+                return None
+        self.run = tab.head.get("run_signature")
+        self.read = _read_shown(self.results_dir, self.run)
+        got = sentence_score.choose(self.language, keys, n=self.n, length=(low, high), order=order, whole=True,
+                                    moment=sentence_score.Moment(files=seen, root=root), clean_only=self.clean_only,
+                                    shown=self.read, table=tab)
+        if got is None:
+            return None
+        base = os.path.join(root, "")
+        tagger = _LazyTagger() if self.language == "ja" else None
+        out, kept = {}, {}
+        for key, lines in got.items():
+            columns = []
+            for line in lines:
+                rel = (line.file[len(base):] if line.file.startswith(base) else line.file).replace(os.sep, "/")
+                kept[(rel, line.number)] = line.text
+                columns += (strip_verse_number(line.text, tagger) if tagger is not None and line.text else line.text,
+                            rel)
+            out[key] = columns
+        self.kept = kept
+        return out
+
+    def keep(self):
+        """results/`SHOWN_FILE`: the text of the lines the last call showed, by the table's run — written only when it
+        differs from what was read (never fails the run)."""
+        if self.run is None or self.kept == self.read:
+            return
+        try:
+            _write_shown(self.results_dir, self.run, self.kept)
+        except Exception as e:
+            print(f"Warning: could not keep the shown sentences: {e}")
+
+
+def _read_shown(results_dir, run_signature):
+    """{(rel, number): text} of results/`SHOWN_FILE` when it is `run_signature`'s; {} else (none, another run's,
+    damaged)."""
+    import gzip
+    try:
+        with gzip.open(os.path.join(results_dir, SHOWN_FILE), "rb") as f:
+            data = json.loads(f.read())
+        if data.get("run_signature") != run_signature:
+            return {}
+        return {(rel, int(number)): text for rel, lines in data["lines"].items() for number, text in lines.items()}
+    except Exception:
+        return {}
+
+
+def _write_shown(results_dir, run_signature, kept):
+    """results/`SHOWN_FILE`, whole (a temp file replaced): the same bytes for the same lines (sorted, no time)."""
+    import gzip
+    lines = {}
+    for (rel, number), text in sorted(kept.items()):
+        lines.setdefault(rel, {})[str(number)] = text
+    path = os.path.join(results_dir, SHOWN_FILE)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=6, mtime=0, filename="") as f:
+        f.write(json.dumps({"run_signature": run_signature, "lines": lines}, separators=(",", ":"),
+                           ensure_ascii=False).encode("utf-8"))
+    os.replace(tmp, path)
 
 
 def plan_texts(language, data_dir, store):
@@ -5774,6 +5882,12 @@ def drawn_for(results_dir):
     return marker.get("run") if stamp and marker.get("plan") == stamp else None
 
 
+def drawn_day():
+    """Today, as the redraw marker names the day it was drawn for (release 2, SPEC § 7 row 36): the local date."""
+    import datetime
+    return datetime.date.today().isoformat()
+
+
 def redrawn_for(results_dir):
     """The redraw marker in `results_dir` ({"plan", "run"}), or None (none, or unreadable). Never raises."""
     try:
@@ -5799,8 +5913,11 @@ def _json_list_entries(text):
 def _write_redraw_marker(plan_signature, run_signature):
     """The redraw marker, written whole (a temp file replaced): `run_signature` None while the redraw writes."""
     path = os.path.join(RESULTS_DIR, REDRAW_FILE)
+    marker = {"plan": plan_signature, "run": run_signature}
+    if plan_rules.SENTENCE_TABLE >= 2:
+        marker["day"] = drawn_day()         # release 2: the remembered context fades by the day (`journey.moved_state`)
     with open(path + ".tmp", "w", encoding="utf-8") as f:
-        json.dump({"plan": plan_signature, "run": run_signature}, f)
+        json.dump(marker, f)
     os.replace(path + ".tmp", path)
 
 

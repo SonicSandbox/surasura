@@ -32,6 +32,11 @@ from app.unicode_ranges import HAN
 # Engine: the Forms column
 # --------------------------------------------------------------------------- #
 
+
+# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
+pytestmark = pytest.mark.usefixtures("journey_pre_cut")
+
+
 def _run_analyzer(root, language, text):
     """Run the real analyzer over one real-text file in a sandbox and return both CSVs' rows."""
     high = root / "data" / language / "HighPriority"

@@ -17,11 +17,14 @@ from tests.qt import test_settings_page as T
 
 @pytest.fixture
 def v3():
+    # put back as they were (since the cut-over, J-CUT, the import-time rows are v3's): a fixed False left every later
+    # test in the process on the Settings before the cut (GitHub's shards: test_settings_catalog after tests/qt)
+    on, was = J.ON, catalog._V3
     J.ON = True
     catalog.use_v3(True)
     yield
-    J.ON = False
-    catalog.use_v3(False)
+    J.ON = on
+    catalog.use_v3(was)
 
 
 @pytest.fixture(autouse=True)

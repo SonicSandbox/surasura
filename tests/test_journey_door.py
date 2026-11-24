@@ -373,13 +373,19 @@ def test_a_route_asked_once_the_window_is_closing_answers_closed():
     assert e.value.kind == journey_door.CLOSED
 
 
-# --- off for a 3.0.18 learner -------------------------------------------------------------------------------------- #
-def test_the_door_is_off_until_the_v3_page_ships_and_on_for_a_run_that_asks(monkeypatch):
+# --- on since the cut-over (J-CUT); off for a run that asks ------------------------------------------------------- #
+def test_the_door_is_on_since_the_v3_page_ships_and_off_for_a_run_that_asks(monkeypatch):
+    # The cut-over's one line (journey_door.ON); SURASURA_DOOR=0 is the pre-cut world for one run (the old renderer's
+    # tests, their child processes), =1 on whatever ON says, anything else is ON's.
     monkeypatch.delenv(journey_door.ENV, raising=False)
-    assert journey_door.ON is False and journey_door.enabled() is False
+    assert journey_door.ON is True and journey_door.enabled() is True
+    monkeypatch.setenv(journey_door.ENV, "0")
+    assert journey_door.enabled() is False
     monkeypatch.setenv(journey_door.ENV, "1")
     assert journey_door.enabled() is True
-    monkeypatch.setenv(journey_door.ENV, "0")
+    monkeypatch.setattr(journey_door, "ON", False)
+    assert journey_door.enabled() is True
+    monkeypatch.setenv(journey_door.ENV, "yes")
     assert journey_door.enabled() is False
 
 
@@ -396,10 +402,10 @@ def test_the_window_starts_no_door_while_it_is_off_and_one_with_the_registry_whe
         def door_routes(self):
             Window.asked += 1
             return shell.ShellWindow.door_routes(self)
-    monkeypatch.delenv(journey_door.ENV, raising=False)
+    monkeypatch.setenv(journey_door.ENV, "0")
     door.stop()
     assert shell.start_door(Window()) is None and door.current() is None and Window.asked == 0
-    monkeypatch.setenv(journey_door.ENV, "1")
+    monkeypatch.delenv(journey_door.ENV, raising=False)            # the cut-over's default: on
     shell.start_door(Window()).join(10)
     d = door.current()
     try:
@@ -411,8 +417,8 @@ def test_the_window_starts_no_door_while_it_is_off_and_one_with_the_registry_whe
 
 
 def test_with_the_door_off_neither_the_start_nor_your_journey_imports_the_door(tmp_path):
-    # a 3.0.18 learner: the window's start after its first frame and *Your journey* run as before, the door's module
-    # (and its server's imports) never loaded; in a fresh process, as the window is
+    # the door off for a run (SURASURA_DOOR=0, the pre-cut world): the window's start after its first frame and *Your
+    # journey* run as before the cut, the door's module (and its server's imports) never loaded; in a fresh process
     pytest.importorskip("PyQt6")
     import subprocess
     results = tmp_path / "results"
@@ -431,7 +437,7 @@ def test_with_the_door_off_neither_the_start_nor_your_journey_imports_the_door(t
         "assert gen.open_report(file='第1話.srt') is True and opened[-1].endswith('journey_open.html'), opened\n"
         "shell.stop_door()\n"
         "print('door imported:', 'app.door' in sys.modules)\n")
-    env = {k: v for k, v in os.environ.items() if k != journey_door.ENV}
+    env = dict(os.environ, **{journey_door.ENV: "0"})
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     run = subprocess.run([sys.executable, "-c", code], cwd=root, env=env, capture_output=True, text=True,
                          encoding="utf-8", timeout=120)

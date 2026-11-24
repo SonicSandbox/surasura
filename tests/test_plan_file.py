@@ -13,9 +13,11 @@ of the same files. These tests prove:
 
 `replay` is a reference for the engine (E1.3), kept small: the analyzer's own sort keys, nothing else.
 """
+import datetime
 import gzip
 import json
 import os
+import re
 from unittest.mock import patch
 
 import pytest
@@ -227,6 +229,24 @@ def test_every_output_a_generate_wrote_before_is_byte_identical(runs, case):
     # the base's hashes again first, on its base, before its own change: python tests/plan_file_cases.py --record.
     assert cases.output_hashes(root) == _base()[case], "an output moved: see plan_file_cases.py's --record"
     assert os.path.exists(os.path.join(root, "results", analyzer.PLAN_FILE))
+
+
+@pytest.mark.parametrize("case", list(cases.CASES))
+def test_the_pages_hash_is_the_same_on_the_next_day(runs, case):
+    """The v3 page writes each episode's days (the growth row's "added" and "done", the pre-studied mark) from the
+    store's UTC stamps of the run itself: the same Generate a day later is the same page, so the hash list blanks
+    them. The run's page with every day moved one on stands for that later run (11-23: recorded one evening, red
+    on every run after midnight UTC)."""
+    root, _run = runs[case]
+    with open(os.path.join(root, "results", "reading_list_static.html"), "rb") as f:
+        today = f.read()
+    day = re.compile(rb'"(\d{4}-\d{2}-\d{2})"')
+    assert day.search(today), "the page names no day: the test proves nothing"
+    later = day.sub(lambda m: b'"%s"' % (datetime.date.fromisoformat(m.group(1).decode())
+                                         + datetime.timedelta(days=1)).isoformat().encode(), today)
+    assert later != today
+    assert (cases.normalised(root, "reading_list_static.html", later)
+            == cases.normalised(root, "reading_list_static.html", today))
 
 
 @pytest.mark.parametrize("case", list(cases.ALL_CASES))

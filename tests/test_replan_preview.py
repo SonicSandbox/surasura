@@ -869,6 +869,67 @@ def test_the_unlocking_pass_places_alike_with_the_jobs_reading_or_its_own(lib, m
         assert runs == []
 
 
+@pytest.mark.parametrize("lib", ["ja", "zh"], indirect=True)
+def test_a_token_store_that_cant_be_opened_is_tried_once_a_job(lib, monkeypatch):
+    """KYOU-MO-WASTE review R1: when the token store can't be opened (busy past its 5 s wait, a damaged file), a job's
+    known words are read without it — the open is tried once, not again for the key and again for the read. The words
+    read are the files' own, as without the store before."""
+    from app import token_index
+    _root, _store = lib
+    settings = _junban_settings()
+    language = _language()
+    monkeypatch.setattr(reposition, "_KNOWN_MEMO", {})
+    monkeypatch.setattr(analyzer, "SANITIZE_JA", language == "ja")         # as the memo reads them (a run's setting)
+    as_without = reposition._known_sets(language, settings, False)
+    tries = []
+
+    def refused(*args, **kwargs):
+        tries.append(args)
+        raise OSError("database is locked")
+    monkeypatch.setattr(token_index, "open_store", refused)
+    sets, _answered = reposition._known_memo(language, settings)               # the first job: a miss
+    assert len(tries) == 1, f"a job tried the token store {len(tries)} times"
+    assert sets == as_without
+    tries.clear()
+    reposition._known_memo(language, settings)                                 # the next: a hit
+    assert len(tries) == 1, f"a job tried the token store {len(tries)} times"
+
+
+@pytest.mark.parametrize("lib", ["ja", "zh"], indirect=True)
+def test_a_jobs_token_store_is_closed_before_the_known_words_slow_read(lib, monkeypatch):
+    """KYOU-MO-WASTE review R2: the one open a job is closed as soon as the store's cached known words are read —
+    never held through the slow read of KnownWord.json that follows when they're stale (the store sets a damaged file
+    aside by renaming it, which an open handle blocks on Windows)."""
+    from app import token_index
+    _root, _store = lib
+    settings = _junban_settings()
+    language = _language()
+    monkeypatch.setattr(reposition, "_KNOWN_MEMO", {})
+    opened, open_at_the_read = [], []
+    real_open, real_read = token_index.open_store, analyzer.load_known_words
+
+    def counted_open(*args, **kwargs):
+        store = real_open(*args, **kwargs)
+        close = store.close
+
+        def closed():
+            store.closed = True
+            close()
+        store.closed, store.close = False, closed
+        opened.append(store)
+        return store
+
+    def slow_read(*args, **kwargs):
+        open_at_the_read.append(sum(1 for store in opened if not store.closed))
+        return real_read(*args, **kwargs)
+    monkeypatch.setattr(token_index, "open_store", counted_open)
+    monkeypatch.setattr(token_index.Store, "get_cached_known", lambda self, signature: None)     # stale: read again
+    monkeypatch.setattr(analyzer, "load_known_words", slow_read)
+    reposition._known_memo(language, settings)
+    assert len(opened) == 1 and open_at_the_read == [0], (len(opened), open_at_the_read)
+    assert all(store.closed for store in opened)
+
+
 def test_known_words_changed_without_a_move_asks_for_no_journey(lib):
     """The journey's Generate is for moves (04 §3, G1.5-5): known words changed with nothing moved leave the run's
     signature behind the library's, but no move is pending — nothing is asked for on focus (mutant "journey asks

@@ -423,8 +423,8 @@ def _known_memo(language, settings):
     the files they come from changes (KnownWord.json — its parse held the window's thread ~200 ms at every move —
     and the three word lists), the Chinese script does, or what else they read does (review 3 R5): the token store's
     known-words key (the names, phrases and pronouns switches, the library's name tables) and the key it holds, and
-    the library's names while Ignore names is on. The token store is opened once for the key and, after a change,
-    the read (KYOU-MO-WASTE)."""
+    the library's names while Ignore names is on. The token store is opened once a job, for the key and, after a
+    change, the read — or tried once, when it can't be opened (KYOU-MO-WASTE)."""
     from app import token_index
     from app.path_utils import get_user_files_path
     user_files = get_user_files_path(language)
@@ -438,7 +438,7 @@ def _known_memo(language, settings):
     try:
         store = token_index.open_store(language)
     except Exception:
-        store = None
+        store = False                       # none to be had: read without it, never asked for again this job
     try:
         key.append(_known_inputs(language, settings, os.path.join(user_files, "KnownWord.json"), store))
         key = tuple(key)
@@ -448,30 +448,32 @@ def _known_memo(language, settings):
             # in this process left: both passes of a job read this one memo (KYOU-MO-HOLD)
             from app import analyzer
             analyzer.SANITIZE_JA = language == "ja"
-            hit = _KNOWN_MEMO[language] = (key, _known_sets(language, settings, store), {})
+            hit = _KNOWN_MEMO[language] = (key, _known_sets(language, settings, store), {})   # (closes it once read)
     finally:
-        if store is not None:
-            store.close()
+        if store:
+            store.close()                   # closing it twice is nothing (`Store.close`)
     return hit[1], hit[2]
 
 
 def _known_inputs(language, settings, known_file, store=None):
     """`_known_sets`' inputs that aren't files: the known-words key the token store would ask for now and the one it
     holds (`Store._known_key`: the switches and the name tables), and the library's names Ignore names adds. `store`:
-    the token store, already open (the caller closes it); else opened and closed here."""
+    the token store, already open (the caller closes it); False, none to be had; else opened and closed here."""
     from app import token_index
-    try:
-        own = store is None
-        if own:
-            store = token_index.open_store(language)
+    known = None
+    if store is not False:
         try:
-            known = (store._known_key(token_index.known_signature(known_file, _script(settings))),
-                     store.get_meta("known_sig"))
-        finally:
+            own = store is None
             if own:
-                store.close()
-    except Exception:
-        known = None
+                store = token_index.open_store(language)
+            try:
+                known = (store._known_key(token_index.known_signature(known_file, _script(settings))),
+                         store.get_meta("known_sig"))
+            finally:
+                if own:
+                    store.close()
+        except Exception:
+            known = None
     try:
         names = tuple(token_index.ignored_names(language))
     except Exception:
@@ -970,25 +972,24 @@ def known_test(language, settings, tokenizer=None):
 def _known_sets(language, settings, store=None):
     """`(known_tuples, known_lemmas, ignore)` — the analyzer's own sets, read the way Generate reads
     them: the token store's cached known words, else `load_known_words`, plus the ignore, black and
-    graduated lists. Imported here, never at import time (spec I4). `store`: the token store, already open (the
-    caller closes it); else opened and closed here."""
+    graduated lists. Imported here, never at import time (spec I4). `store`: the token store, already open — closed
+    here once its cached words are read, before the slow read below; False, none to be had; else opened here."""
     from app import analyzer, token_index
     from app.path_utils import get_user_files_path
     script = _script(settings)
     user_files = get_user_files_path(language)
     known_file = os.path.join(user_files, "KnownWord.json")
     cached = None
-    try:
-        own = store is None
-        if own:
-            store = token_index.open_store(language)
+    if store is not False:
         try:
-            cached = store.get_cached_known(token_index.known_signature(known_file, script))
-        finally:
-            if own:
+            if store is None:
+                store = token_index.open_store(language)
+            try:
+                cached = store.get_cached_known(token_index.known_signature(known_file, script))
+            finally:
                 store.close()
-    except Exception:
-        cached = None
+        except Exception:
+            cached = None
     if cached is None:
         tok = (analyzer.ChineseTokenizer(script=script) if language == "zh"
                else analyzer.JapaneseTokenizer())

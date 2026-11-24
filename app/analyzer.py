@@ -5910,8 +5910,9 @@ def drawn_day():
 def young_stamp(young):
     """The young words a draw weighed ({lemma: weight}, `connect.sentences.young_weights`) as the redraw marker names
     them (release 2, E-JOURNEY): a short digest of the words and their weights, order-free — None for none (no Anki,
-    never synced, every card mature: the marker of before, no key)."""
-    rows = sorted((str(w), round(float(v), 6)) for w, v in (young or {}).items())
+    never synced, every card mature: the marker of before, no key). Weights to two decimals: today's come from whole
+    days (twenty-firsts, all apart); one moving by the hour (a fractional day) would owe a redraw at every look."""
+    rows = sorted((str(w), round(float(v), 2)) for w, v in (young or {}).items())
     if not rows:
         return None
     return hashlib.sha1(json.dumps(rows, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]

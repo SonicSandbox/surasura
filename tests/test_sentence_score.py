@@ -519,6 +519,33 @@ def test_never_returns_the_old_cards_line_and_takes_the_next_best(tmp_path):
     assert [l.text for l in got[FEST[0]]] == [PREPARE, SIGN]
 
 
+@pytest.mark.parametrize("unsaid, rate", [(SS.SILENT, SS.HEARD_SILENT), (SS.AI_VOICE, SS.HEARD_AI)])
+def test_a_lined_up_books_line_is_weighed_by_how_that_line_is_heard_not_its_file(monkeypatch, tmp_path, unsaid,
+                                                                                rate):
+    # why: Kyou-PB — a paired book's chapter is heard only where its line-up says the line; the score weighs each line
+    # by its own answer (`Seen.said`, read to one more array, numbers only: the lead's ruling, 2026-11-23), so the line
+    # the line-up never says costs the book-with-no-audiobook's rate and a said line just behind it in the zone comes first
+    lib = Library(tmp_path)
+    tab = _fest(lib, [("ch01", [FESTIVAL, SIGN])])         # FESTIVAL in the zone (0), SIGN 13 characters (0.03)
+    handed = []
+    real = SS.cost
+
+    def spy(columns, moment, low, high, r=None):
+        handed.append(moment.get("line_hear"))
+        return real(columns, moment, low, high, r)
+    monkeypatch.setattr(SS, "cost", spy)
+    moment = lib.moment({"show/ch01.srt": SS.Seen(1, 0.0, SS.REAL, False, lambda text: text == SIGN, unsaid)})
+    lines = SS.choose("ja", FEST, n=2, moment=moment, length=LENGTH, table=tab, shown=tab.shown())[FEST[0]]
+    assert [(l.text, l.heard) for l in lines] == [(SIGN, SS.REAL), (FESTIVAL, unsaid)]
+    assert [l.cost for l in lines] == [pytest.approx(0.03), pytest.approx(rate)]
+    assert isinstance(handed[0], np.ndarray) and handed[0].tolist() == [SS._HEARD_CODE[unsaid], 0]
+    # a file with no line-up (no `said`): every line its file's answer, and no per-line array is read
+    handed.clear()
+    lines = SS.choose("ja", FEST, n=2, moment=lib.moment({"show/ch01.srt": SS.Seen(1, 0.0, SS.SILENT)}),
+                      length=LENGTH, table=tab, shown=tab.shown())[FEST[0]]
+    assert [(l.text, l.heard) for l in lines] == [(FESTIVAL, SS.SILENT), (SIGN, SS.SILENT)] and handed == [None]
+
+
 def test_the_same_sentence_twice_is_shown_once(tmp_path):
     lib = Library(tmp_path)
     tab = lib.table(FEST, [("ep01", [FESTIVAL, SIGN]), ("ep02", [FESTIVAL])],

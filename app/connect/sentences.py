@@ -37,6 +37,7 @@ counts.
 
 Reads the plan file, the library store and the token store only: never tokenizes the library. Light: nothing written.
 """
+import functools
 import logging
 import os
 import re
@@ -525,8 +526,13 @@ def _dates(language, ai):
     if hit is not None and stamp is not None and hit[0] == stamp and now - hit[1] < DATES_KEPT_S:
         return hit[2], hit[3]
     info = _library(language, None, ai, scored=True)
-    seen = {at: sentence_score.Seen(v[0], v[1], REAL if isinstance(v[2], lineup.Reach) else v[2], v[4])
-            for at, v in info.items()}
+    seen = {}
+    for at, v in info.items():
+        if isinstance(v[2], lineup.Reach):  # a lined-up book: heard line by line, its line-up's answer (Kyou-PB)
+            seen[at] = sentence_score.Seen(v[0], v[1], REAL, v[4], functools.partial(lineup.said, v[2]),
+                                           heard(True, False, ai))
+        else:
+            seen[at] = sentence_score.Seen(v[0], v[1], v[2], v[4])
     if stamp is None:
         _DATES.pop((language, ai), None)
     else:
@@ -577,7 +583,8 @@ def _scored(language, keys, here_key, never, young, files, reach, books, ai, set
     pair) and *Ensure an audio example* (`heard_first`). Only what the cut can't make is left out, never what is
     merely worse: a video whose media can't be cut (`reach`), a book's line where books can't be mined (`books`
     off); a silent line is weighed, never removed. A lined-up book's line its line-up never says is weighed as its
-    own book with no audiobook (Kyou-PB's `_heard_line`, the cost moved by the two hearing rates)."""
+    own book with no audiobook inside the score (`_dates`: `Seen.said`, line by line — the lead's ruling, 2026-11-23);
+    a file outside the store, which the score hears by its own clip, is moved by the two hearing rates here."""
     from app import plan_rules
     if plan_rules.SENTENCE_TABLE < 1:
         return None

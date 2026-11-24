@@ -42,11 +42,12 @@ class World:
         self.settings = dict(SETTINGS, **(settings or {}))
         monkeypatch.setattr(plan_rules, "SENTENCE_TABLE", level)
         monkeypatch.setattr(sentences, "_library", self._library)
-        monkeypatch.setattr(sentences, "_store_stamp", lambda language: None)
+        # (raising=False, getattr: the fixture holds on the code before, so a red there is the behaviour's, not setup's)
+        monkeypatch.setattr(sentences, "_store_stamp", lambda language: None, raising=False)
         monkeypatch.setattr(SS, "_tokens", lambda language: Tokens(self.tokens))
         from app import settings_manager
         monkeypatch.setattr(settings_manager, "load_settings", lambda *a, **k: dict(self.settings))
-        sentences._DATES.clear()
+        getattr(sentences, "_DATES", {}).clear()
 
     def table(self, keys, episodes, word, folder="HighPriority/show", words=None):
         """`episodes` [(name, [text, …])]: every line holding `word` is a line of row 0."""
@@ -220,7 +221,7 @@ def test_a_book_with_the_ai_voice_on_is_weighed_as_voiced_and_off_as_silent(monk
     w.table(key, [("book01", [lines[0]]), ("ep02", [lines[1]])], word)
     w.place("ep02", 2)
     for ai, hear, rate in ((True, sentences.AI_VOICE, SS.HEARD_AI), (False, sentences.SILENT, SS.HEARD_SILENT)):
-        sentences._DATES.clear()
+        getattr(sentences, "_DATES", {}).clear()
         w.place("book01", 1, ctx=0.5, hear=hear, text=True)
         monkeypatch.setattr(sentences, "ai_voice", lambda settings, language, on=ai: on)
         got = {c.item_id: c for c in sentences.choose(lang, [key], dial=sentences.BEST, young={},
@@ -229,17 +230,41 @@ def test_a_book_with_the_ai_voice_on_is_weighed_as_voiced_and_off_as_silent(monk
         assert got[1].cost == pytest.approx(got[2].cost - SS.CONTEXT * 0.5 + rate)
 
 
+def _said(*lines):
+    """A lined-up book's usable line-up that says `lines` (`lineup.reach`'s own shape)."""
+    from app.connect import lineup
+    texts = [lineup.clean(t) for t in lines]
+    heads = {}
+    for t in texts:
+        if len(t) >= lineup.MIN_CHARS:
+            heads.setdefault(t[:lineup.MIN_CHARS], set()).add(t)
+    return lineup.Reach(frozenset(texts), "\n".join(texts), heads)
+
+
 def test_a_lined_up_books_line_its_line_up_never_says_is_weighed_as_unheard(monkeypatch):
-    # why: Kyou-PB — a paired chapter is heard only where its line-up gives the line a clip; the score weighs a file,
-    # so the line it doesn't say is re-weighed by the two hearing rates (a clip, then none)
+    # why: Kyou-PB — a paired chapter is heard only where its line-up gives the line a clip (`lineup.said`); the score
+    # weighs that line as the book with no audiobook's (silent, the AI voice off), its said line as its own clip
     w = World(monkeypatch)
     w.table(FEST, [("book01", [FESTIVAL, PREPARE])], "文化祭")
-    w.place("book01", 1, text=True)
-    monkeypatch.setattr(sentences, "_heard_line",
-                        lambda hear, text, ai: sentences.SILENT if text == FESTIVAL else sentences.REAL)
+    w.place("book01", 1, hear=_said(PREPARE), text=True)
     got = sentences.choose("ja", [FEST], dial=sentences.BEST, young={}, reach=lambda item: True)[FEST]
     assert [(c.text, c.audio) for c in got] == [(PREPARE, True), (FESTIVAL, False)]
     assert got[1].cost == pytest.approx(SS.HEARD_SILENT)
+
+
+def test_a_said_line_behind_eight_unsaid_ones_still_gives_the_card(monkeypatch):
+    # why: the lead's ruling (2026-11-23) — paired books' hearing is exact inside the score, not re-weighed after it:
+    # re-weighing the eight lines the score returned missed a said line just behind them, and the card got a line with
+    # no clip. Eight chapters whose line-up never says the word's line (each 0 in the zone, 0.4 unheard) and a ninth
+    # that says its line (13 characters: 0.03)
+    w = World(monkeypatch)
+    episodes = [(f"ch{n:02d}", [FESTIVAL]) for n in range(1, 9)] + [("ch09", [SIGN])]
+    w.table(FEST, episodes, "文化祭")
+    for n in range(1, 10):
+        w.place(f"ch{n:02d}", n, hear=_said(SIGN), text=True)
+    got = sentences.choose("ja", [FEST], dial=sentences.BEST, young={}, reach=lambda item: True)[FEST]
+    assert (got[0].text, got[0].item_id, got[0].audio) == (SIGN, 9, True)
+    assert got[0].cost == pytest.approx(0.03) and all(c.cost == pytest.approx(SS.HEARD_SILENT) for c in got[1:])
 
 
 def test_ensure_an_audio_example_gives_the_card_the_heard_line_and_keeps_the_silent_one(monkeypatch):
@@ -344,7 +369,7 @@ def test_a_books_unread_chapter_counts_by_its_place_not_its_books_date():
 def test_the_dates_are_kept_between_picks_and_read_again_after_a_watched_mark(monkeypatch):
     # why: one read of the store was nearly all of a pick's time (SPEC § 5.3); a watched mark changes the store's file
     monkeypatch.setattr(plan_rules, "SENTENCE_TABLE", 1)
-    sentences._DATES.clear()
+    getattr(sentences, "_DATES", {}).clear()
     store, (first, second, _third) = _show()
     reads = []
     real = sentences._library
@@ -374,7 +399,7 @@ def test_read_ahead_reads_the_tables_head_and_the_dates_at_level_one(monkeypatch
     w = World(monkeypatch)
     w.table(FEST, [("ep01", [FESTIVAL])], "文化祭")
     w.place("ep01", 1)
-    monkeypatch.setattr(sentences, "_store_stamp", lambda language: ("store", (1, 1), None))
+    monkeypatch.setattr(sentences, "_store_stamp", lambda language: ("store", (1, 1), None), raising=False)
     assert sentences.read_ahead("ja") is True
     assert w.reads == [True] and ("ja", False) in sentences._DATES
     sentences.choose("ja", [FEST], dial=sentences.BEST, young={})

@@ -4690,7 +4690,8 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
         except Exception as e:
             print(f"Error: Could not generate static HTML: {e}")
             report_failed = True
-    _write_redraw_marker(plan.header["run_signature"], run_sig)
+    _write_redraw_marker(plan.header["run_signature"], run_sig,
+                         young=chooser.young_at if chooser is not None else None)
     print("Redrew the journey from the plan (only the order moved).")
     return 1 if report_failed else 0
 
@@ -4721,12 +4722,16 @@ class ListSentences:
     ceiling); `clean_only` *Only i+1* (a row with no line left is []: the Generate leaves it out). What a Context
     shows is the Generate's (`strip_verse_number`); a Src is the file's path from the data folder, as the plan's.
     The text of the lines it shows is kept in results/`SHOWN_FILE` (`keep`) and read from there before the token
-    store the next time. Young words are not weighed: the list reads no Anki (PROVISIONAL, the prototype's)."""
+    store the next time. The young words are the card's (E-JOURNEY): `connect.sentences.young_weights` — the young
+    cards Connect's Anki sync keeps in `User Files/<lang>/anki_young.json` (`anki_sync.sync_young`), read once a call;
+    no file (never synced, Anki absent): none, as before. No Anki call: the file only. `young` {lemma: weight} hands
+    them in instead (tests); `young_at` the stamp of the ones the last call weighed (`young_stamp`), for the redraw
+    marker (a sync since that changes them owes the journey a redraw: `journey.moved_state`)."""
 
-    def __init__(self, language, max_contexts, clean_only=False, results_dir=None, table=None):
+    def __init__(self, language, max_contexts, clean_only=False, results_dir=None, table=None, young=None):
         self.language, self.n, self.clean_only = language, plan_rules.context_limit(max_contexts), clean_only
-        self.results_dir, self.table = results_dir or RESULTS_DIR, table
-        self.run, self.kept, self.read = None, {}, {}
+        self.results_dir, self.table, self.young = results_dir or RESULTS_DIR, table, young
+        self.run, self.kept, self.read, self.young_at = None, {}, {}, None
 
     def __call__(self, keys, order=None):
         from app import sentence_score, sentence_corpus, sentence_table
@@ -4746,9 +4751,11 @@ class ListSentences:
                 return None
         self.run = tab.head.get("run_signature")
         self.read = _read_shown(self.results_dir, self.run)
+        young = connect_sentences.young_weights(self.language) if self.young is None else dict(self.young)
+        self.young_at = young_stamp(young)
         got = sentence_score.choose(self.language, keys, n=self.n, length=(low, high), order=order, whole=True,
-                                    moment=sentence_score.Moment(files=seen, root=root), clean_only=self.clean_only,
-                                    shown=self.read, table=tab)
+                                    moment=sentence_score.Moment(files=seen, young=young, root=root),
+                                    clean_only=self.clean_only, shown=self.read, table=tab)
         if got is None:
             return None
         base = os.path.join(root, "")
@@ -5900,6 +5907,16 @@ def drawn_day():
     return datetime.date.today().isoformat()
 
 
+def young_stamp(young):
+    """The young words a draw weighed ({lemma: weight}, `connect.sentences.young_weights`) as the redraw marker names
+    them (release 2, E-JOURNEY): a short digest of the words and their weights, order-free — None for none (no Anki,
+    never synced, every card mature: the marker of before, no key)."""
+    rows = sorted((str(w), round(float(v), 6)) for w, v in (young or {}).items())
+    if not rows:
+        return None
+    return hashlib.sha1(json.dumps(rows, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+
+
 def redrawn_for(results_dir):
     """The redraw marker in `results_dir` ({"plan", "run"}), or None (none, or unreadable). Never raises."""
     try:
@@ -5922,12 +5939,15 @@ def _json_list_entries(text):
     return [parts[0] + "\n    }"] + ["    {" + p + "\n    }" for p in parts[1:-1]] + ["    {" + parts[-1]]
 
 
-def _write_redraw_marker(plan_signature, run_signature):
-    """The redraw marker, written whole (a temp file replaced): `run_signature` None while the redraw writes."""
+def _write_redraw_marker(plan_signature, run_signature, young=None):
+    """The redraw marker, written whole (a temp file replaced): `run_signature` None while the redraw writes. `young`
+    (release 2): the stamp of the young words the draw weighed (`ListSentences.young_at`), None for none."""
     path = os.path.join(RESULTS_DIR, REDRAW_FILE)
     marker = {"plan": plan_signature, "run": run_signature}
     if plan_rules.SENTENCE_TABLE >= 2:
         marker["day"] = drawn_day()         # release 2: the remembered context fades by the day (`journey.moved_state`)
+        if young is not None:
+            marker["young"] = young         # ... and the young words it weighed: a sync since that changed them owes one
     with open(path + ".tmp", "w", encoding="utf-8") as f:
         json.dump(marker, f)
     os.replace(path + ".tmp", path)
@@ -8379,7 +8399,9 @@ def main():
     # the store.
     if _run_sig and plan_rules.SENTENCE_TABLE >= 2:
         try:
-            _write_redraw_marker(_run_sig, _run_sig)    # release 2: this run's journey is today's (`drawn_for`)
+            # release 2: this run's journey is today's (`drawn_for`). (It names no young words: the Generate's own
+            # columns read through `ListSentences` from E-REDRAW part 2 on — hand its `young_at` here then.)
+            _write_redraw_marker(_run_sig, _run_sig)
         except OSError as e:                # never fails a finished Generate: with none it is redrawn once
             print(f"Warning: could not mark the journey as today's: {e}")
     _set_run_stamp(RESULTS_DIR, _run_sig)

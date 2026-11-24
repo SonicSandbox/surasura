@@ -33,10 +33,6 @@ from app.unicode_ranges import HAN
 # --------------------------------------------------------------------------- #
 
 
-# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
-pytestmark = pytest.mark.usefixtures("journey_pre_cut")
-
-
 def _run_analyzer(root, language, text):
     """Run the real analyzer over one real-text file in a sandbox and return both CSVs' rows."""
     high = root / "data" / language / "HighPriority"
@@ -209,13 +205,15 @@ def test_engine_revision_was_bumped_for_the_forms_column():
 # --------------------------------------------------------------------------- #
 
 def _sig_args():
-    return SimpleNamespace(theme="default", zen_limit=0)
+    return SimpleNamespace()
 
 
-def _fake_templates(tmp_path, web_text):
-    (tmp_path / "templates").mkdir(exist_ok=True)
+def _fake_templates(tmp_path, page_text, web_text="<p>予告</p>"):
+    """The journey page's folder (`templates/journey/`, what the render signature hashes since J-RETIRE) and the
+    YouTube preview's page beside it."""
+    (tmp_path / "templates" / "journey").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "templates" / "journey" / "page.html").write_text(page_text, encoding="utf-8")
     (tmp_path / "templates" / "web_app.html").write_text(web_text, encoding="utf-8")
-    (tmp_path / "templates" / "zen_app.html").write_text("<p>禅</p>", encoding="utf-8")
     return lambda rel: str(tmp_path / rel)
 
 
@@ -227,6 +225,8 @@ def test_render_signature_changes_when_the_template_changes(tmp_path):
     with patch("app.analyzer.get_resource", side_effect=_fake_templates(tmp_path, "<p>新版</p>")):
         after = analyzer.compute_render_signature(_sig_args())
     assert before != after
+    with patch("app.analyzer.get_resource", side_effect=_fake_templates(tmp_path, "<p>新版</p>", "<p>別</p>")):
+        assert analyzer.compute_render_signature(_sig_args()) == after,             "the YouTube preview's page (web_app.html) is not the journey's: it re-renders nothing"
 
 
 def test_render_signature_is_stable_when_nothing_changes(tmp_path):
@@ -348,32 +348,18 @@ def test_the_hash_deep_link_is_wired(web_html):
     assert "rsFromHash();" in web_html
 
 
-def test_generated_report_carries_forms_to_the_browser(tmp_path, monkeypatch):
-    """The column must survive the generator's {keys, rows} compression, not just the CSV."""
-    import pandas as pd
-    from app import static_html_generator
-
-    results = tmp_path / "results"
-    results.mkdir()
-    rows = [{"Word": "食べる", "Orth": "食べる", "Forms": "食べ|食べよ", "Reading": "タベ",
-             "Tier": "Outside", "Score": 20, "Occurrences": 4, "Count (High)": 4,
-             "Count (Low)": 0, "Count (Goal)": 0, "Modality": "", "Sources": "a.txt",
-             "Context 1": "昨日は寿司を食べた。"}]
-    pd.DataFrame(rows).to_csv(results / "priority_learning_list.csv", index=False, encoding="utf-8-sig")
-    prog = [dict(r, Sequence=1, **{"Source File": "a.txt", "Occurrences (Global)": 4,
-                                   "Occurrences (File)": 4}) for r in rows]
-    pd.DataFrame(prog).to_csv(results / "progressive_learning_list.csv", index=False, encoding="utf-8-sig")
-
-    out = results / "reading_list_static.html"
-    monkeypatch.setattr(static_html_generator, "RESULTS_DIR", str(results))
-    monkeypatch.setattr(static_html_generator, "PRIORITY_CSV", str(results / "priority_learning_list.csv"))
-    monkeypatch.setattr(static_html_generator, "PROGRESSIVE_CSV", str(results / "progressive_learning_list.csv"))
-    monkeypatch.setattr(static_html_generator, "OUTPUT_FILE", str(out))
-    static_html_generator.generate_static_html(theme="default", open_browser=False)
-
-    html = out.read_text(encoding="utf-8")
-    assert '"Forms"' in html
-    assert 'id="view-search"' in html
+def test_generated_report_carries_forms_to_the_browser():
+    """The column must survive into the journey page's word record (its 5th cell, what its search folds in), not
+    just the CSV (the old page's {keys, rows} payload before J-RETIRE)."""
+    import gzip
+    import json
+    from app import journey_render as jr
+    rows = [{"Sequence": 1, "Source File": "a.txt", "Word": "食べる", "Orth": "食べる", "Forms": "食べ|食べよ",
+             "Reading": "タベ", "Occurrences (Global)": 4.0, "Occurrences (File)": 4.0, "Count (High)": 4.0,
+             "Count (Low)": 0.0, "Context 1": "昨日は寿司を食べた。", "Src 1": "HighPriority/a.txt"}]
+    out = jr.build("ja", rows, [{"File": "a.txt", "Total Words": 8, "Known Count": 6, "Coverage (%)": 75.0}], stamp=1)
+    words = [w for blob in out.chunks for w in json.loads(gzip.decompress(blob).decode("utf-8"))["w"]]
+    assert words[0][0] == "食べる" and {"食べ", "食べよ"} <= set(words[0][4])
 
 
 # --------------------------------------------------------------------------- #

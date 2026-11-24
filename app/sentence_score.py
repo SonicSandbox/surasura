@@ -121,6 +121,7 @@ Line = namedtuple("Line", "file item_id text cost others chars context heard num
 
 BIG = 1 << 30               # a place no row has: a row off the list, a co-word never known
 _RANK_DIGITS = 9            # costs equal to this many decimals are a tie (the same terms summed in another order)
+_TIE = 10.0 ** -_RANK_DIGITS
 _LINE_COLUMNS = ("row", "src", "number", "chars", "flags", "besides", "start", "hash", "ncow", "ncrowd")
 _MOMENT_ARRAYS = ("placed", "placed_now", "known_at", "own", "lemma", "ctx", "show_only", "hear", "young")
 
@@ -324,14 +325,13 @@ def _moment_arrays(tab, moment, order, root, srcs=None, kept=None):
     `srcs` (None: every file); the list's order is `order` when one is handed in, else the table's `places`. `kept` (a
     pick's memo, `_kept`): the rows' arrays built at its first ask and each file's entry once, the files a later ask
     adds read then (the lead's waste card F6) — the arrays handed back are a copy an ask may add to."""
-    import numpy as np
     sources = tab.sources()
     if kept is not None and "arrays" in kept:
         arrays, placed_files = kept["arrays"], kept["files"]
     else:
-        arrays, placed_files = dict(_rows_kept(tab, moment, order)), {}
-        arrays.update(ctx=np.zeros(len(sources)), show_only=np.zeros(len(sources), bool),
-                      hear=np.zeros(len(sources), np.int8))
+        by_file, placed_files = _files_kept(tab, moment, root)
+        arrays = dict(_rows_kept(tab, moment, order))
+        arrays.update(by_file)
         if kept is not None:
             kept["arrays"], kept["files"] = arrays, placed_files
     ctx, show_only, hear = arrays["ctx"], arrays["show_only"], arrays["hear"]
@@ -344,11 +344,11 @@ def _moment_arrays(tab, moment, order, root, srcs=None, kept=None):
         path = rel if os.path.isabs(rel) else base + rel.replace("/", os.sep)
         at = os.path.normcase(os.path.abspath(path))
         seen = files.get(at) or Seen(heard=_unnamed(moment, path))
-        placed_files[s] = (path, at, rel, kind, digest, seen)
         context = float(seen.context or 0.0)
         ctx[s] = context if math.isfinite(context) else 0.0
         show_only[s] = bool(seen.show_only)
         hear[s] = _HEARD_CODE.get(seen.heard, 2)
+        placed_files[s] = (path, at, rel, kind, digest, seen)     # (last: a placed file's arrays are written)
     return dict(arrays), placed_files
 
 
@@ -362,6 +362,25 @@ def _unnamed(moment, path):
     except Exception:
         return REAL
     return got if got in _HEARD_CODE else REAL
+
+
+_FILES = []                 # [((the table, its sources, the moment's files, its `unnamed`), the data folder, kept)]
+
+
+def _files_kept(tab, moment, root):
+    """The files' arrays ("ctx", "show_only", "hear") and {file: entry} that `_moment_arrays` fills, kept across picks
+    for one table, data folder and moment's `files` and `unnamed` (the same objects: Connect keeps its dates while the
+    store is unchanged) — each pick placed every file of its words' lines again. Filled as asks name files; a moment's
+    `files` is read as it was handed in (another dict, another moment: placed again)."""
+    import numpy as np
+    held = (tab, tab.sources(), moment.files, moment.unnamed)
+    hit = _FILES[0] if _FILES else None            # (one read: another thread may replace the entry)
+    if hit is not None and all(a is b for a, b in zip(hit[0], held)) and hit[1] == root:
+        return hit[2]
+    n = len(held[1])
+    kept = ({"ctx": np.zeros(n), "show_only": np.zeros(n, bool), "hear": np.zeros(n, np.int8)}, {})
+    _FILES[:] = [(held, root, kept)]
+    return kept
 
 
 _ROWS = []                  # [(the table, its keys and places, the moment's known and young words, the rows' arrays)]
@@ -379,8 +398,9 @@ def _rows_kept(tab, moment, order):
     except TypeError:                       # (a moment whose words can't be compared: built each time)
         return _row_arrays(tab, moment, order)
     held = (tab, tab.head.get("keys"), tab.head.get("places"))
-    if _ROWS and all(a is b for a, b in zip(_ROWS[0][0], held)) and _ROWS[0][1] == key:
-        return _ROWS[0][2]
+    hit = _ROWS[0] if _ROWS else None              # (one read: another thread may replace the entry)
+    if hit is not None and all(a is b for a, b in zip(hit[0], held)) and hit[1] == key:
+        return hit[2]
     arrays = _row_arrays(tab, moment, order)
     for a in arrays.values():
         a.flags.writeable = False
@@ -459,13 +479,29 @@ def _spans(row):
     return {int(row[a]): (int(a), int(b)) for a, b in zip(starts, ends)}
 
 
-def _ranked(total, number, tie, src, a, b):
-    """The lines a..b that can be chosen, the lowest cost first; ties by the file's path, then the line's place."""
+_RANK_FIRST = 64            # the lines `_ranked` puts in order before the walk asks for more (a pick takes one or two)
+
+
+def _ranked(total, number, tie, src, a, b, within=None, first=_RANK_FIRST):
+    """The lines a..b that can be chosen, the lowest cost first; ties by the file's path, then the line's place —
+    `within` (file numbers): only those files' lines. Yielded as the walk takes them: the `first` lowest, with every
+    line tied with the last of them, put in order, the rest only when the walk goes past them — the whole sort's order
+    (a common word's 40,000 lines were sorted for the line or two a pick reads)."""
     import numpy as np
     c = total[a:b]
-    cand = np.flatnonzero(np.isfinite(c))
-    by = np.lexsort((number[a:b][cand], tie[src[a:b][cand]], np.round(c[cand], _RANK_DIGITS)))
-    return (cand[by] + a).tolist()
+    ok = np.isfinite(c)
+    if within is not None:
+        ok &= np.isin(src[a:b], within)
+    cand = np.flatnonzero(ok)
+    costs = np.round(c[cand], _RANK_DIGITS)
+    parts = [slice(None)]
+    if len(cand) > first:
+        head = costs <= np.partition(costs, first - 1)[first - 1]
+        parts = [head, ~head]               # (every line of the rest costs more than every line of the head)
+    for part in parts:
+        at = cand[part]
+        by = np.lexsort((number[a:b][at], tie[src[a:b][at]], costs[part]))
+        yield from (at[by] + a).tolist()
 
 
 def choose(language, keys, *, n=1, moment, length, never=None, order=None, only=None, heard_first=False,
@@ -516,14 +552,23 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
     if "with_lines" not in shared:
         shared["with_lines"] = set(tab.rows().values())
     with_lines = shared["with_lines"]
-    columns = _take(tab, sorted(with_lines) if whole else sorted({k for k in asked.values() if k in with_lines}))
-    srcs = np.unique(columns["src"]).tolist()
-    arrays, files = _moment_arrays(tab, moment, order, root, srcs, kept)
-    low, high = length
-    spans = _spans(columns["row"])
-    tie = _tie_ranks(tab.sources(), srcs)
-    src_a, num_a, hash_a, chars_a = columns["src"], columns["number"], columns["hash"], columns["chars"]
+    want = sorted(with_lines) if whole else sorted({k for k in asked.values() if k in with_lines})
     inside = None if only is None else {os.path.normcase(os.path.abspath(p)) for p in only}
+    # (a pick's later asks — more lines of a word, the mined episode's own — are rows its first ask took and costed at
+    # the same moment and Length: a line's cost is its own row's alone, so those columns and costs, never again)
+    done = shared.get("costed")
+    again = done is not None and done[0].issuperset(want) and done[1] == (tuple(length), shown) and (
+        done[2] is None or (inside is not None and inside <= done[2]))
+    if again:
+        columns, srcs, arrays, files, spans, tie = done[3]
+    else:
+        columns = _take(tab, want)
+        srcs = np.unique(columns["src"]).tolist()
+        arrays, files = _moment_arrays(tab, moment, order, root, srcs, kept)
+        spans = _spans(columns["row"])
+        tie = _tie_ranks(tab.sources(), srcs)
+    low, high = length
+    src_a, num_a, hash_a, chars_a = columns["src"], columns["number"], columns["hash"], columns["chars"]
     never_rows = {}             # by row: a key named with or without its reading is the same row's
     for key, texts in (never or {}).items():
         k = _row_of(tuple(key), exact, by_lemma)
@@ -593,23 +638,32 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
     if never_rows:
         from app.connect.sentences import same_line
     try:
-        line_code = arrays["hear"].astype(np.int64)[src_a]
-        said = [s for s in srcs if files[s][5].said is not None and (inside is None or files[s][1] in inside)]
-        if said:
-            # Kyou-PB: a lined-up book is heard line by line — its line-up's answer for each of its lines (the text
-            # read as for a line returned), handed to the cost as one more array (the lead's ruling, 2026-11-23)
-            line_hear = np.full(len(src_a), -1, np.int8)
-            for i in np.flatnonzero(np.isin(src_a, said)).tolist():
-                src, number = int(src_a[i]), int(num_a[i])
-                seen, text = files[src][5], text_of(src, number)
-                try:
-                    says = text is not None and bool(seen.said(text))
-                except Exception:
-                    says = False        # a line-up it can't read says nothing: no clip promised
-                line_hear[i] = 0 if says else _HEARD_CODE.get(seen.unsaid, 2)
-            arrays["line_hear"] = line_hear
-            line_code = np.where(line_hear >= 0, line_hear, line_code)
-        total, others, words, co_young = cost(columns, arrays, low, high)
+        if again:
+            line_code, total, others, words, co_young = done[4]
+        else:
+            line_code = arrays["hear"].astype(np.int64)[src_a]
+            said = [s for s in srcs if files[s][5].said is not None and (inside is None or files[s][1] in inside)]
+            if said:
+                # Kyou-PB: a lined-up book is heard line by line — its line-up's answer for each of its lines (the text
+                # read as for a line returned), handed to the cost as one more array (the lead's ruling, 2026-11-23)
+                line_hear = np.full(len(src_a), -1, np.int8)
+                for i in np.flatnonzero(np.isin(src_a, said)).tolist():
+                    src, number = int(src_a[i]), int(num_a[i])
+                    seen, text = files[src][5], text_of(src, number)
+                    try:
+                        says = text is not None and bool(seen.said(text))
+                    except Exception:
+                        says = False        # a line-up it can't read says nothing: no clip promised
+                    line_hear[i] = 0 if says else _HEARD_CODE.get(seen.unsaid, 2)
+                arrays["line_hear"] = line_hear
+                line_code = np.where(line_hear >= 0, line_hear, line_code)
+            total, others, words, co_young = cost(columns, arrays, low, high)
+            if kept is not None:
+                shared["costed"] = (frozenset(want), (tuple(length), shown), inside, (columns, srcs, arrays, files, spans,
+                                                                                       tie),
+                                    (line_code, total, others, words, co_young))
+        # (an ask inside some files — the mined episode's own — ranks only their lines: the walk skipped the rest)
+        within = None if inside is None else np.array(sorted(s for s in srcs if files[s][1] in inside), np.int64)
         for key, k in asked.items():
             a, b = spans.get(k, (0, 0))
             if a == b:
@@ -621,13 +675,14 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
             heard_one = False
             # (fewer than YOUNG_LINES asked, no heard ask: a young word lowers a line's cost by YOUNG × its weight at
             # most, so once a line's cost less that floor is above the nth best read so far, neither it nor any line
-            # after it can be among the n returned — its file is not read for it; the answer is the same)
-            floor = r.young * max(young_of.values()) if young_of and n < YOUNG_LINES and not heard_ask else None
-            for i in _ranked(total, num_a, tie, src_a, a, b):
+            # after it can be among the n returned — its file is not read for it; the answer is the same. One tie's
+            # width more: a line after it, equal to 9 decimals, may be a hair cheaper before the rounding)
+            floor = r.young * max(young_of.values()) if young_of and 0 < n < YOUNG_LINES and not heard_ask else None
+            for i in _ranked(total, num_a, tie, src_a, a, b, within):
                 if len(taken) >= max(n, YOUNG_LINES if young_of else 0) and (not heard_ask or heard_one):
                     break
                 if (floor is not None and len(taken) >= n
-                        and round(float(total[i]) - floor, _RANK_DIGITS) > sorted(t[0] for t in taken)[n - 1]):
+                        and round(float(total[i]), _RANK_DIGITS) - floor - _TIE > sorted(t[0] for t in taken)[n - 1]):
                     break
                 src, number, repeat = int(src_a[i]), int(num_a[i]), int(hash_a[i])
                 if repeat and repeat in texts:

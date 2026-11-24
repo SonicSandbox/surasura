@@ -227,6 +227,120 @@ def test_the_rows_arrays_are_built_once_across_picks_at_one_moment_and_again_for
     assert tab.head["keys"]
 
 
+@pytest.mark.parametrize("lang, key, word, here_line", [(c[0], c[1], c[2], c[3]) for c in CASES])
+def test_a_picks_later_asks_take_and_cost_no_line_again(monkeypatch, lang, key, word, here_line):
+    # why: a pick asks the score up to three times — its first line, more when that one can't be cut, the mined
+    # episode's own — and each ask took the word's every line from the table and costed them again: the same rows at
+    # the same moment (a line's cost is its own row's alone), so one take and one cost a pick, the answer the same
+    w = World(monkeypatch, lang)
+    w.table(key, [("ep01", [here_line])] + [(f"ep{n:02d}", [t]) for n, t in enumerate(LINES[lang][:4], 2)], word)
+    for n in range(1, 6):
+        w.place(f"ep{n:02d}", n)
+    first = sentences.choose(lang, [key], dial=sentences.BEST, young={}, top=1)[key][0]
+    assert first.item_id != 1
+    real_choose = SS.choose
+    monkeypatch.setattr(SS, "choose", lambda *a, memo=None, **k: real_choose(*a, **k))      # each ask on its own
+    alone = sentences.choose(lang, [key], here=w.path("ep01"), dial=sentences.BEST, young={},
+                             reach=lambda item: item != first.item_id, top=1)[key]
+    monkeypatch.setattr(SS, "choose", real_choose)
+    calls = []
+    for name in ("_take", "cost"):
+        real = getattr(SS, name)
+        monkeypatch.setattr(SS, name, lambda *a, _n=name, _f=real, **k: calls.append(_n) or _f(*a, **k))
+    got = sentences.choose(lang, [key], here=w.path("ep01"), dial=sentences.BEST, young={},
+                           reach=lambda item: item != first.item_id, top=1)[key]
+    assert got == alone and [c.here for c in got] == [False, True] and got[0].item_id != first.item_id
+    assert sorted(calls) == ["_take", "cost"], calls
+
+
+@pytest.mark.parametrize("lang, key, word", [(c[0], c[1], c[2]) for c in CASES])
+def test_a_picks_files_are_placed_once_while_the_librarys_dates_are_kept(monkeypatch, lang, key, word):
+    # why: each pick placed every file of its words' lines again (its path, how it is heard, its context: a 20,000
+    # file library's commonest words are in most of its files) — kept now while the dates Connect keeps are the same
+    w = World(monkeypatch, lang)
+    w.table(key, [(f"ep{n:02d}", [t]) for n, t in enumerate(LINES[lang], 1)], word)
+    for n in (1, 2, 3):
+        w.place(f"ep{n:02d}", n)                    # ep04 and ep05: outside the store, heard by their extension
+    stamp = [(1, 1)]
+    monkeypatch.setattr(sentences, "_store_stamp", lambda language: stamp[0])
+    placed = []
+    real = SS._unnamed
+    monkeypatch.setattr(SS, "_unnamed", lambda *a: placed.append(1) or real(*a))
+    picks = [sentences.choose(lang, [key], dial=sentences.BEST, young={}, top=1)[key] for _pick in range(3)]
+    assert picks[0] == picks[1] == picks[2] and picks[0]
+    assert len(placed) == 2, placed                 # the first pick's two, none after
+    stamp[0] = (2, 2)                               # the store written: its dates read again, every file placed again
+    assert sentences.choose(lang, [key], dial=sentences.BEST, young={}, top=1)[key] == picks[0]
+    assert len(placed) == 4
+
+
+@pytest.mark.parametrize("lang, key, word", [(c[0], c[1], c[2]) for c in CASES])
+def test_a_library_with_a_lined_up_book_keeps_its_files_placed_while_the_books_line_up_is_the_same(monkeypatch, lang,
+                                                                                                  key, word):
+    # why: a paired book's hearing is asked again at every pick (its line-up writes nothing to the store), and the
+    # dates came back as new dicts each time even when every book's answer was the same: every file placed again
+    from app.connect import lineup
+    w = World(monkeypatch, lang)
+    w.table(key, [(f"ep{n:02d}", [t]) for n, t in enumerate(LINES[lang], 1)], word)
+    for n in (1, 2):
+        w.place(f"ep{n:02d}", n)
+    book = os.path.normcase(os.path.abspath(w.path("ep03")))
+    w.info[book] = (3, 0.0, sentences.REAL, True, False, ("book-3", {"state": "done"}))
+    answer = [lineup.Reach(frozenset(), frozenset(), ())]
+    monkeypatch.setattr(lineup, "reach", lambda record: answer[0])
+    monkeypatch.setattr(sentences, "_store_stamp", lambda language: (1, 1))
+    placed = []
+    real = SS._unnamed
+    monkeypatch.setattr(SS, "_unnamed", lambda *a: placed.append(1) or real(*a))
+    picks = [sentences.choose(lang, [key], dial=sentences.BEST, young={}, top=1)[key] for _pick in range(3)]
+    assert picks[0] == picks[1] == picks[2] and picks[0]
+    assert len(placed) == 2, placed                 # ep04 and ep05 at the first pick, none after
+    answer[0] = lineup.Reach(frozenset(), frozenset(), ())      # the line-up done again: another answer
+    assert sentences.choose(lang, [key], dial=sentences.BEST, young={}, top=1)[key] == picks[0]
+    assert len(placed) == 4
+
+
+# --- the walk's order ---------------------------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("lang, key, word, here_line", [(c[0], c[1], c[2], c[3]) for c in CASES])
+def test_the_mined_episodes_own_ask_ranks_only_that_episodes_lines(monkeypatch, lang, key, word, here_line):
+    # why: the episode's own line was found by ranking the word's every line in the library and walking past the
+    # other files' ones (a common word: tens of thousands) — now only the episode's lines are ranked; the same line
+    w = World(monkeypatch, lang)
+    others = [(f"ep{n:02d}", [t]) for n, t in enumerate(LINES[lang][:4] * 5, 2)]
+    w.table(key, [("ep01", [here_line])] + others, word)
+    for n in range(1, len(others) + 2):
+        w.place(f"ep{n:02d}", n)
+    ranked = []
+    real = SS._ranked
+    monkeypatch.setattr(SS, "_ranked", lambda *a, **k: (lambda got: ranked.append(len(got)) or iter(got))(
+        list(real(*a, **k))))
+    got = sentences.choose(lang, [key], here=w.path("ep01"), dial=sentences.BEST, young={}, top=1)[key]
+    assert [c.text for c in got if c.here] == [here_line] and not got[0].here
+    assert ranked == [len(others) + 1, 1], ranked     # the first ask: every line; the episode's own: its one
+
+
+def test_the_lines_are_put_in_order_as_the_walk_takes_them_and_the_order_is_the_whole_sorts():
+    # why: a word's every line was sorted for the one or two a pick reads; the first few (with every line tied with
+    # the last of them) are put in order first, the rest only when the walk goes past them — the same order
+    import numpy as np
+    rng = np.random.default_rng(7)
+    n = 300
+    total = np.round(rng.integers(0, 12, n) / 4.0 + rng.integers(0, 3, n) * 1e-12, 12)   # ties within 9 decimals
+    total[rng.integers(0, n, 20)] = np.inf
+    number, src = rng.integers(0, 50, n), rng.integers(0, 40, n)
+    tie = rng.permutation(40)
+    whole = sorted((i for i in range(10, 290) if np.isfinite(total[i])),
+                   key=lambda i: (round(float(total[i]), SS._RANK_DIGITS), int(tie[src[i]]), int(number[i])))
+    for first in (1, 4, 64, 1000):
+        assert list(SS._ranked(total, number, tie, src, 10, 290, first=first)) == whole
+    within = np.array([3, 17, 22], np.int64)
+    assert list(SS._ranked(total, number, tie, src, 10, 290, within=within, first=4)) == [
+        i for i in whole if src[i] in (3, 17, 22)]
+    lazy = SS._ranked(total, number, tie, src, 10, 290, first=4)
+    assert [next(lazy) for _ in range(3)] == whole[:3]
+
+
 # --- the cap ------------------------------------------------------------------------------------------------------- #
 
 def _long_first(tmp_path, lang, texts, long_ones):

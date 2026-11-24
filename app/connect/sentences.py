@@ -530,7 +530,7 @@ def _dates(language, ai):
         _DATES.pop((language, ai), None)
     else:
         _DATES[(language, ai)] = (stamp, now, info, seen)
-    return info, seen
+    return _heard_now(info, seen, ai)       # (the same answers as the read's: the next pick's objects from the first)
 
 
 def _seen_of(v, ai):
@@ -542,6 +542,9 @@ def _seen_of(v, ai):
     return sentence_score.Seen(v[0], v[1], v[2], v[4])
 
 
+_HEARD = {}                 # ai -> (the kept dates' {path: Seen}, each paired book's answer, `_heard_now`'s answer)
+
+
 def _heard_now(info, seen, ai):
     """The kept dates with each paired book's hearing asked again (`lineup.reach`, once a book): a line-up that
     finished, was done again or lost its audio since writes nothing to the store, so the stamp can't tell -> fresh
@@ -550,18 +553,27 @@ def _heard_now(info, seen, ai):
     paired = [at for at, v in info.items() if len(v) > 5 and v[5] is not None]
     if not paired:
         return info, seen
-    info, seen, reach = dict(info), dict(seen), {}
+    reach = {}
     for at in paired:
-        v = info[at]
-        key, record = v[5]
+        key, record = info[at][5]
         if key not in reach:
             try:
                 reach[key] = lineup.reach(record)
             except Exception:       # a line-up's state not as written: no clip promised (`_library`'s rule)
                 reach[key] = None
-        got = reach[key]
+    # (each book's answer the same object as the pick before — `lineup.reach` keeps one while its files are unchanged —
+    # so the fresh dates are the same: the same objects back, and the score keeps its files' arrays by them)
+    was = _HEARD.get(ai)
+    if was is not None and was[0] is seen and was[1].keys() == reach.keys() and all(
+            was[1][k] is got for k, got in reach.items()):
+        return was[2]
+    kept_seen, info, seen = seen, dict(info), dict(seen)
+    for at in paired:
+        v = info[at]
+        got = reach[v[5][0]]
         info[at] = v[:2] + (got if isinstance(got, lineup.Reach) else heard(v[3], got is not None, ai),) + v[3:]
         seen[at] = _seen_of(info[at], ai)
+    _HEARD[ai] = (kept_seen, reach, (info, seen))
     return info, seen
 
 
@@ -617,6 +629,22 @@ def read_ahead(language):
         return False
 
 
+_UNNAMED = {}               # ai -> how a file outside the store is heard (`_unnamed_of`)
+
+
+def _unnamed_of(ai):
+    """How a file outside the store is heard — a book or a text by its own extension -> REAL / AI_VOICE / SILENT: the
+    moment's `unnamed`, one function for each `ai` (the score keeps its files' arrays while it is the same object)."""
+    got = _UNNAMED.get(ai)
+    if got is None:
+        from app.connect import library
+
+        def got(path):
+            return heard(library.text_only({"rel_path": path}), False, ai)
+        _UNNAMED[ai] = got
+    return got
+
+
 def _scored(language, keys, here_key, never, young, files, reach, books, ai, settings, only=None, top=TOP):
     """`choose` for the keys that are rows of the table, by the score (`sentence_score.choose`: one cost a line, the
     lowest first; every line of the word, not a kept few) -> {key: [Choice, …]} at most `top` a word, plus the mined
@@ -629,7 +657,8 @@ def _scored(language, keys, here_key, never, young, files, reach, books, ai, set
     merely worse: a video whose media can't be cut (`reach`), a book's line where books can't be mined (`books`
     off); a silent line is weighed, never removed. A lined-up book's line its line-up never says is weighed as its
     own book with no audiobook inside the score (`_dates`: `Seen.said`, line by line — the lead's ruling, 2026-11-23);
-    a file outside the store, which the score hears by its own clip, is moved by the two hearing rates here."""
+    a file outside the store is heard inside the score by Connect's own rule (`_unnamed_of`); a line Connect hears
+    otherwise than the score did is moved by the two hearing rates here."""
     from app import plan_rules
     if plan_rules.SENTENCE_TABLE < 1:
         return None
@@ -637,10 +666,8 @@ def _scored(language, keys, here_key, never, young, files, reach, books, ai, set
     from app.connect import library
     info, seen = _dates(language, ai)
     _lo, _hi, low, high = sentence_corpus.length_range(settings)
-
-    def unnamed(path):                      # a file outside the store: a book or a text by its own extension
-        return heard(library.text_only({"rel_path": path}), False, ai)
-    moment = sentence_score.Moment(files=seen, young=dict(young or {}), known=known_since(language), unnamed=unnamed)
+    moment = sentence_score.Moment(files=seen, young=dict(young or {}), known=known_since(language),
+                                   unnamed=_unnamed_of(ai))
     rate = sentence_score.rates()
     hearing = {REAL: rate.heard_real, AI_VOICE: rate.heard_ai, SILENT: rate.heard_silent}
     inside = only

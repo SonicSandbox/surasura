@@ -177,25 +177,28 @@ def cost(columns, moment, low, high, r=None):
     _arrays_only("moment", moment)
     r = r or rates()
     low, high = int(low), int(high)
-    row = columns["row"].astype(np.int64)
+    # (copy=False: a column already int64 — every one `_take` hands in — is read as it is, never copied; nothing below
+    # writes into one)
+    row = columns["row"].astype(np.int64, copy=False)
     n = len(row)
-    chars = columns["chars"].astype(np.int64)
-    flags = columns["flags"].astype(np.int64)
-    src = columns["src"].astype(np.int64)
+    chars = columns["chars"].astype(np.int64, copy=False)
+    flags = columns["flags"].astype(np.int64, copy=False)
+    src = columns["src"].astype(np.int64, copy=False)
     placed, placed_now = moment["placed"], moment["placed_now"]
     mine = placed[row]
 
     # Other new words: a co-word that is not the word itself and not known above it
     lines = np.arange(n, dtype=np.int64)
-    cow = columns["cow"].astype(np.int64)
-    cow_line = np.repeat(lines, columns["ncow"].astype(np.int64))
+    cow = columns["cow"].astype(np.int64, copy=False)
+    cow_line = np.repeat(lines, columns["ncow"].astype(np.int64, copy=False))
     own_c = moment["own"][cow]
-    its_own = own_c == row[cow_line]
+    row_c = row[cow_line]
+    its_own = own_c == row_c
     known = moment["known_at"][cow] < mine[cow_line]
     words = np.bincount(cow_line[~its_own & ~known], minlength=n)
     # New set phrases: a phrase row that is not the word's own and not taught above it
-    crowd = columns["crowd"].astype(np.int64)
-    crowd_line = np.repeat(lines, columns["ncrowd"].astype(np.int64))
+    crowd = columns["crowd"].astype(np.int64, copy=False)
+    crowd_line = np.repeat(lines, columns["ncrowd"].astype(np.int64, copy=False))
     new_phrase = (crowd != row[crowd_line]) & ~(placed_now[crowd] < mine[crowd_line])
     phrases = np.bincount(crowd_line[new_phrase], minlength=n)
 
@@ -221,9 +224,16 @@ def cost(columns, moment, low, high, r=None):
     heard = np.asarray((r.heard_real, r.heard_ai, r.heard_silent), np.float64)[hear]
     young = np.zeros(n)
     lemma = moment["lemma"]            # (never one of the word's own other readings)
-    learning = ~its_own & known & (own_c >= 0) & (lemma[np.maximum(own_c, 0)] != lemma[row[cow_line]])
-    if learning.any():
-        np.maximum.at(young, cow_line[learning], moment["young"].astype(np.float64)[cow[learning]])
+    weights = moment["young"].astype(np.float64, copy=False)
+    # (np.maximum from zeros leaves a line as it was for a weight <= 0, so only the co-words with another weight are
+    # read — none at all for a learner with no young card: 1.69 M co-words at a 400-file Chinese library, E-FAST 6)
+    has = ~(weights <= 0)
+    if has.any():
+        some = np.flatnonzero(has[cow])
+        line_of, own_s = cow_line[some], own_c[some]
+        learning = ~its_own[some] & known[some] & (own_s >= 0) & (lemma[np.maximum(own_s, 0)] != lemma[row_c[some]])
+        if learning.any():
+            np.maximum.at(young, line_of[learning], weights[cow[some][learning]])
 
     total = (r.new_word * words + r.new_phrase * phrases + r.outside * outside + r.few_words_cost * few
              + r.late_cost * late_cost - r.context * ctx[src] + heard - r.young * young)

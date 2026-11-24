@@ -553,6 +553,58 @@ def test_one_pick_builds_the_scores_setup_once_across_its_asks_and_chooses_the_s
     assert got[-1].here and got[-1].text == LONG_JA
 
 
+def test_a_memo_kept_from_another_moment_is_built_again_and_never_answers_for_it(monkeypatch):
+    # why: the memo is the asks of one pick's — a caller that hands the same dict to another moment (another young
+    # word, another file's date) gets that moment's choices, never the first one's arrays
+    w = World(monkeypatch)
+    w.table(FEST, FIVE, "文化祭")
+    root, memo = get_data_path("ja"), {}
+    at = {name: os.path.normcase(os.path.abspath(w.path(name))) for name, _lines in FIVE}
+    old = SS.Moment(files={at["ep01"]: SS.Seen(1, 1.0)}, root=root)
+    new = SS.Moment(files={at["ep05"]: SS.Seen(5, 1.0)}, root=root)
+    for moment in (old, new, old):
+        kept = SS.choose("ja", [FEST], n=5, moment=moment, length=(14, 25), memo=memo)[FEST]
+        fresh = SS.choose("ja", [FEST], n=5, moment=moment, length=(14, 25))[FEST]
+        assert [(l.text, l.cost) for l in kept] == [(l.text, l.cost) for l in fresh]
+    assert SS.choose("ja", [FEST], n=1, moment=new, length=(14, 25))[FEST][0].text == LONG_JA !=         SS.choose("ja", [FEST], n=1, moment=old, length=(14, 25))[FEST][0].text
+
+
+def test_the_mined_episodes_own_line_comes_back_after_an_ask_that_heard_a_lined_up_book_line_by_line(monkeypatch):
+    # why: the asks of one pick share the moment's arrays (the waste card) — the first ask's per-line hearing of a
+    # lined-up book is its own: the next ask (the mined episode's own line, apart) never inherits it
+    w = World(monkeypatch)
+    episodes = [(f"ch{n:02d}", [FESTIVAL]) for n in range(1, 10)] + [("ep01", [LONG_JA])]
+    w.table(FEST, episodes, "文化祭")
+    for n in range(1, 10):
+        w.place(f"ch{n:02d}", n, hear=_said(FESTIVAL), text=True)
+    w.place("ep01", 10)
+    got = sentences.choose("ja", [FEST], here=w.path("ep01"), dial=sentences.BEST, young={},
+                           reach=lambda item: True)[FEST]
+    assert len(got) == sentences.TOP + 1 and all(c.audio and not c.here for c in got[:-1])
+    assert got[-1].here and got[-1].text == LONG_JA
+
+
+def test_a_later_ask_for_other_words_never_inherits_the_first_asks_per_line_hearing(monkeypatch):
+    # why: the moment's arrays are shared by the asks of one pick (the waste card); the per-line hearing of a lined-up
+    # book is one ask's own, sized to its lines — a later ask (a growth ask, other words) reads its own or none
+    w = World(monkeypatch)
+    ready, ready_key = "明日の準備はもう終わったの？", ("準備", "じゅんび")
+    tab = w.lib.table([FEST, ready_key], [("book01", [FESTIVAL, SIGN]), ("ep02", [ready])],
+                      lambda f, n, t: L(0, f, n, t, "文化祭") if "文化祭" in t else
+                      (L(1, f, n, t, "準備") if "準備" in t else None), folder="HighPriority/show")
+    w.tokens.update({w.path("book01"): [(FESTIVAL, []), (SIGN, [])], w.path("ep02"): [(ready, [])]})
+    monkeypatch.setattr(SS, "_table", lambda language: tab)
+    book = os.path.normcase(os.path.abspath(w.path("book01")))
+    moment = SS.Moment(files={book: SS.Seen(1, 0.0, said=lambda text: text == SIGN)}, root=get_data_path("ja"))
+    memo = {}
+    first = SS.choose("ja", [FEST], n=2, moment=moment, length=(1, 99), memo=memo)[FEST]
+    assert [(l.text, l.heard) for l in first] == [(SIGN, SS.REAL), (FESTIVAL, SS.SILENT)]
+    later = SS.choose("ja", [ready_key], n=1, moment=moment, length=(1, 99), memo=memo)[ready_key]
+    fresh = SS.choose("ja", [ready_key], n=1, moment=moment, length=(1, 99))[ready_key]
+    assert [(l.text, l.cost, l.heard) for l in later] == [(l.text, l.cost, l.heard) for l in fresh]
+    assert later[0].text == ready
+
+
 def test_a_book_outside_the_store_is_weighed_as_a_book_with_no_audiobook(monkeypatch):
     # why: the score hears a file it has no word of by its own clip; Connect knows a book or a text by its extension
     # (`library.text_only`) — with no store (or a file it doesn't hold) a book's line is weighed silent, as today

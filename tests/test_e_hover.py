@@ -38,6 +38,14 @@ def run(request, tmp_path_factory):
         json.dump({"logic": {"context": {"max_chars": NEVER_LONGER}}}, f)
     cases.generate(root, case, extra_env={"SURASURA_SENTENCE_TABLE": "2"})
     results = os.path.join(root, "results")
+    # A level-2 Generate stamps its plan format 5 (E-REDRAW), whose pools and first sentences are the table's; these
+    # tests read the plan's own first sentences as today's answer, which part 1's plan still carries: read as format 4
+    path = os.path.join(results, analyzer.PLAN_FILE)
+    with gzip.open(path, "rb") as fh:
+        lines = fh.read().split(b"\n")
+    lines[0] = json.dumps(dict(json.loads(lines[0]), format=4)).encode("utf-8")
+    with gzip.open(path, "wb") as fh:
+        fh.write(b"\n".join(lines))
     return types.SimpleNamespace(language=language, root=root, results=results,
                                  plan_path=os.path.join(results, analyzer.PLAN_FILE),
                                  table_path=os.path.join(results, sentence_table.TABLE_FILE),

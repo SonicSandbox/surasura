@@ -46,7 +46,7 @@ from app import plan_rules
 # `plan_rules.SENTENCE_TABLE >= 2`: the sentences live in the sentence table beside the plan, `app/sentence_table.py`;
 # the plan's own pools and first sentences are never read, and a format-4 plan reads "Generate first", SPEC § 3.6)
 FORMAT = 5 if plan_rules.SENTENCE_TABLE >= 2 else 4
-FORMATS = (1, 2, 3, 4, 5)
+FORMATS = (1, 2, 3, 4, 5) if plan_rules.SENTENCE_TABLE >= 2 else (1, 2, 3, 4)    # (5 unknown below release 2)
 PICKS_IN_TABLE = 5                         # from this format on a row's sentences are the table's (`Engine.contexts`)
 TIERS = ("now", "soon", "goal")            # the analysed tiers, in the order a Generate reads them
 _SLOT = {"now": 0, "soon": 1, "goal": 2}

@@ -117,6 +117,13 @@ def _reader(root, language, keys, max_contexts=3):
     return {tuple(k): v for k, v in got}
 
 
+def _release_2(monkeypatch, on=True):
+    """This process read as at level 2 (a child takes it from SURASURA_SENTENCE_TABLE, at import), or as below it."""
+    monkeypatch.setattr(plan_rules, "SENTENCE_TABLE", 2 if on else 0)
+    monkeypatch.setattr(plan_engine, "FORMAT", 5 if on else 4)
+    monkeypatch.setattr(plan_engine, "FORMATS", (1, 2, 3, 4, 5) if on else (1, 2, 3, 4))
+
+
 def _generated(language, folder, **kw):
     case = f"rp2-{language}"
     root = str(folder)
@@ -206,8 +213,7 @@ def test_a_format_5_plan_holds_its_sentences_in_the_table_and_a_move_reads_none(
     # and the engine's move (the window's own numbers) and the lean load open no sentence table
     with gzip.open(run.plan_path, "rb") as f:
         assert json.loads(f.readline())["format"] == 5, "a level-2 Generate writes format 5"
-    monkeypatch.setattr(plan_rules, "SENTENCE_TABLE", 2)
-    monkeypatch.setattr(plan_engine, "FORMAT", 5)
+    _release_2(monkeypatch)
     opened = []
     monkeypatch.setattr(sentence_table, "open_table", lambda *a, **k: opened.append(a) or None)
     for pools in (True, False):
@@ -219,18 +225,24 @@ def test_a_format_5_plan_holds_its_sentences_in_the_table_and_a_move_reads_none(
         changed, moved = eng.move([soon[-1]], "now")
         assert moved == [soon[-1]] and changed
     assert opened == [], "the move and the lean load open no sentence table"
-    # the same numbers as the plan read as format 4 below release 2: the move doesn't hang on the sentences
-    monkeypatch.setattr(plan_rules, "SENTENCE_TABLE", 0)
-    monkeypatch.setattr(plan_engine, "FORMAT", 4)
-    a = plan_engine.Engine(plan_engine.load(run.plan_path, pools=False))
-    b = plan_engine.Engine(plan_engine.load(run.plan_path, pools=False))
+    # the same numbers as the same plan read as format 4 (its old tables decoded): the move doesn't hang on them
+    with gzip.open(run.plan_path, "rb") as f:
+        lines = f.read().split(b"\n")
+    lines[0] = json.dumps(dict(json.loads(lines[0]), format=4)).encode("utf-8")
+    old = os.path.join(os.path.dirname(run.plan_path), "plan-as-4.json.gz")
+    with gzip.open(old, "wb") as f:
+        f.write(b"\n".join(lines))
+    a = plan_engine.Engine(plan_engine.load(run.plan_path))
+    b = plan_engine.Engine(plan_engine.load(old))
+    assert any(len(fs) for fs in b._fs), "(format 4: the first sentences read)"
     assert a.move([soon[-1]], "now") == b.move([soon[-1]], "now")
+    os.remove(old)
 
 
 def test_a_format_5_plan_with_no_chooser_or_no_table_is_a_generate(run, monkeypatch):
     # why: a release-2 plan's sentences are the table's alone: with none to ask, the redraw Generates, never shows
     # the plan's leftovers
-    monkeypatch.setattr(plan_rules, "SENTENCE_TABLE", 2)
+    _release_2(monkeypatch)
     eng = plan_engine.Engine(plan_engine.load(run.plan_path))
     with pytest.raises(plan_engine.PlanError):
         eng.result(pick=True)
@@ -262,8 +274,7 @@ def test_a_format_4_plan_at_release_2_reads_generate_first(run, tmp_path, monkey
     old = str(tmp_path / analyzer.PLAN_FILE)
     with gzip.open(old, "wb") as f:
         f.write(b"\n".join(lines))
-    monkeypatch.setattr(plan_rules, "SENTENCE_TABLE", 2)
-    monkeypatch.setattr(plan_engine, "FORMAT", 5)
+    _release_2(monkeypatch)
     assert plan_engine.read_header(old) is None
     plan = plan_engine.load(old)
     verdict = plan_engine.check(plan, run.language, plan.header["engine"], plan.header["run_signature"], None)
@@ -273,12 +284,14 @@ def test_a_format_4_plan_at_release_2_reads_generate_first(run, tmp_path, monkey
         ("generate-first", "signature"), "below release 2 the format is not asked (today's verdict)"
 
 
-def test_with_only_i_plus_one_the_redraw_still_generates_and_the_reader_keeps_every_word_today_keeps(run, tmp_path):
+def test_with_only_i_plus_one_the_redraw_still_generates_and_the_reader_keeps_every_word_today_keeps(run, tmp_path,
+                                                                                                      monkeypatch):
     # why: SPEC § 6.3 row 15 — *Only i+1* skips a word with no i+1 sentence; the fast re-plan stands aside with it on
     # (`aside_reasons`: "i+1"), so a move Generates as today; the reader's `clean_only` (every line of the word, not
     # 60 + 15) never loses a word today's list keeps
     root = _generated(run.language, tmp_path / "root", extra_args=["--only-i-plus-one"])
     results = os.path.join(root, "results")
+    _release_2(monkeypatch)
     plan = plan_engine.load(os.path.join(results, analyzer.PLAN_FILE), pools=False)
     assert "i+1" in plan_engine.aside_reasons(plan)
     kept_today = list(_columns(results))

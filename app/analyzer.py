@@ -6297,6 +6297,9 @@ def main():
 
     # pandas is only needed from here on (to write the CSVs on a full run). Import it lazily so the
     # "nothing changed" skip path above never pays its ~0.35s import cost.
+    if plan_rules.SENTENCE_TABLE >= 1:
+        from app import sentence_score
+        sentence_score.numpy_one_thread()   # (pandas brings numpy in: its BLAS held to one thread, as the table)
     import pandas as pd
 
     # F7: only the order moved since the last Generate, and the journey keeper asks for the journey: redrawn from that
@@ -6760,7 +6763,7 @@ def main():
 
     # The sentence table (plan_rules.SENTENCE_TABLE >= 1; app/sentence_table.py): every candidate line of every word
     # and phrase, as numbers, appended where the shortlists below are offered one — off (0), None: nothing changes.
-    _table = None
+    _table = _cores = None
     if plan_rules.SENTENCE_TABLE >= 1 and _plan_on:
         from app import sentence_table
         _table = sentence_table.Packer()
@@ -6773,27 +6776,27 @@ def main():
         _held_words = [None, None]
         _file_words = [None]        # the file's lines as the indexer counted them (Store.file_words), or None
         _counted = [0, 0]           # lines read from those counts · lines counted here
+        # The lines' two numbers on other cores (E-CORES: sentence_table.Cores; one process on one core, a small
+        # library or no store): the walk offers the same lines in the same order, the numbers written in at the end.
+        _cores = sentence_table.Cores.start(len(found_files), _store, language, _people)
+        if _cores is not None:
+            _file_words = None      # the workers read the kept counts themselves
+
+            def _read_again(path):  # a file no worker answered: read as the walk reads it
+                words = [None]
+                return _sentences_of(path, words), words[0]
+            _cores.reads(_read_again, language, _people)
 
         def _line_words(s_text, s_tokens, s_no):
             """The line's words for the table's two numbers: as the indexer counted them (sentence_table.KeptWords,
             E-INDEX), else counted here (sentence_table.LineWords) — the same numbers. Made once a line. A line it
-            can't count reads as none (0, 0): the table never fails the run."""
+            can't count reads as none (0, 0): the table never fails the run. With workers: `_cores` keeps the
+            question."""
+            if _cores is not None:
+                return _cores.line(s_text, s_tokens, s_no)
             if _held_words[0] is not s_tokens:
-                kept, words = _file_words[0], None
-                if kept is not None:
-                    try:
-                        words = kept.line(s_no, s_tokens, s_text, _people)
-                    except Exception:
-                        pass                # counted here instead
-                if words is not None:
-                    _counted[0] += 1
-                else:
-                    _counted[1] += 1
-                    try:
-                        words = sentence_table.LineWords(s_tokens, s_text, language, _people)
-                    except Exception:
-                        words = sentence_table.LineWords((), "", language)
-                _held_words[0], _held_words[1] = s_tokens, words
+                _held_words[0], _held_words[1] = s_tokens, sentence_table.line_words(
+                    _file_words[0], s_no, s_tokens, s_text, language, _people, _counted)
             return _held_words[1]
 
     # --- AGGREGATION PASS ---
@@ -6807,6 +6810,8 @@ def main():
 
         # Cached tokenized sentences from the store (fresh for changed files, reused otherwise).
         sentences = _sentences_of(file_path, _file_words if _table is not None else None)
+        if _table is not None and _cores is not None:
+            _cores.file(file_path, _table)
 
         file_total_words = 0
         file_known_words = 0
@@ -7309,6 +7314,8 @@ def main():
             src_place[src_idx] = (rank, 0)
             try:
                 sentences = list(_sentences_of(file_path, _file_words if _table is not None else None))
+                if _table is not None and _cores is not None:
+                    _cores.file(file_path, _table)
             except Exception as e:
                 print(f"Warning: a finished file couldn't be read for example sentences ({e}).")
                 continue
@@ -8201,6 +8208,9 @@ def main():
             # The sentence table beside the plan, on the plan's rows, sources and co-words' rule (one rule, numbered
             # by key as the plan's are). Never fails the run: without it a reader takes today's path.
             try:
+                if _cores is not None:
+                    _cores.settle(_table)
+                    _counted = _cores.counted
                 _signed.update((os.path.abspath(entry[0]), entry) for entry in (_sig_parts or {}).get("files") or ())
                 _listed_at = {}             # each row's place in the list just written (progressive_rows' order)
                 for _place, _row in enumerate(progressive_rows):
@@ -8218,6 +8228,8 @@ def main():
                       f"counted when indexed: {_counted[0]:,} lines, here: {_counted[1]:,}).")
             except Exception as e:
                 print(f"Warning: could not write the sentence table ({e}); cards take today's path.")
+        if _cores is not None:
+            _cores.close()
         del _table
 
     _drawn = None               # the journey's stones the report was drawn from (`signed_render`)

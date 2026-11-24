@@ -682,6 +682,7 @@ class Store:
         self._names = None          # the library's name tables, read on the first cached file (Japanese)
         self._adjust = None         # (meta names_adjust as stored, parsed): `_names_entry`
         self._no_words = False      # a store made before the `words` column, opened to read only: `file_words`
+        self.switches = None        # the name switches (`_library_switches`) a process without the run's settings reads
 
     def close(self):
         try:
@@ -765,7 +766,7 @@ class Store:
     def _named(self, sentences, names_blob, joined=None):
         """`sentences` with the library's name tables applied (`file_tokens`); `joined`, a set: receives the numbers
         of the sentences a table joined."""
-        switches = _library_switches(self.language)
+        switches = self.switches if self.switches is not None else _library_switches(self.language)
         if names_blob and any(switches):
             if self._names is None:
                 self._names = self.names_tables() or {}

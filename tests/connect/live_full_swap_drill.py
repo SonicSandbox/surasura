@@ -50,6 +50,13 @@ REAL = {"A": ("音楽", "音楽を聴くのが好きだ。", "好きな音楽の
         "C": ("説明", "詳しい説明をお願いします。", "説明しよう")}
 
 
+def _fold_b(text):
+    """A field's text, markup out and NFKC, for comparing sentences."""
+    import re
+    import unicodedata
+    return "".join(unicodedata.normalize("NFKC", re.sub(r"<[^>]+>", "", text or "")).split())
+
+
 def media_names_in(ask, nid, mapping):
     """The media a note's clip and picture fields name now (the drill's teardown deletes them)."""
     from app.connect import sentence_audio
@@ -350,7 +357,7 @@ def main():
                 timed[key] = round(time.perf_counter() - t0, 2)
                 out[f"write_{key}"] = (kind, said == notes[key], learned)
                 finish(key, word, other, row)
-            if a.miner:                         # B, hand edited: the simple Swap's new card, mined for real, timed
+            if a.miner:                         # B, hand edited: the simple Swap's new card, made for real, timed
                 word, _line, other = CARDS["B"]
                 start, end, text = out["lines"]["B"]
                 job = ledger.job_by_id(rows[word]["job_id"])
@@ -360,7 +367,9 @@ def main():
                 t0 = time.perf_counter()
                 for tries in range(1, 41):
                     try:
-                        done = steps.mine("ja", job, picked, words, 1)
+                        # AM-FIX: the batch's own step (`runner._mine_batch`): B's old card is a Lapis note of its
+                        # word, so a bare `mine` is refused as its duplicate (FS-R) — Swap makes it beside the old one
+                        done = runner._mine_batch(steps, ledger, "ja", job, picked, words, 1)
                         break
                     except runner.Wait as e:
                         if tries == 40:
@@ -374,6 +383,22 @@ def main():
                 if got_b.get("note_id"):
                     write("addTags", notes=[int(got_b["note_id"])], tags=drill_tag)     # torn down with the drill's
                     stored |= set(media_names_in(ask, int(got_b["note_id"]), mapping))
+                    new_b = ask("notesInfo", notes=[int(got_b["note_id"])])[0]
+                    old_b = ask("notesInfo", notes=[notes["B"]])[0]
+                    nf, of = ({f: v["value"] for f, v in n["fields"].items()} for n in (new_b, old_b))
+                    sent = mapping.fields.get("sentence") or "Sentence"
+                    media = media_names_in(ask, int(got_b["note_id"]), mapping)
+                    out["new_B"] = {
+                        "a_new_note": int(got_b["note_id"]) != notes["B"],
+                        "word_side_the_old_cards": all(nf[f] == of[f] for f in ("Expression", "MainDefinition",
+                                                                              "Glossary") if f in nf),
+                        "sentence_the_new_line": _fold_b(nf.get(sent)) != _fold_b(of.get(sent)) and
+                        _fold_b(word) in _fold_b(nf.get(sent)), "sentence": nf.get(sent),
+                        "media_in_anki": {m: bool(write("retrieveMediaFile", filename=m)) for m in media},
+                        "job_tag": f"surasura::connect::{runner._tag(job)}".lower() in
+                        {x.lower() for x in new_b["tags"]},
+                        "deck": ask("getDecks", cards=ask("findCards", query=f"nid:{got_b['note_id']}")),
+                        "sentence_furigana": nf.get("SentenceFurigana")}
             out["write_seconds"] = timed
             time.sleep(1.5)
             try:

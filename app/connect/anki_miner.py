@@ -1105,7 +1105,8 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
         episode = runfile.reading_episode(run_id, reading, runfile.word_requests(words, named, book=True), tags)
     else:
         episode = runfile.episode(run_id, video, subtitle, runfile.word_requests(words, named, app=info.get("app")), tags=tags,
-                                  subtitle_offset=subtitle_offset, audio=audio, names=names)
+                                  subtitle_offset=subtitle_offset, audio=audio, names=names, features=named,
+                                  language=language)
     episodes, others = [episode], []
     for n, extra in enumerate(more or (), 1):
         # Kantan-SD 6: a Best sentence's episode, cut in the same call (one start, one dictionary load) — its own run
@@ -1115,7 +1116,7 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
             other, extra["video"], extra["subtitle"],
             runfile.word_requests(extra["words"], named, app=info.get("app")),
             tags=" ".join(t for t in (runfile.job_tag(job), runfile.from_tag(extra.get("show"))) if t),
-            subtitle_offset=float(extra.get("subtitle_offset") or 0.0)))
+            subtitle_offset=float(extra.get("subtitle_offset") or 0.0), features=named, language=language))
         others.append((other, extra["words"]))
     data = runfile.build(run_dir, language, episodes, profile=profile,
                          run_config=runfile.config(mapping, info.get("app"), named, word_audio=word_audio,
@@ -1226,7 +1227,8 @@ def render_line(path, language, job, video, subtitle, words, mapping, profile_na
         raise AnkiMinerError("setup", ZH_UPDATE, verdict=info)
     run_id = f"{job}-{attempt}"
     episode = runfile.episode(run_id, video, subtitle, runfile.word_requests(words, named, app=info.get("app")),
-                              tags=runfile.job_tag(job), subtitle_offset=subtitle_offset, audio=is_audio(video))
+                              tags=runfile.job_tag(job), subtitle_offset=subtitle_offset, audio=is_audio(video),
+                              features=named, language=language)
     data = runfile.build(run_dir, language, [episode], profile=profile,
                          run_config=runfile.config(mapping, info.get("app"), named, word_audio=word_audio,
                                                    workers=workers))

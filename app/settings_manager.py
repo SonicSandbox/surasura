@@ -254,6 +254,10 @@ DEFAULT_SETTINGS = {
     # Off in the tree until FS-2 lands its Settings row (the lead, 2026-11-23): off, every swap is the simple Swap;
     # FS-2's last commit makes it True (decision 1's default).
     "swap_in_place": False,
+    # FS-2: True once the learner picked *Swap gives* (written beside the pick, `settings_catalog.change`) — a file
+    # holding `swap_in_place: false` with no pick is a first save's old default, read as today's (`load_settings`), so
+    # decision 1's flip reaches every install that never picked. State: no row, no signature.
+    "swap_in_place_chosen": False,
     "logic": {
         # D29 (3.0): the automation's switch. Off stops exactly three things: the re-order host (Anki re-ordered as
         # you move, with its AnkiWeb sync), the journey keeper's background Generate and AutoJunban's re-order. The
@@ -466,6 +470,9 @@ def load_settings(strict: bool = False) -> Dict[str, Any]:
                 if key != "logic":
                     settings[key] = value
             settings["placing_rules"] = placing_rules(settings.get("placing_rules"))     # per key, as `logic`
+            # FS-2: *Swap gives* saved off without a pick (a first save wrote every default) reads as today's default
+            if user_settings.get("swap_in_place") is False and not user_settings.get("swap_in_place_chosen"):
+                settings["swap_in_place"] = DEFAULT_SETTINGS["swap_in_place"]
             # Kantan-B3: the old default of *Count as known in Anki*, saved without a pick (a first save wrote every
             # default), reads as today's default; a learner's own pick carries `known_from_anki_chosen`
             if user_settings.get("known_from_anki") == ["suspended"] and not user_settings.get("known_from_anki_chosen"):

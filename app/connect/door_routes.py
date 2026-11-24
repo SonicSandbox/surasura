@@ -45,10 +45,18 @@ NOT_SAVED = "Surasura couldn't keep that ask ({}). Nothing was made."
 
 
 def swap_route(body, app):
-    """`swap/queue` {lang, word, line_id} -> {queued: True, id, already}: ⇄, a new card for a carded word from the
-    line pressed (Swap's `make_card`, by `BY_JOURNEY`)."""
+    """`swap/queue` {lang, word, line_id} -> {queued: True, id, already, same}: ⇄, a carded word's card from the line
+    pressed (Swap's `make_card`, by `BY_JOURNEY`). `same` (FS-2): the learner's *Swap gives* asks for the same card
+    with this sentence (`swap.in_place_on`, read at the press: the page's words; the kind itself is decided when the
+    job is made, decision 10)."""
+    from app import settings_manager
+    from app.connect import swap
     got = _ask(body, journey=True)
-    return {"queued": True, "id": got["id"], "already": not got["new"]}
+    try:                                    # the ask is kept: words read after it never turn it into a failure
+        same = swap.in_place_on(settings_manager.load_settings())
+    except Exception:
+        same = False
+    return {"queued": True, "id": got["id"], "already": not got["new"], "same": same}
 
 
 def card_route(body, app):

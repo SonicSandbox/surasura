@@ -79,6 +79,22 @@ def test_a_workers_answer_for_every_real_line_word_and_span_is_the_walks_own(rea
             assert counted[0 if counts is not None else 1] > 0 and sum(counted) <= len(lines)
 
 
+def test_a_line_of_more_than_255_words_is_clipped_as_the_walk_clips_it(real):
+    # why: the table keeps one byte for the words besides the word; a long line (real lines run together) must give
+    # the 255 the walk packs, never the count's low byte
+    language, lines = real
+    text, tokens = "", []
+    for t, toks in lines:
+        text, tokens = text + t, tokens + list(toks)
+        if len(tokens) > 1500:
+            break
+    long = [(text, tokens)]
+    asked = _asked(long, spans=False)
+    got = st.numbers_of(long, None, asked, language)
+    assert got == _walk_answers(long, None, asked, language, frozenset())
+    assert 255 in got[0::2]
+
+
 @pytest.mark.parametrize("wrong", ["tokens", "length", "past the end"])
 def test_a_line_a_worker_reads_otherwise_than_the_walk_gives_no_answer(real, wrong):
     # why: the worker reads the file again from the token store — if its line is not the walk's (a re-tokenized file
@@ -183,6 +199,18 @@ def test_a_file_no_worker_could_answer_is_answered_by_the_walk_as_it_read_it(rea
     cores.settle(there)
     assert read == ["file02.srt", "file05.srt"]
     assert bytes(there._lines) == bytes(here._lines)
+
+
+def test_a_file_the_walk_itself_reads_otherwise_fails_the_table_never_writes_zeros(real):
+    # why: a file no worker answered is answered by the walk's own read; when even that read is not the lines the walk
+    # offered, the table fails (the run's warning) — numbers of 0 would be a wrong table, not a missing one
+    language, lines = real
+    files = _files(lines)
+    cores = st.Cores(_Pool(files, language, frozenset(), none={"file02.srt"}))
+    there = _walk(files, cores)
+    cores.reads(lambda path: (files[path][:1], None), language, frozenset())
+    with pytest.raises(ValueError):
+        cores.settle(there)
 
 
 @pytest.mark.parametrize("how", ["dies", "won't take work"])

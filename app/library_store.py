@@ -92,8 +92,8 @@ ANALYSED = tuple(t for t, v in TIERS.items() if v[2])                    # now, 
 # episode by this rule. Written once in Python (`counts`) and once in SQL (`counts_sql`), from the same constants; a
 # test holds the two equal. Who reads it today: here, `Store.schedule` (Generate's list, and its set-aside items for
 # the run signature's "reference" part), `_mine_ids`, `text_lists`, `_moves_counted`, `_watched_aside`,
-# `_store_has_content`, `read_only_schedule` (the copy) and `watched_marks` (the journey's stones: the report's
-# `static_html_generator._journey_stones`, the render signature's `analyzer._stones_fingerprint`); outside,
+# `_store_has_content`, `read_only_schedule` (the copy) and `watched_marks` (the journey's stones: the render signature's
+# `analyzer._stones_fingerprint`); outside,
 # `moves._set_aside` (the window's numbers) and Connect's `library.counting` / `library.counts` (`library.ahead` beyond
 # the line, a gap's `inbox._gone`; M-W1 — `level.watched_out` stays stricter, LF4-1). Not yet: the window's drawn
 # lines (`view_rows._mine_ids`, `drag.lines_for`).
@@ -6118,9 +6118,8 @@ class Store:
         through the partial index `items_watched` (`STONES_EXIST_SQL`: a library with no stone pays one look, S19).
         `counts` is the one rule's (`counts`): a watched item counts only with `keep_watched` on. `show`: which show or
         book it is of, as the window's rows read it (`view_rows._show_key`: its work, else its folder, else itself) —
-        `w<id>` / `f<folder>` / `i<id>`; `media`: its work's type as the learner typed it, else None (a6: the journey
-        folds a run of watched parts of one show into one row, `static_html_generator._journey_folds`). Finished stays
-        out (its own view). One read transaction."""
+        `w<id>` / `f<folder>` / `i<id>`; `media`: its work's type as the learner typed it, else None (a6: the render
+        signature's part, `analyzer._stones_fingerprint`). Finished stays out (its own view). One read transaction."""
         with self._reading():
             if not self.conn.execute(STONES_EXIST_SQL).fetchone()[0]:
                 return []

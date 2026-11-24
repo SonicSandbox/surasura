@@ -53,7 +53,6 @@ DEFAULT_SETTINGS = {
     "telemetry_enabled": True,
     "words_per_day": 5,
     "show_words_per_day": True,
-    "zen_limit": 50,
     "onboarding_completed": False,
     "open_count": 0,
     "only_i_plus_one": False,

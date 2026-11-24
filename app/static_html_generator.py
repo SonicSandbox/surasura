@@ -1079,7 +1079,7 @@ def _write_journey(language, app_mode=False, open_browser=True, tagger=None, pla
     else:                                       # no store, or one that couldn't be read: never signed with stones
         from app import analyzer, library_store   # (here only: a run's analyzer is __main__, not loaded twice)
         marks = None if analyzer.journey_marks(language) is None else library_store.UNREAD
-    out = journey_render.render(language, facts=facts, tagger=tagger if language == "ja" else None, plan=plan)
+    out = journey_render.render(language, facts=facts or False, tagger=tagger if language == "ja" else None, plan=plan)
     path = OUTPUT_FILE                          # the old page's file and name (as `open_report` and the window find it)
     journey_render.write_page(out, journey_template(), path)
     print(f"Journey written at: {path} ({out.head['counts']['eps']} episodes, {out.head['counts']['words']} words)")

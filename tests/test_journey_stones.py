@@ -231,6 +231,27 @@ def test_the_pages_facts_and_the_marks_it_is_signed_with_are_one_read_a_mark_com
     store.close()
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_failed_read_of_the_store_is_never_read_again_by_the_render_so_no_stone_is_drawn_unsigned(language, tmp_path):
+    # why (J-FIX 3, the contract review): when the page's own read of the store fails, the render must not read it a
+    # second time — that read could draw a stone the page is never signed with (the run signs UNREAD or None)
+    from app import journey_render
+    _settings(language)
+    store = migrated(language)
+    counted = _now_names(store)
+    store.set_watched([store.ids("now")[0]])
+    calls = []
+
+    def failed(*a, **k):
+        calls.append(a)
+        return None
+    with patch.object(journey_render, "store_facts", failed):
+        data = _render(tmp_path, language, counted)
+    assert len(calls) == 1, "the page's one read, never a second inside the render"
+    assert _marked(data) == [], "nothing read: no stone drawn"
+    store.close()
+
+
 # J-RETIRE: the old page's "an aside file whose name a counted file has gets no entry of its own" (its sidebar keyed
 # each tab by basename) retires: the v3 page keys each episode by its item id (`journey_render.build`). What it also
 # held — the counted file's words never drawn on a same-named episode set aside — is held on v3 by

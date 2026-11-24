@@ -1303,6 +1303,8 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
             stats = []
     if facts is None:
         facts = store_facts(language)
+    elif facts is False:                        # the caller's read found no store: never a second read (J-FIX 3)
+        facts = None
     backlog = gen.anki_backlog_keys(language, settings, gen.PRIORITY_CSV)
     source_map = gen._load_source_map()
     rels = set()

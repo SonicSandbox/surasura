@@ -69,7 +69,7 @@ def _answers(firsts, n_files, n_rows):
     """{(file, row): sentence number} of every file, every row the plan lists."""
     out = {}
     for f in range(n_files):
-        for k, (number, _check) in firsts.of_files({f: range(n_rows)})[f].items():
+        for k, (number, *_check) in firsts.of_files({f: range(n_rows)})[f].items():
             out[(f, k)] = number
     return out
 
@@ -161,6 +161,8 @@ def test_a_title_with_no_table_reads_the_plan_as_today_and_without_either_shows_
     assert plan_engine.first_sentences(other, run.data_dir) is None
     unnamed = _plan_copy(run, str(tmp_path / "unnamed"), header={"run_signature": None})
     assert plan_engine.first_sentences(unnamed, run.data_dir) is None     # no run named: no table is this plan's
+    engineless = _plan_copy(run, str(tmp_path / "engineless"), header={"engine": None})
+    assert plan_engine.first_sentences(engineless, run.data_dir) is None  # no engine named: never another engine's
     damaged = _plan_copy(run, str(tmp_path / "damaged"))
     table = os.path.join(str(tmp_path / "damaged"), sentence_table.TABLE_FILE)
     with open(table, "r+b") as fh:
@@ -236,6 +238,17 @@ def test_a_file_the_table_names_otherwise_shows_none_of_its_words_sentences(run,
     assert any(w.at == renamed for w in new + before)
 
 
+def test_a_table_line_is_shown_only_when_its_text_is_the_lines_length():
+    # why: the table keeps no text, only its file's digest and the line's length: the token store's sentence at that
+    # place, read again differently (another split), must not be shown in the first one's place
+    sentences = [("駅前の喫茶店で友達と待ち合わせた。", [["駅前", "エキマエ", "駅前"], ["喫茶店", "キッサテン", "喫茶店"]])]
+    n = len(sentences[0][0])
+    s = TW.sentence_of(sentences, 0, None, "喫茶店", "キッサテン", False, n)
+    assert s is not None and s.text[s.start:s.end] == "喫茶店"
+    assert TW.sentence_of(sentences, 0, None, "喫茶店", "キッサテン", False, n - 3) is None
+    assert TW.sentence_of(sentences, 1, None, "喫茶店", "キッサテン", False, n) is None
+
+
 def test_a_table_replaced_since_it_was_opened_answers_nothing(run, tmp_path, monkeypatch):
     # why: the card keeps its reader while the plan is the same; a Generate whose plan write failed can still replace
     # the table beside it — its blocks are then not where the head said, so nothing, never a block of another word
@@ -251,6 +264,45 @@ def test_a_table_replaced_since_it_was_opened_answers_nothing(run, tmp_path, mon
     assert firsts.of(f, every) == {}
     os.remove(table)
     assert firsts.of_files({f: every}) == {f: {}}
+
+
+def test_a_damaged_block_gives_nothing_and_never_an_error(run, tmp_path, monkeypatch):
+    # why: the card's worker must never raise (CLAUDE.md § 6, fail gracefully): a block that cannot be read or is the
+    # wrong shape, whatever the error, gives no sentence for the title, never a guess
+    plan, _eng = _engine(run)
+    every = range(len(plan.keys))
+    _level(monkeypatch, 2)
+    firsts = plan_engine.first_sentences(_plan_copy(run, str(tmp_path / "results")), run.data_dir)
+    f = next(i for i in range(len(plan.files)) if firsts.of(i, every))
+    for error in (TypeError("a head with a null size"), KeyError("chars"), ValueError("a block of the wrong size")):
+        def broken(self, k, error=error):
+            raise error
+        monkeypatch.setattr(sentence_table.Table, "block", broken)
+        assert firsts.of_files({f: every, f + 1: every}) == {f: {}, f + 1: {}}
+
+
+def test_a_table_written_after_the_card_first_read_the_plan_is_read_at_the_next_card(run, tmp_path, monkeypatch):
+    # why: a Generate writes the plan, then the table; a card kept open in between (after a move) found no table —
+    # the next card must read the table once it is there, and while plan and table hold, never read either again
+    plan, eng = _engine(run)
+    view = _view(plan, run.language)
+    row = max(view.rows, key=lambda r: len(r.episodes))
+    folder = str(tmp_path / "results")
+    numbers = _Numbers(run, eng)
+    numbers.run = types.SimpleNamespace(**dict(vars(run), plan_path=_plan_copy(run, folder, table=False)))
+    st = os.stat(numbers.run.plan_path)
+    numbers.key = (st.st_mtime_ns, st.st_size)
+    _level(monkeypatch, 2)
+    tw = TW.TitleWords(numbers, run.language, open_store=lambda: token_index.open_reader(run.language, run.store_path))
+    got = []
+    tw.sentences(row, got.append)
+    assert tw.idle(30) and got == [{}]
+    shutil.copy(run.table_path, os.path.join(folder, sentence_table.TABLE_FILE))
+    for _ in range(2):
+        tw.sentences(row, got.append)
+        assert tw.idle(30)
+    tw.close()
+    assert got[1] and got[2] == got[1] and tw.reads["firsts"] == 2
 
 
 def test_a_titles_words_read_each_words_block_once(run, tmp_path, monkeypatch):

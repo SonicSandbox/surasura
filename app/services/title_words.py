@@ -137,18 +137,20 @@ def counts_of(store, paths):
     return out
 
 
-def sentence_of(sentences, number, text_hash, word, reading, phrase):
+def sentence_of(sentences, number, text_hash, word, reading, phrase, chars=None):
     """The word's sentence from a file's cached sentences (`Store.file_tokens`' shape): the plan's `number`, shown only
     when its text's hash is the plan's (`plan_rules.text_hash_of`) — else None, never another sentence. `text_hash`
-    None: the sentence table's line (level 2), whose file was checked by its digest instead (`TableFirsts`). The word's
-    span: its tokens (a phrase: the run of tokens whose lemmas make its Word), else the whole word's own spelling, else
-    none."""
+    None: the sentence table's line (level 2), whose file was checked by its digest instead (`TableFirsts`), shown
+    only when its text is the line's `chars` long (the table's, at most 65,535). The word's span: its tokens (a phrase:
+    the run of tokens whose lemmas make its Word), else the whole word's own spelling, else none."""
     from app import plan_rules
     if not 0 <= number < len(sentences):
         return None
     raw, tokens = sentences[number][0], sentences[number][1]
     text = (raw or "").strip()
     if not text or (text_hash is not None and plan_rules.text_hash_of(text) != text_hash):
+        return None
+    if chars is not None and min(len(text), 0xFFFF) != chars:
         return None
     start, end = _span(text, tokens, word, reading, phrase)
     return Sentence(text, start, end, None)
@@ -278,16 +280,18 @@ class TitleWords:
                     cached[w.f] = store.file_tokens(os.path.join(answer.data_dir, *rel.split("/")))
                 except Exception:
                     cached[w.f] = []
-            s = sentence_of(cached[w.f], found[0], found[1], w.word, w.reading, w.phrase)
+            s = sentence_of(cached[w.f], found[0], found[1], w.word, w.reading, w.phrase,
+                            found[2] if len(found) > 2 else None)
             if s is not None:
                 out[(w.word, w.reading)] = s._replace(place=label.get(w.at))
         return out
 
     def _first_sentences(self, plan, key, data_dir=None):
         from app import plan_engine
+        kept = (plan, key, data_dir, plan_engine.table_stamp(plan))    # (the table's stamp: level 2 only, E-HOVER)
         with self._lock:
             held = self._firsts
-        if held is not None and held[0] == (plan, key):
+        if held is not None and held[0] == kept:
             return held[1]
         try:
             st = os.stat(plan)
@@ -300,7 +304,7 @@ class TitleWords:
         if found is not None and found.key != key:
             found = None
         with self._lock:
-            self._firsts = ((plan, key), found)
+            self._firsts = (kept, found)
         return found
 
     def _token_store(self):

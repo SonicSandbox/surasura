@@ -553,6 +553,14 @@ def _held_dates(monkeypatch, w):
     return go, reading, reads
 
 
+def _done(*threads):
+    """Every thread a test started finished before it ends (the reads ahead included): none reads into the next."""
+    for thread in list(threads) + list(sentences._AHEAD.values()):
+        if thread.ident is not None:
+            thread.join(20)
+            assert not thread.is_alive(), thread.name
+
+
 def _a_world(monkeypatch, lang, key, word):
     w = World(monkeypatch, lang)
     w.table(key, [(f"ep{n:02d}", [t]) for n, t in enumerate(LINES[lang], 1)], word)
@@ -586,6 +594,7 @@ def test_read_ahead_returns_while_the_librarys_dates_are_read_and_the_first_pick
         pick.join(10)
     finally:
         go.set()
+        _done(ahead, pick)
     assert not pick.is_alive() and picked and picked[0]
     assert len(reads) == 1, reads
     sentences._DATES.clear()
@@ -602,23 +611,30 @@ def test_a_pick_waits_for_the_dates_read_ahead_only_so_long_and_one_that_failed_
     monkeypatch.setattr(sentences, "DATES_AHEAD_WAIT_S", 0.2)
     try:
         assert sentences.read_ahead(lang) is True and reading.wait(10)
+        first = sentences._AHEAD[(lang, False)]
+        assert sentences.read_ahead(lang) is True and sentences._AHEAD[(lang, False)] is first, "one at a time"
         real = w._library
         monkeypatch.setattr(sentences, "_library", lambda *a, **k: reads.append("pick") or real(*a, **k))
         assert sentences.choose(lang, [key], dial=sentences.BEST, young={}, top=1)[key]
         assert reads[1:] == ["pick"], reads
+        assert (lang, False) not in sentences._AHEAD, "a read past the wait is waited for once"
+        assert sentences.choose(lang, [key], dial=sentences.BEST, young={}, top=1)[key] and reads[1:] == ["pick"]
     finally:
         go.set()
-    sentences._AHEAD[(lang, False)].join(10)
+        _done(first)
     sentences._DATES.clear()
 
     def broken(*a, **k):
+        broke.append(1)
         raise OSError("the store's file was locked")
+    broke = []
     monkeypatch.setattr(sentences, "_library", broken)
     assert sentences.read_ahead(lang) is True
-    sentences._AHEAD[(lang, False)].join(10)
-    assert (lang, False) not in sentences._DATES
-    monkeypatch.setattr(sentences, "_library", w._library)
+    _done()
+    assert broke == [1] and (lang, False) not in sentences._DATES
+    monkeypatch.setattr(sentences, "_library", lambda *a, **k: reads.append("again") or w._library(*a, **k))
     assert sentences.choose(lang, [key], dial=sentences.BEST, young={}, top=1)[key], "the pick read them itself"
+    assert reads[-1:] == ["again"] and (lang, False) in sentences._DATES
 
 
 def test_at_level_zero_and_with_no_table_nothing_is_read_ahead_on_a_thread(monkeypatch):

@@ -527,14 +527,18 @@ def _store_stamp(language):
         return None
 
 
-def _dates(language, ai):
+def _dates(language, ai, wait=True):
     """(`_library`'s answer with the show-only mark, the score's {path: Seen}) for the whole library, read once and
     kept between picks while the store's file is unchanged, an hour at most (days pass) — one read of the store was
     nearly all of a pick's time (SPEC § 5.3); a paired book's hearing asked again at every pick (`_heard_now`). A read
-    ahead of them still running (`dates_ahead`) is waited for, DATES_AHEAD_WAIT_S at most: its answer is then kept."""
-    ahead = _AHEAD.get((language, ai))
-    if ahead is not None and ahead is not threading.current_thread():
+    ahead of them still running (`dates_ahead`) is waited for, DATES_AHEAD_WAIT_S at most: its answer is then kept
+    (`wait` False: that read's own call)."""
+    ahead = _AHEAD.get((language, ai)) if wait else None
+    if ahead is not None:
         ahead.join(DATES_AHEAD_WAIT_S)
+        with _AHEAD_LOCK:                   # (waited for once: a read stuck past the wait is never waited for again)
+            if _AHEAD.get((language, ai)) is ahead:
+                del _AHEAD[(language, ai)]
     stamp = _store_stamp(language)          # (before the read: a commit during it is read again next time)
     now = time.monotonic()
     hit = _DATES.get((language, ai))
@@ -560,14 +564,14 @@ def dates_ahead(language, ai):
         thread = _AHEAD.get(key)
         if thread is None or not thread.is_alive():
             thread = threading.Thread(target=_read_dates, args=key, name=f"surasura-dates-{language}", daemon=True)
+            thread.start()                  # (kept once started: one that could not start is never waited for)
             _AHEAD[key] = thread
-            thread.start()
     return thread
 
 
 def _read_dates(language, ai):
     try:
-        _dates(language, ai)
+        _dates(language, ai, wait=False)
     except Exception:
         log.info("Connect: the library's dates weren't read ahead (%s)", language, exc_info=True)
 

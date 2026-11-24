@@ -37,6 +37,10 @@ class World:
 
     def __init__(self, monkeypatch, language="ja", level=1, settings=None):
         self.mp, self.language = monkeypatch, language
+        for thread in list(getattr(sentences, "_AHEAD", {}).values()):     # (a read ahead a test before left: done
+            thread.join(10)                                                 # before this world's stand-ins are in)
+            assert not thread.is_alive(), "a read of the dates ahead outlived its test"
+        getattr(sentences, "_AHEAD", {}).clear()
         self.lib = Library(get_data_path(language))
         self.info, self.tokens, self.reads = {}, {}, []
         self.settings = dict(SETTINGS, **(settings or {}))
@@ -48,9 +52,6 @@ class World:
         from app import settings_manager
         monkeypatch.setattr(settings_manager, "load_settings", lambda *a, **k: dict(self.settings))
         getattr(sentences, "_DATES", {}).clear()
-        for thread in list(getattr(sentences, "_AHEAD", {}).values()):     # (a read ahead left by a test before)
-            thread.join(10)
-        getattr(sentences, "_AHEAD", {}).clear()
 
     def table(self, keys, episodes, word, folder="HighPriority/show", words=None):
         """`episodes` [(name, [text, …])]: every line holding `word` is a line of row 0."""

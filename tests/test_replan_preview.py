@@ -708,6 +708,172 @@ def test_a_jobs_known_words_are_read_as_a_run_reads_them_whatever_a_chinese_plan
     assert sets[0] == as_a_run[0] and sets[1] == as_a_run[1] and sets[2] == as_a_run[2]
 
 
+# The counts before KYOU-MO-WASTE's fix (the work-count pattern: a strict xfail, turned green by the fix)
+_WASTE = pytest.mark.xfail(strict=True, reason="KYOU-MO-WASTE: the count before the fix")
+
+
+def _real_sentences(root, fake):
+    """Each card's sentence the list's own example line for its word (the library's real subtitles and books), the word
+    in bold as Anki Miner marks it — several cards share a line, as cards mined from one scene do. -> how many."""
+    with open(os.path.join(root, "results", "progressive_learning_list.csv"), encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    lines = {}
+    for row in rows:
+        line = (row.get("Context 1") or "").strip()
+        for word in ((row.get("Word") or "").strip(), (row.get("Orth") or "").strip()):
+            if word and line and word in line:
+                lines.setdefault(word, line)
+    swapped = 0
+    for note in fake.notes.values():
+        word = next(iter(note["fields"].values()))["value"]
+        if word in lines:
+            note["fields"]["Sentence"]["value"] = lines[word].replace(word, f"<b>{word}</b>", 1)
+            swapped += 1
+    return swapped
+
+
+class _Counts:
+    """What a job builds and reads, counted where it is made: LearningViews, taggers, each text a tagger reads (a
+    stretched-vowel re-read of the same text is its own call's), the token store's opens."""
+
+    def __init__(self, monkeypatch):
+        from app import token_index
+        self.views, self.taggers, self.texts, self.opens = 0, 0, {}, 0
+        view, made, read, opened = (analyzer.LearningView.__init__, analyzer.Tagger.__init__, analyzer.Tagger.__call__,
+                                    token_index.open_store)
+
+        def count_view(this, *args, **kwargs):
+            self.views += 1
+            view(this, *args, **kwargs)
+
+        def count_tagger(this, *args, **kwargs):
+            self.taggers += 1
+            made(this, *args, **kwargs)
+
+        def count_read(this, text, unread=()):
+            if not unread:
+                self.texts[text] = self.texts.get(text, 0) + 1
+            return read(this, text, unread)
+
+        def count_open(*args, **kwargs):
+            self.opens += 1
+            return opened(*args, **kwargs)
+        monkeypatch.setattr(analyzer.LearningView, "__init__", count_view)
+        monkeypatch.setattr(analyzer.Tagger, "__init__", count_tagger)
+        monkeypatch.setattr(analyzer.Tagger, "__call__", count_read)
+        monkeypatch.setattr(token_index, "open_store", count_open)
+
+    def clear(self):
+        self.views, self.taggers, self.texts, self.opens = 0, 0, {}, 0
+
+
+def _known_words_changed(root):
+    known = os.path.join(root, "User Files", _language(), "KnownWord.json")
+    with open(known, encoding="utf-8") as f:
+        data = json.load(f)
+    with open(known, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.utime(known, (time.time() + 5, time.time() + 5))
+
+
+@pytest.mark.parametrize("lib", [pytest.param("ja", marks=_WASTE), "zh"], indirect=True)
+def test_a_moves_job_builds_one_learning_view_and_one_tagger(lib, monkeypatch):
+    """KYOU-MO-WASTE (the margin under R6's 5 ms is 0.5-1 ms; every move pays this): the unlocking word's pass (§17)
+    built its own LearningView and its own fugashi tagger beside the ones the job's placement had just built from the
+    same known words, library and switches. One of each a job (Japanese); Chinese has no pass and no tagger."""
+    root, store = lib
+    fake = _deck(root)
+    assert _real_sentences(root, fake) >= 40
+    host, _lines = _host()
+    with _patched(fake):
+        host._job("catch-up")
+        counts = _Counts(monkeypatch)
+        _move_later_to_top(store)
+        fake.write_requests.clear()
+        host._job("move")
+        assert fake.write_requests, "the move reordered nothing"
+    assert counts.views == 1, f"a move's job built {counts.views} LearningViews"
+    assert counts.taggers == (1 if _language() == "ja" else 0), f"a move's job made {counts.taggers} taggers"
+
+
+@pytest.mark.parametrize("lib", [pytest.param("ja", marks=_WASTE), "zh"], indirect=True)
+def test_a_moves_job_reads_each_cards_sentence_once(lib, monkeypatch):
+    """KYOU-MO-WASTE: cards mined from one scene share a sentence, and the unlocking word's pass read a list card's
+    sentence again for every card it weighed it for (`blockers`: the card, then each card it would bring) — 2 to 7
+    times a move on the library's own lines. Each text is read once a job; Chinese reads none (jieba, no pass)."""
+    root, store = lib
+    fake = _deck(root)
+    assert _real_sentences(root, fake) >= 40
+    host, _lines = _host()
+    with _patched(fake):
+        host._job("catch-up")
+        counts = _Counts(monkeypatch)
+        _move_later_to_top(store)
+        fake.write_requests.clear()
+        host._job("move")
+        assert fake.write_requests, "the move reordered nothing"
+    again = {text: n for text, n in counts.texts.items() if n > 1}
+    assert not again, f"a move's job read {len(again)} sentence(s) more than once: {list(again.items())[:3]}"
+    if _language() == "ja":
+        assert len(counts.texts) >= 40, "the pass read no sentence: nothing was counted"
+    else:
+        assert not counts.texts
+
+
+@pytest.mark.parametrize("lib", [pytest.param("ja", marks=_WASTE), pytest.param("zh", marks=_WASTE)],
+                         indirect=True)
+def test_a_jobs_known_words_open_the_token_store_once(lib, monkeypatch):
+    """KYOU-MO-WASTE: a job's known words (`_known_memo`) opened the token store for their key, closed it, and — once
+    the learner's known words changed — opened it again to read them. At most one open a job, changed or not."""
+    root, store = lib
+    fake = _deck(root)
+    host, _lines = _host()
+    with _patched(fake):
+        host._job("catch-up")
+        counts = _Counts(monkeypatch)
+        _move_later_to_top(store)
+        host._job("move")
+        assert counts.opens <= 1, f"a move's job opened the token store {counts.opens} times"
+        counts.clear()
+        _known_words_changed(root)
+        _move_later_to_top(store)
+        fake.write_requests.clear()
+        host._job("move")
+        assert fake.write_requests, "the move reordered nothing"
+    assert counts.opens <= 1, f"a job after the known words changed opened the token store {counts.opens} times"
+
+
+@pytest.mark.parametrize("lib", [pytest.param("ja", marks=_WASTE), "zh"], indirect=True)
+def test_the_unlocking_pass_places_alike_with_the_jobs_reading_or_its_own(lib, monkeypatch):
+    """KYOU-MO-WASTE: the pass reads with the job's own LearningView and tagger — and places every card as when it
+    builds its own (the shared reading is the same reading): in a move's job, on real sentences, the pass run both
+    ways on the same cards gives the same sort, reason and counts. Chinese: no pass."""
+    import copy
+    root, store = lib
+    fake = _deck(root)
+    assert _real_sentences(root, fake) >= 40
+    host, _lines = _host()
+    real, runs = reposition._ready_first_pass, []
+
+    def both(cards, notes, *args, learning=None, tagger=None, **kwargs):
+        own = copy.deepcopy(cards)
+        alone = real(own, notes, *args, **kwargs)
+        shared = real(cards, notes, *args, learning=learning, tagger=tagger, **kwargs)
+        runs.append((learning is not None and tagger is not None, own == cards, alone == shared))
+        return shared
+    with _patched(fake):
+        host._job("catch-up")
+        monkeypatch.setattr(reposition, "_ready_first_pass", both)
+        _move_later_to_top(store)
+        fake.write_requests.clear()
+        host._job("move")
+        assert fake.write_requests, "the move reordered nothing"
+    if _language() == "ja":
+        assert runs == [(True, True, True)], runs
+    else:
+        assert runs == []
+
+
 def test_known_words_changed_without_a_move_asks_for_no_journey(lib):
     """The journey's Generate is for moves (04 §3, G1.5-5): known words changed with nothing moved leave the run's
     signature behind the library's, but no move is pending — nothing is asked for on focus (mutant "journey asks

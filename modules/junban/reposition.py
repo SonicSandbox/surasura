@@ -437,6 +437,10 @@ def _known_memo(language, settings):
     key = tuple(key)
     hit = _KNOWN_MEMO.get(language)
     if hit is None or hit[0] != key:
+        # Read as a run reads them (`_place_the_rest`: SANITIZE_JA per language), whatever another language's plan in
+        # this process left: both passes of a job read this one memo (KYOU-MO-HOLD)
+        from app import analyzer
+        analyzer.SANITIZE_JA = language == "ja"
         hit = _KNOWN_MEMO[language] = (key, _known_sets(language, settings), {})
     return hit[1], hit[2]
 

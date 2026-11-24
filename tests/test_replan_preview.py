@@ -694,6 +694,20 @@ def test_a_moves_job_reads_the_known_words_only_when_their_files_change(lib, mon
     assert reads == [language], reads
 
 
+def test_a_jobs_known_words_are_read_as_a_run_reads_them_whatever_a_chinese_plan_left(lib, monkeypatch):
+    """KYOU-MO-HOLD: both passes of a Japanese job read the known words from one memo, so it holds them as a run reads
+    them (SANITIZE_JA on: パーティー, not パーティー-party) even when built after a Chinese plan in the same process left
+    the flag off (`_place_the_rest` sets it per language; the warm-up that sets it runs once per process)."""
+    root, _store = lib
+    settings = _junban_settings()
+    monkeypatch.setattr(reposition, "_KNOWN_MEMO", {})
+    monkeypatch.setattr(analyzer, "SANITIZE_JA", True)
+    as_a_run = reposition._known_sets("ja", settings)
+    monkeypatch.setattr(analyzer, "SANITIZE_JA", False)       # what a Chinese plan leaves
+    sets, _answered = reposition._known_memo("ja", settings)
+    assert sets[0] == as_a_run[0] and sets[1] == as_a_run[1] and sets[2] == as_a_run[2]
+
+
 def test_known_words_changed_without_a_move_asks_for_no_journey(lib):
     """The journey's Generate is for moves (04 §3, G1.5-5): known words changed with nothing moved leave the run's
     signature behind the library's, but no move is pending — nothing is asked for on focus (mutant "journey asks

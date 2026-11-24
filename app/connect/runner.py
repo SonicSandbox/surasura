@@ -5168,12 +5168,15 @@ class Steps:
         ready = self._swap_setup(lang, job)
         mapping = ready[3][2]
         word, rendered, why = self._swap_render(lang, job, picked, words, attempt, ready)
+        if why == swap.NO_RENDER:               # FS-FLIP × AM-FIX: no new card can be made either (`swap_new_card`):
+            raise Needs(SWAP_UPDATE_NEED, swap.UPDATE_TO_SWAP, standing=True)    # it waits, then keeps the same card
+        _fixed(ledger, lang, kinds=(SWAP_UPDATE_NEED,))     # render answered: Anki Miner was updated
         if rendered is None:
             swap.fall_back(ledger, row, why)    # a new card instead
             return None
         from app import anki_connect, locks
         from app.connect import sentence_audio
-        learned = swap.learned_tag(ledger, row["old_note"], lambda: self._open(lang))     # decision 15
+        learned =swap.learned_tag(ledger, row["old_note"], lambda: self._open(lang))     # decision 15
         try:
             kind, said = swap.write_in_place(swap.AnkiSwap(self.url), ledger, row, rendered, mapping,
                                              swap.kept_folder(), learned=learned)

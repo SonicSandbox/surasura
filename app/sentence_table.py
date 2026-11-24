@@ -526,6 +526,26 @@ class Table:
         keys = self.head["keys"]
         return {(keys[k][0], keys[k][1]): k for k in self.head["rows"]}
 
+    def as_read(self, src, root):
+        """Is source `src`'s file the one the Generate read: there, its digest (path, time, size, kind) the table's
+        (SPEC § 5.4)? `root`: the language's data folder, a relative source's. No digest, gone, any error: False —
+        nothing of it is shown, never a line of another file. (The rule of the score's `as_read` for a source with a
+        digest, `app/sentence_score.py`; the word card's, E-HOVER.)"""
+        try:
+            from app import plan_rules
+            if src < 0:
+                return False
+            rel, kind, digest = self.sources()[src]
+            if digest is None:
+                return False
+            path = rel if os.path.isabs(rel) else os.path.join(root, "") + rel.replace("/", os.sep)
+            st = os.stat(path)
+            return any(plan_rules.file_digest([signed, [st.st_mtime, st.st_size], None, None, kinds]) == digest
+                       for signed in dict.fromkeys((os.path.join(root, rel), path))
+                       for kinds in ((kind, None) if not kind else (kind,)))
+        except Exception:
+            return False
+
 
 def open_table(path, language=None, engine=None, run_signature=None):
     """The table at `path`, its head read (blocks on demand) — or None: no file, a damaged or half-written one,

@@ -12,7 +12,8 @@ Qt-free (`tests/test_import_guard.py`); the window paints what this says (`app/q
 - **A word's sentence** (kept open, Sonic 2026-11-14): its first sentence in this title, from the plan's per-file first
   sentences (`plan_engine.first_sentences`, read once per plan, F7's `fs` / `firsts`) and the token store's cached
   text — shown only when that text's hash is the plan's; an older plan, a word the list doesn't hold or a word from
-  Anki only has none, and nothing is shown.
+  Anki only has none, and nothing is shown. At level 2 of the sentence table the same call reads the table beside the
+  plan instead (`plan_engine.TableFirsts`: the asked words' blocks only; their file checked by its digest).
 
 Everything runs on this provider's own worker; `ask` / `sentences` answer through a callback (the window bridges it
 to its thread). Measured on 2k / 20k files: Hover-W's register (TheForge tracks/window/reviews/hover-w-register.md).
@@ -138,14 +139,16 @@ def counts_of(store, paths):
 
 def sentence_of(sentences, number, text_hash, word, reading, phrase):
     """The word's sentence from a file's cached sentences (`Store.file_tokens`' shape): the plan's `number`, shown only
-    when its text's hash is the plan's (`plan_rules.text_hash_of`) — else None, never another sentence. The word's span:
-    its tokens (a phrase: the run of tokens whose lemmas make its Word), else the whole word's own spelling, else none."""
+    when its text's hash is the plan's (`plan_rules.text_hash_of`) — else None, never another sentence. `text_hash`
+    None: the sentence table's line (level 2), whose file was checked by its digest instead (`TableFirsts`). The word's
+    span: its tokens (a phrase: the run of tokens whose lemmas make its Word), else the whole word's own spelling, else
+    none."""
     from app import plan_rules
     if not 0 <= number < len(sentences):
         return None
     raw, tokens = sentences[number][0], sentences[number][1]
     text = (raw or "").strip()
-    if not text or plan_rules.text_hash_of(text) != text_hash:
+    if not text or (text_hash is not None and plan_rules.text_hash_of(text) != text_hash):
         return None
     start, end = _span(text, tokens, word, reading, phrase)
     return Sentence(text, start, end, None)
@@ -252,18 +255,21 @@ class TitleWords:
         answer = self.numbers.words(ids) if self.numbers is not None else None
         if answer is None or not answer.data_dir:
             return {}
-        firsts = self._first_sentences(answer.plan, answer.key)
+        firsts = self._first_sentences(answer.plan, answer.key, answer.data_dir)
         store = self._token_store()
         if firsts is None or store is None:
             return {}
         label = {e.id: (e.label if len(ids) > 1 else None) for e in getattr(row, "episodes", None) or ()}
-        out, cached, tables = {}, {}, {}
+        out, cached, asked = {}, {}, {}
         for w in answer.new + answer.before:
             rel = answer.rel.get(w.f)
-            if rel is None or firsts.files[w.f] != rel:
+            if rel is not None and 0 <= w.f < len(firsts.files) and firsts.files[w.f] == rel:
+                asked.setdefault(w.f, []).append(w.k)
+        tables = firsts.of_files(asked)              # (once a title, never once a word: review r1 #5; E-HOVER)
+        for w in answer.new + answer.before:
+            rel = answer.rel.get(w.f)
+            if w.f not in asked:
                 continue
-            if w.f not in tables:
-                tables[w.f] = firsts.of(w.f)           # (once a file, never once a word: review r1 #5)
             found = tables[w.f].get(w.k)
             if found is None:
                 continue
@@ -277,7 +283,7 @@ class TitleWords:
                 out[(w.word, w.reading)] = s._replace(place=label.get(w.at))
         return out
 
-    def _first_sentences(self, plan, key):
+    def _first_sentences(self, plan, key, data_dir=None):
         from app import plan_engine
         with self._lock:
             held = self._firsts
@@ -290,7 +296,7 @@ class TitleWords:
         except OSError:
             return None
         self.reads["firsts"] += 1
-        found = plan_engine.first_sentences(plan)
+        found = plan_engine.first_sentences(plan, data_dir)
         if found is not None and found.key != key:
             found = None
         with self._lock:

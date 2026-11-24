@@ -1576,13 +1576,100 @@ class FirstSentences:
                 out.setdefault(pairs[j], (self._number[i], self._hash[i]))
         return out
 
+    def of_files(self, asked):
+        """{f: rows} -> {f: `of(f)`} (the rows are `TableFirsts`'; here each file's every row)."""
+        return {f: self.of(f) for f in asked}
 
-def first_sentences(path):
+
+class TableFirsts:
+    """Hover-W at level 2 (`plan_rules.SENTENCE_TABLE >= 2`, E-HOVER): each listed word's first sentence in a file
+    from the sentence table beside the plan (`app/sentence_table.py`) — the word's block, its lines of that file, the
+    lowest place (SPEC § 5.2): a read, never a ranking. The walk keeps a word's first sentence of each file there, with
+    the OVER mark when over *Never longer than*, so it is `FirstSentences`' answer. `of_files({f: rows})` -> {f: {k:
+    (sentence number, None)}} for each file's `rows`, each row's block read once for all the files (a title's words:
+    one read a word, not one a word and file), for a file that is the one the Generate read (`Table.as_read`; else
+    {}): a line said once keeps no hash, so None in its place — the file's digest stands for it. `of(f, rows)`: one
+    file's. `files` the table's sources' rel paths (the plan's files, then the Finished ones); `key` the plan's
+    (mtime_ns, size). A table file replaced since it was opened (its stamp moved) answers nothing: its blocks are not
+    where the head read them."""
+
+    def __init__(self, table, root, key):
+        import os
+        self._table, self._root, self.key = table, root, key
+        st = os.stat(table.path)
+        self._stamp = (st.st_mtime_ns, st.st_size)
+        self.files = [source[0] for source in table.sources()]
+
+    def _same_table(self):
+        import os
+        try:
+            st = os.stat(self._table.path)
+        except OSError:
+            return False
+        return (st.st_mtime_ns, st.st_size) == self._stamp
+
+    def of(self, f, rows=()):
+        return self.of_files({f: rows}).get(f, {})
+
+    def of_files(self, asked):
+        out, wanted = {f: {} for f in asked}, {}
+        if not self._same_table():
+            return out
+        for f, rows in asked.items():
+            if 0 <= f < len(self.files) and self._table.as_read(f, self._root):
+                for k in rows:
+                    wanted.setdefault(k, []).append(f)
+        for k, files in wanted.items():
+            try:
+                block = self._table.block(k)
+            except (OSError, ValueError, zlib.error):
+                return {f: {} for f in asked}        # a damaged table: nothing, never a guess
+            if block is None:
+                continue
+            src, number = block[0]["src"], block[0]["number"]    # (a row's lines in (file, place) order)
+            for f in files:
+                i = int(src.searchsorted(f))
+                if i < len(src) and src[i] == f:
+                    out[f][k] = (int(number[i]), None)
+        return out
+
+
+def _table_firsts(path, data_dir):
+    """`TableFirsts` for the plan at `path`: only its header line read (its language, engine and run), the table
+    beside it opened for that run — or None: no plan, no run named, no table, another run's, a damaged one."""
+    import os
+    try:
+        st = os.stat(path)
+        with gzip.open(path, "rb") as fh:
+            header = json.loads(fh.readline())
+        language, run = header.get("language"), header.get("run_signature")
+        if not language or not run:
+            return None
+        from app import sentence_table
+        table = sentence_table.open_table(os.path.join(os.path.dirname(path), sentence_table.TABLE_FILE),
+                                          language=language, engine=header.get("engine"), run_signature=run)
+        if table is None:
+            return None
+        if data_dir is None:
+            from app.path_utils import get_data_path
+            data_dir = get_data_path(language)
+        return TableFirsts(table, data_dir, (st.st_mtime_ns, st.st_size))
+    except Exception:
+        return None
+
+
+def first_sentences(path, data_dir=None):
     """`FirstSentences` from the plan file at `path` (format 3 or 4), or None: no plan, another format, one without
     first sentences (format 1 or 2), or tables that don't fit together. Its own read of the file — the window's numbers
-    load it lean — on the caller's worker (at 20,000 files ~0.7 s, ~13 MB kept: Hover-W's register)."""
+    load it lean — on the caller's worker (at 20,000 files ~0.7 s, ~13 MB kept: Hover-W's register). At level 2 the
+    sentence table beside the plan answers instead (`TableFirsts`; `data_dir`: the language's data folder, for its
+    files' check — None: the language's own) when it is this plan's run's; without one, this read."""
     import base64
     import os
+    if plan_rules.SENTENCE_TABLE >= 2:
+        found = _table_firsts(path, data_dir)
+        if found is not None:
+            return found
     try:
         st = os.stat(path)
         with open(path, "rb") as fh:

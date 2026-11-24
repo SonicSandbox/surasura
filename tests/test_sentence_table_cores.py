@@ -329,6 +329,7 @@ def test_at_level_0_a_generate_starts_no_worker(monkeypatch):
 _BLAS = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")
 # The spy: on PYTHONPATH as sitecustomize, so every Python process the Generate starts runs it — what the BLAS
 # variables were when numpy was first looked for, and at the exit whether numpy loaded and what kind of process it was
+# (the Generate's own: no multiprocessing parent — its entry rewrites sys.argv; a walk worker: the table's `_CORE`)
 _SPY = """
 import atexit, json, os, sys
 NAMES = %r
@@ -340,9 +341,10 @@ class _Spy:
         return None
 sys.meta_path.insert(0, _Spy())
 def _write():
+    import multiprocessing
     table = sys.modules.get("app.sentence_table")
     kind = "walk" if table is not None and getattr(table, "_CORE", None) else (
-        "main" if "analyzer" in sys.argv[1:2] else "other")
+        "main" if multiprocessing.parent_process() is None else "other")
     with open(os.path.join(%r, "%%d.json" %% os.getpid()), "w") as f:
         json.dump(dict(_seen, kind=kind, numpy="numpy" in sys.modules, after={n: os.environ.get(n) for n in NAMES}), f)
 atexit.register(_write)

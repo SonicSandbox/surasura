@@ -388,6 +388,10 @@ def test_show_me_only_lights_a_place_and_changes_nothing(lib_world, step_id):
     from app.qt import press as qpress
     win = lib_world
     c = _shown(win, facts())
+    # FLAKES (train 69's GitHub core 2/8: 'Open your words' before, 'Open Ep 3's words' after): the card was read before
+    # the reader's first view, which then landed in the turn after Show me and named the press after Up Next's episode,
+    # as it should. "Nothing changes" is read from the card once that view is in
+    _up(win)
     before = (json.dumps(win.services.settings.get(), sort_keys=True, default=dict), json.dumps(guide.read_state(), sort_keys=True),
               c.card, c.presses, qpress.presses_of(win).any_live())
     win.path_spot = None
@@ -640,19 +644,34 @@ def test_no_step_shows_a_line_under_its_title_each_says_it_behind_its_question_m
         assert r.about.toolTip() in (line, strings.PATH_WHEN.get(step_id)), step_id
 
 
-def test_a_path_body_is_built_one_piece_a_turn_under_4_ms(world):
-    import time
+def test_a_path_body_is_built_one_piece_a_turn_under_4_ms(world, monkeypatch):
+    # FLAKES (E-TABLE 3's GitHub core 2/8: a piece at 4.61 ms of wall time): the Qt guide's 4 ms is what a piece costs
+    # the window's thread, so each piece (and the place after the last) is timed by that thread's own CPU time, the
+    # budget scaled by how much slower the machine does a fixed reference — the guide panel's own test's two clocks
+    # (test_guide.py `_own_ms`, `_speed`; FLAKES.md, Flake-F4 / F6). A piece that grew costs the thread itself, anywhere
+    from tests.qt.test_guide import _own_ms, _speed
     panel = world.d.guide_panel
+    own_ms = _own_ms()
+    budget = 4.0 * _speed(own_ms)                                           # 4 ms here; scaled on a slower machine
+    own = []
+    real_step = panel._step
+
+    def step(token):
+        t0 = own_ms()
+        real_step(token)
+        own.append(own_ms() - t0)
+    monkeypatch.setattr(panel, "_step", step)
     panel.slices.clear()
     every = facts(junban=True, anki_synced=True, cards_made=True, book_in_current=True, video_waiting=True,
                   episodes_done=3)
     panel.set_path(_path(every))
     assert panel.building()
     assert wait_until(lambda: not panel.building())
-    assert max(panel.slices) < 4.0, max(panel.slices)
-    t0 = time.perf_counter()
+    assert len(own) >= 2 and max(own) < budget, (max(own), max(panel.slices), budget)      # one piece a turn
+    t0 = own_ms()
     panel.place()
-    assert (time.perf_counter() - t0) * 1000 < 4.0
+    placed = own_ms() - t0
+    assert placed < budget, (placed, budget)
 
 
 def test_without_a_library_the_panel_is_whats_new_alone(world):

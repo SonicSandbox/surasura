@@ -212,6 +212,9 @@ def _library(language, store=None, ai=False, only=None, scored=False):
         place = {item_id: n for n, item_id in enumerate(library.ahead(store))}
         paired = library.paired_parts(store)
         root = get_data_path(language)
+        # (the score's read, every file: a path from the folder's own join, the same string as os.path.join(root,
+        # *parts) for parts that are neither empty nor a drive — the others take os.path.join itself)
+        head = os.path.join(root, "x")[:-1] if scored else None
         out = {}
         query = ("SELECT i.id, i.rel_path, i.tier, i.watched, i.work_id, i.parent_folder, i.source_type, w.media_type "
                  "FROM items i LEFT JOIN works w ON w.id = i.work_id")
@@ -233,7 +236,12 @@ def _library(language, store=None, ai=False, only=None, scored=False):
             seen = own_date or show.get("watched_at") or show.get("finished_at")
             if not seen and (watched or show.get("finished") or tier == "graduated"):
                 seen = "earlier"            # a mark made before the store kept dates (Kyou-PB, PROVISIONAL)
-            path = os.path.join(root, *str(rel).replace("\\", "/").split("/"))
+            slashed = str(rel).replace("\\", "/")
+            parts = slashed.split("/")
+            if head is not None and "" not in parts and ":" not in slashed:
+                path = head + os.sep.join(parts)
+            else:
+                path = os.path.join(root, *parts)
             text = library.text_only({"rel_path": rel, "source_type": source_type})
             show_only = False
             if (scored and not own_date and not watched and tier != "graduated" and not show.get("finished")
@@ -532,8 +540,10 @@ def _dates(language, ai):
     hit = _DATES.get((language, ai))
     if hit is not None and stamp is not None and hit[0] == stamp and now - hit[1] < DATES_KEPT_S:
         return _heard_now(hit[2], hit[3], ai)
+    from app import sentence_score
+    from app.connect import lineup
     info = _library(language, None, ai, scored=True)
-    seen = {at: _seen_of(v, ai) for at, v in info.items()}
+    seen = {at: _seen(v, ai, sentence_score.Seen, lineup) for at, v in info.items()}   # (two imports a read, not a file)
     if stamp is None or not info:           # (an empty answer — no store, or one busy at its open — is never kept)
         _DATES.pop((language, ai), None)
     else:
@@ -566,9 +576,13 @@ def _seen_of(v, ai):
     """`_library`'s value -> the score's `Seen`: a lined-up book heard line by line, its line-up's answer (Kyou-PB)."""
     from app import sentence_score
     from app.connect import lineup
+    return _seen(v, ai, sentence_score.Seen, lineup)
+
+
+def _seen(v, ai, seen, lineup):
     if isinstance(v[2], lineup.Reach):
-        return sentence_score.Seen(v[0], v[1], REAL, v[4], functools.partial(lineup.said, v[2]), heard(True, False, ai))
-    return sentence_score.Seen(v[0], v[1], v[2], v[4])
+        return seen(v[0], v[1], REAL, v[4], functools.partial(lineup.said, v[2]), heard(True, False, ai))
+    return seen(v[0], v[1], v[2], v[4])
 
 
 _HEARD = {}                 # ai -> (the kept dates' {path: Seen}, each paired book's answer, `_heard_now`'s answer)

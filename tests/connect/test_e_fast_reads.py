@@ -630,3 +630,29 @@ def test_at_level_zero_and_with_no_table_nothing_is_read_ahead_on_a_thread(monke
         getattr(sentences, "_AHEAD", {}).clear()
         assert sentences.read_ahead("ja") is False
         assert not getattr(sentences, "_AHEAD", {}) and w.reads == []
+
+
+# --- the score's read of the library: every file's path as level 0's own join spells it ---------------------------- #
+
+ODD = {"ja": ["HighPriority/作品/第01話.srt", "HighPriority\作品\第02話.srt", "HighPriority//作品/第03話.srt",
+              "Goal/空白 と点. /第 04 話 .srt", "LowPriority/作品/", "C:/外/第06話.srt"],
+       "zh": ["HighPriority/夜市/第01集.srt", "HighPriority\夜市\第02集.srt", "HighPriority//夜市/第03集.srt",
+              "Goal/空格 和点. /第 04 集 .srt", "LowPriority/夜市/", "C:/外/第06集.srt"]}
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_scores_read_of_the_library_keys_every_file_as_level_zeros_own_join_does(language):
+    # why: the score's read builds a file's path by one join of the data folder (os.path.join over 20,000 files was a
+    # fifth of the read); a path with an empty part (a doubled or a trailing slash) or a drive in it takes
+    # os.path.join itself — every key the same string level 0 reads, each file its own item
+    from tests.test_library_store_support import migrated
+    store = migrated(language, shows=2, episodes=3, loose=0, tiers=("now",))
+    with store:
+        ids = [row[0] for row in store.conn.execute("SELECT id FROM items ORDER BY id")]
+        assert len(ids) == len(ODD[language])
+        with store._writing():
+            for item_id, rel in zip(ids, ODD[language]):
+                store.conn.execute("UPDATE items SET rel_path = ? WHERE id = ?", (rel, item_id))
+        scored = {k: v[0] for k, v in sentences._library(language, store, scored=True).items()}
+        today = {k: v[0] for k, v in sentences._library(language, store).items()}
+    assert scored == today and sorted(scored.values()) == sorted(ids)

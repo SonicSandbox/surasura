@@ -696,7 +696,8 @@ class _SentenceWords:
     def __init__(self, language, settings, library=None, known=None):
         from app import analyzer
         from app.analyzer import _sanitize_term
-        analyzer.SANITIZE_JA = True             # before the known words are read (see _place_the_rest)
+        analyzer.SANITIZE_JA = True             # before the known words are read (see _place_the_rest; a job's memo
+                                                # was read after `_tokenizer` set it)
         self._analyzer, self._sanitize, self.language = analyzer, _sanitize_term, language
         self.known_tuples, self.known_lemmas, self.ignore = known if known is not None else _known_sets(language,
                                                                                                          settings)

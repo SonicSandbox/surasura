@@ -41,6 +41,7 @@ import functools
 import logging
 import os
 import re
+import threading
 import time
 import unicodedata
 from collections import namedtuple
@@ -73,6 +74,7 @@ YOUNG_LINES = 4             # ...and how many of a row's leading candidates have
 GROW = 4                    # the score's path: a row whose best lines the cut can't make is asked again for this many
 GROW_MOST = 2048            # ...times more lines, up to this many (or every line it has)
 DATES_KEPT_S = 3600         # the library's dates kept between picks while the store's file is unchanged: an hour at most
+DATES_AHEAD_WAIT_S = 30     # ...and a read of them waits this long at most for the one read ahead (`dates_ahead`)
 
 # One sentence a word can be cut from: its file and item (None: no library item), the text, how many other words in it
 # you don't know, its weight (young words + context), whether it is the episode being mined, whether it is heard at
@@ -494,6 +496,8 @@ def _from_list(language, kept, listed, here_key, never, young, files, reach, boo
 # The score's path (the sentence choice, release 1: `plan_rules.SENTENCE_TABLE` >= 1 with a table there)
 # --------------------------------------------------------------------------------------------------------------- #
 _DATES = {}                 # (language, ai) -> (the store file's stamp, when read, `_library`'s, the score's files)
+_AHEAD = {}                 # (language, ai) -> the thread reading them ahead (`dates_ahead`), the last one started
+_AHEAD_LOCK = threading.Lock()
 
 
 def _store_stamp(language):
@@ -518,7 +522,11 @@ def _store_stamp(language):
 def _dates(language, ai):
     """(`_library`'s answer with the show-only mark, the score's {path: Seen}) for the whole library, read once and
     kept between picks while the store's file is unchanged, an hour at most (days pass) — one read of the store was
-    nearly all of a pick's time (SPEC § 5.3); a paired book's hearing asked again at every pick (`_heard_now`)."""
+    nearly all of a pick's time (SPEC § 5.3); a paired book's hearing asked again at every pick (`_heard_now`). A read
+    ahead of them still running (`dates_ahead`) is waited for, DATES_AHEAD_WAIT_S at most: its answer is then kept."""
+    ahead = _AHEAD.get((language, ai))
+    if ahead is not None and ahead is not threading.current_thread():
+        ahead.join(DATES_AHEAD_WAIT_S)
     stamp = _store_stamp(language)          # (before the read: a commit during it is read again next time)
     now = time.monotonic()
     hit = _DATES.get((language, ai))
@@ -531,6 +539,27 @@ def _dates(language, ai):
     else:
         _DATES[(language, ai)] = (stamp, now, info, seen)
     return _heard_now(info, seen, ai)       # (the same answers as the read's: the next pick's objects from the first)
+
+
+def dates_ahead(language, ai):
+    """The library's dates (`_dates`) read now on a thread of its own, so the asker goes on — Connect's run to its
+    shelf and its first job (SPEC § 6.3 row 16): the next read of (`language`, `ai`) waits for this one and takes what
+    it kept. One read ahead at a time a (language, ai); one that failed leaves nothing kept (the next reads itself)."""
+    key = (language, ai)
+    with _AHEAD_LOCK:
+        thread = _AHEAD.get(key)
+        if thread is None or not thread.is_alive():
+            thread = threading.Thread(target=_read_dates, args=key, name=f"surasura-dates-{language}", daemon=True)
+            _AHEAD[key] = thread
+            thread.start()
+    return thread
+
+
+def _read_dates(language, ai):
+    try:
+        _dates(language, ai)
+    except Exception:
+        log.info("Connect: the library's dates weren't read ahead (%s)", language, exc_info=True)
 
 
 def _seen_of(v, ai):
@@ -612,9 +641,10 @@ def known_since(language):
 
 
 def read_ahead(language):
-    """Connect's read-ahead for a session (its `prepare`): at level >= 1, the table's head and the library's dates read
-    now, so the first pick of the session reads only its words' blocks -> True when a table was there. Level 0, no
-    table, any failure: False, nothing kept. The window's process never calls it (SPEC § 6.3 row 16)."""
+    """Connect's read-ahead for a session (its `prepare`): at level >= 1, the table's head read now and the library's
+    dates on a thread of their own (`dates_ahead`: the run goes on to its shelf meanwhile), so the first pick of the
+    session reads only its words' blocks -> True when a table was there. Level 0, no table, any failure: False,
+    nothing kept, no thread. The window's process never calls it (SPEC § 6.3 row 16)."""
     from app import plan_rules
     if plan_rules.SENTENCE_TABLE < 1:
         return False
@@ -622,7 +652,7 @@ def read_ahead(language):
         from app import sentence_score, settings_manager
         if sentence_score.choose(language, (), moment=sentence_score.Moment(), length=(1, 1)) is None:
             return False
-        _dates(language, ai_voice(settings_manager.load_settings(), language))
+        dates_ahead(language, ai_voice(settings_manager.load_settings(), language))
         return True
     except Exception:
         log.info("Connect: the sentence table wasn't read ahead (%s)", language, exc_info=True)

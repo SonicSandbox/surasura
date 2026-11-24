@@ -12,6 +12,7 @@ The table and the token store are the score's in-memory ones (`tests/connect/tes
 files real subtitles in the sandbox's data folder; lines as tests/Test Resources/ja|zh write them.
 """
 import os
+import threading
 
 import pytest
 
@@ -534,3 +535,98 @@ def test_a_data_folder_the_generate_spelled_another_way_still_finds_every_file_a
                           for k, v in got.items()}
     assert sum(1 for got in lines[data_dir].values() if got) >= max(1, len(keys) // 2), "the rows' lines, read here"
     assert lines[data_dir] == lines[generated]
+
+
+# --- the library's dates are read ahead on a thread of their own (SPEC § 6.3 row 16) ------------------------------- #
+
+def _held_dates(monkeypatch, w):
+    """`_library` (the library's dates) held until `go` is set, each read noted by the thread that made it."""
+    go, reading, reads = threading.Event(), threading.Event(), []
+    real = w._library
+
+    def held(*a, **k):
+        reads.append(threading.current_thread().name)
+        reading.set()
+        assert go.wait(20), "never let go"
+        return real(*a, **k)
+    monkeypatch.setattr(sentences, "_library", held)
+    return go, reading, reads
+
+
+def _a_world(monkeypatch, lang, key, word):
+    w = World(monkeypatch, lang)
+    w.table(key, [(f"ep{n:02d}", [t]) for n, t in enumerate(LINES[lang], 1)], word)
+    for n in (1, 2, 3):
+        w.place(f"ep{n:02d}", n)
+    monkeypatch.setattr(sentences, "_store_stamp", lambda language: ("store", (1, 1), None))
+    return w
+
+
+@pytest.mark.parametrize("lang, key, word", [(c[0], c[1], c[2]) for c in CASES])
+def test_read_ahead_returns_while_the_librarys_dates_are_read_and_the_first_pick_waits_for_that_one_read(
+        monkeypatch, lang, key, word):
+    # why: Connect's `prepare` held its run for the library's dates (0.05 s at 2,000 files, 0.35 s at 20,000) before
+    # the shelf's look and the first job — they are a thread's read now; the pick that comes first waits for it and
+    # opens no store of its own: the same cards, one read
+    w = _a_world(monkeypatch, lang, key, word)
+    go, reading, reads = _held_dates(monkeypatch, w)
+    asked, picked = [], []
+    ahead = threading.Thread(target=lambda: asked.append(sentences.read_ahead(lang)), daemon=True)
+    pick = threading.Thread(daemon=True, target=lambda: picked.append(
+        sentences.choose(lang, [key], dial=sentences.BEST, young={}, top=1)[key]))
+    try:
+        ahead.start()
+        ahead.join(10)
+        assert not ahead.is_alive(), "read_ahead held its asker for the library's dates"
+        assert asked == [True] and reading.wait(10) and len(reads) == 1
+        pick.start()
+        pick.join(0.3)
+        assert pick.is_alive() and len(reads) == 1, "the pick read the store itself while the dates were being read"
+        go.set()
+        pick.join(10)
+    finally:
+        go.set()
+    assert not pick.is_alive() and picked and picked[0]
+    assert len(reads) == 1, reads
+    sentences._DATES.clear()
+    sentences._AHEAD.clear()
+    assert sentences.choose(lang, [key], dial=sentences.BEST, young={}, top=1)[key] == picked[0], "the same cards"
+
+
+@pytest.mark.parametrize("lang, key, word", [(c[0], c[1], c[2]) for c in CASES])
+def test_a_pick_waits_for_the_dates_read_ahead_only_so_long_and_one_that_failed_is_read_again(monkeypatch, lang, key,
+                                                                                                word):
+    # why: a read ahead stuck on a busy store, or failed, must never stop a pick: it reads the dates itself
+    w = _a_world(monkeypatch, lang, key, word)
+    go, reading, reads = _held_dates(monkeypatch, w)
+    monkeypatch.setattr(sentences, "DATES_AHEAD_WAIT_S", 0.2)
+    try:
+        assert sentences.read_ahead(lang) is True and reading.wait(10)
+        real = w._library
+        monkeypatch.setattr(sentences, "_library", lambda *a, **k: reads.append("pick") or real(*a, **k))
+        assert sentences.choose(lang, [key], dial=sentences.BEST, young={}, top=1)[key]
+        assert reads[1:] == ["pick"], reads
+    finally:
+        go.set()
+    sentences._AHEAD[(lang, False)].join(10)
+    sentences._DATES.clear()
+
+    def broken(*a, **k):
+        raise OSError("the store's file was locked")
+    monkeypatch.setattr(sentences, "_library", broken)
+    assert sentences.read_ahead(lang) is True
+    sentences._AHEAD[(lang, False)].join(10)
+    assert (lang, False) not in sentences._DATES
+    monkeypatch.setattr(sentences, "_library", w._library)
+    assert sentences.choose(lang, [key], dial=sentences.BEST, young={}, top=1)[key], "the pick read them itself"
+
+
+def test_at_level_zero_and_with_no_table_nothing_is_read_ahead_on_a_thread(monkeypatch):
+    # why: inert — at 0 (or no table for the language) Connect's run starts no thread and reads no dates
+    for level in (0, 1):
+        w = World(monkeypatch, "ja", level=level)
+        if level:
+            monkeypatch.setattr(SS, "_table", lambda language: None)
+        getattr(sentences, "_AHEAD", {}).clear()
+        assert sentences.read_ahead("ja") is False
+        assert not getattr(sentences, "_AHEAD", {}) and w.reads == []

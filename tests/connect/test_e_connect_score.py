@@ -48,6 +48,9 @@ class World:
         from app import settings_manager
         monkeypatch.setattr(settings_manager, "load_settings", lambda *a, **k: dict(self.settings))
         getattr(sentences, "_DATES", {}).clear()
+        for thread in list(getattr(sentences, "_AHEAD", {}).values()):     # (a read ahead left by a test before)
+            thread.join(10)
+        getattr(sentences, "_AHEAD", {}).clear()
 
     def table(self, keys, episodes, word, folder="HighPriority/show", words=None):
         """`episodes` [(name, [text, …])]: every line holding `word` is a line of row 0."""
@@ -476,6 +479,7 @@ def test_read_ahead_reads_the_tables_head_and_the_dates_at_level_one(monkeypatch
     w.place("ep01", 1)
     monkeypatch.setattr(sentences, "_store_stamp", lambda language: ("store", (1, 1), None), raising=False)
     assert sentences.read_ahead("ja") is True
+    sentences._AHEAD[("ja", False)].join(10)       # (the dates are a thread's read: E-FAST 6, row 16)
     assert w.reads == [True] and ("ja", False) in sentences._DATES
     sentences.choose("ja", [FEST], dial=sentences.BEST, young={})
     assert w.reads == [True], "the first pick reads no store: the dates were read ahead"

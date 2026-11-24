@@ -76,6 +76,25 @@ def line_name(key, start, end, print_, ext):
     return f"{PREFIX}{digest}{ext.lower()}"
 
 
+def by_line(values, files, key, start, end, text, audio_field, picture_field):
+    """FS-1 (the full Swap): a rendered note's clip and picture named by their line BEFORE they are stored — an in-place
+    write keeps what it wrote for its Undo, so the rename after it (`rename`) must find nothing to do (it leaves a note
+    already on an `sl-` name). `values` {field: value}, `files` {file name: path on disk} -> (the values with the line's
+    names, {name to store: path}). The same names `rename` gives (its fingerprint where the store has none); a field
+    with no field name (a book; an audio episode's shared cover) or a file not on disk keeps its name."""
+    values, out = dict(values or {}), dict(files or {})
+    if start is None:
+        return values, out                  # no line to name them by: render's names stay (renamed after, if ever)
+    for field, pattern in ((audio_field, _SOUND), (picture_field, _IMG)):
+        old = _named(values.get(field) or "", pattern) if field else None
+        if not old or old.startswith(PREFIX) or old not in out:
+            continue
+        new = line_name(key, start, end, fingerprint(text), os.path.splitext(old)[1] or ".bin")
+        values[field] = values[field].replace(old, new)
+        out[new] = out.pop(old)
+    return values, out
+
+
 def _named(value, pattern):
     found = pattern.search(value or "")
     return found.group(1) if found else None

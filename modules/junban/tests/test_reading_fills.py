@@ -191,6 +191,30 @@ def test_connects_run_fills_the_reported_cards_shape_whatever_the_ticks_and_the_
     assert fake.notes[one_word[0]["noteId"]]["fields"]["PitchPosition"]["value"] == ""
 
 
+def test_a_card_a_swap_rewrote_in_place_gets_its_new_lines_furigana_studied_and_known_too():
+    """FS-1 (the full Swap): a studied card's sentence rewritten in place, its SentenceFurigana emptied (the old line's
+    AJT colours never stay under a new line). Connect's run names it `rewritten`: its ふりがな is made though the card
+    is studied and its word known — the card's own fill only, into an empty field only (its pitch, filled, stays). A
+    studied card named beside it but not rewritten is left, as every studied card is. Before FS-1 the swapped card
+    kept an empty furigana for good: Connect's run fills new cards only."""
+    swapped = _note(0, "試合", "しあい", LINES[5].replace("試合", "<b>試合</b>"), pitch="0", studied=True)
+    other = _note(1, "あくまでも", "あくまでも", "「メリット、か。お前は<b>あくまでも</b>損得で行動をするってことだよな」",
+                  studied=True)
+    fake = _fake(swapped, other)
+    session = _Session()
+    session.is_known = lambda word, sentence=None: True         # a mature card: its word counts as known
+    with _patched(fake):
+        report = backfill.run_named(_settings(junban_backfill_deck="TheBank"), session,
+                                    [swapped[0]["noteId"], other[0]["noteId"]], run_id="backfill-20261123-150000-000",
+                                    rewritten=[swapped[0]["noteId"]])
+    assert report["ok"], report
+    assert report["filled"] == [swapped[0]["noteId"]]
+    mine = {k: v["value"] for k, v in fake.notes[swapped[0]["noteId"]]["fields"].items()}
+    assert mine["SentenceFurigana"].startswith("<b>試合[しあい]</b>に 勝[か]って")
+    assert mine["PitchPosition"] == "0"
+    assert fake.notes[other[0]["noteId"]]["fields"]["SentenceFurigana"]["value"] == ""
+
+
 def test_a_chinese_session_never_offers_either_fill():
     assert all(fill.languages == ("ja",) for fill in backfill.FILLS if fill.key in backfill.MAKING)
 

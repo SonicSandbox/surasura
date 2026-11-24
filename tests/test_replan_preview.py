@@ -655,6 +655,45 @@ def test_known_words_changed_reorders_now_then_asks_for_a_generate(lib):
     assert asked and asked[0].startswith("replan-now"), asked
 
 
+@pytest.mark.parametrize("lib", ["ja", "zh"], indirect=True)
+def test_a_moves_job_reads_the_known_words_only_when_their_files_change(lib, monkeypatch):
+    """KYOU-MO-HOLD (R6, 3.0.18: the window's thread held 8-10 ms against 5 at a move): since the mining model the
+    unlocking word's pass (§17) runs in every job, and it read KnownWord.json and the word lists afresh beside the
+    window at each move. A job reads them through the job's memo (`reposition._known_memo`) — once after they change,
+    for both passes — and never between. Chinese: no unlocking pass, the same memo."""
+    root, store = lib
+    fake = _deck(root)
+    host, _lines = _host()
+    reads = []
+    real = reposition._known_sets
+
+    def counted(language, settings):
+        reads.append(language)
+        return real(language, settings)
+    with _patched(fake):
+        host._job("catch-up")                    # the first job reads them (the window's warm-up, here)
+        monkeypatch.setattr(reposition, "_known_sets", counted)
+        _move_later_to_top(store)
+        fake.write_requests.clear()
+        host._job("move")
+        assert fake.write_requests, "the move reordered nothing"
+        assert reads == [], f"a move's job read the known words again: {len(reads)} time(s)"
+        # The learner marks words known: the next job reads them once, and the move after reads them no more
+        language = _language()
+        known = os.path.join(root, "User Files", language, "KnownWord.json")
+        with open(known, encoding="utf-8") as f:
+            data = json.load(f)
+        with open(known, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.utime(known, (time.time() + 5, time.time() + 5))
+        _move_later_to_top(store)
+        host._job("move")
+        assert reads == [language], reads
+        _move_later_to_top(store)
+        host._job("move")
+    assert reads == [language], reads
+
+
 def test_known_words_changed_without_a_move_asks_for_no_journey(lib):
     """The journey's Generate is for moves (04 §3, G1.5-5): known words changed with nothing moved leave the run's
     signature behind the library's, but no move is pending — nothing is asked for on focus (mutant "journey asks

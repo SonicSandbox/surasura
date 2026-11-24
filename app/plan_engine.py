@@ -1698,8 +1698,8 @@ class Engine:
         keys = self.plan.keys
         ranked = [r[-1] for r in self._ranked]
         asked = [(keys[k][0], keys[k][1]) for k in ranked]
-        study = getattr(self, "_study", None) or {}
-        order = {(keys[k][0], keys[k][1]): at for k, at in study.items()}
+        study = getattr(self, "_study", None)       # (None: asked outside `result` — the table's own order)
+        order = None if study is None else {(keys[k][0], keys[k][1]): at for k, at in study.items()}
         got = chooser(asked, order) if chooser is not None else None
         if got is None:
             raise PlanError("no sentence table to choose the sentences from: Generate first")

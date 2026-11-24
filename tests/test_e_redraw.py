@@ -362,3 +362,75 @@ def test_all_asks_the_reader_for_todays_ceiling():
     # ceiling, so the page's weight does not change
     assert analyzer.ListSentences("ja", 0).n == plan_rules.context_limit(0) == 87
     assert analyzer.ListSentences("ja", 3).n == 3
+
+
+# --- The lead's ruling 4 (2026-11-23): a journey with no redraw marker (Generated before this build) counts as not
+# today's, and is redrawn once; this build's level-2 Generate names its own day, so its journey is today's ---
+
+_DRAWN = r"""
+import sys
+from app import analyzer
+results = sys.argv[1]
+print(analyzer.drawn_for(results) == analyzer.read_run_stamp(results) and bool(analyzer.read_run_stamp(results)))
+"""
+
+
+def _current(root):
+    """Whether the outputs in `root`'s results/ are the run stamp's (`drawn_for`, the one question every "is the
+    journey current" asks), read at level 2 in a child."""
+    p = subprocess.run([sys.executable, "-c", _DRAWN, os.path.join(root, "results")], cwd=cases.REPO, env=_env(root),
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    assert p.returncode == 0, p.stderr[-1500:]
+    return p.stdout.strip().splitlines()[-1] == "True"
+
+
+def test_a_release_2_generate_names_its_own_day_so_its_journey_is_todays(run):
+    # why: ruling 4 tells a journey Generated before this build by its missing marker — so this build's Generate
+    # writes one (its own run, today) and is never redrawn just after it
+    stamp = analyzer.read_run_stamp(run.results)
+    assert analyzer.redrawn_for(run.results) == {"plan": stamp, "run": stamp, "day": analyzer.drawn_day()}
+    assert _current(run.root)
+
+
+def test_a_journey_with_no_redraw_marker_is_not_todays_and_is_redrawn_once(run):
+    # why: ruling 4 — a journey Generated before this build has no marker: at level 2 it is not today's (its
+    # sentences weighed no episode's fading), so the keeper redraws it from the plan once; after that it is current
+    root = _generated(run.language, run.tmp.mktemp(f"unmarked-{run.language}"))
+    os.remove(os.path.join(root, "results", analyzer.REDRAW_FILE))
+    assert not _current(root)
+    out = _redraw(root, run.language)
+    assert "Redrew the journey" in out, out[-1500:]
+    assert analyzer.redrawn_for(os.path.join(root, "results"))["day"] == analyzer.drawn_day()
+    assert _current(root)
+
+
+@pytest.mark.parametrize("level, current", [(2, False), (1, True), (0, True)])
+def test_no_marker_is_current_only_below_release_2(tmp_path, monkeypatch, level, current):
+    # why: inert — below level 2 a journey with no marker is the run stamp's, as today (`drawn_for`)
+    monkeypatch.setattr(plan_rules, "SENTENCE_TABLE", level)
+    monkeypatch.setattr(analyzer, "read_run_stamp", lambda results: "stamp")
+    assert (analyzer.drawn_for(str(tmp_path)) == "stamp") is current
+
+
+@pytest.mark.parametrize("level, fmt_ok, state", [(2, True, "owed"), (2, False, None), (0, True, None)])
+def test_with_no_marker_and_nothing_moved_release_2_owes_a_redraw(monkeypatch, level, fmt_ok, state):
+    # why: ruling 4 — nothing moved and no marker: at level 2 the redraw is owed (seconds, from the plan) when the
+    # plan is this build's (`only_order`: a format-4 plan at level 2 reads Generate first, so a Generate); below
+    # level 2 nothing is owed, as today
+    from app import library_store, plan_rules as rules
+    from app.services import journey as J, moves
+
+    class Store:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    monkeypatch.setattr(rules, "SENTENCE_TABLE", level)
+    monkeypatch.setattr(plan_engine, "read_header", lambda path: {"run_signature": "plan"})
+    monkeypatch.setattr(library_store, "open_store", lambda *a, **k: Store())
+    monkeypatch.setattr(moves, "plan_inputs", lambda *a: (None, None, "parts"))
+    monkeypatch.setattr(rules, "signature_digest", lambda parts: "plan")
+    monkeypatch.setattr(plan_engine, "only_order", lambda header, language, *inputs: fmt_ok)
+    monkeypatch.setattr(analyzer, "redrawn_for", lambda results: None)
+    assert J.moved_state({}, "ja", "plan.json.gz") == state

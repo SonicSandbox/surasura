@@ -4733,6 +4733,7 @@ class ListSentences:
         from app.connect import sentences as connect_sentences
         from app.path_utils import get_data_path
         settings = settings_manager.load_settings()
+        # TODO(E-FAST): Connect's moment by its public name once E-FAST lands (it owns app/connect/sentences.py)
         _info, seen = connect_sentences._dates(self.language, connect_sentences.ai_voice(settings, self.language))
         _lo, _hi, low, high = sentence_corpus.length_range(settings)
         root = get_data_path(self.language)
@@ -4797,10 +4798,18 @@ def _write_shown(results_dir, run_signature, kept):
         lines.setdefault(rel, {})[str(number)] = text
     path = os.path.join(results_dir, SHOWN_FILE)
     tmp = f"{path}.{os.getpid()}.tmp"
-    with open(tmp, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=6, mtime=0, filename="") as f:
-        f.write(json.dumps({"run_signature": run_signature, "lines": lines}, separators=(",", ":"),
-                           ensure_ascii=False).encode("utf-8"))
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=6, mtime=0,
+                                                   filename="") as f:
+            f.write(json.dumps({"run_signature": run_signature, "lines": lines}, separators=(",", ":"),
+                               ensure_ascii=False).encode("utf-8"))
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)                  # (no temp file left in results/)
+        except OSError:
+            pass
+        raise
 
 
 def plan_texts(language, data_dir, store):
@@ -5875,11 +5884,13 @@ REDRAW_STATS_FILE = "file_statistics.generated.json"   # the Generate's file sta
 def drawn_for(results_dir):
     """The run signature the outputs in `results_dir` are now: the run stamp's, or — redrawn from the plan since (F7,
     `REDRAW_FILE`) — the order's it was redrawn for, while the marker names the stamp's plan; None when neither can be
-    told (no stamp, a redraw stopped part-way, a marker of another plan). Never raises."""
+    told (no stamp, a redraw stopped part-way, a marker of another plan). Never raises. At release 2 a Generate writes
+    the marker too (its own run, its day): none is a journey Generated before that build — not today's (the lead's
+    ruling, 2026-11-23), so None, and the keeper redraws it once (`journey.moved_state`)."""
     stamp = read_run_stamp(results_dir)
     marker = redrawn_for(results_dir)
     if marker is None:
-        return stamp
+        return stamp if plan_rules.SENTENCE_TABLE < 2 else None
     return marker.get("run") if stamp and marker.get("plan") == stamp else None
 
 
@@ -8366,6 +8377,11 @@ def main():
     # entirely next time (and the presentation fingerprint, signed with the stones the report was
     # drawn from, so a same-setting re-run can open the report without re-rendering), then close
     # the store.
+    if _run_sig and plan_rules.SENTENCE_TABLE >= 2:
+        try:
+            _write_redraw_marker(_run_sig, _run_sig)    # release 2: this run's journey is today's (`drawn_for`)
+        except OSError as e:                # never fails a finished Generate: with none it is redrawn once
+            print(f"Warning: could not mark the journey as today's: {e}")
     _set_run_stamp(RESULTS_DIR, _run_sig)
     if _store is not None:
         try:

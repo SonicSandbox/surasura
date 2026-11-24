@@ -201,8 +201,10 @@ def moved_state(settings, language, plan_path=None):
         marker = analyzer.redrawn_for(get_user_file("results"))
         if marker is not None and marker.get("plan") != header.get("run_signature"):
             marker = None                   # a redraw from another plan: not this one's (a Generate removes it)
-        if signature == header.get("run_signature") and marker is None:
+        if signature == header.get("run_signature") and marker is None and plan_rules.SENTENCE_TABLE < 2:
             return None                     # nothing moved at all (a list file gone, the token store's run another's)
+        # (release 2: no marker is a journey Generated before that build — not today's, owed a redraw once; a plan
+        # the engine can't redraw from, format 4, is a Generate: `only_order`)
         if not plan_engine.only_order(header, language, *inputs):
             return None
         drawn = marker is not None and marker.get("run") == signature

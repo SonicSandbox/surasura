@@ -49,11 +49,12 @@ def _bytes(path):
 @pytest.fixture
 def v3():
     """Settings as the cut-over shows them, put back after (the import-time variant is the one before it)."""
+    on, was = J.ON, catalog._V3        # put back as they were: since the cut-over (J-CUT) the import-time rows are v3's
     J.ON = True
     catalog.use_v3(True)
     yield
-    J.ON = False
-    catalog.use_v3(False)
+    J.ON = on
+    catalog.use_v3(was)
 
 
 @pytest.fixture
@@ -76,7 +77,8 @@ def test_the_page_has_nine_settings_six_new_keys_and_three_it_shares():
         "journey_pitch": "shown", "journey_meanings": "en", "journey_word_size": "m", "journey_sentence_size": "m",
         "journey_keys": "qwerty", "journey_first_meeting": True}
     for key in NEW_KEYS:
-        assert settings_placement.PLACED[key] == "neither", key
+        # the page applies these itself; Meanings the v3 render draws with (the cut-over's rule: placed `report`)
+        assert settings_placement.PLACED[key] == ("report" if key == "journey_meanings" else "neither"), key
     # the table's §2: the page and the data use these names, never a twin
     assert not {"journey_theme", "journey_source", "journey_where_from", "journey_text_size"} & set(defaults)
     assert J.LOOKS == set(J.KEYS) - {"logic.context.max_contexts", "journey_meanings"}
@@ -216,8 +218,18 @@ def test_under_v3_journey_sits_under_app_before_apps_own_section_and_the_old_row
         assert "YouTube preview" in catalog.NOT_SHOWN[key] or "old page" in catalog.NOT_SHOWN[key], key
 
 
-def test_before_the_cut_over_settings_is_as_it_was():
-    """Inert until J-CUT: the rows, heads and the theme's five choices exactly as before."""
+def test_before_the_cut_over_settings_is_as_it_was(monkeypatch):
+    """Before J-CUT (since the cut, SURASURA_DOOR=0): the rows, heads and the theme's five choices exactly as before."""
+    monkeypatch.setenv("SURASURA_DOOR", "0")
+    was = catalog._V3                                  # the import-time rows: the cut's, put back after
+    catalog.use_v3(False)
+    try:
+        _before_the_cut_over()
+    finally:
+        catalog.use_v3(was)
+
+
+def _before_the_cut_over():
     assert not J.v3()
     assert dict(catalog.HEADS)["library"] == ("content", "arrivals", "parsing", "reading", "export")
     assert catalog.ROW["theme"].options == ("Default (Dark)", "Dark Flow", "Midnight (Vibrant)", "Modern Light",

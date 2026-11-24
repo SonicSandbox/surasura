@@ -59,6 +59,7 @@ def _program(root):
         "_internal/base_library.zip": b"PK stdlib",
         "_internal/build_stamp.json": b'{"build_id": "x", "data_name": "Surasura", "version": "3.0.1"}\n',
         "_internal/templates/web_app.html": "<h1>語彙の旅</h1>\n".encode("utf-8"),
+        "_internal/templates/journey/page.html": "<title>旅</title><!--JOURNEY-DATA-->\n".encode("utf-8"),
         "_internal/PyQt6/QtCore.pyd": b"MZ qt",
         "_internal/licenses/PyQt6-6.11.0/licenses/LICENSE": b"GNU GENERAL PUBLIC LICENSE\n",
         "_internal/unidic_lite/dicdir/sys.dic": b"dic" * 100,

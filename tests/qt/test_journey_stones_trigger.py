@@ -46,6 +46,13 @@ from tests.test_library_store_support import LANGUAGES, roots
 from tests.test_services_moves import Heard
 from tests.test_services_replan_host import _Launches, _Opener, _replans, _Settings, fired, gate, landed  # noqa: F401
 
+# Before the cut-over (J-CUT), as its two parts are (tests/test_journey_stones.py, tests/test_journey_stones_quiet.py):
+# its helpers read what a Generate drew from the old page's payload (`_generate`, `_stones`, `_files`; None for a v3
+# page). The trigger it holds is the same code either side of the cut; the v3 render signs the stones too
+# (`compute_render_signature`'s v3 list), its report half asked after a real Generate in
+# tests/test_services_journey_stones.py, a mark mid-render in tests/test_journey_cutover.py.
+pytestmark = pytest.mark.usefixtures("journey_pre_cut")
+
 
 class _Window:
     """One language's window as `shell.Services` wires it: the writer on the library store, the Replan (its real

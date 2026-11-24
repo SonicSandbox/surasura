@@ -9,6 +9,7 @@ licences ask for wherever the data goes.
 The catalog reads no library: the values here are settings as a user's file holds them (real deck names, real folders).
 """
 import ast
+import contextlib
 import importlib.util
 import os
 import subprocess
@@ -27,6 +28,18 @@ from app.settings_placement import OWNERS, PLACED
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EVERYTHING = frozenset(catalog.MODULES) | {"koe_revealed", "hato_found", "miner_found"}   # + row 13's tools
 NOTHING = frozenset()
+
+
+@contextlib.contextmanager
+def _settings_pre_cut():
+    """The Settings before the journey v3 cut-over (`use_v3(False)`), for what only they hold: Speech's rows (D15: speaking
+    left the journey with the old page; the YouTube preview's old page still reads its keys) — back to the switch's own
+    after (J-CUT)."""
+    catalog.use_v3(False)
+    try:
+        yield
+    finally:
+        catalog.use_v3(catalog._journey_v3())
 
 
 def _found(name):
@@ -204,8 +217,12 @@ def test_every_door_opens_a_registered_window_or_one_still_to_come():
     registered = {opener.name for opener in windows.OPENERS}
     waiting = catalog.pending(registered)
     assert "nobody" not in waiting.values(), f"doors no opener holds and nothing brings: {waiting}"
-    assert set(catalog.PENDING_OPENERS) <= catalog.doors()
     assert {"frequency-lists", "sentence-dictionary"} <= registered and not set(waiting) & registered
+    doors = catalog.doors()
+    with _settings_pre_cut():      # Speech's door (koe) is on the Settings before the cut-over only (D15)
+        assert "nobody" not in catalog.pending(registered).values()
+        doors |= catalog.doors()
+    assert set(catalog.PENDING_OPENERS) <= doors
 
 
 def test_settings_held_by_a_window_are_reached_through_its_door_row():
@@ -220,8 +237,10 @@ def test_settings_held_by_a_window_are_reached_through_its_door_row():
     for opener in ("junban", "backfill"):
         assert [row.id for row in catalog.ROWS if opener in row.door] == [
             "junban_scope" if opener == "junban" else "junban_backfill_cards"]
-    for key in ("koe_voice", "koe_model", "koe_style", "koe_temperature", "koe_daily_cap"):
-        assert reached[key] == "koe_door" and key not in catalog.NOT_SHOWN
+    with _settings_pre_cut():                  # Speech's window and its door row: the Settings before the cut-over (D15)
+        speech = {key: row.id for row in catalog.ROWS for key in row.reaches}
+        for key in ("koe_voice", "koe_model", "koe_style", "koe_temperature", "koe_daily_cap"):
+            assert speech[key] == "koe_door" and key not in catalog.NOT_SHOWN
     for row in catalog.ROWS:
         if row.reaches:
             # (a program row reaches its program, which its own picker writes: Sonic 2026-11-05)
@@ -310,9 +329,11 @@ def test_toggles_choices_numbers_and_text_write_their_value():
     assert catalog.change(catalog.ROW["connect_every_word"], settings, "ja", True)[0] == {"connect_every_word": True}
     assert catalog.change(catalog.ROW["study_order"], settings, "ja", "priority")[0] == {"study_order": "priority"}
     assert catalog.change(catalog.ROW["connect_open_anki"], settings, "ja", True)[0] == {"connect_open_anki": True}
-    assert catalog.change(catalog.ROW["theme"], settings, "ja", "Modern Light")[0] == {"theme": "Modern Light"}
-    # a number past its bounds is held to them (2.4's spinbox: 1–10 sentences, a coverage of at most 100 %)
-    assert catalog.change(catalog.ROW["max_contexts"], settings, "ja", 40)[0] == {"logic.context.max_contexts": 10}
+    # the look and *Sentences per word*: the journey v3 rows (J-CUT) write the keys the old rows wrote
+    assert catalog.change(catalog.ROW["journey_theme"], settings, "ja", "Modern Light")[0] == {"theme": "Modern Light"}
+    assert catalog.change(catalog.ROW["sentences_per_word"], settings, "ja", 5)[0] == {"logic.context.max_contexts": 5}
+    assert catalog.change(catalog.ROW["sentences_per_word"], settings, "ja", 0)[0] == {"logic.context.max_contexts": 0}
+    # a number past its bounds is held to them (2.4's spinbox: a coverage of at most 100 %)
     assert catalog.change(catalog.ROW["target_coverage"], settings, "ja", "95")[0] == {"target_coverage": 95}
     # typed text is kept without the spaces around it (Junban's own windows strip it too)
     assert catalog.change(catalog.ROW["junban_own_tag"], settings, "ja", "  immersion ")[0] == \
@@ -598,7 +619,8 @@ def test_values_read_dotted_paths_per_language_entries_and_defaults_from_a_froze
     assert catalog.value(catalog.ROW["anki_decks"], settings, "zh") == []
     assert catalog.value(catalog.ROW["automation"], settings, "ja") is True             # D29's default: on
     assert catalog.value(catalog.ROW["connect_backlog_cap"], settings, "zh") == 80
-    assert catalog.value(catalog.ROW["enable_koe"], settings, "ja") is False            # absent: off
+    with _settings_pre_cut():                                      # Speech's row: before the cut-over only (D15)
+        assert catalog.value(catalog.ROW["enable_koe"], settings, "ja") is False        # absent: off
     assert catalog.value(catalog.ROW["known_road"], settings, "ja") == "anki"
     assert catalog.value(catalog.ROW["known_road"], settings, "zh") == "import"
 
@@ -659,17 +681,24 @@ def test_japanese_rows_hide_for_chinese_and_the_script_shows_only_for_chinese():
 
 @WITH_MODULES
 def test_module_rows_hide_without_their_module():
-    without = {row for row in _shown({"enable_koe": True}, "ja", frozenset({"koe_revealed"}))}
-    for row_id in ("enable_junban", "junban_scope", "put_back", "backfill_patterns", "enable_youtube_transcripts",
-                   "enable_youtube_preview", "enable_koe", "koe_door", "setup_cards"):
-        assert row_id not in without, row_id
-        assert row_id in _shown({"enable_koe": True}, "ja"), row_id
+    def check(row_ids):
+        without = {row for row in _shown({"enable_koe": True}, "ja", frozenset({"koe_revealed"}))}
+        for row_id in row_ids:
+            assert row_id not in without, row_id
+            assert row_id in _shown({"enable_koe": True}, "ja"), row_id
+    check(("enable_junban", "junban_scope", "put_back", "backfill_patterns", "enable_youtube_transcripts",
+           "enable_youtube_preview", "setup_cards"))
+    with _settings_pre_cut():                  # Speech's rows: the Settings before the cut-over only (D15)
+        check(("enable_koe", "koe_door"))
 
 
 def test_speech_shows_only_once_revealed_in_settings_json():
     """The reveal gate (`koe.is_revealed`: the key present in the file): its module alone shows nothing."""
-    assert not {"enable_koe", "koe_door"} & _shown({}, "ja", frozenset(catalog.MODULES))
-    assert {"enable_koe", "koe_door"} <= _shown({"enable_koe": False}, "ja", EVERYTHING)
+    with _settings_pre_cut():                  # Speech's rows: the Settings before the cut-over only (D15)
+        assert not {"enable_koe", "koe_door"} & _shown({}, "ja", frozenset(catalog.MODULES))
+        assert {"enable_koe", "koe_door"} <= _shown({"enable_koe": False}, "ja", EVERYTHING)
+    if catalog._V3:                            # the cut-over's: not even revealed
+        assert not {"enable_koe", "koe_door"} & _shown({"enable_koe": False}, "ja", EVERYTHING)
 
 
 @WITH_MODULES
@@ -790,7 +819,10 @@ def test_reveal_targets_and_written_keys_find_their_rows():
     assert catalog.locate("mine_line") == ("anki", "mine_line")
     assert catalog.locate("soon_line") == ("content", "soon_line")
     assert catalog.locate("logic.names_kanji") == ("parsing", "names_kanji")
-    assert catalog.locate("koe_voice") == ("reading", "koe_door")
+    with _settings_pre_cut():                                   # Speech's door: the Settings before the cut-over
+        assert catalog.locate("koe_voice") == ("reading", "koe_door")
+    if catalog._V3:                                             # the cut-over's: no row reaches it (NOT_SHOWN)
+        assert catalog.locate("koe_voice") is None and "koe_voice" in catalog.NOT_SHOWN
     assert catalog.locate("app_theme") is None
     assert catalog.rows_for(["logic.selection.auto"]) == ["level"]
 

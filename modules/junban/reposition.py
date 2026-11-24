@@ -1784,9 +1784,11 @@ def _per_day(url, decks):
 
 
 def _utc_now():
-    """Kyou-E: now, as the library store writes its times (UTC, microseconds: `library_store._now`'s shape)."""
-    t = time.time()
-    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + ".%06dZ" % int((t % 1) * 10 ** 6)
+    """Kyou-E: now, as the library store writes its times (UTC, microseconds) — its own clock, `library_store._now`:
+    a stamp from `time.time()`'s float could read 1 µs later than the store's taken after it (the float rounds up past
+    a microsecond the clock's integer hadn't reached: .927510 against .927509, FLAKES.md)."""
+    from app import library_store
+    return library_store._now()
 
 
 def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, out_read=None):

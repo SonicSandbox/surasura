@@ -34,11 +34,12 @@ def _all(out):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_the_head_carries_all_nine_setting_rows_with_their_defaults_when_unset(language):
+    # …and ⌕'s two (J-CUT: Settings' word_search_*, which the page reads from its head): shown, All
     out = jr.build(language, _rows(language, 3), _stats(3), pitch=jr.Pitch(language, kanjium={}))
     assert out.head["v"] == 1 and out.head["minor"] == 1        # additive: a v1 reader reads it as before
     assert out.head["settings"] == {"sentences": 3, "meanings": "en", "pitch": "shown", "source": "icon",
                                     "word_size": "m", "sentence_size": "m", "theme": "night", "keys": "qwerty",
-                                    "first_meeting": True}
+                                    "first_meeting": True, "lookup": True, "lookup_category": "all"}
 
 
 def test_the_heads_settings_are_journey_settings_page_values_the_one_reader():
@@ -57,7 +58,8 @@ def test_the_heads_settings_are_journey_settings_page_values_the_one_reader():
         values = journey_settings.page_values(settings)
         shown = jr.build("ja", _rows("ja", 1), _stats(1), settings=settings,
                          pitch=jr.Pitch("ja", kanjium={})).head["settings"]
-        assert shown == {name: values[key] for name, key in jr.HEAD_SETTINGS.items()}, settings
+        assert shown == {**{name: values[key] for name, key in jr.HEAD_SETTINGS.items()},
+                         **journey_settings.lookup_values(settings)}, settings
 
 
 def test_all_sentences_per_word_stored_as_0_shows_every_kept_sentence_not_one():

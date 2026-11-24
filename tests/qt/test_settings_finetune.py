@@ -214,21 +214,23 @@ def test_reset_puts_a_sections_rows_back_including_two_switches_of_one_list():
 
 
 def test_reset_section_writes_once_keeps_the_exceptions_and_its_undo_puts_every_value_back(qapp):
-    data = dict(ALL_ON, **KEPT_OFF, line_player=False, source_display="icon",
-                zen_limit=80, enable_koe=False)
+    # the Journey's rows since the journey v3 cut-over (J-CUT): a switch, a choice and a choice whose page word
+    # differs from what it stores (*Where a sentence came from*: hover)
+    data = dict(ALL_ON, **KEPT_OFF, line_player=False, source_display="hover", journey_word_size="l")
     page, store = make_page(data, "ja")
     slab = page.slabs["reading"]
     assert slab.reset.isVisibleTo(page)
     slab.reset.click()
     (changes, update), = store.calls
     assert update is None
-    assert changes == {"line_player": True, "source_display": "off", "zen_limit": 50}
+    # (*Where a sentence came from* back to its default in the page's words: the icon; "off" read so before the cut)
+    assert changes == {"line_player": True, "source_display": "icon", "journey_word_size": "m"}
     message, undo = page.last_toast
     assert message == S.RESET_DONE.format(section=S.SECTIONS["reading"])
     store.land()
     store.calls.clear()
     undo()
-    assert store.calls == [({"line_player": False, "source_display": "icon", "zen_limit": 80}, None)]
+    assert store.calls == [({"line_player": False, "source_display": "hover", "journey_word_size": "l"}, None)]
     # the App section: usage counts and both update switches are left as the learner set them
     store.land()
     store.calls.clear()
@@ -247,10 +249,10 @@ def test_reset_with_nothing_to_put_back_writes_nothing_and_says_so(qapp):
 
 
 def test_reset_while_searching_puts_back_only_the_rows_the_search_shows(qapp):
-    page, store = make_page(dict(ALL_ON, line_player=False, zen_limit=80, enable_koe=False), "ja")
-    page.search.edit.setText("audio")                     # Journey shows its two audio rows, not *Zen mode*'s
+    page, store = make_page(dict(ALL_ON, line_player=False, journey_word_size="l"), "ja")
+    page.search.edit.setText("audio")                     # Journey shows its audio row, not *Word size*
     QApplication.processEvents()
-    assert page.rows["line_player"].isVisibleTo(page) and not page.rows["zen_limit"].isVisibleTo(page)
+    assert page.rows["line_player"].isVisibleTo(page) and not page.rows["journey_word_size"].isVisibleTo(page)
     page.slabs["reading"].reset.click()
     assert store.calls == [({"line_player": True}, None)]
 

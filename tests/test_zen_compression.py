@@ -21,7 +21,11 @@ def test_compress_list_of_dicts():
     assert compressed["rows"][0] == [10, None, "apple"]
     assert compressed["rows"][1] == [5, 1, "banana"]
 
-def test_zen_mode_static_html_compression(tmp_path):
+# Zen's two names (the display name, the theme id the analyzer forwards): since the journey v3 cut-over (J-CUT) every
+# other theme writes the v3 page, and Zen alone keeps the old data path — so the test names Zen as the app does. (It
+# passed "zen" before, never one of Zen's names: the old page and its limit, the same either way, until the cut.)
+@pytest.mark.parametrize("zen_theme", ["Zen Mode", "zen-focus"])
+def test_zen_mode_static_html_compression(tmp_path, zen_theme):
     """
     Test that generate_static_html correctly limits words for Zen mode
     and outputs the expected compressed format.
@@ -57,7 +61,7 @@ def test_zen_mode_static_html_compression(tmp_path):
     ]).to_csv(prio_csv, index=False, encoding="utf-8-sig")
 
     mock_settings = {
-        "theme": "zen",
+        "theme": zen_theme,
         "logic": {}
     }
 
@@ -70,7 +74,7 @@ def test_zen_mode_static_html_compression(tmp_path):
          patch("os.path.exists", return_value=True): # Pretend progressive CSV exists
          
          # Run generator in Zen mode limit to 2 words
-         generate_static_html(theme="zen", zen_limit=2, open_browser=False)
+         generate_static_html(theme=zen_theme, zen_limit=2, open_browser=False)
          
          assert output_html.exists()
          

@@ -263,8 +263,10 @@ CREATE TABLE IF NOT EXISTS files (
     bound  BLOB,               -- zlib(json {"lemma|reading": n}) — one-kanji words' uses as pieces (Japanese)
     counted INTEGER NOT NULL DEFAULT 1, -- 1 counted, 0 kept: tokenized, never summed (module docstring)
     aside INTEGER NOT NULL DEFAULT 0,   -- 1 with counted 0: set aside (W-1), never summed, the name tables' evidence
-    lines BLOB                          -- zlib(json [key << 2 | marks, ...]) — each sentence's line (app/song_lines.py);
-                                        -- last, so a row's counted / aside are read without walking past it
+    lines BLOB,                         -- zlib(json [key << 2 | marks, ...]) — each sentence's line (app/song_lines.py);
+                                        -- after counted / aside, so they are read without walking past it
+    words BLOB                          -- zlib(sentence_table.file_words): each line's two numbers' inputs, counted
+                                        -- once while the sentence table is on (E-INDEX); NULL: the walk counts them
 );
 CREATE TABLE IF NOT EXISTS aggregate (  -- maintained rollup; the preview reads this
     lemma TEXT, reading TEXT, count INTEGER,
@@ -339,7 +341,8 @@ KEPT, COUNTED, ASIDE = 0, 1, 2
 _STATE = "CASE WHEN counted = 1 THEN 1 WHEN aside = 1 THEN 2 ELSE 0 END"
 _EVIDENCE = "(counted = 1 OR aside = 1)"
 _ADDED = (("counted", "INTEGER NOT NULL DEFAULT 1"), ("aside", "INTEGER NOT NULL DEFAULT 0"),
-          ("lines", "BLOB"))      # a row written before it has none: no song marks until the file is read again
+          ("lines", "BLOB"),      # a row written before it has none: no song marks until the file is read again
+          ("words", "BLOB"))      # likewise: no kept counts (the walk counts its lines: the same numbers) until then
 
 
 def _columns(state):
@@ -678,6 +681,7 @@ class Store:
         self.path = path            # the store's file
         self._names = None          # the library's name tables, read on the first cached file (Japanese)
         self._adjust = None         # (meta names_adjust as stored, parsed): `_names_entry`
+        self._no_words = False      # a store made before the `words` column, opened to read only: `file_words`
 
     def close(self):
         try:
@@ -756,17 +760,48 @@ class Store:
         row = self.conn.execute("SELECT tokens, names FROM files WHERE path=?", (_norm(path),)).fetchone()
         if not row:
             return []
-        sentences = _decode_tokens(row[0])
+        return self._named(_decode_tokens(row[0]), row[1])
+
+    def _named(self, sentences, names_blob, joined=None):
+        """`sentences` with the library's name tables applied (`file_tokens`); `joined`, a set: receives the numbers
+        of the sentences a table joined."""
         switches = _library_switches(self.language)
-        if row[1] and any(switches):
+        if names_blob and any(switches):
             if self._names is None:
                 self._names = self.names_tables() or {}
             if self._names:
                 from app import names
-                spans = _decode_counts(row[1]).get("s", [])
+                spans = _decode_counts(names_blob).get("s", [])
                 if spans:
-                    names.apply_spans(sentences, spans, self._names, *switches)
+                    names.apply_spans(sentences, spans, self._names, *switches, joined=joined)
         return sentences
+
+    def file_words(self, path):
+        """(sentences, words): `file_tokens`' sentences, and each line's two numbers as the indexer counted them
+        (`sentence_table.FileWords`, E-INDEX) — words None when the row keeps none (written while the sentence table
+        was off, by a build before them, by another rule, or unreadable): the walk counts every line, as before. A
+        sentence a name table joined is left to the walk (its tokens are not the indexed ones)."""
+        if self._no_words:
+            return self.file_tokens(path), None
+        try:
+            row = self.conn.execute("SELECT tokens, names, words FROM files WHERE path=?", (_norm(path),)).fetchone()
+        except sqlite3.OperationalError as e:
+            if "no such column" not in str(e).lower():
+                raise
+            self._no_words = True                   # a store a build before them made, opened to read only
+            return self.file_tokens(path), None
+        if not row:
+            return [], None
+        joined = set()
+        sentences = self._named(_decode_tokens(row[0]), row[1], joined)
+        words = None
+        if row[2]:
+            from app import sentence_table
+            try:
+                words = sentence_table.read_file_words(zlib.decompress(row[2]), self.language, joined)
+            except zlib.error:
+                pass
+        return sentences, words
 
     def file_lines(self, paths):
         """{path: lines} of the files of `paths` the store holds: each sentence's [line key, marks]
@@ -1318,13 +1353,14 @@ class Store:
                     phrased = True
                 names = result.get("names")
                 lines = result.get("lines")
+                words = result.get("words")
                 cur.execute(
                     "INSERT OR REPLACE INTO files(path, mtime, size, total, counts, tokens, names, bound, lines, "
-                    "counted, aside) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    "counted, aside, words) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (key, mtime, size, total, _encode_counts(counts),
                      _encode_tokens(result["sentences"]), _encode_counts(names) if names is not None else None,
                      _encode_counts(bound) if bound else None, _encode_tokens(lines) if lines else None,
-                     *_columns(flag)),
+                     *_columns(flag), zlib.compress(words, _BLOB_LEVEL) if words else None),
                 )
 
             # Adds / changes — reuse unchanged (fast path), tokenize only the delta; a flag that moved moves the counts.
@@ -2269,7 +2305,7 @@ def make_tokenizer(language, reinforce=False, script="asis"):
     - Japanese, `bound`: Counter('lemma|reading' -> n) of the one-kanji words' uses that are pieces of something
       else as the file reads alone (analyzer.bound_uses) — the bound table the preview reads.
     """
-    from app import analyzer, song_lines
+    from app import analyzer, plan_rules, song_lines
 
     # ja lemmas carry a gloss suffix the analyzer strips; match it so store lemmas == run lemmas.
     analyzer.SANITIZE_JA = (language == "ja")
@@ -2312,6 +2348,14 @@ def make_tokenizer(language, reinforce=False, script="asis"):
                     bound[make_key(s_tokens[i][0], s_tokens[i][1])] += 1
         result = {"sentences": sentences, "counts": counts,
                   "lines": song_lines.file_lines(sentences, facts.get("song_marks") or ())}
+        if plan_rules.SENTENCE_TABLE >= 1:
+            # The sentence table's two numbers, counted once a file here (in the pool's workers), not at every Generate
+            # (E-INDEX: sentence_table.file_words). Off, nothing is counted and the row keeps none
+            try:
+                from app import sentence_table
+                result["words"] = sentence_table.file_words(sentences, language)
+            except Exception:
+                pass
         if record is not None:
             result["names"] = record.data()
             result["bound"] = bound

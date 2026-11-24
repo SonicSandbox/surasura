@@ -13,6 +13,7 @@ Real Japanese and Chinese files, the real analyzer as a child, each under the te
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -88,9 +89,17 @@ def _records(proc):
 
 
 def _outputs():
+    # the v3 journey's head names its render time (`stamp`, ms): blanked, as plan_file_cases' hashes do (J-CUT)
     folder = os.path.join(h.root(), "results")
-    return {name: hashlib.sha256(open(os.path.join(folder, name), "rb").read()).hexdigest()
-            for name in sorted(os.listdir(folder)) if os.path.isfile(os.path.join(folder, name))}
+    found = {}
+    for name in sorted(os.listdir(folder)):
+        if os.path.isfile(os.path.join(folder, name)):
+            with open(os.path.join(folder, name), "rb") as f:
+                data = f.read()
+            if name == "reading_list_static.html":
+                data = re.sub(rb'"stamp":"\d+"', b'"stamp":""', data, count=1)
+            found[name] = hashlib.sha256(data).hexdigest()
+    return found
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
@@ -131,7 +140,8 @@ def test_every_output_is_byte_identical_with_and_without_the_flag(lang):
     flagged = _analyzer(lang, "--progress-json", env=seed)
     assert flagged.returncode == 0
     assert _outputs() == without
-    assert len(without) == 13
+    # 13, and since the journey v3 cut-over (J-CUT) the page's counts (plan_counts.bin) and its word memo
+    assert len(without) == 15 and {"plan_counts.bin", "journey_words.json"} <= set(without), sorted(without)
 
 
 def test_the_flag_never_enters_the_run_signature():

@@ -20,6 +20,10 @@ from app import static_html_generator as gen
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
+pytestmark = pytest.mark.usefixtures("journey_pre_cut")
+
+
 def _template(name):
     with open(os.path.join(ROOT, "templates", name), encoding="utf-8") as f:
         return f.read()

@@ -1091,11 +1091,14 @@ def chosen(sentences, spans, tables, recurring=True, kanji=True, terms=True):
             yield s, a, b, [lemma, reading, surface, orth]
 
 
-def apply_spans(sentences, spans, tables, recurring=True, kanji=True, terms=True):
+def apply_spans(sentences, spans, tables, recurring=True, kanji=True, terms=True, joined=None):
     """The token store's cached `sentences` ([text, [[lemma, reading, surface, orth], …]], as recorded) with every
-    recorded span the tables choose made one token — the same choice `join_library` makes on live text."""
+    recorded span the tables choose made one token — the same choice `join_library` makes on live text. `joined`, a
+    set: receives the number of each sentence a join changed."""
     for s, a, b, token in reversed(list(chosen(sentences, spans, tables, recurring, kanji, terms))):
         sentences[s][1][a:b] = [token]
+        if joined is not None:
+            joined.add(s)
     return sentences
 
 

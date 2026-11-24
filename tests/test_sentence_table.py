@@ -13,6 +13,7 @@ sentences on their cards or their list moving before the release that says so.
 import ast
 import hashlib
 import os
+import re
 import subprocess
 import sys
 
@@ -71,10 +72,17 @@ def test_a_level_with_spaces_around_it_is_that_level():
 # 2. Off is today
 # --------------------------------------------------------------------------- #
 def _outputs():
+    # the v3 journey's head names its render time (`stamp`, ms): blanked, as plan_file_cases' hashes do
     from tests import services_helpers as h
     folder = os.path.join(h.root(), "results")
-    return {name: hashlib.sha256(open(os.path.join(folder, name), "rb").read()).hexdigest()
-            for name in sorted(os.listdir(folder)) if os.path.isfile(os.path.join(folder, name))}
+    found = {}
+    for name in sorted(os.listdir(folder)):
+        if os.path.isfile(os.path.join(folder, name)):
+            data = open(os.path.join(folder, name), "rb").read()
+            if name == "reading_list_static.html":
+                data = re.sub(rb'"stamp":"\d+"', b'"stamp":""', data, count=1)
+            found[name] = hashlib.sha256(data).hexdigest()
+    return found
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])

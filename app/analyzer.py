@@ -211,7 +211,11 @@ ENSURE_AUDIO_EXAMPLE = False
 #     keeps for it, and the list as many Context / Src columns as its widest row (plan_rules.context_limit /
 #     context_columns; the plan's re-pick the same) — 0 wrote no column before. Only a list with 0 changes; no
 #     tokenizing changed: SCHEMA_VERSION stays 28. 3.0.19.
-ENGINE_REVISION = 47
+# 48: a Generate writes the journey's counts beside its plan (results/plan_counts.bin, `plan_engine.CountsTable`: the
+#     listed rows' uses in each file and each file's known / counted tokens, from the lines that write the plan), which
+#     the journey reads instead of the plan's tables (J-CUT, the lead's ruling). The plan and the lists are unchanged;
+#     SCHEMA_VERSION stays 28. 3.0.19.
+ENGINE_REVISION = 48
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -3052,14 +3056,22 @@ def _tokenize_file(tokenizer, file_path, language):
     return tokenizer.tokenize_sentences(text)
 
 
-def file_sentences(store, tokenizer, file_path, language):
+def file_sentences(store, tokenizer, file_path, language, words=None):
     """A file's tokenized sentences as a run reads them: cached in the token store (the name tables applied), else
-    tokenized here."""
+    tokenized here. `words`, a list: its first item becomes the file's lines as the indexer counted them for the
+    sentence table (`Store.file_words`), or None — the walk counts them."""
+    if words is not None:
+        words[0] = None
     if store is None:
         if not os.path.exists(file_path):
             return []                   # a missing item (9b) with no token store to read it from
         return _tokenize_file(tokenizer, file_path, language)
-    sentences = store.file_tokens(file_path)
+    if words is not None:
+        sentences, words[0] = store.file_words(file_path)
+        if not sentences:
+            words[0] = None
+    else:
+        sentences = store.file_tokens(file_path)
     # Safety net: an empty result for a NON-empty file means the cached blob was unreadable
     # (disk damage) while its (mtime,size) still matched, so reconcile didn't refresh it.
     # Re-tokenize directly rather than silently drop the whole file's contribution.
@@ -4376,6 +4388,9 @@ def plan_lines(run):
             yield _plan_json({name: table[start:start + _PLAN_CHUNK]})
 
     counted = [0] * len(keys)
+    table = run.get("counts")           # J-CUT: the journey's counts, from these very lines (`plan_engine.CountsTable`)
+    if table is not None:
+        table.start(keys, rows, [report_name(entry[0]) for entry in files])
     for f, (file_path, _label, _weight, _type) in enumerate(found_files):
         uses, unusual, phrase_unusual, row_firsts = plan_files[f]
         # [k, its first sentence here (an id in `sentences`), …] for the listed rows met here
@@ -4408,8 +4423,10 @@ def plan_lines(run):
                 found = _plan_spellings(phrase, k, True, phrase_unusual, word_stats[key], tied[key])
                 if found:
                     spellings.append(found)
-        yield _plan_json({"f": f, "main": main, "ph": phrases, "sp": spellings,
-                          "prog": _plan_progressive(run, f, file_path, index, met), "fs": firsts})
+        prog = _plan_progressive(run, f, file_path, index, met)
+        if table is not None:
+            table.add(main, phrases, prog)
+        yield _plan_json({"f": f, "main": main, "ph": phrases, "sp": spellings, "prog": prog, "fs": firsts})
     for k, key in enumerate(keys):
         if counted[k] != word_stats[key]["total_count"]:
             raise ValueError(f"the uses of {key} add up to {counted[k]}, not {word_stats[key]['total_count']}")
@@ -4452,6 +4469,34 @@ def _plan_json(obj):
 
 
 _PLAN_HEADER = [None]          # (key, header): one tuple, so two threads never pair one file's key with another's header
+
+
+def _journey_plan(args, run_signature, results_dir=None):
+    """The plan file as the v3 journey reads it — each word's count ahead and each episode's *% known*
+    (`journey_render._ahead`, `_plan_pcts`): one source every piece reads (J-CUT, the lead's ruling), read after it is
+    written, so a Generate, its reuse and a redraw draw the same page. results/'s plan, numbers only (`pools=False`),
+    when it is whole and written by the run `run_signature` names; None for Zen, before the cut-over, or without such a
+    plan (the render then counts each word in its own episode). The counts table the Generate wrote beside the plan
+    (`plan_engine.read_counts`: the listed rows' counts alone, the lead's ruling) when it is this run's, else only the
+    plan's tables the count reads (`plan_engine.counts`, a plan from before the table: the whole plan held ~130 MB more
+    at the render's peak at 20,000 files, J-CUT 3; its tables +109 MB over none). Never raises."""
+    if not run_signature or args.theme in ZEN_THEMES:
+        return None
+    from app.services import journey_settings
+    if not journey_settings.v3():
+        return None
+    from app import plan_engine
+    results = results_dir or RESULTS_DIR
+    path = os.path.join(results, PLAN_FILE)
+    if os.path.exists(path):        # the table beside this run's plan (its counts, written once), else the plan's own
+        table = plan_engine.read_counts(os.path.join(results, plan_engine.COUNTS_FILE), run_signature)
+        if table is not None:
+            return table
+    try:
+        plan = plan_engine.counts(path)
+    except Exception:
+        return None
+    return plan if plan is not None and plan.header.get("run_signature") == run_signature else None
 
 
 def _table_is_this_runs(results_dir, language, run_signature):
@@ -4622,7 +4667,9 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
             rendering = time.time()
             drawn = static_html_generator.generate_static_html(
                 theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
-                open_browser=not args.no_open, language=language, marks=marks, found=found_files)
+                open_browser=not args.no_open, language=language, marks=marks, found=found_files,
+                plan=plan_engine.read_counts(os.path.join(RESULTS_DIR, plan_engine.COUNTS_FILE),   # the Generate's
+                                             plan.header.get("run_signature")) or plan)   # figures (its counts table)
             report_failed = not _report_written(_html, rendering)
             try:
                 store.set_meta("last_render_sig", signed_render(args, drawn, not report_failed, made))
@@ -5518,6 +5565,31 @@ def compute_render_signature(args, marks=None, made=_READ_NOW):
         _s = {}
     _logic = _s.get("logic") if isinstance(_s.get("logic"), dict) else {}
     _markers = _logic.get("priority_markers")
+    _language = getattr(args, "language", "ja")
+    # Anki's labels (WP-B8, F-6), read by both pages: the switch, and only while it is on, the backlog, Junban's answers
+    # and Connect's record
+    _backlog_on = bool(_s.get("anki_backlog_on_generate", True))
+    _anki = [_backlog_on,
+             _backlog_fingerprint(_language) if _backlog_on else None,
+             _backlog_fingerprint(_language, "junban_pairs.json") if _backlog_on else None,
+             (_made_fingerprint(_language) if made is _READ_NOW else made) if _backlog_on else None]
+    _markers = {k: v for k, v in _markers.items() if k != "_comment"} if isinstance(_markers, dict) else _markers
+    if args.theme not in ZEN_THEMES:
+        # Journey v3 (J-CUT): only what its render reads — ⌕'s switch and category among them (the page's head). Its
+        # looks (the theme, the source's display and J-SET's) are applied in the page and read back through the door,
+        # and the old page's options (words a day, the study order's tab, Speech, the page size, its two switches, its
+        # templates) are read by no part of it, so a change of one draws nothing (the Redraw rule). A saved Zen look keeps the list below: Zen in or
+        # out re-renders. Read through `journey_settings.v3()`, never by importing the generator (pandas: the fast
+        # paths' cost); before the cut-over (or with SURASURA_DOOR=0) the old page's list, as it was.
+        from app.services import journey_settings as _journey_settings
+        if _journey_settings.v3():
+            _parts = ["journey v3", bool(_s.get("line_player", True)), _journey_settings.lookup_values(_s), *_anki,
+                      _markers]
+            _stones = _stones_fingerprint(_language, marks)
+            if _stones:
+                _parts.append(_stones)
+            _parts.append(_journey_fingerprint(_language, _s))
+            return json.dumps(_parts)
     _parts = [
         args.theme,
         int(args.zen_limit or 0),
@@ -5542,17 +5614,11 @@ def compute_render_signature(args, marks=None, made=_READ_NOW):
         # "Label backlogged Anki words" (Junban_Backlog_Spec WP-B8): the switch, and — only while it
         # is on — the backlog file the Anki sync keeps. Both are INJECTED, so a sync costs one
         # re-render on the next Generate, never a re-analysis (§3 I3).
-        bool(_s.get("anki_backlog_on_generate", True)),
-        _backlog_fingerprint(getattr(args, "language", "ja"))
-        if _s.get("anki_backlog_on_generate", True) else None,
         # …and the answers to Junban's "Same word as one on your list?": a "yes" labels its word too
-        # (Anki_Match_Consistency_Scope.md item 1).
-        _backlog_fingerprint(getattr(args, "language", "ja"), "junban_pairs.json")
-        if _s.get("anki_backlog_on_generate", True) else None,
-        # …and Connect's record of the cards it made (F-6): a card is labelled on the row Connect made it for
-        # (static_html_generator._connect_rows, Japanese only), so a card made or deleted re-renders
-        (_made_fingerprint(getattr(args, "language", "ja")) if made is _READ_NOW else made)
-        if _s.get("anki_backlog_on_generate", True) else None,
+        # (Anki_Match_Consistency_Scope.md item 1), and Connect's record of the cards it made (F-6): a card is labelled
+        # on the row Connect made it for (static_html_generator._connect_rows, Japanese only), so a card made or
+        # deleted re-renders (`_anki`, above)
+        *_anki,
         # The report's own logic keys, which the templates read from the logic block they embed
         # (globalLogic): "Show 'Target Met' inline", "Hide Audio Button", the page size and the ✦ / ⚖
         # thresholds. No run reads them, so compute_run_signature leaves them out: changing one
@@ -5561,7 +5627,7 @@ def compute_render_signature(args, marks=None, made=_READ_NOW):
         bool(_logic.get("inline_completed_files", False)),
         bool(_logic.get("hide_audio_button", False)),
         _logic.get("chunk_size", 50),
-        {k: v for k, v in _markers.items() if k != "_comment"} if isinstance(_markers, dict) else _markers,
+        _markers,
         # Speech's port: the report embeds it to reach the helper, but only while Speech is on.
         _s.get("koe_port") if _s.get("enable_koe", False) else None,
         # The templates themselves. Without this a template-only change (a new report tab, a CSS
@@ -5574,10 +5640,33 @@ def compute_render_signature(args, marks=None, made=_READ_NOW):
     # while a stone is on the list, so a library with none keeps the signature it had. Zen (the generator's choice of
     # template) shows no journey: no part, never read.
     if args.theme not in ZEN_THEMES:
-        _stones = _stones_fingerprint(getattr(args, "language", "ja"), marks)
+        _stones = _stones_fingerprint(_language, marks)
         if _stones:
             _parts.append(_stones)
     return json.dumps(_parts)
+
+
+def _journey_fingerprint(language, settings):
+    """The v3 journey's render inputs no other part holds (journey v3 SPEC §7; the engine map's rule: what the report
+    shows re-renders, never re-analyses): its own template folder (`templates/journey/`), *Meanings* (the one look the
+    render reads: Yours is read only when it isn't English — the page's other looks are applied in the page, J-SET's
+    LOOKS, and read back through the door), the learner's own dictionaries while Yours is asked (each one's id, time
+    and size: `own_dicts.stamp`) and, in Japanese, their Kanjium copy (the pitch reads it first). The meanings and kanji
+    tables and unidic ship with the app: its version is in the run signature. Never raises."""
+    try:
+        from app import own_dicts
+        from app.services import journey_settings
+        meanings = journey_settings.page_value(settings, "journey_meanings")
+        yours = [list(d) for d in own_dicts.stamp(own_dicts.chain())] if meanings != "en" else None
+        kanjium = None
+        if language == "ja":
+            found = own_dicts.kanjium_path()
+            if found:
+                st = os.stat(found)
+                kanjium = [st.st_size, st.st_mtime_ns]
+        return ["journey v3", _template_fingerprint(("journey",)), meanings, yours, kanjium]
+    except Exception:
+        return "journey unreadable"
 
 
 ZEN_THEMES = ("Zen Mode", "zen-focus")      # static_html_generator's choice of the Zen template (no journey)
@@ -5642,13 +5731,17 @@ def _made_fingerprint(language):
         return None
 
 
-def _template_fingerprint():
-    """Short hash of both report templates; a constant if they can't be read (never raises)."""
+def _template_fingerprint(names=("web_app.html", "zen_app.html")):
+    """Short hash of the report's templates — both old pages, or `("journey",)`: the v3 page's folder (every file in
+    it, by name, sorted); a constant if they can't be read (never raises)."""
     h = hashlib.sha1()
     try:
-        for name in ("web_app.html", "zen_app.html"):
-            with open(get_resource(os.path.join("templates", name)), "rb") as f:
-                h.update(f.read())
+        for name in names:
+            path = get_resource(os.path.join("templates", name))
+            for found in ([os.path.join(path, f) for f in sorted(os.listdir(path))] if os.path.isdir(path) else [path]):
+                h.update(os.path.basename(found).encode("utf-8"))
+                with open(found, "rb") as f:
+                    h.update(f.read())
     except Exception:
         return "templates-unreadable"
     return h.hexdigest()[:12]
@@ -6189,7 +6282,8 @@ def main():
                     _rendering = time.time()
                     _drawn = static_html_generator.generate_static_html(
                         theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
-                        open_browser=not args.no_open, language=language, marks=_marks)
+                        open_browser=not args.no_open, language=language, marks=_marks,
+                        plan=_journey_plan(args, read_run_stamp(RESULTS_DIR)))     # the plan checked just above
                     _report_failed = not _report_written(_html, _rendering)
                     try:
                         _store.set_meta("last_render_sig", signed_render(args, _drawn, not _report_failed, _made))
@@ -6355,11 +6449,11 @@ def main():
                                   (1 if stype in ("subtitle", "bilibili") else 2))
         return idx
 
-    def _sentences_of(file_path):
+    def _sentences_of(file_path, words=None):
         """A file's tokenized sentences: cached in the store (fresh for changed files, reused otherwise), else
         tokenized here (`file_sentences`, the arrival record's reader too) — a song line's with no words
-        (`song_sentences`, below)."""
-        sentences = file_sentences(_store, tokenizer, file_path, language)
+        (`song_sentences`, below). `words`: as `file_sentences`' (the sentence table's kept counts)."""
+        sentences = file_sentences(_store, tokenizer, file_path, language, words)
         out = _songs.get(file_path)
         if out:
             sentences = [(s[0], []) if no in out else s for no, s in enumerate(sentences)]
@@ -6677,15 +6771,28 @@ def main():
             except Exception:
                 pass
         _held_words = [None, None]
+        _file_words = [None]        # the file's lines as the indexer counted them (Store.file_words), or None
+        _counted = [0, 0]           # lines read from those counts · lines counted here
 
-        def _line_words(s_text, s_tokens):
-            """The line's words for the table's two numbers (sentence_table.LineWords): made once a line. A line it
+        def _line_words(s_text, s_tokens, s_no):
+            """The line's words for the table's two numbers: as the indexer counted them (sentence_table.KeptWords,
+            E-INDEX), else counted here (sentence_table.LineWords) — the same numbers. Made once a line. A line it
             can't count reads as none (0, 0): the table never fails the run."""
             if _held_words[0] is not s_tokens:
-                try:
-                    words = sentence_table.LineWords(s_tokens, s_text, language, _people)
-                except Exception:
-                    words = sentence_table.LineWords((), "", language)
+                kept, words = _file_words[0], None
+                if kept is not None:
+                    try:
+                        words = kept.line(s_no, s_tokens, s_text, _people)
+                    except Exception:
+                        pass                # counted here instead
+                if words is not None:
+                    _counted[0] += 1
+                else:
+                    _counted[1] += 1
+                    try:
+                        words = sentence_table.LineWords(s_tokens, s_text, language, _people)
+                    except Exception:
+                        words = sentence_table.LineWords((), "", language)
                 _held_words[0], _held_words[1] = s_tokens, words
             return _held_words[1]
 
@@ -6699,7 +6806,7 @@ def main():
         src_idx = _source_idx(file_path, source_type)
 
         # Cached tokenized sentences from the store (fresh for changed files, reused otherwise).
-        sentences = _sentences_of(file_path)
+        sentences = _sentences_of(file_path, _file_words if _table is not None else None)
 
         file_total_words = 0
         file_known_words = 0
@@ -6986,7 +7093,7 @@ def main():
                                          lrs, s_text, src_idx, marks, len(freqs), s_hash, s_no)
                     if _table is not None and (first_here or not is_over_hard_max):
                         _table.add(index, src_idx, s_no, len(s_text), s_hash, lrs, marks,
-                                   *_line_words(s_text, s_tokens).of_span(start, end), over=is_over_hard_max)
+                                   *_line_words(s_text, s_tokens, s_no).of_span(start, end), over=is_over_hard_max)
                     if first_here:
                         # its first sentence in this file: the plan's (Context 1 and a near candidate wherever the file
                         # goes) kept compact, and whole while it is one of the files nearest its first meeting here
@@ -7024,7 +7131,7 @@ def main():
                 near_too = False
                 if _table is not None and (not is_over_hard_max or entry.get("_fsq") != seq_idx):
                     _table.add(key, src_idx, s_no, len(s_text), s_hash, unique_lrs, marks or (),
-                               *_line_words(s_text, s_tokens).of_word(key), over=is_over_hard_max)
+                               *_line_words(s_text, s_tokens, s_no).of_word(key), over=is_over_hard_max)
                 if entry.get("_fsq") != seq_idx:
                     # Its first sentence in this file: the plan's (Context 1 and a near candidate wherever the file
                     # goes) kept compact; whole while it is one of the files nearest its first meeting in this order
@@ -7201,7 +7308,7 @@ def main():
                 src_place.append((plan_rules.NOT_FINISHED, 0))
             src_place[src_idx] = (rank, 0)
             try:
-                sentences = list(_sentences_of(file_path))
+                sentences = list(_sentences_of(file_path, _file_words if _table is not None else None))
             except Exception as e:
                 print(f"Warning: a finished file couldn't be read for example sentences ({e}).")
                 continue
@@ -7270,7 +7377,7 @@ def main():
                     freqs = _unknown_counts(lrs)
                     if _table is not None:
                         _table.add(index, src_idx, s_no, len(s_text), s_hash, lrs, marks or (),
-                                   *_line_words(s_text, s_tokens).of_span(start, end))
+                                   *_line_words(s_text, s_tokens, s_no).of_span(start, end))
                     entry = word_stats[_phrase_row_of[index]]
                     plan_rules.keep_best(entry.setdefault("finished_contexts", []),
                                          _candidate(short, long, rolling_context_cost(_phrase_uses_of(index), freqs),
@@ -7282,7 +7389,7 @@ def main():
                     for key in targets:
                         if _table is not None:
                             _table.add(key, src_idx, s_no, len(s_text), s_hash, unique_lrs, marks or (),
-                                       *_line_words(s_text, s_tokens).of_word(key))
+                                       *_line_words(s_text, s_tokens, s_no).of_word(key))
                         plan_rules.keep_best(word_stats[key].setdefault("finished_contexts", []),
                                              _candidate(short, long, rolling_context_cost(_uses(key), unk_freqs),
                                                         unique_lrs, s_text, src_idx, marks, len(unk_freqs), s_hash,
@@ -8020,28 +8127,13 @@ def main():
             
     # --- STATIC GENERATION ---
     _progress("Writing the journey")
-    _drawn = None               # the journey's stones the report was drawn from (`signed_render`)
-    _made = None                # Connect's record as read before it was drawn (F-6; a report not written signs "")
-    if args.static:
-        try:
-            try:
-                from app import static_html_generator
-            except ImportError:
-                import static_html_generator
-
-            print("\n---------------------------------------------------")
-            print("Generating Static HTML...")
-            _rendering = time.time()
-            _made = _made_fingerprint(language)          # F-6: read before the report is drawn, signed with it
-            _drawn = static_html_generator.generate_static_html(
-                theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
-                open_browser=not args.no_open, language=language)
-            _report_failed = not _report_written(os.path.join(RESULTS_DIR, "reading_list_static.html"), _rendering)
-        except Exception as e:
-            print(f"Error: Could not generate static HTML: {e}")
-            _report_failed = True
-
-    # The plan file (E1.1 01), last: every output exists, and the stamp below comes only after it. Never fails the run.
+    # The order analysed and each file's growth snapshot (Kura-GS), before the journey is drawn — as the redraw and the
+    # reuse path record it — so the journey's *% known* (the store's 'last' snapshot: `journey_render.store_facts`) is
+    # this Generate's (J-CUT). Past this step a cancel waits for the run's end.
+    record_analysed(language, _library, data_dir, user_files_dir,
+                    growth=lambda: _growth_figures(data_dir, found_files, file_growth))
+    # The plan file (E1.1 01): every output but the journey exists (it is drawn from the plan, below), and the stamp
+    # comes only after both. Never fails the run.
     # Q4-3: a band Automatic chose that differs from the one remembered is remembered now, and the run is stamped (and
     # its plan written) with it — the parts the next check will read — so a band change never costs a second Generate.
     try:
@@ -8061,6 +8153,8 @@ def main():
         try:
             if not _run_sig:
                 raise ValueError("the run has no signature")
+            from app import plan_engine as _plan_engine
+            _counts_table = _plan_engine.CountsTable()
             _plan_size = write_plan_file(RESULTS_DIR, plan_lines({
                 "language": language,
                 "engine": engine_id(),
@@ -8080,8 +8174,12 @@ def main():
                 "pick": {"keys": row_keys, "sentences": sentences, "firsts": first_rows, "cowords": cowords,
                          "picked": picked, "place": src_place, "sources": source_list,
                          "recency_files": RECENCY_FILES, "ensure_audio": bool(ENSURE_AUDIO_EXAMPLE),
-                         "max_chars": max_chars}}))
+                         "max_chars": max_chars},
+                "counts": _counts_table}))
             print(f"Saved the plan file ({_plan_size:,} bytes).")
+            # J-CUT: the journey's counts beside it, from the same lines (the render and the redraw read them)
+            if not _counts_table.write(RESULTS_DIR, _run_sig):
+                print("Warning: could not write the journey's counts; the journey reads the plan.")
         except Exception as e:
             print(f"Warning: could not write the plan file ({e}); the last one is left as it was.")
         if _table is not None and _run_sig:
@@ -8116,18 +8214,42 @@ def main():
                     {"engine": engine_id(), "run_signature": _run_sig, "language": language},
                     places=[_listed_at.get(key, -1) for key in row_keys],
                 ).write(os.path.join(RESULTS_DIR, sentence_table.TABLE_FILE))
-                print(f"Saved the sentence table ({_table_size:,} bytes, {len(_table):,} lines offered).")
+                print(f"Saved the sentence table ({_table_size:,} bytes, {len(_table):,} lines offered; their words "
+                      f"counted when indexed: {_counted[0]:,} lines, here: {_counted[1]:,}).")
             except Exception as e:
                 print(f"Warning: could not write the sentence table ({e}); cards take today's path.")
         del _table
+
+    _drawn = None               # the journey's stones the report was drawn from (`signed_render`)
+    _made = None                # Connect's record as read before it was drawn (F-6; a report not written signs "")
+    # The journey, after the plan file (J-CUT, the lead's ruling): it reads its figures from the plan just written
+    # (`_journey_plan`), as the redraw and the reuse path read the same file
+    if args.static:
+        try:
+            try:
+                from app import static_html_generator
+            except ImportError:
+                import static_html_generator
+
+            print("\n---------------------------------------------------")
+            print("Generating Static HTML...")
+            _rendering = time.time()
+            _made = _made_fingerprint(language)          # F-6: read before the report is drawn, signed with it
+            _drawn = static_html_generator.generate_static_html(
+                theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
+                open_browser=not args.no_open, language=language,
+                tagger=tokenizer.tagger if language == "ja" else None,     # J-CUT: the journey's pitch, no 2nd tagger
+                plan=_journey_plan(args, _run_sig))      # the plan written just above, if it was
+            _report_failed = not _report_written(os.path.join(RESULTS_DIR, "reading_list_static.html"), _rendering)
+        except Exception as e:
+            print(f"Error: Could not generate static HTML: {e}")
+            _report_failed = True
 
     # All outputs are now written — record the run-signature so an identical re-run can skip
     # entirely next time (and the presentation fingerprint, signed with the stones the report was
     # drawn from, so a same-setting re-run can open the report without re-rendering), then close
     # the store.
     _set_run_stamp(RESULTS_DIR, _run_sig)
-    record_analysed(language, _library, data_dir, user_files_dir,
-                    growth=lambda: _growth_figures(data_dir, found_files, file_growth))
     if _store is not None:
         try:
             if _run_sig:

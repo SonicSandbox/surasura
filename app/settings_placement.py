@@ -11,27 +11,32 @@ Pure: no Tk, no Qt, no pandas.
 """
 import importlib.util
 
+# Since the journey v3 cut-over (J-CUT) a "report" setting is one the v3 render reads (`compute_render_signature`'s v3
+# list; ⌕'s word_search_* among them). The old page's looks and options — theme, source_display, words_per_day,
+# show_words_per_day, zen_limit, study_order, Speech's two, logic.inline_completed_files / hide_audio_button /
+# chunk_size — are "neither": the v3 page applies its looks itself and reads none of the rest. A saved Zen look still
+# re-renders on them (its signature keeps the old list), at the next press or Generate.
 PLACED = {
-    "exclude_single": "analysis:ja", "open_app_mode": "neither", "theme": "report", "strategy": "analysis",
+    "exclude_single": "analysis:ja", "open_app_mode": "neither", "theme": "neither", "strategy": "analysis",
     "target_coverage": "analysis", "split_length": "neither", "split_books_by": "neither", "target_language": "analysis",
-    "zh_script": "analysis:zh", "telemetry_enabled": "neither", "words_per_day": "report",
-    "show_words_per_day": "report", "zen_limit": "report", "onboarding_completed": "neither", "open_count": "neither",
+    "zh_script": "analysis:zh", "telemetry_enabled": "neither", "words_per_day": "neither",
+    "show_words_per_day": "neither", "zen_limit": "neither", "onboarding_completed": "neither", "open_count": "neither",
     "only_i_plus_one": "analysis", "ensure_audio_example": "analysis",
     "add_graduated_words": "neither", "auto_update_enabled": "neither", "update_check_enabled": "neither", "skipped_version": "neither",
-"source_display": "report", "word_search_enabled": "report", "line_player": "report",
+"source_display": "neither", "word_search_enabled": "report", "line_player": "report",
     "word_search_category": "report", "sentence_dictionary_source": "neither", "index_pool_workers": "neither",
     "use_every_core": "neither",
     "app_theme": "neither", "text_size": "neither", "app_motion": "neither",
     "journey_settle_s": "neither", "journey_settle_battery_s": "neither",
-    # Journey v3's page (J-SET): looks, applied in the page; *Meanings* is read by the render J-CUT brings, which
-    # places it "report" with the render signature's new input — until then nothing reads it
+    # Journey v3's page (J-SET): looks, applied in the page; *Meanings* is read by the render (J-CUT: the render
+    # signature's `_journey_fingerprint`), so it re-renders and never re-analyses
     "journey_pitch": "neither", "journey_word_size": "neither", "journey_sentence_size": "neither",
-    "journey_keys": "neither", "journey_first_meeting": "neither", "journey_meanings": "neither",
+    "journey_keys": "neither", "journey_first_meeting": "neither", "journey_meanings": "report",
     "anki_connect_url": "neither",
     "connect_enabled": "neither", "placing_rules": "neither", "connect_mine_words": "neither",
     "connect_every_word": "neither",         # Cards for every new word (Kantan-MO): what Connect mines, never a run
     "connect_sentence_dial": "neither",      # the sentence dial (Kantan-SD): which line a card is cut from
-    "study_order": "report",                 # the study order (Kantan-MO): which list the journey opens on
+    "study_order": "neither",                # the study order (Kantan-MO): which list the old journey opened on
     "connect_send_grammar": "neither", "connect_anki_miner_path": "neither", "connect_anki_miner_profile": "neither",
     "connect_trust_timing": "neither",       # Trust my subtitles' timing (P-LF-9): what Connect mines, never a run
     "connect_spot_every_episode": "neither",     # Michi-T1: when Connect hears a video's audio, never a run
@@ -63,7 +68,7 @@ PLACED = {
     "anki_sync_auto": "neither", "anki_sync_decks": "neither", "anki_sync_fields": "neither",
     "anki_sync_include_suspended": "neither", "anki_backlog_on_generate": "report", "anki_auto_generate": "neither",
     "logic.automation": "neither",           # D29 (3.0, W3.5 row 7): what runs by itself, never what a run reads
-    "logic.inline_completed_files": "report", "logic.hide_audio_button": "report", "logic.chunk_size": "report",
+    "logic.inline_completed_files": "neither", "logic.hide_audio_button": "neither", "logic.chunk_size": "neither",
     "logic.paren_readings": "analysis:ja", "logic.names_katakana": "analysis:ja",
     "logic.names_recurring": "analysis:ja", "logic.names_kanji": "analysis:ja", "logic.names_work_terms": "analysis:ja",
     "logic.phrases_and_titles": "analysis:ja", "logic.pronoun_bases": "analysis:ja", "logic.phrase_rows": "analysis:ja",
@@ -86,7 +91,7 @@ PLACED = {
     "logic.importer.split_overflow": "neither",
     # The optional modules' switches and their own tunables (each module's SETTINGS_DEFAULTS).
     "enable_youtube_transcripts": "neither", "enable_youtube_preview": "neither", "youtube_risk_acknowledged": "neither",
-    "enable_koe": "report", "koe_port": "report", "koe_voice": "neither", "koe_model": "neither", "koe_style": "neither",
+    "enable_koe": "neither", "koe_port": "neither", "koe_voice": "neither", "koe_model": "neither", "koe_style": "neither",
     "koe_temperature": "neither", "koe_daily_cap": "neither",
     "enable_reels": "neither", "reels_context_cues": "neither", "reels_exclude_numerals": "neither",
     "reels_exclude_proper_nouns": "neither", "reels_ffmpeg_dir": "neither", "reels_gap_seconds": "neither",

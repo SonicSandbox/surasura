@@ -9,6 +9,10 @@ from unittest.mock import patch, MagicMock
 from app.static_html_generator import generate_static_html
 
 
+# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
+pytestmark = pytest.mark.usefixtures("journey_pre_cut")
+
+
 def _fixture_csvs(tmp_path):
     """A one-word priority list for the generator to render.
 

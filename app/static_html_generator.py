@@ -58,7 +58,27 @@ def report_holds(file):
         text = read_text(os.path.join(get_user_file("results"), REPORT_NAME))
     except OSError:
         return False
+    head = _journey_head(text)
+    if head is not None:                                   # a v3 page: its episodes' names, as its `#file=` reads them
+        return any(isinstance(e, list) and len(e) > 1 and e[1] == file for e in head.get("eps") or ())
     return f'"filename": {json.dumps(file)}' in text      # (a name holds no "/", so no "</" for the dump to escape)
+
+
+_HEAD_OPEN = '<script type="application/json" id="j-head">'
+
+
+def _journey_head(text):
+    """A v3 page's head (`journey_render.elements`' first element, JSON) out of the page's text; None for any other
+    page (the old one, Zen's) or a head that doesn't read."""
+    at = text.find(_HEAD_OPEN)
+    if at < 0:
+        return None
+    end = text.find("</script>", at)
+    try:
+        head = json.loads(text[at + len(_HEAD_OPEN):end])
+    except ValueError:
+        return None
+    return head if isinstance(head, dict) else None
 
 
 def open_report(app_mode=False, file=None):
@@ -187,9 +207,11 @@ class AnchorFinder:
     MIN_LEN = 5          # shorter than this is too generic to point at anything
     MAX_ANCHOR = 40      # bounds the whitespace-tolerant pattern
     MAX_CHUNKS = 6       # a sentence can span a dozen cues; a few of the longest is plenty
-    # The memo's answers: [anchor, start, end]. A memo written before the times came from Connect's line reader
-    # (E5.1) holds [anchor, whole seconds] found otherwise, and is recomputed: its files' signatures differ. The
-    # signature also names the engine: the reader cleans lines as a Generate does, and that changes only with it.
+    # The memo's answers: [anchor, start, end] — a times-only answer made this render is held as (start, end) and
+    # written as [None, start, end] (`save_memo`; 92,000 of them at 20,000 files: 3 MB less). A memo written before
+    # the times came from Connect's line reader (E5.1) holds [anchor, whole seconds] found otherwise, and is
+    # recomputed: its files' signatures differ. The signature also names the engine: the reader cleans lines as a
+    # Generate does, and that changes only with it.
     LINES = "cues-1"
 
     def __init__(self, cache_path=None, script="asis", language=None):
@@ -211,7 +233,8 @@ class AnchorFinder:
         self._cache_path = cache_path
         self._memo = self._load_memo()
         self._memo_dirty = False
-        self._sigs = {}        # path -> (mtime, size), so the freshness check is one stat per file
+        self._sigs = {}        # path -> (mtime, size[, script], lines), so the freshness check is one stat per file
+        self._version = None   # `_lines()`, made once a finder
         self._dirs = {}        # folder -> its listing's entries ({name: DirEntry}): `_dir_stat`
         self._entries = {}     # path -> its validated memo entry, so that check happens once too
 
@@ -354,13 +377,14 @@ class AnchorFinder:
         """(mtime, size), cached — this is asked once per SENTENCE, and a stat each time was
         measurably worse than the lookup it guards."""
         if path not in self._sigs:
+            if self._version is None:
+                self._version = self._lines()
             try:
                 st = self._dir_stat(path)
-                self._sigs[path] = [st.st_mtime, st.st_size]
-                if self._script != "asis":
-                    # Answers found through a conversion are re-verified after a script switch.
-                    self._sigs[path].append(self._script)
-                self._sigs[path].append(self._lines())
+                # Answers found through a conversion are re-verified after a script switch. A tuple: the memo's JSON
+                # writes it as the list it is read back as (`_entry` compares the two).
+                self._sigs[path] = (st.st_mtime, st.st_size) + \
+                    ((self._script,) if self._script != "asis" else ()) + (self._version,)
             except OSError:
                 self._sigs[path] = None
         return self._sigs[path]
@@ -399,8 +423,10 @@ class AnchorFinder:
             return hit[0], hit[1], hit[2]
 
         anchor = self.anchor(abs_path, sentence)
-        # A times-only answer (`times`: [None, start, end]) keeps its times; its anchor is looked for now.
-        start, end = (hit[1], hit[2]) if isinstance(hit, list) and len(hit) == 3 else self.line(abs_path, sentence)
+        # A times-only answer (`times`: (start, end), or [None, start, end] as written) keeps its times; its anchor is
+        # looked for now.
+        found = self.answer(hit)
+        start, end = found if found is not None else self.line(abs_path, sentence)
         entry["a"][sentence] = [anchor, start, end]
         self._memo_dirty = True
         return anchor, start, end
@@ -410,22 +436,48 @@ class AnchorFinder:
         else the line reader's — kept as [None, start, end], its anchor never looked for (that reads the whole file:
         only `resolve`, for the badge, does)."""
         entry = self._entry(abs_path)
-        hit = entry["a"].get(sentence)
+        found = self.answer(entry["a"].get(sentence))
+        if found is not None:
+            return found
+        found = self.line(abs_path, sentence)
+        entry["a"][sentence] = found
+        self._memo_dirty = True
+        return found
+
+    @staticmethod
+    def answer(hit):
+        """A memo answer's (start, end): held as (start, end) when made this render, [anchor, start, end] as written;
+        None for anything else (a damaged or older memo's: asked again)."""
+        if type(hit) is tuple:
+            return hit
         if isinstance(hit, list) and len(hit) == 3:
             return hit[1], hit[2]
-        start, end = self.line(abs_path, sentence)
-        entry["a"][sentence] = [None, start, end]
-        self._memo_dirty = True
-        return start, end
+        return None
+
+    def answers(self, abs_path):
+        """A file's memo answers, {sentence: answer} (`answer` reads one), checked against the file once a render: the
+        journey's `Sources.prepare` reads a whole page's lines through it."""
+        return self._entry(abs_path)["a"]
+
+    def forget(self, abs_path):
+        """Let go of a file's lines (`line` reads them again if asked): the journey asks a file at a time."""
+        self._timelines.pop(abs_path, None)
+
+    def forget_listings(self):
+        """Let go of the folder listings the freshness check read (31 MB of entries at 20,000 files): once every file
+        is checked, a later one lists its folder again."""
+        self._dirs.clear()
 
     def _entry(self, abs_path):
         """The memo's entry for a file, checked against its signature once a render."""
         entry = self._entries.get(abs_path)
         if entry is None:
             entry = self._memo.get(abs_path)
+            sig = self._file_sig(abs_path)
+            old = entry.get("sig") if isinstance(entry, dict) else None
             if not isinstance(entry, dict) or not isinstance(entry.get("a"), dict) or \
-                    entry.get("sig") != self._file_sig(abs_path):
-                entry = {"sig": self._file_sig(abs_path), "a": {}}
+                    (tuple(old) if isinstance(old, list) else old) != sig:
+                entry = {"sig": sig, "a": {}}
                 self._memo[abs_path] = entry
                 self._memo_dirty = True
             self._entries[abs_path] = entry
@@ -447,7 +499,23 @@ class AnchorFinder:
         try:
             tmp = self._cache_path + ".tmp"
             with open(tmp, 'w', encoding='utf-8') as f:
-                f.write(json.dumps(live, ensure_ascii=False))   # one write, the fast encoder
+                # A file's entry at a time (the whole memo as one string was +10 to +30 MB at 20,000 files); a
+                # times-only answer held as (start, end) is written [None, start, end], as it is read back
+                held, size, sep = ["{"], 0, ""
+                for path, entry in live.items():
+                    answers = entry["a"]
+                    if any(type(hit) is tuple for hit in answers.values()):
+                        entry = {"sig": entry["sig"], "a": {sentence: [None, hit[0], hit[1]] if type(hit) is tuple
+                                                            else hit for sentence, hit in answers.items()}}
+                    piece = f"{sep}{json.dumps(path, ensure_ascii=False)}:{json.dumps(entry, ensure_ascii=False)}"
+                    held.append(piece)
+                    size += len(piece)
+                    sep = ","
+                    if size >= 1 << 20:
+                        f.write("".join(held))
+                        held, size = [], 0
+                held.append("}")
+                f.write("".join(held))
             os.replace(tmp, self._cache_path)
         except Exception as e:
             print(f"Warning: could not save the anchor cache: {e}")
@@ -1193,15 +1261,81 @@ def _journey_folds(data, file_order, marks, inline=False):
         data["folds"] = folds
 
 
+# --- Journey v3 (the cut-over, J-CUT; SPEC §7, §8) ----------------------------------------------------------------- #
+# The journey is v3's page: J-DATA's data (`app/journey_render.py`) in J-PAGE's page (`templates/journey/`), written to
+# the same file (`REPORT_NAME`), so *Journey ↗*, a page open in a browser and its storage keep their name. The old page
+# (`web_app.html`) stays for the YouTube preview, which loads it and this module's helpers itself (Charter S10), and Zen
+# keeps `zen_app.html` and the data path below. Two renderers until the preview moves to v3 (the dup audit's row 13).
+ZEN_THEMES = ("Zen Mode", "zen-focus")         # the display name and the theme id both pick Zen (`analyzer.ZEN_THEMES`)
+JOURNEY_DIR = os.path.join("templates", "journey")
+JOURNEY_RAIL = "stepper"                       # SPEC §1.1b; D13: Stepper only at first launch, the rail stays swappable
+RAIL_MARK = "<!--JOURNEY-RAIL-->"              # where the page takes its rail, once (its data: `journey_render.MARKER`)
+JOURNEY_FILES = ("page.html", f"rail-{JOURNEY_RAIL}.css", f"rail-{JOURNEY_RAIL}.js")   # what the page is made of
+
+
+def journey_v3():
+    """Whether Generate writes the v3 page: the cut-over's one switch (`journey_settings.v3()`: the door's `ON`, or
+    `SURASURA_DOOR` for one run), so the page, its Settings rows and the door turn on and off together."""
+    from app.services import journey_settings
+    return journey_settings.v3()
+
+
+def journey_template():
+    """The v3 page's HTML with its rail inlined — the rail's own `.css` and `.js` in place of `RAIL_MARK` and nothing else
+    changed (SPEC §1.1b) — and the data's marker left for `journey_render.write_page`."""
+    texts = []
+    for name in JOURNEY_FILES:
+        with open(get_resource(os.path.join(JOURNEY_DIR, name)), encoding="utf-8") as f:
+            texts.append(f.read())
+    page, css, js = texts
+    if page.count(RAIL_MARK) != 1:
+        raise ValueError("the journey's template must hold its rail marker once")
+    return page.replace(RAIL_MARK, f"<style>\n{css}\n</style>\n<script>\n{js}\n</script>")
+
+
+def _write_journey(language, app_mode=False, open_browser=True, marks=None, tagger=None, plan=None):
+    """Write the v3 journey: `journey_render.render` over this language's last Generate (the CSVs in results, the
+    library store, the ▶'s memos), with the run's own fugashi `tagger` (speed row 1: the pitch makes no second one), in
+    `journey_template()`, to `OUTPUT_FILE` (a temp file replaced: a page open in a browser is never half written).
+    Returns the watched marks it was drawn with (`marks`: the run's; None: read now, one read, before the render reads
+    the store) for the run's render signature, as the old path's `_journey_stones` does."""
+    from app import journey_render
+    if language is None:
+        try:
+            language = settings_manager.load_settings().get("target_language", "ja")
+        except Exception:
+            language = "ja"
+    if marks is None:
+        from app import analyzer
+        marks = analyzer.journey_marks(language)
+    out = journey_render.render(language, tagger=tagger if language == "ja" else None, plan=plan)
+    path = OUTPUT_FILE                          # the old page's file and name (as `open_report` and the window find it)
+    journey_render.write_page(out, journey_template(), path)
+    print(f"Journey written at: {path} ({out.head['counts']['eps']} episodes, {out.head['counts']['words']} words)")
+    if open_browser:
+        if app_mode:
+            open_as_app(path)
+        else:
+            webbrowser.open(f"file://{os.path.abspath(path)}")
+    return marks
+
+
 def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_browser=True, language=None, marks=None,
-                         found=None):
+                         found=None, tagger=None, plan=None):
     """Write the report. `language`: the run's (the analyzer's `--language`), whose journey's stones it draws (None:
     settings.json's); `marks`: those stones as the run read them (None: read here). Returns the marks the journey was
     drawn from — None for Zen or without a library store, `library_store.UNREAD` when they couldn't be read — for the
     run's render signature (`analyzer.signed_render`). `found`: the run's own `resolve_found_files` list, when it has
-    one (F7's redraw: every library file stat'd once a run)."""
+    one (F7's redraw: every library file stat'd once a run).
+
+    Since the cut-over (`journey_v3()`) every theme but Zen writes the v3 journey (`_write_journey`; `tagger`: the run's
+    fugashi tagger, `plan`: the plan file, both for the render); Zen writes `zen_app.html` from the data below."""
+    if theme not in ZEN_THEMES and journey_v3():
+        print("Writing the journey (v3)...")
+        return _write_journey(language, app_mode=app_mode, open_browser=open_browser, marks=marks, tagger=tagger,
+                              plan=plan)
     print(f"Generating static HTML (Theme: {theme})...")
-    
+
     # Pre-load settings
     try:
         settings = settings_manager.load_settings()

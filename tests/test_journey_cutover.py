@@ -581,8 +581,9 @@ def test_meanings_re_render_and_a_look_the_page_applies_itself_does_not(monkeypa
     assert _sig(journey_meanings="yours_en") != _sig(), "the door off: the same page, the same signature"
 
 
-def _zsig(theme, **settings):
-    args = analyzer.parse_analysis_args(["--language=ja", "--static", "--no-open", f"--theme={theme}"])
+def _zsig(argv_theme, **settings):
+    # an older argv's --theme (accepted, ignored); `settings` the saved ones (a saved `theme` too)
+    args = analyzer.parse_analysis_args(["--language=ja", "--static", "--no-open", f"--theme={argv_theme}"])
     with patch.object(analyzer.settings_manager, "load_settings", lambda: dict(settings)):
         return analyzer.compute_render_signature(args, marks=[], made=None)
 
@@ -600,6 +601,8 @@ def test_a_look_change_moves_no_signature_and_zen_is_one_more_look(old_option, m
     assert _zsig("default", **old_option) == plain, f"the old page's {old_option}: nothing on v3 reads it"
     assert _zsig("zen-focus") == plain and _zsig("Zen Mode") == plain, "Zen in or out draws nothing"
     assert _zsig("zen-focus", **old_option) == plain, "nor the old page's options under a saved Zen look"
+    for saved in ("Zen Mode", "Modern Light", "Dark Flow"):     # the saved look (what a run reads now: no --theme)
+        assert _zsig("default", theme=saved) == plain and _zsig("default", theme=saved, **old_option) == plain, saved
     assert _zsig("default", line_player=False) != plain, "a setting the v3 render reads still re-renders"
     assert json.loads(plain)[0] == "journey v3", "no older page's signature can match it"
     monkeypatch.setenv("SURASURA_DOOR", "0")

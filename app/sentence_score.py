@@ -108,10 +108,12 @@ Seen = namedtuple("Seen", "item_id context heard show_only said unsaid",
                   defaults=(None, 0.0, REAL, False, None, SILENT))
 
 # The moment: `files` {normalised path (os.path.normcase(os.path.abspath(...))): Seen} — a file it does not name is
-# heard by its own clip, remembered not at all · `young` {lemma: weight in (0, 1]} (Connect's `young_weights`) ·
+# remembered not at all and heard as `unnamed` says · `young` {lemma: weight in (0, 1]} (Connect's `young_weights`) ·
 # `known` the list rows' keys {(lemma, reading)} known since the Generate (a key with no reading: every row of the
-# lemma) · `root` the data folder the table's paths are from (None: the language's own)
-Moment = namedtuple("Moment", "files young known root", defaults=(None, None, None, None))
+# lemma) · `root` the data folder the table's paths are from (None: the language's own) · `unnamed` (its path) -> how
+# a file `files` does not name is heard, REAL / AI_VOICE / SILENT (Connect's rule for a file outside its library: a
+# book or a text by its extension), so the score's order is the caller's; None, or no answer: by its own clip
+Moment = namedtuple("Moment", "files young known root unnamed", defaults=(None, None, None, None, None))
 
 # One line returned: its file's path and item, its text, its cost, how many other new words and set phrases it holds,
 # its characters, the context it was weighed with, how it is heard, and its place among its file's sentences
@@ -327,7 +329,7 @@ def _moment_arrays(tab, moment, order, root, srcs=None, kept=None):
     if kept is not None and "arrays" in kept:
         arrays, placed_files = kept["arrays"], kept["files"]
     else:
-        arrays, placed_files = _row_arrays(tab, moment, order), {}
+        arrays, placed_files = dict(_rows_kept(tab, moment, order)), {}
         arrays.update(ctx=np.zeros(len(sources)), show_only=np.zeros(len(sources), bool),
                       hear=np.zeros(len(sources), np.int8))
         if kept is not None:
@@ -341,13 +343,49 @@ def _moment_arrays(tab, moment, order, root, srcs=None, kept=None):
         rel, kind, digest = sources[s]
         path = rel if os.path.isabs(rel) else base + rel.replace("/", os.sep)
         at = os.path.normcase(os.path.abspath(path))
-        seen = files.get(at) or Seen()
+        seen = files.get(at) or Seen(heard=_unnamed(moment, path))
         placed_files[s] = (path, at, rel, kind, digest, seen)
         context = float(seen.context or 0.0)
         ctx[s] = context if math.isfinite(context) else 0.0
         show_only[s] = bool(seen.show_only)
         hear[s] = _HEARD_CODE.get(seen.heard, 2)
     return dict(arrays), placed_files
+
+
+def _unnamed(moment, path):
+    """How a file the moment does not name is heard: `moment.unnamed`'s answer — none, or one it can't give: its own
+    clip."""
+    if moment.unnamed is None:
+        return REAL
+    try:
+        got = moment.unnamed(path)
+    except Exception:
+        return REAL
+    return got if got in _HEARD_CODE else REAL
+
+
+_ROWS = []                  # [(the table, its keys and places, the moment's known and young words, the rows' arrays)]
+
+
+def _rows_kept(tab, moment, order):
+    """`_row_arrays`, kept across picks for one table while its keys and places (the same objects: the entry holds them)
+    and the moment's known and young words are the same (a session's picks: the arrays were built at every pick); with
+    an `order` handed in (a move's), built each time. The kept arrays are read-only: a reader that wrote into them
+    would fail (its caller's own path), never change the next pick's."""
+    if order is not None:
+        return _row_arrays(tab, moment, order)
+    try:
+        key = (frozenset(moment.known or ()), tuple(sorted(_young(moment).items())))
+    except TypeError:                       # (a moment whose words can't be compared: built each time)
+        return _row_arrays(tab, moment, order)
+    held = (tab, tab.head.get("keys"), tab.head.get("places"))
+    if _ROWS and all(a is b for a, b in zip(_ROWS[0][0], held)) and _ROWS[0][1] == key:
+        return _ROWS[0][2]
+    arrays = _row_arrays(tab, moment, order)
+    for a in arrays.values():
+        a.flags.writeable = False
+    _ROWS[:] = [(held, key, arrays)]
+    return arrays
 
 
 def _row_arrays(tab, moment, order):
@@ -581,8 +619,15 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
             heard_ask = heard_first and bool((np.isfinite(total[a:b]) & (line_code[a:b] != 2)).any())
             taken, texts = [], set()
             heard_one = False
+            # (fewer than YOUNG_LINES asked, no heard ask: a young word lowers a line's cost by YOUNG × its weight at
+            # most, so once a line's cost less that floor is above the nth best read so far, neither it nor any line
+            # after it can be among the n returned — its file is not read for it; the answer is the same)
+            floor = r.young * max(young_of.values()) if young_of and n < YOUNG_LINES and not heard_ask else None
             for i in _ranked(total, num_a, tie, src_a, a, b):
                 if len(taken) >= max(n, YOUNG_LINES if young_of else 0) and (not heard_ask or heard_one):
+                    break
+                if (floor is not None and len(taken) >= n
+                        and round(float(total[i]) - floor, _RANK_DIGITS) > sorted(t[0] for t in taken)[n - 1]):
                     break
                 src, number, repeat = int(src_a[i]), int(num_a[i]), int(hash_a[i])
                 if repeat and repeat in texts:

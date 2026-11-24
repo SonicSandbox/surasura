@@ -117,6 +117,37 @@ def test_swap_decodes_only_the_old_line_and_the_next_and_still_skips_a_line_outs
 
 
 @pytest.mark.parametrize("lang, key, word, long_line", CASES)
+def test_swap_reads_the_old_cards_line_once_where_it_repeats_across_files(monkeypatch, lang, key, word, long_line):
+    # why: a line said the same in many files (a show's song, the zh resources' shared lines) was read from each file
+    # to see it is the old card's line — 109 whole files decoded for one zh Swap. The table's fingerprint of a line's
+    # text (CRC-32, kept where another line of the word says the same: what "the same sentence twice" already trusts)
+    # tells the copies apart unread: the first copy is read and refused, the rest skipped, the answer the same
+    from app import plan_rules
+    from app.connect import swap
+    from tests.test_sentence_score import L
+    w = World(monkeypatch, lang)
+    old, other = LINES[lang][0], LINES[lang][1]
+    episodes = [(f"ep{n:02d}", [old]) for n in range(1, 9)] + [("ep09", [other])]
+    fp = max(plan_rules.text_hash_of(old), 1)               # (the Generate's: repeated -> its CRC-32, never 0)
+    tab = w.lib.table([key], episodes, lambda f, n, t: L(0, f, n, t, word, repeat=fp if t == old else 0)
+                      if word in t else None, folder="HighPriority/show")
+    for name, texts in episodes:
+        w.tokens[w.path(name)] = [(t, []) for t in texts]
+    monkeypatch.setattr(SS, "_table", lambda language: tab)
+    for n in range(1, 10):
+        w.place(f"ep{n:02d}", n, ctx=0.5 - n / 100)         # every copy of the old line ahead of the other line
+    reads = _counted(monkeypatch, w)
+    assert swap.choose_line(lang, key[0], avoid=[old], reading=key[1]) == (9, other)
+    assert sorted(set(reads)) == ["ep01", "ep09"], reads     # the first copy (to see it is the old line), the next
+    # every copy of the old line is still the old line: none is offered when no other line is left
+    reads.clear()
+    sentences._DATES.clear()
+    w.info.pop(os.path.normcase(os.path.abspath(w.path("ep09"))))
+    assert swap.choose_line(lang, key[0], avoid=[old], reading=key[1]) is None
+    assert "ep02" not in reads, reads
+
+
+@pytest.mark.parametrize("lang, key, word, long_line", CASES)
 def test_a_book_outside_the_store_is_heard_as_a_book_inside_the_score_so_the_first_line_is_connects(monkeypatch,
                                                                                                     tmp_path, lang,
                                                                                                     key, word,

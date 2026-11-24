@@ -695,6 +695,8 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
                     continue            # its file changed or left since the Generate: every line of it skipped
                 text = text_of(src, number)
                 if text is None or (banned and same_line(text, banned)):
+                    if repeat and text is not None:
+                        texts.add(repeat)   # (the same text in other files is refused too: those copies never read)
                     continue
                 if repeat:
                     texts.add(repeat)

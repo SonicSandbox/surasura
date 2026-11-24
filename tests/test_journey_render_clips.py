@@ -4,11 +4,11 @@ The page cuts a line the browser can't play (an .mkv: most anime libraries) thro
 whose source has a `play` and whose lines carry their times — and the render gave them only to a file a browser plays
 (`play.PLAYABLE`). Now the journey's render asks for the one cutter's videos too (`runner.VIDEO_EXTENSIONS`, the kinds
 Connect cuts its cards from): a source whose video sits beside its subtitle gets its `play` ("<dir>/<name>.mkv") and
-its lines their times; the page, seeing a name no browser plays, cuts it. The old page asks as it did: its bytes do not
-change.
+its lines their times; the page, seeing a name no browser plays, cuts it. (The old page, which asked without the
+cutter's kinds and shared the ▶'s memos, retired with Zen: J-RETIRE, 2026-11-23.)
 
 What a wrong answer would cost a learner: no ▶ on any line of an .mkv library (the journey's whole point for anime), a
-▶ on a line nothing can play, or an old page that changed under them. Real Japanese and Chinese subtitles from
+▶ on a line nothing can play,. Real Japanese and Chinese subtitles from
 tests/Test Resources (placed_episode.srt, night_market.srt); video stand-ins (a few bytes, never played).
 """
 import gzip
@@ -24,7 +24,7 @@ from app import static_html_generator as gen
 from app.connect import runner
 from app.services import play
 from tests.test_journey_render_times import _facts
-from tests.test_report_line_player import LINE_JA, LINE_ZH, NIGHT, PLACED, _in_library, _render, _stand_in
+from tests.test_report_line_player import LINE_JA, LINE_ZH, NIGHT, PLACED, _in_library, _stand_in
 from tests.test_services_play import _video
 
 SHOW = "放課後の約束"                                   # a made-up show
@@ -114,23 +114,3 @@ def test_the_journey_gives_an_mkv_line_its_play_and_its_times_and_a_line_with_no
     assert by_play[f"0/{SHOW} - 01.mkv"] == (text, start, end)          # the page cuts it: clip/cut, its line id
     assert by_play[""][1:] == (None, None)                              # no video beside it: no ▶, no times
     assert len(out.head["dirs"]) == 1 and out.head["dirs"][0].startswith("file:///")
-
-
-@pytest.mark.usefixtures("journey_pre_cut")          # the old page (Zen's, the preview's): written only before the cut
-@pytest.mark.parametrize("language", ["ja", "zh"])
-def test_the_old_page_is_byte_for_byte_the_same_after_the_journey_is_drawn(tmp_path, language):
-    # both pages share the ▶'s memos in results/ (line_media.json, line_times.json): the journey now looks the .mkv
-    # sources up and times their lines — the old page drawn after it must not change by one byte
-    rels = _episodes(language, [".mkv", ".mp4", None])
-    text, _start, _end = LINE[language]
-    source_map = {rel: {"name": rel.rsplit("/", 1)[-1], "type": "subtitle",
-                        "abs": os.path.join(path_utils.get_data_path(language), *rel.split("/"))} for rel in rels}
-    records = {rel.rsplit("/", 1)[-1]: [{"Word": WORDS[language][n], "Context 1": text, "Src 1": rel}]
-               for n, rel in enumerate(rels)}
-    page = tmp_path / "results" / "reading_list_static.html"
-    _render(tmp_path, records, source_map, {"source_display": "off", "target_language": language})
-    before = page.read_bytes()
-    _render_journey(tmp_path, language, rels)
-    assert json.loads((tmp_path / "results" / gen.LINE_MEDIA_MEMO).read_text(encoding="utf-8"))   # (it shared them)
-    _render(tmp_path, records, source_map, {"source_display": "off", "target_language": language})
-    assert page.read_bytes() == before

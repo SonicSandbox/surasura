@@ -33,6 +33,29 @@ import math
 import os
 from collections import namedtuple
 
+# numpy's BLAS (OpenBLAS, in numpy's own wheels) starts a thread and reserves a buffer for every CPU thread at numpy's
+# first import: 759 MB of private memory on a 24-thread desktop, 20 MB held to one (measured, E-FAST). Nothing the
+# score or the table does calls BLAS (counts, sorts and reductions: no dot, matmul or linalg), so the first import
+# through here holds it to one thread; the variables are put back at once, so no child process (Anki Miner's speech
+# model) is given them. One the learner set is left as it is.
+_BLAS_THREADS = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")
+
+
+def numpy_one_thread():
+    """numpy, imported once a process with its BLAS held to one thread (`_BLAS_THREADS`) — or as it is when something
+    imported it already. The score's own door to it (`_table`) and Connect's (`connect.sentences.known_since`)."""
+    import sys
+    if "numpy" not in sys.modules:
+        mine = [name for name in _BLAS_THREADS if name not in os.environ]
+        try:
+            os.environ.update({name: "1" for name in mine})
+            import numpy  # noqa: F401
+        finally:
+            for name in mine:
+                os.environ.pop(name, None)
+    import numpy
+    return numpy
+
 # --------------------------------------------------------------------------------------------------------------- #
 # The rates — every number of the score, in one block (SPEC § 4.1; whose each is: the lane's register)
 # --------------------------------------------------------------------------------------------------------------- #
@@ -217,6 +240,7 @@ def _table(language):
     once a process while the file's (path, time, size) and the run's stamp hold (SPEC § 5.3) — or None: none written,
     another language, engine or run, damaged. Never an exception."""
     try:
+        numpy_one_thread()
         from app import analyzer, sentence_table
         from app.path_utils import get_user_file
         results = get_user_file("results")

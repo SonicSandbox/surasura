@@ -1039,21 +1039,10 @@ def test_a_rows_description_waits_behind_its_question_mark_and_shows_on_hover_fo
     assert store.calls == []
 
 
-@pytest.fixture
-def settings_pre_cut():
-    """The Settings before the journey v3 cut-over (`use_v3(False)`), for a row only they hold — Speech's (D15: speaking
-    left the journey; the YouTube preview's old page still reads its key); back to the switch's own after (J-CUT)."""
-    catalog.use_v3(False)
-    yield
-    catalog.use_v3(catalog._journey_v3())
-
-
 @pytest.mark.parametrize("row_id", ["known_import", "update_check_enabled", "telemetry_enabled", "covers_download",
-                                    "remove_downloaded_covers", "practice_ai", "enable_koe"])
+                                    "remove_downloaded_covers", "practice_ai"])
 def test_a_line_the_learner_must_read_before_pressing_stays_in_sight_without_a_question_mark(qapp, row_id, request):
     """What leaves this computer, what replaces or deletes for good: read before the press, never hidden."""
-    if row_id == "enable_koe":
-        request.getfixturevalue("settings_pre_cut")      # Speech's row: the Settings before the cut-over only
     data = dict(ALL_ON, known_road="import")
     page, _store = make_page(data, "ja")
     if row_id == "known_import":

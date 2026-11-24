@@ -10,13 +10,9 @@ times come from Connect's line reader (app/cues.py, E5.1), whose text is searche
 As-is must stay exactly the old search: `_hay` IS the raw text.
 """
 
-import json
 import os
-from unittest.mock import patch
 
-import pandas as pd
-
-from app import analyzer, zh_script
+from app import zh_script
 from app.static_html_generator import AnchorFinder
 
 # A Traditional subtitle. Cue 2 starts at 1:10; the spaced cue 3 exercises the whitespace-tolerant
@@ -26,11 +22,6 @@ TRAD_SRT = (
     "2\n00:01:10,500 --> 00:01:14,000\n許多學者認為，台灣必須持續學習新技術。\n\n"
     "3\n00:02:00,000 --> 00:02:03,000\n研究人員 後來發現 早餐很重要｡\n\n"
 )
-
-
-import pytest
-# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
-pytestmark = pytest.mark.usefixtures("journey_pre_cut")
 
 
 def _write(path, text):
@@ -106,49 +97,6 @@ def test_a_script_switch_does_not_reuse_the_other_scripts_answers(tmp_path):
     assert anchor and anchor in TRAD_SRT and (at, end) == (5, 8)
 
 
-# ---- the whole chain: analyzer -> CSV -> report ------------------------------------------------ #
-
-def test_report_links_point_at_the_original_wording(tmp_path):
-    """Analyze a Traditional subtitle read as Simplified, render the report with the source badge on,
-    and check the HTML carries the Simplified sentence AND a deep link in the file's own Traditional."""
-    uf = tmp_path / "User Files" / "zh"; uf.mkdir(parents=True)
-    high = tmp_path / "data" / "zh" / "HighPriority"; high.mkdir(parents=True)
-    results = tmp_path / "results"; results.mkdir()
-    (uf / "KnownWord.json").write_text(json.dumps({"words": []}), encoding="utf-8")
-    _write(high / "ep01.srt", TRAD_SRT)
-    with open(os.path.join(os.environ["SURASURA_TEST_ROOT"], "settings.json"), "w",
-              encoding="utf-8") as f:
-        json.dump({"target_language": "zh", "zh_script": "s", "source_display": "icon"}, f)
-
-    def guf(path): return str(tmp_path / path)
-    def gdp(lang=None): return str(tmp_path / "data" / lang) if lang else str(tmp_path / "data")
-    def gufp(lang=None): return str(tmp_path / "User Files" / lang) if lang else str(tmp_path / "User Files")
-
-    csv = results / "priority_learning_list.csv"
-    with patch("app.analyzer.get_user_file", side_effect=guf), \
-         patch("app.analyzer.get_data_path", side_effect=gdp), \
-         patch("app.analyzer.get_user_files_path", side_effect=gufp), \
-         patch("app.analyzer.RESULTS_DIR", str(results)), \
-         patch("app.analyzer.OUTPUT_CSV", str(csv)), \
-         patch("app.analyzer.OUTPUT_STATS", str(results / "file_statistics.txt")), \
-         patch("app.analyzer.OUTPUT_PROGRESSIVE", str(results / "progressive_learning_list.csv")), \
-         patch("sys.argv", ["analyzer.py", "--language", "zh", "--min-freq", "1", "--zh-script=s"]):
-        analyzer.main()
-    contexts = set(pd.read_csv(csv)["Context 1"].dropna())
-    assert "许多学者认为，台湾必须持续学习新技术。" in contexts
-
-    from app import static_html_generator
-    out = results / "reading_list_static.html"
-    with patch("app.static_html_generator.RESULTS_DIR", str(results)), \
-         patch("app.static_html_generator.PRIORITY_CSV", str(csv)), \
-         patch("app.static_html_generator.PROGRESSIVE_CSV", str(results / "progressive_learning_list.csv")), \
-         patch("app.static_html_generator.OUTPUT_FILE", str(out)), \
-         patch("app.static_html_generator.open_report"):
-        static_html_generator.generate_static_html(open_browser=False)
-    html = out.read_text(encoding="utf-8")
-
-    def injected(text):   # the report's data is JSON with ensure_ascii, so CJK arrives \u-escaped
-        return json.dumps(text)[1:-1] in html
-
-    assert injected("许多学者认为")                   # the sentence, in the chosen script
-    assert injected("許多學者認為")                   # the deep link, in the file's own script
+# The whole chain (analyzer -> CSV -> report: the deep link in the file's own wording) retired with the old page
+# (J-RETIRE): the journey page draws no deep link; its ▶ times are AnchorFinder's with the chosen script
+# (journey_render.render), the fact test_line_times_survive_the_conversion holds.

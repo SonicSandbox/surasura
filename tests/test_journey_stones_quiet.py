@@ -101,10 +101,6 @@ if _out:
 '''
 
 
-# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
-pytestmark = pytest.mark.usefixtures("journey_pre_cut")
-
-
 @pytest.fixture(autouse=True)
 def _the_childs_token_store(monkeypatch):
     """The window's questions are asked in this process of the store the Generate child wrote (under the test root, as
@@ -119,8 +115,8 @@ def _argv(language):
 
 
 def _generate(root, language, spy=None, tmp_path=None):
-    """A Generate in its own process, as the dashboard starts it (the store's helper after) -> (report data, what it
-    printed). `spy`: a file name; every process the Generate starts counts its tokenizer calls into it."""
+    """A Generate in its own process, as the dashboard starts it (the store's helper after) -> (the page's data —
+    test_journey_stones' `_payload` —, what it printed). `spy`: a file name; every process the Generate starts counts its tokenizer calls into it."""
     env = child_env(root)
     if spy:
         spy_dir = tmp_path / "spy"
@@ -172,13 +168,13 @@ def _current(language):
 
 def _kept_on(language):
     """Show A Ep01–03 then Show B Ep01–03 in NOW, *Keep studying* on, one full Generate -> (store, ids, names, root,
-    the report data)."""
+    the page's data)."""
     root = os.environ["SURASURA_TEST_ROOT"]
     _settings(language)
     store, ids, names = _library(language)
     store.set_library_options(keep_watched=True)
     first, said = _generate(root, language)
-    assert REUSED not in said and (first is None or _stones(first) == {}), "a full Generate (the old page: no stone)"
+    assert REUSED not in said and _stones(first) == {}, "a full Generate, no stone"
     return store, ids, names, root, first
 
 
@@ -197,7 +193,7 @@ def test_d2_after_a_mark_and_its_quiet_run_the_counts_equal_a_full_generate_from
     full, said = _generate(root, language)
     assert REUSED not in said, "a full analysis"
     assert _csvs(root) == quiet_csvs, "the full Generate's lists, byte for byte"
-    assert full == quiet, "and its journey: the same files, words, counts and stone"
+    assert full == quiet, "and its journey: the same episodes, words, *% known* and stone"
     assert _stones(quiet) == {names["A2"]: False}, "counted AND watched"
     store.close()
 
@@ -213,12 +209,11 @@ def test_d2_a_finished_show_stays_out_of_the_journey_through_a_quiet_run(languag
     store.finish(show_b)
     finished, said = _generate(root, language)
     assert REUSED not in said, "a Finish is a Generate"
-    assert not b_names & set(_files(finished) + [f["filename"] for f in finished["completed_files"]])
+    assert not b_names & set(_files(finished))
     store.set_watched([ids["A2"]])
     quiet, said = _generate(root, language)
     assert REUSED in said and RE_RENDER in said
-    assert not b_names & set(_files(quiet) + [f["filename"] for f in quiet["completed_files"]]), \
-        "Finished stays out of the journey"
+    assert not b_names & set(_files(quiet)), "Finished stays out of the journey"
     assert _stones(quiet) == {names["A2"]: False}, "the one stone: A2's, counted"
     assert _files(quiet) == _files(finished)
     store.close()

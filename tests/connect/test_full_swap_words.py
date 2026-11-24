@@ -169,8 +169,8 @@ def _write_settings(values):
 def test_the_defaults_flip_reaches_everyone_who_never_picked_and_never_a_pick(monkeypatch, on_disk, read):
     """Decision 1 (new installs and updates): a first save writes every default, so a file from a release with the
     default off holds `swap_in_place: false` — read as today's default unless the learner picked it (the marker
-    `swap_in_place_chosen`, written beside the pick), as Kantan-B3's and E-LENGTH's. Today the default is off, so
-    nothing changes until the flip; here the flip is stood in for."""
+    `swap_in_place_chosen`, written beside the pick), as Kantan-B3's and E-LENGTH's. The default is on since
+    3.0.18; it is patched on here so the test reads the rule, whatever the shipped default."""
     from app import settings_manager
     monkeypatch.setitem(settings_manager.DEFAULT_SETTINGS, "swap_in_place", True)
     _write_settings(dict(on_disk, connect_enabled=True))

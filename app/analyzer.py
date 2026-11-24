@@ -5384,6 +5384,7 @@ def settings_signature(settings, language):
         "sentence_length_chosen",       # E-LENGTH: whether *Length* is the learner's pick; the pair is hashed
         "loop_ignore_flag",             # Mado-LT: the loop's Ignore / Swap flags: what they move is in the lists
         "loop_swap_flag",
+        "swap_in_place_chosen",         # FS-2: whether *Swap gives* is the learner's pick, never a run
         "swap_in_place",                # FS-1: Swap rewrites a card in place or makes a new one, never a run
         "connect_video_folders",        # P2.5: where Connect looks for a moved video, never what a run counts
         "connect_trust_timing",         # P-LF-9: whether Connect mines an episode nothing can time, never a run

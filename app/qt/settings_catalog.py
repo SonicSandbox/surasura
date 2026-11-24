@@ -52,6 +52,7 @@ MODULES = ("modules.junban", "modules.koe", "modules.youtube_downloader", "modul
 LANGUAGES = ("ja", "zh")
 PER_LANGUAGE = ("connect_backlog_cap", "connect_video_folders")
 CHOSEN = "known_from_anki_chosen"                    # Kantan-B3: written beside its pick (`change`)
+SWAP_CHOSEN = "swap_in_place_chosen"                 # FS-2: written beside *Swap gives*' pick (`change`)
 
 # Fine-tune's three heads (Mado-EZA: EZ-4, SPEC-r2 §0.5; PROVISIONAL): the sections under Cards · Library · App, in the
 # page's order — Your setup above them all (Essentials takes it later); Connections under App until Tools takes it
@@ -287,6 +288,9 @@ ROWS = (
     _row("known_from_anki", "anki", "tablets", ("known_from_anki",), group="loop",
          options=tuple(term for term, _label in settings_values.KNOWN)),
     _row("loop_swap_flag", "anki", "select", ("loop_swap_flag",), options=MOVE_FLAGS, when=_CONNECT),
+    # FS-2 (the full Swap, SCOPE § 4; PROVISIONAL words): what Swap gives the card — Swap's own setting (ROLES.md),
+    # under its flag: *Same card, new sentence* rewrites it in place, *A new card* is the simple Swap
+    _row("swap_in_place", "anki", "choice", ("swap_in_place",), options=(True, False), sub=True, when=_CONNECT),
     _row("loop_ignore_flag", "anki", "select", ("loop_ignore_flag",), options=MOVE_FLAGS, when=_CONNECT),
     # Kantan-B2 (PROVISIONAL): the words whose cards you deleted in Anki, never made again — each with *Allow again*
     _row("unmined_words", "anki", "door", when=_CONNECT, door=("unmined-words",)),
@@ -492,9 +496,9 @@ NOT_SHOWN = {
     "sentence_length_chosen": "state: written beside *Length*'s pick once the sentence table is on (E-LENGTH)",
     "anki_sync_include_suspended": "retired (Kotoba-WS2): folded into *Count as known in Anki*, read once on load",
     "hints_seen": "state: the one-time hints shown, each per library (W-1's first watched mark)",
+    "swap_in_place_chosen": "state: written beside *Swap gives*'s pick (FS-2), so the default's flip reaches the rest",
     "subs_with_hato": "the learner's one yes in Needs you (*Find them with hato*, NS-2; hato's card: 3.0.1's next step)",
     "subs_with_hato_zh": "the Chinese library's one yes in Needs you (*Find them with hato*, Zh-H)",
-    "swap_in_place": "off in the tree until FS-2 lands its Settings row (*Swap gives a card a better sentence*)",
     "open_count": "state: a launch counter",
     "paused": "state: the circles paused with a click at the bar's bottom left (Mado-PZ), resumed the same way",
     "skipped_version": "state: its way back is App's *Offer <version> again*",
@@ -918,6 +922,8 @@ def change(row, settings, language, new):
         # Kantan-B3: a pick, never read as an old default again — written on every pick, even when the loaded settings
         # already say True: the old switch's fold sets it in memory only (Kotoba-WS2F, the keeper's F1)
         out[CHOSEN] = True
+    if row.id == "swap_in_place" and out:          # FS-2: a pick, never a first save's old default (`load_settings`)
+        out[SWAP_CHOSEN] = True
     if row.id == "sentence_length" and out and plan_rules.SENTENCE_TABLE >= 1:
         # E-LENGTH: a Length set with the sentence table on is the learner's own, never read as the old default again —
         # the pair as the row shows it (one end changed must not leave the file's other end on an old default)

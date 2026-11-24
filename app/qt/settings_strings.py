@@ -243,9 +243,16 @@ ROWS = {
                         "known from anki suspended marked flag count as known in anki count suspended cards as known "
                         "include suspended studied then suspended review loop daily loop move phone"),
     "loop_swap_flag": ("⇄ Swap",
-                       "At the next sync Surasura makes the word a new card from a better sentence",
+                       "At the next sync Surasura gives the word a better sentence",       # FS-2: either way
                        "Suspend a card with this flag: a different sentence, please.",
                        "swap different sentence better sentence flag green review loop daily loop move phone"),
+    # FS-2 (the full Swap, SCOPE § 4, decisions 5, 6, 9; PROVISIONAL words): what Swap gives the card, under its flag
+    "swap_in_place": ("Swap gives",
+                      "Same card: it keeps its reviews; its sentence, audio and picture change. Cards you made or "
+                      "changed by hand get a new card. A phone edit before Anki syncs may be lost.",
+                      "Same card keeps its reviews; a new card starts the word again.",
+                      "swap in place same card new sentence keep reviews due date rewrite full swap better sentence "
+                      "new card daily loop"),
     "loop_ignore_flag": ("✕ Ignore",
                          "At the next sync its word goes on your Ignore list; once synced, delete freely",
                          "Suspend a card with this flag: not a word to learn.",
@@ -712,6 +719,7 @@ OPTIONS = {
         ("Red", "Orange", "Green", "Blue", "Pink", "Turquoise", "Purple"), 1)},
     "loop_ignore_flag": {n: f"Suspend + {colour} flag" for n, colour in enumerate(
         ("Red", "Orange", "Green", "Blue", "Pink", "Turquoise", "Purple"), 1)},
+    "swap_in_place": {True: "Same card, new sentence", False: "A new card"},          # FS-2 (PROVISIONAL)
     "study_order": {"content": "As I’ll meet it", "priority": "By leverage"},
     "connect_sentence_dial": {"best": "Best", "nearest": "Nearest"},
     "split_books_by": {"chapters": "Chapters", "even": "Even parts"},
@@ -745,6 +753,8 @@ OPTION_TIPS = {
     "junban_only_markers": {"star": "High leverage: the words your journey stars",
                             "lopsided": "Lopsided: words that come almost entirely from one part of your library",
                             "reading": "Reading: words you'll read but essentially never hear"},
+    "swap_in_place": {True: "The card keeps its reviews and due date; its sentence, audio and picture change.",
+                      False: "A new card from the better sentence; the old one leaves your reviews."},     # FS-2
     "junban_order_all": {False: "Your own cards go ahead of the made-for-you cards.",
                          True: "Your own cards go among the made-for-you cards, in list order."},
     "open_video": {"default": "▶ opens a video in the program Windows opens it with",

@@ -253,7 +253,9 @@ ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway",
            "dw_all_known", "dw_all_ignore", "dw_all_bad", "dw_leave",  # Kyou-DW: the whole card (All parsing
            "dw_forget_all", "dw_keep_old",                             # mistakes only asks its follow-up: Kyou-DW 3)
            "dw_all_word_wrong", "dw_all_only_line",
-           "undo_swap", "leave_swap", "leave_swap_wait")                                 # Kantan-SL
+           "undo_swap", "leave_swap", "leave_swap_wait",                                 # Kantan-SL
+           "undo_swap_same", "leave_swap_same",                                          # FS-2
+           "undo_swap_deleted")                                                          # FS-2 2
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "generate_again",
                      "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
@@ -538,8 +540,9 @@ class NeedsCards(QWidget):
         return card
 
 
-def deleted_said(why, got):
-    """Kyou-DW (PROVISIONAL): an answer's line — what it did, and what it skipped and why."""
+def deleted_said(why, got, same_card=False):
+    """Kyou-DW (PROVISIONAL): an answer's line — what it did, and what it skipped and why. FS-2 (decision 11): *Bad
+    card* done while Swap gives the same card (`same_card`) says that a flag would have kept the reviews."""
     done, skipped = list(got.get("done") or ()), list(got.get("skipped") or ())
     words = list(dict.fromkeys(w for _n, w in done))
     if words:
@@ -554,6 +557,8 @@ def deleted_said(why, got):
                  else strings.NEEDS_DELETED_SKIPPED.format(n=f"{len(skipped):,}"))
     if got.get("unflagged"):
         text += strings.NEEDS_DELETED_UNFLAGGED
+    if why == "bad" and words and same_card:
+        text += strings.NEEDS_BAD_CARD_FLAG
     return text
 
 
@@ -2608,7 +2613,8 @@ class NeedsYou(QObject):
             if not got.get("done"):
                 self._stays(name, entry)
             self.refresh()
-            said = deleted_said(why, got)
+            from app.connect import swap
+            said = deleted_said(why, got, same_card=why == "bad" and swap.in_place_on(read_settings() or {}))
             if not got.get("done") or not self._alive():
                 self._say(said)
                 return
@@ -2712,7 +2718,7 @@ class NeedsYou(QObject):
 
     # Kantan-SL (PROVISIONAL): Swap, said — *Undo* deletes the new card with a backup and puts the old one back to study
     # (`swap.act_undo`: Anki's write lock, waiting up to its 10 s; on a worker)
-    def _do_undo_swap(self, entry, _line):
+    def _do_undo_swap(self, entry, _line, name="undo_swap", undone=strings.NEEDS_SWAP_UNDONE):
         from app.connect import swap
         lang, read_settings = self.language, self.read_settings
         swap_id = (entry.data or {}).get("id")
@@ -2720,18 +2726,29 @@ class NeedsYou(QObject):
         def done(got):
             got = got or {}
             if got.get("why"):
-                self._stays("undo_swap", entry)
+                self._stays(name, entry)
                 self._say(strings.NEEDS_SWAP_NOT_UNDONE.format(why=got["why"]))
             else:
-                self._say(strings.NEEDS_SWAP_UNDONE)
+                self._say(undone)
             self.refresh()
-        self._press("undo_swap", entry, lambda: swap.act_undo(read_settings() or {}, lang, swap_id), then=done)
+        self._press(name, entry, lambda: swap.act_undo(read_settings() or {}, lang, swap_id), then=done)
 
-    def _do_leave_swap(self, entry, _line):
+    def _do_leave_swap(self, entry, _line, name="leave_swap", left=strings.NEEDS_SWAP_LEFT):
         def done(_n):
-            self._say(strings.NEEDS_SWAP_LEFT)
+            self._say(left)
             self.refresh()
-        self._press("leave_swap", entry, service.answer, self.language, service.answer_keys(entry), then=done)
+        self._press(name, entry, service.answer, self.language, service.answer_keys(entry), then=done)
+
+    # FS-2 (PROVISIONAL): an in-place swap — the same `swap.act_undo` (it reads the swap's own kind), its own words
+    def _do_undo_swap_same(self, entry, line):
+        self._do_undo_swap(entry, line, "undo_swap_same", strings.NEEDS_SWAP_SAME_UNDONE)
+
+    def _do_leave_swap_same(self, entry, line):
+        self._do_leave_swap(entry, line, "leave_swap_same", strings.NEEDS_SWAP_SAME_LEFT)
+
+    # FS-2 2 (PROVISIONAL): a *Bad card*'s swap — the same `swap.act_undo`; its old card was deleted and stays so
+    def _do_undo_swap_deleted(self, entry, line):
+        self._do_undo_swap(entry, line, "undo_swap_deleted", strings.NEEDS_SWAP_DELETED_UNDONE)
 
     def _do_leave_swap_wait(self, entry, _line):
         def done(_n):

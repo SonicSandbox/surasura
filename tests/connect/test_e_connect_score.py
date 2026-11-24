@@ -327,6 +327,55 @@ def test_a_word_known_since_the_generate_no_longer_counts_as_new_in_a_sentence(m
     assert after[SIGN].others == 0 and after[SIGN].cost == pytest.approx(before[SIGN].cost - SS.NEW_WORD)
 
 
+def _synced(language, word):
+    """KnownWord.json as the Anki sync leaves it after a card of `word` turned known (`anki_sync._entry`'s shape),
+    written long after the Generate."""
+    import json
+    from app import anki_sync
+    path = anki_sync._known_path(language)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    entry = {"dictForm": word, "knownStatus": "KNOWN", "hasCard": 1, "language": language, "source": anki_sync.SOURCE}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"source": anki_sync.SOURCE, "words": [entry]}, f, ensure_ascii=False)
+    os.utime(path, ns=(2 * 10 ** 18, 2 * 10 ** 18))
+
+
+def test_a_word_the_anki_sync_marks_known_is_never_later_on_the_new_path_than_on_todays(monkeypatch):
+    # why: the lead's ruling (2026-11-23) — the new path is never behind today's. Today's list path counts a line's
+    # other new words as the last Generate wrote them (`_from_list`: the plan's co-words, never re-read at the pick),
+    # so a word the Anki sync marks known counts from the next Generate on (Connect's verdict runs one after mining);
+    # the score's path is the same for the sync's words (the table's places) — and ahead for a word marked in the
+    # window, above. Both are pinned here, so a later change that makes either count at once moves both.
+    from tests.connect.test_kantan_sd_list import BOUKEN, EASY, HARD, _plan, _write
+    monkeypatch.setattr(plan_rules, "SENTENCE_TABLE", 0)
+    here = _write("ja", "第01話.srt", [HARD])
+    info = {os.path.normcase(os.path.abspath(here)): (1, 0.0, sentences.REAL, False)}
+    monkeypatch.setattr(sentences, "_library", lambda language, store=None, ai=False, only=None, scored=False: info)
+    _plan("ja", [here], {BOUKEN: [(0, 0, HARD, 3)]})
+    today = sentences.choose("ja", [BOUKEN], dial=sentences.BEST, young={})[BOUKEN]
+    _synced("ja", "迷宮")                           # one of HARD's other new words
+    assert [c.others for c in sentences.choose("ja", [BOUKEN], dial=sentences.BEST, young={})[BOUKEN]] == \
+        [c.others for c in today] == [3], "today's: counted from the plan until the next Generate"
+    # the score's path: 看板, a row below 文化祭, known by the sync since the table was written
+    w = World(monkeypatch)
+    keys = [FEST, ("看板", "かんばん")]
+    tab = w.lib.table(keys, [("ep01", [FESTIVAL, SIGN])], lambda f, n, t: L(0, f, n, t, "文化祭", cow=[0] if n else ()),
+                      cowords=[(1, [[1]])], folder="HighPriority/show")
+    w.tokens[w.path("ep01")] = [(FESTIVAL, []), (SIGN, [])]
+    monkeypatch.setattr(SS, "_table", lambda language: tab)
+    w.place("ep01", 1)
+    from app.path_utils import get_user_file
+    results = get_user_file("results")
+    with open(os.path.join(results, "sentences.bin"), "wb") as f:
+        f.write(b"the Generate's table")
+    os.utime(os.path.join(results, "sentences.bin"), ns=(1, 10 ** 18))
+    before = {c.text: c.others for c in sentences.choose("ja", [FEST], dial=sentences.BEST, young={})[FEST]}
+    _synced("ja", "看板")
+    assert sentences.known_since("ja") == set(), "the sync's entry is no mark made in the window"
+    after = {c.text: c.others for c in sentences.choose("ja", [FEST], dial=sentences.BEST, young={})[FEST]}
+    assert before[SIGN] == after[SIGN] == 1, "the score's: new until the next Generate, as today's"
+
+
 def _show(language="ja"):
     from tests.test_library_store_support import migrated
     store = migrated(language, shows=1, episodes=3, loose=0, tiers=("now",))

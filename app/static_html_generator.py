@@ -1060,22 +1060,26 @@ def journey_template():
     return page.replace(RAIL_MARK, f"<style>\n{css}\n</style>\n<script>\n{js}\n</script>")
 
 
-def _write_journey(language, app_mode=False, open_browser=True, marks=None, tagger=None, plan=None):
+def _write_journey(language, app_mode=False, open_browser=True, tagger=None, plan=None):
     """Write the v3 journey: `journey_render.render` over this language's last Generate (the CSVs in results, the
     library store, the ▶'s memos), with the run's own fugashi `tagger` (speed row 1: the pitch makes no second one), in
     `journey_template()`, to `OUTPUT_FILE` (a temp file replaced: a page open in a browser is never half written).
-    Returns the watched marks it was drawn with (`marks`: the run's; None: read now, one read, before the render reads
-    the store) for the run's render signature."""
-    from app import journey_render
+    Returns the watched marks it was drawn with — the very read of the store the page draws from
+    (`journey_render.store_facts`' `marks`: J-FIX 3, a mark between two reads was drawn but not signed) — for the run's
+    render signature: None with no library store, `library_store.UNREAD` when a store is there and its read failed."""
+    from app import analyzer, journey_render
     if language is None:
         try:
             language = settings_manager.load_settings().get("target_language", "ja")
         except Exception:
             language = "ja"
-    if marks is None:
-        from app import analyzer
-        marks = analyzer.journey_marks(language)
-    out = journey_render.render(language, tagger=tagger if language == "ja" else None, plan=plan)
+    facts = journey_render.store_facts(language)
+    if facts is not None:
+        marks = facts.marks
+    else:                                       # no store, or one that couldn't be read: never signed with stones
+        from app import library_store
+        marks = None if analyzer.journey_marks(language) is None else library_store.UNREAD
+    out = journey_render.render(language, facts=facts, tagger=tagger if language == "ja" else None, plan=plan)
     path = OUTPUT_FILE                          # the old page's file and name (as `open_report` and the window find it)
     journey_render.write_page(out, journey_template(), path)
     print(f"Journey written at: {path} ({out.head['counts']['eps']} episodes, {out.head['counts']['words']} words)")
@@ -1087,15 +1091,15 @@ def _write_journey(language, app_mode=False, open_browser=True, marks=None, tagg
     return marks
 
 
-def generate_static_html(app_mode=False, open_browser=True, language=None, marks=None, tagger=None, plan=None):
+def generate_static_html(app_mode=False, open_browser=True, language=None, tagger=None, plan=None):
     """Write the journey: v3's page (`_write_journey`) for every look — the look is applied in the page (J-SET), and
     a look saved before it (Zen's too) reads as its new meaning (`journey_settings.page_value`). `language`: the run's
-    (the analyzer's `--language`; None: settings.json's); `marks`: the journey's stones as the run read them (None:
-    read here); `tagger`: the run's fugashi tagger, `plan`: the plan file, both for the render. Returns the marks the
-    journey was drawn from — None without a library store, `library_store.UNREAD` when they couldn't be read — for the
-    run's render signature (`analyzer.signed_render`)."""
+    (the analyzer's `--language`; None: settings.json's); `tagger`: the run's fugashi tagger, `plan`: the plan file,
+    both for the render. Returns the marks the journey was drawn from (the page's own read of the store) — None
+    without a library store, `library_store.UNREAD` when they couldn't be read — for the run's render signature
+    (`analyzer.signed_render`)."""
     print("Writing the journey (v3)...")
-    return _write_journey(language, app_mode=app_mode, open_browser=open_browser, marks=marks, tagger=tagger, plan=plan)
+    return _write_journey(language, app_mode=app_mode, open_browser=open_browser, tagger=tagger, plan=plan)
 
 
 def main():

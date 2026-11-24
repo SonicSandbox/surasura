@@ -4659,11 +4659,10 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
             except ImportError:
                 import static_html_generator
             _html = os.path.join(RESULTS_DIR, "reading_list_static.html")
-            marks = journey_marks(language)
             made = _made_fingerprint(language)
             rendering = time.time()
-            drawn = static_html_generator.generate_static_html(
-                app_mode=args.app_mode, open_browser=not args.no_open, language=language, marks=marks,
+            drawn = static_html_generator.generate_static_html(        # signed with the marks it was drawn from
+                app_mode=args.app_mode, open_browser=not args.no_open, language=language,
                 plan=plan_engine.read_counts(os.path.join(RESULTS_DIR, plan_engine.COUNTS_FILE),   # the Generate's
                                              plan.header.get("run_signature")) or plan)   # figures (its counts table)
             report_failed = not _report_written(_html, rendering)
@@ -6202,7 +6201,7 @@ def main():
                 _html = os.path.join(RESULTS_DIR, "reading_list_static.html")
                 # Presentation fingerprint that decides whether the HTML must be RE-RENDERED (see
                 # compute_render_signature — shared with the dashboard so the two can't drift). The
-                # journey's stones are read once: the check and the re-render use the same marks.
+                # check reads the journey's stones here; a re-render is signed with the ones it drew (J-FIX 3).
                 _marks = journey_marks(language)
                 _made = _made_fingerprint(language)      # F-6: read once, before the report is drawn
                 _render_sig = compute_render_signature(args, marks=_marks, made=_made)
@@ -6217,7 +6216,7 @@ def main():
                     print("Re-rendering report from existing results (presentation changed)...")
                     _rendering = time.time()
                     _drawn = static_html_generator.generate_static_html(
-                        app_mode=args.app_mode, open_browser=not args.no_open, language=language, marks=_marks,
+                        app_mode=args.app_mode, open_browser=not args.no_open, language=language,
                         plan=_journey_plan(args, read_run_stamp(RESULTS_DIR)))     # the plan checked just above
                     _report_failed = not _report_written(_html, _rendering)
                     try:

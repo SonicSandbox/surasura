@@ -71,9 +71,12 @@ HEAD_SETTINGS = {
 }
 
 _Ep = namedtuple("_Ep", "watched cards status missing removed in_top")
-StoreFacts = namedtuple("StoreFacts", "items works order cards pre growth library")
+StoreFacts = namedtuple("StoreFacts", "items works order cards pre growth library counted marks",
+                        defaults=(None, None))
 #   items {id: feed row} · works {id: row} · order [id] (the study order, set-aside watched items in their place) ·
-#   cards {id: n} · pre {id: (day, by)} · growth {id: {kind: {...}}} · library: the queue's key (D31)
+#   cards {id: n} · pre {id: (day, by)} · growth {id: {kind: {...}}} · library: the queue's key (D31) ·
+#   counted {id}: the items Generate's list reads (None: all of `order`) · marks: `Store.watched_marks`' from the same
+#   read (`library_store.UNREAD` when they couldn't be read), what the page is signed with (`_write_journey`)
 
 
 # --- values --------------------------------------------------------------------------------------------------------- #
@@ -635,7 +638,9 @@ _WORK_FIELDS = ("id", "media_type", "title", "youtube_channel")
 def store_facts(language, data_dir=None, user_files_dir=None):
     """The episodes' facts from the library store, read in one go through its readers (`read_feed`, `scheduled_ids`,
     `cards_of`, and — once their lanes land — `prestudied_marks`, `growth_of`), or None with no ready store (the page
-    then names episodes by file only). Never writes, never raises."""
+    then names episodes by file only). One read transaction (`_reading`), the stones' marks (`watched_marks`) in it:
+    the page and the render signature it is signed with read the same store (J-FIX 3: a mark landing between two reads
+    was drawn but not signed, so its Undo left the stone). Never writes, never raises."""
     try:
         from app import library_store
         from app.path_utils import get_data_path, get_user_files_path
@@ -647,31 +652,36 @@ def store_facts(language, data_dir=None, user_files_dir=None):
     if store is None:
         return None
     try:
-        feed = store.read_feed()
-        items = {row["id"]: {k: row.get(k) for k in _ITEM_FIELDS} for row in feed["items"]}
-        works = {row["id"]: {k: row.get(k) for k in _WORK_FIELDS} for row in feed["works"]}
-        epoch = feed.get("epoch")
-        del feed                                # the rest of the feed (each item's ~40 fields) isn't held
-        counted = [i for i, _tier in store.scheduled_ids()]
-        order = _with_aside(counted, items)
-        cards = {i: len(notes) for i, notes in store.cards_of(order).items() if notes}
-        pre = {}
-        reader = getattr(store, "prestudied_marks", None)        # J-STORE's reader (SPEC §2.2)
-        try:                                                     # a seam that fails is its empty state, alone
-            for item, mark in ((reader() or {}) if reader is not None else {}).items():
-                pre[item] = (mark[0], mark[1]) if isinstance(mark, (list, tuple)) else (mark, None)
-        except Exception as e:
+        with store._reading():                  # one read: what the page draws is what it is signed with
+            feed = store.read_feed()
+            items = {row["id"]: {k: row.get(k) for k in _ITEM_FIELDS} for row in feed["items"]}
+            works = {row["id"]: {k: row.get(k) for k in _WORK_FIELDS} for row in feed["works"]}
+            epoch = feed.get("epoch")
+            del feed                                # the rest of the feed (each item's ~40 fields) isn't held
+            counted = [i for i, _tier in store.scheduled_ids()]
+            order = _with_aside(counted, items)
+            cards = {i: len(notes) for i, notes in store.cards_of(order).items() if notes}
             pre = {}
-            print(f"Warning: the journey couldn't read what was pre-studied: {e}")
-        growth = {}
-        grower = getattr(store, "growth_of", None)               # Kura-GS's reader (#585)
-        try:
-            if grower is not None:
-                growth = grower(order, kinds=("added", "done", "last")) or {}
-        except Exception as e:
+            reader = getattr(store, "prestudied_marks", None)        # J-STORE's reader (SPEC §2.2)
+            try:                                                     # a seam that fails is its empty state, alone
+                for item, mark in ((reader() or {}) if reader is not None else {}).items():
+                    pre[item] = (mark[0], mark[1]) if isinstance(mark, (list, tuple)) else (mark, None)
+            except Exception as e:
+                pre = {}
+                print(f"Warning: the journey couldn't read what was pre-studied: {e}")
             growth = {}
-            print(f"Warning: the journey couldn't read the growth snapshots: {e}")
-        return StoreFacts(items, works, order, cards, pre, growth, str(epoch or ""))
+            grower = getattr(store, "growth_of", None)               # Kura-GS's reader (#585)
+            try:
+                if grower is not None:
+                    growth = grower(order, kinds=("added", "done", "last")) or {}
+            except Exception as e:
+                growth = {}
+                print(f"Warning: the journey couldn't read the growth snapshots: {e}")
+            try:
+                marks = store.watched_marks()
+            except Exception:
+                marks = library_store.UNREAD        # drawn, never signed as current (`analyzer.signed_render`)
+        return StoreFacts(items, works, order, cards, pre, growth, str(epoch or ""), frozenset(counted), marks)
     except Exception as e:
         print(f"Warning: the journey couldn't read the library store: {e}")
         return None
@@ -972,9 +982,11 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
     from app.path_utils import infer_source_type, report_name
     from app.services import stone_plan
 
-    # The episodes, in the study order: the store's (by id) when there is one, else the run's files by name
+    # The episodes, in the study order: the store's (by id) when there is one, else the run's files by name. The run's
+    # lists name a file only by its name (`report_name`): a name is the episode the run COUNTED of that name, never a
+    # set-aside one (two shows' 第01集, one watched and set aside: J-FIX 3) — its words, *% known* and count ahead
     stats = [s for s in (stats or ()) if isinstance(s, dict) and s.get("File")]
-    shows, show_index, eps, ep_of_name = [], {}, [], {}
+    shows, show_index, eps, ep_of_name, aside = [], {}, [], {}, set()
 
     def show_of(key, title, kind):
         if key not in show_index:
@@ -987,10 +999,13 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
     plan_files = _plan_files(plan)
     plan_pcts = _plan_pcts(plan, plan_files) if plan_files is not None else None
 
-    def add_ep(item_id, name, tier, kind, show, watched, cards, missing, pre, growth, last=None):
+    def add_ep(item_id, name, tier, kind, show, watched, cards, missing, pre, growth, last=None, counted=True):
         coverage = plan_pcts.get(name) if plan_pcts is not None else _pct(last)
         flags = (1 if watched else 0) | (2 if missing else 0) | (4 if cards else 0)
-        ep_of_name.setdefault(name, len(eps))
+        if name not in ep_of_name or (counted and ep_of_name[name] in aside):
+            ep_of_name[name] = len(eps)
+        if not counted:
+            aside.add(len(eps))
         eps.append([item_id, name, None, show, tier, kind, coverage, 0, 0,
                     _stone_state(watched, cards, item_id is not None and item_id in nothing), flags, pre, growth])
 
@@ -1010,7 +1025,7 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
             add_ep(item_id, name, tiers.get(item.get("tier")), kind, show_of(key, _show_name(work, item), kind),
                    item.get("watched"), facts.cards.get(item_id, 0), item.get("availability") == "missing",
                    [_day(pre[0]) or pre[0], pre[1]] if pre else None, growth_row(facts.growth.get(item_id)),
-                   (facts.growth.get(item_id) or {}).get("last"))
+                   (facts.growth.get(item_id) or {}).get("last"), facts.counted is None or item_id in facts.counted)
     named = {e[1] for e in eps}
     for s in stats:
         if s["File"] not in named:
@@ -1018,8 +1033,10 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
             kind = infer_source_type(s["File"])
             add_ep(None, s["File"], None, kind, show_of(f"n{s['File']}", s["File"], kind), False, 0, False, None, None)
     from app.static_html_generator import shown_name
-    for e in eps:
+    for n, e in enumerate(eps):
         e[2] = shown_name(e[1])
+        if plan_pcts is not None and n in aside and ep_of_name[e[1]] != n:
+            e[6] = None                         # the plan's figure is its counted namesake's
 
     # The words, each once, at the episode it is first met in
     by_file = {}
@@ -1044,7 +1061,9 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
             words.append((e, row))
         ep[7] = len(words) - ep[8]
     # The count ahead, one number a word: its uses in its own episode and the next AHEAD - 1
-    ahead = _ahead(plan, [e[1] for e in eps], [e for e, _row in words], word_id, plan_files)         if plan_files is not None else None
+    names = [e[1] if ep_of_name.get(e[1]) == n else None for n, e in enumerate(eps)]    # a set-aside namesake: none
+    ahead = _ahead(plan, names, [e for e, _row in words], word_id, plan_files) if plan_files is not None else None
+    del names
     del plan_files
 
     sources = sources or Sources(language)

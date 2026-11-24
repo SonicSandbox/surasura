@@ -666,7 +666,7 @@
           window.__J_DOOR_HOOK = (rt) => (rt === "swap/queue" ? { ok: true, queued: true, same: true } : null);
           J.pickLine(0); await settle();
           window.__J_DOOR_HOOK = null;
-          ok("⇄ with Same card: the card gets the line and keeps its reviews, never a new card", /keeps its reviews/.test($("#toast").textContent) && !/new card/.test($("#toast").textContent), $("#toast").textContent);
+          ok("⇄ with Same card: the card gets the line, never a new card (no promise the job may fall back from)", /card gets this line/.test($("#toast").textContent) && !/new card|reviews/.test($("#toast").textContent), $("#toast").textContent);
         }
       }
     }

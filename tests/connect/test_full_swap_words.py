@@ -96,7 +96,7 @@ def test_the_journey_page_words_its_swap_toast_by_the_answer():
     import os
     page = open(os.path.join(os.path.dirname(__file__), "..", "..", "templates", "journey", "page.html"),
                 encoding="utf-8").read()
-    assert "a.same" in page and "keeps its reviews" in page and "new card from this line" in page
+    assert "a.same" in page and "card gets this line" in page and "new card from this line" in page
 
 
 @pytest.mark.parametrize("on, said", [(True, True), (False, False)])
@@ -112,3 +112,99 @@ def test_bad_card_says_once_that_a_flag_keeps_the_reviews_only_while_same_card_i
     assert (strings.NEEDS_BAD_CARD_FLAG in line) is said
     for why in ("known", "ignore", "parsing", "line"):
         assert strings.NEEDS_BAD_CARD_FLAG not in qneeds.deleted_said(why, got, same_card=True)
+
+
+# --- review fixes (haiku-lens, FS-2) -------------------------------------------------------------------------------- #
+def _write_settings(values):
+    import json
+    import os
+    from app.path_utils import get_settings_path
+    path = get_settings_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(values, f, ensure_ascii=False)
+
+
+@pytest.mark.parametrize("on_disk, read", [
+    ({"swap_in_place": False}, True),                                   # a first save wrote the old default: unchosen
+    ({}, True),                                                         # never saved
+    ({"swap_in_place": False, "swap_in_place_chosen": True}, False),   # *A new card*, the learner's pick: kept
+    ({"swap_in_place": True}, True),
+])
+def test_the_defaults_flip_reaches_everyone_who_never_picked_and_never_a_pick(monkeypatch, on_disk, read):
+    """Decision 1 (new installs and updates): a first save writes every default, so a file from a release with the
+    default off holds `swap_in_place: false` — read as today's default unless the learner picked it (the marker
+    `swap_in_place_chosen`, written beside the pick), as Kantan-B3's and E-LENGTH's. Today the default is off, so
+    nothing changes until the flip; here the flip is stood in for."""
+    from app import settings_manager
+    monkeypatch.setitem(settings_manager.DEFAULT_SETTINGS, "swap_in_place", True)
+    _write_settings(dict(on_disk, connect_enabled=True))
+    settings = settings_manager.load_settings()
+    assert settings["swap_in_place"] is read and swap.in_place_on(settings) is read
+
+
+@pytest.mark.parametrize("shipped", [True, False])
+def test_a_pick_in_settings_writes_the_marker_and_the_shown_choice_again_writes_nothing(monkeypatch, shipped):
+    from app import settings_manager
+    from app.qt import settings_catalog as catalog
+    from app.services.settings import freeze
+    monkeypatch.setitem(settings_manager.DEFAULT_SETTINGS, "swap_in_place", shipped)
+    row = catalog.ROW["swap_in_place"]
+    _write_settings({"connect_enabled": True})
+    changes, _update = catalog.change(row, freeze(settings_manager.load_settings()), "ja", not shipped)
+    assert changes == {"swap_in_place": not shipped, "swap_in_place_chosen": True}
+    settings_manager.save_keys(changes)
+    assert settings_manager.load_settings()["swap_in_place"] is (not shipped)
+    assert catalog.change(row, freeze(settings_manager.load_settings()), "ja", not shipped)[0] == {}
+
+
+def test_the_marker_is_state_no_row_shows_and_no_signature_reads():
+    from app import analyzer, settings_manager, settings_placement
+    from app.qt import settings_catalog as catalog
+    assert settings_manager.DEFAULT_SETTINGS["swap_in_place_chosen"] is False
+    assert settings_placement.PLACED["swap_in_place_chosen"] == "neither"
+    assert "swap_in_place_chosen" in catalog.NOT_SHOWN
+    base = settings_manager.load_settings()
+    assert analyzer.settings_signature(dict(base, swap_in_place_chosen=True), "ja") == \
+        analyzer.settings_signature(dict(base, swap_in_place_chosen=False), "ja")
+
+
+def test_the_journey_toast_never_promises_the_reviews_the_job_may_still_fall_back_from():
+    """Decisions 5, 6, 12 are decided when the job is made: the toast says the card gets the line, nothing more."""
+    import os
+    page = open(os.path.join(os.path.dirname(__file__), "..", "..", "templates", "journey", "page.html"),
+                encoding="utf-8").read()
+    assert "keeps its reviews" not in page and "card gets this line" in page
+
+
+def test_a_journey_swap_that_made_a_new_card_never_says_you_flagged_it():
+    for why in (None, swap.HAND_EDITED):
+        (entry,) = needs._swap_entries(_record(swap.NEW_CARD, by=swap.BY_JOURNEY, why=why), frozenset())
+        assert "flagged" not in entry.say and "journey" in entry.say
+        assert entry.actions == ("undo_swap", "leave_swap")
+
+
+def test_the_journeys_answer_says_queued_even_when_the_setting_cant_be_read(monkeypatch):
+    """The ask is kept before the words are read: a settings read that fails never turns it into a failure."""
+    from app import settings_manager
+    from app.connect import door_routes
+    monkeypatch.setattr(door_routes, "_ask", lambda body, journey: {"id": 3, "new": True})
+
+    def broken():
+        raise OSError("settings.json is locked")
+    monkeypatch.setattr(settings_manager, "load_settings", broken)
+    assert door_routes.swap_route({"lang": "ja"}, None) == {"queued": True, "id": 3, "already": False, "same": False}
+
+
+def test_a_ledger_with_kind_but_not_kind_why_still_lists_its_swaps(tmp_path):
+    """`ensure`'s ALTERs are one by one: stopped between them, the record still reads (kind_why None)."""
+    book = ledger_mod.Ledger(str(tmp_path / "ledger.sqlite"))
+    try:
+        book.conn.execute(swap._SQL)
+        book.conn.execute("ALTER TABLE swaps ADD COLUMN kind TEXT")
+        book.conn.execute("INSERT INTO swaps (language, word, by, state, kind, at, updated_at) VALUES "
+                          "('ja', '借りる', 'swap', 'made', 'in place', 'x', 'x')")
+        (made,) = swap.status_of(book.conn, "ja")["made"]
+        assert (made["kind"], made["kind_why"], made["by"]) == (swap.IN_PLACE, None, swap.BY_SWAP)
+    finally:
+        book.close()

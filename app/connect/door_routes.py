@@ -52,8 +52,11 @@ def swap_route(body, app):
     from app import settings_manager
     from app.connect import swap
     got = _ask(body, journey=True)
-    return {"queued": True, "id": got["id"], "already": not got["new"],
-            "same": swap.in_place_on(settings_manager.load_settings())}
+    try:                                    # the ask is kept: words read after it never turn it into a failure
+        same = swap.in_place_on(settings_manager.load_settings())
+    except Exception:
+        same = False
+    return {"queued": True, "id": got["id"], "already": not got["new"], "same": same}
 
 
 def card_route(body, app):

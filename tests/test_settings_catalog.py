@@ -276,6 +276,7 @@ def test_each_rows_change_writes_its_own_keys_and_nothing_else(language):
         # with Connect on, `_wanted`)
         riders = {catalog.CHOSEN} if row.id == "known_from_anki" else set()
         riders |= {"junban_off_list"} if row.id in catalog.ASIDE_TICKS else set()     # Kyou-MO: the switch's pin
+        riders |= {catalog.SWAP_CHOSEN} if row.id == "swap_in_place" else set()      # FS-2: *Swap gives*' marker
         assert set(changes) <= set(row.keys) | riders, f"{row.id} wrote {sorted(changes)}"
         assert (update is not None) == (row.keys[0] in catalog.PER_LANGUAGE), row.id
         for key in changes:

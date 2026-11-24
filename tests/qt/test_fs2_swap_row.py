@@ -58,13 +58,14 @@ def test_the_swap_row_shows_only_with_cards_made_for_you_as_swaps_flag_does(qapp
 
 @pytest.mark.parametrize("chosen", [True, False])
 def test_picking_a_choice_writes_swap_in_place_through_the_service_only(qapp, chosen):
-    """*Same card, new sentence* writes True, *A new card* False — the one key, through the settings service."""
+    """*Same card, new sentence* writes True, *A new card* False — its key and the pick's marker (so the default's later
+    flip never overrides a pick), through the settings service."""
     page, store = make_page(dict(ALL_ON, swap_in_place=not chosen), "ja")
     view = page.rows["swap_in_place"]
     choice = view.controls[0]
     assert isinstance(choice, sc.Choice) and choice.values() == [True, False]
     assert choice.toolTip()
-    assert _written(store, choice, chosen) == [{"swap_in_place": chosen}]
+    assert _written(store, choice, chosen) == [{"swap_in_place": chosen, "swap_in_place_chosen": True}]
 
 
 def test_the_rows_changed_dot_follows_the_shipped_default():

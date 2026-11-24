@@ -1148,10 +1148,11 @@ def status_of(conn, language, newest=5):
     try:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'swaps'").fetchone():
             return {"made": [], "waits": []}
-        kinds = "kind" in {r[1] for r in conn.execute("PRAGMA table_info(swaps)")}
+        have = {r[1] for r in conn.execute("PRAGMA table_info(swaps)")}     # each ALTER of `ensure` is its own
+        kinds = ", ".join(c if c in have else "NULL" for c in ("kind", "kind_why"))
         made = [{"id": r[0], "word": r[1], "at": r[2], "kind": r[3] or NEW_CARD, "kind_why": r[4], "by": r[5]}
                 for r in conn.execute(
-            f"SELECT id, word, updated_at, {'kind, kind_why' if kinds else 'NULL, NULL'}, by FROM swaps WHERE language "
+            f"SELECT id, word, updated_at, {kinds}, by FROM swaps WHERE language "
             "= ? AND state = ? ORDER BY id DESC LIMIT ?", (language, MADE, int(newest)))]
         waits = [{"id": r[0], "word": r[1]} for r in conn.execute(
             "SELECT id, word FROM swaps WHERE language = ? AND state = ? ORDER BY id", (language, WAITS))]

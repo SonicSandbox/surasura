@@ -56,6 +56,7 @@ PLACED = {
     "sentence_length_chosen": "neither",     # E-LENGTH: whether *Length* is the learner's pick, never a run
     "loop_ignore_flag": "neither",           # Mado-LT: the loop's Ignore move; what it moves is in the word lists
     "loop_swap_flag": "neither",             # Mado-LT: the loop's Swap move; what it queues is Connect's
+    "swap_in_place_chosen": "neither",       # FS-2: whether *Swap gives* is the learner's pick, never a run
     "swap_in_place": "neither",              # FS-1: how Swap writes a card (in place or a new one), never what runs count
     "connect_video_folders": "neither",      # P2.5: where Connect looks for a moved video, never a run
     "anki_sync_delay_min": "neither",       # the sync rule's minute (E1.1 04 §3): when Anki syncs, never a run

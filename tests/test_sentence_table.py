@@ -776,3 +776,82 @@ def test_at_level_1_generate_writes_the_same_table_whatever_the_hash_seed(langua
         blobs.append(open(path, "rb").read())
     assert blobs[0] == blobs[1]
     assert max(st.open_table(path).places()) >= 0
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_costs_young_pass_reads_only_co_words_with_a_weight_and_gives_the_old_passs_numbers(tmp_path, language):
+    # why: E-FAST 6 — the young pass ran over every co-word of the asked lines (1.69 M at a 400-file Chinese library)
+    # though only one with a weight above 0 can move a line's youngest; read now over those alone. The four answers
+    # must be the old pass's to the bit: no weight, some weights (others 0 or below), every co-word weighed; ja + zh
+    import numpy as np
+    from app import sentence_score as SS
+    lib = _Library(_sentences(language))
+    table = st.open_table(_write(lib.finish(lib.packer(), language), tmp_path))
+    arrays, _files = SS._moment_arrays(table, SS.Moment(), None, str(tmp_path))
+    cols = SS._take(table, sorted(table.rows().values()))
+    assert len(cols["cow"]) > 50, "enough co-words to tell a pass that skips the wrong ones"
+
+    def old_young(moment):
+        # the pass as it was before (E-FAST 5's head), every co-word read
+        row, cow = cols["row"].astype(np.int64), cols["cow"].astype(np.int64)
+        cow_line = np.repeat(np.arange(len(row), dtype=np.int64), cols["ncow"].astype(np.int64))
+        own_c = moment["own"][cow]
+        its_own = own_c == row[cow_line]
+        known = moment["known_at"][cow] < moment["placed"][row][cow_line]
+        lemma = moment["lemma"]
+        learning = ~its_own & known & (own_c >= 0) & (lemma[np.maximum(own_c, 0)] != lemma[row[cow_line]])
+        young = np.zeros(len(row))
+        if learning.any():
+            np.maximum.at(young, cow_line[learning], moment["young"].astype(np.float64)[cow[learning]])
+        return young
+
+    n = len(arrays["young"])
+    mixed = np.where(np.arange(n) % 3 == 0, 0.25 + (np.arange(n) % 7) / 10, np.where(np.arange(n) % 3 == 1, 0.0, -0.5))
+    for weights in (np.zeros(n), mixed, np.full(n, 0.6)):
+        moment = dict(arrays, young=weights)
+        # every co-word known from the start, so a weight can reach a line (with none known, every pass reads 0)
+        moment["known_at"] = np.full(len(arrays["known_at"]), -1, np.int64)
+        total, others, words, young = SS.cost(cols, moment, 14, 25)
+        want = old_young(moment)
+        assert young.tolist() == want.tolist()
+        assert (want > 0).any() == bool(weights.max() > 0), "a weight reaches some line, or none is there to reach"
+        ref = dict(moment, young=np.zeros(n))
+        total0 = SS.cost(cols, ref, 14, 25)[0]
+        fin = np.isfinite(total0)
+        assert np.array_equal(np.isfinite(total), fin)
+        assert np.allclose(total[fin], total0[fin] - SS.rates().young * want[fin], rtol=0, atol=1e-12)
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_readers_blocks_come_from_one_open_of_the_file_and_are_each_rows_own(tmp_path, language, monkeypatch):
+    # why: E-FAST 6 — a pick read its words' blocks one `open` of the table each (307 for one Chinese episode: 12 ms of
+    # a 224 ms pick); `blocks` reads them all through one, in the file's order, and gives what `block` gives row by row
+    # (a row asked twice or with no line: as `block` answers it); the score's `_take` asks it once a pick
+    from app import sentence_score as SS
+    import numpy as np
+    lib = _Library(_sentences(language))
+    path = _write(lib.finish(lib.packer(), language), tmp_path)
+    table = st.open_table(path)
+    rows = sorted(table.head["rows"])
+    assert len(rows) > 10
+    opened = []
+    real_open = open
+
+    def counted(file, *a, **k):
+        if os.path.abspath(str(file)) == os.path.abspath(path):
+            opened.append(file)
+        return real_open(file, *a, **k)
+    monkeypatch.setattr(st, "open", counted, raising=False)
+    asked = list(reversed(rows)) + [rows[0], len(lib.keys) + 5]        # (out of order, one twice, one with no line)
+    got = table.blocks(asked)
+    assert len(opened) == 1, "one open of the file for every block"
+    assert sorted(got) == rows, "every row with lines, once; a row with no line left out"
+    for k in rows:
+        cols, cow, phr = table.block(k)
+        mine, mine_cow, mine_phr = got[k]
+        assert sorted(mine) == sorted(cols) and all(np.array_equal(mine[c], cols[c]) for c in cols)
+        assert np.array_equal(mine_cow, cow) and np.array_equal(mine_phr, phr)
+    opened.clear()
+    cols = SS._take(table, rows)
+    assert len(opened) == 1, "the score's take: one open a pick"
+    assert cols["row"].tolist() == [k for k in rows for _n in range(len(table.block(k)[0]["number"]))]

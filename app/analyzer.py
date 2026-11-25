@@ -4730,8 +4730,7 @@ class ListSentences:
         from app.connect import sentences as connect_sentences
         from app.path_utils import get_data_path
         settings = settings_manager.load_settings()
-        # TODO(E-FAST): Connect's moment by its public name once E-FAST lands (it owns app/connect/sentences.py)
-        _info, seen = connect_sentences._dates(self.language, connect_sentences.ai_voice(settings, self.language))
+        seen = connect_sentences.files_seen(self.language, connect_sentences.ai_voice(settings, self.language))
         _lo, _hi, low, high = sentence_corpus.length_range(settings)
         root = get_data_path(self.language)
         tab = self.table
@@ -6386,6 +6385,11 @@ def main():
     if plan_rules.SENTENCE_TABLE >= 1:
         from app import sentence_score
         sentence_score.numpy_one_thread()   # (pandas brings numpy in: its BLAS held to one thread, as the table)
+    if plan_rules.SENTENCE_TABLE >= 2:
+        # The library's dates the list's sentences weigh (Connect's moment, `ListSentences`), read on a thread of their
+        # own from here — while pandas and the plan load — for the redraw and the Generate alike (E-FAST 6)
+        from app.connect import sentences as connect_sentences
+        connect_sentences.dates_ahead(language, connect_sentences.ai_voice(settings_manager.load_settings(), language))
     import pandas as pd
 
     # F7: only the order moved since the last Generate, and the journey keeper asks for the journey: redrawn from that

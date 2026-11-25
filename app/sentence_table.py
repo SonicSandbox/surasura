@@ -549,10 +549,30 @@ class Table:
         found = self._parts.get(row)
         if found is not None or row not in self._blocks:
             return found
-        off, size, lines, cows, phrs = self._blocks[row]
         with open(self.path, "rb") as f:
-            f.seek(off)
-            data = zlib.decompress(f.read(size))
+            return self._read(f, row)
+
+    def blocks(self, rows):
+        """`block` of each of `rows` -> {row: block} (a row with no line left out), the file opened once for them all
+        and read in its own order: a pick asks one block a word (307 opens of the file for one Chinese episode)."""
+        out, wanted = {}, []
+        for row in rows:
+            found = self._parts.get(row)
+            if found is not None:
+                out[row] = found
+            elif row in self._blocks and row not in out:
+                wanted.append(row)
+        if wanted:
+            with open(self.path, "rb") as f:
+                for row in sorted(set(wanted), key=lambda k: self._blocks[k][0]):
+                    out[row] = self._read(f, row)
+        return out
+
+    def _read(self, f, row):
+        """Row `row`'s block read from the open table file `f` (`block`'s answer)."""
+        off, size, lines, cows, phrs = self._blocks[row]
+        f.seek(off)
+        data = zlib.decompress(f.read(size))
         if len(data) != lines * _BYTES + 4 * (cows + phrs):
             raise ValueError("a block of the wrong size")
         np = _np()

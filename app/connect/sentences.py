@@ -503,7 +503,8 @@ def _from_list(language, kept, listed, here_key, never, young, files, reach, boo
 # --------------------------------------------------------------------------------------------------------------- #
 # The score's path (the sentence choice, release 1: `plan_rules.SENTENCE_TABLE` >= 1 with a table there)
 # --------------------------------------------------------------------------------------------------------------- #
-_DATES = {}                 # (language, ai) -> (the store file's stamp, when read, `_library`'s, the score's files)
+_DATES = {}                 # (language, ai) -> (the store file's stamp, when read, `_library`'s, the score's files,
+                            # the store's own count of what changed then: `_store_state`)
 _AHEAD = {}                 # (language, ai) -> the thread reading them ahead (`dates_ahead`), the last one started
 _AHEAD_LOCK = threading.Lock()
 
@@ -527,9 +528,22 @@ def _store_stamp(language):
         return None
 
 
+def _store_state(language):
+    """The store's own count of what changed (`library_store.read_state`: its id, epoch and `state_version`), or None
+    (can't tell): what the file's stamp moving says only when this moved too — the export's own commit after a move
+    (`spawn_maintain`'s, a second or two into a Generate or redraw) and a checkpoint move the stamp, never this."""
+    try:
+        from app import library_store
+        from app.path_utils import get_data_path
+        return library_store.read_state(language, get_data_path(language))
+    except Exception:
+        return None
+
+
 def _dates(language, ai, wait=True):
     """(`_library`'s answer with the show-only mark, the score's {path: Seen}) for the whole library, read once and
-    kept between picks while the store's file is unchanged, an hour at most (days pass) — one read of the store was
+    kept between picks while the store's file is unchanged — or, when its stamp moved, while the store's own count of
+    what changed holds (`_store_state`: the export's commit after a move, a checkpoint) — an hour at most (days pass) — one read of the store was
     nearly all of a pick's time (SPEC § 5.3); a paired book's hearing asked again at every pick (`_heard_now`). A read
     ahead of them still running (`dates_ahead`) is waited for, DATES_AHEAD_WAIT_S at most: its answer is then kept
     (`wait` False: that read's own call)."""
@@ -542,8 +556,13 @@ def _dates(language, ai, wait=True):
     stamp = _store_stamp(language)          # (before the read: a commit during it is read again next time)
     now = time.monotonic()
     hit = _DATES.get((language, ai))
-    if hit is not None and stamp is not None and hit[0] == stamp and now - hit[1] < DATES_KEPT_S:
-        return _heard_now(hit[2], hit[3], ai)
+    if hit is not None and stamp is not None and now - hit[1] < DATES_KEPT_S:
+        if hit[0] == stamp:
+            return _heard_now(hit[2], hit[3], ai)
+        if hit[4] is not None and _store_state(language) == hit[4]:
+            _DATES[(language, ai)] = (stamp,) + hit[1:]      # only bookkeeping since (the export's commit): kept
+            return _heard_now(hit[2], hit[3], ai)
+    state = _store_state(language) if stamp is not None else None
     from app import sentence_score
     from app.connect import lineup
     info = _library(language, None, ai, scored=True)
@@ -551,7 +570,7 @@ def _dates(language, ai, wait=True):
     if stamp is None or not info:           # (an empty answer — no store, or one busy at its open — is never kept)
         _DATES.pop((language, ai), None)
     else:
-        _DATES[(language, ai)] = (stamp, now, info, seen)
+        _DATES[(language, ai)] = (stamp, now, info, seen, state)
     return _heard_now(info, seen, ai)       # (the same answers as the read's: the next pick's objects from the first)
 
 

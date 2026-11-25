@@ -8,8 +8,9 @@ a reader of those files (the journey page, Junban, Connect, the window's word li
 day the switch flips. So the column lists are read from what level 0 writes, never typed here: a column a later lane
 adds to level 0's writer and not to level 2's turns this red.
 
-On RP-2's real Japanese and Chinese libraries (tests/plan_file_cases.py), each through a full Generate in a child process
-as the dashboard runs it, then a move and the keeper's redraw (`--from-plan`), once at level 0 and once at level 2.
+On RP-2's real Japanese and Chinese libraries (tests/plan_file_cases.py), each through a full Generate in a child
+process as the dashboard runs it, then a move and the keeper's redraw (`--from-plan`), once at level 0 and once at
+level 2.
 """
 import csv
 import json
@@ -27,7 +28,8 @@ STATS = "file_statistics.json"
 
 def _shape(results):
     """{file name: its columns} for every list results/ holds — a CSV's header in its order, file_statistics.json's
-    keys of each file's entry (the set of distinct key lists: every entry is one file's) — what a reader reads by name."""
+    keys of each file's entry (the set of distinct key lists: every entry is one file's) — what a reader reads by
+    name."""
     out = {}
     for name in sorted(os.listdir(results)):
         path = os.path.join(results, name)
@@ -85,6 +87,7 @@ def test_the_level_2_generate_writes_every_column_level_0_writes(shapes):
     language, got = shapes
     level0, level2 = got[0][0], got[2][0]
     assert "priority_learning_list.csv" in level0 and STATS in level0, (language, sorted(level0))
+    assert "Word" in level0["priority_learning_list.csv"] and level0[STATS], (language, level0)   # (never two empties)
     for name, columns in level0.items():
         assert name in level2, (language, name, "level 0 writes it, level 2 doesn't")
         assert level2[name] == columns, (language, name, "level 0:", columns, "level 2:", level2[name])
@@ -95,6 +98,7 @@ def test_the_level_2_redraw_after_a_move_writes_every_column_level_0_writes(shap
     # one reader at level 2) — its columns must be today's too, and the same as its own Generate's
     language, got = shapes
     level0, level2 = got[0][1], got[2][1]
+    assert "Word" in level0.get("priority_learning_list.csv", ()) and level0.get(STATS), (language, level0)
     for name, columns in level0.items():
         assert name in level2, (language, name, "level 0's redraw writes it, level 2's doesn't")
         assert level2[name] == columns, (language, name, "level 0:", columns, "level 2:", level2[name])

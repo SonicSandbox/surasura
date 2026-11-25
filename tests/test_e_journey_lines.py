@@ -69,7 +69,7 @@ for blob in re.findall(r'<script type="application/gzip-base64" id="j-c\d+">(.*?
             row = rows[0]
             numbers = sorted(int(k[8:]) for k in row if k.startswith("Context ") and k[8:].isdecimal())
             have = [row[f"Context {n}"] for n in numbers if row[f"Context {n}"]]
-            out["words"].append([w[0], page, have[:len(page)]])
+            out["words"].append([w[0], page, have])     # (the page and the list read one max_contexts)
         for ln in w[9] or ():
             src = chunk["src"][ln[1]] if len(ln) > 1 and ln[1] is not None else None
             at = ln[2] if len(ln) > 2 else None
@@ -79,7 +79,7 @@ for blob in re.findall(r'<script type="application/gzip-base64" id="j-c\d+">(.*?
                 out["books"] += 1       # the page's own key: no line a card can be cut from
                 continue
             lid = swap.line_id(item, at)
-            got = door_routes._line(steps, language, lid)
+            got = door_routes._line(steps, language, lid, w[0])     # (the body the page sends: the word, the id)
             out["lines"].append([w[0], ln[0], lid, item, None if got is None else [got[0], got[1]]])
 print(json.dumps(out, ensure_ascii=False))
 """
@@ -87,7 +87,7 @@ print(json.dumps(out, ensure_ascii=False))
 
 @pytest.fixture(scope="module", params=["ja", "zh"])
 def page(request, tmp_path_factory):
-    """A level-2 Generate of the language's library with its episodes' videos beside them, and the page's lines pressed."""
+    """A level-2 Generate of the language's library, its episodes' videos beside them; the page's lines pressed."""
     language = request.param
     case = _case(language)
     root = str(tmp_path_factory.mktemp(f"e-journey-lines-{language}"))
@@ -152,3 +152,115 @@ def test_a_books_line_gets_no_id_a_card_can_be_cut_from(page):
     assert got["books"] > 0, f"{language}: RP-2's books gave the page no line"
     assert swap._parse_line_id("p1a2b3c4d") is None
     assert door_routes.LINE_MAX >= len("123456:7200000")
+
+
+# --- two lines that start together (two speakers at once): the id names a start, the word tells them apart ---
+
+class _Steps:
+    """Connect's steps as the press reads them: the item's subtitle (repeated_lines: cues 4 and 5 start at 7.000 s)."""
+
+    def __init__(self, path):
+        self.path = path
+
+    def subtitle(self, language, job):
+        return self.path
+
+
+@pytest.mark.parametrize("word, said", [("でも", "でも まだ半分しか読んでない"), ("窓口", "早く窓口に返却しないと"),
+                                        (None, "早く窓口に返却しないと")])
+def test_two_lines_that_start_together_are_told_apart_by_the_word_pressed(word, said):
+    # why: found by the page's test above — a subtitle where two speakers talk at once has two cues with one start, so
+    # the line id (`<item>:<start ms>`) names both; ⇄ / *Add now* on the second made a card from the first's sentence.
+    # The press is for a word (the door's body, the swap's row): of the cues at that start, the first that holds it.
+    # No word, or none holds it: the first, as before (the clip: both cues are one span of audio)
+    from app.connect import door_routes, swap
+    steps = _Steps(os.path.join(cases.RES, "ja", "repeated_lines.ja.srt"))
+    lid = swap.line_id(6, 7.0)
+    got = swap.line_cue(steps, "ja", lid, word=word)
+    assert got is not None and got[0] == 6 and got[1].text.replace("\n", " ") == said, (word, got)
+    assert swap._resolve_line_id(steps, "ja", lid, word) == (6, got[1].text)
+    if word is not None:
+        assert door_routes._line(steps, "ja", lid, word) == (6, got[1].text)
+
+
+def test_a_word_said_inflected_is_told_apart_by_its_dictionary_form():
+    # why: the page sends the list's word, its dictionary form (読む), and the line says it inflected (読んでない): a
+    # match on the text alone took the first line again — the bug — for every verb and adjective. The analyzer's own
+    # reading of each line (its lemma, as the list counted it) finds the line that says the word
+    from app.connect import swap
+    steps = _Steps(os.path.join(cases.RES, "ja", "repeated_lines.ja.srt"))
+    got = swap.line_cue(steps, "ja", swap.line_id(6, 7.0), word="読む")
+    assert got[1].text.replace("\n", " ") == "でも まだ半分しか読んでない", got
+
+
+def test_a_word_no_line_at_its_start_says_takes_the_first_line_as_before():
+    # why: edge case — a word neither line at that start says, a start one cue alone has, a start no cue has: the
+    # first cue there (today's answer, never "gone"), that one cue, None
+    from app.connect import swap
+    steps = _Steps(os.path.join(cases.RES, "ja", "repeated_lines.ja.srt"))
+    assert swap.line_cue(steps, "ja", swap.line_id(6, 7.0), word="図書館")[1].text == "早く窓口に返却しないと"
+    assert swap.line_cue(steps, "ja", swap.line_id(6, 1.0), word="ない")[1].text == "図書館の鍵を忘れちゃった"
+    assert swap.line_cue(steps, "ja", swap.line_id(6, 99.0), word="でも") is None
+
+
+def _two_at_once(tmp_path, language, lines):
+    """A subtitle of `lines` [(start, end, text)] (SRT times) -> Connect's steps reading it."""
+    path = tmp_path / f"two_at_once.{language}.srt"
+    path.write_text("".join(f"{n}\n{a} --> {b}\n{text}\n\n" for n, (a, b, text) in enumerate(lines, 1)),
+                    encoding="utf-8")
+    return _Steps(str(path))
+
+
+@pytest.mark.parametrize("language, lines, word, said", [
+    ("ja", [("00:00:03,000", "00:00:05,000", "日本に帰りたい"), ("00:00:03,000", "00:00:06,500", "この本、面白いね")],
+     "本", "この本、面白いね"),
+    ("zh", [("00:00:03,000", "00:00:05,000", "我们明天去夜市"), ("00:00:03,000", "00:00:06,500", "天很冷，多穿点")],
+     "天", "天很冷，多穿点")])
+def test_a_word_inside_a_longer_word_of_the_other_line_is_not_that_line(tmp_path, language, lines, word, said):
+    # why: edge case — 本 is written inside 日本, 天 inside 明天: a match on the text took the first line, which never
+    # says the word. The analyzer reads 日本 / 明天 as one word, so the line that says 本 / 天 is the one pressed
+    from app.connect import swap
+    got = swap.line_cue(_two_at_once(tmp_path, language, lines), language, swap.line_id(6, 3.0), word=word)
+    assert got[1].text == said, got
+
+
+def test_a_set_phrase_the_tokenizer_reads_as_parts_is_found_as_the_line_writes_it(tmp_path):
+    # why: edge case — a list row the analyzer joins after its tokenizer (気がする: the tokenizer reads 気 / が / 為る)
+    # is no one token of either line; the line that writes it is the one pressed, not the first at that start
+    from app.connect import swap
+    steps = _two_at_once(tmp_path, "ja", [("00:00:05,000", "00:00:06,000", "気をつけてね"),
+                                          ("00:00:05,000", "00:00:07,500", "なんか変な気がする")])
+    assert swap.line_cue(steps, "ja", swap.line_id(6, 5.0), word="気がする")[1].text == "なんか変な気がする"
+
+
+def test_a_traditional_line_is_read_in_the_learners_script_as_the_list_was(tmp_path):
+    # why: edge case — with the Chinese script set to Simplified the list's words are simplified (天气) while the
+    # subtitle writes them traditional (天氣): each line is read in the learner's script, as the Generate read it
+    from app.connect import swap
+    from tests import cli_helpers as h
+    h.write_settings(target_language="zh", zh_script="s")
+    steps = _two_at_once(tmp_path, "zh", [("00:00:03,000", "00:00:05,000", "我們明天去夜市"),
+                                          ("00:00:03,000", "00:00:06,500", "天氣很冷，多穿點")])
+    assert swap.line_cue(steps, "zh", swap.line_id(6, 3.0), word="天气")[1].text == "天氣很冷，多穿點"
+
+
+def test_the_clip_of_two_lines_that_start_together_holds_both_voices(tmp_path):
+    # why: the page's ▶ asks for a line's clip by its id alone (no word: `clips.cut`), so of two lines that start
+    # together it can't tell which was pressed — the line that ends last is cut: its span holds every voice said then,
+    # never a line cut short (the first ended sooner: the second's audio lost its end)
+    from app.connect import swap
+    steps = _two_at_once(tmp_path, "ja", [("00:00:03,000", "00:00:04,200", "えっ、本当？"),
+                                          ("00:00:03,000", "00:00:06,500", "うん、明日から夏休みだって")])
+    got = swap.line_cue(steps, "ja", swap.line_id(6, 3.0))
+    assert got[1].text == "うん、明日から夏休みだって", got
+
+
+def test_the_line_at_the_ids_own_start_is_taken_before_one_a_few_ms_away(tmp_path):
+    # why: edge case — the id is the pressed line's own start; a line 3 ms later, earlier in the file, was taken by the
+    # ±5 ms window (kept for a subtitle re-timed a little) when it also said the word. The line at the very start wins
+    from app.connect import swap
+    steps = _two_at_once(tmp_path, "ja", [("00:00:09,003", "00:00:10,500", "はい、行きます"),
+                                          ("00:00:09,000", "00:00:11,000", "はい、来ました")])
+    for word in ("はい", None):
+        assert swap.line_cue(steps, "ja", swap.line_id(6, 9.0), word=word)[1].text == "はい、来ました", word
+    assert swap.line_cue(steps, "ja", swap.line_id(6, 9.002), word="はい")[1].text == "はい、行きます"

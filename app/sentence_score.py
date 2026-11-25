@@ -625,15 +625,21 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
     def held(src):
         """What the walk reads of a file, decoded once: its lines' texts and, with young words, each line's youngest
         word that is no row — (texts, weights or None). Its tokens are let go at once: a list's call touches nearly
-        every file, and a file's tokens weigh ~18× its texts (E-REDRAW: +337 MB at 2k)."""
+        every file, and a file's tokens weigh ~18× its texts (E-REDRAW: +337 MB at 2k); with no young word they are
+        not decoded at all (`file_texts`: every list call; E-L2G)."""
         at = files[src][1]
         got = read.get(at)
         if got is None:
             cache = store()
             try:
-                sentences = cache.file_tokens(at) if cache else []
-                got = (tuple(map(_line_text, sentences)),
-                       tuple(_youngest(s, young_of, by_lemma) for s in sentences) if young_of else None)
+                texts_of = None if young_of or not cache else getattr(cache, "file_texts", None)
+                texts = texts_of(at) if texts_of is not None else None
+                if texts is not None:
+                    got = (tuple(text.strip() for text in texts), None)     # (`_line_text`'s, of a JSON string)
+                else:
+                    sentences = cache.file_tokens(at) if cache else []
+                    got = (tuple(map(_line_text, sentences)),
+                           tuple(_youngest(s, young_of, by_lemma) for s in sentences) if young_of else None)
             except Exception:
                 got = ((), None)
             read[at] = got

@@ -158,20 +158,23 @@ def test_while_the_window_is_awake_pythons_lock_comes_back_to_it_at_once_and_at_
 
 
 def test_a_stretch_that_goes_on_hands_the_lock_over_as_at_rest_till_the_window_rests(monkeypatch):
-    """The fine hand-over is a press's (a few ms): a stretch older than `LONG_S` — Settings built in ~135 turns of the
-    loop with no rest between, the start's first seconds — hands over as at rest from its next turn (the start's ten
+    """The fine hand-over is a press's (a few ms): a stretch older than `LONG_S` that runs a page's slices with no rest
+    between (`slice_ran`: Settings, ~135 turns of the loop) hands over as at rest from its next turn (the start's ten
     busy workers spun at 0.25 ms: Settings 21 s instead of 1.3 s). Its rest ends it; the next wake is fine again. A
     save under way keeps its own finer one. The clock is the test's (a stretch is old by the test's word)."""
     import sys
     clock = _Clock()
     monkeypatch.setattr(window_idle, "time", clock)
+    monkeypatch.setattr(window_idle, "_sliced", [None])
     was = sys.getswitchinterval()
     try:
         window_idle.set_switch(0.00025, 0.001)
         sys.setswitchinterval(0.001)
         window_idle.busy()                                         # (woke at 100.000)
+        window_idle.slice_ran()                                    # (Settings' first slice)
         assert sys.getswitchinterval() == pytest.approx(0.00025)
         clock.t = 100.0 + window_idle.LONG_S - 0.001
+        window_idle.slice_ran()
         window_idle.busy()                                         # (a turn of the loop, still young)
         assert sys.getswitchinterval() == pytest.approx(0.00025)
         clock.t = 100.0 + window_idle.LONG_S + 0.001
@@ -185,6 +188,44 @@ def test_a_stretch_that_goes_on_hands_the_lock_over_as_at_rest_till_the_window_r
         assert sys.getswitchinterval() == pytest.approx(0.001)
         clock.t = 200.0
         window_idle.busy()                                         # (woke anew: a press's fine hand-over again)
+        assert sys.getswitchinterval() == pytest.approx(0.00025)
+    finally:
+        window_idle.set_switch(None, None)
+        window_idle.rest()
+        sys.setswitchinterval(was)
+
+
+def test_a_long_stretch_that_runs_no_slices_keeps_the_fine_hand_over_till_it_rests(monkeypatch):
+    """OPEN-GAP (2026-11-25): the start's own first stretch at 20,000 files — the rows' first paint, Goal's dock, the
+    level's pop-up, ~0.9 s with no rest — handed over as at rest from 0.1 s on (0b3e47e3), and each of its events then
+    waited out a busy worker's whole millisecond: the window's input came 0.6–0.7 s late instead of 0.2 s. Only a
+    stretch that runs a page's slices (`slice_ran`) hands over as at rest; one clicked mid-stretch from its next turn,
+    staying so till the stretch rests; slices of an earlier stretch never count. The clock is the test's."""
+    import sys
+    clock = _Clock()
+    monkeypatch.setattr(window_idle, "time", clock)
+    monkeypatch.setattr(window_idle, "_sliced", [None])
+    was = sys.getswitchinterval()
+    try:
+        window_idle.set_switch(0.00025, 0.001)
+        sys.setswitchinterval(0.001)
+        window_idle.busy()                                         # (woke at 100.000: the first frame's stretch)
+        for t in (0.05, window_idle.LONG_S + 0.001, 0.5, 0.9):
+            clock.t = 100.0 + t
+            window_idle.busy()                                     # (its turns, old and older: no slices)
+            assert sys.getswitchinterval() == pytest.approx(0.00025), t
+        window_idle.slice_ran()                                    # (Settings clicked inside it: its first slice)
+        clock.t = 100.95
+        window_idle.busy()
+        assert sys.getswitchinterval() == pytest.approx(0.001)
+        clock.t = 101.0                                            # (built: no more slices, the stretch stays as it
+        window_idle.busy()                                         # is…)
+        assert sys.getswitchinterval() == pytest.approx(0.001)
+        window_idle.rest()                                         # (…till it rests)
+        clock.t = 102.0
+        window_idle.busy()                                         # (a new long stretch: the last one's slices never
+        clock.t = 102.5                                            # count)
+        window_idle.busy()
         assert sys.getswitchinterval() == pytest.approx(0.00025)
     finally:
         window_idle.set_switch(None, None)

@@ -145,6 +145,56 @@ def make_page(data=None, language="ja", found=EVERYTHING, size=(1100, 700), wait
     return page, store
 
 
+def test_each_build_slice_tells_the_windows_idle_and_a_built_or_gone_page_tells_it_nothing_more(qapp, monkeypatch):
+    """OPEN-GAP (2026-11-25): only a stretch that runs a page's slices hands Python's lock over as at rest past
+    `window_idle.LONG_S` (Settings during the start: 21 s at 0.25 ms) — the start's own long stretch keeps the fine one
+    (at 1 ms the 20,000-file open's input waited 0.7 s). So every slice of the build says so, and a page built, or gone
+    mid-build, says nothing more: nothing is left on for later stretches, however the build stops."""
+    from PyQt6 import sip
+    from app.services import window_idle
+    told = []
+    monkeypatch.setattr(window_idle, "slice_ran", lambda: told.append(1))
+    page, _store = make_page()
+    assert len(told) == len(page.slice_ms) > 1
+    n = len(told)
+    assert not wait_until(lambda: len(told) > n, 0.05)   # (built: no slice after it)
+    gone, _store = make_page(wait=False)
+    assert wait_until(lambda: len(told) > n, 5) and not gone.built
+    sip.delete(gone)                                  # (its window closed mid-build)
+    m = len(told)
+    assert not wait_until(lambda: len(told) > m, 0.05)
+    page.close()
+
+
+def test_mounting_settings_tells_the_windows_idle_before_its_imports_and_page_and_a_mounted_one_tells_it_nothing(
+        monkeypatch):
+    """OPEN-GAP 2 (2026-11-25): Settings' mount (its six imports, the page's frame, the rows other packages attach) is
+    the sliced build's first stretch. Told only from the first slice on, that stretch kept the fine hand-over beside the
+    start's busy workers: Settings clicked 1.5 s after the 20,000-file open's first frame built 0.3-2 s later than on
+    3.0-dev, every pair of two bookings. So the mount says so before anything else, and a page already mounted (a later
+    click of the tab) says nothing."""
+    from app.qt import shell
+    from app.services import window_idle
+    told = []
+    monkeypatch.setattr(window_idle, "slice_ran", lambda: told.append("idle"))
+
+    class Built(Exception):
+        pass
+
+    def page(*_a, **_k):
+        told.append("page")
+        raise Built                                   # (the page itself is not this test's: stop at its making)
+    monkeypatch.setattr(sp, "SettingsPage", page)
+    win = SimpleNamespace(settings_page=None, page_widgets={"settings": None}, language="ja",
+                          services=SimpleNamespace(settings=SimpleNamespace(get=lambda: {"target_language": "ja"})))
+    with pytest.raises(Built):
+        shell.ShellWindow.mount_settings(win)
+    assert told == ["idle", "page"]
+    told.clear()
+    win.settings_page = mounted = object()
+    assert shell.ShellWindow.mount_settings(win) is mounted and told == []
+
+
 def open_all_folds(page):
     for section_id, slab in page.slabs.items():
         if not slab.more_row.isHidden() and section_id not in page.folds():

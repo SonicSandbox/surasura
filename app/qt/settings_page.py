@@ -60,6 +60,7 @@ from app.qt import settings_live
 from app.qt import settings_strings as S
 from app.qt.tooltip import AboutMark
 from app.services import settings as settings_service
+from app.services import window_idle
 
 SLICE_MS = 4.0                  # the GUI thread's step (charter §4): what a slice may take
 BUILD_MS = 2.5                  # rows built and shown until then; the section's layout fills the rest
@@ -1057,6 +1058,7 @@ class SettingsPage(QWidget):
     def _slice(self):
         if not _alive(self):
             return
+        window_idle.slice_ran()               # no rest between slices: the lock as at rest past LONG_S (OPEN-GAP)
         t0 = time.perf_counter()
         if self._slice_end is not None:
             self.between_ms.append((t0 - self._slice_end) * 1000)   # the loop's own turn between: layout, paint

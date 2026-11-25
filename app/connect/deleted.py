@@ -313,10 +313,12 @@ def report_rows(language, notes=()):
 
 
 def _int(value):
+    """A note id as a whole number SQLite can hold, else None (a record edited by hand: never a reason to fail)."""
     try:
-        return int(value) if value is not None and not isinstance(value, bool) else None
-    except (TypeError, ValueError):
+        n = int(value) if value is not None and not isinstance(value, bool) else None
+    except (TypeError, ValueError, OverflowError):
         return None
+    return n if n is not None and -2 ** 63 <= n < 2 ** 63 else None
 
 
 def _newer_cards(conn, language, words):

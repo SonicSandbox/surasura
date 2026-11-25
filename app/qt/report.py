@@ -1319,8 +1319,8 @@ class ReportWindow(SecondaryWindow):
             self.say(line)
         elif not n and not self.status.text() and not self._waits():
             self.say(strings.REPORT_EMPTY)
-        elif n and self._unheld == strings.REPORT_EMPTY:           # (the list's own line, gone with its emptiness —
-            self._unheld = ""                                      # ... a held line kept showing until it goes)
+        elif (n or self._waits()) and self._unheld == strings.REPORT_EMPTY:   # (the list's own line, gone with its
+            self._unheld = ""                     # ... emptiness or once something waits — a held line kept until it goes)
             if not self._holds:
                 self._show_status("")
 

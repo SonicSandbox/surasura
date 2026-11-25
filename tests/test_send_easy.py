@@ -313,3 +313,20 @@ def test_the_queue_is_never_written_by_a_report(pc):
     report.save("記録", "")
     send_report.build("ja")
     assert open(swap_queue.path("ja"), "rb").read() == before
+
+
+def test_a_zip_refit_to_fewer_cards_or_swaps_then_built_again_gets_a_new_nonce(pc):
+    # why: a nonce names one zip's content; the receiver keeps the first it got under it
+    a, b = _gone("ja", [deleted.IGNORE, deleted.KNOWN])
+    entry, _ = _ask("ja", 8700, old=CASES["ja"][1])
+    ob = send_report.build("ja")
+    fewer = send_report.refit([f"d:{a}", f"q:{entry['id']}"], ob.nonce)       # one card unticked
+    assert send_report.build("ja").nonce != fewer.nonce
+    ob = send_report.build("ja")
+    fewer = send_report.refit([f"d:{a}", f"d:{b}"], ob.nonce)                  # the swap unticked
+    assert send_report.build("ja").nonce != fewer.nonce
+
+
+def test_a_note_id_no_ledger_could_hold_never_empties_the_cards():
+    assert deleted._int(10 ** 30) is None and deleted._int(float("inf")) is None and deleted._int(True) is None
+    assert deleted._int("1700000000000") == 1_700_000_000_000

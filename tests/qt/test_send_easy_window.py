@@ -110,3 +110,15 @@ def test_card_texts_say_the_sentence_then_the_word_why_and_how():
         (strings.REPORT_CARD_NO_SENTENCE, False),
         (f"{word} · {strings.REPORT_CARD_WHY['known']} · {strings.REPORT_CARD_BY['flag'].format(when='').strip()}",
          True)]
+
+
+def test_opened_again_with_nothing_then_a_swap_says_no_nothing_to_send(main):
+    # why: a reopened window says its last read's line at once (Mado-SO); swaps found by the new read must clear it
+    from tests.qt.test_report_window import _close
+    lang = windows.language_of(main)
+    w = _press(main)
+    assert wait_until(lambda: w.status.text() == strings.REPORT_EMPTY)
+    _close(w)
+    _ask(lang, 9400, old=CASES[lang][1])
+    w = _press(main)
+    assert wait_until(lambda: w.send_button.isEnabled() and w.status.text() != strings.REPORT_EMPTY)

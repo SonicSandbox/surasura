@@ -342,7 +342,8 @@ def for_report(language, sent=None, newest=200):
     sent = dict(sent or {})
     cards = load(language).get("cards")
     red = [(str(c), r) for c, r in (cards.items() if isinstance(cards, dict) else ())
-           if isinstance(r, dict) and r.get("move") == IGNORE and not r.get("undone") and r.get("word")]
+           if isinstance(r, dict) and r.get("move") == IGNORE and not r.get("undone") and r.get("word")
+           and isinstance(r["word"], str)]
     try:
         rows, sentences = deleted.report_rows(language, [r.get("note") for _c, r in red])
     except Exception:
@@ -352,7 +353,7 @@ def for_report(language, sent=None, newest=200):
         rows, sentences = [], {}
     out = []
     for c, r in red:
-        line = swap._report_text(sentences.get(swap._int(r.get("note"))))
+        line = swap._report_text(sentences.get(deleted._int(r.get("note"))))
         out.append((f"r:{c}", IGNORE, {"word": r["word"], "sentence": line, "why": IGNORE, "by": BY_FLAG,
                                        "at": r.get("at")}))
     out += [(f"d:{row['note_id']}", row["why"], {"word": row["word"], "sentence": swap._report_text(row["sentence"]),

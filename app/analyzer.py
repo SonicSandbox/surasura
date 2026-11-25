@@ -8483,9 +8483,9 @@ def main():
     # the store.
     if _run_sig and plan_rules.SENTENCE_TABLE >= 2:
         try:
-            # release 2: this run's journey is today's (`drawn_for`). (It names no young words: the Generate's own
-            # columns read through `ListSentences` from E-REDRAW part 2 on — hand its `young_at` here then.)
-            _write_redraw_marker(_run_sig, _run_sig)
+            # release 2: this run's journey is today's (`drawn_for`), with the young words its list weighed (the
+            # chooser's own stamp: a sync since that moves them owes one redraw, `journey.moved_state`)
+            _write_redraw_marker(_run_sig, _run_sig, young=_chooser.young_at if _chooser is not None else None)
         except OSError as e:                # never fails a finished Generate: with none it is redrawn once
             print(f"Warning: could not mark the journey as today's: {e}")
     _set_run_stamp(RESULTS_DIR, _run_sig)

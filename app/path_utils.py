@@ -483,6 +483,15 @@ def report_name(path):
     return os.path.basename(path or "")
 
 
+def library_path(path, data_dir):
+    """A content file's path from the data folder, "/" between its parts — what names one file in the library store
+    (an item's `rel_path`), the plan's `files`, the lists' Src N and the run's per-file rows (`Source Path`, file
+    statistics' `Path`: E-NAMES), so two shows' 第01集 are two files where `report_name` makes them one. ValueError
+    for a file on another drive than the data folder."""
+    prefix = os.path.join(data_dir, "")
+    return (path[len(prefix):] if path.startswith(prefix) else os.path.relpath(path, data_dir)).replace("\\", "/")
+
+
 def is_content_file(path):
     """True if `path` is a content file the analyzer will read (extension check only)."""
     return str(path).lower().endswith(CONTENT_EXTENSIONS)

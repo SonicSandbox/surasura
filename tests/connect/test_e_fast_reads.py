@@ -11,7 +11,9 @@ nothing they are made of changed. The cut takes the score's best line that fits 
 The table and the token store are the score's in-memory ones (`tests/connect/test_e_connect_score.py`'s World), the
 files real subtitles in the sandbox's data folder; lines as tests/Test Resources/ja|zh write them.
 """
+import json
 import os
+import threading
 
 import pytest
 
@@ -534,3 +536,204 @@ def test_a_data_folder_the_generate_spelled_another_way_still_finds_every_file_a
                           for k, v in got.items()}
     assert sum(1 for got in lines[data_dir].values() if got) >= max(1, len(keys) // 2), "the rows' lines, read here"
     assert lines[data_dir] == lines[generated]
+
+
+# --- the library's dates are read ahead on a thread of their own (SPEC § 6.3 row 16) ------------------------------- #
+
+def _held_dates(monkeypatch, w):
+    """`_library` (the library's dates) held until `go` is set, each read noted by the thread that made it."""
+    go, reading, reads = threading.Event(), threading.Event(), []
+    real = w._library
+
+    def held(*a, **k):
+        reads.append(threading.current_thread().name)
+        reading.set()
+        assert go.wait(20), "never let go"
+        return real(*a, **k)
+    monkeypatch.setattr(sentences, "_library", held)
+    return go, reading, reads
+
+
+def _done(*threads):
+    """Every thread a test started finished before it ends (the reads ahead included): none reads into the next."""
+    for thread in list(threads) + list(sentences._AHEAD.values()):
+        if thread.ident is not None:
+            thread.join(20)
+            assert not thread.is_alive(), thread.name
+
+
+def _a_world(monkeypatch, lang, key, word):
+    w = World(monkeypatch, lang)
+    w.table(key, [(f"ep{n:02d}", [t]) for n, t in enumerate(LINES[lang], 1)], word)
+    for n in (1, 2, 3):
+        w.place(f"ep{n:02d}", n)
+    monkeypatch.setattr(sentences, "_store_stamp", lambda language: ("store", (1, 1), None))
+    return w
+
+
+@pytest.mark.parametrize("lang, key, word", [(c[0], c[1], c[2]) for c in CASES])
+def test_read_ahead_returns_while_the_librarys_dates_are_read_and_the_first_pick_waits_for_that_one_read(
+        monkeypatch, lang, key, word):
+    # why: Connect's `prepare` held its run for the library's dates (0.05 s at 2,000 files, 0.35 s at 20,000) before
+    # the shelf's look and the first job — they are a thread's read now; the pick that comes first waits for it and
+    # opens no store of its own: the same cards, one read
+    w = _a_world(monkeypatch, lang, key, word)
+    go, reading, reads = _held_dates(monkeypatch, w)
+    asked, picked = [], []
+    ahead = threading.Thread(target=lambda: asked.append(sentences.read_ahead(lang)), daemon=True)
+    pick = threading.Thread(daemon=True, target=lambda: picked.append(
+        sentences.choose(lang, [key], dial=sentences.BEST, young={}, top=1)[key]))
+    try:
+        ahead.start()
+        ahead.join(10)
+        assert not ahead.is_alive(), "read_ahead held its asker for the library's dates"
+        assert asked == [True] and reading.wait(10) and len(reads) == 1
+        pick.start()
+        pick.join(0.3)
+        assert pick.is_alive() and len(reads) == 1, "the pick read the store itself while the dates were being read"
+        go.set()
+        pick.join(10)
+    finally:
+        go.set()
+        _done(ahead, pick)
+    assert not pick.is_alive() and picked and picked[0]
+    assert len(reads) == 1, reads
+    sentences._DATES.clear()
+    sentences._AHEAD.clear()
+    assert sentences.choose(lang, [key], dial=sentences.BEST, young={}, top=1)[key] == picked[0], "the same cards"
+
+
+@pytest.mark.parametrize("lang, key, word", [(c[0], c[1], c[2]) for c in CASES])
+def test_a_pick_waits_for_the_dates_read_ahead_only_so_long_and_one_that_failed_is_read_again(monkeypatch, lang, key,
+                                                                                                word):
+    # why: a read ahead stuck on a busy store, or failed, must never stop a pick: it reads the dates itself
+    w = _a_world(monkeypatch, lang, key, word)
+    go, reading, reads = _held_dates(monkeypatch, w)
+    monkeypatch.setattr(sentences, "DATES_AHEAD_WAIT_S", 0.2)
+    try:
+        assert sentences.read_ahead(lang) is True and reading.wait(10)
+        first = sentences._AHEAD[(lang, False)]
+        assert sentences.read_ahead(lang) is True and sentences._AHEAD[(lang, False)] is first, "one at a time"
+        real = w._library
+        monkeypatch.setattr(sentences, "_library", lambda *a, **k: reads.append("pick") or real(*a, **k))
+        assert sentences.choose(lang, [key], dial=sentences.BEST, young={}, top=1)[key]
+        assert reads[1:] == ["pick"], reads
+        assert (lang, False) not in sentences._AHEAD, "a read past the wait is waited for once"
+        assert sentences.choose(lang, [key], dial=sentences.BEST, young={}, top=1)[key] and reads[1:] == ["pick"]
+    finally:
+        go.set()
+        _done(first)
+    sentences._DATES.clear()
+
+    def broken(*a, **k):
+        broke.append(1)
+        raise OSError("the store's file was locked")
+    broke = []
+    monkeypatch.setattr(sentences, "_library", broken)
+    assert sentences.read_ahead(lang) is True
+    _done()
+    assert broke == [1] and (lang, False) not in sentences._DATES
+    monkeypatch.setattr(sentences, "_library", lambda *a, **k: reads.append("again") or w._library(*a, **k))
+    assert sentences.choose(lang, [key], dial=sentences.BEST, young={}, top=1)[key], "the pick read them itself"
+    assert reads[-1:] == ["again"] and (lang, False) in sentences._DATES
+
+
+def test_at_level_zero_and_with_no_table_nothing_is_read_ahead_on_a_thread(monkeypatch):
+    # why: inert — at 0 (or no table for the language) Connect's run starts no thread and reads no dates
+    for level in (0, 1):
+        w = World(monkeypatch, "ja", level=level)
+        if level:
+            monkeypatch.setattr(SS, "_table", lambda language: None)
+        getattr(sentences, "_AHEAD", {}).clear()
+        assert sentences.read_ahead("ja") is False
+        assert not getattr(sentences, "_AHEAD", {}) and w.reads == []
+
+
+# --- the score's read of the library: every file's path as level 0's own join spells it ---------------------------- #
+
+ODD = {"ja": ["HighPriority/作品/第01話.srt", "HighPriority\作品\第02話.srt", "HighPriority//作品/第03話.srt",
+              "Goal/空白 と点. /第 04 話 .srt", "LowPriority/作品/", "C:/外/第06話.srt"],
+       "zh": ["HighPriority/夜市/第01集.srt", "HighPriority\夜市\第02集.srt", "HighPriority//夜市/第03集.srt",
+              "Goal/空格 和点. /第 04 集 .srt", "LowPriority/夜市/", "C:/外/第06集.srt"]}
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_scores_read_of_the_library_keys_every_file_as_level_zeros_own_join_does(language):
+    # why: the score's read builds a file's path by one join of the data folder (os.path.join over 20,000 files was a
+    # fifth of the read); a path with an empty part (a doubled or a trailing slash) or a drive in it takes
+    # os.path.join itself — every key the same string level 0 reads, each file its own item
+    from tests.test_library_store_support import migrated
+    store = migrated(language, shows=2, episodes=3, loose=0, tiers=("now",))
+    with store:
+        ids = [row[0] for row in store.conn.execute("SELECT id FROM items ORDER BY id")]
+        assert len(ids) == len(ODD[language])
+        with store._writing():
+            for item_id, rel in zip(ids, ODD[language]):
+                store.conn.execute("UPDATE items SET rel_path = ? WHERE id = ?", (rel, item_id))
+        scored = {k: v[0] for k, v in sentences._library(language, store, scored=True).items()}
+        today = {k: v[0] for k, v in sentences._library(language, store).items()}
+    assert scored == today and sorted(scored.values()) == sorted(ids)
+
+
+# --- the level-2 list reads the library's dates once, on their own thread (the lead's ruling, 2026-11-24) ---------- #
+
+_DATES_PROBE = r"""
+import json, sys, threading
+from app import analyzer
+from app.connect import sentences as S
+log = []
+real_library, real_ahead, real_call = S._library, S.dates_ahead, analyzer.ListSentences.__call__
+
+
+def library(language, store=None, ai=False, only=None, scored=False):
+    if scored:
+        log.append(["read", threading.current_thread().name])
+    return real_library(language, store, ai, only, scored)
+
+
+def ahead(language, ai):
+    log.append(["ahead", threading.current_thread().name])
+    return real_ahead(language, ai)
+
+
+def call(self, keys, order=None):
+    log.append(["list", threading.current_thread().name])
+    return real_call(self, keys, order)
+
+
+S._library, S.dates_ahead, analyzer.ListSentences.__call__ = library, ahead, call
+sys.argv = ["analyzer.py"] + sys.argv[1:]
+code = analyzer.main()
+print("PROBE " + json.dumps({"code": code, "log": log}))
+"""
+
+
+@pytest.mark.parametrize("language, how", [("ja", "redraw"), ("zh", "redraw"), ("ja", "generate")])
+def test_a_release_2_list_reads_the_librarys_dates_once_on_a_thread_started_before_it_asks(tmp_path, language, how):
+    # why: the level-2 list (`analyzer.ListSentences`) read every file's dates on the main thread at every Generate
+    # and every redraw (0.75 s of 20,000 files, profiled): one read now, started at main()'s start (Connect's
+    # `dates_ahead`), done while the plan and pandas load, the list waiting only for what is left
+    import subprocess
+    import sys
+    from tests import plan_file_cases as cases
+    from tests.test_e_redraw import _env, _generated
+    root = _generated(language, tmp_path)
+    results = os.path.join(root, "results")
+    argv = [f"--language={language}", "--static", "--no-open"]
+    env = _env(root)
+    if how == "redraw":
+        os.remove(os.path.join(results, analyzer.REDRAW_FILE))      # (not today's: the keeper redraws it)
+        argv.append("--from-plan")
+    else:
+        env["SURASURA_FORCE_RUN"] = "1"
+    p = subprocess.run([sys.executable, "-c", _DATES_PROBE] + argv, cwd=cases.REPO, env=env, capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
+    assert p.returncode == 0, p.stdout[-2000:] + p.stderr[-2000:]
+    got = json.loads(next(line for line in p.stdout.splitlines() if line.startswith("PROBE "))[6:])
+    if how == "redraw":
+        assert "Redrew the journey" in p.stdout, p.stdout[-1500:]
+    log = [tuple(entry) for entry in got["log"]]
+    asked = [n for n, (what, _thread) in enumerate(log) if what == "list"]
+    assert asked, "the list asked the one reader"
+    assert log.index(("ahead", "MainThread")) < asked[0], log
+    assert [entry for entry in log if entry[0] == "read"] == [("read", f"surasura-dates-{language}")], log

@@ -198,6 +198,7 @@ def test_the_rows_handed_to_the_journey_are_the_list_as_it_reads_it(tmp_path, la
     rows[3]["Kana"] = None
     rows[4]["Word"] = "NA"                              # (a word spelled like pandas' missing value stays the word)
     rows[5]["Forms"] = True
+    rows[6]["Kana"] = 0.1 + 0.2                         # (a float among a text column's cells: csv writes its repr)
     kept, read = _kept_and_read(tmp_path, rows, keep)
     assert kept == read and len(kept) == len(rows)
     assert all(isinstance(v, str) for row in kept for v in row.values())
@@ -215,8 +216,20 @@ def test_the_rows_handed_to_the_journey_on_empty_and_one_column_lists(tmp_path):
     from app import journey_render
     keep = (journey_render.PRIORITY_COLUMNS, False)
     assert _kept_and_read(tmp_path, [], keep, ["Word", "Reading"]) == ([], [])
+    assert _kept_and_read(tmp_path, [{}, {}], keep) == ([], []), "rows of no columns: empty lines, no rows"
     kept, read = _kept_and_read(tmp_path, [{"Word": ""}, {"Word": None}, {"Word": "猫"}], keep)
     assert kept == read == [{"Word": ""}, {"Word": ""}, {"Word": "猫"}]
+
+
+def test_the_rows_are_kept_for_the_journey_only_when_a_page_is_drawn():
+    """`_page_keep`: without `--static` no page is drawn, so the writer holds no rows; with it, the journey's own
+    columns — the priority list's words, the progressive list's columns with its sentences."""
+    from argparse import Namespace
+    from app import journey_render
+    assert analyzer._page_keep(Namespace(static=False), True) is None
+    assert analyzer._page_keep(Namespace(), False) is None
+    assert analyzer._page_keep(Namespace(static=True), True) == (journey_render.PRIORITY_COLUMNS, False)
+    assert analyzer._page_keep(Namespace(static=True), False) == (journey_render.ROW_COLUMNS, True)
 
 
 def test_the_journey_drawn_with_the_rows_never_reads_the_lists(tmp_path, monkeypatch):
@@ -444,8 +457,8 @@ def test_a_kept_works_song_numbers_reach_the_walk_without_a_set_a_file(tmp_path)
         store.close()
     numbers = set(again[path])
     blanked = [(s[0], []) if no in numbers else s for no, s in enumerate(lines)]     # (the rule before, by a set)
-    out = list(lines)
-    for no in again[path]:
-        if no < len(out):
-            out[no] = (out[no][0], [])
+    out = analyzer.blank_songs(lines, again[path])                      # (the walk's `_sentences_of` calls it)
     assert out == blanked and any(not s[1] for s in out) and any(s[1] for s in out)
+    past = again[path] + [len(lines), len(lines) + 40]                 # (a kept answer for a longer reading)
+    assert analyzer.blank_songs(lines, past) == blanked, "a number past the file's end is no line"
+    assert analyzer.blank_songs(lines, []) is lines and analyzer.blank_songs(lines, None) is lines

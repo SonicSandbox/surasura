@@ -3114,6 +3114,19 @@ def songs_left_out(files):
     return song_lines.left_out(episodes)
 
 
+def blank_songs(sentences, numbers):
+    """A file's sentences with its song lines (`numbers`, sorted: `song_sentences`' answer for it) given no words, in
+    their places — each blanked by its number, no set made and no line tested (G9); a number past the file's end (an
+    answer kept for a longer reading) is no line. No numbers: the sentences as they are."""
+    if not numbers:
+        return sentences
+    sentences = list(sentences)
+    for no in numbers:
+        if no < len(sentences):
+            sentences[no] = (sentences[no][0], [])
+    return sentences
+
+
 def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None):
     """{path: [sentence number, …] (sorted)} of every spoken file's song lines in a run's `found_files` ([(path, label,
     weight, source type)]), each work on its own (§ above) — as kept, so a kept work makes no set a file (G9). With
@@ -6719,13 +6732,7 @@ def main():
         tokenized here (`file_sentences`, the arrival record's reader too) — a song line's with no words
         (`song_sentences`, below). `words`: as `file_sentences`' (the sentence table's kept counts)."""
         sentences = file_sentences(_store, tokenizer, file_path, language, words)
-        out = _songs.get(file_path)
-        if out:
-            sentences = list(sentences)     # (each song line blanked by its number: no set made, no line tested, G9)
-            for no in out:
-                if no < len(sentences):
-                    sentences[no] = (sentences[no][0], [])
-        return sentences
+        return blank_songs(sentences, _songs.get(file_path))
 
     def _floor_count(total_tokens, own_freqs):
         """The word-selection floor (replaces the retired raw min_freq default): a density band's ppm floor as a

@@ -9,7 +9,8 @@ timeout and is killed at it; nothing opens a window (CREATE_NO_WINDOW).
   its default folder (%LOCALAPPDATA%\\Programs\\AnkiMiner). Absent -> None: the mine step is `skipped`, never an error.
 - `version`, `profiles`, `settings_export` — read once a Connect run, again after any failure, every 15 min and
   whenever Anki Miner's program or settings files change (`stamp`; LF-mining row 25, amending E10's "read before
-  every batch, never cached": PROVISIONAL, Michi's technical rule; `verbs._anki_miner_setup`); `check` before every batch, never cached (E9, E10: it updates itself).
+  every batch, never cached": PROVISIONAL, Michi's technical rule; `verbs._anki_miner_setup`) — `version` and
+  `profiles` kept from one run to the next while they hold (`kept_look_ups`, DSA-CONNECT 2); `check` before every batch, never cached (E9, E10: it updates itself).
 - `mine_batch(...)` — one batch, holding Surasura's Anki-write lock (`anki-writer`, E1.4) from start to end: the
   version and `features` read again (or handed in: `known`), the profile chosen (`choose_profile`), the whitelist
   file rewritten (N10, until Z-1), the run file written (`runfile`: from 3.7, one entry a word, its `surface` and
@@ -254,7 +255,73 @@ def stamp(path):
         return None
 
 
-WINDOW_MARKER = "instance.window-"     # Anki Miner's window holds instance.window-<pid>.lock in its home while open
+# DSA-CONNECT 2: Anki Miner's `version` and `profiles` answers kept from one Connect run to the next, beside the run's
+# own set (`verbs._anki_miner_setup`, row 25), so a run's first pick starts Anki Miner once (its `settings-export`)
+# where it started it three times (~1.2 s each). Each answer is a function of what `stamp` watches (3.13's
+# `cli/api/commands.py`: the program; the profiles folder and gui_config.json): kept while the program, its home, the
+# installer's version and the stamp are the same; dropped by Surasura's own writes to Anki Miner (`DROPS`: *Finish its
+# setup*'s `settings-import` and `setup`) and by any failure (`verbs.drop_anki_miner_held`). Never the export: it may
+# hold a key (clips: never kept on disk).
+LOOK_UPS_KEPT = "anki-miner-look-ups.json"
+DROPS = frozenset(("settings-import", "setup"))
+
+
+def _kept_path():
+    from app.path_utils import get_local_data_path
+    return os.path.join(get_local_data_path(), "connect", LOOK_UPS_KEPT)
+
+
+def _kept_key(path, now):
+    """What the kept answers hold for, as JSON reads it back (its tuples lists)."""
+    return json.loads(json.dumps({"program": os.path.normcase(os.path.abspath(path)),
+                                  "home": os.path.normcase(os.path.abspath(home())),
+                                  "installed": installed_version(), "stamp": now}))
+
+
+def kept_look_ups(path, now):
+    """(the `version` answer, the `profiles` list) kept for the Anki Miner at `path` whose files stamp `now`, or None
+    (none kept, another program or home, an update, a file changed, unreadable)."""
+    if now is None or not path:
+        return None
+    try:
+        with open(_kept_path(), encoding="utf-8") as f:
+            kept = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(kept, dict) or kept.get("key") != _kept_key(path, now):
+        return None
+    info, listed = kept.get("version"), kept.get("profiles")
+    return (info, listed) if isinstance(info, dict) and isinstance(listed, list) else None
+
+
+def keep_look_ups(path, now, info, listed):
+    """Keep `info` (a `version` answer) and `listed` (`profiles`), read while the files stamped `now`. Atomically
+    (temp + replace); a failure costs only the next run's look-ups. Never raises."""
+    if now is None or not path:
+        return
+    target = _kept_path()
+    temp = f"{target}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(temp, "w", encoding="utf-8") as f:
+            json.dump({"key": _kept_key(path, now), "version": info, "profiles": listed}, f, ensure_ascii=False)
+        os.replace(temp, target)
+    except (OSError, TypeError, ValueError):
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+
+
+def drop_look_ups():
+    """The kept answers gone: the next run's first pick reads Anki Miner again. Never raises."""
+    try:
+        os.remove(_kept_path())
+    except (OSError, RuntimeError):
+        pass                            # (none kept; a test with no root never kept one)
+
+
+WINDOW_MARKER ="instance.window-"     # Anki Miner's window holds instance.window-<pid>.lock in its home while open
 
 
 def window_open():
@@ -501,7 +568,10 @@ def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None, bind=True, look_up=None
     flags = CREATE_NO_WINDOW if sys.platform == "win32" else 0
     if look_up is None:
         look_up = bool(args) and args[0] in LOOK_UPS    # row 56: read before the program starts, never after
+    dropping = bool(args) and args[0] in DROPS
     with _CALLS.one(path, args[0] if args else None):
+        if dropping:
+            drop_look_ups()             # DSA-CONNECT 2: Anki Miner's settings rewritten: never answered from before
         try:
             proc = _popen(_command(path) + ["--api", *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                           stderr=subprocess.DEVNULL, creationflags=flags, env=env, below=below)
@@ -520,6 +590,9 @@ def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None, bind=True, look_up=None
             _stop(proc)
             raise AnkiMinerError("timeout", f"Anki Miner didn't answer within {int(timeout)} s, so it was stopped.") \
                 from None
+        finally:
+            if dropping:
+                drop_look_ups()         # (again once it ended: a look-up beside it keeps nothing of before)
         return _verdict(proc.returncode, stdout)
 
 
@@ -547,6 +620,8 @@ def start(path, args, out, bind=True):
     AnkiMinerError `absent` / `quarantined` / `crashed` as `api` does. It waits for a settings write as `api`'s calls
     do, and a write meets it with `busy` while it runs (`_Calls`, CONNECT-RACE)."""
     flags = CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    if args and args[0] in DROPS:
+        drop_look_ups()                 # DSA-CONNECT 2: its setup (the speech model) may rewrite its settings
     with _CALLS.starting(path, args[0] if args else None) as under_way:
         try:
             with open(out, "wb") as f:

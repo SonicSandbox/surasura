@@ -19,7 +19,7 @@ import sys
 
 import pytest
 
-from tests.flake_lints import _parse, _text
+from tests.flake_lints import _parse, _text, as_read
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FORBIDDEN = ("tkinter", "_tkinter", "PyQt6", "PySide6", "PyQt5", "PySide2", "pandas")
@@ -202,8 +202,10 @@ def test_nothing_outside_the_window_reaches_qt_or_the_window_but_the_entrys_one_
         module = _module_of(path)
         rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
         source = _text(ROOT, rel)
-        if module != "app_entry" and "PyQt6" not in source and not _QT_WORD.search(source):
-            continue                # (each way in spells PyQt6 or a word starting `qt`: parsed only where one may be)
+        seen = as_read(source)      # (a name by pieces or escapes reaches it only through a loader's call)
+        if module != "app_entry" and not any(w in seen for w in ("PyQt6", "import_module", "__import__")) \
+                and not _QT_WORD.search(seen):
+            continue                # (no way in: parsed only where one may be)
         tree = _parse(ROOT, rel)    # (once a run, shared with the other guards)
         if module == "app_entry":
             door = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_qt_window"]

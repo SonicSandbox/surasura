@@ -24,7 +24,9 @@ BASE_NAMES = ("LOCALAPPDATA", "APPDATA", "XDG_DATA_HOME")
 def redirect():
     """Point %LOCALAPPDATA%, %APPDATA% and XDG_DATA_HOME at a new folder in TEMP (removed when this process exits);
     PYTHONUSERBASE keeps naming this user's packages (Python looks for them under %APPDATA%), for the children too."""
-    os.environ.setdefault("PYTHONUSERBASE", real_user_base())
+    import site
+    keep_user_site(os.environ)                    # (a lane's own redirected APPDATA: the real profile's base)
+    os.environ.setdefault("PYTHONUSERBASE", site.getuserbase())
     forget_stale()
     bases = tempfile.mkdtemp(prefix=ROOTS_PREFIX)
     atexit.register(shutil.rmtree, bases, True)   # before any test's exit hook, so it runs after them
@@ -78,7 +80,28 @@ def real_user_base():
     if sys.platform != "win32":
         import site
         return site.getuserbase()
-    return os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "Python")
+    return os.path.join(_roaming_folder() or os.path.join(os.path.expanduser("~"), "AppData", "Roaming"), "Python")
+
+
+def _roaming_folder():
+    """Windows' own roaming folder (FOLDERID_RoamingAppData: a relocated one too, as on a managed PC), whatever
+    %APPDATA% says now; None if it can't be asked."""
+    try:
+        import ctypes
+
+        class _Guid(ctypes.Structure):
+            _fields_ = [("a", ctypes.c_uint32), ("b", ctypes.c_uint16), ("c", ctypes.c_uint16),
+                        ("d", ctypes.c_ubyte * 8)]
+        roaming = _Guid(0x3EB685DB, 0x65F9, 0x4CF6, (ctypes.c_ubyte * 8)(0xA0, 0x3A, 0xE3, 0xEF, 0x65, 0x72, 0x9F, 0x3D))
+        path = ctypes.c_wchar_p()
+        if ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(roaming), 0, None, ctypes.byref(path)) != 0:
+            return None
+        try:
+            return path.value
+        finally:
+            ctypes.windll.ole32.CoTaskMemFree(path)
+    except Exception:
+        return None
 
 
 def keep_user_site(environ):

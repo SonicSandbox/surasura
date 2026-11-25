@@ -379,9 +379,11 @@ def test_a_warm_up_that_fails_still_says_it_has_run(monkeypatch):
     from app import token_index
     monkeypatch.setattr(token_index, "prepare_preview", lambda language, folder: 1 / 0)
     chores, _r, _p = _make()
-    chores._prepare_preview()
-    assert chores.warmed.is_set()
-    chores.close()
+    try:
+        chores._prepare_preview()
+        assert chores.warmed.is_set()
+    finally:
+        chores.close()
 
 
 def test_hatos_daily_update_starts_once_on_its_own_thread_and_ends_at_the_quit(monkeypatch, timers_on):

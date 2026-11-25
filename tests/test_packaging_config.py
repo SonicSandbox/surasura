@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 import package_app
+from tests.flake_lints import as_read
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPEC = os.path.join(PROJECT, "packaging", "Surasura.spec")
@@ -158,7 +159,8 @@ def _loads_by_name():
             if file.endswith(".py"):
                 path = os.path.join(root, file)
                 source = _source(path)
-                if "import_module" not in source and "__import__" not in source:
+                seen = as_read(source)
+                if "import_module" not in seen and "__import__" not in seen:
                     continue                    # (no loader named, none aliased: parsed only where a load may be)
                 tree = ast.parse(source)
                 Loads(os.path.relpath(path, PROJECT).replace(os.sep, "/"), tree).visit(tree)

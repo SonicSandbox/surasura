@@ -24,6 +24,7 @@ import datetime
 import gc
 import os
 import re
+import unicodedata
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -69,6 +70,12 @@ def _text(root, path):
         with open(os.path.join(root, path), encoding="utf-8") as f:
             _TEXT[key] = f.read()
     return _TEXT[key]
+
+
+def as_read(text):
+    """The text for a prefilter, as Python reads its names: it NFKC-normalises identifiers (`ｔｓｕｂａｓａ` is
+    `tsubasa`), so a file that isn't plain ASCII is searched in both forms."""
+    return text if text.isascii() else text + "\n" + unicodedata.normalize("NFKC", text)
 
 
 def _parse(root, path):

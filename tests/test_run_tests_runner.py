@@ -53,14 +53,18 @@ def _planted_user_site(tmp_path, monkeypatch):
     """A profile of the test's own (~ = it) whose user base holds one package: this user's `pip install --user`."""
     import sysconfig
     from tests import user_bases
-    monkeypatch.setenv("USERPROFILE", str(tmp_path / "profile"))
+    roaming = os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+    assert os.path.normcase(user_bases._roaming_folder() or roaming) == os.path.normcase(roaming), \
+        "Windows' own roaming folder, asked (this PC's is not relocated)"
+    monkeypatch.setattr(user_bases, "_roaming_folder", lambda: str(tmp_path / "profile" / "AppData" / "Roaming"))
     real = user_bases.real_user_base()
     assert real == str(tmp_path / "profile" / "AppData" / "Roaming" / "Python")
     site_dir = sysconfig.get_path("purelib", f"{os.name}_user", vars={"userbase": real})
     os.makedirs(site_dir)
     with open(os.path.join(site_dir, "surasura_user_site_probe.py"), "w", encoding="utf-8") as f:
         f.write("HERE = 1\n")
-    monkeypatch.delenv("PYTHONUSERBASE", raising=False)
+    monkeypatch.setenv("PYTHONUSERBASE", "")             # (set first: what main() writes is put back after)
+    monkeypatch.delenv("PYTHONUSERBASE")
     monkeypatch.setenv("APPDATA", str(tmp_path / "throwaway" / "Roaming"))      # the lane's, as with-lock.sh asks
     return real
 
@@ -84,7 +88,7 @@ def test_a_user_site_package_stays_importable_in_a_child_when_appdata_names_a_th
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Python finds a user's packages under %APPDATA% on Windows only")
-def test_every_child_run_gets_the_real_user_base_from_the_runner(tmp_path, monkeypatch):
+def test_the_runners_child_run_gets_the_real_user_base(tmp_path, monkeypatch):
     real = _planted_user_site(tmp_path, monkeypatch)
     seen = {}
     monkeypatch.setattr(run_tests.subprocess, "run",

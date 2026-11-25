@@ -308,6 +308,7 @@ def test_the_probes_wait_on_the_warm_up_is_bounded_and_off_unless_asked(qapp, wi
         probe.result["first_frame_wall"] = time.perf_counter()
         try:
             probe._finish()
+            assert path.exists() is (bound is None), "bounded: it waits (its finish is not at once); off: at once"
             assert wait_until(path.exists, 10)
         finally:
             _unquit(qapp)

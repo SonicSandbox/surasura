@@ -258,3 +258,42 @@ def test_chinese_tokens_are_cut_by_the_chinese_tokenizer(zh_resources_dir):
 
 def test_no_cues_no_tokens():
     assert cues.tokens([], "ja") == []
+
+
+# --- the squeezed text a line's times are found in (J-RENDER: the fast path, its answers the rule's) ---------------- #
+
+def _squeezed_by_the_rule(text):
+    """The rule as it was written before the fast path: every character looked at, whitespace and Cf left out."""
+    import unicodedata
+    return "".join(ch for ch in text if not ch.isspace() and unicodedata.category(ch) != "Cf")
+
+
+def test_squeezed_leaves_out_exactly_the_rules_characters_over_every_code_point():
+    # Why: the fast path removes spaces with sre's \s and trusts isprintable to say no Cf is left — both are other
+    # tests than the rule's isspace / category. Every code point, alone and between two words, must come out as the
+    # rule says, or a line's ▶ times would move.
+    chars = [chr(c) for c in range(0x110000) if not 0xD800 <= c <= 0xDFFF]
+    assert [cues._squeezed(ch) for ch in chars] == [_squeezed_by_the_rule(ch) for ch in chars]
+    joined = "".join(f"字{ch}" for ch in chars[::7]) + "。"
+    assert cues._squeezed(joined) == _squeezed_by_the_rule(joined)
+
+
+@pytest.mark.parametrize("text", [
+    "", " ", "　", "そうか　うん｡", "はい​！‎ と言った", "﻿大丈夫｡", "a\tb\r\nc\x00d\x7f",
+    "夜市 好吃 嗎？", "標籤\U000e0001\U000e0020了", "うっ…­うわああっ！", "\U00020000𠮟る ‍",
+])
+def test_squeezed_mixed_scripts_marks_and_line_ends_as_the_rule(text):
+    assert cues._squeezed(text) == _squeezed_by_the_rule(text)
+
+
+def test_squeezed_real_subtitles_and_their_times_unchanged(ja_resources_dir, zh_resources_dir):
+    # Why: the real files (a BOM, CRLF, an .ass's forced breaks, Chinese) squeeze as the rule does, and a sentence's
+    # times are found in that text as before.
+    for path, language in ((os.path.join(ja_resources_dir, "library_episode.ass"), "ja"), (SAMPLE_SRT, "ja"),
+                           (os.path.join(zh_resources_dir, "night_market.srt"), "zh")):
+        text = cues.read_text(path, language)
+        assert cues._squeezed(text) == _squeezed_by_the_rule(text)
+        line = cues.timeline(path, language)
+        said = next(cue.text for cue in cues.read(path, language) if cue.counted)
+        assert line.line(said) is not None
+        assert line._squeezed == _squeezed_by_the_rule(line._squeezed)

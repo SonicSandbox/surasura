@@ -4971,7 +4971,8 @@ def wire_idle():
     """The window's idle for its process's background threads (`services.window_idle`): woken → busy, back to wait →
     idle — the event dispatcher's own signals, wired once a process (the writer, the reader and the numbers start a
     step only while the window rests, so a press's stretch never takes turns at Python's lock with them), and while it
-    is awake the lock comes back to it at once (`AWAKE_SWITCH_INTERVAL_S`)."""
+    is awake the lock comes back to it at once (`AWAKE_SWITCH_INTERVAL_S`) — but for a stretch that has run a page's
+    build slices (`window_idle.slice_ran`) and outlasted `window_idle.LONG_S`: that one hands it over as at rest."""
     from PyQt6.QtCore import QAbstractEventDispatcher
     d = QAbstractEventDispatcher.instance()
     if d is None or any(x is d for x in _IDLE_WIRED):

@@ -231,6 +231,14 @@ def test_a_long_stretch_with_no_sliced_build_keeps_the_fine_hand_over_till_it_re
         clock.t = 102.6
         window_idle.busy()
         assert sys.getswitchinterval() == pytest.approx(0.001)
+        window_idle.sliced(True)                                   # (two builds at once — a second window's
+        window_idle.sliced(False)                                  # Settings: one ending leaves the other's)
+        window_idle.rest()
+        clock.t = 103.0
+        window_idle.busy()
+        clock.t = 103.5
+        window_idle.busy()
+        assert sys.getswitchinterval() == pytest.approx(0.001)
     finally:
         window_idle._sliced[0] = 0
         window_idle.set_switch(None, None)

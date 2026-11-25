@@ -153,20 +153,26 @@ def test_the_build_in_slices_marks_the_windows_idle_till_built_and_a_page_gone_m
     over as at rest for good), and the slice still due after it never ends it twice."""
     from PyQt6 import sip
     from app.services import window_idle
-    before = window_idle._sliced[0]
-    page, _store = make_page(wait=False)
-    assert window_idle._sliced[0] == before + 1
-    assert wait_until(lambda: page.built, 20)
-    assert window_idle._sliced[0] == before
-    gone, _store = make_page(wait=False)
-    assert window_idle._sliced[0] == before + 1 and not gone.built
-    slicing = gone._slicing
-    sip.delete(gone)                                  # (its window closed mid-build)
-    assert window_idle._sliced[0] == before
-    slicing.end()                                     # (the slice still due: a second end is nothing)
-    QApplication.processEvents()
-    assert window_idle._sliced[0] == before
-    page.close()
+    window_idle.sliced(True)                          # (another build under way: a second end would show)
+    try:
+        before = window_idle._sliced[0]
+        page, _store = make_page(wait=False)
+        assert window_idle._sliced[0] == before + 1
+        assert wait_until(lambda: page.built, 20)
+        assert window_idle._sliced[0] == before
+        page._slicing.end()                           # (once built, an end again is nothing)
+        assert window_idle._sliced[0] == before
+        gone, _store = make_page(wait=False)
+        assert window_idle._sliced[0] == before + 1 and not gone.built
+        slicing = gone._slicing
+        sip.delete(gone)                              # (its window closed mid-build)
+        assert window_idle._sliced[0] == before
+        slicing.end()                                 # (the slice still due: a second end is nothing)
+        QApplication.processEvents()
+        assert window_idle._sliced[0] == before
+        page.close()
+    finally:
+        window_idle.sliced(False)
 
 
 def open_all_folds(page):

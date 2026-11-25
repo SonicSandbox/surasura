@@ -1,5 +1,5 @@
 """Journey v3's page settings (J-SET; SPEC §1.4, the settings table J-SET-TABLE.md, Sonic's answers 2026-11-22):
-`app/services/journey_settings.py`, the Settings rows it brings (`settings_catalog.use_v3`) and the door's
+`app/services/journey_settings.py`, the Settings rows it brings (`settings_catalog._journey_rows`) and the door's
 `settings/set`.
 
 What a wrong answer would cost: a learner's look or sentences changed by the update with no press of theirs (a value
@@ -44,17 +44,6 @@ def _install(settings):
 def _bytes(path):
     with open(path, "rb") as f:
         return f.read()
-
-
-@pytest.fixture
-def v3():
-    """Settings as the cut-over shows them, put back after (the import-time variant is the one before it)."""
-    on, was = J.ON, catalog._V3        # put back as they were: since the cut-over (J-CUT) the import-time rows are v3's
-    J.ON = True
-    catalog.use_v3(True)
-    yield
-    J.ON = on
-    catalog.use_v3(was)
 
 
 @pytest.fixture
@@ -120,7 +109,7 @@ def test_sentences_per_word_reads_its_number_and_0_is_all(saved, reads):
     assert J.page_value({"logic": {"context": {"max_contexts": saved}}}, "logic.context.max_contexts") == reads
 
 
-def test_an_old_japanese_learners_file_reads_as_the_page_reads_it_and_is_never_written(old_ja, v3):
+def test_an_old_japanese_learners_file_reads_as_the_page_reads_it_and_is_never_written(old_ja):
     """Zen Mode, File name, 7 sentences, the retired rows' values: read, never rewritten (settings criteria 11) —
     neither by the page's read nor by Settings' rows."""
     path = _install(old_ja)
@@ -139,7 +128,7 @@ def test_an_old_japanese_learners_file_reads_as_the_page_reads_it_and_is_never_w
     assert settings["logic"]["inline_completed_files"] is True and settings["logic"]["hide_audio_button"] is True
 
 
-def test_an_old_chinese_learners_midnight_and_hidden_read_as_night_and_icon(old_zh, v3):
+def test_an_old_chinese_learners_midnight_and_hidden_read_as_night_and_icon(old_zh):
     _install(old_zh)
     settings = settings_manager.load_settings()
     assert J.page_value(settings, "theme") == "night"
@@ -197,7 +186,7 @@ def test_a_hand_edited_value_of_the_wrong_kind_reads_as_the_default_and_never_br
 
 
 # --- Settings under journey v3 ----------------------------------------------------------------------------------- #
-def test_under_v3_journey_sits_under_app_before_apps_own_section_and_the_old_rows_are_gone(v3):
+def test_under_v3_journey_sits_under_app_before_apps_own_section_and_the_old_rows_are_gone():
     """Q10 (ruled): App › Journey, the one section, before App's own (its links stay the page's last block); the old
     page's rows Sonic removed (66 c) and Zen (66 a), target days (66 b) leave Settings."""
     assert dict(catalog.HEADS)["app"] == ("connect", "reading", "app")
@@ -214,53 +203,25 @@ def test_under_v3_journey_sits_under_app_before_apps_own_section_and_the_old_row
     # Sentences per word: the same key, still in Cards › Sentences beside the other sentence rules (Q8)
     assert catalog.ROW["sentences_per_word"].section == "sentences"
     assert catalog.ROW["sentences_per_word"].keys == ("logic.context.max_contexts",)
-    for key in ("logic.inline_completed_files", "logic.hide_audio_button", "zen_limit", "show_words_per_day"):
+    for key in ("logic.inline_completed_files", "logic.hide_audio_button", "show_words_per_day"):
         assert "YouTube preview" in catalog.NOT_SHOWN[key] or "old page" in catalog.NOT_SHOWN[key], key
 
 
-def test_before_the_cut_over_settings_is_as_it_was(monkeypatch):
-    """Before J-CUT (since the cut, SURASURA_DOOR=0): the rows, heads and the theme's five choices exactly as before."""
-    monkeypatch.setenv("SURASURA_DOOR", "0")
-    was = catalog._V3                                  # the import-time rows: the cut's, put back after
-    catalog.use_v3(False)
-    try:
-        _before_the_cut_over()
-    finally:
-        catalog.use_v3(was)
+def test_zen_is_gone_from_settings_whole_and_a_saved_zen_look_shows_as_night():
+    """J-RETIRE (Sonic 2026-11-23): Zen is no look any more — no row offers it, its size (`zen_limit`) has no row, no
+    default and no placing, and Settings is the page's only (no switch brings the old rows back); a saved *Zen Mode*
+    lights Night, the page's default, and is read, never written."""
+    from app import settings_manager, settings_placement
+    assert not [row.id for row in catalog.ROWS if "Zen Mode" in (row.options or ())]
+    assert "zen_limit" not in catalog.ROW and "zen_limit" not in catalog.NOT_SHOWN
+    assert "zen_limit" not in settings_manager.DEFAULT_SETTINGS and "zen_limit" not in settings_placement.PLACED
+    assert not hasattr(catalog, "use_v3") and not hasattr(J, "v3") and not hasattr(J, "ON")
+    assert J.page_value({"theme": "Zen Mode"}, "theme") == J.page_value({}, "theme") == "night"
+    saved = {"theme": "Zen Mode"}
+    assert catalog.value(catalog.ROW["journey_theme"], saved, "ja") == J.NIGHT and saved == {"theme": "Zen Mode"}
 
 
-def _before_the_cut_over():
-    assert not J.v3()
-    assert dict(catalog.HEADS)["library"] == ("content", "arrivals", "parsing", "reading", "export")
-    assert catalog.ROW["theme"].options == ("Default (Dark)", "Dark Flow", "Midnight (Vibrant)", "Modern Light",
-                                            "Zen Mode")
-    assert catalog.ROW["max_contexts"].bounds == (1, 10)
-    assert not {"journey_pitch", "sentences_per_word"} & set(catalog.ROW)
-    assert catalog.value(catalog.ROW["theme"], {"theme": "Zen Mode"}, "ja") == "Zen Mode"
-
-
-def test_the_cut_overs_switch_is_the_doors(monkeypatch):
-    """One switch: J-CUT turns the door on (`journey_door.ON`), and these rows with it."""
-    door = types.ModuleType("app.services.journey_door")
-    door.ON = False
-    monkeypatch.setitem(sys.modules, "app.services.journey_door", door)
-    assert not J.v3()
-    door.ON = True
-    assert J.v3()
-
-
-def test_the_doors_run_switch_turns_these_rows_on_with_the_page(monkeypatch):
-    """SURASURA_DOOR=1 opens the v3 page for a run (the door's `enabled()`): its Settings are v3 with it, never the
-    old rows beside the new page."""
-    from app.services import journey_door
-    monkeypatch.setattr(journey_door, "ON", False)
-    monkeypatch.delenv(journey_door.ENV, raising=False)
-    assert not J.v3()
-    monkeypatch.setenv(journey_door.ENV, "1")
-    assert J.v3()
-
-
-def test_under_v3_every_setting_is_still_in_exactly_one_row_or_not_shown(v3):
+def test_under_v3_every_setting_is_still_in_exactly_one_row_or_not_shown():
     from tests import test_settings_catalog as T
     T.test_every_installed_placed_setting_is_in_exactly_one_row_or_not_shown()
     T.test_every_row_key_and_every_not_shown_key_is_a_placed_setting()
@@ -283,7 +244,7 @@ ROW_PRESS = [   # (row, the press, what it writes) — one key each, the stored 
 
 
 @pytest.mark.parametrize("row_id, press, writes", ROW_PRESS)
-def test_each_rows_press_writes_its_own_key_alone(row_id, press, writes, v3):
+def test_each_rows_press_writes_its_own_key_alone(row_id, press, writes):
     settings = settings_manager.load_settings()
     row = catalog.ROW[row_id]
     changes, update = catalog.change(row, settings, "ja", press)
@@ -291,7 +252,7 @@ def test_each_rows_press_writes_its_own_key_alone(row_id, press, writes, v3):
 
 
 @pytest.mark.parametrize("row_id", sorted({r for r, _p, _w in ROW_PRESS}))
-def test_a_press_on_what_a_row_already_shows_writes_nothing(row_id, old_ja, v3):
+def test_a_press_on_what_a_row_already_shows_writes_nothing(row_id, old_ja):
     """An old *Zen Mode* reads as Night: a press on Night writes nothing (no value changed: criteria 11)."""
     _install(old_ja)
     settings = settings_manager.load_settings()
@@ -299,7 +260,7 @@ def test_a_press_on_what_a_row_already_shows_writes_nothing(row_id, old_ja, v3):
     assert catalog.change(row, settings, "ja", catalog.control_value(row, settings, "ja")) == ({}, None)
 
 
-def test_a_choice_not_offered_is_refused_by_the_row(v3):
+def test_a_choice_not_offered_is_refused_by_the_row():
     settings = settings_manager.load_settings()
     with pytest.raises(ValueError):
         catalog.change(catalog.ROW["journey_theme"], settings, "ja", "Zen Mode")
@@ -307,7 +268,7 @@ def test_a_choice_not_offered_is_refused_by_the_row(v3):
         catalog.change(catalog.ROW["sentences_per_word"], settings, "ja", 11)
 
 
-def test_reset_journey_puts_every_row_back_to_its_default(old_ja, v3):
+def test_reset_journey_puts_every_row_back_to_its_default(old_ja):
     """Rule 12: Reset (Journey) — every value row of the section that isn't at its default goes back, one write; the
     page's Undo takes that write back (`SettingsPage.reset_section`, tests/qt)."""
     old_ja.update(journey_pitch="hidden", journey_meanings="yours", journey_word_size="l", journey_sentence_size="s",

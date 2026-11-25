@@ -7,21 +7,14 @@ The file name stays the report's key (`#file=`, the marks, Completed): only what
 JS engine here, so they are string contracts (test_modality_badge.py's convention); the name itself is the generator's
 (`shown_name`), tested as data.
 """
-import json
 import os
-import re
 from unittest.mock import patch
 
-import pandas as pd
 import pytest
 
 from app import static_html_generator as gen
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
-pytestmark = pytest.mark.usefixtures("journey_pre_cut")
 
 
 def _template(name):
@@ -61,58 +54,37 @@ def test_fresh_u_a_name_with_nothing_to_read_falls_back_to_the_file_name_and_nev
     assert gen.shown_name(filename) == (filename or "")
 
 
-def _render(tmp_path, filenames):
-    results = tmp_path / "results"
-    results.mkdir()
-    pd.DataFrame([{"Word": "冒険", "Reading": "ボウケン", "Tier": "global50k:1", "Score": 30, "Occurrences": 4,
-                   "Count (High)": 1, "Count (Low)": 1, "Count (Goal)": 2, "Context 1": "冒険に出かけた。"}]
-                 ).to_csv(results / "priority_learning_list.csv", index=False, encoding="utf-8-sig")
-    pd.DataFrame([{"Sequence": i, "Source File": name, "Word": f"単語{i}", "Reading": "タンゴ", "Tier": "global50k:1",
-                   "Score": 10, "Occurrences (Global)": 2, "Occurrences (File)": 2, "Count (High)": 0,
-                   "Count (Low)": 0, "Count (Goal)": 2, "Context 1": "冒険に出かけた。"}
-                  for i, name in enumerate(filenames, 1)]
-                 ).to_csv(results / "progressive_learning_list.csv", index=False, encoding="utf-8-sig")
-    out = results / "reading_list_static.html"
-    with patch.object(gen, "RESULTS_DIR", str(results)), \
-         patch.object(gen, "PRIORITY_CSV", str(results / "priority_learning_list.csv")), \
-         patch.object(gen, "PROGRESSIVE_CSV", str(results / "progressive_learning_list.csv")), \
-         patch.object(gen, "OUTPUT_FILE", str(out)):
-        gen.generate_static_html(theme="default", open_browser=False)
-    payload = re.search(r"let globalData = (\{.*?\});\n", out.read_text(encoding="utf-8"), re.S)
-    return json.loads(payload.group(1))
+def _episodes(tmp_path, filenames, stats=()):
+    """The journey page's episodes (`journey_render.render`'s head `eps`: [id, file name, shown name, …]) for a list
+    whose words are met in `filenames` and a stats file of `stats` (the files already met)."""
+    from app import journey_render as jr
+    rows = [{"Sequence": i, "Source File": name, "Word": f"単語{i}", "Reading": "タンゴ", "Score": 10,
+             "Occurrences (Global)": 2, "Occurrences (File)": 2, "Count (High)": 0, "Count (Low)": 0,
+             "Context 1": "冒険に出かけた。"} for i, name in enumerate(filenames, 1)]
+    with patch.object(gen, "RESULTS_DIR", str(tmp_path)),          patch.object(gen, "PRIORITY_CSV", str(tmp_path / "none.csv")):
+        out = jr.render("ja", rows=rows, priority=[], stats=list(stats), settings={})
+    return [(e[1], e[2]) for e in out.head["eps"]]
 
 
 def test_fresh_u_every_journey_entry_carries_its_shown_name_and_keeps_its_file_name_as_key(tmp_path):
-    """Why: the sidebar shows `name`; `filename` stays the key the window's `#file=`, the marks and Completed use."""
-    data = _render(tmp_path, ["Hoshikuzu Station S01E01.ja.srt", "H_priority_sample_1.txt"])
-    assert [(f["filename"], f["name"]) for f in data["progressive"]] == [
+    """Why: the journey shows the episode's name; its file name stays the key the window's `#file=` and the marks use
+    (the library's episodes: test_journey_cutover's test_every_episode_carries_its_shown_name_…)."""
+    assert _episodes(tmp_path, ["Hoshikuzu Station S01E01.ja.srt", "H_priority_sample_1.txt"]) == [
         ("Hoshikuzu Station S01E01.ja.srt", "Hoshikuzu Station · Ep 1"),
         ("H_priority_sample_1.txt", "H priority sample · Part 1")]
 
 
 def test_fresh_u_a_file_already_met_is_named_too(tmp_path):
-    """Why: *Target met* files (in the stats, not the list) are a sidebar row and a panel of their own."""
-    results = tmp_path / "results"
-    data_dir = results
-    results.mkdir()
-    pd.DataFrame([], columns=["Sequence", "Source File", "Word"]).to_csv(
-        results / "progressive_learning_list.csv", index=False, encoding="utf-8-sig")
-    with open(results / "file_statistics.json", "w", encoding="utf-8") as f:
-        json.dump([{"File": "Hoshikuzu Station S01E02.ja.srt", "Total Words": 5, "Coverage (%)": 99}], f)
-    out = results / "reading_list_static.html"
-    with patch.object(gen, "RESULTS_DIR", str(data_dir)), \
-         patch.object(gen, "PRIORITY_CSV", str(results / "none.csv")), \
-         patch.object(gen, "PROGRESSIVE_CSV", str(results / "progressive_learning_list.csv")), \
-         patch.object(gen, "OUTPUT_FILE", str(out)):
-        gen.generate_static_html(theme="default", open_browser=False)
-    data = json.loads(re.search(r"let globalData = (\{.*?\});\n", out.read_text(encoding="utf-8"), re.S).group(1))
-    assert [(f["filename"], f["name"]) for f in data["completed_files"]] == [
+    """Why: a *Target met* file (in the stats, not the list) is an episode of its own, named as the others."""
+    assert _episodes(tmp_path, [], [{"File": "Hoshikuzu Station S01E02.ja.srt", "Total Words": 5,
+                                     "Coverage (%)": 99}]) == [
         ("Hoshikuzu Station S01E02.ja.srt", "Hoshikuzu Station · Ep 2")]
 
 
 def test_fresh_u_the_sidebar_and_panels_show_the_name_and_keep_the_file_name_in_the_hover():
-    """Why: every place the journey wrote `fileData.filename` as words now writes its name (an old report's data has
-    none: the file name, as before); the file name stays findable in the row's hover."""
+    """Why: every place the YouTube preview's page (web_app.html, `modules/youtube_downloader/preview.py`) wrote
+    `fileData.filename` as words now writes its name (an old report's data has none: the file name, as before); the
+    file name stays findable in the row's hover. (Zen's page retired with the old journey, J-RETIRE.)"""
     html = _template("web_app.html")
     assert "function shownName(fileData)" in html
     assert html.count('data-content="${safeName}"') == 3                 # counted · set aside · target met
@@ -120,8 +92,6 @@ def test_fresh_u_the_sidebar_and_panels_show_the_name_and_keep_the_file_name_in_
     assert 'tab.title = item.data.filename' in html
     assert "<strong>${fileData.filename}</strong>" not in html            # the Target Met panel
     assert "<strong>${escapeHtml(shownName(fileData))}</strong>" in html
-    zen = _template("zen_app.html")
-    assert "fileData.filename.replace(/</g" not in zen and "escapeHtml(fileData.name || fileData.filename)" in zen
 
 
 def test_fresh_u_score_is_called_worth_and_the_tier_badge_is_gone():

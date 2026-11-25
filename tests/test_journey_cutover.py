@@ -2,14 +2,15 @@
 (`journey_render.render`) in J-PAGE's page (`templates/journey/`, its Stepper rail inlined) — into the journey's own file
 (`reading_list_static.html`), the door is on, and the render signature carries what the new page reads.
 
-  * a Generate (every theme but Zen) writes the v3 page: its head and chunks, the rail's own code, no marker left, none
-    of the old page's data; Zen still writes its own page from the old data;
+  * a Generate writes the v3 page for every look — a saved Zen look and a run with the door off too (J-RETIRE: the old
+    page and Zen retired whole, Sonic 2026-11-23): its head and chunks, the rail's own code, no marker left, none of
+    the old page's data;
   * the page's episodes are the library's, in the study order, each with *% known* from THIS Generate (the growth
     snapshot is written before the journey is drawn, as the redraw does), and *Journey ↗ on an episode* finds it;
   * the run's own fugashi tagger is handed to the render (speed row 1: the pitch makes no second one);
   * the render signature: an older (pre-cut) one never matches, so the first Generate after the update draws the new
     page; *Meanings*, the learner's own dictionaries (while Yours is asked) and the page's files re-render it, never a
-    re-analysis; SURASURA_DOOR=0 is the pre-cut world (no v3 part);
+    re-analysis; the theme (Zen included) and the old page's options are in no part of it;
   * an empty results folder still writes a page (the page's own empty state), never an error.
 
 What a wrong answer would cost a learner: the old page on the day of the release (or a page with no data), a journey
@@ -89,13 +90,20 @@ def _generate(root, language, *args, env=None):
 
 # --- the switch -------------------------------------------------------------------------------------------------- #
 
-def test_the_page_its_settings_and_the_door_turn_on_together_and_off_together_for_a_run(monkeypatch):
-    # One switch (journey_door.ON), read by the generator through journey_settings.v3(): never a page without its door
+def test_the_door_off_for_a_run_leaves_the_page_and_its_settings_v3s(tmp_path, monkeypatch):
+    # J-RETIRE: the old page is gone, so the door's own switch (SURASURA_DOOR=0: nothing listens) no longer brings it
+    # back — Generate writes the v3 page and Settings shows the page's rows either way; no second switch remains
+    from app.qt import settings_catalog as catalog
     from app.services import journey_settings
-    monkeypatch.delenv(journey_door.ENV, raising=False)
-    assert gen.journey_v3() and journey_settings.v3() and journey_door.enabled()
+    assert not hasattr(gen, "journey_v3") and not hasattr(journey_settings, "v3")
+    assert not hasattr(catalog, "use_v3"), "one Settings: the page's"
     monkeypatch.setenv(journey_door.ENV, "0")
-    assert not gen.journey_v3() and not journey_settings.v3() and not journey_door.enabled()
+    assert not journey_door.enabled()
+    results, patches = _empty_results(tmp_path)
+    with patches[0], patches[1], patches[2], patches[3]:
+        gen.generate_static_html(open_browser=False, language="ja")
+    assert _head((results / "reading_list_static.html").read_text(encoding="utf-8"))["lang"] == "ja"
+    assert "journey_theme" in catalog.ROW and "theme" not in catalog.ROW and "zen_limit" not in catalog.ROW
 
 
 def test_the_template_has_its_rail_inlined_once_and_its_data_marker_left_for_the_render():
@@ -143,26 +151,24 @@ def test_a_generate_writes_the_v3_page_with_the_librarys_episodes_and_this_gener
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_before_the_cut_the_same_generate_writes_the_old_page_and_signs_without_the_v3_part(language, monkeypatch):
+def test_a_saved_zen_look_and_the_door_off_still_generate_the_v3_page_and_sign_the_same(language, monkeypatch):
+    # J-RETIRE: a learner whose settings.json still says Zen Mode, in a run with the door off, gets the v3 page — and
+    # the run is current for the window's own argv (no --theme: Zen is in no signature), so nothing re-renders
+    from app import run_args
     store, _ids, names = _library(language)
     store.close()
     root = os.environ["SURASURA_TEST_ROOT"]
-    _generate(root, language, env=dict(child_env(root), SURASURA_DOOR="0"))
+    said = _generate(root, language, "--theme=zen-focus", "--zen-limit=50",
+                     env=dict(child_env(root), SURASURA_DOOR="0"))
+    assert "Writing the journey (v3)" in said
     html = _page(root)
-    assert "let globalData = {" in html and 'id="j-head"' not in html
+    assert 'id="j-head"' in html and "let globalData" not in html and "zen-focus" not in html
     with patch.object(gen, "get_user_file", lambda name: os.path.join(root, name)):
-        assert gen.report_holds(names["A1"]), "the old page's names still read"
-    # The update: the signature the pre-cut run recorded never matches the cut-over's, so the first Generate after the
-    # update draws the new page (a re-render, never a re-analysis)
-    args = ARGS(language)
+        assert gen.report_holds(names["A1"])
+    argv = run_args.analyzer_args({"theme": "Zen Mode", "zen_limit": 50}, language)
+    assert not [a for a in argv if a.startswith(("--theme", "--zen-limit"))], argv
     _as_the_child(monkeypatch, root)
-    monkeypatch.setenv("SURASURA_DOOR", "0")
-    assert analyzer.report_is_current(args, language) is True
-    monkeypatch.delenv("SURASURA_DOOR")
-    assert analyzer.report_is_current(args, language) is False
-    said = _generate(root, language)
-    assert "Writing the journey (v3)" in said and "Saved progressive" not in said, "re-drawn, not re-analysed"
-    assert 'id="j-head"' in _page(root)
+    assert analyzer.report_is_current(ARGS(language), language) is True
 
 
 def _chunk_records(html):
@@ -214,7 +220,7 @@ def test_each_words_count_ahead_is_its_own_episodes_and_the_next_two_read_from_t
     assert [r[7] for r in _chunk_records(_page(root)) if r[0] not in homographs] == [r[7] for r in records]
 
 
-def test_the_journey_reads_only_this_runs_plan_and_none_for_zen_or_before_the_cut(tmp_path, monkeypatch):
+def test_the_journey_reads_only_this_runs_plan_for_every_look_and_the_door_off(tmp_path, monkeypatch):
     from app import plan_engine
     monkeypatch.delenv("SURASURA_DOOR", raising=False)
     header = {"format": plan_engine.FORMAT, "run_signature": "run-1"}
@@ -226,10 +232,11 @@ def test_the_journey_reads_only_this_runs_plan_and_none_for_zen_or_before_the_cu
     assert seen == [os.path.join(str(tmp_path), analyzer.PLAN_FILE)], "the count's tables only, of results/'s plan"
     assert analyzer._journey_plan(args, "run-2", str(tmp_path)) is None, "another run's plan is never read"
     assert analyzer._journey_plan(args, "", str(tmp_path)) is None
+    # J-RETIRE: an older argv's Zen look and a run with the door off draw the v3 page too, from the same plan
     zen = analyzer.parse_analysis_args(["--language=ja", "--static", "--no-open", "--theme", "Zen Mode"])
-    assert analyzer._journey_plan(zen, "run-1", str(tmp_path)) is None
+    assert analyzer._journey_plan(zen, "run-1", str(tmp_path)).header is header
     monkeypatch.setenv("SURASURA_DOOR", "0")
-    assert analyzer._journey_plan(args, "run-1", str(tmp_path)) is None
+    assert analyzer._journey_plan(args, "run-1", str(tmp_path)).header is header
     monkeypatch.delenv("SURASURA_DOOR")
     monkeypatch.setattr(plan_engine, "counts", lambda path: None)
     assert analyzer._journey_plan(args, "run-1", str(tmp_path)) is None, "no plan: each word's own episode"
@@ -397,10 +404,22 @@ def test_the_journey_reads_the_counts_table_of_this_run_else_the_plans_stream(tm
     assert analyzer._journey_plan(args, "run-1", results).keys == [] and len(streamed) == 4, "no plan: never its table"
 
 
-def test_zen_keeps_its_own_page(tmp_path):
-    from tests.test_journey_stones import _render
-    html = _render(tmp_path, "ja", ["第01話.srt", "第02話.srt"], theme="Zen Mode")
-    assert 'id="j-head"' not in html and "let globalData = {" in html and "zen" in html.lower()
+@pytest.mark.parametrize("theme", ["Default (Dark)", "Dark Flow", "Midnight (Vibrant)", "Modern Light", "Zen Mode",
+                                   "zen-focus", "default", "modern-light"])
+def test_every_look_a_saved_zen_one_too_writes_the_v3_page(theme, tmp_path):
+    # J-RETIRE (Sonic 2026-11-23): no look picks another page — a saved Zen look is Night, the page's default, read
+    # from settings.json as it is; Zen's template is gone, the preview's stays
+    from app import settings_manager
+    results, patches = _empty_results(tmp_path)
+    saved = dict(settings_manager.DEFAULT_SETTINGS, theme=theme)
+    with patches[0], patches[1], patches[2], patches[3],             patch.object(settings_manager, "load_settings", lambda *_a, **_k: saved):
+        gen.generate_static_html(open_browser=False, language="ja")
+    html = (results / "reading_list_static.html").read_text(encoding="utf-8")
+    head = _head(html)
+    assert head["lang"] == "ja" and "let globalData" not in html
+    assert head["settings"]["theme"] == ("light" if theme in ("Modern Light", "modern-light") else "night")
+    assert not os.path.exists(os.path.join(REPO, "templates", "zen_app.html"))
+    assert os.path.exists(os.path.join(REPO, "templates", "web_app.html")), "the YouTube preview's page stays"
 
 
 def test_an_empty_results_folder_still_writes_the_page_its_empty_state_never_an_error(tmp_path):
@@ -411,7 +430,7 @@ def test_an_empty_results_folder_still_writes_the_page_its_empty_state_never_an_
             patch.object(gen, "PRIORITY_CSV", str(results / "priority_learning_list.csv")), \
             patch.object(gen, "PROGRESSIVE_CSV", str(results / "progressive_learning_list.csv")), \
             patch.object(gen, "OUTPUT_FILE", str(out)):
-        gen.generate_static_html(theme="default", open_browser=False, language="zh")
+        gen.generate_static_html(open_browser=False, language="zh")
     head = _head(out.read_text(encoding="utf-8"))
     assert head["lang"] == "zh" and head["counts"]["words"] == 0
 
@@ -439,23 +458,25 @@ def test_the_automatic_generate_writes_the_journey_without_opening_it(tmp_path, 
     assert len(opened) == (1 if open_browser else 0)
 
 
-def test_the_journey_is_signed_with_the_marks_read_before_it_was_drawn_and_an_unread_read_signs_nothing(tmp_path):
-    # test_journey_stones' S-1: a mark landing mid-render is the next press's re-render, never a page recorded as
-    # current that shows the wrong stones; a read that failed (library_store.UNREAD) signs "" (`signed_render`)
+def test_the_journey_is_signed_with_the_marks_of_the_read_it_was_drawn_from_and_an_unread_read_signs_nothing(
+        tmp_path):
+    # test_journey_stones' S-1 and J-FIX 3: the page is signed with the marks of its own read of the store
+    # (`store_facts`), never a read before or after it — a mark landing between two reads was drawn but not signed, so
+    # its Undo left the stone; a read that failed (library_store.UNREAD) signs "" (`signed_render`), and with no
+    # facts read the page is never signed with stones (no store: None; a store there: UNREAD)
     from app import journey_render
-    reads = iter([[("ShowA_ep01.srt", "HighPriority", True, True)], [("ShowA_ep02.srt", "HighPriority", True, True)]])
-    real = journey_render.render
-
-    def landing(lang, **kw):
-        analyzer.journey_marks(lang)                 # a mark lands while the page is drawn
-        return real(lang, **kw)
+    drawn_marks = [("HighPriority/ShowA/ShowA_ep01.srt", "HighPriority", 1, 1, "fShowA", None)]
+    facts = journey_render.StoreFacts({}, {}, [], {}, {}, {}, "e1", frozenset(), drawn_marks)
+    other = [("HighPriority/ShowA/ShowA_ep02.srt", "HighPriority", 1, 1, "fShowA", None)]
     results, patches = _empty_results(tmp_path)
-    with patches[0], patches[1], patches[2], patches[3], patch.object(analyzer, "journey_marks", lambda _l: next(reads)), \
-            patch.object(journey_render, "render", landing):
-        drawn = gen.generate_static_html(open_browser=False, language="ja")
-    assert drawn == [("ShowA_ep01.srt", "HighPriority", True, True)], "the marks read before the render"
-    with patches[0], patches[1], patches[2], patches[3]:
-        assert gen.generate_static_html(open_browser=False, language="ja", marks=ls.UNREAD) == ls.UNREAD
+
+    def drawn(facts_read, marks_read):
+        with patches[0], patches[1], patches[2], patches[3],                 patch.object(journey_render, "store_facts", lambda _l: facts_read),                 patch.object(analyzer, "journey_marks", lambda _l: marks_read):
+            return gen.generate_static_html(open_browser=False, language="ja")
+    assert drawn(facts, other) == drawn_marks, "the marks of the read the page was drawn from"
+    assert drawn(facts._replace(marks=ls.UNREAD), other) == ls.UNREAD, "its marks unread: never signed current"
+    assert drawn(None, None) is None, "no store: no stones part"
+    assert drawn(None, other) == ls.UNREAD, "a store whose facts couldn't be read: never signed current"
     args = analyzer.parse_analysis_args(["--language=ja", "--static", "--no-open"])
     assert analyzer.signed_render(args, ls.UNREAD, True) == ""
 
@@ -559,11 +580,12 @@ def test_meanings_re_render_and_a_look_the_page_applies_itself_does_not(monkeypa
     assert _sig(journey_pitch="hidden") == plain and _sig(journey_word_size="l") == plain, \
         "a look the page applies (J-SET's LOOKS), read back through the door: no re-render"
     monkeypatch.setenv("SURASURA_DOOR", "0")
-    assert _sig(journey_meanings="yours_en") == _sig(), "before the cut nothing reads Meanings"
+    assert _sig(journey_meanings="yours_en") != _sig(), "the door off: the same page, the same signature"
 
 
-def _zsig(theme, **settings):
-    args = analyzer.parse_analysis_args(["--language=ja", "--static", "--no-open", f"--theme={theme}"])
+def _zsig(argv_theme, **settings):
+    # an older argv's --theme (accepted, ignored); `settings` the saved ones (a saved `theme` too)
+    args = analyzer.parse_analysis_args(["--language=ja", "--static", "--no-open", f"--theme={argv_theme}"])
     with patch.object(analyzer.settings_manager, "load_settings", lambda: dict(settings)):
         return analyzer.compute_render_signature(args, marks=[], made=None)
 
@@ -572,18 +594,21 @@ def _zsig(theme, **settings):
     {"source_display": "full"}, {"words_per_day": 12}, {"show_words_per_day": False}, {"zen_limit": 20},
     {"study_order": "priority"},
     {"enable_koe": True}, {"logic": {"hide_audio_button": True, "inline_completed_files": True, "chunk_size": 20}}])
-def test_a_look_change_moves_no_signature_and_zen_in_or_out_does(old_option, monkeypatch):
+def test_a_look_change_moves_no_signature_and_zen_is_one_more_look(old_option, monkeypatch):
     # The Redraw rule (the lead's ruling): the v3 page applies its looks itself and reads none of the old page's
-    # options, so changing one draws nothing; Zen is its own page (a saved look), so Zen in or out re-renders
+    # options, so changing one draws nothing; J-RETIRE: Zen is no page of its own any more, so it is one more look
     monkeypatch.delenv("SURASURA_DOOR", raising=False)
     plain = _zsig("default")
     assert _zsig("modern-light") == plain and _zsig("midnight-vibrant") == plain, "one look to another"
     assert _zsig("default", **old_option) == plain, f"the old page's {old_option}: nothing on v3 reads it"
-    assert _zsig("zen-focus") != plain and _zsig("Zen Mode") != plain, "Zen in (and so out) re-renders"
-    assert _zsig("zen-focus", source_display="full") != _zsig("zen-focus"), "a saved Zen look still re-renders on it"
+    assert _zsig("zen-focus") == plain and _zsig("Zen Mode") == plain, "Zen in or out draws nothing"
+    assert _zsig("zen-focus", **old_option) == plain, "nor the old page's options under a saved Zen look"
+    for saved in ("Zen Mode", "Modern Light", "Dark Flow"):     # the saved look (what a run reads now: no --theme)
+        assert _zsig("default", theme=saved) == plain and _zsig("default", theme=saved, **old_option) == plain, saved
     assert _zsig("default", line_player=False) != plain, "a setting the v3 render reads still re-renders"
+    assert json.loads(plain)[0] == "journey v3", "no older page's signature can match it"
     monkeypatch.setenv("SURASURA_DOOR", "0")
-    assert _zsig("modern-light") != _zsig("default"), "before the cut the old page drew its theme"
+    assert _zsig("modern-light") == plain and _zsig("zen-focus") == plain, "the door off: the same page"
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

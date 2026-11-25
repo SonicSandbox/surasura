@@ -176,9 +176,11 @@ def _content(path):
 
 
 # Pinned from 3.0-dev d171b0c7 (the table as E-TABLE built it), before the speed work: re-pin only with a change of
-# the table's bytes made on purpose (and its format's VERSION).
-PINNED = {"ja": "bc918e6d781de5bc56622ae4acec772a4d4dccbccefc44604146fed1ab562c3d",
-          "zh": "5988eb87850ebfbdc0bf8d1f75e474e647e69c8b908c467712d09f58bcf970ec"}
+# the table's bytes made on purpose (and its format's VERSION). Re-pinned for VERSION 4 (E-FAST: a source's digest in
+# one spelling) — the head's version only: packed at VERSION 3 the same lines give d171b0c7's pins
+# (ja bc918e6d…, zh 5988eb87…), and these lines' sources carry no digest.
+PINNED = {"ja": "cf8db621212cfd2fb9213f256fe88d979028cae89f2627c1e0658314bdbcd2de",
+          "zh": "1849c6566a32a81d82d5912e9c2149d5266261a693ca739991d77ccac6bd71db"}
 
 
 def _frozen(language):

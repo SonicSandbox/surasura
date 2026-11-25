@@ -30,7 +30,7 @@ def _make_app_package(zip_path, include_templates=True, include_html=True, inclu
         if include_templates:
             if include_html:
                 z.writestr("templates/web_app.html", TEMPLATE)
-                z.writestr("templates/zen_app.html", TEMPLATE)
+                z.writestr("templates/journey/page.html", TEMPLATE)
             else:
                 z.writestr("templates/notes.txt", "no html here\n")
     return zip_path

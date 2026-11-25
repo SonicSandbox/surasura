@@ -1,5 +1,5 @@
 """Settings › App › Journey under journey v3 (J-SET; SPEC §1.4, the settings table, Sonic's answers 2026-11-22): the
-Settings page with the cut-over's rows (`settings_catalog.use_v3`).
+Settings page with the journey's rows (`settings_catalog._journey_rows`).
 
 What a wrong answer would cost: a row that writes another key, or more than its own; the section somewhere the page's
 ⚙ doesn't say (it says Settings › App › Journey); Reset (Journey) without its Undo; an old learner's Zen Mode or File
@@ -13,18 +13,6 @@ from app.qt import settings_strings as S
 from app.services import journey_settings as J
 from tests.qt.test_settings_page import ALL_ON, make_page
 from tests.qt import test_settings_page as T
-
-
-@pytest.fixture
-def v3():
-    # put back as they were (since the cut-over, J-CUT, the import-time rows are v3's): a fixed False left every later
-    # test in the process on the Settings before the cut (GitHub's shards: test_settings_catalog after tests/qt)
-    on, was = J.ON, catalog._V3
-    J.ON = True
-    catalog.use_v3(True)
-    yield
-    J.ON = on
-    catalog.use_v3(was)
 
 
 @pytest.fixture(autouse=True)
@@ -42,12 +30,12 @@ OLD = {"theme": "Zen Mode", "source_display": "filename", "zen_limit": 75, "show
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])
-def test_under_v3_every_visible_control_writes_exactly_its_keys(qapp, v3, language):
+def test_under_v3_every_visible_control_writes_exactly_its_keys(qapp, language):
     T.test_every_visible_control_writes_exactly_its_keys_and_a_per_language_one_keeps_the_other_language(
         qapp, language)
 
 
-def test_journey_sits_under_app_between_connections_and_app_with_the_pages_rows(qapp, v3):
+def test_journey_sits_under_app_between_connections_and_app_with_the_pages_rows(qapp):
     page, _store = make_page(ALL_ON, "ja")
     order = list(page.slabs)
     assert order.index("connect") < order.index("reading") < order.index("app")
@@ -60,7 +48,7 @@ def test_journey_sits_under_app_between_connections_and_app_with_the_pages_rows(
     assert page.rows["sentences_per_word"].isVisibleTo(page)
 
 
-def test_an_old_learners_zen_mode_and_file_name_show_as_night_and_icon_name_and_nothing_is_written(qapp, v3):
+def test_an_old_learners_zen_mode_and_file_name_show_as_night_and_icon_name_and_nothing_is_written(qapp):
     page, store = make_page(OLD, "ja")
     QApplication.processEvents()
     assert page.rows["journey_theme"].controls[0].value() == J.NIGHT
@@ -69,7 +57,7 @@ def test_an_old_learners_zen_mode_and_file_name_show_as_night_and_icon_name_and_
     assert store.calls == []
 
 
-def test_reset_journey_puts_the_pages_rows_back_in_one_write_and_its_undo_puts_them_back(qapp, v3):
+def test_reset_journey_puts_the_pages_rows_back_in_one_write_and_its_undo_puts_them_back(qapp):
     data = dict(OLD, theme="Modern Light", journey_pitch="hidden", journey_word_size="l", journey_keys="dvorak",
                 journey_first_meeting=False)
     page, store = make_page(data, "ja")

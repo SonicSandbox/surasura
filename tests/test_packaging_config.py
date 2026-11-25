@@ -90,6 +90,114 @@ def test_the_window_and_its_qt_modules_are_named_and_the_cli_keeps_excluding_pyq
     assert "'PyQt6'" in cli
 
 
+# --- what app/ loads by a name -> the spec names it (3.0.18 cut 2: the built journey page hid five controls) ------------
+
+# The calls under app/ that load a module named by a variable ("<file>:<function>"), and the names each one loads: a new
+# one fails the test below until it is added here, with where its names are.
+BY_VARIABLE = {
+    "app/services/journey_door.py:resolve":           # the door's routes, its `state` readers and `hello`'s stamp
+        lambda: [m for m, _fn in list(_literal("app/services/journey_door.py", "ROUTES").values())
+                 + list(_literal("app/services/journey_door.py", "READERS").values())]
+                + [_literal("app/services/journey_door.py", "RENDER_STAMP")[0]],
+    "app/qt/bridge.py:warm_worker_types":             # PyQt6's own modules (the window's Qt test above)
+        lambda: [m for m, _names in _literal("app/qt/bridge.py", "WORKER_QT")],
+    "app/settings_manager.py:_optional_module_defaults":  # the optional modules: packaging/build_config.json decides
+        lambda: _literal("app/settings_manager.py", "_OPTIONAL_MODULE_NAMES"),
+}
+
+
+def _literal(rel, name):
+    """The literal `rel` assigns to `name` at its top level (read, never imported)."""
+    for node in ast.parse(_source(os.path.join(PROJECT, rel))).body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"{rel} assigns no {name} at its top level")
+
+
+def _loads_by_name():
+    """Every `importlib.import_module(...)` / `__import__(...)` under app/ -> (names, packages, sites): a string's
+    module; an f-string's package (`f"app.connect.{module}"` -> app.connect: any module in it); and "<file>:<function>"
+    of each call whose name is a variable."""
+    names, packages, sites = set(), set(), set()
+
+    class Loads(ast.NodeVisitor):
+        def __init__(self, rel, tree):
+            self.rel, self.where = rel, ["<module>"]
+            self.loaders = {"import_module", "__import__"} | {   # (`from importlib import import_module as load`)
+                a.asname for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == "importlib"
+                for a in n.names if a.name == "import_module" and a.asname}
+
+        def visit_FunctionDef(self, node):
+            self.where.append(node.name)
+            self.generic_visit(node)
+            self.where.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_Call(self, node):
+            f = node.func
+            called = f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else None
+            args = list(node.args) + [k.value for k in node.keywords if k.arg in ("name", "package")]
+            if called in self.loaders and args:
+                arg = args[0]
+                package = args[1] if called != "__import__" and len(args) > 1 else None
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.startswith(".") \
+                        and isinstance(package, ast.Constant) and isinstance(package.value, str):
+                    names.add(package.value + arg.value)              # (a relative name and its package)
+                elif isinstance(arg, ast.Constant) and isinstance(arg.value, str) and not arg.value.startswith("."):
+                    names.add(arg.value)
+                elif isinstance(arg, ast.JoinedStr) and arg.values and isinstance(arg.values[0], ast.Constant) \
+                        and arg.values[0].value.endswith("."):
+                    packages.add(arg.values[0].value[:-1])
+                else:
+                    sites.add(f"{self.rel}:{self.where[-1]}")
+            self.generic_visit(node)
+
+    for root, _dirs, files in os.walk(os.path.join(PROJECT, "app")):
+        for file in files:
+            if file.endswith(".py"):
+                path = os.path.join(root, file)
+                tree = ast.parse(_source(path))
+                Loads(os.path.relpath(path, PROJECT).replace(os.sep, "/"), tree).visit(tree)
+    return names, packages, sites
+
+
+def _package_modules(package):
+    """Every module in `package`'s folder (the package itself included), as import names."""
+    out = set()
+    for root, _dirs, files in os.walk(os.path.join(PROJECT, *package.split("."))):
+        for file in files:
+            if file.endswith(".py"):
+                rel = os.path.relpath(os.path.join(root, file[:-3]), PROJECT)
+                out.add(rel.replace(os.sep, ".").replace(".__init__", ""))
+    return out
+
+
+def test_every_module_app_loads_by_name_is_named_by_the_spec(tmp_path):
+    """3.0.18's second cut: the journey door loads its routes' modules by name (journey_door.ROUTES), which PyInstaller
+    can't follow, and the spec named three of them nowhere, so the built journey page hid Swap, Add now, the clip on
+    an .mkv line, word audio and pre-studied while every test from source passed. Every `app` module app/ loads by a
+    name (a string, a variable's table in BY_VARIABLE, every module of an f-string's package) is in the main program's
+    hiddenimports, read from the spec executed on this tree (PyInstaller's steps stubbed, nothing built)."""
+    names, packages, sites = _loads_by_name()
+    assert not sites - set(BY_VARIABLE), \
+        f"app/ loads a module named by a variable: add each to BY_VARIABLE: {sorted(sites - set(BY_VARIABLE))}"
+    assert not set(BY_VARIABLE) - sites, f"BY_VARIABLE names a call app/ no longer makes: {sorted(set(BY_VARIABLE) - sites)}"
+    for site in sites:
+        names.update(BY_VARIABLE[site]())
+    for package in packages:
+        if package == "app" or package.startswith("app."):
+            names.update(_package_modules(package))
+    wanted = {n for n in names if n == "app" or n.startswith("app.")}
+    # (the door's own: an empty scan would pass without them)
+    assert {"app.connect.door_routes", "app.services.prestudied", "app.journey_render"} <= wanted
+    if not __import__("importlib.util").util.find_spec("PyQt6"):
+        wanted = {n for n in wanted if not n.startswith("app.qt")}    # (no PyQt6: the spec builds no window)
+    main = _run_spec(tmp_path, None, None, root=PROJECT)[0]
+    missing = wanted - set(main["hiddenimports"])
+    assert not missing, f"app/ loads these by name and the spec doesn't name them in hiddenimports: {sorted(missing)}"
+
+
 # --- UPX off everywhere (D15, E12) ----------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("spec", [SPEC, UPDATER_SPEC], ids=["Surasura.spec", "updater.spec"])
@@ -117,9 +225,12 @@ def test_the_spec_names_no_settings_json():
     assert not [s for s in strings if "settings.json" in s]
 
 
-def _run_spec(tmp_path, config, settings, binaries=(), collected=None):
+def _run_spec(tmp_path, config, settings, binaries=(), collected=None, root=None):
     """The whole spec executed in a scratch project (PyInstaller's steps stubbed, recording every Analysis). `binaries`:
-    the (dest, source, kind) entries the main Analysis finds; `collected` (a list) gets what COLLECT is handed."""
+    the (dest, source, kind) entries the main Analysis finds; `collected` (a list) gets what COLLECT is handed. `root`:
+    a project to execute it on as it is (this repo: nothing is written there; `config` and `settings` unused)."""
+    if root is not None:
+        return _exec_spec(root, binaries, collected)
     root = tmp_path / "project"
     (root / "app").mkdir(parents=True)
     (root / "packaging").mkdir()
@@ -131,6 +242,10 @@ def _run_spec(tmp_path, config, settings, binaries=(), collected=None):
     if config is not None:
         (root / "packaging" / "build_config.json").write_text(json.dumps(config), encoding="utf-8")
     (root / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+    return _exec_spec(root, binaries, collected)
+
+
+def _exec_spec(root, binaries, collected):
     analyses = []
 
     class _Analysis:

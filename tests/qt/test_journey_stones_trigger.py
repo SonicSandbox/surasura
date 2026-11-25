@@ -46,12 +46,8 @@ from tests.test_library_store_support import LANGUAGES, roots
 from tests.test_services_moves import Heard
 from tests.test_services_replan_host import _Launches, _Opener, _replans, _Settings, fired, gate, landed  # noqa: F401
 
-# Before the cut-over (J-CUT), as its two parts are (tests/test_journey_stones.py, tests/test_journey_stones_quiet.py):
-# its helpers read what a Generate drew from the old page's payload (`_generate`, `_stones`, `_files`; None for a v3
-# page). The trigger it holds is the same code either side of the cut; the v3 render signs the stones too
-# (`compute_render_signature`'s v3 list), its report half asked after a real Generate in
-# tests/test_services_journey_stones.py, a mark mid-render in tests/test_journey_cutover.py.
-pytestmark = pytest.mark.usefixtures("journey_pre_cut")
+# Its helpers read what a Generate drew from the v3 page (J-RETIRE: the journey's one page; test_journey_stones'
+# `_payload`, through `_generate`, `_stones`, `_files`).
 
 
 class _Window:
@@ -141,7 +137,7 @@ def _verdict(root, language, store):
 
 
 def _journey_names(data):
-    return set(_files(data) + [f["filename"] for f in data["completed_files"]])
+    return set(_files(data))
 
 
 # --- D1 · a Finish still asks its Generate (Anki's order at once since Haya-FN) ---------------------------------- #

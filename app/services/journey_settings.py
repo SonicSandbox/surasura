@@ -14,14 +14,11 @@ YouTube preview right** — it still paints the old page from `theme` and `sourc
 Light *Modern Light* (the preview's own names), Icon + name *full*; *Only on hover* stores "hover", which the preview
 reads as hidden (`preview.py`'s check: a value it doesn't know is "off").
 
-Off until the cut-over (`v3()`): J-CUT turns the door on (`journey_door.ON`), and with it these rows; until then
-Settings shows the old Journey rows and nothing here is called.
+The page is the journey for every look (J-RETIRE, Sonic 2026-11-23: the old page and Zen retired whole): these are
+Settings' only Journey rows, and a saved *Zen Mode* reads as Night, the default — never rewritten.
 """
-import importlib
 import os
 from collections.abc import Mapping
-
-ON = False                      # on for a run without the door's switch (a test, a capture); J-CUT flips the door's
 
 SENTENCES = "logic.context.max_contexts"
 ALL = 0                         # *All* (plan_rules.ALL_CONTEXTS): every sentence the list keeps for the word
@@ -54,19 +51,6 @@ LOOKS = frozenset(KEYS) - {SENTENCES, "journey_meanings"}   # applied in the pag
 # How a value saved before the page reads (the table's §1): theme and where-from; anything else unknown is the default
 _LIGHTS = (LIGHT, "modern-light")              # Light (the look's name, or the id a hand-edited file may hold); else Night
 _OLD_SOURCE = {"off": "icon", "icon": "icon", "filename": "icon_name", "full": "icon_name", "hover": "hover"}
-
-
-def v3():
-    """Whether journey v3's settings are the ones Settings shows: `ON`, or the door's own switch (`enabled()`: its `ON`,
-    or SURASURA_DOOR=1 for a run) — the page and its Settings turn on together."""
-    if ON:
-        return True
-    try:
-        door = importlib.import_module("app.services.journey_door")
-    except ImportError:
-        return False
-    enabled = getattr(door, "enabled", None)
-    return bool(enabled() if callable(enabled) else getattr(door, "ON", False))
 
 
 def _get(settings, key, default=None):

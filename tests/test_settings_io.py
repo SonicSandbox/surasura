@@ -88,11 +88,11 @@ def test_round_trip_puts_back_every_known_setting_and_the_signatures_as_they_wer
     outcome = settings_io.apply(plan)
     assert outcome.ok, outcome.message
     written = _file()
-    expected = {k: v for k, v in ja.items() if k not in ("reinforce_segmentation", "hide_satoru")}
+    expected = {k: v for k, v in ja.items() if k not in ("reinforce_segmentation", "hide_satoru", "zen_limit")}
     expected["logic"] = json.loads(json.dumps(ja["logic"]))
     del expected["logic"]["weights"]["_comment"], expected["logic"]["context"]["min_words"]
     assert written == expected
-    assert set(plan.dropped) == {"reinforce_segmentation", "hide_satoru", "logic.context.min_words"}
+    assert set(plan.dropped) == {"reinforce_segmentation", "hide_satoru", "zen_limit", "logic.context.min_words"}
     assert _signatures("ja") == before
 
 
@@ -172,7 +172,7 @@ def test_the_way_back_is_an_export_import_takes_and_it_puts_the_settings_before_
     assert back.refused is None and back.language == "ja"
     assert settings_io.apply(back).ok
     assert _signatures("ja") == before
-    assert _file() == {k: v for k, v in ja.items() if k not in ("reinforce_segmentation", "hide_satoru")} | {
+    assert _file() == {k: v for k, v in ja.items() if k not in ("reinforce_segmentation", "hide_satoru", "zen_limit")} | {
         "logic": back.settings["logic"]}
 
 

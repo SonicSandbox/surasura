@@ -408,3 +408,52 @@ def test_the_scores_row_index_is_built_once_a_table_not_once_a_callers_memo(lang
     exact, by_lemma = sentence_score._table_rows(other)[0]
     assert exact[(WORDS[language][2][0], WORDS[language][2][1])] == 2
     assert sentence_score._table_rows(other)[1] == {0, 2, 4}
+
+
+# --------------------------------------------------------------------------------------------------------------- #
+# Pins the mutants asked for (session 2)
+# --------------------------------------------------------------------------------------------------------------- #
+
+# The chunks' text lengths for CHUNK_BYTES in range(600, 6000, 97), as 3.0-dev 64301d15 built them (sha256 of the
+# JSON list of lists, the number of chunks): G11 changed how a chunk's bytes are counted, never where it closes.
+CHUNKS_OF_64301D15 = {"ja": ("7f8a8a225a339ab31a2dbc8d0396fa9a77e412560f048d0386f030e4ed1d0389", 84),
+                      "zh": ("8f0efd8324bd625db6caa029db0189f1a87aad5ad44c2a6e3197fcb8547fa653", 70)}
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_chunks_close_where_they_closed_before_at_every_cap(language, monkeypatch):
+    # why: a source row's comma counted or not moves a chunk's end by a word now and then — a page that splits
+    # differently is a different page (its ranges, its gzip sizes), though every word is still on it.
+    sizes = []
+    for cap in range(600, 6000, 97):
+        monkeypatch.setattr(jr, "CHUNK_BYTES", cap)
+        built = jr.build(language, _rows(language, 6), _stats(6), pitch=_NoPitch())
+        sizes.append([len(gzip.decompress(c)) for c in built.chunks])
+    digest, n = CHUNKS_OF_64301D15[language]
+    assert (hashlib.sha256(json.dumps(sizes).encode()).hexdigest(), sum(map(len, sizes))) == (digest, n)
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_each_chunks_source_table_holds_each_source_once_and_its_own_row(language):
+    # why: the source rows' JSON is now kept once a build (G11): a row kept under the wrong source would show every
+    # sentence under one episode's title.
+    sources = {}
+    built = jr.build(language, _rows(language, 6), _stats(6), pitch=_NoPitch())
+    for chunk in built.chunks:
+        src = json.loads(gzip.decompress(chunk))["src"]
+        assert len({json.dumps(r) for r in src}) == len(src)
+        for r in src:
+            sources[json.dumps(r)] = 1
+    assert len(sources) > 1                              # (the rows are real: several files' sources)
+
+
+def test_a_plan_whose_own_order_is_bad_is_refused_when_the_engine_is_made():
+    # why: the plan's own order is still checked in `Engine(...)` though its numbers wait for the first ask — a bad
+    # plan is a PlanError where it always was, never at a later read on another path.
+    plan = synthetic_plan(7)
+    files = list(plan.files)
+    later = next(i for i, entry in enumerate(files) if entry[1] != "now")
+    files.insert(0, files.pop(later))                    # a soon / 6+ months file ahead of the NOW tier
+    plan.files = files
+    with pytest.raises(plan_engine.PlanError):
+        plan_engine.Engine(plan)

@@ -133,9 +133,10 @@ def test_a_card_type_other_than_the_audio_card_is_the_learners_for_a_book_too(fa
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
-@pytest.mark.parametrize("marks", [dict(SENREN_MARKS, sentence=""), {"audio": "IsAudioCard"}, None])
+@pytest.mark.parametrize("marks", [dict(SENREN_MARKS, sentence=""), dict(JPMN_MARKS, sentence="  "),
+                                   {"audio": "IsAudioCard"}, None])
 def test_a_note_type_with_no_sentence_card_mark_gets_no_card_type(fake_miner, tmp_path, lang, marks):
-    """A note type with no sentence card (its mark empty, missing, or no mark map at all): the book's mine sends the
+    """A note type with no sentence card (its mark empty or blank, missing, or no mark map at all): the book's mine sends the
     card type empty — no mark is written, so the card is the note type's plain word card, never its audio card."""
     config = _mine(fake_miner, tmp_path, lang, _export(lang, marks=marks))
     assert config["card_type"] == ""
@@ -163,6 +164,16 @@ def test_a_sentence_mark_the_note_type_has_no_field_for_is_dropped_before_the_ru
     assert fields.with_note_fields(mapping, None) is mapping
     plain = fields.from_export(_export("ja", ""))
     assert plain.quiet_mark is None and fields.with_note_fields(plain, lapis[:6]) is plain
+
+
+@pytest.mark.parametrize("mark", [" IsSentenceCard", "Sentence"])
+def test_a_mark_anki_miner_would_refuse_is_no_card_type(mark):
+    """Anki Miner reads the mark as written and refuses a run whose mark field the note type lacks (a padded name is
+    another name) or one the mapping already fills (`Sentence`: written twice): the mark kept as written, so Anki's
+    note type check drops the padded one; the mapped one is none at once."""
+    mapping = fields.from_export(_export("ja", marks=dict(JPMN_MARKS, sentence=mark)))
+    lapis = ["Expression", "Sentence", "MainDefinition", "Picture", "SentenceAudio", "MiscInfo", "IsSentenceCard"]
+    assert fields.with_note_fields(mapping, lapis).quiet_mark == ""
 
 
 def test_the_run_files_card_type_is_one_anki_miner_takes(tmp_path):
@@ -207,3 +218,92 @@ def test_the_runner_tells_the_mine_a_job_the_ai_voice_will_read(tmp_path):
         runner._mine_batch(Steps(), ledger, "ja", {"id": 8}, picked, [], 1)
     assert seen == [None, True, None]
     assert "voiced" not in picked, "the job's own pick is never changed"
+
+
+# --------------------------------------------------------------------------- #
+# The wiring: the setup Connect mines with, and the runner's own call
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_the_setup_connect_mines_with_carries_the_mark_and_drops_one_the_note_type_lacks(fake_miner, tmp_path,
+                                                                                         monkeypatch, lang):
+    """`verbs._anki_miner_setup` (every Connect batch, and the command line's pick): the mapping read from the
+    profile's export carries the sentence card's mark; Anki's note type is asked for its fields, and one with no field
+    for the mark gives a mapping with none. Kept set: the export's own mapping, asked again at the next call."""
+    from app import anki_connect
+    from app.cli import verbs
+    fake_miner.plan(app=APP[lang], features=["word-from-line", "reading"], export=_export(lang))
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
+    monkeypatch.setattr(anki_connect, "probe", lambda url, timeout=2: {"ok": True})
+    note = ["Expression", "Sentence", "MainDefinition", "Picture", "SentenceAudio", "MiscInfo", "IsSentenceCard",
+            "IsAudioCard"]
+    asked = []
+
+    def invoke(action, url, **params):
+        asked.append(action)
+        return list(note) if action == "modelFieldNames" else []
+    monkeypatch.setattr(anki_connect, "invoke", invoke)
+    loaded, held = {"connect_anki_miner_path": fake_miner.path}, {}
+    run_dir = str(tmp_path / "runs" / "job-1")
+    assert verbs._anki_miner_setup(loaded, lang, run_dir, held=held)[2].quiet_mark == "IsSentenceCard"
+    note.remove("IsSentenceCard")
+    assert verbs._anki_miner_setup(loaded, lang, run_dir, held=held)[2].quiet_mark == ""
+    assert held["set"][2].quiet_mark == "IsSentenceCard", "the kept set is the export's, checked at every call"
+    assert asked.count("modelFieldNames") == 2
+    monkeypatch.setenv("SURASURA_NO_ANKI_SYNC", "1")     # Anki not asked: as read (Anki Miner's own check asks)
+    assert verbs._anki_miner_setup(loaded, lang, run_dir)[2].quiet_mark == "IsSentenceCard"
+
+
+@pytest.mark.parametrize("voiced", [False, True])
+def test_the_runners_mine_hands_the_ai_voices_mark_to_anki_miner(tmp_path, monkeypatch, voiced):
+    """`Steps._mine_one` (the runner's one call of `mine_batch`): a pick the AI voice will read (`voiced`, set by
+    `_mine_batch` from the job's `AI_JOB` mark) goes to Anki Miner as `voiced`; any other as not — the book's
+    reading file either way."""
+    from types import SimpleNamespace
+    from app.cli import verbs
+    mapping = fields.from_export(_export("ja"))
+    monkeypatch.setattr(anki_miner, "find", lambda loaded: "AnkiMiner.exe")
+    monkeypatch.setattr(verbs, "_anki_miner_setup", lambda loaded, lang, run_dir, held=None: ({}, "p", mapping))
+    sent = {}
+
+    def mine_batch(*args, **kw):
+        sent.update(kw)
+        return {"outcomes": []}
+    monkeypatch.setattr(anki_miner, "mine_batch", mine_batch)
+    steps = SimpleNamespace(loaded={}, url="http://127.0.0.1:9", run_dir=lambda job: str(tmp_path / "runs"),
+                            _anki_miner_held=lambda lang: {}, _settings=lambda lang: {}, show=lambda lang, job: None,
+                            _reviewing=lambda: False, _place=lambda *a: None)
+    picked = {"reading": TEXT["ja"], "video": None, "subtitle": None, "words": []}
+    if voiced:
+        picked["voiced"] = True
+    runner.Steps._mine_one(steps, "ja", {"id": 7}, picked, [], 1)
+    assert sent["voiced"] is voiced and sent["reading"] == TEXT["ja"]
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+@pytest.mark.parametrize("kind", ["book", "video"])
+def test_the_command_lines_pick_writes_the_same_card_type_rule(fake_miner, tmp_path, monkeypatch, lang, kind):
+    """`surasura-cli pick` writes the run file a learner's own script may mine (`verbs.pick`): a book's (`reading`)
+    under the audio card names the sentence card, a video's names none — the runner's rule (no AI voice here)."""
+    from types import SimpleNamespace
+    from app.cli import verbs
+    from app.connect import pick as picking
+    from tests import cli_helpers as h
+    fake_miner.plan(app=APP[lang], features=["word-from-line", "reading"], export=_export(lang))
+    from app.path_utils import get_user_files_path
+    os.makedirs(get_user_files_path(lang), exist_ok=True)        # (the language set up: its folders made)
+    h.write_settings(connect_anki_miner_path=fake_miner.path, language=lang)
+    monkeypatch.setattr(picking, "carded", lambda lang, settings, decks=(): (set(), "backlog"))
+    if kind == "book":
+        source, video, reading = TEXT[lang], None, TEXT[lang]
+    else:
+        video = str(tmp_path / "episode.mkv")
+        with open(video, "wb") as f:
+            f.write(b"\x1aE\xdf\xa3")
+        source, reading = EPISODE[lang], None
+    ns = SimpleNamespace(lang=lang, file=source, video=video, reading=reading, words="unknown", job="job-9", wait=30,
+                         made=(), listed=None, held=None, unsure=())
+    out = verbs.pick(ns)
+    assert out["run_file"], out
+    with open(out["run_file"], encoding="utf-8") as f:
+        config = json.load(f)["config"]
+    assert config.get("card_type") == ("sentence" if kind == "book" else None)

@@ -78,17 +78,19 @@ def from_export(export, language="ja", do=FINISH):
     if not fields.get("word"):
         raise NeedsYou("Anki Miner doesn't say which field holds the word. " + do)
     return Mapping(deck, note_type, fields, fields["word"], fields.get("sentence"), fields.get("source"),
-                   fields.get("frequency_sort"), quiet_mark=_quiet_mark(settings))
+                   fields.get("frequency_sort"), quiet_mark=_quiet_mark(settings, fields))
 
 
-def _quiet_mark(settings):
-    """BOOK-CARD: `Mapping.quiet_mark` from the export's `settings` — the sentence card's mark field while the card
-    type is the audio card ("" when the mark map names none, or there's no map), else None."""
+def _quiet_mark(settings, mapped):
+    """BOOK-CARD: `Mapping.quiet_mark` from the export's `settings` — the sentence card's mark field, as Anki Miner
+    names it (compared exactly, as its preflight does), while the card type is the audio card; "" when the mark map
+    names none, there's no map, or the mark is a field `mapped` fills (Anki Miner refuses a field written twice);
+    else None."""
     if settings.get("card_type") != AUDIO_CARD:
         return None
     marks = settings.get("card_type_marker_fields")
     mark = marks.get(SENTENCE_CARD) if isinstance(marks, dict) else None
-    return mark.strip() if isinstance(mark, str) else ""
+    return mark if isinstance(mark, str) and mark.strip() and mark not in mapped.values() else ""
 
 
 def with_note_fields(mapping, model_fields):

@@ -278,13 +278,17 @@ _LINE_COLUMNS = [("word", "<i4"), ("src", "<i4"), ("number", "<i4"), ("chars", "
 
 class Packer:
     """The walk's side: lines appended as the files are read, as compact bytes (no Python object per line) — one
-    `_LINE` a line, and the co-words' and phrases' ids one after another."""
+    `_LINE` a line, its co-words' group, the groups' ids one after another, and the phrases' ids."""
 
     def __init__(self):
         self._ids, self._keys = {}, []          # any key (a word, a co-word) -> its provisional id; id -> key
         self._lines = bytearray()
         self._cow, self._phr = array("i"), array("i")     # co-words: provisional ids · set phrases: the walk's numbers
-        self._held = ((), [])                   # the last line's co-words and their ids (a line offered for several words)
+        # A sentence is offered once for each of its words with the same co-words (one collection): its ids are packed
+        # once, as a group — each line names its group, each group where its ids start in `_cow` (E-PICK 4: 3.22 M
+        # ids for 15,897 sentences at a 400-file Chinese library, packed once a line)
+        self._grp, self._gat = array("i"), array("i")
+        self._held = (object(), -1, 0)          # the last group's co-words (as passed), its number and length
 
     def _id(self, key):
         found = self._ids.get(key)
@@ -305,19 +309,18 @@ class Packer:
         if w is None:
             w = self._id(word)
         held = self._held
-        if held[0] is cowords:
-            ids = held[1]
-        else:
+        if held[0] is not cowords:
             get = self._ids.get
             ids = [get(c) for c in cowords]
             if None in ids:
                 ids = [self._id(c) for c in cowords]
-            self._held = (cowords, ids)
-        self._lines += _LINE.pack(w, src, number, chars, len(ids), len(phrases), text_hash & 0xFFFFFFFF,
+            held = self._held = (cowords, len(self._gat), len(ids))
+            self._gat.append(len(self._cow))
+            self._cow.extend(ids)
+        self._grp.append(held[1])
+        self._lines += _LINE.pack(w, src, number, chars, held[2], len(phrases), text_hash & 0xFFFFFFFF,
                                   OVER if over else 0, besides if besides < 255 else 255,
                                   starts if starts < STARTS_PAST else STARTS_PAST)
-        if ids:
-            self._cow.extend(ids)
         if phrases:
             self._phr.extend(phrases)
 
@@ -369,11 +372,16 @@ class Packer:
             order = order[~same]
             del r, s, n, same
 
-        # co-words: only those a kept line names, numbered by key; known from the start (TRUE) left out
-        cow = _view(self._cow, np.int32)
-        cow_line = np.repeat(np.arange(len(ncow), dtype=np.int32), ncow)
+        # co-words: only those a kept line names, numbered by key; known from the start (TRUE) left out. Each line's
+        # are its group's (one a sentence: `add`)
+        cow, grp = _view(self._cow, np.int32), _view(self._grp, np.int32)
+        n_groups = len(self._gat)
+        cow_group = np.repeat(np.arange(n_groups, dtype=np.int32),
+                              np.diff(np.append(_view(self._gat, np.int32), np.int32(len(cow)))))
+        kept_group = np.zeros(n_groups, bool)
+        kept_group[grp[keep]] = True
         used = np.zeros(n_ids, bool)
-        used[cow[keep[cow_line]]] = True
+        used[cow[kept_group[cow_group]]] = True
         formulas, final = [], np.full(n_ids, -1, np.int32)
         named = sorted((key_order(self._keys[p]), p) for p in np.flatnonzero(used).tolist())
         for _order, p in named:
@@ -381,8 +389,8 @@ class Packer:
             if clauses != plan_rules.TRUE:
                 final[p] = len(formulas)
                 formulas.append((own_row(self._keys[p]), clauses))
-        cow_ids, cow_at = _regroup(cow_line, final[cow], order, len(ncow))
-        del cow, cow_line, used, final
+        cow_ids, cow_at = _regroup(cow_group, final[cow], order, n_groups, grp)
+        del cow, grp, cow_group, kept_group, used, final
 
         phr = _view(self._phr, np.int32)
         # (each phrase's row asked once, in its numbers' order; then one lookup — no Python step a phrase line)
@@ -431,14 +439,17 @@ def _view(values, dtype):
     return np.frombuffer(values, dtype) if len(values) else np.zeros(0, dtype)
 
 
-def _regroup(line, ids, order, n_lines):
+def _regroup(line, ids, order, n_lines, of=None):
     """A flat list of per-line ids (`line`: each one's line, ascending), -1 dropped, each line's ids ascending, lines
     taken in `order` -> (the ids, each taken line's start among them, one more at the end). Each line's ids are sorted
     where they lie — `line` ascending, so one stable sort of (line, id) runs over stretches already in order (a merge
     of two lines in order is one comparison) — then the lines are gathered in `order`. The same as one sort of (the
     line's place in `order`, its id) over every id, which was a sort of 1.69 M keys in no order at a 400-file Chinese
-    library (E-PICK)."""
+    library (E-PICK). `of`: the ids are per group, not per line (`line` and `n_lines` then a group's number and the
+    groups' count) and `of` each line's group, `order` still lines: a line taken gets its group's ids."""
     np = _np()
+    if of is not None:
+        order = of[order]                           # (each line taken -> its group, as taken)
     taken = np.zeros(n_lines, bool)
     taken[order] = True
     if len(line):
@@ -460,7 +471,7 @@ def _regroup(line, ids, order, n_lines):
     at = np.repeat(first[order] - starts[:-1], counts)
     del first
     at += np.arange(len(at), dtype=np.int64)
-    ids = key[at].astype(np.int32)
+    ids = key.astype(np.int32)[at]                  # (narrowed before the gather: a group's ids are gathered per line)
     return ids, starts
 
 

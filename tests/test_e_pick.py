@@ -24,6 +24,7 @@ import pytest
 from app import sentence_score, sentence_table, token_index
 from tests.test_e_l2g import _MADE, _blob, _child, gen  # noqa: F401  (gen: the module's fixture)
 from tests.test_e_redraw import _columns
+from tests.test_sentence_table import _write
 
 
 # ---------------------------------------------------------------------------------------------------- #
@@ -197,6 +198,39 @@ def test_the_co_words_regrouped_with_nothing_to_regroup_are_empty():
         want, got = _regroup_by_one_sort(*case), sentence_table._regroup(*case)
         for w, g in zip(want, got):
             assert w.dtype == g.dtype and np.array_equal(w, g), case
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_sentences_co_words_are_packed_once_whatever_words_it_is_offered_for(tmp_path, language):
+    # why: E-PICK 4 — the walk offers a sentence once for each of its new words, all with the same co-words (one set,
+    # `unique_lrs`); packed once a line they were 3.22 M ids for 15,897 sentences at a 400-file Chinese library, and
+    # the table's finish worked every copy (0.18 s of its 0.29 s). Packed once a sentence, the table is the same
+    # bytes as when every line brings its own copy — a sentence offered for one word, for many, with no co-words,
+    # its set offered again after another's, lines over the cap, a line offered twice
+    from tests.test_sentence_table import _Library, _sentences
+    lib = _Library(_sentences(language))
+    shared, fresh, once = sentence_table.Packer(), sentence_table.Packer(), 0
+    by_sentence = {}
+    for word, src, number, chars, h, _cowords, over in lib.lines:
+        by_sentence.setdefault((src, number), []).append((word, chars, h, over))
+    held = None
+    for (src, number), lines in by_sentence.items():
+        words = frozenset(w for w, *_x in lines) if len(lines) > 1 else ()
+        once += len(words)
+        for i, (word, chars, h, over) in enumerate(lines + lines[:1]):      # (its first line offered twice)
+            if i == 1 and held is not None:     # another sentence's set once more, between two of this one's lines
+                shared.add(word, src, number, chars, h, held, besides=len(held), over=over)
+                fresh.add(word, src, number, chars, h, set(held), besides=len(held), over=over)
+                once += len(held) + len(words)         # (and this one's set again after it)
+            shared.add(word, src, number, chars, h, words, besides=len(words), starts=number % 300, over=over)
+            fresh.add(word, src, number, chars, h, set(words), besides=len(words), starts=number % 300, over=over)
+        held = words or held
+    assert len(shared) == len(fresh) > 100
+    assert len(shared._cow) == once < len(fresh._cow), "a sentence's co-words once, not once for each word"
+    a = _write(lib.finish(shared, language), tmp_path, "shared.bin")
+    b = _write(lib.finish(fresh, language), tmp_path, "fresh.bin")
+    with open(a, "rb") as fa, open(b, "rb") as fb:
+        assert fa.read() == fb.read()
 
 
 # ---------------------------------------------------------------------------------------------------- #

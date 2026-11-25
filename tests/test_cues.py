@@ -270,17 +270,17 @@ def _squeezed_by_the_rule(text):
 
 def test_squeezed_leaves_out_exactly_the_rules_characters_over_every_code_point():
     # Why: the fast path removes spaces with sre's \s and trusts isprintable to say no Cf is left — both are other
-    # tests than the rule's isspace / category. Every code point, alone and between two words, must come out as the
-    # rule says, or a line's ▶ times would move.
-    chars = [chr(c) for c in range(0x110000) if not 0xD800 <= c <= 0xDFFF]
-    assert [cues._squeezed(ch) for ch in chars] == [_squeezed_by_the_rule(ch) for ch in chars]
-    joined = "".join(f"字{ch}" for ch in chars[::7]) + "。"
+    # tests than the rule's isspace / category. Every code point alone, and every seventh between two words, must come
+    # out as the rule says, or a line's ▶ times would move.
+    chars = (chr(c) for c in range(0x110000) if not 0xD800 <= c <= 0xDFFF)      # a loop: no list of 1.1M answers
+    assert [hex(ord(ch)) for ch in chars if cues._squeezed(ch) != _squeezed_by_the_rule(ch)] == []
+    joined = "".join(f"字{chr(c)}" for c in range(0, 0x110000, 7) if not 0xD800 <= c <= 0xDFFF) + "。"
     assert cues._squeezed(joined) == _squeezed_by_the_rule(joined)
 
 
 @pytest.mark.parametrize("text", [
-    "", " ", "　", "そうか　うん｡", "はい​！‎ と言った", "﻿大丈夫｡", "a\tb\r\nc\x00d\x7f",
-    "夜市 好吃 嗎？", "標籤\U000e0001\U000e0020了", "うっ…­うわああっ！", "\U00020000𠮟る ‍",
+    "", " ", "\u3000", "そうか\u3000うん｡", "はい\u200b！\u200e と言った", "\ufeff大丈夫｡", "a\tb\r\nc\x00d\x7f",
+    "夜市\u2028好吃\u2029嗎？", "標籤\U000e0001\U000e0020了", "うっ…\u00adうわああっ！", "\U00020000\U00020b9fる \u200d", "a\ud800 b",
 ])
 def test_squeezed_mixed_scripts_marks_and_line_ends_as_the_rule(text):
     assert cues._squeezed(text) == _squeezed_by_the_rule(text)
@@ -296,4 +296,5 @@ def test_squeezed_real_subtitles_and_their_times_unchanged(ja_resources_dir, zh_
         line = cues.timeline(path, language)
         said = next(cue.text for cue in cues.read(path, language) if cue.counted)
         assert line.line(said) is not None
-        assert line._squeezed == _squeezed_by_the_rule(line._squeezed)
+        whole, _starts = cues._text(cues.read(path, language, clues=False), language)
+        assert line._squeezed == _squeezed_by_the_rule(whole)      # the whole text, as the rule squeezes it

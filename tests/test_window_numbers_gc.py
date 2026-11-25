@@ -79,12 +79,15 @@ def window_library(language, monkeypatch):
     try:
         yield make
     finally:
-        for numbers, reader in made:
-            reader.stop()
-            numbers.close()
-        gc.set_threshold(*threshold)
-        gc.unfreeze()
-        gc.enable()
+        try:
+            for numbers, reader in made:                      # (each ended before the patched switch goes back: a
+                reader.stop(timeout=30)                       # look or a load still running would give its pause
+                numbers.idle(30)                              # back to the module's own count)
+                numbers.close()
+        finally:
+            gc.set_threshold(*threshold)
+            gc.unfreeze()
+            gc.enable()
 
 
 def _count_collections(monkeypatch, from_start=True):
@@ -138,6 +141,25 @@ def test_the_windows_numbers_load_runs_with_the_collector_paused_and_frozen_afte
             assert gc.get_freeze_count() == 0, "a load that isn't the window's never freezes"
         assert gc.isenabled(), "the collector on again after the load"
     assert figures[True] == figures[False] and figures[True], "the same figures either way"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_after_a_readers_stop_the_numbers_load_neither_pauses_nor_freezes(language, window_library, monkeypatch):
+    """A language switch: a reader has stopped (everything thawed) and the switch may still hold the library it left —
+    the new numbers' load then freezes nothing (a left library's cycles would stay in memory until the next switch)
+    and leaves the collector as it was; the reader's own next freeze collects first and takes the engine too."""
+    library_reader._THAWED[0] = True                          # a reader stopped since the last freeze
+    numbers, _reader = window_library()
+    counted = _count_collections(monkeypatch)
+    gc.set_threshold(50, 1, 1)
+    try:
+        numbers.load()
+        assert numbers.idle(60) and numbers.why() is None, numbers.why()
+    finally:
+        gc.callbacks.remove(counted["cb"])
+    assert gc.get_freeze_count() == 0, "nothing frozen while a left library may still be held"
+    assert counted["runs"] > 0, "not paused either: a pause is for a build that will be frozen"
+    assert gc.isenabled() and library_reader._PAUSES[0] == 0
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

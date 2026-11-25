@@ -129,11 +129,13 @@ def resume_gc(frozen=False):
     """(A4 P-gil) A `pause_gc()` given back — `frozen`: what is alive moved out of the collector's sight first (unless
     a reader stopped meanwhile) — and the collector on again when it was the last."""
     with _GC:
-        if frozen and not _THAWED[0]:
-            gc.freeze()
-        _PAUSES[0] -= 1
-        if not _PAUSES[0]:
-            gc.enable()
+        try:
+            if frozen and not _THAWED[0]:
+                gc.freeze()
+        finally:
+            _PAUSES[0] -= 1
+            if not _PAUSES[0]:
+                gc.enable()
 
 
 class _Kept(dict):

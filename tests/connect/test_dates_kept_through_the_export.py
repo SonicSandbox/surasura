@@ -48,13 +48,16 @@ def _fresh(language, reads):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_the_exports_own_commit_after_a_move_keeps_the_dates_read_ahead(language, reads):
+def test_the_exports_own_commit_after_a_move_keeps_the_dates_read_ahead(language, reads, monkeypatch):
     # why: the move the learner made before Generate owes the copy; the helper's export lands after the dates were
     # read ahead — its commit is bookkeeping only, so the read must stand (it was read again on the main thread)
     store = migrated(language)
     now = store.ids("now")
     store.set_tier(now[:1], "soon")                 # a move: the copy is owed
     assert store.export_due()
+    counted = []
+    real_state = ls.read_state
+    monkeypatch.setattr(ls, "read_state", lambda *a: counted.append(1) or real_state(*a))
     first = sentences._dates(language, False)
     assert len(reads) == 1 and first[0]
     before = sentences._store_stamp(language)
@@ -63,7 +66,9 @@ def test_the_exports_own_commit_after_a_move_keeps_the_dates_read_ahead(language
     again = sentences._dates(language, False)
     assert len(reads) == 1, "the export's own commit threw the dates away"
     assert again[0] is first[0] and _view(again[0]) == _fresh(language, reads)
+    assert len(counted) == 2, "the count asked once at the read, once when the stamp moved"
     assert sentences._dates(language, False)[0] is first[0] and len(reads) == 1, "kept under the new stamp too"
+    assert len(counted) == 2, "the new stamp kept: the count not asked again"
     store.close()
 
 
@@ -121,4 +126,11 @@ def test_with_no_counter_to_read_a_changed_stamp_reads_the_dates_again(language,
     ls.export_copy(store)
     sentences._dates(language, False)
     assert len(reads) == 2
+    other = sqlite3.connect(store.db_path)          # the stamp moved again, the count unreadable then as now
+    try:
+        other.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        other.close()
+    sentences._dates(language, False)
+    assert len(reads) == 3, "two counts that can't be read are no match"
     store.close()

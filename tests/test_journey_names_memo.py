@@ -97,6 +97,15 @@ def test_a_memo_of_another_reading_rule_a_damaged_one_or_one_unkeyed_reads_the_n
         asked.clear()
         again = _render(language, page, _memo(path, language, key=key))
         assert set(asked) == set(NAMES[language]) and _all(again) == _all(plain), key
+    unkeyed = _memo(path, language, key="?")        # written while the code's files could not be read
+    _render(language, page, unkeyed)
+    unkeyed.save()
+    asked.clear()
+    _render(language, page, _memo(path, language, key="?"))
+    assert set(asked) == set(NAMES[language]), "a memo keyed ? is never served"
+    memo = _memo(path, language, key="1:build:an-older-build")
+    _render(language, page, memo)
+    memo.save()
     held = json.load(open(path, encoding="utf-8"))
     held["n"] = {name: 5 for name in held["n"]}         # not a name: read again, never shown
     with open(path, "w", encoding="utf-8") as f:
@@ -107,6 +116,27 @@ def test_a_memo_of_another_reading_rule_a_damaged_one_or_one_unkeyed_reads_the_n
     with open(path, "w", encoding="utf-8") as f:
         f.write('{"v": 1, "n_key": ')                   # cut mid-write
     assert _all(_render(language, page, _memo(path, language, key="1:build:an-older-build"))) == _all(plain)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_names_alone_new_to_the_memo_are_saved(language, tmp_path, asked):
+    # why: a page whose words the memo already holds but whose names it lacks (a memo from before L2-WASTE) must
+    # still keep its names, or every redraw reads them again
+    path = str(tmp_path / jr.WORD_MEMO)
+    page = _page(language)
+    memo = _memo(path, language)
+    _render(language, page, memo)
+    memo.save()
+    held = json.load(open(path, encoding="utf-8"))
+    held["n"] = {}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(held, f, ensure_ascii=False)
+    names_only = _memo(path, language)
+    _render(language, page, names_only)
+    names_only.save()
+    asked.clear()
+    _render(language, page, _memo(path, language))
+    assert asked == []
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -146,8 +176,10 @@ def test_the_names_key_is_the_reading_codes_own_a_freezes_build_or_the_source_fi
     rule.write_text("# LM1a, as it was\n", encoding="utf-8")
     monkeypatch.setattr(episode_names, "__file__", str(rule))
     before = jr.names_key()
-    rule.write_text("# LM1a, read another way\n", encoding="utf-8")
-    assert jr.names_key() != before, "a changed rule file is another key"
+    rule.write_text("# LM1a, as it is!\n", encoding="utf-8")       # the same size, written later
+    st = os.stat(rule)
+    os.utime(rule, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))
+    assert jr.names_key() != before, "a changed rule file is another key, its size the same"
     monkeypatch.setattr(episode_names, "__file__", str(tmp_path / "gone.py"))
     assert jr.names_key() == "?", "a rule file that can't be read keys nothing"
     monkeypatch.setattr(sys, "frozen", True, raising=False)

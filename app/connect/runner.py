@@ -3343,7 +3343,7 @@ class Steps:
 
     def title(self, lang, job):
         try:
-            if self._step_reads is not None:
+            if getattr(self, "_step_reads", None) is not None:   # (a stand-in borrowing the method has none)
                 item = self._read_once(lang, job)[1] or {}
             else:
                 with self._open(lang) as store:
@@ -3355,7 +3355,7 @@ class Steps:
 
     def pairing(self, lang, job):
         """The item's pairing; a busy store is a Wait, never "no pairing" (adversary P2.4-A #10)."""
-        if self._step_reads is not None:
+        if getattr(self, "_step_reads", None) is not None:   # (a stand-in borrowing the method has none)
             return self._read_once(lang, job)[0]
         from app.connect import library
         with self._open(lang) as store:
@@ -3395,7 +3395,7 @@ class Steps:
 
     def subtitle(self, lang, job):
         from app.path_utils import get_data_path
-        if self._step_reads is not None:
+        if getattr(self, "_step_reads", None) is not None:   # (a stand-in borrowing the method has none)
             item = self._read_once(lang, job)[1]
         else:
             with self._open(lang) as store:

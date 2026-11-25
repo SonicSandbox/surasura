@@ -1349,9 +1349,15 @@ def _anki_miner_setup(loaded, lang, run_dir, held=None):
         try:
             while True:
                 info, listed = looked or (anki_miner.version(miner), anki_miner.profiles(miner))
-                profile = anki_miner.choose_profile(info, listed, name)    # 3.7: else your active one
-                os.makedirs(run_dir, exist_ok=True)
-                export = anki_miner.settings_export(miner, lang, export_path, profile)
+                try:
+                    profile = anki_miner.choose_profile(info, listed, name)    # 3.7: else your active one
+                    os.makedirs(run_dir, exist_ok=True)
+                    export = anki_miner.settings_export(miner, lang, export_path, profile)
+                except anki_miner.AnkiMinerError:
+                    if looked is None:
+                        raise
+                    looked = None       # never a kept answer's failure: read again, and say only that one's
+                    continue
                 said = export.get("app_version") if isinstance(export, dict) else None
                 if looked is None or said in (None, info.get("app")):
                     break

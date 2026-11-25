@@ -175,7 +175,8 @@ def test_an_export_naming_another_version_reads_version_and_profiles_again(miner
 
 @pytest.mark.parametrize("lang", LANGS)
 def test_a_failed_look_up_drops_the_kept_answers_and_the_next_run_reads_all_three(miner, lang):
-    # why (any failure, row 25): a refused export may be the kept profile gone — read everything again
+    # why (any failure, row 25): a refused export may be the kept profile gone — read everything again, at once (a
+    # kept answer's failure is never said: the fresh read's is), and the next run reads all three again too
     _run(miner, lang)
     miner.plan(replay={"settings-export": {"schema": 1, "command": "settings-export", "ok": False,
                                            "error": "PROFILE_UNREADABLE", "message": "unreadable"}})
@@ -184,7 +185,14 @@ def test_a_failed_look_up_drops_the_kept_answers_and_the_next_run_reads_all_thre
     assert not os.path.exists(anki_miner._kept_path())
     miner.plan()
     _run(miner, lang, job=3)
-    assert miner.commands() == LOOK_UPS + ["settings-export"] + LOOK_UPS
+    assert miner.commands() == LOOK_UPS + ["settings-export"] + LOOK_UPS + LOOK_UPS
+
+
+def test_a_steps_made_without_its_init_reads_the_store_as_before(monkeypatch):
+    # why: a test's Steps (`Steps.__new__`, test_z9_books) has no `_step_reads` of its own: no memo, no AttributeError
+    steps = runner.Steps.__new__(runner.Steps)
+    monkeypatch.setattr(runner.Steps, "_open", lambda self, lang: (_ for _ in ()).throw(runner.Wait("busy")))
+    assert steps.title("ja", {"item_id": 1}) is None
 
 
 def test_the_runners_failure_drop_takes_the_kept_answers_too(miner):

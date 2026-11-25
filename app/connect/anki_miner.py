@@ -286,10 +286,10 @@ def kept_look_ups(path, now):
     try:
         with open(_kept_path(), encoding="utf-8") as f:
             kept = json.load(f)
-    except (OSError, ValueError):
-        return None
-    if not isinstance(kept, dict) or kept.get("key") != _kept_key(path, now):
-        return None
+        if not isinstance(kept, dict) or kept.get("key") != _kept_key(path, now):
+            return None
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return None                     # (none kept, unreadable; a test with no root keeps none)
     info, listed = kept.get("version"), kept.get("profiles")
     return (info, listed) if isinstance(info, dict) and isinstance(listed, list) else None
 
@@ -299,7 +299,10 @@ def keep_look_ups(path, now, info, listed):
     (temp + replace); a failure costs only the next run's look-ups. Never raises."""
     if now is None or not path:
         return
-    target = _kept_path()
+    try:
+        target = _kept_path()
+    except RuntimeError:
+        return                          # (a test with no root keeps none)
     temp = f"{target}.{os.getpid()}.{threading.get_ident()}.tmp"
     try:
         os.makedirs(os.path.dirname(target), exist_ok=True)

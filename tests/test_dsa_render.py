@@ -76,7 +76,7 @@ def _scanned(lines, wanted):
 
 class _Counted:
     """lzma's decompressors, counting the table's bytes they hand out: a block (raw LZMA2) or the one stream of the
-    format before (`LZMADecompressor`) — the index's own read (`.xz`, once a process) apart."""
+    format before (`LZMADecompressor`) — the index's own read (zlib's, once a process) apart."""
 
     def __init__(self, monkeypatch):
         self.out = self.index = 0
@@ -90,10 +90,7 @@ class _Counted:
                 found = real_decompress(data, *a, **k)
             finally:
                 inside.pop()
-            if k.get("format") == lzma.FORMAT_RAW:
-                counter.out += len(found)
-            else:
-                counter.index += len(found)
+            counter.out += len(found)
             return found
 
         class Decompressor:
@@ -109,8 +106,16 @@ class _Counted:
             def __getattr__(self, name):
                 return getattr(self._real, name)
 
+        real_zlib = zlib.decompress
+
+        def index_read(data, *a, **k):
+            found = real_zlib(data, *a, **k)
+            counter.index += len(found)
+            return found
+
         monkeypatch.setattr(lzma, "decompress", decompress)
         monkeypatch.setattr(lzma, "LZMADecompressor", Decompressor)
+        monkeypatch.setattr(zlib, "decompress", index_read)
 
 
 # --------------------------------------------------------------------------------------------------------------- #

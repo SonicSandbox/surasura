@@ -112,7 +112,7 @@ FORMAT = 2                  # 1 (until 2026-11-25): one lzma stream, scanned who
 def _pack_blocks(lines):
     """[line] -> (DATA in base 64, BLOCKS: where each block starts in the decoded DATA, and the end; INDEX in base 64:
     for each bucket (a key's CRC-32 % BUCKETS; `journey_render._line_keys`) how many blocks it names, one byte each,
-    then those blocks' numbers, one byte each, bucket by bucket. A line-by-line index (each key's CRC-32 and line)
+    then those blocks' numbers, one byte each, bucket by bucket, zlib-compressed. A line-by-line index (each key's CRC-32 and line)
     took 2.1 MB and 0.12 s to read — a quarter of what it saved."""
     from app.journey_render import _line_keys
     filters = [{"id": lzma.FILTER_LZMA2, "preset": 9 | lzma.PRESET_EXTREME, "dict_size": BLOCK_DICT}]
@@ -130,7 +130,8 @@ def _pack_blocks(lines):
     if max(map(len, named), default=0) > 255:
         raise ValueError("a bucket names more than 255 blocks: raise BUCKETS")
     index = bytes(map(len, named)) + bytes(b for found in named for b in sorted(found))
-    index = lzma.compress(index, preset=9 | lzma.PRESET_EXTREME)
+    index = zlib.compress(index, 9)     # (zlib: read in 3 ms by every render that misses a word; lzma took 29 ms
+    #                                         for 16 KB less)
     return base64.b64encode(bytes(data)).decode(), blocks, base64.b64encode(index).decode()
 
 

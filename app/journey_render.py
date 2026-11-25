@@ -282,7 +282,7 @@ def _gloss_lines(module, wanted):
     import lzma
     index = _GLOSS_INDEX.get(module.__name__)
     if index is None:
-        raw = lzma.decompress(base64.b64decode(module.INDEX))
+        raw = zlib.decompress(base64.b64decode(module.INDEX))
         buckets = module.BUCKETS
         index = _GLOSS_INDEX[module.__name__] = (array("I", accumulate(raw[:buckets], initial=0)), raw[buckets:])
     starts, named = index
@@ -476,11 +476,16 @@ class Meanings:
         wanted = {key.encode("utf-8") for key in wanted}
         index, isdisjoint = {}, wanted.isdisjoint
         for line in _gloss_lines(module, wanted):       # (the index's blocks only: each line checked here)
-            keys = _line_keys(line)
+            # `_line_keys` inline and its dedupe only on a hit: this runs for every line of the blocks read (all of
+            # them for a memo-less page), so a call and a dict a line cost a third more than the scan it replaced
+            second = line.find(b"\t", line.find(b"\t") + 1)
+            if second < 0:
+                continue
+            keys = line[:second].replace(b"\t", b",").split(b",")   # ja: kanji forms, readings · zh: 简, 繁
             if isdisjoint(keys):
                 continue
             entry = line.decode("utf-8").split("\t")
-            for key in keys:
+            for key in dict.fromkeys(keys):
                 if key in wanted:
                     index.setdefault(key.decode("utf-8"), []).append(entry)
         return index

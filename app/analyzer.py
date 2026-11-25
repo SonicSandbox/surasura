@@ -4728,12 +4728,15 @@ class ListSentences:
     cards Connect's Anki sync keeps in `User Files/<lang>/anki_young.json` (`anki_sync.sync_young`), read once a call;
     no file (never synced, Anki absent): none, as before. No Anki call: the file only. `young` {lemma: weight} hands
     them in instead (tests); `young_at` the stamp of the ones the last call weighed (`young_stamp`), for the redraw
-    marker (a sync since that changes them owes the journey a redraw: `journey.moved_state`)."""
+    marker (a sync since that changes them owes the journey a redraw: `journey.moved_state`). The shown lines no audio
+    is heard from (`Line.heard` silent: SPEC § 4.5) are kept beside them, {(Src, Context)} (`silent`): the journey
+    marks them while *Ensure an audio example* is on (`journey_render.silent_lines`)."""
 
     def __init__(self, language, max_contexts, clean_only=False, results_dir=None, table=None, young=None):
         self.language, self.n, self.clean_only = language, plan_rules.context_limit(max_contexts), clean_only
         self.results_dir, self.table, self.young = results_dir or RESULTS_DIR, table, young
         self.run, self.kept, self.read, self.young_at = None, {}, {}, None
+        self.silent, self.read_silent = set(), set()
 
     def __call__(self, keys, order=None):
         from app import sentence_score, sentence_corpus, sentence_table
@@ -4753,6 +4756,7 @@ class ListSentences:
                 return None
         self.run = tab.head.get("run_signature")
         self.read = _read_shown(self.results_dir, self.run)
+        self.read_silent = _read_shown(self.results_dir, self.run, SILENT_KEY)
         young = connect_sentences.young_weights(self.language) if self.young is None else dict(self.young)
         self.young_at = young_stamp(young)
         got = sentence_score.choose(self.language, keys, n=self.n, length=(low, high), order=order, whole=True,
@@ -4762,56 +4766,67 @@ class ListSentences:
             return None
         base = os.path.join(root, "")
         tagger = _LazyTagger() if self.language == "ja" else None
-        out, kept = {}, {}
+        out, kept, silent = {}, {}, set()
         for key, lines in got.items():
             columns = []
             for line in lines:
                 rel = (line.file[len(base):] if line.file.startswith(base) else line.file).replace(os.sep, "/")
                 kept[(rel, line.number)] = line.text
-                columns += (strip_verse_number(line.text, tagger) if tagger is not None and line.text else line.text,
-                            rel)
+                shown = strip_verse_number(line.text, tagger) if tagger is not None and line.text else line.text
+                if line.heard is None:              # (sentence_score.SILENT: no clip of its own, no AI voice)
+                    silent.add((rel, shown))
+                columns += (shown, rel)
             out[key] = columns
-        self.kept = kept
+        self.kept, self.silent = kept, silent
         return out
 
     def keep(self):
         """results/`SHOWN_FILE`: the text of the lines the last call showed, by the table's run — written only when it
         differs from what was read (never fails the run)."""
-        if self.run is None or self.kept == self.read:
+        if self.run is None or (self.kept == self.read and self.silent == self.read_silent):
             return
         try:
-            _write_shown(self.results_dir, self.run, self.kept)
+            _write_shown(self.results_dir, self.run, self.kept, self.silent)
         except Exception as e:
             print(f"Warning: could not keep the shown sentences: {e}")
 
 
-def _read_shown(results_dir, run_signature):
+SILENT_KEY = "silent"            # results/`SHOWN_FILE`'s silent lines: [[Src, Context], …] (`journey_render.silent_lines`)
+
+
+def _read_shown(results_dir, run_signature, part="lines"):
     """{(rel, number): text} of results/`SHOWN_FILE` when it is `run_signature`'s; {} else (none, another run's,
-    damaged)."""
+    damaged). `part` SILENT_KEY: its silent lines instead, {(rel, Context)} (set() else)."""
     import gzip
+    empty = {} if part == "lines" else set()
     try:
         with gzip.open(os.path.join(results_dir, SHOWN_FILE), "rb") as f:
             data = json.loads(f.read())
         if data.get("run_signature") != run_signature:
-            return {}
+            return empty
+        if part == SILENT_KEY:
+            return {(rel, text) for rel, text in data.get(SILENT_KEY) or ()}
         return {(rel, int(number)): text for rel, lines in data["lines"].items() for number, text in lines.items()}
     except Exception:
-        return {}
+        return empty
 
 
-def _write_shown(results_dir, run_signature, kept):
-    """results/`SHOWN_FILE`, whole (a temp file replaced): the same bytes for the same lines (sorted, no time)."""
+def _write_shown(results_dir, run_signature, kept, silent=()):
+    """results/`SHOWN_FILE`, whole (a temp file replaced): the same bytes for the same lines (sorted, no time); the
+    silent ones (`silent`, {(rel, Context)}) beside them when there are any (none: the file as before)."""
     import gzip
     lines = {}
     for (rel, number), text in sorted(kept.items()):
         lines.setdefault(rel, {})[str(number)] = text
+    data = {"run_signature": run_signature, "lines": lines}
+    if silent:
+        data[SILENT_KEY] = [list(pair) for pair in sorted(silent)]
     path = os.path.join(results_dir, SHOWN_FILE)
     tmp = f"{path}.{os.getpid()}.tmp"
     try:
         with open(tmp, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=6, mtime=0,
                                                    filename="") as f:
-            f.write(json.dumps({"run_signature": run_signature, "lines": lines}, separators=(",", ":"),
-                               ensure_ascii=False).encode("utf-8"))
+            f.write(json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
         os.replace(tmp, path)
     except BaseException:
         try:

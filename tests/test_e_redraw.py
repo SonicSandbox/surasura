@@ -214,7 +214,9 @@ def test_the_redraw_keeps_the_shown_lines_text_and_reads_it_back(moved, tmp_path
     assert analyzer._read_shown(results, "another run") == {}, "another run's kept text is never read"
     with open(os.path.join(results, analyzer.SHOWN_FILE), "rb") as f:
         first = f.read()
-    analyzer._write_shown(str(tmp_path), table.head["run_signature"], kept)
+    silent = analyzer._read_shown(results, table.head["run_signature"], analyzer.SILENT_KEY)
+    assert silent, "RP-2's books are heard from nothing (no audiobook, no AI voice): kept as silent (SPEC § 4.5)"
+    analyzer._write_shown(str(tmp_path), table.head["run_signature"], kept, silent)
     with open(os.path.join(str(tmp_path), analyzer.SHOWN_FILE), "rb") as f:
         assert f.read() == first, "the same lines, the same bytes (no time inside)"
 

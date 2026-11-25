@@ -59,6 +59,7 @@ import zlib
 import sqlite3
 import time
 from collections import Counter
+from json.decoder import scanstring as _scanstring
 from operator import itemgetter
 
 # Bump when the on-disk SHAPE changes — or when the tokenizer would now produce DIFFERENT sentences
@@ -243,6 +244,36 @@ def _decode_tokens(blob):
         return json.loads(zlib.decompress(blob).decode("utf-8"))
     except Exception:
         return []
+
+
+_CUT = ']], ["'             # between two sentences of `_encode_tokens`' JSON: [text, [[…], …]], [text, …
+
+
+def _decode_texts(blob, lines):
+    """`_decode_tokens(blob)`'s sentences' texts, read without decoding their tokens (json.loads of the tokens was 78 %
+    of a file's read: E-L2G) — None when it can't tell, and the caller decodes in full. The JSON is cut where one
+    sentence ends and the next begins (`_CUT`: inside a string every `"` is escaped, so the cut is a boundary, or a
+    string's content ending in `]], [`), each piece's text read as JSON reads it; `lines`, the row's own column (one
+    entry a sentence, written with it), counts them: a cut too many, a piece that isn't one, no column — None."""
+    if not blob or not lines:
+        return None
+    try:
+        doc = zlib.decompress(blob).decode("utf-8")
+        count = len(json.loads(zlib.decompress(lines)))
+        if not doc.startswith('[["'):
+            return None
+        parts = doc[3:].split(_CUT)
+        if len(parts) != count:
+            return None
+        out = []
+        for part in parts:
+            text, end = _scanstring(part, 0)
+            if not part.startswith(", [", end):
+                return None
+            out.append(text)
+        return out
+    except Exception:
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -762,6 +793,18 @@ class Store:
         if not row:
             return []
         return self._named(_decode_tokens(row[0]), row[1])
+
+    def file_texts(self, path):
+        """`file_tokens(path)`'s sentences' texts, in their order, without their tokens (`_decode_texts`; the name
+        tables never change a text) — [] if the file isn't indexed, None when the row can't tell them apart that way
+        (the caller reads `file_tokens`)."""
+        try:
+            row = self.conn.execute("SELECT tokens, lines FROM files WHERE path=?", (_norm(path),)).fetchone()
+        except sqlite3.OperationalError:
+            return None                             # (a store a build before the column made, opened to read only)
+        if not row:
+            return []
+        return _decode_texts(row[0], row[1])
 
     def _named(self, sentences, names_blob, joined=None):
         """`sentences` with the library's name tables applied (`file_tokens`); `joined`, a set: receives the numbers

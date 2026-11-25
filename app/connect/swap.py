@@ -330,16 +330,21 @@ def _chosen(language, keys, avoid, files, bad, reachable):
 
     def reach(item):
         return item is not None and item not in bad and (reachable is None or bool(reachable(item)))
-    try:
-        ranked = picker.choose(language, sorted(keys), never={k: set(avoid) for k in keys}, files=files,
-                               reach=reach)
-    except Exception:
-        log.info("Swap: the sentence picker didn't answer for a word; the swap waits", exc_info=True)
-        return None
-    for key in sorted(keys):
-        for c in ranked.get(key) or ():
-            if c.item_id is not None and c.item_id not in bad and not sentences.same_line(c.text, avoid):
-                return c.item_id, c.text
+    # The score's line first, one asked (every line returned is read); one it can't use (a file outside the library:
+    # no item) -> asked again for the picker's TOP, as before. Today's path answers whole the first time
+    for top in (1, sentences.TOP):
+        try:
+            ranked = picker.choose(language, sorted(keys), never={k: set(avoid) for k in keys}, files=files,
+                                   reach=reach, top=top)
+        except Exception:
+            log.info("Swap: the sentence picker didn't answer for a word; the swap waits", exc_info=True)
+            return None
+        for key in sorted(keys):
+            for c in ranked.get(key) or ():
+                if c.item_id is not None and c.item_id not in bad and not sentences.same_line(c.text, avoid):
+                    return c.item_id, c.text
+        if not any(getattr(c, "cost", None) is not None for key in keys for c in ranked.get(key) or ()):
+            return None                 # (not the score's: nothing more to ask for)
     return None
 
 

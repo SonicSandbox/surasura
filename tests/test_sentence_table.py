@@ -627,18 +627,25 @@ def test_at_level_1_the_table_carries_each_lines_two_numbers(language, monkeypat
     assert all(start <= len(text) for start, text, _w in starts)
 
 
-def test_at_level_1_each_source_carries_the_plans_own_digest(monkeypatch):
-    # why: a reader skips a line whose file changed since the Generate (SPEC § 5.4) by the file's digest — the one the
-    # plan's files already carry (plan_rules.file_digest), so the table and the plan never disagree about a file
+def test_at_level_1_each_source_carries_its_files_own_digest_in_one_spelling(monkeypatch):
+    # why: a reader skips a line whose file changed since the Generate (SPEC § 5.4) by the file's digest — its path,
+    # time, size and kind, as the plan's files are signed, but its path in one spelling (st.source_digest), so a
+    # reader that spells the data folder another way still finds the file; the plan's files, in the plan's order
     import re
     from app import analyzer, plan_engine
+    from app.path_utils import get_data_path
     monkeypatch.delenv("SURASURA_SENTENCE_TABLE", raising=False)
     results = _seed("ja")
     _generate_at("ja", 1)
     table = st.open_table(os.path.join(results, st.TABLE_FILE), language="ja")
     plan = plan_engine.load(os.path.join(results, analyzer.PLAN_FILE))
     sources = table.sources()
-    assert [s[2] for s in sources[:len(plan.files)]] == [f[2] for f in plan.files]
+
+    def signed(rel, kind):
+        path = os.path.join(get_data_path("ja"), *rel.split("/"))
+        stat = os.stat(path)
+        return st.source_digest(path, [stat.st_mtime, stat.st_size], kind or None)
+    assert [s[2] for s in sources[:len(plan.files)]] == [signed(f[0], f[3]) for f in plan.files]
     assert [s[0] for s in sources[:len(plan.files)]] == [f[0] for f in plan.files]
     assert all(isinstance(s[2], str) and re.fullmatch(r"[0-9a-f]{16}", s[2]) for s in sources)
 

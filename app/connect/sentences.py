@@ -555,10 +555,18 @@ def _dates(language, ai, wait=True):
     return _heard_now(info, seen, ai)       # (the same answers as the read's: the next pick's objects from the first)
 
 
+def files_seen(language, ai):
+    """The score's {path: Seen} for the whole library now — the dates Connect's card weighs (`_dates`: one read, kept
+    while the store is unchanged, a read ahead waited for): what the level-2 list asks (`analyzer.ListSentences`), so
+    the list shows what a card would get."""
+    return _dates(language, ai)[1]
+
+
 def dates_ahead(language, ai):
     """The library's dates (`_dates`) read now on a thread of its own, so the asker goes on — Connect's run to its
-    shelf and its first job (SPEC § 6.3 row 16): the next read of (`language`, `ai`) waits for this one and takes what
-    it kept. One read ahead at a time a (language, ai); one that failed leaves nothing kept (the next reads itself)."""
+    shelf and its first job (SPEC § 6.3 row 16), a level-2 Generate or redraw to its plan (`analyzer.main`): the next
+    read of (`language`, `ai`) waits for this one and takes what it kept. One read ahead at a time a (language, ai);
+    one that failed leaves nothing kept (the next reads itself)."""
     key = (language, ai)
     with _AHEAD_LOCK:
         thread = _AHEAD.get(key)

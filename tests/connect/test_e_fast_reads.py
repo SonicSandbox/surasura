@@ -11,6 +11,7 @@ nothing they are made of changed. The cut takes the score's best line that fits 
 The table and the token store are the score's in-memory ones (`tests/connect/test_e_connect_score.py`'s World), the
 files real subtitles in the sandbox's data folder; lines as tests/Test Resources/ja|zh write them.
 """
+import json
 import os
 import threading
 
@@ -672,3 +673,67 @@ def test_the_scores_read_of_the_library_keys_every_file_as_level_zeros_own_join_
         scored = {k: v[0] for k, v in sentences._library(language, store, scored=True).items()}
         today = {k: v[0] for k, v in sentences._library(language, store).items()}
     assert scored == today and sorted(scored.values()) == sorted(ids)
+
+
+# --- the level-2 list reads the library's dates once, on their own thread (the lead's ruling, 2026-11-24) ---------- #
+
+_DATES_PROBE = r"""
+import json, sys, threading
+from app import analyzer
+from app.connect import sentences as S
+log = []
+real_library, real_ahead, real_call = S._library, S.dates_ahead, analyzer.ListSentences.__call__
+
+
+def library(language, store=None, ai=False, only=None, scored=False):
+    if scored:
+        log.append(["read", threading.current_thread().name])
+    return real_library(language, store, ai, only, scored)
+
+
+def ahead(language, ai):
+    log.append(["ahead", threading.current_thread().name])
+    return real_ahead(language, ai)
+
+
+def call(self, keys, order=None):
+    log.append(["list", threading.current_thread().name])
+    return real_call(self, keys, order)
+
+
+S._library, S.dates_ahead, analyzer.ListSentences.__call__ = library, ahead, call
+sys.argv = ["analyzer.py"] + sys.argv[1:]
+code = analyzer.main()
+print("PROBE " + json.dumps({"code": code, "log": log}))
+"""
+
+
+@pytest.mark.parametrize("language, how", [("ja", "redraw"), ("zh", "redraw"), ("ja", "generate")])
+def test_a_release_2_list_reads_the_librarys_dates_once_on_a_thread_started_before_it_asks(tmp_path, language, how):
+    # why: the level-2 list (`analyzer.ListSentences`) read every file's dates on the main thread at every Generate
+    # and every redraw (0.75 s of 20,000 files, profiled): one read now, started at main()'s start (Connect's
+    # `dates_ahead`), done while the plan and pandas load, the list waiting only for what is left
+    import subprocess
+    import sys
+    from tests import plan_file_cases as cases
+    from tests.test_e_redraw import _env, _generated
+    root = _generated(language, tmp_path)
+    results = os.path.join(root, "results")
+    argv = [f"--language={language}", "--static", "--no-open"]
+    env = _env(root)
+    if how == "redraw":
+        os.remove(os.path.join(results, analyzer.REDRAW_FILE))      # (not today's: the keeper redraws it)
+        argv.append("--from-plan")
+    else:
+        env["SURASURA_FORCE_RUN"] = "1"
+    p = subprocess.run([sys.executable, "-c", _DATES_PROBE] + argv, cwd=cases.REPO, env=env, capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
+    assert p.returncode == 0, p.stdout[-2000:] + p.stderr[-2000:]
+    got = json.loads(next(line for line in p.stdout.splitlines() if line.startswith("PROBE "))[6:])
+    if how == "redraw":
+        assert "Redrew the journey" in p.stdout, p.stdout[-1500:]
+    log = [tuple(entry) for entry in got["log"]]
+    asked = [n for n, (what, _thread) in enumerate(log) if what == "list"]
+    assert asked, "the list asked the one reader"
+    assert log.index(("ahead", "MainThread")) < asked[0], log
+    assert [entry for entry in log if entry[0] == "read"] == [("read", f"surasura-dates-{language}")], log

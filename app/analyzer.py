@@ -4614,9 +4614,14 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
             entry[f"final_src_{i}"] = row.get(f"Src {i}", "")
     # One write, the fast encoder (no indent: the same data, every reader parses it); the sidecars hold each file's
     # words (sources), which no order moves: only their times follow word_stats.json's (the Content Manager's newer-
-    # than rule), written again only when one is missing
-    with open(word_stats_path, 'w', encoding='utf-8') as f:
-        f.write(json.dumps(stats, ensure_ascii=False))
+    # than rule), written again only when one is missing. Whole or not at all (`write_list`): a redraw killed here
+    # leaves the last one, so the next look redraws — never a whole Generate for a file it can't read
+    text = json.dumps(stats, ensure_ascii=False)
+
+    def _write_stats(tmp):
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write(text)
+    write_list(_write_stats, word_stats_path)
     try:
         sidecars = [os.path.join(RESULTS_DIR, name) for name in ("analyzed_files.json", "file_words.json")]
         if all(os.path.exists(p) for p in sidecars):

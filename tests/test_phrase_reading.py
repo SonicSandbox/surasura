@@ -132,9 +132,11 @@ def test_a_phrase_with_a_form_of_its_own_is_named_in_it_and_keeps_its_voicing(ru
 def test_the_replan_shows_the_same_kana_as_the_generate(run):
     # why: the journey's redraw after a move writes the engine's rows over the Generate's: Kana must survive it
     plan = plan_engine.load(str(run / analyzer.PLAN_FILE))
-    assert plan.header["format"] == plan_engine.FORMAT == analyzer.PLAN_FORMAT == 4
-    result = plan_engine.Engine(plan).result()
-    # a format-4 plan whose phrase entries lack the spelling is refused whole, never half-read
+    assert plan.header["format"] == plan_engine.FORMAT == analyzer.PLAN_FORMAT == 5     # 5: the flip
+    # (a format-5 plan's sentences are the list reader's, asked as the redraw asks them: `_redraw_from_plan`)
+    result = plan_engine.Engine(plan).result(chooser=analyzer.ListSentences(
+        "ja", plan.header.get("max_contexts") or 0, bool(plan.header.get("only_i_plus_one")), results_dir=str(run)))
+    # a plan whose phrase entries lack the spelling is refused whole, never half-read
     lines = [json.loads(line) for line in __import__("gzip").decompress(
         (run / analyzer.PLAN_FILE).read_bytes()).split(b"\n") if line]
     lines[0]["phrase_entries"] = [entry[:2] for entry in lines[0]["phrase_entries"]]

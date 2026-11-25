@@ -29,6 +29,7 @@ Each was proved able to fail by breaking its condition once by hand in app/ (the
 Japanese and Chinese alike, under the per-test SURASURA_TEST_ROOT, with real text from the bundled samples (the library
 builders of tests/test_journey_stones.py). Never a real %APPDATA%: child_env moves both under the test root.
 """
+import csv
 import glob
 import json
 import os
@@ -38,7 +39,7 @@ import sys
 
 import pytest
 
-from app import analyzer
+from app import analyzer, plan_rules
 from app.cli import verbs
 from tests.plan_file_cases import child_env
 from tests.test_journey_stones import REPO, REUSED, _files, _library, _report, _settings, _stones, _words
@@ -142,6 +143,17 @@ def _results(root):
     return os.path.join(root, "results")
 
 
+def _counts(csvs):
+    """`_csvs`' lists with their example sentences (`Context N` / `Src N`) left out -> {name: [row text]}."""
+    out = {}
+    for name, data in csvs.items():
+        rows = data.decode("utf-8-sig").splitlines()
+        keep = [i for i, col in enumerate(next(csv.reader(rows[:1])))
+                if not (col.startswith("Context ") or col.startswith("Src "))]
+        out[name] = [[row[i] for i in keep if i < len(row)] for row in csv.reader(rows)]
+    return out
+
+
 def _csvs(root):
     """results/*.csv, byte for byte -> {name: bytes}."""
     out = {}
@@ -192,7 +204,12 @@ def test_d2_after_a_mark_and_its_quiet_run_the_counts_equal_a_full_generate_from
     shutil.rmtree(_results(root))                       # from scratch: no results for any reuse to start from
     full, said = _generate(root, language)
     assert REUSED not in said, "a full analysis"
-    assert _csvs(root) == quiet_csvs, "the full Generate's lists, byte for byte"
+    if plan_rules.SENTENCE_TABLE >= 2:
+        # level 2: a list's example sentences weigh how well each episode is remembered (SPEC decision 6, § 4.1), so
+        # the mark moves them; the counts (every other column) are this test's promise, byte for byte
+        assert _counts(_csvs(root)) == _counts(quiet_csvs), "the full Generate's counts, byte for byte"
+    else:
+        assert _csvs(root) == quiet_csvs, "the full Generate's lists, byte for byte"
     assert full == quiet, "and its journey: the same episodes, words, *% known* and stone"
     assert _stones(quiet) == {names["A2"]: False}, "counted AND watched"
     store.close()

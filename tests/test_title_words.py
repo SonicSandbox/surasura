@@ -36,7 +36,10 @@ TITLES = {"ja": {"喫茶店の朝": ["gotoubun_ep01.srt", "gotoubun_ep02.srt", "
 @pytest.fixture(scope="module", params=["ja", "zh"])
 def run(request, tmp_path_factory):
     """One case's library and its Generate (a child process, as the dashboard runs it)."""
-    language = request.param
+    return _generated(request.param, tmp_path_factory)
+
+
+def _generated(language, tmp_path_factory):
     case = f"rp2-{language}"
     root = str(tmp_path_factory.mktemp(case))
     cases.build(root, case)
@@ -45,6 +48,12 @@ def run(request, tmp_path_factory):
                                  plan_path=os.path.join(root, "results", analyzer.PLAN_FILE),
                                  data_dir=os.path.join(root, "data", language),
                                  store_path=os.path.join(root, "index", f"token_store_{language}.db"))
+
+
+@pytest.fixture(params=["ja", "zh"])
+def run_level_0(level_0, request, tmp_path_factory):
+    """`run`, Generated at level 0 (the plan's format 4 and its first sentences): for the test of F7's tables."""
+    return _generated(request.param, tmp_path_factory)
 
 
 def _engine(run, lean=True):
@@ -127,9 +136,11 @@ def test_hover_w_after_a_move_the_words_follow_the_new_order(run):
         assert [[(w.k, w.label) for w in part] for part in eng.words_of(ids_)] ==             [[(w.k, w.label) for w in part] for part in fresh.words_of(ids_)]
 
 
-def test_hover_w_the_plans_first_sentences_give_each_words_context_1_back_from_the_token_store(run):
+def test_hover_w_the_plans_first_sentences_give_each_words_context_1_back_from_the_token_store(run_level_0):
     """F7's per-file first sentences: a word's first sentence in its first file is its Context 1 (the Generate's), and
     the token store's text has the plan's hash. A lean load never decodes them: `first_sentences` reads them."""
+    # why: proves format 4's `firsts` and the old rule "Context 1 is the word's first sentence": E-RETIRE removes both
+    run = run_level_0
     plan, eng = _engine(run)
     firsts = plan_engine.first_sentences(run.plan_path)
     assert firsts is not None and firsts.files == [entry[0] for entry in plan.files]

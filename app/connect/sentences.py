@@ -361,7 +361,7 @@ def _from_list(language, kept, listed, here_key, never, young, files, reach, boo
     stamp), its media there (`reach`), never a line of `never`. The young words are read for a row's first
     YOUNG_LINES of those only (a sentence's known words are the token store's, a file decoded for each): they order
     a row's best-placed candidates, the rest weigh by context. `window`: the learner's length range as the library
-    search reads it (`sentence_corpus.length_range`)."""
+    search reads it (`sentence_corpus.length_range`: at `plan_rules.SENTENCE_TABLE` >= 2 from one character)."""
     from app import plan_rules, token_index, sentence_corpus
     from app.connect import library
     from app.path_utils import get_data_path
@@ -377,7 +377,7 @@ def _from_list(language, kept, listed, here_key, never, young, files, reach, boo
             row = sentences[s] if 0 <= s < len(sentences) else None
             if (row is None or not row[plan_rules.TEXT] or not window[0] <= len(row[plan_rules.TEXT]) <= window[1]
                     or row[plan_rules.HASH] in seen):
-                continue        # a length outside the learner's range is no candidate (the library search's window)
+                continue        # a length outside the library search's window is no candidate
             seen.add(row[plan_rules.HASH])
             line.append(s)
         lines[key] = line
@@ -850,7 +850,8 @@ def choose(language, keys, *, here=None, dial=None, never=None, young=None, file
     media can't be cut is no choice; a book's or a text's line isn't asked (`heard`: with a `reach`, one heard by
     nothing is no choice); `books`: can a book's or a text's line be mined at all (Connect: while Anki Miner reads
     books). A sentence of the library outside the learner's length range is not a candidate
-    (the corpus's window), so a word met only in short lines gets [] here and keeps its own episode's line.
+    (the corpus's window), so a word met only in short lines gets [] here and keeps its own episode's line — at
+    `plan_rules.SENTENCE_TABLE` >= 2 only one over the range's top is: a short line is a candidate (SPEC § 4.6).
 
     A word that is a row of the list (a word with no reading: the lemma's one row, `_row_of`) gets the list's
     candidates (`_from_list`: the module's docstring) — Best, and Nearest asked with no `here`; at most TOP, and the

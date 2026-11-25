@@ -14,7 +14,7 @@ import app.analyzer as analyzer
 from app.analyzer import JapaneseTokenizer
 
 @pytest.fixture
-def mock_environment():
+def mock_environment(monkeypatch):
     temp_dir = tempfile.mkdtemp()
     
     # Mock data directories
@@ -43,6 +43,8 @@ def mock_environment():
 
     # Mock variables in analyzer module
     analyzer.get_data_path = lambda lang: data_dir
+    # (level 2's list sentences are read by `analyzer.ListSentences`, which finds the data folder through path_utils)
+    monkeypatch.setattr("app.path_utils.get_data_path", lambda lang=None: data_dir)
     analyzer.get_user_files_path = lambda lang: user_files_dir
     analyzer.RESULTS_DIR = results_dir
     analyzer.OUTPUT_CSV = os.path.join(results_dir, "Priority_Words.csv")

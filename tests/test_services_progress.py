@@ -21,7 +21,7 @@ import time
 
 import pytest
 
-from app import analyzer
+from app import analyzer, plan_rules, sentence_table
 from app.services import progress
 from tests import services_helpers as h
 
@@ -88,6 +88,20 @@ def _records(proc):
     return [json.loads(line) for line in out if line.startswith('{"type"')]
 
 
+def _level_outputs():
+    """The outputs a Generate writes at the tree's sentence level beyond level 0's: at level 2 the sentence table, the
+    text of the lines the list shows and the journey's own draw marker (SPEC § 5.3; `analyzer._write_redraw_marker`)."""
+    if plan_rules.SENTENCE_TABLE < 2:
+        return set()
+    return {sentence_table.TABLE_FILE, analyzer.SHOWN_FILE, analyzer.REDRAW_FILE}
+
+
+def _dropped():
+    """What a run drops as it starts, before its first cancel point: the stamp — and at level 2 the draw marker with it
+    (`analyzer._forget_redraw`): the journey is stale either way, the next Generate runs it again."""
+    return {"run_signature.txt"} | ({analyzer.REDRAW_FILE} if plan_rules.SENTENCE_TABLE >= 2 else set())
+
+
 def _outputs():
     # the v3 journey's head names its render time (`stamp`, ms): blanked, as plan_file_cases' hashes do (J-CUT)
     folder = os.path.join(h.root(), "results")
@@ -140,8 +154,10 @@ def test_every_output_is_byte_identical_with_and_without_the_flag(lang):
     flagged = _analyzer(lang, "--progress-json", env=seed)
     assert flagged.returncode == 0
     assert _outputs() == without
-    # 13, and since the journey v3 cut-over (J-CUT) the page's counts (plan_counts.bin) and its word memo
-    assert len(without) == 15 and {"plan_counts.bin", "journey_words.json"} <= set(without), sorted(without)
+    # 13, and since the journey v3 cut-over (J-CUT) the page's counts (plan_counts.bin) and its word memo; and the
+    # level's own (`_level_outputs`)
+    extra = _level_outputs()
+    assert len(without) == 15 + len(extra) and {"plan_counts.bin", "journey_words.json"} | extra <= set(without),         sorted(without)
 
 
 def test_the_flag_never_enters_the_run_signature():
@@ -174,7 +190,7 @@ def test_a_run_asked_to_stop_before_writing_stops_itself_and_writes_nothing(tmp_
     h.seed_library("ja")
     h.write_settings({"target_language": "ja", "anki_connect_url": "http://127.0.0.1:9"})
     assert _analyzer("ja").returncode == 0
-    before = {k: v for k, v in _outputs().items() if k != "run_signature.txt"}
+    before = {k: v for k, v in _outputs().items() if k not in _dropped()}
     flag = tmp_path / "cancel.flag"
     flag.write_text("cancel")
     proc = _analyzer("ja", "--progress-json", env={"SURASURA_FORCE_RUN": "1", "SURASURA_CANCEL_FILE": str(flag)})
@@ -182,7 +198,7 @@ def test_a_run_asked_to_stop_before_writing_stops_itself_and_writes_nothing(tmp_
     records = _records(proc)
     assert records[-1]["type"] == "error" and records[-1]["code"] == "cancelled"
     assert [r for r in records if r["type"] == "progress"] == []
-    assert {k: v for k, v in _outputs().items() if k != "run_signature.txt"} == before
+    assert {k: v for k, v in _outputs().items() if k not in _dropped()} == before
 
 
 def _closed_window_run(lang, env):
@@ -207,12 +223,12 @@ def test_a_cancelled_run_whose_window_closed_ends_cancelled_never_on_an_error(tm
     h.seed_library(lang)
     h.write_settings({"target_language": lang, "anki_connect_url": "http://127.0.0.1:9"})
     assert _analyzer(lang).returncode == 0
-    before = {k: v for k, v in _outputs().items() if k != "run_signature.txt"}
+    before = {k: v for k, v in _outputs().items() if k not in _dropped()}
     flag = tmp_path / "cancel.flag"
     flag.write_text("cancel")
     code = _closed_window_run(lang, {"SURASURA_FORCE_RUN": "1", "SURASURA_CANCEL_FILE": str(flag)})
     assert code == analyzer.GENERATE_CANCELLED
-    assert {k: v for k, v in _outputs().items() if k != "run_signature.txt"} == before
+    assert {k: v for k, v in _outputs().items() if k not in _dropped()} == before
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])

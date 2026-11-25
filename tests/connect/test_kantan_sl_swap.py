@@ -1089,9 +1089,12 @@ def _searched(monkeypatch):
     return asked
 
 
+@pytest.mark.usefixtures("level_0")
 @pytest.mark.parametrize("lang", ["ja", "zh"])
 def test_a_listed_word_swapped_with_no_reading_reaches_the_lists_kept_lines_never_the_library_search(
         placed, lang, monkeypatch):
+    # why: proves Connect's list rows (`_from_list`, a format-4 plan's pools) found with no reading; at level 2 the
+    # score's `_scored` reads the table instead, and E-RETIRE removes `_from_list` and this test together
     # Why: a swap from the review loop's queue carries no reading; the list's rows are keyed (lemma, reading), so the
     # word missed its row and went to the slow library search and another pool. One row with that lemma is the word.
     if lang == "ja":

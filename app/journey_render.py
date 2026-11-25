@@ -37,6 +37,8 @@ SHAPE_MINOR = 1                 # 1.1 (2026-11-22): additive only — the head's
 #                                 settings, `stamp` in ms; a v1 reader reads a 1.1 page as before
 MARKER = "<!--JOURNEY-DATA-->"  # where the page's template takes the data, once
 WORD_MEMO = "journey_words.json"   # in results/, beside the ▶'s memos: `WordMemo`
+SHOWN_FILE = "shown.json.gz"        # in results/: the list reader's shown lines (`analyzer.SHOWN_FILE`), its silent ones
+PLAN_FILE = "plan.json.gz"          # in results/: the plan file (`analyzer.PLAN_FILE`), its header the run's signature
 MEMO_FORMAT = 1                 # in the memo's keys: bump when a meaning's JSON or a pitch is written another way
 CHUNK_EPISODES = 100
 CHUNK_BYTES = 240_000           # a chunk's JSON closes past this (≈ 60–80 KB gzipped for Japanese sentences)
@@ -1000,14 +1002,15 @@ def _ahead(plan, names, word_eps, word_id, by_name=None):
 
 
 def build(language, rows, stats=(), priority=None, facts=None, settings=None, *, backlog=(), known=(), ranks=None,
-          pitch=None, sources=None, plan=None, own=None, stamp=None, memo=None, nothing=()):
+          pitch=None, sources=None, plan=None, own=None, stamp=None, memo=None, nothing=(), silent=()):
     """The page's data (`Render`) from a Generate's outputs, every input given (`render` gathers them):
     `rows` the progressive list's records in order, `stats` file_statistics.json's entries in order, `priority` the
     priority list's records (*Most frequent first*; None: no such order), `facts` `store_facts`' (None: no store),
     `backlog` the Anki backlog's keys, `known` the learner's known terms, `pitch` a `Pitch`, `sources` a `Sources`,
     `plan` the plan file (the count ahead), `own` a callable [(word, reading)] -> {key: (title, text)} (Yours),
     `memo` a `WordMemo` (the meanings and pitch looked up last time; None: everything looked up), `nothing` the
-    items Connect mined with nothing new to make (`nothing_new`: their stones)."""
+    items Connect mined with nothing new to make (`nothing_new`: their stones), `silent` the shown lines no audio is
+    heard from, {(Src, Context)} (`silent_lines`: each such line's 5th field is 1, the page's mark)."""
     settings = settings or {}
     logic = settings.get("logic") if isinstance(settings.get("logic"), dict) else {}
     shown_settings = page_settings(settings)
@@ -1175,6 +1178,8 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
                     if src is None:
                         src = added[rel] = len(cur_rows) + len(added)
             line = [text, src, at, end]
+            if silent and (rel, text) in silent:
+                line.append(1)                  # marked silent (SPEC § 4.5): its ▶ time, if any, stays where it is
             while line[-1] is None:
                 line.pop()
             lines.append(line)
@@ -1387,7 +1392,8 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
     out = build(language, rows, stats, priority, facts, settings, backlog=backlog,
                 known=_known_terms(language, script),
                 ranks=ranks, pitch=Pitch(language, tagger), sources=sources,
-                plan=plan, own=own, stamp=stamp, memo=memo, nothing=nothing_new(language))
+                plan=plan, own=own, stamp=stamp, memo=memo, nothing=nothing_new(language),
+                silent=silent_lines(gen.RESULTS_DIR, settings))
     out.head["dirs"] = dirs
     if timer is not None and not sources.saved:
         timer.save_memo()
@@ -1397,6 +1403,27 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
         from app.path_utils import get_data_path
         out.head["library"] = library_store.library_key(get_data_path(language))
     return out
+
+
+def silent_lines(results_dir, settings):
+    """The shown lines no audio is heard from, {(Src, Context)}, as the list's one reader kept them beside the lines it
+    showed (`analyzer.ListSentences.keep`, results/`SHOWN_FILE`'s "silent") — only while *Ensure an audio example* is
+    on (SPEC § 4.5: they stay in their true order, marked silent) and the list is the reader's (release 2); set()
+    otherwise, with none kept, or kept by another run than the plan's (a Generate whose reader kept nothing leaves the
+    last one's: never its marks). Read here, not through the analyzer: a run's analyzer is `__main__`."""
+    from app import plan_rules
+    if plan_rules.SENTENCE_TABLE < 2 or not (settings or {}).get("ensure_audio_example"):
+        return set()
+    try:
+        with gzip.open(os.path.join(results_dir, SHOWN_FILE), "rb") as f:
+            data = json.loads(f.read())
+        with gzip.open(os.path.join(results_dir, PLAN_FILE), "rb") as f:
+            run = json.loads(f.readline()).get("run_signature")    # (its first line only: the header)
+        if not run or data.get("run_signature") != run:
+            return set()
+        return {(_text(rel), _text(text)) for rel, text in data.get("silent") or ()}
+    except Exception:
+        return set()
 
 
 # --- the page ------------------------------------------------------------------------------------------------------ #

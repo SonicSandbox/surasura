@@ -105,8 +105,20 @@ def test_the_plans_re_pick_under_all_is_the_generates_pick(runs, case):
     from tests.test_plan_engine import _texts
     root, _three, every = runs[case]
     plan = plan_engine.load(os.path.join(root, "results", analyzer.PLAN_FILE))
-    result = plan_engine.Engine(plan).result(pick=True, texts=_texts(root, cases.ALL_CASES[case][0]))
     csv_rows = {(r["Word"], r["Reading"]): r for r in every["priority_learning_list.csv"]}
+    if plan_rules.SENTENCE_TABLE >= 2:
+        # release 2: a format-5 plan holds no sentences; a re-plan's are the one reader's, asked of this Generate's
+        # table in its own order (the redraw's call, SPEC § 5.2): under All, every row's are the Generate's
+        from tests.test_e_redraw import _reader
+        assert plan.header["format"] == 5
+        got = _reader(root, cases.ALL_CASES[case][0], list(csv_rows), max_contexts=0)
+        for key, want in csv_rows.items():
+            columns = [want[f"{c} {i}"] for i in range(1, _columns(want) + 1) for c in ("Context", "Src")]
+            while columns and not columns[-1] and not columns[-2]:
+                del columns[-2:]            # (a row with fewer sentences than columns is padded with "")
+            assert got.get(key, []) == columns, key
+        return
+    result = plan_engine.Engine(plan).result(pick=True, texts=_texts(root, cases.ALL_CASES[case][0]))
     assert len(result.priority) == len(csv_rows)
     for row in result.priority:
         want = csv_rows[(row["Word"], row["Reading"])]

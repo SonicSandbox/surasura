@@ -27,7 +27,7 @@ from PyQt6.QtGui import QPalette
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QAbstractButton, QApplication, QWidget
 
-from app import settings_manager, theme
+from app import plan_rules, settings_manager, theme
 from app.qt import bridge, freeze, motion, style, windows
 from app.qt import settings_catalog as catalog
 from app.qt import settings_controls as sc
@@ -285,7 +285,10 @@ def test_every_visible_control_writes_exactly_its_keys_and_a_per_language_one_ke
                 assert given_update is None
                 # Kantan-B3's marker rides beside *Count as known in Anki*'s pick (a pick, never an old default)
                 # (and FS-2's beside *Swap gives*': the default's later flip reaches only who never picked)
-                beside = {"known_from_anki": {catalog.CHOSEN}, "swap_in_place": {catalog.SWAP_CHOSEN}}.get(row.id, set())
+                # (and E-LENGTH's beside *Length* while the sentence table is on: a pick, never read as the old default)
+                beside = {"known_from_anki": {catalog.CHOSEN}, "swap_in_place": {catalog.SWAP_CHOSEN},
+                          "sentence_length": ({settings_manager.SENTENCE_LENGTH_CHOSEN}
+                                              if plan_rules.SENTENCE_TABLE >= 1 else set())}.get(row.id, set())
                 assert set(changes) == set(expected) and set(changes) <= set(row.keys) | beside, (row.id, changes)
                 assert changes == expected
             store.land()

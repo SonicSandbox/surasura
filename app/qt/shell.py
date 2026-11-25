@@ -21,6 +21,7 @@ through one app-wide filter (`AppFilter`, a9.1).
 
 Run it: `python app_entry.py` on the 3.0 line (or `main()` here).
 """
+import importlib
 import json
 import math
 import os
@@ -4237,7 +4238,26 @@ class ShellWindow(QMainWindow):
 
     # --- SRC W1b: the source folders (app/services/source_looks.py; the RUNBOOK §1b S4, S10 / D5, S14 / D6) -------- #
     def _start_looks(self):
-        """After the first frame: the looks made for the library open, and the first look after start (a full one)."""
+        """After the first frame: the looks made for the library open, and the first look after start (a full one).
+        Their module (`app/services/source_looks.py`, with `app/sources.py`'s and `app/audiobooks.py`'s patterns) is
+        read on a worker, never on this thread: read here, in the first frame's step, it took turns at Python's lock
+        with the numbers' plan read and held this thread 250–310 ms at 2,000 files (E-L2W, level 2); the looks are made
+        here once it is in (`_looks_module_in`)."""
+        if self.looks is None and getattr(self.services, "source_looks", None) is None \
+                and LOOKS_MODULE not in sys.modules:
+            bridge.run_in_worker(importlib.import_module, LOOKS_MODULE, then=self._looks_module_in,
+                                 failed=lambda _e: self._looks_module_in(None))
+            return
+        if self.looks is None:
+            self._open_looks(self.services.writer)
+        self.look_at_sources(focused=True)
+
+    def _looks_module_in(self, _module):
+        """(This thread.) The looks' module read on its worker: the looks made and the first look asked, as
+        `_start_looks` does — none once the window closed or its quit began (a failed read: made here, as before)."""
+        closing = getattr(self.services, "closing", None)
+        if sip.isdeleted(self) or self._quit is not None or (closing is not None and closing.is_set()):
+            return
         if self.looks is None:
             self._open_looks(self.services.writer)
         self.look_at_sources(focused=True)
@@ -4913,6 +4933,9 @@ def _log_unhandled(kind, value, tb):
     applog.log("unhandled", text)
     sys.__stderr__ and sys.__stderr__.write(text)
 
+
+# E-L2W: the source-folder looks' module, read on a worker after the first frame (`ShellWindow._start_looks`)
+LOOKS_MODULE = "app.services.source_looks"
 
 # Python's lock is handed between threads every 5 ms by default: a busy worker (a service's thread, a pool task) could
 # hold the GUI thread off for that long — over the 4 ms step. 1 ms keeps one wait under the budget (W2.1 review A3).

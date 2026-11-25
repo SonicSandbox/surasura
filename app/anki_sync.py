@@ -262,7 +262,6 @@ class KnownFile:
     def write(self, data):
         """`data` written whole (atomic, as `_atomic_write_json` writes it) and kept as the parse of what's there."""
         raw = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
-        self._raw = self._parts = None                  # a failed write keeps nothing: the next read parses
         _atomic_write_bytes(self.path, raw)
         self._parts, self._raw = _known_parts(data), raw
 

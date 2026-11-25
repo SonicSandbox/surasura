@@ -542,9 +542,10 @@ def _store_state(language):
 
 def _dates(language, ai, wait=True):
     """(`_library`'s answer with the show-only mark, the score's {path: Seen}) for the whole library, read once and
-    kept between picks while the store's file is unchanged — or, when its stamp moved, while the store's own count of
-    what changed holds (`_store_state`: the export's commit after a move, a checkpoint) — an hour at most (days pass) — one read of the store was
-    nearly all of a pick's time (SPEC § 5.3); a paired book's hearing asked again at every pick (`_heard_now`). A read
+    kept between picks while the store's file is unchanged — or, its stamp moved, while the store's own count of what
+    changed holds (`_store_state`: the export's commit after a move, a checkpoint) — an hour at most (days pass): one
+    read of the store was nearly all of a pick's time (SPEC § 5.3); a paired book's hearing asked again at every pick
+    (`_heard_now`). A read
     ahead of them still running (`dates_ahead`) is waited for, DATES_AHEAD_WAIT_S at most: its answer is then kept
     (`wait` False: that read's own call)."""
     ahead = _AHEAD.get((language, ai)) if wait else None
@@ -556,13 +557,13 @@ def _dates(language, ai, wait=True):
     stamp = _store_stamp(language)          # (before the read: a commit during it is read again next time)
     now = time.monotonic()
     hit = _DATES.get((language, ai))
-    if hit is not None and stamp is not None and now - hit[1] < DATES_KEPT_S:
-        if hit[0] == stamp:
-            return _heard_now(hit[2], hit[3], ai)
-        if hit[4] is not None and _store_state(language) == hit[4]:
-            _DATES[(language, ai)] = (stamp,) + hit[1:]      # only bookkeeping since (the export's commit): kept
-            return _heard_now(hit[2], hit[3], ai)
-    state = _store_state(language) if stamp is not None else None
+    kept = hit is not None and stamp is not None and now - hit[1] < DATES_KEPT_S
+    if kept and hit[0] == stamp:
+        return _heard_now(hit[2], hit[3], ai)
+    state = _store_state(language) if stamp is not None else None      # (before the read too: as the stamp)
+    if kept and state is not None and state == hit[4]:
+        _DATES[(language, ai)] = (stamp,) + hit[1:]          # only bookkeeping since (the export's commit): kept
+        return _heard_now(hit[2], hit[3], ai)
     from app import sentence_score
     from app.connect import lineup
     info = _library(language, None, ai, scored=True)

@@ -16,8 +16,9 @@ What is kept for a line (one row of the table is a line and its word):
 The file: MAGIC, three little-endian 4-byte lengths, the head (zlib JSON: the format's version, the engine, the run's
 signature, the language, every list row's (word, reading) and its place in the list, the rows that have lines and
 each one's sizes — the head is the index), the sources (zlib JSON: [rel, kind, digest]; the digest `source_digest`'s),
-the formulas (zlib, four int32 arrays), then one zlib block a row: its lines' columns one after another, lines in (file,
-place) order.
+the formulas (zlib, four int32 arrays), then the rows in groups (G11: one zlib a group of rows, ~GROUP_BYTES of
+them, never one a row — `groups` in the head, each one's rows): a row is its lines' columns one after another, lines in
+(file, place) order.
 Little-endian always; the head's keys in a fixed order; one compression level; no time, path of this PC or process id
 inside: the same run writes the same bytes, packed as the walk goes or at the end.
 
@@ -42,8 +43,10 @@ from operator import itemgetter
 
 TABLE_FILE = "sentences.bin"
 MAGIC = b"SURATBL\n"
-VERSION = 4                     # 4: a source's digest signs its path in one spelling (`source_digest`) · 3: each
-                                # row's place in the list · 2: the two word numbers counted (1 wrote 0)
+VERSION = 5                     # 5: the rows compressed in groups (DSA-WALK, G11) · 4: a source's digest signs its
+                                # path in one spelling (`source_digest`) · 3: each row's place in the list · 2: the two
+                                # word numbers counted (1 wrote 0)
+GROUP_BYTES = 1 << 16           # a group of rows closes at this many bytes before compression (one zlib a group)
 LEVEL = 3                       # zlib: 0.44 s for 7.01 MB at 20,000 files (lighter 7.42 MB, harder 1.15 s: SPEC § 8.2)
 
 OVER = 1 << 2                   # marks: over *Never longer than* (a file's first sentence of the word; never chosen)
@@ -507,25 +510,37 @@ class Table:
         self.head, self.path = None, None
         self._sources = self._form = None
         self._parts, self._blocks, self._at = {}, {}, None
+        self._groups, self._held = [], (None, None)     # each group's (offset, size); the last one read, decompressed
 
     # ---- written by Generate ------------------------------------------------------------------------------- #
     def write(self, path):
         """Write the table whole through a temp file and `os.replace` -> its bytes. On any error the temp is removed,
         an older table stays as it was, and the error is raised for the caller to log."""
         np = _np()
-        blobs, cows, phrs = [], [], []
+        blobs, cows, phrs, groups = [], [], [], []
+        held, size = [], 0
+
+        def close():
+            blobs.append(zlib.compress(b"".join(held), LEVEL))
+            groups.append(len(held) // 3)
+            held.clear()
         for k in self.head["rows"]:
             cols, cow, phr = self._parts[k]
             src = cols["src"].astype(np.int64)
             step = src.copy()
             step[1:] -= src[:-1]
-            data = [(step if name == "src" else cols[name]).astype(t).tobytes() for name, t in COLUMNS]
-            blobs.append(zlib.compress(b"".join(data + [cow.astype("<i4").tobytes(), phr.astype("<i4").tobytes()]),
-                                       LEVEL))
+            held.append(b"".join([(step if name == "src" else cols[name]).astype(t).tobytes() for name, t in COLUMNS]))
+            held += (cow.astype("<i4").tobytes(), phr.astype("<i4").tobytes())
+            size += len(held[-3]) + len(held[-2]) + len(held[-1])
             cows.append(len(cow))
             phrs.append(len(phr))
+            if size >= GROUP_BYTES:
+                close()
+                size = 0
+        if held:
+            close()
         form = zlib.compress(b"".join(x.astype("<i4").tobytes() for x in self._form), LEVEL)
-        head = _zjson(dict(self.head, cows=cows, phrs=phrs, sizes=[len(b) for b in blobs],
+        head = _zjson(dict(self.head, cows=cows, phrs=phrs, groups=groups, sizes=[len(b) for b in blobs],
                            form=[len(x) for x in self._form]))
         sources = _zjson(self._sources)
         tmp = f"{path}.{os.getpid()}.tmp"
@@ -587,19 +602,25 @@ class Table:
                 wanted.append(row)
         if wanted:
             with open(self.path, "rb") as f:
-                for row in sorted(set(wanted), key=lambda k: self._blocks[k][0]):
+                for row in sorted(set(wanted), key=lambda k: self._blocks[k][:2]):
                     out[row] = self._read(f, row)
         return out
 
     def _read(self, f, row):
-        """Row `row`'s block read from the open table file `f` (`block`'s answer)."""
-        off, size, lines, cows, phrs = self._blocks[row]
-        f.seek(off)
-        data = zlib.decompress(f.read(size))
-        if len(data) != lines * _BYTES + 4 * (cows + phrs):
-            raise ValueError("a block of the wrong size")
+        """Row `row`'s block read from the open table file `f` (`block`'s answer): its group decompressed once for
+        every row of it asked in turn (`blocks` reads in the file's order)."""
+        group, at, lines, cows, phrs = self._blocks[row]
+        held = self._held
+        if held[0] != group:
+            off, size, length = self._groups[group]
+            f.seek(off)
+            data = zlib.decompress(f.read(size))
+            if len(data) != length:
+                raise ValueError("a group of the wrong size")
+            held = self._held = (group, data)
+        data = held[1]
         np = _np()
-        cols, at = {}, 0
+        cols = {}
         for name, t in COLUMNS:
             cols[name] = np.frombuffer(data, t, lines, at)
             at += lines * np.dtype(t).itemsize
@@ -659,10 +680,18 @@ def open_table(path, language=None, engine=None, run_signature=None):
         start = len(MAGIC) + 12 + hl
         t._at = (start, sl, fl)
         off = start + sl + fl
-        for k, n, lines, cows, phrs in zip(head["rows"], head["sizes"], head["lines"], head["cows"], head["phrs"]):
-            t._blocks[k] = (off, n, lines, cows, phrs)
+        rows = iter(zip(head["rows"], head["lines"], head["cows"], head["phrs"]))
+        if not (len(head["rows"]) == len(head["lines"]) == len(head["cows"]) == len(head["phrs"])
+                == sum(head["groups"])) or len(head["groups"]) != len(head["sizes"]):
+            return None
+        for group, (n_rows, n) in enumerate(zip(head["groups"], head["sizes"])):
+            at = 0
+            for k, lines, cows, phrs in (next(rows) for _ in range(n_rows)):
+                t._blocks[k] = (group, at, lines, cows, phrs)
+                at += lines * _BYTES + 4 * (cows + phrs)
+            t._groups.append((off, n, at))
             off += n
-        if off != size or len(head["rows"]) != len(head["sizes"]) or len(head["places"]) != len(head["keys"]):
+        if off != size or len(head["places"]) != len(head["keys"]):
             return None                         # half-written, or more than one table's bytes
         return t
     except (OSError, ValueError, KeyError, TypeError, AttributeError, struct.error, zlib.error):

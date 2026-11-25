@@ -55,6 +55,8 @@ def i_plus_one_env(tmp_path):
         "mock_get_user_files_path": mock_get_user_files_path
     }
 
+# (both Generates below patch `app.path_utils.get_data_path` too: at level 2 the list's sentences are read by
+# `analyzer.ListSentences`, which finds the data folder through path_utils)
 def read_results(csv_path):
     if not os.path.exists(csv_path): return pd.DataFrame()
     return pd.read_csv(csv_path)
@@ -70,6 +72,7 @@ def test_i_plus_one_fallback(i_plus_one_env):
     
     with patch("app.analyzer.get_user_file", side_effect=i_plus_one_env["mock_get_user_file"]), \
          patch("app.analyzer.get_data_path", side_effect=i_plus_one_env["mock_get_data_path"]), \
+         patch("app.path_utils.get_data_path", side_effect=i_plus_one_env["mock_get_data_path"]), \
          patch("app.analyzer.get_user_files_path", side_effect=i_plus_one_env["mock_get_user_files_path"]), \
          patch("app.analyzer.RESULTS_DIR", str(results_dir)), \
          patch("app.analyzer.OUTPUT_CSV", str(csv_path)), \
@@ -105,6 +108,7 @@ def test_only_i_plus_one_strict(i_plus_one_env):
     
     with patch("app.analyzer.get_user_file", side_effect=i_plus_one_env["mock_get_user_file"]), \
          patch("app.analyzer.get_data_path", side_effect=i_plus_one_env["mock_get_data_path"]), \
+         patch("app.path_utils.get_data_path", side_effect=i_plus_one_env["mock_get_data_path"]), \
          patch("app.analyzer.get_user_files_path", side_effect=i_plus_one_env["mock_get_user_files_path"]), \
          patch("app.analyzer.RESULTS_DIR", str(results_dir)), \
          patch("app.analyzer.OUTPUT_CSV", str(csv_path)), \

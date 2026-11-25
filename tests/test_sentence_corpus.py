@@ -70,7 +70,10 @@ def test_the_length_window_is_the_users_own_setting_widened_by_five():
     assert sc.length_range(context(min_chars=10, preferred_max_chars=35, max_chars=150)) == (5, 40, 10, 35)
     assert sc.length_range(context(min_chars=20, preferred_max_chars=60, max_chars=150)) == (15, 65, 20, 60)
     assert sc.length_range(context(min_chars=3, preferred_max_chars=148, max_chars=150)) == (1, 150, 3, 148)
-    assert sc.length_range({}) == (5, 55, 10, 50)        # the shipped defaults, 10–50
+    # why: the shipped default is the level's (14–25 since the flip, 10–50 at level 0): read from its one home
+    from app import settings_manager
+    low, high = settings_manager.sentence_length_default()
+    assert sc.length_range({}) == (max(1, low - sc.LENGTH_LEEWAY), high + sc.LENGTH_LEEWAY, low, high)
 
 
 def test_the_fewest_unknown_words_come_first_not_the_first_one_met():

@@ -13,8 +13,13 @@ import pytest
 
 def pin(mp, level):
     """`mp` (a pytest MonkeyPatch) sets `level` for this process and its children."""
-    from app import analyzer, plan_engine, plan_rules       # (here, not at import: conftest imports this module)
+    from app import analyzer, plan_engine, plan_rules, settings_manager  # (here, not at import: conftest imports this)
     mp.setattr(plan_rules, "SENTENCE_TABLE", level)
+    # *Length*'s default in DEFAULT_SETTINGS (14-25 from level 1, 10-50 at 0: E-LENGTH), as an import at `level` sets it
+    context = settings_manager.DEFAULT_SETTINGS["logic"]["context"]
+    low, high = settings_manager.sentence_length_default()
+    mp.setitem(context, "min_chars", low)
+    mp.setitem(context, "preferred_max_chars", high)
     mp.setattr(plan_engine, "FORMAT", 5 if level >= 2 else 4)
     mp.setattr(plan_engine, "FORMATS", (1, 2, 3, 4, 5) if level >= 2 else (1, 2, 3, 4))
     mp.setattr(analyzer, "PLAN_FORMAT", 5 if level >= 2 else 4)

@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app import analyzer
+from app import analyzer, plan_rules
 
 # Japanese: 灯台 is said twice in its first sentence, beside two words still new at its place on the list (蜃気楼,
 # 見える) — so the walk files that sentence after 8 clean ones, and it has unknowns.
@@ -82,6 +82,8 @@ def _run(root, language, extra=()):
     with patch("app.analyzer.get_user_file", side_effect=lambda p: str(root / p)), \
          patch("app.analyzer.get_data_path",
                side_effect=lambda l=None: str(root / "data" / l) if l else str(root / "data")), \
+         patch("app.path_utils.get_data_path",          # (level 2's reader, `analyzer.ListSentences`, asks path_utils)
+               side_effect=lambda l=None: str(root / "data" / l) if l else str(root / "data")), \
          patch("app.analyzer.get_user_files_path",
                side_effect=lambda l=None: str(root / "User Files" / l) if l else str(root / "User Files")), \
          patch("app.analyzer.RESULTS_DIR", str(results)), \
@@ -99,6 +101,9 @@ def _contexts(row, n=3):
     return [(row.get(f"Context {i}") or "").strip() for i in range(1, n + 1)]
 
 
+# why: proves the old pick's rule "Context 1 is the word's first sentence" (ContextPicker's ladder, the first sentence a
+# file): level 0's, replaced at level 2 by one score (SPEC § 1); E-RETIRE removes both
+@pytest.mark.usefixtures("level_0")
 @pytest.mark.parametrize("language, word, first, clean, known", [
     ("ja", "灯台", JA_FIRST, JA_CLEAN, JA_KNOWN),
     ("zh", "灯塔", ZH_FIRST, ZH_CLEAN, ZH_KNOWN),
@@ -113,6 +118,9 @@ def test_context_1_is_the_first_sentence_even_behind_six_clean_ones_and_with_a_n
     assert ctx[1:] == clean[:2], "the other slots stay the cleanest sentences, as before"
 
 
+# why: proves the old pick's rule "Context 1 is the word's first sentence" (ContextPicker's ladder, the first sentence a
+# file): level 0's, replaced at level 2 by one score (SPEC § 1); E-RETIRE removes both
+@pytest.mark.usefixtures("level_0")
 def test_one_slot_is_the_first_sentence(tmp_path):
     """--max-contexts 1: the only slot is the first sentence (the pick then stops after 2 clean ones)."""
     root = _library(tmp_path, "ja", _episodes(JA_FIRST, JA_CLEAN, JA_OTHER), JA_KNOWN)
@@ -127,9 +135,15 @@ def test_only_i_plus_one_still_skips_a_first_sentence_with_a_new_word(tmp_path):
     row = _run(root, "ja", ["--only-i-plus-one"])["灯台"]
     ctx = _contexts(row)
     assert JA_FIRST not in ctx
-    assert ctx == JA_CLEAN[:3]
+    if plan_rules.SENTENCE_TABLE < 2:
+        assert ctx == JA_CLEAN[:3]
+    else:                                   # (level 2: one score orders them, the clean ones only — SPEC § 4.2)
+        assert all(ctx) and set(ctx) <= set(JA_CLEAN), ctx
 
 
+# why: proves the old pick's rule "Context 1 is the word's first sentence" (ContextPicker's ladder, the first sentence a
+# file): level 0's, replaced at level 2 by one score (SPEC § 1); E-RETIRE removes both
+@pytest.mark.usefixtures("level_0")
 def test_only_i_plus_one_weighs_an_i_plus_one_first_sentence_like_any_other(tmp_path):
     """*Only i+1* never pins the first sentence; it is one more candidate (F7: the pick weighs every one, no early
     exit). Here it is i+1 at 灯台's place, as clean as the others and in the file nearest the word's first meeting —
@@ -152,6 +166,9 @@ def test_only_i_plus_one_weighs_an_i_plus_one_first_sentence_like_any_other(tmp_
 
 
 
+# why: proves the old rule that a first sentence over the hard cap is still offered: level 0's; at level 2 a line over
+# *Never longer than* is never a candidate (SPEC § 4.3) — E-RETIRE removes the old one
+@pytest.mark.usefixtures("level_0")
 def test_only_i_plus_one_still_offers_a_first_sentence_too_long_for_the_pool(tmp_path):
     """A sentence over the hard cap (150 characters) is kept only as the word's first sentence, never in the pool:
     *Only i+1* still looks at it, so a word whose one i+1 sentence it is stays on the list (it was so before)."""
@@ -163,6 +180,9 @@ def test_only_i_plus_one_still_offers_a_first_sentence_too_long_for_the_pool(tmp
     assert row is not None, "灯台 has an i+1 sentence: its first one"
     assert row["Context 1"].strip() == first
 
+# why: proves the run's audio slot (*Ensure an audio example*, the AUDIO_POOL shortlist): level 0's; at level 2 no run
+# reads the setting (SPEC § 4.5) — E-RETIRE removes both
+@pytest.mark.usefixtures("level_0")
 def test_the_audio_slot_is_still_the_last_one(tmp_path):
     """--ensure-audio-example gives the LAST slot to a sentence you can hear, never Context 1: the first sentence (from
     a book here) stays first, the subtitle line takes slot 3, and no fourth column appears."""
@@ -179,6 +199,9 @@ def test_the_audio_slot_is_still_the_last_one(tmp_path):
     assert "Context 4" not in row
 
 
+# why: proves the old pick's rule "Context 1 is the word's first sentence" (ContextPicker's ladder, the first sentence a
+# file): level 0's, replaced at level 2 by one score (SPEC § 1); E-RETIRE removes both
+@pytest.mark.usefixtures("level_0")
 def test_a_phrase_rows_context_1_is_its_first_sentence(tmp_path):
     """A set phrase's row (気がする, Word 気が為る) picks through the same pass: its first sentence — the phrase said
     twice, beside a word still new (蜃気楼) — sat behind 9 clean ones, and is Context 1."""

@@ -28,7 +28,7 @@ SHORT_SENTENCE = "電車に乗る。"
 
 
 @pytest.fixture
-def ja_env():
+def ja_env(monkeypatch):
     temp = tempfile.mkdtemp()
     data_dir = os.path.join(temp, "data", "ja")
     for bucket in ("HighPriority", "LowPriority", "GoalContent"):
@@ -43,6 +43,9 @@ def ja_env():
     os.makedirs(results)
 
     analyzer.get_data_path = lambda lang=None: data_dir
+    # why: the list's sentences (level 2: analyzer.ListSentences) read the lines from the data folder path_utils names
+    monkeypatch.setattr("app.path_utils.get_data_path",
+                        lambda lang=None: os.path.join(temp, "data", lang) if lang else os.path.join(temp, "data"))
     analyzer.get_user_files_path = lambda lang=None: uf
     analyzer.RESULTS_DIR = results
     analyzer.OUTPUT_CSV = os.path.join(results, "priority_learning_list.csv")
@@ -52,7 +55,10 @@ def ja_env():
     shutil.rmtree(temp, ignore_errors=True)
 
 
+@pytest.mark.usefixtures("level_0")
 def test_long_sentence_dropped_as_secondary_but_kept_as_fallback(ja_env):
+    # why: proves the old path's fall-back (a word's own sentence kept over the cap); at level 2 a line over *Never
+    # longer than* is never shown (the test below) and E-RETIRE removes both this path and this test
     assert len(LONG_SENTENCE) > 150, "test sentence must exceed the 150-char cap"
 
     # 電車 appears in the SHORT sentence first, then the long one. 乗客 appears ONLY in the long one.
@@ -80,3 +86,21 @@ def test_long_sentence_dropped_as_secondary_but_kept_as_fallback(ja_env):
     # 乗客 appears ONLY in the long sentence -> it's kept as the fallback (its example).
     fallback_ctx = contexts_for("乗客")
     assert any("交通手段" in c for c in fallback_ctx), "the long sentence must be kept as 乗客's only/fallback example"
+
+
+def test_a_sentence_over_the_cap_is_never_an_example_even_a_words_only_one(ja_env):
+    """The sentence choice (SPEC § 4.2 item 4, § 4.3): *Never longer than* is the wall. 電車 shows its short sentence;
+    the >150-character one is no word's example, 乗客's (its only sentence) neither."""
+    with open(os.path.join(ja_env["data"], "HighPriority", "t.txt"), "w", encoding="utf-8") as f:
+        f.write(SHORT_SENTENCE + "\n" + LONG_SENTENCE + "\n")
+    sys.argv = ["analyzer.py", "--language", "ja", "--min-freq", "1",
+                "--context-min", "0", "--target-coverage", "100"]
+    analyzer.main()
+
+    df = pd.read_csv(os.path.join(ja_env["results"], "priority_learning_list.csv"))
+    ctx_cols = [c for c in df.columns if c.startswith("Context ")]
+    shown = {str(v) for c in ctx_cols for v in df[c].dropna()}
+    train = df[df["Word"] == "電車"]
+    assert not train.empty and any("電車に乗る" in str(train.iloc[0].get(c) or "") for c in ctx_cols)
+    assert "乗客" in set(df["Word"]), "a word whose only sentence is over the cap is still listed"
+    assert not any("交通手段" in s for s in shown), "the >150-char sentence is never an example"

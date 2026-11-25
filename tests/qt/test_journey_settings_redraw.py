@@ -281,7 +281,7 @@ def test_opened_with_its_old_look_while_a_generate_is_due_the_answer_says_so(mon
     from app import static_html_generator as generator
     opened = []
     monkeypatch.setattr(generator, "open_report", lambda **k: opened.append(k) or True)
-    monkeypatch.setattr(generator, "report_holds", lambda name: name == "第01話.srt")
+    monkeypatch.setattr(generator, "report_holds", lambda name, item=None: name == "第01話.srt")
     services = SimpleNamespace(closing=threading.Event(), settings=SimpleNamespace(get=lambda: {}),
                                draw_journey=lambda: True)
     assert shell.Services.open_journey(services) == shell.JOURNEY_OLD_LOOK

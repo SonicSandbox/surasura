@@ -32,6 +32,7 @@ import pandas as pd
 import pytest
 
 from app import library_store as ls
+from tests.journey_page_edge import find_edge
 from tests.plan_file_cases import _split_lines, _split_srt, child_env
 from tests.test_generate_watched import SHOWS, _read
 from tests.test_library_store_support import LANGUAGES, entry, migrated, roots, write_manifest
@@ -354,6 +355,172 @@ def test_two_shows_one_file_name_the_set_aside_episode_never_takes_the_counted_o
     assert eps[0] == {"filename": one, "tier": 0, "pct": None, "words": [], "watched": True, "aside": True},         "the set-aside 第01集: no words, no % known"
     assert eps[2]["words"] and eps[2]["pct"] is not None and not eps[2].get("watched"),         "Show B's counted 第01集 holds its own words and its % known"
     store.close()
+
+
+def _page(root):
+    """The page's head and its chunks, as the report on disk holds them -> (head, [chunk])."""
+    with open(os.path.join(root, "results", "reading_list_static.html"), encoding="utf-8") as f:
+        html = f.read()
+    return (json.loads(HEAD.search(html).group(1)),
+            [json.loads(gzip.decompress(base64.b64decode(blob)).decode("utf-8")) for blob in CHUNK.findall(html)])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_shows_one_file_name_both_counted_each_episode_keeps_its_own_words_known_and_count_ahead(language):
+    # why (E-NAMES): the run's lists named a file only by its name, so with Show A's and Show B's 第01集 both counted,
+    # B's words, its *% known* and its count ahead were drawn on A's episode and B's own stood empty — the learner
+    # about to study Show B saw nothing to learn in it. Each episode is told by its path: the oracle is the run's own
+    # numbering (the progressive list's Sequence, the plan's per-file counts), never the name.
+    from app import plan_engine
+    from app.journey_render import AHEAD, _known_pct
+    root = os.environ["SURASURA_TEST_ROOT"]
+    _settings(language)
+    store, _ids, (one, two) = _same_named(language)
+    _generate(root, language)
+    head, chunks = _page(root)
+    eps = head["eps"]
+    assert [e[1] for e in eps] == [one, two, one, two], "each show's episodes in the library's order"
+
+    results = os.path.join(root, "results")
+    prog = pd.read_csv(os.path.join(results, "progressive_learning_list.csv"), encoding="utf-8-sig",
+                       keep_default_na=False)
+    listed = {n: list(zip(prog[prog["Sequence"] == n + 1]["Word"], prog[prog["Sequence"] == n + 1]["Reading"]))
+              for n in range(4)}
+    want = {n: [word for word, _reading in listed[n]] for n in range(4)}
+    assert want[2], "Show B's 第01集 has words first met in it (the samples are two different books)"
+    got = {n: [] for n in range(4)}
+    page_words = []
+    for chunk in chunks:
+        for w in chunk["w"]:
+            got[w[5]].append(w[0])
+            page_words.append(w)
+    assert got == want, "every episode holds the words first met in IT, Show B's 第01集 its own"
+
+    plan = plan_engine.counts(os.path.join(results, "plan.json.gz"))
+    assert [e[6] for e in eps] == [_known_pct(line["prog"][1], line["prog"][0]) for line in plan.per_file], \
+        "each episode's *% known* is its own file's"
+    key_of = {(k[0], k[1]): i for i, k in enumerate(plan.keys)}
+
+    def uses(f, k):
+        line = plan.per_file[f]
+        return sum(m for table in (line["main"], line["ph"]) for kk, m in zip(table[0::2], table[1::2]) if kk == k)
+
+    for w, (word, reading) in zip(page_words, (key for n in range(4) for key in listed[n])):
+        e, k = w[5], key_of[(word, reading)]
+        assert w[7] == sum(uses(f, k) for f in range(e, min(e + AHEAD, 4))), \
+            f"{w[0]}'s count ahead is its uses in its own episode and the next ones ({e})"
+    shown_on = {row[2] for chunk in chunks for row in chunk["src"]}
+    assert {0, 2} <= shown_on, "a line from Show B's 第01集 names B's episode as its source, A's line A's"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_counted_namesakes_stay_apart_when_the_journey_is_redrawn_from_the_plan_after_a_move(language):
+    # why (E-NAMES): a move is redrawn from the plan (`--from-plan`, F7), whose rows are the plan engine's own — a row
+    # named its file by the name alone there too, so with Show B moved before Show A, B's 第01集 words were read back
+    # onto whichever 第01集 came first. The redraw's rows carry each file's path: each episode keeps its own words.
+    from app import analyzer
+    root = os.environ["SURASURA_TEST_ROOT"]
+    _settings(language)
+    store, ids, (one, two) = _same_named(language)
+    _generate(root, language)
+    assert store.move([ids["B1"], ids["B2"]], "now", before_id=ids["A1"]) is not None
+    p = subprocess.run([sys.executable, os.path.join(REPO, "app", "analyzer.py"), f"--language={language}", "--static",
+                        "--no-open", "--min-freq", "1", "--from-plan"], cwd=REPO, env=child_env(root),
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    assert p.returncode == 0, (p.stdout + p.stderr)[-3000:]
+    results = os.path.join(root, "results")
+    assert analyzer.redrawn_for(results) is not None, "only the order moved: redrawn from the plan, no Generate"
+
+    order = [store.item(ids[k])["rel_path"].replace("\\", "/") for k in ("B1", "B2", "A1", "A2")]
+    prog = pd.read_csv(os.path.join(results, "progressive_learning_list.csv"), encoding="utf-8-sig",
+                       keep_default_na=False)
+    assert {n: set(prog[prog["Sequence"] == n + 1]["Source Path"]) for n in range(4)} == \
+        {n: {path} for n, path in enumerate(order) if (prog["Sequence"] == n + 1).any()}, \
+        "each redrawn row names its own file by its path, in the new order"
+    head, chunks = _page(root)
+    assert [e[0] for e in head["eps"]] == [ids[k] for k in ("B1", "B2", "A1", "A2")]
+    assert [e[1] for e in head["eps"]] == [one, two, one, two]
+    want = {n: list(prog[prog["Sequence"] == n + 1]["Word"]) for n in range(4)}
+    assert want[0] and want[2], "both shows' 第01集 have words first met in them"
+    got = {n: [] for n in range(4)}
+    for chunk in chunks:
+        for w in chunk["w"]:
+            got[w[5]].append(w[0])
+    assert got == want, "every episode holds the words first met in IT after the move, never its namesake's"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_list_from_before_the_path_column_still_draws_a_name_on_its_counted_namesake(language):
+    # why (E-NAMES): a run's lists from before ENGINE 49 have no `Source Path` (nor file statistics' `Path`) — the page
+    # drawn from them must still put a name's words on the episode the run COUNTED of that name (J-FIX 3), never strand
+    # them on an episode of their own at the end. Show A's 第01集 set aside: its name's words are Show B's.
+    from app import journey_render as jr
+    from tests.test_journey_render_shape import _rows
+    store, ids, (one, two) = _same_named(language)
+    store.set_watched([ids["A1"]])
+    data_dir, user_files_dir = roots(language)
+    store.close()
+    facts = jr.store_facts(language, data_dir, user_files_dir)
+    rows = _rows(language, 2)
+    for row in rows:
+        row["Source File"] = (one, two)[row["Sequence"] - 1]
+    assert "Source Path" not in rows[0]
+    stats = [{"File": name, "Total Words": 400, "Known Count": 360, "Coverage (%)": 90.0} for name in (one, two)]
+    out = jr.build(language, rows, stats, facts=facts, pitch=jr.Pitch(language, kanjium={}))
+    eps = out.head["eps"]
+    assert [e[0] for e in eps] == [ids[k] for k in ("A1", "A2", "B1", "B2")], "the store's four, none added for a name"
+    at = {}
+    for blob in out.chunks:
+        for w in json.loads(gzip.decompress(blob).decode("utf-8"))["w"]:
+            at.setdefault(w[5], []).append(w[0])
+    assert set(at) == {1, 2}, "A's set-aside 第01集 holds nothing; its name's words are B's counted one, 第02 A's"
+    assert at[2] == [r["Word"] for r in rows if r["Sequence"] == 1]
+
+
+@pytest.mark.skipif(not find_edge(), reason="Edge isn't installed")
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_windows_arrow_on_show_bs_first_episode_opens_show_bs_never_its_namesake(language):
+    # why (E-NAMES): the window's ↗ handed the page an episode's file name alone (`#file=<name>`) and the page opened
+    # that name's FIRST episode — ↗ on Show B's 第01集 opened Show A's. The window hands the item too (`&id=<item id>`,
+    # the page's own way back to an episode); a link with the name alone (an older one) still opens the name's first.
+    from app import static_html_generator as gen
+    from tests.journey_page_edge import Edge
+    root = os.environ["SURASURA_TEST_ROOT"]
+    _settings(language)
+    store, ids, (one, two) = _same_named(language)
+    _generate(root, language)
+    store.close()
+    report = os.path.join(root, "results", gen.REPORT_NAME)
+    at = {e[0]: n for n, e in enumerate(_page(root)[0]["eps"])}
+    on_name = os.path.join(root, "results", gen.OPEN_ON_NAME)
+    from urllib.parse import quote
+    with Edge() as edge:
+        # the page: the item opens its own episode; the name alone (an older link) the name's first
+        assert edge.open("file:///" + report.replace("\\", "/") + f"?n=1#file={quote(one, safe='')}&id={ids['B1']}")
+        assert edge.evaluate("S.ep") == at[ids["B1"]], "↗ on Show B's 第01集 opens Show B's"
+        edge.evaluate("localStorage.clear()")
+        assert edge.open("file:///" + report.replace("\\", "/") + "?n=2#file=" + quote(one, safe=""))
+        assert edge.evaluate("S.ep") == at[ids["A1"]], "the name alone (an older link): the name's first episode"
+        edge.evaluate("localStorage.clear()")
+        assert edge.open("file:///" + report.replace("\\", "/") + "?n=3")
+        itself = edge.evaluate("S.ep")
+        edge.evaluate("localStorage.clear()")
+        lacks = f"?n=4#file={quote(two, safe='')}&id={max(ids.values()) + 1}"
+        assert edge.open("file:///" + report.replace("\\", "/") + lacks)
+        assert edge.evaluate("S.ep") == itself != at[ids["B2"]], "an item the page lacks: where it opens by itself"
+        # the window's way there: `open_report` hands the item to the page, through the small page beside it
+        opened = []
+        with patch.object(gen, "get_user_file", lambda name: os.path.join(root, name)), \
+                patch.object(gen.webbrowser, "open", opened.append):
+            assert gen.report_holds(one, ids["B1"]) and gen.report_holds(one)
+            assert not gen.report_holds(one, max(ids.values()) + 1), "an episode the page doesn't hold yet: JO-1's"
+            assert gen.open_report(file=one, item=ids["B1"]) is True
+        assert opened == ["file://" + os.path.abspath(on_name)], "the small page that carries the fragment"
+        edge.evaluate("localStorage.clear()")
+        assert edge.open("file:///" + on_name.replace("\\", "/"))
+        assert edge.evaluate("S.ep") == at[ids["B1"]], "through the window's own open: Show B's"
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

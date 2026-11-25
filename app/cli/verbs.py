@@ -283,7 +283,8 @@ def list_words(args):
     out = {"language": lang}
     if args.file is not None:
         name = os.path.basename(args.file)
-        rows = [row for row in rows if row.get("Source File") == name]
+        rel = _library_rel(lang, args.file) if rows and "Source Path" in rows[0] else None
+        rows = [row for row in rows if (row.get("Source Path") == rel if rel else row.get("Source File") == name)]
         out["file"] = name
     kind = _kinds(lang)
     words, seen = [], set()
@@ -345,6 +346,17 @@ def _phrase_set(loaded, lang):
     return phrases.load()
 
 
+def _library_rel(lang, path):
+    """`path`'s Source Path (E-NAMES: its path from the library's data folder, as the run's rows name a file), or None
+    for a path outside it (or a bare name): the caller then matches the file by its name."""
+    from app.path_utils import get_data_path, library_path
+    try:
+        rel = library_path(os.path.abspath(path), os.path.abspath(get_data_path(lang)))
+    except ValueError:
+        return None
+    return None if rel == os.pardir or rel.startswith(os.pardir + "/") else rel
+
+
 def _the_librarys_file(lang, path):
     """Is `path` the library's one file of its name (so the journey's rows for that name are its own)?"""
     from app.path_utils import get_data_path
@@ -360,8 +372,9 @@ def _the_librarys_file(lang, path):
 def _file_encounter(args, loaded, lang):
     """One subtitle's list words in the order first said, read from the file itself by the cue reader (so a file is
     the path given, never a file name two shows share): each with `start` / `end` (seconds) of the line it is first
-    said on, how often the file says it, and `new` — whether this file is where the journey first meets it (null
-    when the file isn't the library's one file of its name: the journey keys files by name)."""
+    said on, how often the file says it, and `new` — whether this file is where the journey first meets it (by its
+    Source Path, E-NAMES; a list from before names files by name alone: null when the file isn't the library's one
+    file of its name, or not in the library)."""
     from app import cues
     from app.connect import pick as picking
     if not os.path.isfile(args.file):
@@ -376,10 +389,14 @@ def _file_encounter(args, loaded, lang):
     listed = {}
     for row in rows:
         listed.setdefault((row.get("Word", ""), row.get("Reading", "")), row)
-    # The journey names a file by its name only: `new` is told only for the library's one file of that name, this one
+    # The journey names a file by its Source Path (E-NAMES); a list from before by its name only: then `new` is told
+    # only for the library's one file of that name, this one
     name = os.path.basename(args.file)
+    rel = _library_rel(lang, args.file) if journey and "Source Path" in journey[0] else None
     new = None
-    if _the_librarys_file(lang, args.file):
+    if rel:
+        new = {(row.get("Word", ""), row.get("Reading", "")) for row in journey if row.get("Source Path") == rel}
+    elif _the_librarys_file(lang, args.file):
         new = {(row.get("Word", ""), row.get("Reading", "")) for row in journey if row.get("Source File") == name}
     tokenizer, script = _reading(loaded, lang)
     try:

@@ -4609,9 +4609,12 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
     # From the first write on, the outputs are neither the stamp's run nor this order's until the marker says so:
     # one stopped part-way is never current (`drawn_for` None), and the next look redraws it.
     _write_redraw_marker(plan.header["run_signature"], None)
-    write_list(lambda tmp: write_rows(tmp, result.priority, columns), OUTPUT_CSV)
+    page_priority = write_list(lambda tmp: write_rows(tmp, result.priority, columns, keep=_page_keep(args, True)),
+                               OUTPUT_CSV)
+    page_rows = None                        # (no progressive list written: the page reads the file, as before)
     if result.progressive:
-        write_list(lambda tmp: write_rows(tmp, result.progressive, columns_prog), OUTPUT_PROGRESSIVE)
+        page_rows = write_list(lambda tmp: write_rows(tmp, result.progressive, columns_prog,
+                                                      keep=_page_keep(args, False)), OUTPUT_PROGRESSIVE)
 
     # word_stats.json's list rows: what the order moves (Score, the tier counts, the first file, the sentences)
     # (the columns the re-plan wrote: every row has them; under All, as many as its widest row)
@@ -4703,6 +4706,7 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
             rendering = time.time()
             drawn = static_html_generator.generate_static_html(        # signed with the marks it was drawn from
                 app_mode=args.app_mode, open_browser=not args.no_open, language=language,
+                rows=page_rows, priority=page_priority,                 # the lists just written, as read
                 plan=plan_engine.read_counts(os.path.join(RESULTS_DIR, plan_engine.COUNTS_FILE),   # the Generate's
                                              plan.header.get("run_signature")) or plan)   # figures (its counts table)
             report_failed = not _report_written(_html, rendering)
@@ -6004,7 +6008,8 @@ def write_list(write, path):
     `os.replace`: a reader (New arrivals' worker, the journey's shadow compare, Connect) never reads half a list, only
     the last one or the new one. A reader holding the old one open (Windows refuses the replace) is waited for, tried
     every 50 ms for up to 10 s (a list is read in about a second); after that the temp is copied over it, as the list
-    was written before. The temp never stays; one a killed run left is removed by the next write, once a minute old."""
+    was written before. The temp never stays; one a killed run left is removed by the next write, once a minute old.
+    Returns what `write` returned (`write_rows`' rows for the journey)."""
     import shutil
     tmp = f"{path}.{os.getpid()}.tmp"
     folder, name = os.path.split(path)
@@ -6016,17 +6021,18 @@ def write_list(write, path):
             except OSError:
                 pass
     try:
-        write(tmp)
+        wrote = write(tmp)
         deadline = time.monotonic() + 10.0
         while True:
             try:
                 os.replace(tmp, path)
-                return
+                return wrote
             except PermissionError:
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(0.05)
         shutil.copyfile(tmp, path)
+        return wrote
     finally:
         try:
             os.remove(tmp)
@@ -6041,14 +6047,38 @@ def _number_kind(kind):
     return "i" if issubclass(kind, numbers.Integral) else "f"
 
 
-def write_rows(path, rows, columns=None, upto=None):
+def _csv_text(value):
+    """A cell's text as the csv module writes it: a str as it is, None empty, a float its repr, anything else str()."""
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    return repr(value) if isinstance(value, float) else str(value)
+
+
+def _page_keep(args, priority):
+    """`write_rows`' `keep` for a list this run's journey is drawn from (`journey_render._records`' columns: the
+    priority list's words, or the progressive list's columns with its sentences), or None when no page is drawn."""
+    if not getattr(args, "static", False):
+        return None
+    try:
+        from app import journey_render
+    except ImportError:
+        return None                         # (the page reads the lists from the file, as before)
+    return (journey_render.PRIORITY_COLUMNS, False) if priority else (journey_render.ROW_COLUMNS, True)
+
+
+def write_rows(path, rows, columns=None, upto=None, keep=None):
     """E-WRITE: the one writer of the two lists (`OUTPUT_CSV`, `OUTPUT_PROGRESSIVE`) — the Generate's and the redraw's,
     with the standard library's csv: the bytes `pandas.DataFrame(rows).to_csv(path, index=False, encoding='utf-8-sig')`
     wrote (pandas was imported in both only for this, ~0.35 s a process). `columns`: the header (None: every row's keys
     in the order first met); a row's other keys are left out, a column it lacks is empty. `upto`: only the first `upto`
     rows are written (the coverage cut) — each column's kind is still read over all `rows`, as the frame was cut after
     it was made. A column of numbers with a gap or a float is pandas' float column: its whole numbers are written 3.0;
-    a gap, None or NaN is empty everywhere. One pass over the cells for the kinds, one to write."""
+    a gap, None or NaN is empty everywhere. One pass over the cells for the kinds, one to write.
+    `keep` (`_page_keep`: the journey's `(columns, contexts)`): the rows written are also handed back as the journey's
+    reader would read them from this file (`journey_render._records`: each kept column's text as csv wrote it, a cell
+    that repeats held once), so the page this run draws never reads back the lists it was just given. None without."""
     if columns is None:
         columns = list(dict.fromkeys(chain.from_iterable(rows)))
     floats, nans = set(), set()
@@ -6071,11 +6101,23 @@ def write_rows(path, rows, columns=None, upto=None):
             return ""
         return value                        # (csv writes str(value))
 
+    kept = None
+    if keep is not None:
+        wanted, contexts = keep
+        picks = [(n, name, name.startswith("Context ")) for n, name in enumerate(columns)
+                 if name in wanted or (contexts and name.startswith(("Context ", "Src ")))]
+        once = {}.setdefault
+        kept = []
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f, lineterminator=os.linesep)      # (pandas' line ends: the system's)
         writer.writerow(columns)
         for row in rows if upto is None else rows[:upto]:
-            writer.writerow([_cell(column, row.get(column)) for column in columns])
+            line = [_cell(column, row.get(column)) for column in columns]
+            writer.writerow(line)
+            if kept is not None and line:   # (an empty line is no row to the reader)
+                kept.append({name: _csv_text(line[n]) if sentence else once(_csv_text(line[n]), _csv_text(line[n]))
+                             for n, name, sentence in picks})
+    return kept
 
 
 def _set_run_stamp(results_dir, signature):
@@ -8178,6 +8220,7 @@ def main():
     # The listed words, once the list is written; None: no list, so nothing below is held back. Bound here rather
     # than tested with `in locals()`, which copies every local of this function on each test (a word, per file).
     valid_lrs = None
+    _page_priority = _page_rows = None      # the two lists as the journey reads them, when this run wrote them
     if output_rows:
         n_listed = len(output_rows)         # (the rows the list keeps: the coverage target cuts it below)
 
@@ -8217,7 +8260,8 @@ def main():
 
         valid_lrs = {(r["Word"], r["Reading"]) for r in output_rows[:n_listed]}
         _columns = [c for c in dict.fromkeys(chain.from_iterable(output_rows)) if c != "_MinSeq"]   # (a helper key)
-        write_list(lambda tmp: write_rows(tmp, output_rows, _columns, n_listed), OUTPUT_CSV)
+        _page_priority = write_list(lambda tmp: write_rows(tmp, output_rows, _columns, n_listed,
+                                                           _page_keep(args, True)), OUTPUT_CSV)
         try:
             print(f"Saved priority list to {OUTPUT_CSV}")
         except UnicodeEncodeError:
@@ -8487,7 +8531,8 @@ def main():
             progressive_rows.append(row)
         
     if progressive_rows:
-        write_list(lambda tmp: write_rows(tmp, progressive_rows), OUTPUT_PROGRESSIVE)
+        _page_rows = write_list(lambda tmp: write_rows(tmp, progressive_rows, keep=_page_keep(args, False)),
+                                OUTPUT_PROGRESSIVE)
         print(f"Saved progressive report to {OUTPUT_PROGRESSIVE}")
     else:
         print("No progressive words found (all known).")
@@ -8593,6 +8638,7 @@ def main():
             _drawn = static_html_generator.generate_static_html(
                 app_mode=args.app_mode, open_browser=not args.no_open, language=language,
                 tagger=tokenizer.tagger if language == "ja" else None,     # J-CUT: the journey's pitch, no 2nd tagger
+                rows=_page_rows, priority=_page_priority,                   # the lists just written, as read
                 plan=_journey_plan(args, _run_sig))      # the plan written just above, if it was
             _report_failed = not _report_written(os.path.join(RESULTS_DIR, "reading_list_static.html"), _rendering)
         except Exception as e:

@@ -174,6 +174,67 @@ def test_the_coverage_cut_keeps_the_whole_lists_column_kinds(tmp_path, language,
     assert _ours(tmp_path, rows, columns, n) == _pandas_cut(rows, n)
 
 
+def _kept_and_read(tmp_path, rows, keep, columns=None, upto=None):
+    """`write_rows`' rows handed to the page (`keep`), and the same list as the page's reader reads it from the file."""
+    from app import journey_render
+    path = os.path.join(tmp_path, "list.csv")
+    kept = analyzer.write_rows(path, rows, columns, upto, keep)
+    return kept, journey_render._records(path, *keep)
+
+
+@pytest.mark.parametrize("which", ["priority", "progressive"])
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_rows_handed_to_the_journey_are_the_list_as_it_reads_it(tmp_path, language, which):
+    """Left 2: the page drawn by the run that wrote the two lists took them back from the file (`journey_render.
+    _records`, 0.04 s at 2k). `write_rows`' `keep` hands back the same rows: each kept column's text as csv wrote it —
+    a count as its digits, a gap / None / NaN empty, a float column's 170.0, a sentence with a CRLF, quotes and commas
+    as is — the same columns (the Context / Src ones only for the progressive list), the coverage cut the same."""
+    from app import journey_render
+    keep = (journey_render.PRIORITY_COLUMNS, False) if which == "priority" else (journey_render.ROW_COLUMNS, True)
+    rows = _with_gaps(_ja_rows() if language == "ja" else _zh_rows())
+    rows[0]["Context 1"] = (rows[0].get("Context 1") or "") + ' "Spider, Thread"\r\n二行目'
+    rows[1]["Occurrences (Global)"] = 12.5
+    rows[2]["Modality"] = float("nan")
+    rows[3]["Kana"] = None
+    rows[4]["Word"] = "NA"                              # (a word spelled like pandas' missing value stays the word)
+    rows[5]["Forms"] = True
+    kept, read = _kept_and_read(tmp_path, rows, keep)
+    assert kept == read and len(kept) == len(rows)
+    assert all(isinstance(v, str) for row in kept for v in row.values())
+    assert any(k.startswith("Context ") for k in kept[0]) == (which == "progressive")
+    cut, read_cut = _kept_and_read(tmp_path, rows, keep, upto=7)
+    assert cut == read_cut and len(cut) == 7
+    header = [c for c in rows[0] if c != "Sources"] + ["Context 9"]     # (the redraw's header: the Generate's)
+    assert _kept_and_read(tmp_path, rows, keep, header)[0] == _kept_and_read(tmp_path, rows, keep, header)[1]
+    assert analyzer.write_rows(os.path.join(tmp_path, "list.csv"), rows) is None, "no keep: nothing held"
+
+
+def test_the_rows_handed_to_the_journey_on_empty_and_one_column_lists(tmp_path):
+    """The empty edges: a list of no rows (the header alone) is [] both ways; a one-column row of an empty cell is a
+    row both ways (csv writes it \"\")."""
+    from app import journey_render
+    keep = (journey_render.PRIORITY_COLUMNS, False)
+    assert _kept_and_read(tmp_path, [], keep, ["Word", "Reading"]) == ([], [])
+    kept, read = _kept_and_read(tmp_path, [{"Word": ""}, {"Word": None}, {"Word": "猫"}], keep)
+    assert kept == read == [{"Word": ""}, {"Word": ""}, {"Word": "猫"}]
+
+
+def test_the_journey_drawn_with_the_rows_never_reads_the_lists(tmp_path, monkeypatch):
+    """`generate_static_html(rows=, priority=)` hands the lists to `journey_render.render` as they are; with neither
+    (the reuse path, a re-render) the page reads them from results, as before."""
+    from app import journey_render, static_html_generator as gen
+    seen = []
+    monkeypatch.setattr(journey_render, "store_facts", lambda language: type("Facts", (), {"marks": None})())
+    monkeypatch.setattr(journey_render, "render", lambda language, rows=None, priority=None, **kw: seen.append(
+        (rows, priority)) or (_ for _ in ()).throw(RuntimeError("drawn")))
+    rows, priority = [{"Word": "夜市", "Context 1": "夜市に行った。"}], [{"Word": "夜市"}]
+    with pytest.raises(RuntimeError):
+        gen.generate_static_html(open_browser=False, language="ja", rows=rows, priority=priority)
+    with pytest.raises(RuntimeError):
+        gen.generate_static_html(open_browser=False, language="ja")
+    assert seen == [(rows, priority), (None, None)]
+
+
 def test_an_empty_text_cell_and_a_one_column_row(tmp_path):
     """Edge cases of the csv module itself, which both writers share: a row of one empty cell is written "" (else it
     would read as no row), an empty string and None both empty."""
@@ -183,16 +244,23 @@ def test_an_empty_text_cell_and_a_one_column_row(tmp_path):
 
 _NO_PANDAS = """
 import runpy, sys
+from app import journey_render
+reads, records = [], journey_render._records
+def counted(path, *a, **k):
+    reads.append(path)
+    return records(path, *a, **k)
+journey_render._records = counted
 sys.argv = [sys.argv[1]] + sys.argv[2:]
 try:
     runpy.run_path(sys.argv[0], run_name="__main__")
 finally:
-    sys.stderr.write("\\nPANDAS-LOADED %s\\n" % ("pandas" in sys.modules))
+    sys.stderr.write("\\nPANDAS-LOADED %s\\nLIST-READS %d\\n" % ("pandas" in sys.modules, len(reads)))
 """
 
 
 def _analyzer(root, language, *args):
-    """The analyzer as the window runs it (a child), at level 2 -> (exit code, output, whether pandas was loaded)."""
+    """The analyzer as the window runs it (a child), at level 2 -> (exit code, output, whether pandas was loaded); the
+    journey's reads of a list from results (`journey_render._records`) counted in `_analyzer.reads`."""
     env = cases.child_env(root)
     env["SURASURA_SENTENCE_TABLE"] = "2"
     p = subprocess.run([sys.executable, "-c", _NO_PANDAS, os.path.join(cases.REPO, "app", "analyzer.py"),
@@ -200,13 +268,15 @@ def _analyzer(root, language, *args):
                        cwd=cases.REPO, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
     loaded = [line for line in p.stderr.splitlines() if line.startswith("PANDAS-LOADED ")]
     assert loaded, p.stderr[-2000:]
+    _analyzer.reads = int([line for line in p.stderr.splitlines() if line.startswith("LIST-READS ")][-1].split()[1])
     return p.returncode, p.stdout + p.stderr, loaded[-1] == "PANDAS-LOADED True"
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])
-def test_neither_the_generate_nor_the_redraw_loads_pandas(tmp_path, language):
+def test_neither_the_generate_nor_the_redraw_loads_pandas_or_reads_back_its_lists(tmp_path, language):
     """A full Generate of RP-2's real library, then the journey redrawn from its plan (`--from-plan`, the keeper's
-    redraw after a move): both write the two lists, neither loads pandas."""
+    redraw after a move): both write the two lists, neither loads pandas, and neither's journey reads back the lists
+    it has just written (Left 2: `write_rows` hands them over)."""
     root = str(tmp_path)
     case = f"rp2-{language}"
     cases.build(root, case)
@@ -214,12 +284,14 @@ def test_neither_the_generate_nor_the_redraw_loads_pandas(tmp_path, language):
     assert code == 0, out[-3000:]
     assert os.path.exists(os.path.join(root, "results", "priority_learning_list.csv"))
     assert not loaded, "the Generate loads no pandas"
+    assert _analyzer.reads == 0, "the Generate's journey takes the lists it wrote, never reads them back"
     words, files = _compact_json(root)
     from tests.test_e_redraw import _move
     _move(root, language, "top")                        # (a show to the top: the keeper's redraw is owed)
     code, out, loaded = _analyzer(root, language, "--from-plan")
     assert code == 0 and "Redrew the journey" in out, out[-3000:]
     assert not loaded, "the redraw loads no pandas"
+    assert _analyzer.reads == 0, "the redraw's journey takes the lists it wrote"
     words_after, files_after = _compact_json(root)
     assert words_after.keys() == words.keys()
     assert files_after != files and sorted(files_after, key=json.dumps) == sorted(files, key=json.dumps), (

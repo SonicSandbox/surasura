@@ -1065,13 +1065,15 @@ def journey_template():
     return page.replace(RAIL_MARK, f"<style>\n{css}\n</style>\n<script>\n{js}\n</script>")
 
 
-def _write_journey(language, app_mode=False, open_browser=True, tagger=None, plan=None):
+def _write_journey(language, app_mode=False, open_browser=True, tagger=None, plan=None, rows=None, priority=None):
     """Write the v3 journey: `journey_render.render` over this language's last Generate (the CSVs in results, the
     library store, the ▶'s memos), with the run's own fugashi `tagger` (speed row 1: the pitch makes no second one), in
     `journey_template()`, to `OUTPUT_FILE` (a temp file replaced: a page open in a browser is never half written).
     Returns the watched marks it was drawn with — the very read of the store the page draws from
     (`journey_render.store_facts`' `marks`: J-FIX 3, a mark between two reads was drawn but not signed) — for the run's
-    render signature: None with no library store, `library_store.UNREAD` when a store is there and its read failed."""
+    render signature: None with no library store, `library_store.UNREAD` when a store is there and its read failed.
+    `rows` / `priority`: the progressive and priority lists as the run just wrote them (`analyzer.write_rows`' `keep`),
+    or None: read from results (`journey_render._records`)."""
     from app import journey_render
     if language is None:
         try:
@@ -1084,7 +1086,8 @@ def _write_journey(language, app_mode=False, open_browser=True, tagger=None, pla
     else:                                       # no store, or one that couldn't be read: never signed with stones
         from app import analyzer, library_store   # (here only: a run's analyzer is __main__, not loaded twice)
         marks = None if analyzer.journey_marks(language) is None else library_store.UNREAD
-    out = journey_render.render(language, facts=facts or False, tagger=tagger if language == "ja" else None, plan=plan)
+    out = journey_render.render(language, rows, priority, facts=facts or False,
+                                tagger=tagger if language == "ja" else None, plan=plan)
     path = OUTPUT_FILE                          # the old page's file and name (as `open_report` and the window find it)
     journey_render.write_page(out, journey_template(), path)
     print(f"Journey written at: {path} ({out.head['counts']['eps']} episodes, {out.head['counts']['words']} words)")
@@ -1096,15 +1099,18 @@ def _write_journey(language, app_mode=False, open_browser=True, tagger=None, pla
     return marks
 
 
-def generate_static_html(app_mode=False, open_browser=True, language=None, tagger=None, plan=None):
+def generate_static_html(app_mode=False, open_browser=True, language=None, tagger=None, plan=None, rows=None,
+                         priority=None):
     """Write the journey: v3's page (`_write_journey`) for every look — the look is applied in the page (J-SET), and
     a look saved before it (Zen's too) reads as its new meaning (`journey_settings.page_value`). `language`: the run's
     (the analyzer's `--language`; None: settings.json's); `tagger`: the run's fugashi tagger, `plan`: the plan file,
-    both for the render. Returns the marks the journey was drawn from (the page's own read of the store) — None
+    both for the render; `rows` / `priority`: the two lists the run just wrote, as the page reads them (None: read
+    from results). Returns the marks the journey was drawn from (the page's own read of the store) — None
     without a library store, `library_store.UNREAD` when they couldn't be read — for the run's render signature
     (`analyzer.signed_render`)."""
     print("Writing the journey (v3)...")
-    return _write_journey(language, app_mode=app_mode, open_browser=open_browser, tagger=tagger, plan=plan)
+    return _write_journey(language, app_mode=app_mode, open_browser=open_browser, tagger=tagger, plan=plan,
+                          rows=rows, priority=priority)
 
 
 def main():

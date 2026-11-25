@@ -14,8 +14,10 @@ words on the page:
   ZH   one line per CC-CEDICT entry: Simplified, Traditional, pinyin (tone numbers), then up to 3 senses — a
        variant's, a surname's or a "see …" line kept as CC-CEDICT writes it.
 
-Each table is the lines' UTF-8 in blocks of BLOCK_LINES lines, each block compressed with lzma alone and all of them
-written in base 64 (a hex dump, the other tables' encoding, would pass 10 MB here; base 85's decoder is pure Python,
+Each table is the lines' UTF-8 in blocks of BLOCK_LINES lines, each block a zstd frame of its own against one
+dictionary trained on the table (DICT: shared by the blocks, so they compress about as well as one lzma stream and
+decode ten times faster: every JA block in 0.03 s, lzma's 0.31), all of it written in base 64 (a hex dump, the
+other tables' encoding, would pass 10 MB here; base 85's decoder is pure Python,
 ~1 s for JA), one module a language so a Chinese render never loads the Japanese table. Beside it, INDEX: every key a
 line is looked up by (ja: its kanji forms and readings · zh: Simplified, Traditional) falls in a bucket (the CRC-32 of
 its UTF-8, modulo BUCKETS), and each bucket names the blocks its keys' lines are in — so a render decompresses and
@@ -102,26 +104,45 @@ def _pack(lines):
     return base64.b64encode(lzma.compress("\n".join(lines).encode("utf-8"), filters=filters)).decode()
 
 
-BLOCK_LINES = 2048         # a block's lines (~160 KB of JA: 3 ms to decompress, 2 ms to check). 512 cost the JA
-#                             module 8.7 MB of blocks for 1 ms a block (2,048: 7.9 MB; one stream: 6.3 MB)
-BLOCK_DICT = 1 << 20        # a block's lzma window (the block is smaller): what a reader holds while it decompresses
+BLOCK_LINES = 2048         # a block's lines (~160 KB of JA: 0.3 ms to decompress, 2 ms to check). Blocks of 4,096 /
+#                             8,192 named about as many blocks a key (2.85 / 2.78, against 2.89) at 2–4x a block's bytes
+DICT_BYTES = 256 << 10      # the trained dictionary: JA's blocks 7.66 MB in base 64 (a 112 KB one: 7.84; the blocks in
+#                             lzma alone 7.94; one lzma stream 6.25)
+LEVEL = 19                  # zstd's level (22 saved 0.01 %)
+SAMPLE_LINES = 64           # the dictionary's training samples: the table in pieces of this many lines
 BUCKETS = 1 << 18           # INDEX's buckets: ~1.5 keys a bucket, so a key's bucket names its own blocks and ~1 other
-FORMAT = 2                  # 1 (until 2026-11-25): one lzma stream, scanned whole · 2: blocks + INDEX
+FORMAT = 2                  # 1 (until 2026-11-25): one lzma stream, scanned whole · 2: zstd blocks + DICT + INDEX
+
+
+def _trained(encoded):
+    """The zstd dictionary for these lines (UTF-8), trained on pieces of SAMPLE_LINES lines — or None for a table too
+    small to train on (its blocks are then compressed alone)."""
+    import zstandard
+    samples = [b"\n".join(encoded[s:s + SAMPLE_LINES]) for s in range(0, len(encoded), SAMPLE_LINES)]
+    if sum(map(len, samples)) < 8 * DICT_BYTES:
+        return None
+    try:
+        return zstandard.train_dictionary(DICT_BYTES, samples, level=LEVEL)
+    except zstandard.ZstdError:
+        return None
 
 
 def _pack_blocks(lines):
-    """[line] -> (DATA in base 64, BLOCKS: where each block starts in the decoded DATA, and the end; INDEX in base 64:
+    """[line] -> (DATA in base 64, BLOCKS: where each block starts in the decoded DATA, and the end; DICT in base 64,
+    "" for none; INDEX in base 64:
     for each bucket (a key's CRC-32 % BUCKETS; `journey_render._line_keys`) how many blocks it names, one byte each,
-    then those blocks' numbers, one byte each, bucket by bucket, zlib-compressed. A line-by-line index (each key's CRC-32 and line)
-    took 2.1 MB and 0.12 s to read — a quarter of what it saved."""
+    then those blocks' numbers, one byte each, bucket by bucket, zlib-compressed. A line-by-line index (each key's
+    CRC-32 and line) took 2.1 MB and 0.12 s to read — a quarter of what it saved."""
+    import zstandard
     from app.journey_render import _line_keys
-    filters = [{"id": lzma.FILTER_LZMA2, "preset": 9 | lzma.PRESET_EXTREME, "dict_size": BLOCK_DICT}]
     encoded = [line.encode("utf-8") for line in lines]
+    trained = _trained(encoded)
+    packer = zstandard.ZstdCompressor(level=LEVEL, dict_data=trained) if trained else zstandard.ZstdCompressor(level=LEVEL)
     data, blocks = bytearray(), [0]
     for start in range(0, len(encoded), BLOCK_LINES):
-        data += lzma.compress(b"\n".join(encoded[start:start + BLOCK_LINES]), format=lzma.FORMAT_RAW, filters=filters)
+        data += packer.compress(b"\n".join(encoded[start:start + BLOCK_LINES]))
         blocks.append(len(data))
-    if len(blocks) - 1 > 255:
+    if len(blocks) - 1 > 256:                 # (blocks 0…255: one byte each)
         raise ValueError(f"{len(blocks) - 1} blocks: INDEX numbers a block in one byte (raise BLOCK_LINES)")
     named = [set() for _b in range(BUCKETS)]
     for n, line in enumerate(encoded):
@@ -132,7 +153,8 @@ def _pack_blocks(lines):
     index = bytes(map(len, named)) + bytes(b for found in named for b in sorted(found))
     index = zlib.compress(index, 9)     # (zlib: read in 3 ms by every render that misses a word; lzma took 29 ms
     #                                         for 16 KB less)
-    return base64.b64encode(bytes(data)).decode(), blocks, base64.b64encode(index).decode()
+    return (base64.b64encode(bytes(data)).decode(), blocks,
+            base64.b64encode(trained.as_bytes()).decode() if trained else "", base64.b64encode(index).decode())
 
 
 def module_lines(module):
@@ -141,10 +163,13 @@ def module_lines(module):
     if getattr(module, "FORMAT", 1) == 1:
         text = lzma.decompress(data)
         return text.decode("utf-8").split("\n") if text else []
-    filters = [{"id": lzma.FILTER_LZMA2, "dict_size": module.BLOCK_DICT}]
+    import zstandard
+    trained = base64.b64decode(module.DICT)
+    reader = (zstandard.ZstdDecompressor(dict_data=zstandard.ZstdCompressionDict(trained)) if trained
+              else zstandard.ZstdDecompressor())
     out = []
     for start, end in zip(module.BLOCKS, module.BLOCKS[1:]):
-        out += lzma.decompress(data[start:end], format=lzma.FORMAT_RAW, filters=filters).decode("utf-8").split("\n")
+        out += reader.decompress(data[start:end]).decode("utf-8").split("\n")
     return out
 
 
@@ -190,10 +215,10 @@ def main(lists_dir=LISTS_DIR, gold_dir=GOLD_DIR, outputs=None):
         except Exception:
             same = False
         revision = old.REVISION if same else today      # the same meanings keep their Revision, whatever the format
-        data, blocks, index = _pack_blocks(lines)
+        data, blocks, trained, index = _pack_blocks(lines)
         text = TEMPLATE.format(revision=revision, source=source, n=len(lines),
                                what=what.format(senses=SENSES, glosses=GLOSSES), data=_wrap(data), format=FORMAT,
-                               block_lines=BLOCK_LINES, block_dict=BLOCK_DICT, buckets=BUCKETS,
+                               block_lines=BLOCK_LINES, buckets=BUCKETS, trained=_wrap(trained),
                                blocks=_wrap_numbers(blocks),
                                index=_wrap(index))
         wrote = _write(outputs[lang], text)
@@ -225,7 +250,7 @@ Regenerate with:  python scripts/build_gloss_data.py
 
 Revision: {revision}   {source}
   DATA  {n:,} {what}
-Tab-separated lines in blocks of BLOCK_LINES, each lzma-compressed alone, base 64; INDEX: the blocks each key's
+Tab-separated lines in blocks of BLOCK_LINES, each a zstd frame against DICT, base 64; INDEX: the blocks each key's
 bucket names (scripts/build_gloss_data.py says why). Read through app/journey_render.py (`Meanings`), for the words
 on a page only: their lines' blocks alone.
 
@@ -238,7 +263,6 @@ under the same licence, https://creativecommons.org/licenses/by-sa/4.0/.
 REVISION = "{revision}"
 FORMAT = {format}
 BLOCK_LINES = {block_lines}
-BLOCK_DICT = {block_dict}
 BUCKETS = {buckets}
 
 BLOCKS = (
@@ -247,6 +271,10 @@ BLOCKS = (
 
 DATA = """
 {data}
+"""
+
+DICT = """
+{trained}
 """
 
 INDEX = """

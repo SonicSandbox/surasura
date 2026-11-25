@@ -272,20 +272,23 @@ def _line_keys(line):
     return [key for key in dict.fromkeys(line[:second].replace(b"\t", b",").split(b",")) if key]
 
 
-_GLOSS_INDEX = {}           # {module name: (each bucket's start in the block numbers, the block numbers)}
+_GLOSS_INDEX = {}           # {module name: (each bucket's start in the block numbers, the block numbers, DICT)}
 
 
 def _gloss_lines(module, wanted):
     """A meanings module's lines (bytes) in the blocks that may hold one of `wanted` (UTF-8 keys) — every line that
     does among them, in the table's order — from its INDEX (each key's bucket names its blocks): only those blocks
-    decompressed, the caller checks each line (G4; scripts/build_gloss_data.py). The index is read once a process."""
-    import lzma
+    decompressed (each a zstd frame against the table's DICT), the caller checks each line (G4;
+    scripts/build_gloss_data.py). The index is read once a process; a decompressor is made each call (one is never
+    shared between threads)."""
+    import zstandard
     index = _GLOSS_INDEX.get(module.__name__)
     if index is None:
         raw = zlib.decompress(base64.b64decode(module.INDEX))
         buckets = module.BUCKETS
-        index = _GLOSS_INDEX[module.__name__] = (array("I", accumulate(raw[:buckets], initial=0)), raw[buckets:])
-    starts, named = index
+        index = _GLOSS_INDEX[module.__name__] = (array("I", accumulate(raw[:buckets], initial=0)), raw[buckets:],
+                                                 base64.b64decode(module.DICT))
+    starts, named, trained = index
     buckets, found = module.BUCKETS, set()
     for key in wanted:
         b = zlib.crc32(key) % buckets
@@ -293,10 +296,10 @@ def _gloss_lines(module, wanted):
     if not found:
         return
     data, blocks = base64.b64decode(module.DATA), module.BLOCKS
-    filters = [{"id": lzma.FILTER_LZMA2, "dict_size": module.BLOCK_DICT}]
+    reader = (zstandard.ZstdDecompressor(dict_data=zstandard.ZstdCompressionDict(trained)) if trained
+              else zstandard.ZstdDecompressor())
     for block in sorted(found):
-        yield from lzma.decompress(data[blocks[block]:blocks[block + 1]], format=lzma.FORMAT_RAW,
-                                   filters=filters).split(b"\n")
+        yield from reader.decompress(data[blocks[block]:blocks[block + 1]]).split(b"\n")
 
 
 class WordMemo:
@@ -1197,6 +1200,7 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
     # word and each source row is written as JSON and encoded once (its bytes are what the cap counts); a chunk is
     # their bytes joined (G11: each was encoded again in the chunk's text, each row's JSON written twice).
     chunks, ranges, glosses, chars = [], [], [], set()
+    row_json = {}                       # {rel: its source row's JSON as UTF-8}: once a build, though each chunk lists it
     cur, cur_src, cur_rows, cur_bytes, cur_eps, cur_w0 = [], {}, [], 0, set(), 0
 
     def close():
@@ -1260,14 +1264,14 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
             lines, added = numbered(found_lines)
             record[9] = lines
             text = _json(record).encode("utf-8")
-            rows = [_json(sources.row(rel)).encode("utf-8")
-                    for rel, _n in sorted(added.items(), key=lambda item: item[1])]
+            rows = [row_json[rel] if rel in row_json else row_json.setdefault(rel, _json(sources.row(rel)).encode("utf-8"))
+                    for rel in added]           # (`numbered` adds them in their numbers' order)
             return text, added, rows, len(text) + sum(len(r) + 1 for r in rows)
         text, added, new_rows, size = sized()
         if cur and cur_bytes + size > CHUNK_BYTES:
             close()                             # its sources then go in the new chunk's table, numbered again
             text, added, new_rows, size = sized()
-        for (rel, _n), source_row in zip(sorted(added.items(), key=lambda item: item[1]), new_rows):
+        for rel, source_row in zip(added, new_rows):
             cur_src[rel] = len(cur_rows)
             cur_rows.append(source_row)
         cur.append(text)

@@ -22,6 +22,7 @@ import os
 import zlib
 
 import pytest
+import zstandard
 
 from app import journey_render as jr
 from app import plan_engine, plan_rules, sentence_score
@@ -47,11 +48,12 @@ def _builder():
 
 def _all_lines(module):
     """Every line of a meanings module (bytes), its blocks decompressed one after another — the test's own reader."""
-    data = base64.b64decode(module.DATA)
-    filters = [{"id": lzma.FILTER_LZMA2, "dict_size": module.BLOCK_DICT}]
+    data, trained = base64.b64decode(module.DATA), base64.b64decode(module.DICT)
+    reader = (zstandard.ZstdDecompressor(dict_data=zstandard.ZstdCompressionDict(trained)) if trained
+              else zstandard.ZstdDecompressor())
     out = []
     for start, end in zip(module.BLOCKS, module.BLOCKS[1:]):
-        out += lzma.decompress(data[start:end], format=lzma.FORMAT_RAW, filters=filters).split(b"\n")
+        out += reader.decompress(data[start:end]).split(b"\n")
     return out
 
 
@@ -75,8 +77,8 @@ def _scanned(lines, wanted):
 
 
 class _Counted:
-    """lzma's decompressors, counting the table's bytes they hand out: a block (raw LZMA2) or the one stream of the
-    format before (`LZMADecompressor`) — the index's own read (zlib's, once a process) apart."""
+    """The decompressors, counting the table's bytes they hand out: a block (zstd's), or lzma's (the one stream of the
+    format before, `LZMADecompressor`) — the index's own read (zlib's, once a process) apart."""
 
     def __init__(self, monkeypatch):
         self.out = self.index = 0
@@ -113,9 +115,21 @@ class _Counted:
             counter.index += len(found)
             return found
 
+        real_zstd = zstandard.ZstdDecompressor
+
+        class Blocks:
+            def __init__(self, *a, **k):
+                self._real = real_zstd(*a, **k)
+
+            def decompress(self, data, *a, **k):
+                found = self._real.decompress(data, *a, **k)
+                counter.out += len(found)
+                return found
+
         monkeypatch.setattr(lzma, "decompress", decompress)
         monkeypatch.setattr(lzma, "LZMADecompressor", Decompressor)
         monkeypatch.setattr(zlib, "decompress", index_read)
+        monkeypatch.setattr(zstandard, "ZstdDecompressor", Blocks)
 
 
 # --------------------------------------------------------------------------------------------------------------- #
@@ -171,11 +185,11 @@ def _built(tmp_path, lines, monkeypatch, block_lines=3):
     """`_pack_blocks`' module for these lines (str), in small blocks, through the build's own template."""
     build = _builder()
     monkeypatch.setattr(build, "BLOCK_LINES", block_lines)
-    data, blocks, index = build._pack_blocks(lines)
+    data, blocks, trained, index = build._pack_blocks(lines)
     text = build.TEMPLATE.format(revision="2026-11-25", source="test", n=len(lines), what="lines",
                                  data=build._wrap(data), format=build.FORMAT, block_lines=block_lines,
-                                 block_dict=build.BLOCK_DICT, buckets=build.BUCKETS,
-                                 blocks=build._wrap_numbers(blocks), index=build._wrap(index))
+                                 buckets=build.BUCKETS, blocks=build._wrap_numbers(blocks),
+                                 trained=build._wrap(trained), index=build._wrap(index))
     path = tmp_path / "gloss_test_data.py"
     path.write_text(text, encoding="utf-8")
     spec = importlib.util.spec_from_file_location(f"gloss_test_data_{tmp_path.name}", str(path))

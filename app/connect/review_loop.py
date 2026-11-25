@@ -159,11 +159,14 @@ def _ints(values):
     return out
 
 
-def read(language, url, decks, fields, settings):
+def read(language, url, decks, fields, settings, known=None):
     """One read, beside the known-words sync -> `known_signal.read`'s answer, plus `loop`: the payoff
     ({"sync": its id, "known": n, "swap": n, "ignored": n, "unknown": n known words taken out}) when the phone sent
-    something, else None (and `loop_error` when the moves couldn't be read or written this time)."""
-    out = dict(known_signal.read(language, url, decks, fields, settings) or {})
+    something, else None (and `loop_error` when the moves couldn't be read or written this time). `known`: the sync's
+    `anki_sync.KnownFile`: Known's mark, the lists' states and write and the read-back read its one parse (DSA-SYNC)."""
+    from app import anki_sync
+    known = known if known is not None else anki_sync.KnownFile(language)
+    out = dict(known_signal.read(language, url, decks, fields, settings, known=known) or {})
     out["loop"] = None
     queries = {m: query(m, decks, settings) for m in MOVES}
     if not decks:
@@ -201,25 +204,24 @@ def read(language, url, decks, fields, settings):
                 set_by.setdefault(r.get("word"), set()).add("ignore" if r["move"] == IGNORE else "learning")
         known_words = list(out.get("marked") or ())
         loop_known = [w for w in known_words if w in set_by]
-        now = word_marks.states(language, loop_known) if loop_known else {}
+        now = word_marks.states(language, loop_known, known=known) if loop_known else {}
         marks = [(w, None) for w in loop_known if now.get(w) in set_by[w]]
         marks += [(w, "learning") for w, c, _n in words if move_of.get(c) == SWAP]
         marks += [(w, "ignore") for w, c, _n in words if move_of.get(c) == IGNORE]    # last: Ignore wins
         changes, known_before = [], set()
         if marks:
-            from app import anki_sync
             try:
-                _data, entries = anki_sync._read_known_file(language)
+                _data, entries = known.read()
                 known_before = anki_sync._known_keys(entries or [])
             except anki_sync._KnownFileError:
                 pass                                        # word_marks says why below, writing nothing
-            done = word_marks.apply(language, marks, undoable=False, unknow=True)
+            done = word_marks.apply(language, marks, undoable=False, unknow=True, known=known)
             if done.error is not None:
                 out["loop_error"] = done.error              # nothing written: read again at the next sync
                 return out
-            read_back = word_marks.states(language, [w for w, _b, _a in done.done])   # as Undo will read it (a
-            changes = [{"word": w, "before": b, "mark": a, "after": read_back.get(w)}  # Still learning with
-                       for w, b, a in done.done]                                     # nothing turned reads None)
+            # as Undo will read it (a Still learning with nothing turned reads None)
+            read_back = word_marks.states(language, [w for w, _b, _a in done.done], known=known)
+            changes = [{"word": w, "before": b, "mark": a, "after": read_back.get(w)} for w, b, a in done.done]
         ignored = sorted({w for w, c, _n in words if move_of.get(c) == IGNORE})
         queued = []
         try:
@@ -299,17 +301,19 @@ def undo(language, sync_id):
         later = [s for s in syncs[syncs.index(sync) + 1:] if isinstance(s, dict) and not s.get("undone")]
         moved_since = {c.get("word") for s in later for c in s.get("changes") or () if isinstance(c, dict)}
         known_since = {w for s in later for w in s.get("known") or ()}
-        now = word_marks.states(language, [c["word"] for c in changes])
+        from app import anki_sync
+        known = anki_sync.KnownFile(language)       # one parse for the lists' Undo and the Known words' (DSA-SYNC)
+        now = word_marks.states(language, [c["word"] for c in changes], known=known)
         back = [(c["word"], c["before"]) for c in reversed(changes)          # a word a later sync moved again
                 if now.get(c["word"]) == c["after"] and c["word"] not in moved_since]   # (to the same state too)
         kept = [c["word"] for c in changes if now.get(c["word"]) != c["after"] or c["word"] in moved_since]
         if back:
-            done = word_marks.apply(language, back, undoable=False, unknow=True)   # an Ignore put back is the
-            if done.error is not None:                                              # loop's: no known word
+            done = word_marks.apply(language, back, undoable=False, unknow=True, known=known)   # an Ignore put back
+            if done.error is not None:                                    # is the loop's: no known word
                 raise RuntimeError(done.error)
-        for word in sync.get("known") or ():
-            if word not in known_since:
-                known_signal.undo(language, word, None, cards_too=False)
+        marked = [w for w in sync.get("known") or () if w not in known_since]
+        if marked:                                  # one write for them all, never one a word (DSA-SYNC)
+            known_signal.undo_words(language, marked, None, cards_too=False, known=known)
         swap_queue.drop_sync(language, sync_id, "undone")
         stamp = _now()
         for record in (state.get("cards") or {}).values():

@@ -147,8 +147,8 @@ def _old_schema(db):
     conn = sqlite3.connect(db)
     conn.executescript(
         "CREATE TABLE files_old (path TEXT PRIMARY KEY, mtime REAL, size INTEGER, total INTEGER, counts BLOB, "
-        "tokens BLOB, names BLOB, bound BLOB);"
-        "INSERT INTO files_old SELECT path, mtime, size, total, counts, tokens, names, bound FROM files ORDER BY rowid;"
+        "texts BLOB, ids BLOB, names BLOB, bound BLOB);"
+        "INSERT INTO files_old SELECT path, mtime, size, total, counts, texts, ids, names, bound FROM files ORDER BY rowid;"
         "DROP TABLE files; ALTER TABLE files_old RENAME TO files;")
     conn.commit()
     assert "counted" not in [r[1] for r in conn.execute("PRAGMA table_info(files)")]

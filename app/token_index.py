@@ -57,9 +57,10 @@ import json
 import hashlib
 import zlib
 import sqlite3
+import sys
 import time
+from array import array
 from collections import Counter
-from json.decoder import scanstring as _scanstring
 from operator import itemgetter
 
 # Bump when the on-disk SHAPE changes — or when the tokenizer would now produce DIFFERENT sentences
@@ -140,7 +141,11 @@ from operator import itemgetter
 # v29 each file also keeps each line's counts for the sentence table (`file_words` in `words`: E-INDEX, read by a
 #    Generate at plan_rules.SENTENCE_TABLE >= 1; ENGINE_REVISION 50, the flip to 2): a v28 row has none, and the
 #    walk would count every line itself (the same table, a slower Generate) — users rebuild once.
-SCHEMA_VERSION = 29
+# v30 each file's tokens are kept once, as int32 ids into the store's vocabulary (`types`, `ids`), and its sentences'
+#    texts apart (`texts`): the `tokens` JSON column goes, the small columns come first and reconcile reads them from
+#    their own index (`files_head`) — DSA-WALK, G1 / G2 (a Generate looks a token up by its id, never decodes its JSON).
+#    A v29 store can't be read as this one (`open_reader` gives None): users rebuild once.
+SCHEMA_VERSION = 30
 
 # The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,
 # Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.
@@ -249,68 +254,102 @@ def _decode_tokens(blob):
         return []
 
 
-_CUT = ']], ["'             # between two sentences of `_encode_tokens`' JSON: [text, [[…], …]], [text, …
+# The id layout (v30, DSA-WALK): each file's tokens are kept once, as int32 ids into the store's one vocabulary (`types`:
+# one row a distinct token, [lemma, reading, surface, orth] as the tokenizer gives it), and its sentences' texts apart.
+#   ids   = zlib(int32 little-endian: n, starts[0..n] (each sentence's first token, starts[n] the count), type ids)
+#   texts = zlib(int32 little-endian: n, ends[0..n-1] (each text's end, in UTF-8 bytes), the texts' UTF-8 joined)
+# A Generate's walk reads a token's state by its id (an array lookup, never a token's JSON: G1); a reader asking a few
+# lines' texts slices them out by their offsets (`some_texts`, never the whole file decoded: E-PICK).
+_INT = "i"
+assert array(_INT).itemsize == 4
+_SWAP = sys.byteorder != "little"
 
 
-def _decode_texts(blob, lines):
-    """`_decode_tokens(blob)`'s sentences' texts, read without decoding their tokens (json.loads of the tokens was 78 %
-    of a file's read: E-L2G) — None when it can't tell, and the caller decodes in full. The JSON is cut where one
-    sentence ends and the next begins (`_CUT`: inside a string every `"` is escaped, so the cut is a boundary, or a
-    string's content ending in `]], [`), each piece's text read as JSON reads it; `lines`, the row's own column (one
-    entry a sentence, written with it), counts them: a cut too many, a piece that isn't one, no column — None."""
-    if not blob or not lines:
-        return None
+def _int32s(values):
+    """`values` as int32 little-endian bytes."""
+    out = array(_INT, values)
+    if _SWAP:
+        out.byteswap()
+    return out.tobytes()
+
+
+def _from_int32s(raw):
+    """int32 little-endian bytes -> an array of ints."""
+    out = array(_INT)
+    out.frombytes(raw)
+    if _SWAP:
+        out.byteswap()
+    return out
+
+
+def _encode_ids(sentences, intern):
+    """A file's tokenized sentences [(text, [[lemma, reading, surface, orth], ...]), ...] -> its `ids` blob; `intern`:
+    a token -> its type id."""
+    starts, ids = [0], []
+    for _text, tokens in sentences:
+        ids.extend(map(intern, tokens))
+        starts.append(len(ids))
+    return zlib.compress(_int32s([len(sentences)] + starts + ids), _BLOB_LEVEL)
+
+
+def _ids_bytes(blob):
+    """(n, the raw ids blob's bytes) — the walk's own read (numpy over the bytes); None when it can't be read."""
     try:
-        doc = zlib.decompress(blob).decode("utf-8")
-        count = len(json.loads(zlib.decompress(lines)))
-        if not doc.startswith('[["'):
+        raw = zlib.decompress(blob)
+        n = int.from_bytes(raw[:4], "little", signed=True)
+        if n < 0 or len(raw) < 4 * (n + 2) or len(raw) % 4:
             return None
-        parts = doc[3:].split(_CUT)
-        if len(parts) != count:
-            return None
-        out = []
-        for part in parts:
-            text, end = _scanstring(part, 0)
-            if not part.startswith(", [", end):
-                return None
-            out.append(text)
-        return out
+        return n, raw
     except Exception:
         return None
 
 
-_CUT_BYTES = _CUT.encode("ascii")
-# (a cut too many is a string ending in the cut's characters: its closing `"` is the cut's last, and what JSON writes
-# after a string's end follows — ", " or "]". A sentence's text never starts there unless it starts with one of them)
-_WRONG_CUTS = (_CUT_BYTES + b", ", _CUT_BYTES + b"]")
-
-
-def _decode_some(blob, lines, numbers):
-    """`_decode_texts(blob, lines)`'s texts of the sentences `numbers` alone -> {number: text} (a number past the
-    file's last sentence left out), None when it can't tell (the caller reads the whole file). The cuts are found in
-    the bytes (the cut is ASCII: never inside a character's UTF-8), and only the asked pieces are decoded — no whole
-    file's text, no step a sentence (E-PICK: the walk read 158,000 sentences' texts at 2k for its 1,461 lines). A cut
-    too many is seen without reading each piece: one is always followed by `_WRONG_CUTS`' bytes, so a file holding
-    them is read in full, as is one whose count isn't the row's `lines`. (The bytes are zlib's, checked by its own
-    sum: the UTF-8 written, never a damaged character.)"""
-    if not blob or not lines:
+def _read_ids(blob):
+    """An `ids` blob -> (starts, ids), lists of ints (sentence n's tokens are ids[starts[n]:starts[n + 1]]); None when
+    it can't be read."""
+    held = _ids_bytes(blob) if blob else None
+    if held is None:
         return None
+    n, raw = held
+    values = _from_int32s(raw)
+    starts = values[1:n + 2].tolist()
+    ids = values[n + 2:].tolist()
+    if starts[0] != 0 or starts[-1] != len(ids):
+        return None
+    return starts, ids
+
+
+def _encode_texts(sentences):
+    """A file's sentences -> its `texts` blob."""
+    data = [text.encode("utf-8") for text, _tokens in sentences]
+    ends, at = [], 0
+    for piece in data:
+        at += len(piece)
+        ends.append(at)
+    return zlib.compress(_int32s([len(data)] + ends) + b"".join(data), _BLOB_LEVEL)
+
+
+def _read_texts(blob, numbers=None):
+    """A `texts` blob -> every sentence's text, in order — or, given `numbers`, {number: text} of those alone (a number
+    past the file's last sentence left out): only the asked pieces decoded. None when it can't be read."""
     try:
-        doc = zlib.decompress(blob)
-        count = len(json.loads(zlib.decompress(lines)))
-        if not doc.startswith(b'[["') or any(wrong in doc for wrong in _WRONG_CUTS):
+        raw = zlib.decompress(blob)
+        n = int.from_bytes(raw[:4], "little", signed=True)
+        base = 4 * (n + 1)
+        ends = _from_int32s(raw[4:base])
+        if len(ends) != n or (n and base + ends[-1] != len(raw)):
             return None
-        parts = doc[3:].split(_CUT_BYTES)
-        if len(parts) != count:
-            return None
+        if numbers is None:
+            text = raw[base:]
+            out, at = [], 0
+            for end in ends:
+                out.append(text[at:end].decode("utf-8"))
+                at = end
+            return out
         out = {}
         for number in numbers:
-            if 0 <= number < count:
-                part = parts[number].decode("utf-8")
-                text, end = _scanstring(part, 0)
-                if not part.startswith(", [", end):
-                    return None
-                out[number] = text
+            if 0 <= number < n:
+                out[number] = raw[base + (ends[number - 1] if number else 0):base + ends[number]].decode("utf-8")
         return out
     except Exception:
         return None
@@ -324,20 +363,26 @@ def _decode_some(blob, lines, numbers):
 # the write lock: _ensure_schema builds inside BEGIN IMMEDIATE and looks at the version again inside it, so the second
 # finds the first's build done and runs nothing.
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS files (
+CREATE TABLE IF NOT EXISTS files (     -- small columns first, the biggest last (v30: none read past a big one)
     path   TEXT PRIMARY KEY,   -- normcase abspath
     mtime  REAL, size INTEGER, -- reconcile signature (filesystem truth)
     total  INTEGER,            -- token count for this file
-    counts BLOB,               -- zlib(json {"lemma|reading": n}) for O(delta) subtract
-    tokens BLOB,               -- zlib(json sentences) — cached tokenization for Generate reuse
-    names  BLOB,               -- zlib(json app.names.Record data) — the file's name candidates (Japanese)
-    bound  BLOB,               -- zlib(json {"lemma|reading": n}) — one-kanji words' uses as pieces (Japanese)
     counted INTEGER NOT NULL DEFAULT 1, -- 1 counted, 0 kept: tokenized, never summed (module docstring)
     aside INTEGER NOT NULL DEFAULT 0,   -- 1 with counted 0: set aside (W-1), never summed, the name tables' evidence
-    lines BLOB,                         -- zlib(json [key << 2 | marks, ...]) — each sentence's line (app/song_lines.py);
-                                        -- after counted / aside, so they are read without walking past it
-    words BLOB                          -- zlib(sentence_table.file_words): each line's two numbers' inputs, counted
-                                        -- once while the sentence table is on (E-INDEX); NULL: the walk counts them
+    counts BLOB,               -- zlib(json {"lemma|reading": n}) for O(delta) subtract
+    bound  BLOB,               -- zlib(json {"lemma|reading": n}) — one-kanji words' uses as pieces (Japanese)
+    names  BLOB,               -- zlib(json app.names.Record data) — the file's name candidates (Japanese)
+    lines BLOB,                -- zlib(json [key << 2 | marks, ...]) — each sentence's line (app/song_lines.py)
+    words BLOB,                -- zlib(sentence_table.file_words): each line's two numbers' inputs, counted
+                               -- once while the sentence table is on (E-INDEX); NULL: the walk counts them
+    texts BLOB,                -- the sentences' texts (`_encode_texts`)
+    ids BLOB                   -- the sentences' tokens as type ids (`_encode_ids`) — cached tokenization for Generate
+);
+-- What reconcile looks at for every file (G2): read from this index alone, never through a row's blobs.
+CREATE INDEX IF NOT EXISTS files_head ON files(path, mtime, size, total, counted, aside);
+CREATE TABLE IF NOT EXISTS types (      -- the vocabulary: each distinct token once (`ids` holds their numbers)
+    id INTEGER PRIMARY KEY, lemma TEXT, reading TEXT, surface TEXT, orth TEXT,
+    UNIQUE (lemma, reading, surface, orth)
 );
 CREATE TABLE IF NOT EXISTS aggregate (  -- maintained rollup; the preview reads this
     lemma TEXT, reading TEXT, count INTEGER,
@@ -365,7 +410,8 @@ def _statements(script):
     return out
 
 
-_REBUILD = [f"DROP TABLE IF EXISTS {t}" for t in ("files", "aggregate", "bound", "meta")] + _statements(_SCHEMA)
+_HEAD_INDEX = "CREATE INDEX IF NOT EXISTS files_head ON files(path, mtime, size, total, counted, aside)"
+_REBUILD = [f"DROP TABLE IF EXISTS {t}" for t in ("files", "types", "aggregate", "bound", "meta")] + _statements(_SCHEMA)
 
 
 def _schema_ready(conn):
@@ -374,7 +420,8 @@ def _schema_ready(conn):
     if conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
         return False
     try:
-        conn.execute("SELECT names, bound FROM files LIMIT 1")
+        conn.execute("SELECT names, bound, texts, ids FROM files LIMIT 1")
+        conn.execute("SELECT 1 FROM types LIMIT 1")
         conn.execute("SELECT 1 FROM aggregate LIMIT 1")
         conn.execute("SELECT 1 FROM bound LIMIT 1")
         conn.execute("SELECT 1 FROM meta LIMIT 1")
@@ -430,12 +477,17 @@ def _add_counted(conn):
     def missing():
         have = [r[1] for r in conn.execute("PRAGMA table_info(files)")]
         return [(name, kind) for name, kind in _ADDED if name not in have]
-    if not missing():
+
+    def no_head():                  # (reconcile's covering index, G2: gone with a files table made again by hand)
+        return conn.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='files_head'").fetchone() is None
+    if not missing() and not no_head():
         return
     conn.execute("BEGIN IMMEDIATE")
     try:
         for name, kind in missing():
             conn.execute(f"ALTER TABLE files ADD COLUMN {name} {kind}")
+        if no_head():
+            conn.execute(_HEAD_INDEX)
         conn.commit()
     except sqlite3.OperationalError as e:
         conn.rollback()
@@ -510,6 +562,9 @@ def open_reader(language, path=None):
     try:
         c.execute("PRAGMA busy_timeout=5000")
         c.execute("PRAGMA query_only=ON")
+        if c.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+            c.close()                   # another schema's store (v29's tokens are JSON): not read until it is built
+            return None
         c.execute("SELECT 1 FROM meta LIMIT 1")
         have = {r[1] for r in c.execute("PRAGMA table_info(files)")}
     except sqlite3.Error:
@@ -737,6 +792,67 @@ def _rebuilt_text(sentences, names=None):
     return "\n".join(s_text for s_text, _tokens in sentences), facts
 
 
+def _spliced(starts, ids, by_sentence, intern):
+    """(starts, ids) with each sentence's joins made — {sentence: [(a, b, token), ...]} in the order `names.chosen`
+    gives them (never overlapping), made from the last, as `names.apply_spans` makes them: tokens a..b become the one
+    token's id. One pass over the file: the sentences no join touches are copied as they are."""
+    out, moved, at = array(_INT), {}, 0
+    for s_no in sorted(by_sentence):
+        first, last = starts[s_no], starts[s_no + 1]
+        sentence = ids[first:last].tolist()
+        for a, b, token in reversed(by_sentence[s_no]):
+            sentence[a:b] = [intern(token)]
+        out.extend(ids[at:first])
+        out.extend(array(_INT, sentence))
+        at = last
+        moved[s_no] = len(sentence) - (last - first)
+    new_starts, shift = array(_INT, starts), 0
+    for k in range(1, len(starts)):
+        shift += moved.get(k - 1, 0)
+        new_starts[k] += shift
+    out.extend(ids[at:])
+    return new_starts, out
+
+
+_INTERN_WHOLE = 50                  # files written in one reconcile from which the whole vocabulary is read at once
+
+
+class _Interner:
+    """Token -> its type id, for one reconcile's writes — inside its BEGIN IMMEDIATE, the vocabulary's one writer. A
+    build (a new store, or `_INTERN_WHOLE` files or more) reads the whole vocabulary once; a few files look up only the
+    tokens they hold, by value (the UNIQUE index), 200 a query. A token not there yet is added with the next id."""
+
+    def __init__(self, cur, files):
+        self.cur = cur
+        self.ids = {}
+        self.next = (cur.execute("SELECT MAX(id) FROM types").fetchone()[0] or 0) + 1
+        self.whole = self.next == 1 or files >= _INTERN_WHOLE
+        if self.whole and self.next > 1:
+            self.ids = {row[1:]: row[0] for row in cur.execute("SELECT id, lemma, reading, surface, orth FROM types")}
+
+    def file(self, sentences):
+        """Look up the tokens of a file about to be written that this reconcile hasn't met (none when whole)."""
+        if self.whole:
+            return
+        ids = self.ids
+        wanted = list({tuple(t) for _text, tokens in sentences for t in tokens if tuple(t) not in ids})
+        for at in range(0, len(wanted), 200):
+            batch = wanted[at:at + 200]
+            for row in self.cur.execute(
+                    "SELECT id, lemma, reading, surface, orth FROM types WHERE (lemma, reading, surface, orth) IN "
+                    f"(VALUES {','.join(['(?,?,?,?)'] * len(batch))})", [x for t in batch for x in t]):
+                ids[row[1:]] = row[0]
+
+    def __call__(self, token):
+        key = tuple(token)
+        found = self.ids.get(key)
+        if found is None:
+            found = self.ids[key] = self.next
+            self.next += 1
+            self.cur.execute("INSERT INTO types(id, lemma, reading, surface, orth) VALUES(?,?,?,?,?)", (found, *key))
+        return found
+
+
 # --------------------------------------------------------------------------- #
 # The store
 # --------------------------------------------------------------------------- #
@@ -752,8 +868,8 @@ class Store:
         self.path = path            # the store's file
         self._names = None          # the library's name tables, read on the first cached file (Japanese)
         self._adjust = None         # (meta names_adjust as stored, parsed): `_names_entry`
-        self._no_words = False      # a store made before the `words` column, opened to read only: `file_words`
         self.switches = None        # the name switches (`_library_switches`) a process without the run's settings reads
+        self._types = {}            # type id -> (lemma, reading, surface, orth): the vocabulary rows read so far
 
     def close(self):
         try:
@@ -823,46 +939,69 @@ class Store:
                 out.append(path)
         return out
 
+    def _tokens_of(self, ids, cur=None):
+        """This store's {type id: token} holding every id of `ids` — the ones not read before fetched by id, 500 a
+        query (a reader of a few files never reads the whole vocabulary). Ids are never reused: `types` only grows."""
+        types = self._types
+        missing = [i for i in set(ids) if i not in types]
+        conn = cur if cur is not None else self.conn
+        for at in range(0, len(missing), 500):
+            batch = missing[at:at + 500]
+            for row in conn.execute(f"SELECT id, lemma, reading, surface, orth FROM types WHERE id IN "
+                                    f"({','.join('?' * len(batch))})", batch):
+                types[row[0]] = row[1:]
+        return types
+
+    def _stored(self, texts_blob, ids_blob, cur=None):
+        """A row's sentences as the tokenizer gave them, [[text, [[lemma, reading, surface, orth], ...]], ...] — new
+        lists each call (a caller may join tokens in place: names.apply_spans); [] when the row can't be read (the
+        caller tokenizes the file again: `analyzer.file_sentences`)."""
+        held = _read_ids(ids_blob) if ids_blob else None
+        texts = _read_texts(texts_blob) if texts_blob else None
+        if held is None or texts is None or len(texts) != len(held[0]) - 1:
+            return []
+        starts, ids = held
+        types = self._tokens_of(ids, cur)
+        try:
+            tokens = [list(types[i]) for i in ids]
+        except KeyError:
+            return []                               # (a vocabulary row gone: the store is damaged)
+        return [[text, tokens[starts[n]:starts[n + 1]]] for n, text in enumerate(texts)]
+
     def file_tokens(self, path):
         """Cached tokenized sentences for a file: [(s_text, [[lemma,reading,surface],...]),...].
         Empty list if the file isn't indexed. Lets Generate reuse tokens for unchanged files.
 
         Japanese: with the library's name tables applied (app/names.py) — the cache holds each file as it reads
         alone, plus where its name candidates sit, so a new table needs no re-tokenizing."""
-        row = self.conn.execute("SELECT tokens, names FROM files WHERE path=?", (_norm(path),)).fetchone()
+        row = self.conn.execute("SELECT names, texts, ids FROM files WHERE path=?", (_norm(path),)).fetchone()
         if not row:
             return []
-        return self._named(_decode_tokens(row[0]), row[1])
+        return self._named(self._stored(row[1], row[2]), row[0])
 
     def file_texts(self, path):
-        """`file_tokens(path)`'s sentences' texts, in their order, without their tokens (`_decode_texts`; the name
-        tables never change a text) — [] if the file isn't indexed, None when the row can't tell them apart that way
-        (the caller reads `file_tokens`)."""
-        try:
-            row = self.conn.execute("SELECT tokens, lines FROM files WHERE path=?", (_norm(path),)).fetchone()
-        except sqlite3.OperationalError:
-            return None                             # (a store a build before the column made, opened to read only)
+        """`file_tokens(path)`'s sentences' texts, in their order, without their tokens (the `texts` column alone; the
+        name tables never change a text) — [] if the file isn't indexed, None when its row can't be read (the caller
+        reads `file_tokens`)."""
+        row = self.conn.execute("SELECT texts FROM files WHERE path=?", (_norm(path),)).fetchone()
         if not row:
             return []
-        return _decode_texts(row[0], row[1])
+        return _read_texts(row[0]) if row[0] else None
 
     def some_texts(self, asked):
-        """{path: sentence numbers} -> {path: {number: text}} — `file_texts`' texts of those sentences alone
-        (`_decode_some`), one query a batch of files: {} for a file the store doesn't hold, None for one it can't tell
-        that way (the caller reads `file_texts`)."""
+        """{path: sentence numbers} -> {path: {number: text}} — `file_texts`' texts of those sentences alone (sliced
+        out of `texts` by their offsets: only those decoded), one query a batch of files: {} for a file the store
+        doesn't hold, None for one whose row can't be read (the caller reads `file_texts`)."""
         keys = {}
         for p in asked:
             keys.setdefault(_norm(p), []).append(p)
         out, wanted = {}, list(keys)
-        try:
-            for at in range(0, len(wanted), 500):
-                batch = wanted[at:at + 500]
-                for path, blob, lines in self.conn.execute(
-                        f"SELECT path, tokens, lines FROM files WHERE path IN ({','.join('?' * len(batch))})", batch):
-                    for p in keys[path]:
-                        out[p] = _decode_some(blob, lines, asked[p])
-        except sqlite3.OperationalError:
-            return {p: None for p in asked}         # (a store a build before the column made, opened to read only)
+        for at in range(0, len(wanted), 500):
+            batch = wanted[at:at + 500]
+            for path, blob in self.conn.execute(
+                    f"SELECT path, texts FROM files WHERE path IN ({','.join('?' * len(batch))})", batch):
+                for p in keys[path]:
+                    out[p] = _read_texts(blob, asked[p]) if blob else None
         for p in asked:
             out.setdefault(p, {})
         return out
@@ -886,27 +1025,58 @@ class Store:
         (`sentence_table.FileWords`, E-INDEX) — words None when the row keeps none (written while the sentence table
         was off, by a build before them, by another rule, or unreadable): the walk counts every line, as before. A
         sentence a name table joined is left to the walk (its tokens are not the indexed ones)."""
-        if self._no_words:
-            return self.file_tokens(path), None
-        try:
-            row = self.conn.execute("SELECT tokens, names, words FROM files WHERE path=?", (_norm(path),)).fetchone()
-        except sqlite3.OperationalError as e:
-            if "no such column" not in str(e).lower():
-                raise
-            self._no_words = True                   # a store a build before them made, opened to read only
-            return self.file_tokens(path), None
+        row = self.conn.execute("SELECT names, words, texts, ids FROM files WHERE path=?", (_norm(path),)).fetchone()
         if not row:
             return [], None
         joined = set()
-        sentences = self._named(_decode_tokens(row[0]), row[1], joined)
+        sentences = self._named(self._stored(row[2], row[3]), row[0], joined)
         words = None
-        if row[2]:
+        if row[1]:
             from app import sentence_table
             try:
-                words = sentence_table.read_file_words(zlib.decompress(row[2]), self.language, joined)
+                words = sentence_table.read_file_words(zlib.decompress(row[1]), self.language, joined)
             except zlib.error:
                 pass
         return sentences, words
+
+    def file_ids(self, path, intern):
+        """The walk's read of a file (G1): (starts, ids, joined, texts, words) — `starts` / `ids` int32 arrays (sentence
+        n's tokens are ids[starts[n]:starts[n + 1]]), with the library's name tables applied as `file_tokens` applies
+        them: each join a splice, its token's id `intern(token)` (the run's own numbering for a token the store may not
+        hold); `joined` the sentences a join changed; `texts` the row's texts blob (`_read_texts`); `words` as
+        `file_words` gives them. None when the file isn't indexed or its row can't be read (the walk reads
+        `file_words`). `names.chosen` reads only the spans and the sentences' count, so no token is decoded here."""
+        row = self.conn.execute("SELECT names, words, texts, ids FROM files WHERE path=?", (_norm(path),)).fetchone()
+        held = _ids_bytes(row[3]) if row and row[3] else None
+        if held is None or not row[2]:
+            return None
+        n, raw = held
+        values = _from_int32s(raw)
+        starts, ids = values[1:n + 2], values[n + 2:]
+        if starts[0] != 0 or starts[-1] != len(ids):
+            return None
+        joined = set()
+        switches = self.switches if self.switches is not None else _library_switches(self.language)
+        if row[0] and any(switches):
+            if self._names is None:
+                self._names = self.names_tables() or {}
+            spans = _decode_counts(row[0]).get("s", []) if self._names else ()
+            if spans:
+                from app import names
+                by_sentence = {}
+                for s_no, a, b, token in names.chosen(range(n), spans, self._names, *switches):
+                    by_sentence.setdefault(s_no, []).append((a, b, token))
+                if by_sentence:
+                    starts, ids = _spliced(starts, ids, by_sentence, intern)
+                    joined.update(by_sentence)
+        words = None
+        if row[1]:
+            from app import sentence_table
+            try:
+                words = sentence_table.read_file_words(zlib.decompress(row[1]), self.language, joined)
+            except zlib.error:
+                pass
+        return starts, ids, joined, row[2], words
 
     def file_lines(self, paths):
         """{path: lines} of the files of `paths` the store holds: each sentence's [line key, marks]
@@ -1032,8 +1202,8 @@ class Store:
             held = _names_held(spans, reads, (True, True, True))
             entry = kept.get(path)
             if entry is None or entry[0] != mtime or entry[1] != size or entry[2] != held:
-                blob = cur.execute("SELECT tokens FROM files WHERE path=?", (path,)).fetchone()[0]
-                entry = [mtime, size, held, self._names_share(_decode_tokens(blob), spans, tables, combos)]
+                stored = cur.execute("SELECT texts, ids FROM files WHERE path=?", (path,)).fetchone()
+                entry = [mtime, size, held, self._names_share(self._stored(*stored, cur=cur), spans, tables, combos)]
             shares[path] = entry
             for combo, (counts, total, pieces) in entry[3].items():
                 delta = deltas[combo]
@@ -1339,10 +1509,17 @@ class Store:
         phrased = False         # what the counted files hold changed: the phrases too (they read counted files alone)
         try:
             # "counted": the file's class (KEPT / COUNTED / ASIDE, `_STATE`)
+            # Read from `files_head` alone (G2): a file's counts and bound only when it changed, leaves or moves class
+            # (`blobs`) — the whole store's blobs were read to reach these flags (20k: 13 s cold).
             existing = {
-                r[0]: {"mtime": r[1], "size": r[2], "total": r[3], "counts": r[4], "bound": r[5], "counted": r[6]}
-                for r in cur.execute(f"SELECT path, mtime, size, total, counts, bound, {_STATE} FROM files")
+                r[0]: {"mtime": r[1], "size": r[2], "total": r[3], "counted": r[4]}
+                for r in cur.execute(f"SELECT path, mtime, size, total, {_STATE} FROM files")
             }
+
+            def blobs(key):
+                """(counts, bound) of a file the store holds, decoded, read by its path."""
+                found = cur.execute("SELECT counts, bound FROM files WHERE path=?", (key,)).fetchone()
+                return (_decode_counts(found[0]), _decode_counts(found[1])) if found else ({}, {})
             current, put, held, gone = self._listed(files, kept, {key: row["counted"] for key, row in existing.items()},
                                                     forgotten, aside)
             listed = dict(current)
@@ -1419,6 +1596,8 @@ class Store:
             texts.put(keep_now)
 
             if wipe:
+                # (`types` stays: an id is never given to another token, so a reader holding ids or types read before
+                # the wipe never reads a wrong token; a new tokenizer's tokens are added beside the old ones)
                 cur.execute("DELETE FROM files")
                 cur.execute("DELETE FROM aggregate")
                 cur.execute("DELETE FROM bound")
@@ -1434,21 +1613,27 @@ class Store:
             for key in leaving:
                 row = existing.pop(key)
                 if row["counted"] == COUNTED:
-                    delta.subtract(_decode_counts(row["counts"]))
-                    pieces.subtract(_decode_counts(row["bound"]))
+                    counts, bound = blobs(key)
+                    delta.subtract(counts)
+                    pieces.subtract(bound)
                     phrased = True
                 if row["counted"] != KEPT:
                     changed = True
                 cur.execute("DELETE FROM files WHERE path=?", (key,))
 
+            interner = None
+
             def write(key, mtime, size, result, row, flag):
-                nonlocal changed, phrased
+                nonlocal changed, phrased, interner
+                if interner is None:
+                    interner = _Interner(cur, len(todo) + len(by_hand))
                 counts = {k: n for k, n in result["counts"].items() if n > 0}
                 bound = {k: n for k, n in (result.get("bound") or {}).items() if n > 0}
                 total = sum(counts.values())
                 if row is not None and row["counted"] == COUNTED:  # changed: subtract the stale contribution first
-                    delta.subtract(_decode_counts(row["counts"]))
-                    pieces.subtract(_decode_counts(row["bound"]))
+                    old_counts, old_bound = blobs(key)
+                    delta.subtract(old_counts)
+                    pieces.subtract(old_bound)
                 if flag == COUNTED:
                     delta.update(counts)
                     pieces.update(bound)
@@ -1459,13 +1644,15 @@ class Store:
                 names = result.get("names")
                 lines = result.get("lines")
                 words = result.get("words")
+                sentences = result["sentences"]
+                interner.file(sentences)
                 cur.execute(
-                    "INSERT OR REPLACE INTO files(path, mtime, size, total, counts, tokens, names, bound, lines, "
-                    "counted, aside, words) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (key, mtime, size, total, _encode_counts(counts),
-                     _encode_tokens(result["sentences"]), _encode_counts(names) if names is not None else None,
-                     _encode_counts(bound) if bound else None, _encode_tokens(lines) if lines else None,
-                     *_columns(flag), zlib.compress(words, _BLOB_LEVEL) if words else None),
+                    "INSERT OR REPLACE INTO files(path, mtime, size, total, counted, aside, counts, bound, names, "
+                    "lines, words, texts, ids) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (key, mtime, size, total, *_columns(flag), _encode_counts(counts),
+                     _encode_counts(bound) if bound else None, _encode_counts(names) if names is not None else None,
+                     _encode_tokens(lines) if lines else None, zlib.compress(words, _BLOB_LEVEL) if words else None,
+                     _encode_texts(sentences), _encode_ids(sentences, interner)),
                 )
 
             # Adds / changes — reuse unchanged (fast path), tokenize only the delta; a flag that moved moves the counts.
@@ -1477,7 +1664,7 @@ class Store:
                     if row["counted"] != flag:          # unchanged, in another list: its counts move, no tokenizing
                         if COUNTED in (flag, row["counted"]):   # kept <-> aside: no count moves, the evidence does
                             phrased = True
-                            counts, bound = _decode_counts(row["counts"]), _decode_counts(row["bound"])
+                            counts, bound = blobs(key)
                             if flag == COUNTED:
                                 delta.update(counts)
                                 pieces.update(bound)
@@ -1568,9 +1755,9 @@ class Store:
                 pass
         if result is not None:
             return (*_rebuilt_text(result["sentences"], result.get("names")), row["mtime"], row["size"])
-        blob, names = cur.execute("SELECT tokens, names FROM files WHERE path=?", (key,)).fetchone()
-        return (*_rebuilt_text(_decode_tokens(blob), _decode_counts(names) if names else None),
-                row["mtime"], row["size"])
+        blob, names = cur.execute("SELECT texts, names FROM files WHERE path=?", (key,)).fetchone()
+        return (*_rebuilt_text([(text, ()) for text in (_read_texts(blob) if blob else None) or ()],
+                               _decode_counts(names) if names else None), row["mtime"], row["size"])
 
     # -- the phrase table (idioms and set phrases on the list, app/phrases.py) --------------------------------- #
     def _phrases_basis(self, revision):

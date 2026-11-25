@@ -66,39 +66,27 @@ def test_every_files_lines_read_alone_are_its_texts(gen):
 
 
 @pytest.mark.parametrize("text", [", 続きは明日。", "] これで終わり", ", ", "]"])
-def test_a_text_starting_where_a_wrong_cut_would_end_is_read_in_full(text):
-    # why: a cut too many (a string ending in the cut's own characters) is always followed by ", " or "]"; the pieces
-    # are not read one by one, so a file holding those bytes after a cut is read in full instead — the same texts
+def test_a_text_starting_where_the_old_wrong_cut_would_end_is_read_as_written(text):
+    # why: the JSON layout read a file holding these bytes in full (a cut too many hid behind them); the texts kept
+    # apart (v30) are read by their offsets — such a line reads alone as written, and so do its neighbours
     sentences = _MADE[:3] + [(text, [["続き", "ツヅキ", "続き", "続き"]])] + _MADE[3:]
-    blob, lines = _blob(sentences)
-    assert token_index._decode_some(blob, lines, range(len(sentences))) is None
-    assert token_index._decode_texts(blob, lines) == [s[0] for s in sentences], "the full read: the truth"
+    blob = _blob(sentences)
+    assert token_index._read_texts(blob, range(len(sentences))) == {n: s[0] for n, s in enumerate(sentences)}
+    assert token_index._read_texts(blob) == [s[0] for s in sentences], "the full read: the truth"
 
 
-def test_made_lines_read_alone_are_their_texts_and_a_wrong_cut_is_never_read():
-    # why: the hazards test_e_l2g reads in full (quotes, backslashes, the cut inside a line, CRLF, control
-    # characters, an empty text) read alone give the texts; every cut too many — even one the count agrees with —
-    # gives None, never a shifted text
+def test_made_lines_read_alone_are_their_texts_and_a_damaged_row_is_never_read():
+    # why: the hazards test_e_l2g reads in full (quotes, backslashes, `]], [` inside a line, CRLF, control
+    # characters, an empty text) read alone give the texts; a number past the end or below 0 is left out; a damaged
+    # row gives None, never a shifted text
     truth = [s[0] for s in _MADE]
-    blob, lines = _blob(_MADE)
-    assert token_index._decode_some(blob, lines, range(len(_MADE))) == dict(enumerate(truth))
-    assert token_index._decode_some(blob, lines, [5, 2, 99, -1]) == {5: truth[5], 2: truth[2]}
-    assert token_index._decode_some(blob, lines, []) == {}
-    text_ends_in_cut = ("配列の終わりは ]], [", [["配列", "ハイレツ", "配列", "配列"]])
-    token_ends_in_cut = ("記号だ", [["]], [", "", "]], [", "]], ["], ["だ", "ダ", "だ", "だ"]])
-    for wrong in (text_ends_in_cut, token_ends_in_cut):
-        made = _MADE[:2] + [wrong] + _MADE[2:]
-        assert token_index._decode_some(*_blob(made), [0, 1]) is None, "a wrong cut after the asked lines too"
-        assert token_index._decode_some(*_blob([wrong]), [0]) is None
-    blob = token_index._encode_tokens([token_ends_in_cut])
-    pieces = zlib.decompress(blob).decode("utf-8")[3:].split(token_index._CUT)
-    agreeing = token_index._encode_tokens([1] * len(pieces))
-    assert len(pieces) > 1 and token_index._decode_some(blob, agreeing, [0]) is None, "a count that agrees"
-    blob, lines = _blob(_MADE)
-    assert token_index._decode_some(blob, token_index._encode_tokens([1] * (len(_MADE) - 1)), [0]) is None
-    assert token_index._decode_some(blob, None, [0]) is None, "no `lines` column: read in full"
-    assert token_index._decode_some(blob[:-3], lines, [0]) is None, "a damaged blob: read in full"
-    assert token_index._decode_some(*_blob([[None, []]]), [0]) is None, "a line held badly: read in full"
+    blob = _blob(_MADE)
+    assert token_index._read_texts(blob, range(len(_MADE))) == dict(enumerate(truth))
+    assert token_index._read_texts(blob, [5, 2, 99, -1]) == {5: truth[5], 2: truth[2]}
+    assert token_index._read_texts(blob, []) == {}
+    assert token_index._read_texts(blob[:-3], [0]) is None, "a damaged blob: read in full"
+    raw = zlib.decompress(blob)
+    assert token_index._read_texts(zlib.compress(raw[:4] + raw[8:]), [0]) is None, "offsets that don't fit: in full"
 
 
 # ---------------------------------------------------------------------------------------------------- #

@@ -190,8 +190,8 @@ def test_a_run_the_library_keeps_using_as_one_is_one_word_everywhere(tmp_path, t
         assert "メロンベンチ" in _cached_surfaces(store, paths[0])
         assert _cached_surfaces(store, paths[2])[:3] == ["公園", "の", "ベンチ"], "ベンチ alone is still ベンチ"
         # The cache holds each file as it reads alone, its candidates beside it: a new table needs no re-tokenizing.
-        raw = ti._decode_tokens(store.conn.execute("SELECT tokens FROM files WHERE path=?",
-                                                   (ti._norm(paths[0]),)).fetchone()[0])
+        raw = store._stored(*store.conn.execute("SELECT texts, ids FROM files WHERE path=?",
+                                                (ti._norm(paths[0]),)).fetchone())
         assert "メロンベンチ" not in [t[2] for _s, tokens in raw for t in tokens]
     finally:
         store.close()
@@ -481,8 +481,8 @@ def test_a_work_term_the_library_keeps_using_is_one_word_everywhere(tmp_path, to
         assert tables["w"]["焔魄陣"] == [1.0, "焔魄陣", "", "焔魄陣"]
         assert _cached_surfaces(store, paths[0]) == ["焔魄陣", "を", "放っ", "た", "彼", "の", "焔魄陣", "は", "強い"]
         assert _cached_surfaces(store, paths[1])[-4:] == ["陣", "が", "崩れ", "た"], "陣 alone is still 陣"
-        raw = ti._decode_tokens(store.conn.execute("SELECT tokens FROM files WHERE path=?",
-                                                   (ti._norm(paths[0]),)).fetchone()[0])
+        raw = store._stored(*store.conn.execute("SELECT texts, ids FROM files WHERE path=?",
+                                                (ti._norm(paths[0]),)).fetchone())
         assert "焔魄陣" not in [t[2] for _s, tokens in raw for t in tokens]
     finally:
         store.close()
@@ -663,13 +663,13 @@ def _names_adjust_in_one_pass(store):
     combos = [(f"{r:d}{k:d}{t:d}", (bool(r), bool(k), bool(t)))
               for r in (1, 0) for k in (1, 0) for t in (1, 0) if r or k or t]
     deltas = {combo: [Counter(), 0, Counter()] for combo, _switches in combos}
-    for tokens_blob, names_blob in store.conn.execute(
-            "SELECT tokens, names FROM files WHERE names IS NOT NULL").fetchall():
+    for texts_blob, ids_blob, names_blob in store.conn.execute(
+            "SELECT texts, ids, names FROM files WHERE names IS NOT NULL").fetchall():
         spans = ti._decode_counts(names_blob).get("s", [])
         if not any(span[6] in spellings.get(span[5], ()) or (span[5] == "w" and ti._holds_a_term(span[6], terms))
                    for span in spans):
             continue
-        sentences = ti._decode_tokens(tokens_blob)
+        sentences = store._stored(texts_blob, ids_blob)
         alone = {}
         for combo, switches in combos:
             delta = deltas[combo]

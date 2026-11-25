@@ -317,10 +317,10 @@ class Packer:
             held = self._held = (cowords, len(self._gat), len(ids))
             self._gat.append(len(self._cow))
             self._cow.extend(ids)
-        self._grp.append(held[1])
         self._lines += _LINE.pack(w, src, number, chars, held[2], len(phrases), text_hash & 0xFFFFFFFF,
                                   OVER if over else 0, besides if besides < 255 else 255,
                                   starts if starts < STARTS_PAST else STARTS_PAST)
+        self._grp.append(held[1])                # (after the line: one each, whatever pack raised)
         if phrases:
             self._phr.extend(phrases)
 

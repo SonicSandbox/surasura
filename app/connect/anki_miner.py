@@ -324,7 +324,7 @@ def drop_look_ups():
         pass                            # (none kept; a test with no root never kept one)
 
 
-WINDOW_MARKER ="instance.window-"     # Anki Miner's window holds instance.window-<pid>.lock in its home while open
+WINDOW_MARKER = "instance.window-"     # Anki Miner's window holds instance.window-<pid>.lock in its home while open
 
 
 def window_open():

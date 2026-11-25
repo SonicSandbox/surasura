@@ -130,6 +130,22 @@ def test_finish_its_setup_drops_the_kept_answers(miner, tmp_path, lang, write):
     assert miner.commands()[-3:] == LOOK_UPS, "the next run reads all three"
 
 
+@pytest.mark.parametrize("lang", LANGS)
+def test_answers_kept_while_a_settings_write_runs_are_dropped_when_it_ends(miner, tmp_path, monkeypatch, lang):
+    # why: another run's look-ups may keep their answers while `settings-import` is still writing (they were read
+    # from the files before the write landed); the write's end drops them again, so none of before survives it
+    _run(miner, lang)
+    real = anki_miner._popen
+
+    def popen_and_a_keep_beside_it(*args, **kwargs):
+        proc = real(*args, **kwargs)
+        anki_miner.keep_look_ups(miner.path, anki_miner.stamp(miner.path), {"app": "3.7.0"}, [])
+        return proc
+    monkeypatch.setattr(anki_miner, "_popen", popen_and_a_keep_beside_it)
+    anki_miner.settings_import(miner.path, lang, {}, str(tmp_path / "import"), profile="p-surasura")
+    assert not os.path.exists(anki_miner._kept_path()), "a keep during the write is dropped at its end"
+
+
 def test_a_speech_model_setup_started_drops_the_kept_answers(miner, tmp_path):
     # why: `setup --speech-model` runs for minutes beside Connect (`anki_miner.start`) and may rewrite the profile
     _run(miner, "ja")

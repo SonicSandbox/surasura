@@ -1120,9 +1120,13 @@ class TableFirsts:
             if 0 <= f < len(self.files) and self._table.as_read(f, self._root):
                 for k in rows:
                     wanted.setdefault(k, []).append(f)
+        try:
+            blocks = self._table.blocks(wanted)     # (one open, in the file's order: each group decompressed once)
+        except Exception:
+            return {f: {} for f in asked}
         for k, files in wanted.items():
             try:
-                block = self._table.block(k)
+                block = blocks.get(k)
                 if block is None:
                     continue
                 src, number, chars = block[0]["src"], block[0]["number"], block[0]["chars"]   # (file, place) order

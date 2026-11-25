@@ -606,3 +606,104 @@ def test_the_indexer_after_a_sync_reads_only_the_added_words(tmp_path, language,
         store.close()
     tok = cls() if language == "ja" else cls(reinforce_segmentation=False, script=script)
     assert cached is not None and cached == analyzer.load_known_words(path, tok)
+
+
+# ---------------------------------------------------------------------------------------------------- #
+# The lenses' three (session 3): a damaged row, the cache read by id, the word card's rows read in file order
+# ---------------------------------------------------------------------------------------------------- #
+def test_a_row_whose_texts_are_damaged_is_read_as_tokens_never_half_walked(made):
+    # why: the walk read a row's texts only when a sentence was first asked, mid-file — a damaged texts blob (or one
+    # whose sentences aren't the ids') raised out of Generate's loop instead of the row being read as tokens, as a
+    # damaged row always was (`Walk.file` -> None: the caller tokenizes the file again)
+    language, store, paths = made
+    walk = ti.Walk(store, _classes([tuple(t) for p in paths for _s, tokens in store.file_tokens(p) for t in tokens]))
+    p = max(paths, key=lambda q: len(store.file_tokens(q)))
+    assert walk.file(p) is not None and len(walk.file(p)) > 3
+    for bad in (zlib.compress(b"not a texts blob"), b"\x00broken", ti._encode_texts([("one sentence only", [])])):
+        store.conn.execute("UPDATE files SET texts=? WHERE path=?", (bad, ti._norm(p)))
+        store.conn.commit()
+        assert walk.file(p) is None, bad[:12]
+
+
+def test_types_written_since_the_walk_began_are_read_by_id_not_by_walking_the_cache(made):
+    # why: a type another process wrote after the walk read the vocabulary is fetched by id (`_tokens_of`); the walk
+    # then went through the store's whole id -> token cache (every type any reader of the process had read) for each
+    # such file instead of the few ids it asked for
+    language, store, paths = made
+    walk = ti.Walk(store, _classes([tuple(t) for p in paths for _s, tokens in store.file_tokens(p) for t in tokens]))
+    seen = [0]
+
+    class Cache(dict):
+        def items(self):
+            seen[0] += len(self)
+            return super().items()
+    for p in paths:
+        store.file_tokens(p)
+    store._types = Cache(store._types)
+    held = len(store._types)
+    del walk.types[len(walk.types) // 2:]       # (as if the upper half had been written after the walk began)
+    asked = set()
+    for p in paths:
+        got = walk.file(p)
+        if got is not None:
+            asked.update(int(i) for i in got.ids if int(i) < ti._RUN)
+    assert held > 100 and asked
+    assert seen[0] < held, "only the asked ids were read from the cache"
+    assert all(walk.types[i] == store._types[i] for i in asked)
+
+
+def test_the_word_cards_rows_are_read_in_the_tables_order_each_group_decompressed_once(tmp_path, monkeypatch,
+                                                                                    ja_resources_dir):
+    # why: the word card asks a title's words' rows in the list's order (`TableFirsts.of_files`), one `block` a row —
+    # with the rows compressed in groups (G11), rows asked across groups decompressed a ~64 KB group again for each
+    # row; `blocks` reads them in the file's order, each group once, and the answers are the same
+    from app import plan_rules, sentence_table as st
+    lines = [l.strip() for name in _JA_FILES for l in open(os.path.join(ja_resources_dir, name), encoding="utf-8-sig")
+             if len(l.strip()) > 4 and any("぀" <= c <= "鿿" for c in l)]
+    lines = list(dict.fromkeys(lines))[:24]
+    assert len(lines) >= 12
+    root = tmp_path / "data"
+    root.mkdir()
+    sources = []
+    for f in range(2):
+        path = root / f"episode{f}.txt"
+        path.write_text("\n".join(lines), encoding="utf-8")
+        s = os.stat(path)
+        sources.append([path.name, "subtitle", st.source_digest(str(path), [s.st_mtime, s.st_size], "subtitle")])
+    keys = [(line[:2], line[:2]) for line in lines]
+    keys = list(dict.fromkeys(keys))
+    p = st.Packer()
+    for row, key in enumerate(keys):
+        for f in range(2):
+            text = lines[row]
+            p.add(key, f, row + f, len(text), plan_rules.text_hash_of(text), starts=0)
+    row_of = {k: i for i, k in enumerate(keys)}
+    monkeypatch.setattr(st, "GROUP_BYTES", 3 * 2 * st._BYTES)       # three rows a group
+    tab = p.finish(keys, row_of.get, lambda key: ((row_of[key],),), lambda key: row_of.get(key, -1),
+                   lambda key: key, lambda index: None, sources,
+                   {"engine": "e", "run_signature": "r", "language": "ja"})
+    path = str(tmp_path / st.TABLE_FILE)
+    tab.write(path)
+    table = st.open_table(path)
+    assert table is not None and len(table._groups) >= 4
+    firsts = st.TableFirsts(table, str(root), (0, 0))
+    truth = {f: {} for f in range(2)}
+    for k in range(len(keys)):
+        cols = st.open_table(path).block(k)[0]
+        for i, f in enumerate(cols["src"].tolist()):
+            truth[f][k] = (int(cols["number"][i]), None, int(cols["chars"][i]))
+    n = len(keys)
+    across = [k for pair in zip(range(0, n // 2), range(n // 2, n)) for k in pair]   # 0, n/2, 1, n/2 + 1, ...
+    across += [k for k in range(n) if k not in across]
+    calls = [0]
+    real = st.zlib.decompress
+
+    def counted(data, *a):
+        calls[0] += 1
+        return real(data, *a)
+    monkeypatch.setattr(st.zlib, "decompress", counted)
+    got = firsts.of_files({0: across, 1: across})
+    monkeypatch.setattr(st.zlib, "decompress", real)
+    assert got == truth
+    groups = {table._blocks[k][0] for k in across}
+    assert calls[0] == len(groups), (calls[0], len(groups))

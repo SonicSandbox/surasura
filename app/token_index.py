@@ -931,11 +931,11 @@ class Walk:
             return None
         top = int(ids.max())
         if top >= len(self.types):      # written since the walk began (another process's index): read by id
-            held = self.store._tokens_of([int(i) for i in np.unique(ids[ids >= len(self.types)])])
+            new = [int(i) for i in np.unique(ids[ids >= len(self.types)])]
+            held = self.store._tokens_of(new)
             self.types.extend([None] * (top + 1 - len(self.types)))
-            for i, token in held.items():
-                if i < len(self.types):
-                    self.types[i] = token
+            for i in new:
+                self.types[i] = held.get(i)
         if len(self.cls) < len(self.types):
             self.cls = np.concatenate([self.cls, np.zeros(len(self.types) - len(self.cls), np.uint8)])
             self.kid = np.concatenate([self.kid, np.zeros(len(self.types) - len(self.kid), np.int32)])
@@ -975,8 +975,14 @@ class Walk:
         if len(starts) < 2:
             return None                 # no sentence: read as tokens (a non-empty file is tokenized again there)
         np = self.np
-        return self._made(np.frombuffer(starts, np.int32), np.frombuffer(ids, np.int32), texts, None, words,
-                          joined, blank)
+        got = self._made(np.frombuffer(starts, np.int32), np.frombuffer(ids, np.int32), texts, None, words,
+                         joined, blank)
+        if got is not None:
+            try:
+                got._open()             # (a damaged texts blob, or not the ids' sentences: read as tokens)
+            except (zlib.error, ValueError, IndexError):
+                return None
+        return got
 
     def read(self, sentences):
         """`WalkFile` of a file read as tokens ([(text, tokens), ...]: the store couldn't give it) — its tokens the
@@ -1034,17 +1040,21 @@ class WalkFile:
                                                      .tolist()])
         return got
 
+    def _open(self):
+        """The row's texts read and checked against its ids (`Walk.file`, before the walk reads the file)."""
+        raw = zlib.decompress(self._blob)
+        n = int.from_bytes(raw[:4], "little", signed=True)
+        base = 4 * (n + 1)
+        ends = _from_int32s(raw[4:base])
+        if n != self.n or len(ends) != n or (n and base + ends[-1] != len(raw)):
+            raise ValueError("the texts are not the ids' sentences")
+        self._raw, self._ends, self._base = raw, ends, base
+
     def text(self, no):
         if self._texts is not None:
             return self._texts[no]
         if self._raw is None:
-            raw = zlib.decompress(self._blob)
-            n = int.from_bytes(raw[:4], "little", signed=True)
-            base = 4 * (n + 1)
-            ends = _from_int32s(raw[4:base])
-            if n != self.n or len(ends) != n or (n and base + ends[-1] != len(raw)):
-                raise ValueError("the texts are not the ids' sentences")
-            self._raw, self._ends, self._base = raw, ends, base
+            self._open()
         ends, base = self._ends, self._base
         return self._raw[base + (ends[no - 1] if no else 0):base + ends[no]].decode("utf-8")
 

@@ -1465,6 +1465,10 @@ def main():
         sys.exit(0 if helping else 2)
     # 1. Setup environment
     project_root = os.path.dirname(os.path.abspath(__file__))
+    # this user's own packages stay importable for every child run when the lane's APPDATA names its throwaway
+    # folder (with-lock.sh's rule): PYTHONUSERBASE set to the real profile's, unless set already (TOOLS-TIDY)
+    from tests.user_bases import keep_user_site
+    keep_user_site(os.environ)
     listing = "--list" in args
     if listing and not any(a.split("=", 1)[0] in ("--stress-changed", "--touched-callers", "--guards", "--local-only")
                            for a in args):

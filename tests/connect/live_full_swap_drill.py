@@ -12,7 +12,8 @@ drill loads DevTest and puts the profile back at the end).
 - `swap_in_place` on for the drill only. Connect's look (`swap.look`, the line handed in) decides each kind: A and C in
   place, B a new card (hand edited). A's and C's write is the real one (`swap.write_in_place` through Swap's Anki, the
   field writer's replace mode, the media named by the line, the first-episode tag); `render`'s answer is handed in as
-  files in its shape — this PC's Anki Miner has no `render` (it needs 3.11) — then the job's batch ends as the runner
+  files in its shape — this mode runs no Anki Miner at all (`--miner` below drives the real `render`: this PC's
+  Anki Miner is 3.13.0 since 2026-11-24, which has it; 3.11 and later do) — then the job's batch ends as the runner
   ends it, Backfill's ふりがな runs for real (`run_named(rewritten=)`), and the next look puts A back in reviews.
 - `--miner` (FS-R): A's and C's new lines are two real lines of `--episode` (its `.mkv` and `.ja.ass`, read only) and
   the write is Connect's own step, `runner.Steps.swap_in_place`: Anki Miner's real `render` of the word on its line

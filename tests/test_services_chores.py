@@ -364,13 +364,26 @@ def test_each_start_chore_runs_once_per_start(monkeypatch, timers_on):
     chores.started()
     assert chores.worker.idle(5)
     assert notes == [1] and warm == []                      # not at once: its timer
+    assert not chores.warmed.is_set()                       # (the start probe's wait: FLAKES row 140)
     assert sorted(t.delay for t in timers) == [C.START_INDEX, C.START_MAINTAIN, C.ARRIVALS_AT, C.WARM_AT, C.HATO_AT]
     assert C.WARM_AT > max(C.START_INDEX, C.START_MAINTAIN, C.ARRIVALS_AT)
     [t for t in timers if t.delay == C.WARM_AT][0].call()
     assert chores.worker.idle(5)
-    assert warm == ["ja"]
+    assert warm == ["ja"] and chores.warmed.is_set()
     chores.close()
     assert all(t.cancelled for t in timers)
+
+
+def test_a_warm_up_that_fails_still_says_it_has_run(monkeypatch):
+    # The start probe waits on `warmed` (bounded): a warm-up whose read failed (no index yet) has still run its turn.
+    from app import token_index
+    monkeypatch.setattr(token_index, "prepare_preview", lambda language, folder: 1 / 0)
+    chores, _r, _p = _make()
+    try:
+        chores._prepare_preview()
+        assert chores.warmed.is_set()
+    finally:
+        chores.close()
 
 
 def test_hatos_daily_update_starts_once_on_its_own_thread_and_ends_at_the_quit(monkeypatch, timers_on):

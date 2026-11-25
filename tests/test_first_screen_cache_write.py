@@ -29,6 +29,16 @@ def _plain(value):
     return value
 
 
+def _old_to_cache(view, rows):
+    """The old `view_rows.to_cache`, kept here whole as the reference (never the code under test): the first `rows`
+    rows without their `string`, the lines among them, the Goal strip's first five, the counts — copied plain."""
+    kept = view.rows[:rows]
+    return {"rows": _plain([r._replace(string=None) for r in kept]),
+            "lines": _plain([ln for ln in view.lines if ln.after < len(kept)]),
+            "goal": _plain(view.goal)[:5], "counts": _plain(view.counts), "subline": view.subline,
+            "badges": dict(view.badges), "keep_watched": bool(view.keep_watched)}
+
+
 def _built_reader(tmp_path, language):
     """A reader on a seed library with its first view built by hand (no thread), the cache file in `tmp_path`."""
     seed = window_seed.build(language=language)         # the 40-row seed (shows with episodes, books, songs)
@@ -70,19 +80,23 @@ def test_the_first_screens_cache_is_written_without_a_python_pass_per_row_or_epi
     assert calls < 60, f"{calls} Python calls to write {rows} rows ({episodes} episodes)"
 
 
-@pytest.mark.parametrize("language", ["ja", "zh"])
-def test_the_cache_file_is_the_text_the_copy_pass_and_json_dump_wrote(tmp_path, monkeypatch, language):
+@pytest.mark.parametrize("language,cache_rows", [("ja", None), ("zh", None), ("ja", 5), ("zh", 5)])
+def test_the_cache_file_is_the_text_the_copy_pass_and_json_dump_wrote(tmp_path, monkeypatch, language, cache_rows):
     """The bytes don't move: the file is exactly what the old writer wrote (`json.dump` of the plain copy, the same
     keys in the same order, Japanese / Chinese titles as they are, `ensure_ascii=False`) — so a cache an older version
     wrote and one this version writes read the same, and `from_cache` reads it back into the same first screen."""
     monkeypatch.setattr(library_reader.time, "time", lambda: 1764000000.25)     # `written_at`, fixed
     reader, view, cache = _built_reader(tmp_path, language)
+    if cache_rows is not None:                           # fewer cached rows than the view has: the lines' filter and
+        reader.cache_rows = cache_rows                   # the rows' cut both count
+        assert len(view.rows) > cache_rows and any(ln.after >= cache_rows for ln in view.lines)
+    assert any(r.string is not None for r in view.rows), "the rows carry a `string` the cache leaves out"
     key = ["store-id", 3, 41, [1764000000000000000, 2471285]]
     reader._write_cache(view, key, None)
     got = cache.read_text(encoding="utf-8")
 
     data = {"version": library_reader.CACHE_VERSION, "key": key, "written_at": 1764000000.25,
-            "view": _plain(view_rows.to_cache(view, reader.cache_rows)),
+            "view": _old_to_cache(view, reader.cache_rows),
             "numbers": library_reader._cached_figures(view, None, reader.cache_rows),
             "faded": False, "app": library_reader.APP_VERSION}
     import io

@@ -501,19 +501,27 @@ ti.WalkFile.sentences = lambda self, mask: list(range(len(self)))
 @pytest.mark.parametrize("language", ["ja", "zh"])
 def test_the_finished_walk_passes_over_only_sentences_that_can_be_no_example(tmp_path, language):
     # why: a finished show is a sentence source (F7): on ids its walk reads only the sentences holding a list row's
-    # word that may be an unknown there — a word to name, a one-kanji word offered where it stands free (it is bound
-    # in some sentences, unknown in others), an unknown — or a set phrase; the rest can be no example. Real text: the
-    # token store's six files counted, a finished show of tests/Test Resources (test_finished_reference). Generated
-    # once as it ships and once with every finished sentence walked: the two lists byte for byte the same
+    # word that may be an unknown there — a word to name, a one-kanji word offered where it stands free (bound in some
+    # sentences, unknown in others), an unknown — or a set phrase; the rest can be no example. Real text: the token
+    # store's six files counted, a finished show of tests/Test Resources (test_finished_reference); the learner knows
+    # every word of two characters or more and every word is listed (--min-freq 1), so the one-kanji words are the
+    # only examples left to find. Generated as it ships and with every finished sentence walked: the lists the same
     from tests.plan_file_cases import REPO, child_env
     from tests.test_finished_reference import _finished_show
     from tests.test_generate_missing_item import COMPARED
+    from tests.test_library_store_support import roots
     from tests.test_token_store_kept import _library, _run_indexer
     root = os.environ["SURASURA_TEST_ROOT"]
-    store, _data_dir, _ids = _library(language)
-    store.import_finished(_finished_show(language))
+    store, _data_dir, ids = _library(language)
+    show = _finished_show(language)
+    store.import_finished(show)
     store.close()
     _run_indexer(language)
+    with ti.open_store(language) as tokens:
+        lemmas = {t[0] for p in list(ids) + show for _s, toks in (tokens.file_tokens(p) or []) for t in toks}
+    with open(os.path.join(roots(language)[1], "KnownWord.json"), "w", encoding="utf-8") as f:
+        json.dump([{"dictForm": lemma, "knownStatus": "KNOWN"} for lemma in sorted(lemmas) if len(lemma) > 1], f,
+                  ensure_ascii=False)
     hook = tmp_path / "hook"
     hook.mkdir()
     (hook / "sitecustomize.py").write_text(_EVERY_SENTENCE, encoding="utf-8")
@@ -524,14 +532,15 @@ def test_the_finished_walk_passes_over_only_sentences_that_can_be_no_example(tmp
         if every:
             env["PYTHONPATH"] = str(hook) + os.pathsep + env["PYTHONPATH"]
         p = subprocess.run([sys.executable, os.path.join(REPO, "app", "analyzer.py"), f"--language={language}",
-                            "--static", "--no-open"], cwd=REPO, env=env, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace")
+                            "--static", "--no-open", "--min-freq", "1"], cwd=REPO, env=env, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace")
         assert p.returncode == 0, (p.stdout + p.stderr)[-3000:]
         made = {}
         for name in COMPARED:
             with open(os.path.join(root, "results", name), "rb") as f:
                 made[name] = f.read()
         lists.append(made)
+    assert len(lists[0]["priority_learning_list.csv"].splitlines()) > 5, "some words listed"
     assert lists[0] == lists[1]
 
 

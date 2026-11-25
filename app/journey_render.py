@@ -38,6 +38,7 @@ SHAPE_MINOR = 1                 # 1.1 (2026-11-22): additive only — the head's
 MARKER = "<!--JOURNEY-DATA-->"  # where the page's template takes the data, once
 WORD_MEMO = "journey_words.json"   # in results/, beside the ▶'s memos: `WordMemo`
 SHOWN_FILE = "shown.json.gz"        # in results/: the list reader's shown lines (`analyzer.SHOWN_FILE`), its silent ones
+PLAN_FILE = "plan.json.gz"          # in results/: the plan file (`analyzer.PLAN_FILE`), its header the run's signature
 MEMO_FORMAT = 1                 # in the memo's keys: bump when a meaning's JSON or a pitch is written another way
 CHUNK_EPISODES = 100
 CHUNK_BYTES = 240_000           # a chunk's JSON closes past this (≈ 60–80 KB gzipped for Japanese sentences)
@@ -1374,13 +1375,18 @@ def silent_lines(results_dir, settings):
     """The shown lines no audio is heard from, {(Src, Context)}, as the list's one reader kept them beside the lines it
     showed (`analyzer.ListSentences.keep`, results/`SHOWN_FILE`'s "silent") — only while *Ensure an audio example* is
     on (SPEC § 4.5: they stay in their true order, marked silent) and the list is the reader's (release 2); set()
-    otherwise, or with none kept. Read here, not through the analyzer: a run's analyzer is `__main__`."""
+    otherwise, with none kept, or kept by another run than the plan's (a Generate whose reader kept nothing leaves the
+    last one's: never its marks). Read here, not through the analyzer: a run's analyzer is `__main__`."""
     from app import plan_rules
     if plan_rules.SENTENCE_TABLE < 2 or not (settings or {}).get("ensure_audio_example"):
         return set()
     try:
         with gzip.open(os.path.join(results_dir, SHOWN_FILE), "rb") as f:
             data = json.loads(f.read())
+        with gzip.open(os.path.join(results_dir, PLAN_FILE), "rb") as f:
+            run = json.loads(f.readline()).get("run_signature")    # (its first line only: the header)
+        if not run or data.get("run_signature") != run:
+            return set()
         return {(_text(rel), _text(text)) for rel, text in data.get("silent") or ()}
     except Exception:
         return set()

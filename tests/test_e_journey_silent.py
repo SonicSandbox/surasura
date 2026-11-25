@@ -11,7 +11,7 @@ off and at level 0:
   - the reader's silent lines are exactly the shown lines from a text (no audiobook, AI voice off) — none from a
     subtitle episode; with the AI voice on, none (its lines are heard), and the file says so;
   - the page's data marks each such line and no other with the setting on, none with it off or below release 2, and
-    is otherwise the same page;
+    its lines otherwise the same;
   - in headless Edge, a marked line shows the muted speaker (its name, tip and label) and no ▶; with the setting off
     no line does; a marked line whose file can play keeps its ▶ (the mark is never beside a ▶ that plays).
 """
@@ -146,7 +146,8 @@ def _bare(ln, src):
 
 def test_the_reader_keeps_as_silent_every_shown_line_from_a_text_and_none_from_a_subtitle(run):
     # why: SPEC § 4.5 — a line no audio is heard from (a book or a text with no audiobook, the AI voice off) is the
-    # one the journey marks; a subtitle episode's line is heard (its own clip), never marked
+    # one the journey marks; a subtitle episode's line is heard (its own clip), never marked (RP-2's Chinese library
+    # is texts only: there every shown line is silent)
     pairs = _listed_pairs(run.results)
     assert pairs, "the list shows lines"
     assert all(src.endswith((".txt", ".srt")) for src, _ in pairs), "RP-2 holds texts and subtitles only"
@@ -185,6 +186,8 @@ def test_with_the_ai_voice_on_no_shown_line_is_silent_and_the_kept_file_says_so(
     assert out["rows"] and out["shown"] and out["silent"] == 0, out
     after = _shown_file(results)
     assert "silent" not in after, "no silent line: the file as before the mark"
+    if run.language == "zh":        # texts only: the voice moves every line alike, so the same lines are shown
+        assert after["lines"] == before["lines"], "written again for its silent part alone"
     assert after["run_signature"] == before["run_signature"]
 
 
@@ -213,6 +216,7 @@ def test_silent_lines_reads_the_kept_file_only_at_release_2_with_the_setting_on(
     # off, with no file or a damaged one (the page then marks nothing: never a failed render)
     monkeypatch.setattr(plan_rules, "SENTENCE_TABLE", 2)
     want = {tuple(p) for p in _shown_file(run.results)["silent"]}
+    assert want
     assert journey_render.silent_lines(run.results, {"ensure_audio_example": True}) == want
     assert journey_render.silent_lines(run.results, {"ensure_audio_example": False}) == set()
     assert journey_render.silent_lines(run.results, {}) == set()
@@ -221,6 +225,13 @@ def test_silent_lines_reads_the_kept_file_only_at_release_2_with_the_setting_on(
     with open(os.path.join(str(tmp_path), SHOWN), "wb") as f:
         f.write(b"not gzip")
     assert journey_render.silent_lines(str(tmp_path), {"ensure_audio_example": True}) == set(), "a damaged file"
+    other = str(tmp_path / "other")
+    os.makedirs(other)
+    shutil.copy(os.path.join(run.results, "plan.json.gz"), other)
+    data = dict(_shown_file(run.results), run_signature="another run")
+    with gzip.open(os.path.join(other, SHOWN), "wb") as f:
+        f.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+    assert journey_render.silent_lines(other, {"ensure_audio_example": True}) == set(), "another run's kept file"
     monkeypatch.setattr(plan_rules, "SENTENCE_TABLE", 1)
     assert journey_render.silent_lines(run.results, {"ensure_audio_example": True}) == set(), "below release 2"
 
@@ -252,10 +263,11 @@ _DRAW = r"""(async () => {
 })()"""
 
 
-def _draw(e, path, limit=600):
+def _draw(e, path, limit=100_000):
     assert e.open("file:///" + path.replace("\\", "/")), e.errors()
     rows = e.evaluate(_DRAW % limit)
     assert rows, "the page drew its words"
+    assert len(rows) == min(limit, e.evaluate("window.__J.page.head.counts.words")), "every word drawn"
     for _id, n, lines in rows:
         assert n == len(lines), "one line element a line shown"
     return [line for _id, _n, lines in rows for line in lines]

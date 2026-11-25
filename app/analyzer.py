@@ -4771,7 +4771,7 @@ class ListSentences:
                 rel = (line.file[len(base):] if line.file.startswith(base) else line.file).replace(os.sep, "/")
                 kept[(rel, line.number)] = line.text
                 shown = strip_verse_number(line.text, tagger) if tagger is not None and line.text else line.text
-                if line.heard is None:              # (sentence_score.SILENT: no clip of its own, no AI voice)
+                if line.heard is None and shown:    # (sentence_score.SILENT: no clip of its own, no AI voice)
                     silent.add((rel, shown))
                 columns += (shown, rel)
             out[key] = columns

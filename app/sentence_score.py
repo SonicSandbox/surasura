@@ -482,13 +482,21 @@ def _row_arrays(tab, moment, order):
 
 def _kept(memo, tab, moment, order, root):
     """A pick's memo (`choose`'s `memo`) for this table, moment, order and data folder — what its asks share, built at
-    the first and kept for the rest; emptied when any of the four differs from the asks before. None: no memo."""
+    the first and kept for the rest; emptied when any of the four differs from the asks before — but for another
+    order alone, which keeps what no order changes (the rows' index, the columns taken, each file's text, check and
+    stamp: *Only i+1*'s second round read them all again, E-L2G) and drops the rows' arrays and the costs, which are
+    the order's. None: no memo."""
     if memo is None:
         return None
     was = memo.get("for")
-    if was is None or not (was[0] is tab and was[1] is moment and was[2] is order and was[3] == root):
-        memo.clear()
-        memo["for"] = (tab, moment, order, root)
+    if was is not None and was[0] is tab and was[1] is moment and was[3] == root:
+        if was[2] is not order:
+            for name in ("arrays", "files", "costed"):
+                memo.pop(name, None)
+            memo["for"] = (tab, moment, order, root)
+        return memo
+    memo.clear()
+    memo["for"] = (tab, moment, order, root)
     return memo
 
 
@@ -598,11 +606,16 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
     if again:
         columns, srcs, arrays, files, spans, tie = done[3]
     else:
-        columns = _take(tab, want)
-        srcs = np.unique(columns["src"]).tolist()
+        # (the rows' columns, their files and where each row's lines sit: the same at every order — `_kept`)
+        taken = shared.get("taken")
+        if taken is None or taken[0] != want:
+            columns = _take(tab, want)
+            srcs = np.unique(columns["src"]).tolist()
+            taken = (want, columns, srcs, _spans(columns["row"]), _tie_ranks(tab.sources(), srcs))
+            if kept is not None:
+                shared["taken"] = taken
+        _want, columns, srcs, spans, tie = taken
         arrays, files = _moment_arrays(tab, moment, order, root, srcs, kept)
-        spans = _spans(columns["row"])
-        tie = _tie_ranks(tab.sources(), srcs)
     low, high = length
     src_a, num_a, hash_a, chars_a = columns["src"], columns["number"], columns["hash"], columns["chars"]
     never_rows = {}             # by row: a key named with or without its reading is the same row's

@@ -9,6 +9,9 @@ as the dashboard runs it. What these prove:
     shown line's whole file was 0.70 of the level-2 pick's 0.78 s at 2k): no file's tokens decoded, the same columns —
     and, on any doubt, the full decode, the same columns again; the texts are `file_tokens`' over every file of the
     store and over made lines (quotes, backslashes, the cut inside a line, an empty token list, control characters).
+  - ***Only i+1*'s second round reads nothing again** (row 15: round 2 repeated the whole pick, +1.29 s at 2k): one
+    reader asked twice in two orders, as the Generate's rounds ask it, reads each file's text and the table's columns
+    once, and answers what a fresh reader answers.
 """
 import json
 import os
@@ -203,3 +206,55 @@ def test_made_lines_texts_read_alone_are_the_texts_and_a_line_that_would_cut_wro
     assert token_index._decode_texts(blob[:-3], lines) is None, "a damaged blob: read in full"
     assert token_index._decode_texts(token_index._encode_tokens([]), None) is None, "no line: the store's [] in full"
     assert token_index._decode_texts(*_blob([[None, []]])) is None, "a line held badly: read in full"
+
+
+# The Generate's *Only i+1* rounds, as its loop asks them of one reader: every row in the list's order, then the rows
+# left (those with no clean line, or with none: every seventh) in their own order — each file's text read and the
+# table's columns taken counted; then a fresh reader asked the second round alone (today's: a reader a call).
+_ROUNDS = r"""
+import collections, json, os, sys
+from app import analyzer, sentence_score, sentence_table, token_index
+language, results, keys = sys.argv[1], sys.argv[2], [tuple(k) for k in json.loads(sys.argv[3])]
+reads, taken = collections.Counter(), [0]
+tokens, texts, take = token_index.Store.file_tokens, getattr(token_index.Store, "file_texts", None), sentence_score._take
+def counted_tokens(self, path):
+    reads[path] += 1
+    return tokens(self, path)
+def counted_texts(self, path):
+    reads[path] += 1
+    got = texts(self, path)
+    if got is None:
+        reads[path] -= 1                # (in doubt: its file_tokens read counts it)
+    return got
+def counted_take(tab, want):
+    taken[0] += 1
+    return take(tab, want)
+token_index.Store.file_tokens, sentence_score._take = counted_tokens, counted_take
+if texts is not None:
+    token_index.Store.file_texts = counted_texts
+analyzer._read_shown = lambda results_dir, run_signature: {}
+table = sentence_table.open_table(os.path.join(results, sentence_table.TABLE_FILE), language=language,
+                                  engine=analyzer.engine_id(), run_signature=analyzer.read_run_stamp(results))
+one = analyzer.ListSentences(language, 3, True, results_dir=results, table=table)     # (the Generate's own table)
+first = one(keys, {k: at for at, k in enumerate(keys)})
+left = [k for k in keys if first.get(k)]
+if len(left) == len(keys):              # (every word has a clean line: every seventh left off, as a round would)
+    left = [k for at, k in enumerate(keys) if at % 7]
+order = {k: at for at, k in enumerate(left)}
+second = one(left, order)
+counts = {"files": len(reads), "twice": sum(1 for n in reads.values() if n > 1), "taken": taken[0]}
+fresh = analyzer.ListSentences(language, 3, True, results_dir=results)(left, dict(order))
+print(json.dumps({"counts": counts, "left": len(left), "same": second == fresh, "first": len(first)}))
+"""
+
+
+def test_only_i_plus_ones_second_round_reads_no_files_text_and_no_column_again(gen):
+    # why: E-L2G, row 15 — *Only i+1* asks the reader again for the words left, in their own order; each call made a
+    # new moment and no memo, so round 2 took every column and decoded every file's text again. One reader keeps
+    # what no order changes: each file read once, the columns taken once, the answer a fresh reader's
+    language, root = gen
+    keys = json.dumps([list(k) for k in _columns(os.path.join(root, "results"))], ensure_ascii=False)
+    got = _child(root, _ROUNDS, language, os.path.join(root, "results"), keys)
+    assert got["first"] > got["left"] > 0, got
+    assert got["counts"]["twice"] == 0 and got["counts"]["taken"] == 1, got
+    assert got["counts"]["files"] > 0 and got["same"], got

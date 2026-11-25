@@ -4724,21 +4724,27 @@ class ListSentences:
     ceiling); `clean_only` *Only i+1* (a row with no line left is []: the Generate leaves it out). What a Context
     shows is the Generate's (`strip_verse_number`); a Src is the file's path from the data folder, as the plan's.
     The text of the lines it shows is kept in results/`SHOWN_FILE` (`keep`) and read from there before the token
-    store the next time. Young words are not weighed: the list reads no Anki (PROVISIONAL, the prototype's)."""
+    store the next time. Young words are not weighed: the list reads no Anki (PROVISIONAL, the prototype's). Its
+    calls share one moment and one memo (`sentence_score.choose`'s): *Only i+1*'s second round, in another order,
+    reads no file's text and no column again (E-L2G)."""
 
     def __init__(self, language, max_contexts, clean_only=False, results_dir=None, table=None):
         self.language, self.n, self.clean_only = language, plan_rules.context_limit(max_contexts), clean_only
         self.results_dir, self.table = results_dir or RESULTS_DIR, table
         self.run, self.kept, self.read = None, {}, {}
+        self.moment, self.length, self.memo = None, None, {}
 
     def __call__(self, keys, order=None):
         from app import sentence_score, sentence_corpus, sentence_table
         from app.connect import sentences as connect_sentences
         from app.path_utils import get_data_path
-        settings = settings_manager.load_settings()
-        seen = connect_sentences.files_seen(self.language, connect_sentences.ai_voice(settings, self.language))
-        _lo, _hi, low, high = sentence_corpus.length_range(settings)
-        root = get_data_path(self.language)
+        if self.moment is None:             # (one run's settings and dates: the same for each of its calls)
+            settings = settings_manager.load_settings()
+            seen = connect_sentences.files_seen(self.language, connect_sentences.ai_voice(settings, self.language))
+            _lo, _hi, low, high = sentence_corpus.length_range(settings)
+            self.moment = sentence_score.Moment(files=seen, root=get_data_path(self.language))
+            self.length = (low, high)
+        root = self.moment.root
         tab = self.table
         if tab is None:
             tab = sentence_table.open_table(os.path.join(self.results_dir, sentence_table.TABLE_FILE),
@@ -4748,9 +4754,9 @@ class ListSentences:
                 return None
         self.run = tab.head.get("run_signature")
         self.read = _read_shown(self.results_dir, self.run)
-        got = sentence_score.choose(self.language, keys, n=self.n, length=(low, high), order=order, whole=True,
-                                    moment=sentence_score.Moment(files=seen, root=root), clean_only=self.clean_only,
-                                    shown=self.read, table=tab)
+        got = sentence_score.choose(self.language, keys, n=self.n, length=self.length, order=order, whole=True,
+                                    moment=self.moment, clean_only=self.clean_only, shown=self.read, table=tab,
+                                    memo=self.memo)
         if got is None:
             return None
         base = os.path.join(root, "")
@@ -8004,6 +8010,8 @@ def main():
             if not _empty:
                 break
             _left_off |= _empty
+        if _chooser is not None:
+            _chooser.memo.clear()           # (the rounds are over: what they shared — every file's text — let go)
         output_rows, _l2_valid = _rows, valid_lrs
         words_skipped_i_plus_one = len(_left_off)
         n_columns = plan_rules.context_columns(args.max_contexts, (len(cols) // 2 for cols in _got.values()))

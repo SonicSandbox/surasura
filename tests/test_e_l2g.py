@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import sys
+import zlib
 
 import pytest
 
@@ -322,6 +323,11 @@ def test_made_lines_texts_read_alone_are_the_texts_and_a_line_that_would_cut_wro
     for wrong in (text_ends_in_cut, token_ends_in_cut):
         assert token_index._decode_texts(*_blob(_MADE[:2] + [wrong] + _MADE[2:])) is None
         assert token_index._decode_texts(*_blob([wrong])) is None
+    # a cut too many that the count can't see (a `lines` column that agrees with it): each piece after a wrong cut
+    # starts inside a token, no line's start — that alone says so
+    blob = token_index._encode_tokens([token_ends_in_cut])
+    pieces = zlib.decompress(blob).decode("utf-8")[3:].split(token_index._CUT)
+    assert len(pieces) > 1 and token_index._decode_texts(blob, token_index._encode_tokens([1] * len(pieces))) is None
     blob, lines = _blob(_MADE)
     assert token_index._decode_texts(blob, token_index._encode_tokens([1] * (len(_MADE) - 1))) is None
     assert token_index._decode_texts(blob, None) is None, "no `lines` column: read in full"

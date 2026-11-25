@@ -448,6 +448,51 @@ def test_only_i_plus_ones_second_round_parses_shown_once_and_builds_no_order_fre
     assert got["same_first"] and got["same"] and got["same_third"], got
 
 
+# Loaded first in the Generate's child: every progressive pass's `files` (each file as the pass reads it) held, and at
+# the child's exit how many passes ran and how many `files` were built for them.
+_PASSES = r"""
+import atexit, json, os
+from app import plan_rules
+_pass, _files = plan_rules.progressive_pass, []
+
+
+def _counted(files, *args, **kwargs):
+    _files.append(files)                # (held: an id is never reused while it lives)
+    return _pass(files, *args, **kwargs)
+
+
+def _said():
+    with open(os.environ["E_L2G_PASSES"], "w") as f:
+        json.dump({"passes": len(_files), "built": len({id(files) for files in _files})}, f)
+
+
+plan_rules.progressive_pass = _counted
+atexit.register(_said)
+"""
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_only_i_plus_ones_rounds_read_each_file_for_the_progressive_pass_once(language, tmp_path):
+    # why: E-L2G 4, row 15 — each round of *Only i+1* at level 2 ran the progressive pass again over every file, and
+    # built again each file as the pass reads it (its words not known before any file, their counts: the same at every
+    # round — only the words listed change). Profiled at 2,000 files: 1.07 s of the 2 rounds' 2.15 s. Built once for
+    # the rounds; the pass itself still runs at each (the words listed are the round's); the list is the reader's
+    hook = tmp_path / "hook"
+    hook.mkdir()
+    (hook / "sitecustomize.py").write_text(_PASSES, encoding="utf-8")
+    counted = tmp_path / "passes.json"
+    env = dict(LEVEL_2, PYTHONPATH=str(hook) + os.pathsep + cases.REPO, E_L2G_PASSES=str(counted))
+    root = str(tmp_path / "lib")
+    cases.build(root, f"rp2-{language}")
+    cases.generate(root, f"rp2-{language}", extra_env=env, extra_args=["--only-i-plus-one"])
+    with open(counted, encoding="utf-8") as f:
+        got = json.load(f)
+    assert got["passes"] >= 2, f"no second round on this library: {got}"
+    assert got["built"] == 1, f"{got['built']} builds of every file's pass input for {got['passes']} rounds"
+    listed = _columns(os.path.join(root, "results"))
+    assert listed and all(cols and cols[0] for cols in listed.values()), "every word left on shows a sentence"
+
+
 # Loaded first in the redraw's child: at its exit, whether a Japanese tagger was ever loaded (fugashi is imported only
 # to make one: `JapaneseTokenizer`).
 _TAGGER_LOADED = r"""

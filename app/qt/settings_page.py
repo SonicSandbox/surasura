@@ -60,6 +60,7 @@ from app.qt import settings_live
 from app.qt import settings_strings as S
 from app.qt.tooltip import AboutMark
 from app.services import settings as settings_service
+from app.services import window_idle
 
 SLICE_MS = 4.0                  # the GUI thread's step (charter §4): what a slice may take
 BUILD_MS = 2.5                  # rows built and shown until then; the section's layout fills the rest
@@ -164,6 +165,20 @@ def _shown_in(layouts):
         items = (layout.itemAt(i) for i in range(layout.count()))
         out.append(tuple((w, w.isHidden()) for w in (it.widget() for it in items) if w is not None))
     return out
+
+
+class _Slicing:
+    """A Settings build's mark on the window's idle (`window_idle.sliced`): on from its first slice, off once — built,
+    or the page gone — however many ways it ends (OPEN-GAP)."""
+
+    def __init__(self):
+        self.on = True
+        window_idle.sliced(True)
+
+    def end(self, *_):
+        if self.on:
+            self.on = False
+            window_idle.sliced(False)
 
 
 def _alive(w):
@@ -867,6 +882,8 @@ class SettingsPage(QWidget):
             QTimer.singleShot(0, self._look)
         if not _WARMED:
             bridge.run_in_worker(_warm, then=_warmed, failed=_warm_failed)
+        self._slicing = _Slicing()            # the build never rests between slices: the lock as at rest past LONG_S
+        self.destroyed.connect(self._slicing.end)   # (a page gone mid-build ends its own)
         QTimer.singleShot(0, self._slice)
 
     # --- the frame: the nav and the search, at once -------------------------------------------------------------- #
@@ -1056,6 +1073,7 @@ class SettingsPage(QWidget):
 
     def _slice(self):
         if not _alive(self):
+            self._slicing.end()
             return
         t0 = time.perf_counter()
         if self._slice_end is not None:
@@ -1085,6 +1103,7 @@ class SettingsPage(QWidget):
             QTimer.singleShot(0 if _WARMED or not _WARM_ROWS(self._queue[0][1]) else WARM_WAIT_MS, self._slice)
             return
         self.built = True
+        self._slicing.end()
         self._revealed = None
         if self.built_order != [s.id for s in catalog.SECTIONS if s.id in self.slabs]:
             self._tab_order()                 # built out of order (a reveal first): Tab follows the page, not the build

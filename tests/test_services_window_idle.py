@@ -158,14 +158,15 @@ def test_while_the_window_is_awake_pythons_lock_comes_back_to_it_at_once_and_at_
 
 
 def test_a_stretch_that_goes_on_hands_the_lock_over_as_at_rest_till_the_window_rests(monkeypatch):
-    """The fine hand-over is a press's (a few ms): a stretch older than `LONG_S` — Settings built in ~135 turns of the
-    loop with no rest between, the start's first seconds — hands over as at rest from its next turn (the start's ten
-    busy workers spun at 0.25 ms: Settings 21 s instead of 1.3 s). Its rest ends it; the next wake is fine again. A
+    """The fine hand-over is a press's (a few ms): a stretch older than `LONG_S` while a page is built in slices with
+    no rest between (`sliced`: Settings, ~135 turns of the loop) hands over as at rest from its next turn (the start's
+    ten busy workers spun at 0.25 ms: Settings 21 s instead of 1.3 s). Its rest ends it; the next wake is fine again. A
     save under way keeps its own finer one. The clock is the test's (a stretch is old by the test's word)."""
     import sys
     clock = _Clock()
     monkeypatch.setattr(window_idle, "time", clock)
     was = sys.getswitchinterval()
+    window_idle.sliced(True)                                       # (Settings' build under way)
     try:
         window_idle.set_switch(0.00025, 0.001)
         sys.setswitchinterval(0.001)
@@ -187,6 +188,51 @@ def test_a_stretch_that_goes_on_hands_the_lock_over_as_at_rest_till_the_window_r
         window_idle.busy()                                         # (woke anew: a press's fine hand-over again)
         assert sys.getswitchinterval() == pytest.approx(0.00025)
     finally:
+        window_idle.sliced(False)
+        window_idle.set_switch(None, None)
+        window_idle.rest()
+        sys.setswitchinterval(was)
+
+
+def test_a_long_stretch_with_no_sliced_build_keeps_the_fine_hand_over_till_it_rests(monkeypatch):
+    """OPEN-GAP (2026-11-25): the start's own first stretch at 20,000 files — the rows' first paint, Goal's dock, the
+    level's pop-up, ~0.9 s with no rest — handed over as at rest from 0.1 s on (0b3e47e3), and each of its events then
+    waited out a busy worker's whole millisecond: the window's input came 0.6–0.7 s late instead of 0.2 s. Only a page
+    built in slices hands over as at rest (`sliced`); a build that begins mid-stretch does so from the stretch's next
+    turn, and its end leaves the stretch as it is until it rests. The clock is the test's."""
+    import sys
+    clock = _Clock()
+    monkeypatch.setattr(window_idle, "time", clock)
+    was = sys.getswitchinterval()
+    try:
+        window_idle.set_switch(0.00025, 0.001)
+        sys.setswitchinterval(0.001)
+        window_idle.busy()                                         # (woke at 100.000: the first frame's stretch)
+        for t in (0.05, window_idle.LONG_S + 0.001, 0.5, 0.9):
+            clock.t = 100.0 + t
+            window_idle.busy()                                     # (its turns, old and older: no sliced build)
+            assert sys.getswitchinterval() == pytest.approx(0.00025), t
+        window_idle.sliced(True)                                   # (Settings clicked inside it)
+        clock.t = 100.95
+        window_idle.busy()
+        assert sys.getswitchinterval() == pytest.approx(0.001)
+        window_idle.sliced(False)                                  # (built: the stretch stays as it is…)
+        clock.t = 101.0
+        window_idle.busy()
+        assert sys.getswitchinterval() == pytest.approx(0.001)
+        window_idle.rest()                                         # (…till it rests)
+        clock.t = 102.0
+        window_idle.busy()
+        clock.t = 102.5
+        window_idle.busy()                                         # (a new long stretch, no build: fine)
+        assert sys.getswitchinterval() == pytest.approx(0.00025)
+        window_idle.sliced(False)                                  # (an end with none begun never counts below 0)
+        window_idle.sliced(True)
+        clock.t = 102.6
+        window_idle.busy()
+        assert sys.getswitchinterval() == pytest.approx(0.001)
+    finally:
+        window_idle._sliced[0] = 0
         window_idle.set_switch(None, None)
         window_idle.rest()
         sys.setswitchinterval(was)

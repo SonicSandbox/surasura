@@ -18,6 +18,7 @@ import pytest
 import package_app
 from app import updater
 from tests.test_packaging_config import _program, _stubbed_build, _stand_in_archives, fake_site  # noqa: F401
+from tests.flake_lints import as_read
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPEC = os.path.join(PROJECT, "packaging", "Surasura.spec")
@@ -273,9 +274,14 @@ def test_nothing_of_surasuras_imports_tsubasa():
     found = []
     for path in _python_files():
         try:
+            with open(path, encoding="utf-8") as f:
+                source = f.read()
+            seen = as_read(source)                           # (a name by pieces or escapes: the loader's call)
+            if not any(word in seen for word in ("tsubasa", "import_module", "__import__")):
+                continue                                     # (no way in: parsed only where one may be)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")              # another file's old escapes, not ours
-                tree = ast.parse(open(path, encoding="utf-8").read())
+                tree = ast.parse(source)
         except (SyntaxError, UnicodeDecodeError):
             continue
         found += [os.path.relpath(path, PROJECT) for n in _imported_names(tree) if n.split(".")[0] == "tsubasa"]

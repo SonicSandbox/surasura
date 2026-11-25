@@ -163,6 +163,32 @@ def test_after_a_readers_stop_the_numbers_load_neither_pauses_nor_freezes(langua
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_readers_stop_during_the_numbers_load_leaves_nothing_frozen_after_it(language, window_library, monkeypatch):
+    """A language switch mid-load: the reader shows its first view (frozen) and stops while the numbers still load —
+    everything goes back to the collector, and the load's end then freezes nothing (the switch may still hold the
+    library it left); the collector is on again."""
+    numbers, reader = window_library()
+    views = []
+    reader.subscribe(views.append)
+    seen = {}
+    real_stale = M.Numbers._stale
+
+    def stale(self, *a, **k):                                 # the numbers' worker, its load half done
+        reader.start()
+        seen["viewed"] = _wait(lambda: views and views[-1].state == "full", 30)
+        seen["frozen_by_reader"] = _wait(lambda: gc.get_freeze_count() > 0, 30)
+        reader.stop(timeout=30)                               # the switch: everything given back to the collector
+        seen["frozen_after_stop"] = gc.get_freeze_count()
+        return real_stale(self, *a, **k)
+    monkeypatch.setattr(M.Numbers, "_stale", stale)
+    numbers.load()
+    assert numbers.idle(60) and numbers.why() is None, numbers.why()
+    assert seen["viewed"] and seen["frozen_by_reader"] and seen["frozen_after_stop"] == 0, seen
+    assert gc.get_freeze_count() == 0, "nothing frozen at the end of a load a reader's stop crossed"
+    assert gc.isenabled() and library_reader._PAUSES[0] == 0
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_reader_look_ending_before_the_numbers_load_ends_leaves_the_collector_paused_for_the_rest(
         language, window_library, monkeypatch):
     """One pause, two users, crossing: the reader's look starts (its build paused), the numbers' load starts inside it,

@@ -789,7 +789,8 @@ class Sources:
     def __init__(self, language, source_map=None, ep_of=None, media=None, timer=None):
         self.language = language
         self.map = source_map or {}
-        self.ep_of = ep_of or {}
+        self.ep_of = ep_of or {}               # {an episode's key: its index} (`build`'s: its path, or an older
+        self.by_path = False                    # run's lists, its name alone — `by_path` False)
         self.media = media or {}
         self.timer = timer
         self.titles = {}                        # {file name: its shown name}: the head's, so each is made once
@@ -816,8 +817,8 @@ class Sources:
             title = self.titles.get(name)
             if title is None:
                 title = self.titles[name] = shown_name(name)
-            found = self._rows[rel] = [title, kind, self.ep_of.get(name, -1), play, link,
-                                       self.items.get(rel.replace("\\", "/"))]
+            ep = self.ep_of.get(rel.replace("\\", "/") if self.by_path else name, -1)
+            found = self._rows[rel] = [title, kind, ep, play, link, self.items.get(rel.replace("\\", "/"))]
         return found
 
     def prepare(self, texts, rels):
@@ -884,24 +885,25 @@ Render = namedtuple("Render", "head chunks blobs stones")
 #   head: dict · chunks: [bytes gz] · blobs: {name: bytes gz} · stones: dict
 
 
-def _plan_files(plan):
-    """{file name: its index in the plan} (a name's first file), what `_plan_pcts` and `_ahead` look a page's episode
-    up by; None without a plan."""
+def _plan_files(plan, by_path=True):
+    """{file's path: its index in the plan} (the plan's `files`, the counts table's: E-NAMES), what `_plan_pcts` and
+    `_ahead` look a page's episode up by — `by_path` False (an older run's lists, names alone): {file name: a name's
+    first file}; None without a plan."""
     if plan is None:
         return None
     try:
         from app.path_utils import report_name
         by_name = {}
         for f, entry in enumerate(plan.files):
-            by_name.setdefault(report_name(entry[0]), f)
+            by_name.setdefault(entry[0] if by_path else report_name(entry[0]), f)
         return by_name
     except Exception:
         return None
 
 
 def _plan_pcts(plan, by_name=None):
-    """{file name: *% known*} from the plan's per-file `prog` (the tokens known before any file over the tokens
-    counted) — the very count the window's rows read (`moves.Numbers`); None without a plan. `by_name`: `_plan_files`'
+    """{file's key (`_plan_files`'): *% known*} from the plan's per-file `prog` (the tokens known before any file over
+    the tokens counted) — the very count the window's rows read (`moves.Numbers`); None without a plan. `by_name`: `_plan_files`'
     (made here when not handed in)."""
     if plan is None:
         return None
@@ -921,8 +923,8 @@ def _ahead(plan, names, word_eps, word_id, by_name=None):
     """Each page word's count ahead -> array, one number a word: its uses in its own episode and the next AHEAD - 1,
     from the plan's per-file counts (`plan_engine.Plan`, `Counts`), or -1 where its own episode has no count for it (no
     line in the plan, or the word not met there: the page then shows its count in its own episode); None without a
-    plan. `names` the page's episodes' file names in order, `word_eps` each word's episode index (in word order),
-    `word_id` {(Word, Reading): its word index} (`build`'s); the plan's keys are distinct. At 20,000 files the
+    plan. `names` the page's episodes' keys in order (`_plan_files`'), `word_eps` each word's episode index (in word
+    order), `word_id` {(Word, Reading): its word index} (`build`'s); the plan's keys are distinct. At 20,000 files the
     {episode: {key: count}} dicts this was, and the asked sets that cut them, were 12.5 MB of the render's peak (J-CUT
     5's gate); here a window of AHEAD episodes' words at a time. `by_name`: `_plan_files`' (made here when not handed
     in)."""
@@ -982,11 +984,19 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
     from app.path_utils import infer_source_type, report_name
     from app.services import stone_plan
 
-    # The episodes, in the study order: the store's (by id) when there is one, else the run's files by name. The run's
-    # lists name a file only by its name (`report_name`): a name is the episode the run COUNTED of that name, never a
-    # set-aside one (two shows' 第01集, one watched and set aside: J-FIX 3) — its words, *% known* and count ahead
+    # The episodes, in the study order: the store's (by id) when there is one, else the run's files. Each is told by
+    # its path from the data folder (E-NAMES: the store's rel_path, the lists' Source Path, file statistics' Path), so
+    # two shows' 第01集, both counted, keep their own words, *% known* and count ahead. An older run's lists name a file
+    # by its name alone (`by_path` False): there a name is the episode the run COUNTED of that name, never a set-aside
+    # one (J-FIX 3)
     stats = [s for s in (stats or ()) if isinstance(s, dict) and s.get("File")]
-    shows, show_index, eps, ep_of_name, aside = [], {}, [], {}, set()
+    first_row = next(iter(rows or ()), None)
+    by_path = "Source Path" in first_row if first_row is not None else (not stats or "Path" in stats[0])
+
+    def key_of(path, name):
+        return (path or name) if by_path else name
+
+    shows, show_index, eps, ep_keys, ep_of, aside = [], {}, [], [], {}, set()
 
     def show_of(key, title, kind):
         if key not in show_index:
@@ -996,16 +1006,17 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
 
     # *% known*: the window's own figure (the plan's count), never the stats file's Coverage (%) — the plan when the
     # caller hands it in, else the store's 'last' snapshot (the same count, kept by that Generate); else none
-    plan_files = _plan_files(plan)
+    plan_files = _plan_files(plan, by_path)
     plan_pcts = _plan_pcts(plan, plan_files) if plan_files is not None else None
 
-    def add_ep(item_id, name, tier, kind, show, watched, cards, missing, pre, growth, last=None, counted=True):
-        coverage = plan_pcts.get(name) if plan_pcts is not None else _pct(last)
+    def add_ep(item_id, name, key, tier, kind, show, watched, cards, missing, pre, growth, last=None, counted=True):
+        coverage = plan_pcts.get(key) if plan_pcts is not None else _pct(last)
         flags = (1 if watched else 0) | (2 if missing else 0) | (4 if cards else 0)
-        if name not in ep_of_name or (counted and ep_of_name[name] in aside):
-            ep_of_name[name] = len(eps)
+        if key not in ep_of or (counted and ep_of[key] in aside):
+            ep_of[key] = len(eps)
         if not counted:
             aside.add(len(eps))
+        ep_keys.append(key)
         eps.append([item_id, name, None, show, tier, kind, coverage, 0, 0,
                     _stone_state(watched, cards, item_id is not None and item_id in nothing), flags, pre, growth])
 
@@ -1022,37 +1033,39 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
             kind = work.get("media_type") or item.get("source_type") or infer_source_type(item["rel_path"])
             key = library_store._show_of(item_id, item.get("work_id"), item.get("parent_folder"))
             pre = facts.pre.get(item_id)
-            add_ep(item_id, name, tiers.get(item.get("tier")), kind, show_of(key, _show_name(work, item), kind),
-                   item.get("watched"), facts.cards.get(item_id, 0), item.get("availability") == "missing",
+            add_ep(item_id, name, key_of(item["rel_path"].replace("\\", "/"), name), tiers.get(item.get("tier")),
+                   kind, show_of(key, _show_name(work, item), kind), item.get("watched"), facts.cards.get(item_id, 0), item.get("availability") == "missing",
                    [_day(pre[0]) or pre[0], pre[1]] if pre else None, growth_row(facts.growth.get(item_id)),
                    (facts.growth.get(item_id) or {}).get("last"), facts.counted is None or item_id in facts.counted)
-    named = {e[1] for e in eps}
+    named = set(ep_keys)
     for s in stats:
-        if s["File"] not in named:
-            named.add(s["File"])
+        key = key_of(s.get("Path"), s["File"])
+        if key not in named:
+            named.add(key)
             kind = infer_source_type(s["File"])
-            add_ep(None, s["File"], None, kind, show_of(f"n{s['File']}", s["File"], kind), False, 0, False, None, None)
+            add_ep(None, s["File"], key, None, kind, show_of(f"n{key}", s["File"], kind), False, 0, False, None, None)
     from app.static_html_generator import shown_name
     for n, e in enumerate(eps):
         e[2] = shown_name(e[1])
-        if plan_pcts is not None and n in aside and ep_of_name[e[1]] != n:
-            e[6] = None                         # the plan's figure is its counted namesake's
+        if plan_pcts is not None and n in aside and ep_of[ep_keys[n]] != n:
+            e[6] = None                         # the plan's figure is its counted namesake's (an older run's lists)
 
     # The words, each once, at the episode it is first met in
     by_file = {}
     for row in rows or ():
-        by_file.setdefault(_text(row.get("Source File")), []).append(row)
-    for name in by_file:
-        if name not in ep_of_name:
+        by_file.setdefault(key_of(_text(row.get("Source Path")), _text(row.get("Source File"))), []).append(row)
+    for key in by_file:
+        if key not in ep_of:
+            name = report_name(key)
             kind = infer_source_type(name)
-            add_ep(None, name, None, kind, show_of(f"n{name}", name, kind), False, 0, False, None, None)
+            add_ep(None, name, key, None, kind, show_of(f"n{key}", name, kind), False, 0, False, None, None)
             eps[-1][2] = shown_name(name)
     owners = anki_owners(priority if priority is not None else (rows or ()), language) if backlog else {}
     keys = set(backlog or ())
     seen, words, word_rows, word_id = set(), [], [], {}
     for e, ep in enumerate(eps):
         ep[8] = len(words)
-        for row in by_file.get(ep[1], ()) if ep_of_name.get(ep[1]) == e else ():
+        for row in by_file.get(ep_keys[e], ()) if ep_of.get(ep_keys[e]) == e else ():
             key = (_text(row.get("Word")), _text(row.get("Reading")))
             if not key[0] or key in seen:
                 continue
@@ -1061,14 +1074,14 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
             words.append((e, row))
         ep[7] = len(words) - ep[8]
     # The count ahead, one number a word: its uses in its own episode and the next AHEAD - 1
-    names = [e[1] if ep_of_name.get(e[1]) == n else None for n, e in enumerate(eps)]    # a set-aside namesake: none
+    names = [k if ep_of.get(k) == n else None for n, k in enumerate(ep_keys)]    # a set-aside namesake: none
     ahead = _ahead(plan, names, [e for e, _row in words], word_id, plan_files) if plan_files is not None else None
     del names
     del plan_files
 
     sources = sources or Sources(language)
     if not sources.ep_of:
-        sources.ep_of = ep_of_name              # each source's episode, as this head numbers them
+        sources.ep_of, sources.by_path = ep_of, by_path     # each source's episode, as this head numbers them
     # Every word's lines, read once: [text] and [its source] side by side (a tuple a line held to the loop below was
     # 6 MB at 20,000 files), and each word's first line in them
     texts, rels, first = [], [], []
@@ -1227,8 +1240,8 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
     return Render(head, chunks, blobs, stone_pictures())
 
 
-ROW_COLUMNS = frozenset(("Source File", "Word", "Orth", "Forms", "Reading", "Kana", "Modality", "Occurrences",
-                         "Occurrences (Global)", "Occurrences (File)", "Count (High)", "Count (Low)"))
+ROW_COLUMNS = frozenset(("Source File", "Source Path", "Word", "Orth", "Forms", "Reading", "Kana", "Modality",
+                         "Occurrences", "Occurrences (Global)", "Occurrences (File)", "Count (High)", "Count (Low)"))
 PRIORITY_COLUMNS = frozenset(("Word", "Orth", "Forms", "Reading"))
 
 

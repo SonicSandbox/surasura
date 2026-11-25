@@ -218,7 +218,8 @@ def test_step_ones_press_opens_the_journey_on_up_nexts_episode_and_ticks_once_it
     assert "journey" not in (guide.read_state().get("moments") or {})
     c.primary.click()
     assert wait_until(lambda: "journey" in (guide.read_state().get("moments") or {}))
-    assert asked == [(shell.journey_file(view_rows.journey_episode(row)),)]      # on that episode, never the top
+    episode = view_rows.journey_episode(row)
+    assert asked == [(shell.journey_file(episode), episode.id)]      # on that episode (its item: E-NAMES), never the top
 
 
 def test_a_journey_that_lacks_the_episode_still_ticks_and_the_bar_says_why(lib_world, monkeypatch):

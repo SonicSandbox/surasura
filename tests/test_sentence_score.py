@@ -105,6 +105,16 @@ class Table:
         return (cols, np.asarray([c for l in lines for c in l["cow"]], "<i4"),
                 np.asarray([c for l in lines for c in l["crowd"]], "<i4"))
 
+    def blocks(self, rows):
+        """`sentence_table.Table.blocks`: {row: block} of the rows with lines (each read through `block`, noted)."""
+        out = {}
+        for row in rows:
+            if row not in out:
+                got = self.block(row)
+                if got is not None:
+                    out[row] = got
+        return out
+
     def take(self, rows):
         """The cost's columns, as the reader takes them."""
         return SS._take(self, rows)

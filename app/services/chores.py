@@ -130,6 +130,9 @@ class Chores:
         self._indexing = False          # from the check until the indexer's end: never two
         self._again = False             # a forced ask came while it ran: one more run at its end, never lost
         self._hato_stop = threading.Event()     # Hato-UP: set at the quit: hato's daily look ends
+        # set once the Rarity tables' warm-up (the start's last timer, WARM_AT) has run: the start probe's wait
+        # (`hud.Probe`, SURASURA_SHELL_PROBE_WARM: tests/qt/test_entry.py's start guard, FLAKES row 140)
+        self.warmed = threading.Event()
         self._hato_thread = None
         self._proc = None
         self._handed = {}               # the store copy's stat last handed to a helper, per language
@@ -410,6 +413,8 @@ class Chores:
             token_index.prepare_preview(self.language, get_user_files_path(self.language))
         except Exception:
             pass
+        finally:
+            self.warmed.set()
 
     def build_store(self):
         """Haya-LD: a language with no store yet (JSON mode: a manifest to build from, or a fresh install's folders) —

@@ -48,6 +48,57 @@ def test_default_run_is_unchanged(monkeypatch):
     assert exit_info.value.code == 3, "pytest's exit code is passed on"
 
 
+# --- This user's packages under a redirected APPDATA (2026-11-24) ---------------------------------------------------
+def _planted_user_site(tmp_path, monkeypatch):
+    """A profile of the test's own (~ = it) whose user base holds one package: this user's `pip install --user`."""
+    import sysconfig
+    from tests import user_bases
+    roaming = os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+    assert os.path.normcase(user_bases._roaming_folder() or roaming) == os.path.normcase(roaming), \
+        "Windows' own roaming folder, asked (this PC's is not relocated)"
+    monkeypatch.setattr(user_bases, "_roaming_folder", lambda: str(tmp_path / "profile" / "AppData" / "Roaming"))
+    real = user_bases.real_user_base()
+    assert real == str(tmp_path / "profile" / "AppData" / "Roaming" / "Python")
+    site_dir = sysconfig.get_path("purelib", f"{os.name}_user", vars={"userbase": real})
+    os.makedirs(site_dir)
+    with open(os.path.join(site_dir, "surasura_user_site_probe.py"), "w", encoding="utf-8") as f:
+        f.write("HERE = 1\n")
+    monkeypatch.setenv("PYTHONUSERBASE", "")             # (set first: what main() writes is put back after)
+    monkeypatch.delenv("PYTHONUSERBASE")
+    monkeypatch.setenv("APPDATA", str(tmp_path / "throwaway" / "Roaming"))      # the lane's, as with-lock.sh asks
+    return real
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Python finds a user's packages under %APPDATA% on Windows only")
+def test_a_user_site_package_stays_importable_in_a_child_when_appdata_names_a_throwaway_folder(tmp_path, monkeypatch):
+    """Why: a lane points APPDATA at its throwaway folder, and Python looks for this user's own packages under it —
+    certifi was gone from three of a level-2 --all's shards, which ran nothing. The runner names the real profile's
+    base for its children (PYTHONUSERBASE) unless one is set; a child then imports a package only the user base has."""
+    from tests import user_bases
+    real = _planted_user_site(tmp_path, monkeypatch)
+    probe = [sys.executable, "-c", "import surasura_user_site_probe"]
+    hidden = subprocess.run(probe, env=dict(os.environ), capture_output=True, timeout=60)
+    assert hidden.returncode != 0, "the case itself: the package is hidden under the throwaway APPDATA"
+    env = dict(os.environ)
+    assert user_bases.keep_user_site(env) == real
+    kept = subprocess.run(probe, env=env, capture_output=True, text=True, timeout=60)
+    assert kept.returncode == 0, kept.stderr[-2000:]
+    assert user_bases.keep_user_site(dict(env)) is None, "one set already is kept"
+    assert user_bases.keep_user_site({"APPDATA": os.path.dirname(real)}) is None, "the real APPDATA needs nothing"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Python finds a user's packages under %APPDATA% on Windows only")
+def test_the_runners_child_run_gets_the_real_user_base(tmp_path, monkeypatch):
+    real = _planted_user_site(tmp_path, monkeypatch)
+    seen = {}
+    monkeypatch.setattr(run_tests.subprocess, "run",
+                        lambda cmd, **kwargs: seen.update(kwargs) or subprocess.CompletedProcess(cmd, 0))
+    monkeypatch.setattr(sys, "argv", ["run_tests.py"])
+    with pytest.raises(SystemExit):
+        run_tests.main()
+    assert seen["env"]["PYTHONUSERBASE"] == real
+
+
 # --- No console windows (2026-11-21: every shard opened one and took the focus) ----------------------------------------
 def test_from_a_terminal_a_child_starts_exactly_as_before(monkeypatch):
     monkeypatch.setattr(run_tests, "_has_console", lambda: True)

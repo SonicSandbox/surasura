@@ -266,6 +266,54 @@ def test_the_probe_start_runs_main_and_writes_every_phase(qapp, monkeypatch, tmp
     assert {"qapp", "claimed", "services", "look", "window", "shown", "painted", "flushed"} <= set(names)
 
 
+class _Warm:
+    """The chores' one part the probe reads: the warm-up's event."""
+    def __init__(self):
+        import threading
+        self.warmed = threading.Event()
+
+
+@pytest.mark.parametrize("chores", ["made", "not made yet"])
+def test_asked_to_the_probe_quits_only_once_the_warm_up_has_run(qapp, window, monkeypatch, tmp_path, chores):
+    # FLAKES row 140: test_entry's start guard read what the start imported after a fixed idle, and under load the
+    # Rarity warm-up's timer (chores.WARM_AT) rang after it. SURASURA_SHELL_PROBE_WARM makes the quit wait on the
+    # warm-up's own event too — the duties not made yet is not yet run either.
+    monkeypatch.setenv("SURASURA_SHELL_PROBE_WARM", "60")
+    stand_in = _Warm()
+    monkeypatch.setattr(window.services, "chores", stand_in if chores == "made" else None)
+    path = tmp_path / "probe.json"
+    probe = hud.Probe(window, str(path), idle=0)
+    probe.result["first_frame_wall"] = time.perf_counter()
+    try:
+        probe._finish()                                  # the idle is over
+        assert not wait_until(path.exists, 0.5), "quit before the warm-up ran"
+        window.services.chores = stand_in
+        stand_in.warmed.set()
+        assert wait_until(path.exists, 10)
+    finally:
+        _unquit(qapp)
+
+
+def test_the_probes_wait_on_the_warm_up_is_bounded_and_off_unless_asked(qapp, window, monkeypatch, tmp_path):
+    # A warm-up that never runs ends the wait at its bound (the guard then fails on what was not imported, never on
+    # the child's timeout); without the variable the probe quits at its idle, as every measuring script expects.
+    monkeypatch.setattr(window.services, "chores", _Warm())
+    for bound, name in (("0.3", "bounded.json"), (None, "off.json")):
+        if bound:
+            monkeypatch.setenv("SURASURA_SHELL_PROBE_WARM", bound)
+        else:
+            monkeypatch.delenv("SURASURA_SHELL_PROBE_WARM", raising=False)
+        path = tmp_path / name
+        probe = hud.Probe(window, str(path), idle=0)
+        probe.result["first_frame_wall"] = time.perf_counter()
+        try:
+            probe._finish()
+            assert path.exists() is (bound is None), "bounded: it waits (its finish is not at once); off: at once"
+            assert wait_until(path.exists, 10)
+        finally:
+            _unquit(qapp)
+
+
 def test_the_probes_bar_update_burst_moves_the_bars_words(qapp, window, monkeypatch, tmp_path):
     # PS-A5: the bar prints `bar_lines` (the phase strip's Q5); the burst fed `lines` alone, so the bar's words never
     # moved and row D's burst timed a no-op

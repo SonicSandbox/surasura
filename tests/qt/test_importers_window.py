@@ -536,11 +536,27 @@ def test_a_failed_migaku_import_says_why(main, runs):
 
 # --- Jiten (inv §4) -------------------------------------------------------------------------------------------------- #
 def _fetched(runs, cards):
-    """Play step 1's child: it keeps `cards` where the window asked, and exits 0."""
-    path = runs.calls[-1].argv[-1]
+    """Play step 1's child: it keeps `cards` where the window asked (its `--save-cards` path, in the window's own
+    folder), and exits 0. Never the last run's last word whatever the run: a replace's is its `--expect` numbers, and a
+    file named `2,10000,0,1` (these cards) turned up in three copies' roots, the folder a test run starts in."""
+    argv = runs.calls[-1].argv if runs.calls else []
+    assert "--save-cards" in argv, f"the last run is no fetch, so there is nowhere the window asked: {argv}"
+    path = argv[argv.index("--save-cards") + 1]
     with open(path, "w", encoding="utf-8") as f:
         json.dump(cards, f, ensure_ascii=False)
     runs.end(0, f"Fetched {len(cards)} cards; nothing changed yet.")
+
+
+def test_playing_the_fetch_after_a_replace_writes_nothing_into_the_folder_the_run_started_in(runs, tmp_path,
+                                                                                               monkeypatch):
+    # The stray `2,10000,0,1` file: `_fetched` took the last run's last word for the cards' path, and when the last
+    # run was a replace (the fetch not started yet) that word is its `--expect` numbers, a bare relative name.
+    monkeypatch.chdir(tmp_path)
+    runs.calls.append(SimpleNamespace(argv=["migaku_converter.py", MIGAKU, "--language", "ja", "--expect",
+                                            "2,10000,0,1"], on_line=None, on_end=None))
+    with pytest.raises(AssertionError, match="no fetch"):
+        _fetched(runs, [{"wordText": "猫", "state": 5}])
+    assert os.listdir(tmp_path) == []
 
 
 def test_jiten_fetches_first_with_the_key_in_the_environment_only_then_asks_with_both_numbers(main, runs):

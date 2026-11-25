@@ -49,7 +49,7 @@ def counted(monkeypatch, tmp_path):
 
     counting(verbs, "settings", lambda: {"target_language": "ja", "exclude_single": True})
     monkeypatch.setattr(verbs, "require_set_up", lambda lang: None)
-    monkeypatch.setattr(verbs, "_level_job", lambda job, lang: None)
+    counting(verbs, "_level_job", lambda job, lang: None)
     monkeypatch.setattr(verbs, "_swap_spec", lambda job, lang: None)
     monkeypatch.setattr(verbs, "_connect_folder", lambda: str(tmp_path / "connect"))
     counting(verbs, "_reading")
@@ -98,6 +98,7 @@ def test_one_jobs_own_pick_and_its_borrowed_picks_read_the_jobs_context_once(cou
     borrowed = [verbs.pick(_ns(lang, other, video, context=context, only=[key])) for _ in range(2)]
     assert {name: calls.get(name, 0) for name in PER_JOB} == {name: 1 for name in PER_JOB}, \
         "the episode's own pick reads the job's context; its borrowed picks read none of it again"
+    assert calls["_level_job"] == 1, "only the episode's own pick reads its ledger row: a borrow's words are its job"
     # the same answers as picks that read everything themselves
     calls.clear()
     assert verbs.pick(_ns(lang, own, video)) == mine
@@ -105,6 +106,7 @@ def test_one_jobs_own_pick_and_its_borrowed_picks_read_the_jobs_context_once(cou
     assert borrowed[0]["words"] and borrowed[0]["words"][0]["word"] == key[0]
     # the command line's pick (no context) reads everything at every call, as before
     assert {name: calls.get(name, 0) for name in PER_JOB} == {name: 3 for name in PER_JOB}
+    assert calls["_level_job"] == 1
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])

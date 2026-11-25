@@ -1436,10 +1436,11 @@ def pick(args):
     listed = getattr(args, "listed", None)
     if listed is None:
         listed = _listed(args, lang)
-    level_job = _level_job(args.job, lang)
     # Kantan-SD 6 (Connect's runner, never on the command line): the words a job cuts from this episode's lines though
-    # it mines another (`runner._borrow`) — picked as a Best sentence's own job picked them, by name
+    # it mines another (`runner._borrow`) — picked as a Best sentence's own job picked them, by name (the ledger's row
+    # isn't read for it: these words are the job, DSA-CONNECT)
     only = getattr(args, "only", None)
+    level_job = None if only else _level_job(args.job, lang)
     if only:
         from app.connect import level
         level_job = {"kind": "level", "source": level.BEST, "words": [tuple(key) for key in only]}

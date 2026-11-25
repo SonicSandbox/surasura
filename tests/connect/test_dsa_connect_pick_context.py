@@ -121,6 +121,19 @@ def test_another_job_in_the_same_context_reads_everything_again(counted, tmp_pat
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_the_carded_set_is_read_again_for_other_decks(counted, tmp_path, lang):
+    # why: the carded set is read for the decks Anki Miner's look-ups name; a pick with no video asks none (no
+    # decks), so a later pick of the job that has them reads the set for them
+    calls, video = counted
+    own = _srt(tmp_path / "ep01.srt", LINES[lang])
+    context = {}
+    verbs.pick(_ns(lang, own, None, context=context))
+    verbs.pick(_ns(lang, own, video, context=context))
+    verbs.pick(_ns(lang, own, video, context=context))
+    assert calls["carded"] == 2 and calls["_anki_miner_setup"] == 1
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
 def test_steps_pick_hands_a_borrow_its_jobs_context_and_anything_else_a_new_one(monkeypatch, tmp_path, lang):
     # why: the runner's half — `_borrow`'s picks (`only`, the same job) read the context the episode's own pick
     # started; the next episode's pick, another job, and any pick after a failure start a new one
@@ -137,7 +150,7 @@ def test_steps_pick_hands_a_borrow_its_jobs_context_and_anything_else_a_new_one(
     def picked(ns):
         seen.append(ns.context)
         if fail:
-            raise KeyError(fail.pop())
+            raise fail.pop()
         ns.context.setdefault("job", ns.job)
         return {"words": []}
     monkeypatch.setattr(verbs, "pick", picked)
@@ -150,11 +163,15 @@ def test_steps_pick_hands_a_borrow_its_jobs_context_and_anything_else_a_new_one(
     assert seen[3] is not seen[0], "the episode's own pick again: a new context"
     steps.pick(lang, {"id": 13, "item_id": 3, "only": [(WORD[lang], "")]}, None)
     assert seen[4] is not seen[3], "another job's borrow never reads this one's"
-    fail.append("a pick that failed part way")
-    with pytest.raises(KeyError):
+    from app.cli.contract import CliError
+    for n, (failure, raised) in enumerate([(KeyError("a pick that failed part way"), KeyError),
+                                           (CliError("bad-data", "The subtitle can't be read"), (runner.Needs, runner.Wait))]):
+        steps.pick(lang, job, None)
+        fail.append(failure)
+        with pytest.raises(raised):
+            steps.pick(lang, dict(job, item_id=3, only=[(WORD[lang], "")]), None)
         steps.pick(lang, dict(job, item_id=3, only=[(WORD[lang], "")]), None)
-    steps.pick(lang, dict(job, item_id=3, only=[(WORD[lang], "")]), None)
-    assert seen[6] is not seen[5], "after a failure the next pick reads everything again"
+        assert seen[-1] is not seen[-3], f"after a failure ({failure}) the next pick reads everything again"
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
@@ -167,21 +184,24 @@ def test_a_best_pick_step_looks_each_other_episodes_video_up_once(tmp_path, monk
     home, away = WORDS[lang]
     steps = _steps(tmp_path, lang)
     steps.plan["words"]["2"] = [home, away]
+    steps.plan["words"]["3"] = [away]
     steps._settings = lambda lang: {"connect_sentence_dial": sentences.BEST}
     asked = []
     real = steps.video
     steps.video = lambda lang, job: asked.append(job["item_id"]) or real(lang, job)
     here = "/library/1.ja.srt"
-    better = sentences.Choice("/library/2.ja.srt", 2, LINES[lang][0], 0, 0.5, False, True)
+    there = {home: sentences.Choice("/library/2.ja.srt", 2, LINES[lang][0], 0, 0.5, False, True),
+             away: sentences.Choice("/library/3.ja.srt", 3, LINES[lang][0], 0, 0.5, False, True)}
     own = sentences.Choice(here, 1, LINES[lang][1], 2, 0.5, True, True)
 
     def choose(lang, keys, **kw):
-        assert kw["here"] == here and kw["reach"](2)
-        return {key: [better, own] for key in keys}
+        assert kw["here"] == here and kw["reach"](2) and kw["reach"](3)
+        return {key: [there[key], own] for key in keys}
     monkeypatch.setattr(sentences, "choose", choose)
     jobs = _run(steps, str(tmp_path / "ledger.sqlite"), lang)
     assert [(kind, state) for _id, kind, state in jobs] == [("mine", "done")]
     with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
         picked = ledger.picked(jobs[0][0])
-    assert sorted(w.get("from") for w in picked["words"]) == [2, 2], "both words cut from episode 2's lines"
-    assert asked.count(2) == 1, f"episode 2's video looked up {asked.count(2)} times in one pick step"
+    assert sorted(w.get("from") for w in picked["words"]) == [2, 3], "each word cut from its other episode's line"
+    assert {item: os.path.basename(source["video"]) for item, source in picked["sources"].items()} ==         {"2": "episode-2.mkv", "3": "episode-3.mkv"}, "each episode its own video"
+    assert (asked.count(2), asked.count(3)) == (1, 1), f"videos looked up {asked} in one pick step"

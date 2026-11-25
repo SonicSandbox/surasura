@@ -256,14 +256,16 @@ def test_the_walks_read_on_ids_joins_the_names_as_file_tokens_joins_them(tmp_pat
 
 def test_a_splice_moves_every_later_sentences_start():
     # why: a join of two tokens, one token made a name, and a term put where every piece was dropped (a == b) each
-    # move the starts after them — by one pass, never a wrong sentence's tokens
+    # move the starts after them — by one pass, never a wrong sentence's tokens; two joins that each shrink one
+    # sentence are made from the last (as names.apply_spans), so the first never moves the second's place
     from array import array
-    starts, ids = array("i", [0, 3, 3, 6, 8]), array("i", [10, 11, 12, 20, 21, 22, 30, 31])
-    joins = {0: [(0, 2, ["平野"])], 2: [(1, 2, ["名"]), (3, 3, ["末"])], 3: [(0, 2, ["全"])]}
-    made = {"平野": 90, "名": 91, "末": 92, "全": 93}
+    starts, ids = array("i", [0, 3, 3, 6, 8, 12]), array("i", [10, 11, 12, 20, 21, 22, 30, 31, 40, 41, 42, 43])
+    joins = {0: [(0, 2, ["平野"])], 2: [(1, 2, ["名"]), (3, 3, ["末"])], 3: [(0, 2, ["全"])],
+             4: [(0, 2, ["森山"]), (2, 4, ["未来"])]}
+    made = {"平野": 90, "名": 91, "末": 92, "全": 93, "森山": 94, "未来": 95}
     new_starts, new_ids = ti._spliced(starts, ids, joins, lambda t: made[t[0]])
-    assert list(new_starts) == [0, 2, 2, 6, 7]
-    assert list(new_ids) == [90, 12, 20, 91, 22, 92, 93]
+    assert list(new_starts) == [0, 2, 2, 6, 7, 9]
+    assert list(new_ids) == [90, 12, 20, 91, 22, 92, 93, 94, 95]
 
 
 

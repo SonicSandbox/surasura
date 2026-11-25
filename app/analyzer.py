@@ -9,15 +9,17 @@ import json
 import re
 import csv
 import hashlib
+import numbers
 import shutil
 import threading
 import time
 import unicodedata
 # Heavy libraries are imported LAZILY (inside the tokenizer classes / extract_text / main), NOT at
-# module top. `jieba` alone costs ~0.17s to import, `pandas` ~0.35s, `fugashi` loads for Japanese,
-# `pysrt` only for .srt files. Consequences: a "nothing changed" skip builds no tokenizer and writes
-# no CSV, so it imports NONE of them; a Japanese run never loads jieba; a Chinese run never loads
-# fugashi. (Python caches imports, so the repeated `import` inside a method is a cheap dict lookup.)
+# module top. `jieba` alone costs ~0.17s to import, `fugashi` loads for Japanese, `pysrt` only for
+# .srt files; pandas not at all (E-WRITE: the two lists are the csv module's, `write_rows`).
+# Consequences: a "nothing changed" skip builds no tokenizer and writes no CSV, so it imports NONE of
+# them; a Japanese run never loads jieba; a Chinese run never loads fugashi. (Python caches imports,
+# so the repeated `import` inside a method is a cheap dict lookup.)
 import bisect
 from collections import defaultdict, Counter, namedtuple
 from itertools import accumulate, chain, compress, repeat
@@ -3113,10 +3115,11 @@ def songs_left_out(files):
 
 
 def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None):
-    """{path: {sentence number, …}} of every spoken file's song lines in a run's `found_files` ([(path, label, weight,
-    source type)]), each work on its own (§ above). With the store, a work's answer is kept (`Store.keep_songs`) under
-    a digest of its files' stamps and the rule's version, so a Generate after nothing changed in a work reads only its
-    stamps; without the store, each file is read and tokenized here. `stats`, a dict, receives "read" (the works whose
+    """{path: [sentence number, …] (sorted)} of every spoken file's song lines in a run's `found_files` ([(path, label,
+    weight, source type)]), each work on its own (§ above) — as kept, so a kept work makes no set a file (G9). With
+    the store, a work's answer is kept (`Store.keep_songs`) under a digest of its files' stamps and the rule's version,
+    so a Generate after nothing changed in a work reads only its stamps; without the store, each file is read and
+    tokenized here. `stats`, a dict, receives "read" (the works whose
     lines were read) and "kept" (the works whose kept answer was used)."""
     works = {}
     for file_path, _label, _weight, source_type in found_files:
@@ -3142,7 +3145,7 @@ def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None
             held = kept.get(work)
             if digest is not None and held and held[0] == digest:
                 keep[work] = held
-                out.update((path, set(numbers)) for path, numbers in held[1].items())
+                out.update(held[1])           # (each file's numbers as kept, sorted: no set made a file, G9)
                 used += 1
                 continue
         read += 1
@@ -3161,10 +3164,10 @@ def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None
                 lines = song_lines.file_lines(list(tokenizer.tokenize_sentences(extract_text(path, language, facts))),
                                               facts.get("song_marks") or ())
             files.append((path, lines))
-        found = {path: numbers for path, numbers in songs_left_out(files).items() if numbers}
+        found = {path: sorted(numbers) for path, numbers in songs_left_out(files).items() if numbers}
         out.update(found)
         if digest is not None and all(path in held for path in paths):   # never kept from a file without lines
-            keep[work] = [digest, {path: sorted(numbers) for path, numbers in found.items()}]
+            keep[work] = [digest, found]
     if stats is not None:
         stats.update(read=read, kept=used)
     if store is not None and keep != kept:
@@ -4093,6 +4096,9 @@ def group_sources(source_list):
 _VOLUME_SUFFIX_RE = re.compile(r"[_Vv\s\-]*\d+$")
 
 
+_DATA_PREFIX = {}                   # {data folder: its absolute path + separator} (`_series_name`)
+
+
 def _series_name(file_path, data_dir):
     """Which WORK a content file belongs to — the folder under its tier, volumes merged.
 
@@ -4103,11 +4109,20 @@ def _series_name(file_path, data_dir):
 
     Loose files directly under a tier are each their own work, which is the honest reading: we
     have no evidence they belong together.
+
+    G9: a file under the data folder as written (the store's and the library's paths) is cut by its prefix, made once
+    a folder — `os.path.relpath` made both paths absolute and compared them part by part, for every file of a run (0.45
+    s of the songs' step at 20,000 files, and again in the walk). Anything else is `relpath`'s, as before.
     """
-    try:
-        rel = os.path.relpath(file_path, data_dir).replace("\\", "/")
-    except ValueError:      # different drive on Windows
-        return os.path.basename(file_path)
+    prefix = _DATA_PREFIX.get(data_dir)
+    if prefix is None:
+        prefix = _DATA_PREFIX[data_dir] = os.path.join(os.path.abspath(data_dir), "")
+    rel = file_path[len(prefix):].replace("\\", "/") if file_path.startswith(prefix) else None
+    if not rel or "//" in rel or "/./" in f"/{rel}/" or "/../" in f"/{rel}/":
+        try:
+            rel = os.path.relpath(file_path, data_dir).replace("\\", "/")
+        except ValueError:      # different drive on Windows
+            return os.path.basename(file_path)
     parts = [p for p in rel.split("/") if p]
     if len(parts) < 2:
         return rel                      # shouldn't happen; degrade to the path itself
@@ -4545,7 +4560,6 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
     -> main()'s exit value once drawn (0, or 1: the report failed); None when the plan can't serve this library, before
     anything is written: then a Generate runs."""
     from app import plan_engine
-    import pandas as pd
     plan_path = os.path.join(RESULTS_DIR, PLAN_FILE)
     try:
         plan = plan_engine.load(plan_path, trusted=True)
@@ -4581,21 +4595,22 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
         return None                         # (a run with no list writes none: the Generate says so its own way)
     _progress("Writing your list")
 
-    def _rows_as(path, rows):
+    def _columns_of(path, rows):
+        """The list's header as the Generate wrote it (the redraw keeps its columns and their order)."""
         with open(path, encoding="utf-8-sig", newline="") as f:
             columns = next(list_reader(f, header=False), None)
         if not columns or (rows and set(columns) - set(rows[0])):
             raise ValueError(f"{os.path.basename(path)}'s columns aren't the plan's")
-        return pd.DataFrame(rows, columns=columns)
+        return columns
 
-    df = _rows_as(OUTPUT_CSV, result.priority)
-    df_prog = _rows_as(OUTPUT_PROGRESSIVE, result.progressive)
+    columns = _columns_of(OUTPUT_CSV, result.priority)
+    columns_prog = _columns_of(OUTPUT_PROGRESSIVE, result.progressive)
     # From the first write on, the outputs are neither the stamp's run nor this order's until the marker says so:
     # one stopped part-way is never current (`drawn_for` None), and the next look redraws it.
     _write_redraw_marker(plan.header["run_signature"], None)
-    write_list(lambda tmp: df.to_csv(tmp, index=False, encoding='utf-8-sig'), OUTPUT_CSV)
-    if not df_prog.empty:
-        write_list(lambda tmp: df_prog.to_csv(tmp, index=False, encoding='utf-8-sig'), OUTPUT_PROGRESSIVE)
+    write_list(lambda tmp: write_rows(tmp, result.priority, columns), OUTPUT_CSV)
+    if result.progressive:
+        write_list(lambda tmp: write_rows(tmp, result.progressive, columns_prog), OUTPUT_PROGRESSIVE)
 
     # word_stats.json's list rows: what the order moves (Score, the tier counts, the first file, the sentences)
     # (the columns the re-plan wrote: every row has them; under All, as many as its widest row)
@@ -4664,17 +4679,11 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
                         f.write(f"  Coverage: {stat['Coverage (%)']}%\n")
                         f.write("\n")
             write_list(_write_text_stats, OUTPUT_STATS)
-            # The Generate's own text, its entries moved whole (re-encoding with an indent is the slow encoder)
-            with open(as_generated, encoding="utf-8") as f:
-                text = f.read()
-            blocks = _json_list_entries(text) if text.startswith("[\n    {") else None
+            text = json.dumps(file_stats, ensure_ascii=False)   # (the Generate's form: no indent, the C encoder)
 
             def _write_json_stats(tmp):
                 with open(tmp, 'w', encoding='utf-8') as f:
-                    if blocks is not None and len(blocks) == len(moved):
-                        f.write("[\n" + ",\n".join(blocks[i] for i in moved) + "\n]")
-                    else:
-                        f.write(json.dumps(file_stats, indent=4, ensure_ascii=False))
+                    f.write(text)
             write_list(_write_json_stats, stats_json)
     except Exception as e:
         print(f"Warning: could not reorder the file statistics: {e}")
@@ -4752,6 +4761,7 @@ class ListSentences:
         self.run, self.kept, self.read, self.forms, self.forms_read = None, {}, {}, {}, {}
         self.moment, self.length, self.memo, self.young_at, self.read_of = None, None, {}, None, None
         self.silent, self.read_silent, self.read_run = set(), set(), None
+        self.tagger = _LazyTagger() if language == "ja" else None      # (one a chooser: *Only i+1*'s rounds share it)
 
     def __call__(self, keys, order=None):
         from app import sentence_score, sentence_corpus, sentence_table
@@ -4784,7 +4794,7 @@ class ListSentences:
         if got is None:
             return None
         base = os.path.join(root, "")
-        tagger = _LazyTagger() if self.language == "ja" else None
+        tagger = self.tagger
         out, kept, forms, silent = {}, {}, {}, set()
         for key, lines in got.items():
             columns = []
@@ -5949,18 +5959,6 @@ def redrawn_for(results_dir):
     return marker if isinstance(marker, dict) else None
 
 
-def _json_list_entries(text):
-    """The entries of a JSON list written with `indent=4` (file_statistics.json), each its own text: the list's top-level
-    objects are the only lines that are "    }" or "    {" — None when the text isn't that shape."""
-    body = text[2:-2] if text.endswith("\n]") else None
-    if not body:
-        return None
-    parts = body.split("\n    },\n    {")
-    if len(parts) == 1:
-        return [body]
-    return [parts[0] + "\n    }"] + ["    {" + p + "\n    }" for p in parts[1:-1]] + ["    {" + parts[-1]]
-
-
 def _write_redraw_marker(plan_signature, run_signature, young=None):
     """The redraw marker, written whole (a temp file replaced): `run_signature` None while the redraw writes. `young`
     (release 2): the stamp of the young words the draw weighed (`ListSentences.young_at`), None for none."""
@@ -6001,7 +5999,7 @@ def read_run_stamp(results_dir):
 
 
 def write_list(write, path):
-    """a7: a list written whole or not at all — `write(temp)` writes it beside `path` (`df.to_csv`, a csv writer), then
+    """a7: a list written whole or not at all — `write(temp)` writes it beside `path` (`write_rows`, a csv writer), then
     `os.replace`: a reader (New arrivals' worker, the journey's shadow compare, Connect) never reads half a list, only
     the last one or the new one. A reader holding the old one open (Windows refuses the replace) is waited for, tried
     every 50 ms for up to 10 s (a list is read in about a second); after that the temp is copied over it, as the list
@@ -6033,6 +6031,50 @@ def write_list(write, path):
             os.remove(tmp)
         except OSError:
             pass
+
+
+def _number_kind(kind):
+    """"i" a whole-number type, "f" another real number's, None anything else (a bool, a str, None's)."""
+    if kind is bool or not issubclass(kind, numbers.Real):
+        return None
+    return "i" if issubclass(kind, numbers.Integral) else "f"
+
+
+def write_rows(path, rows, columns=None, upto=None):
+    """E-WRITE: the one writer of the two lists (`OUTPUT_CSV`, `OUTPUT_PROGRESSIVE`) — the Generate's and the redraw's,
+    with the standard library's csv: the bytes `pandas.DataFrame(rows).to_csv(path, index=False, encoding='utf-8-sig')`
+    wrote (pandas was imported in both only for this, ~0.35 s a process). `columns`: the header (None: every row's keys
+    in the order first met); a row's other keys are left out, a column it lacks is empty. `upto`: only the first `upto`
+    rows are written (the coverage cut) — each column's kind is still read over all `rows`, as the frame was cut after
+    it was made. A column of numbers with a gap or a float is pandas' float column: its whole numbers are written 3.0;
+    a gap, None or NaN is empty everywhere. One pass over the cells for the kinds, one to write."""
+    if columns is None:
+        columns = list(dict.fromkeys(chain.from_iterable(rows)))
+    floats, nans = set(), set()
+    for column in columns:
+        kinds = {type(row.get(column)) for row in rows}
+        gap = type(None) in kinds
+        kinds.discard(type(None))
+        marks = {_number_kind(kind) for kind in kinds}
+        if kinds and None not in marks and (gap or "f" in marks):
+            floats.add(column)
+        elif any(issubclass(kind, float) for kind in kinds):
+            nans.add(column)                # (a NaN among a column's text is empty too)
+
+    def _cell(column, value):
+        if value is None:
+            return ""
+        if column in floats:
+            return "" if value != value else repr(float(value))
+        if column in nans and isinstance(value, float) and value != value:
+            return ""
+        return value                        # (csv writes str(value))
+
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.writer(f, lineterminator=os.linesep)      # (pandas' line ends: the system's)
+        writer.writerow(columns)
+        for row in rows if upto is None else rows[:upto]:
+            writer.writerow([_cell(column, row.get(column)) for column in columns])
 
 
 def _set_run_stamp(results_dir, signature):
@@ -6464,17 +6506,16 @@ def main():
         _store.close()
         return 1 if _report_failed else None
 
-    # pandas is only needed from here on (to write the CSVs on a full run). Import it lazily so the
-    # "nothing changed" skip path above never pays its ~0.35s import cost.
+    # numpy is only needed from here on (the sentence table and its reader), never on the "nothing changed" skip
+    # path above; pandas never (E-WRITE: the two lists are `write_rows`', the csv module's).
     if plan_rules.SENTENCE_TABLE >= 1:
         from app import sentence_score
-        sentence_score.numpy_one_thread()   # (pandas brings numpy in: its BLAS held to one thread, as the table)
+        sentence_score.numpy_one_thread()   # (its BLAS held to one thread, as the table)
     if plan_rules.SENTENCE_TABLE >= 2:
         # The library's dates the list's sentences weigh (Connect's moment, `ListSentences`), read on a thread of their
-        # own from here — while pandas and the plan load — for the redraw and the Generate alike (E-FAST 6)
+        # own from here — while numpy and the plan load — for the redraw and the Generate alike (E-FAST 6)
         from app.connect import sentences as connect_sentences
         connect_sentences.dates_ahead(language, connect_sentences.ai_voice(settings_manager.load_settings(), language))
-    import pandas as pd
 
     # F7: only the order moved since the last Generate, and the journey keeper asks for the journey: redrawn from that
     # Generate's plan — its re-pick is the Generate's pick — with no file read (else a Generate, below).
@@ -6634,7 +6675,10 @@ def main():
         sentences = file_sentences(_store, tokenizer, file_path, language, words)
         out = _songs.get(file_path)
         if out:
-            sentences = [(s[0], []) if no in out else s for no, s in enumerate(sentences)]
+            sentences = list(sentences)     # (each song line blanked by its number: no set made, no line tested, G9)
+            for no in out:
+                if no < len(sentences):
+                    sentences[no] = (sentences[no][0], [])
         return sentences
 
     def _floor_count(total_tokens, own_freqs):
@@ -8130,14 +8174,12 @@ def main():
     del chosen_rows
 
     _progress("Writing your list")          # results/ is written from here on: a cancel waits for the end (W1.3)
-    df = pd.DataFrame(output_rows)
     # The listed words, once the list is written; None: no list, so nothing below is held back. Bound here rather
     # than tested with `in locals()`, which copies every local of this function on each test (a word, per file).
     valid_lrs = None
-    if not df.empty:
-        # Drop the helper key if we added it (we need to add it to row first)
-        df_display = df.drop(columns=["_MinSeq"])
-        
+    if output_rows:
+        n_listed = len(output_rows)         # (the rows the list keeps: the coverage target cuts it below)
+
         # TARGET COVERAGE LOGIC
         if args.target_coverage > 0:
             total_tokens = sum(s['Total Words'] for s in file_stats)
@@ -8149,35 +8191,32 @@ def main():
                 
                 if current_pct >= args.target_coverage:
                     print(f"Goal Achieved: Target coverage of {args.target_coverage}% is already met ({current_pct:.2f}%).")
-                    df = df.iloc[0:0] # Empty dataframe
+                    n_listed = 0            # (the list's header alone)
                 else:
-                    # Greedy selection logic
-                    needed_rows = []
+                    # Greedy selection logic: the list's first rows, until the target is reached
+                    n_listed = 0
                     running_known = current_known
                     target_tokens = (args.target_coverage / 100) * total_tokens
-                    
-                    for index, row in df.iterrows():
-                        needed_rows.append(row)
+
+                    for row in output_rows:
+                        n_listed += 1
                         # A phrase row makes no more of the text known than its words do: coverage is the tokens'.
                         if (row['Word'], row['Reading']) not in phrase_keys:
                             running_known += row['Occurrences']
                         if running_known >= target_tokens:
                             break
-                    
+
                     final_pct = (running_known / total_tokens) * 100
-                    df = pd.DataFrame(needed_rows)
-                    
+
                     if final_pct >= args.target_coverage:
-                        print(f"Successfully reached {final_pct:.2f}% coverage by adding {len(df)} words.")
+                        print(f"Successfully reached {final_pct:.2f}% coverage by adding {n_listed} words.")
                     else:
-                        print(f"Note: Could only reach {final_pct:.2f}% coverage after adding ALL {len(df)} unknown words.")
+                        print(f"Note: Could only reach {final_pct:.2f}% coverage after adding ALL {n_listed} unknown words.")
                         print(f"  (This is because some unique tokens remain that were not in the candidate list.)")
-            
-            # Use the filtered DF for output, but make sure to drop _MinSeq
-            df_display = df.drop(columns=["_MinSeq"], errors='ignore')
-            
-        valid_lrs = set(zip(df_display['Word'], df_display['Reading']))
-        write_list(lambda tmp: df_display.to_csv(tmp, index=False, encoding='utf-8-sig'), OUTPUT_CSV)
+
+        valid_lrs = {(r["Word"], r["Reading"]) for r in output_rows[:n_listed]}
+        _columns = [c for c in dict.fromkeys(chain.from_iterable(output_rows)) if c != "_MinSeq"]   # (a helper key)
+        write_list(lambda tmp: write_rows(tmp, output_rows, _columns, n_listed), OUTPUT_CSV)
         try:
             print(f"Saved priority list to {OUTPUT_CSV}")
         except UnicodeEncodeError:
@@ -8204,7 +8243,7 @@ def main():
             print("Saved stats to file.")
     
     with open(OUTPUT_STATS_JSON, 'w', encoding='utf-8') as f:
-        f.write(json.dumps(file_stats, indent=4, ensure_ascii=False))
+        f.write(json.dumps(file_stats, ensure_ascii=False))       # (no indent: the C encoder; every reader parses it)
     try:
         print(f"Saved JSON stats to {OUTPUT_STATS_JSON}")
     except UnicodeEncodeError:
@@ -8267,8 +8306,8 @@ def main():
 
     with open(OUTPUT_WORD_STATS, 'w', encoding='utf-8') as f:
         # One write of the whole text: json.dump writes it piece by piece (about a million writes here), and only
-        # json.dumps uses the fast encoder where there is no indent (the source table, the frequency map). The same text.
-        f.write(json.dumps(serializable_stats, indent=2, ensure_ascii=False))
+        # json.dumps with no indent uses the fast (C) encoder — as the redraw writes it; every reader parses it (G11).
+        f.write(json.dumps(serializable_stats, ensure_ascii=False))
     try:
         print(f"Saved {'FULL' if _debug_word_stats else 'lean'} word stats to {OUTPUT_WORD_STATS}")
     except UnicodeEncodeError:
@@ -8446,9 +8485,8 @@ def main():
             row["Total Count"] = total
             progressive_rows.append(row)
         
-    df_prog = pd.DataFrame(progressive_rows)
-    if not df_prog.empty:
-        write_list(lambda tmp: df_prog.to_csv(tmp, index=False, encoding='utf-8-sig'), OUTPUT_PROGRESSIVE)
+    if progressive_rows:
+        write_list(lambda tmp: write_rows(tmp, progressive_rows), OUTPUT_PROGRESSIVE)
         print(f"Saved progressive report to {OUTPUT_PROGRESSIVE}")
     else:
         print("No progressive words found (all known).")

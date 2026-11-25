@@ -265,6 +265,36 @@ def test_the_chooser_reads_the_young_words_once_and_keeps_their_stamp(monkeypatc
     assert reads == ["ja"] and asked["young"] == {} and given.young_at is None
 
 
+def test_the_level_2_generate_marks_the_young_words_its_list_weighed(run):
+    # why: since E-REDRAW part 2 the level-2 Generate's own columns come from the one reader, and the reader weighs
+    # the young file — so the Generate's marker must name those young words, or `moved_state` reads every Generate
+    # made with a young card as owed and the journey is redrawn once for nothing (part 1's lens finding, documented
+    # then); its list's first sentence is the card's too. A Generate forced (the young file is no input of the run's)
+    words = [w for _k, w in run.found]
+    young = _young_file(run.root, run.language, words)
+    try:
+        cases.generate(run.root, f"rp2-{run.language}", extra_env=dict(LEVEL_2, SURASURA_FORCE_RUN="1"))
+        marker = analyzer.redrawn_for(run.results)
+        state = _child(run.root, _STATE, run.language, os.path.join(run.results, analyzer.PLAN_FILE))
+        from tests.test_e_redraw import _columns
+        listed = _columns(run.results)
+        cards = _firsts(run, [k for k, _w in run.found])
+    finally:
+        os.remove(young)
+    assert marker.get("young") == analyzer.young_stamp({w: 1.0 for w in words}), marker
+    assert state == "drawn", state
+    for key, _word in run.found:
+        assert listed[key][1::-1] == cards[key]["card"], (run.language, key, listed[key][:2], cards[key])
+
+
+_STATE = r"""
+import json, sys
+from app import settings_manager
+from app.services import journey as J
+print(json.dumps(J.moved_state(settings_manager.load_settings(), sys.argv[1], sys.argv[2])))
+"""
+
+
 def test_the_redraw_after_a_move_shows_the_cards_sentence_and_marks_the_young_words_it_drew_with(run):
     # why: end to end, as the window runs it — a move, then the keeper's redraw (`--from-plan`) with Anki's young
     # file there: the list it writes shows the card's first sentence for each word a young card moves, and its marker

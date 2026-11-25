@@ -223,6 +223,9 @@ NAME_SEAMS = {
     ("app/qt/shell.py", "ShellWindow._open_looks", "source_looks"):
         "a test seam: a test's `services.source_looks` (tests/qt/test_needs_seams.py, test_window_sources.py and "
         "others) in place of the `SourceLooks` worker over the library's own store handle",
+    ("app/qt/shell.py", "ShellWindow._start_looks", "source_looks"):
+        "the same test seam, asked first: a test's own `services.source_looks` are made at once, with no read of the "
+        "looks' module on a worker (the real window has none and reads the module off its thread)",
 }
 
 

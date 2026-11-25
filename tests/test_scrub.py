@@ -344,6 +344,8 @@ IDENTITY_KEYS = {("app/path_utils.py", "_install_key"), ("app/library_store.py",
                  ("app/library_watch.py", "bell_key"), ("app/instance_name.py", "install_part")}
 NOT_AN_INSTALL = {
     ("app/analyzer.py", "_template_fingerprint"): "the two report templates' bytes",
+    ("app/analyzer.py", "young_stamp"): "the young words a draw weighed and their weights (the redraw marker's): "
+                                        "never a path or one install's code",
     ("app/services/word_lists.py", "merge_blacklist"): "the Blacklist's own bytes (its words): the merge's marker in "
                                                        "the Ignore list, never a path",
     ("app/services/word_lists.py", "merged_default"): "the program tree's default Blacklist's bytes, at build time",

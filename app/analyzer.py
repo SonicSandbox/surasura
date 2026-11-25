@@ -4568,6 +4568,7 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
         return None
     if chooser is not None:
         chooser.keep()                      # the text of the lines shown now: the next redraw reads only new ones
+        chooser.memo.clear()                # (its one call is over: every file's text let go before the list is drawn)
     if eng.unread:
         print(f"The journey can't be redrawn from the plan ({eng.unread} sentences' text can't be read): generating.")
         return None
@@ -4613,9 +4614,14 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
             entry[f"final_src_{i}"] = row.get(f"Src {i}", "")
     # One write, the fast encoder (no indent: the same data, every reader parses it); the sidecars hold each file's
     # words (sources), which no order moves: only their times follow word_stats.json's (the Content Manager's newer-
-    # than rule), written again only when one is missing
-    with open(word_stats_path, 'w', encoding='utf-8') as f:
-        f.write(json.dumps(stats, ensure_ascii=False))
+    # than rule), written again only when one is missing. Whole or not at all (`write_list`): a redraw killed here
+    # leaves the last one, so the next look redraws — never a whole Generate for a file it can't read
+    text = json.dumps(stats, ensure_ascii=False)
+
+    def _write_stats(tmp):
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write(text)
+    write_list(_write_stats, word_stats_path)
     try:
         sidecars = [os.path.join(RESULTS_DIR, name) for name in ("analyzed_files.json", "file_words.json")]
         if all(os.path.exists(p) for p in sidecars):
@@ -4643,23 +4649,29 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
             file_stats = [file_stats[i] for i in moved]
             with open(OUTPUT_STATS, encoding="utf-8") as f:
                 head = f.read().split("\nFile: ", 1)[0].rstrip("\n") + "\n\n"
-            with open(OUTPUT_STATS, 'w', encoding='utf-8') as f:
-                f.write(head)
-                for stat in file_stats:
-                    f.write(f"File: {stat['File']}\n")
-                    f.write(f"  Total Words: {stat['Total Words']}\n")
-                    f.write(f"  Known Words: {stat['Known Count']}\n")
-                    f.write(f"  Coverage: {stat['Coverage (%)']}%\n")
-                    f.write("\n")
+
+            def _write_text_stats(tmp):             # (both whole or not at all, as word_stats.json: `write_list`)
+                with open(tmp, 'w', encoding='utf-8') as f:
+                    f.write(head)
+                    for stat in file_stats:
+                        f.write(f"File: {stat['File']}\n")
+                        f.write(f"  Total Words: {stat['Total Words']}\n")
+                        f.write(f"  Known Words: {stat['Known Count']}\n")
+                        f.write(f"  Coverage: {stat['Coverage (%)']}%\n")
+                        f.write("\n")
+            write_list(_write_text_stats, OUTPUT_STATS)
             # The Generate's own text, its entries moved whole (re-encoding with an indent is the slow encoder)
             with open(as_generated, encoding="utf-8") as f:
                 text = f.read()
             blocks = _json_list_entries(text) if text.startswith("[\n    {") else None
-            with open(stats_json, 'w', encoding='utf-8') as f:
-                if blocks is not None and len(blocks) == len(moved):
-                    f.write("[\n" + ",\n".join(blocks[i] for i in moved) + "\n]")
-                else:
-                    f.write(json.dumps(file_stats, indent=4, ensure_ascii=False))
+
+            def _write_json_stats(tmp):
+                with open(tmp, 'w', encoding='utf-8') as f:
+                    if blocks is not None and len(blocks) == len(moved):
+                        f.write("[\n" + ",\n".join(blocks[i] for i in moved) + "\n]")
+                    else:
+                        f.write(json.dumps(file_stats, indent=4, ensure_ascii=False))
+            write_list(_write_json_stats, stats_json)
     except Exception as e:
         print(f"Warning: could not reorder the file statistics: {e}")
 
@@ -4687,7 +4699,8 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
         except Exception as e:
             print(f"Error: Could not generate static HTML: {e}")
             report_failed = True
-    _write_redraw_marker(plan.header["run_signature"], run_sig)
+    _write_redraw_marker(plan.header["run_signature"], run_sig,
+                         young=chooser.young_at if chooser is not None else None)
     print("Redrew the journey from the plan (only the order moved).")
     return 1 if report_failed else 0
 
@@ -4718,21 +4731,33 @@ class ListSentences:
     ceiling); `clean_only` *Only i+1* (a row with no line left is []: the Generate leaves it out). What a Context
     shows is the Generate's (`strip_verse_number`); a Src is the file's path from the data folder, as the plan's.
     The text of the lines it shows is kept in results/`SHOWN_FILE` (`keep`) and read from there before the token
-    store the next time. Young words are not weighed: the list reads no Anki (PROVISIONAL, the prototype's)."""
+    store the next time, with what Context shows of each line led by digits: one read back needs no tagger. The young
+    words are the card's (E-JOURNEY): `connect.sentences.young_weights` — the young cards Connect's Anki sync keeps in
+    `User Files/<lang>/anki_young.json` (`anki_sync.sync_young`), read once, into the moment; no file (never synced,
+    Anki absent): none, as before. No Anki call: the file only. `young` {lemma: weight} hands them in instead (tests);
+    `young_at` the stamp of the ones the last call weighed (`young_stamp`), for the redraw marker (a sync since that
+    changes them owes the journey a redraw: `journey.moved_state`). Its calls share one moment and one memo
+    (`sentence_score.choose`'s): *Only i+1*'s second round, in another order, reads no file's text and no column
+    again (E-L2G)."""
 
-    def __init__(self, language, max_contexts, clean_only=False, results_dir=None, table=None):
+    def __init__(self, language, max_contexts, clean_only=False, results_dir=None, table=None, young=None):
         self.language, self.n, self.clean_only = language, plan_rules.context_limit(max_contexts), clean_only
-        self.results_dir, self.table = results_dir or RESULTS_DIR, table
-        self.run, self.kept, self.read = None, {}, {}
+        self.results_dir, self.table, self.young = results_dir or RESULTS_DIR, table, young
+        self.run, self.kept, self.read, self.forms, self.forms_read = None, {}, {}, {}, {}
+        self.moment, self.length, self.memo, self.young_at = None, None, {}, None
 
     def __call__(self, keys, order=None):
         from app import sentence_score, sentence_corpus, sentence_table
         from app.connect import sentences as connect_sentences
         from app.path_utils import get_data_path
-        settings = settings_manager.load_settings()
-        seen = connect_sentences.files_seen(self.language, connect_sentences.ai_voice(settings, self.language))
-        _lo, _hi, low, high = sentence_corpus.length_range(settings)
-        root = get_data_path(self.language)
+        if self.moment is None:             # (one run's settings, dates and young words: the same for each of its calls)
+            settings = settings_manager.load_settings()
+            seen = connect_sentences.files_seen(self.language, connect_sentences.ai_voice(settings, self.language))
+            _lo, _hi, low, high = sentence_corpus.length_range(settings)
+            young = connect_sentences.young_weights(self.language) if self.young is None else dict(self.young)
+            self.moment = sentence_score.Moment(files=seen, young=young, root=get_data_path(self.language))
+            self.length = (low, high)
+        root = self.moment.root
         tab = self.table
         if tab is None:
             tab = sentence_table.open_table(os.path.join(self.results_dir, sentence_table.TABLE_FILE),
@@ -4741,64 +4766,85 @@ class ListSentences:
             if tab is None:
                 return None
         self.run = tab.head.get("run_signature")
-        self.read = _read_shown(self.results_dir, self.run)
-        got = sentence_score.choose(self.language, keys, n=self.n, length=(low, high), order=order, whole=True,
-                                    moment=sentence_score.Moment(files=seen, root=root), clean_only=self.clean_only,
-                                    shown=self.read, table=tab)
+        self.young_at = young_stamp(self.moment.young)
+        self.forms_read = {}
+        self.read = _read_shown(self.results_dir, self.run, self.forms_read)
+        got = sentence_score.choose(self.language, keys, n=self.n, length=self.length, order=order, whole=True,
+                                    moment=self.moment, clean_only=self.clean_only, shown=self.read, table=tab,
+                                    memo=self.memo)
         if got is None:
             return None
         base = os.path.join(root, "")
         tagger = _LazyTagger() if self.language == "ja" else None
-        out, kept = {}, {}
+        out, kept, forms = {}, {}, {}
         for key, lines in got.items():
             columns = []
             for line in lines:
                 rel = (line.file[len(base):] if line.file.startswith(base) else line.file).replace(os.sep, "/")
-                kept[(rel, line.number)] = line.text
-                columns += (strip_verse_number(line.text, tagger) if tagger is not None and line.text else line.text,
-                            rel)
+                at = (rel, line.number)
+                kept[at] = line.text
+                shown = line.text
+                if tagger is not None and line.text and _LEADING_DIGITS_RE.match(line.text):
+                    # (a line led by digits shows what `strip_verse_number` makes of it, kept beside its text: read
+                    # back, it asks no tagger — the redraw's child loads none, E-L2G)
+                    shown = self.forms_read.get(at) if self.read.get(at) == line.text else None
+                    if shown is None:
+                        shown = strip_verse_number(line.text, tagger)
+                    forms[at] = shown
+                columns += (shown, rel)
             out[key] = columns
-        self.kept = kept
+        self.kept, self.forms = kept, forms
         return out
 
     def keep(self):
         """results/`SHOWN_FILE`: the text of the lines the last call showed, by the table's run — written only when it
         differs from what was read (never fails the run)."""
-        if self.run is None or self.kept == self.read:
+        if self.run is None or (self.kept == self.read and self.forms == self.forms_read):
             return
         try:
-            _write_shown(self.results_dir, self.run, self.kept)
+            _write_shown(self.results_dir, self.run, self.kept, self.forms)
         except Exception as e:
             print(f"Warning: could not keep the shown sentences: {e}")
 
 
-def _read_shown(results_dir, run_signature):
+def _read_shown(results_dir, run_signature, forms=None):
     """{(rel, number): text} of results/`SHOWN_FILE` when it is `run_signature`'s; {} else (none, another run's,
-    damaged)."""
+    damaged). `forms`, a dict: given what Context shows of the kept lines led by digits, {(rel, number): shown} (a file
+    written before them has none)."""
     import gzip
     try:
         with gzip.open(os.path.join(results_dir, SHOWN_FILE), "rb") as f:
             data = json.loads(f.read())
         if data.get("run_signature") != run_signature:
             return {}
-        return {(rel, int(number)): text for rel, lines in data["lines"].items() for number, text in lines.items()}
+        texts = {(rel, int(number)): text for rel, lines in data["lines"].items() for number, text in lines.items()}
+        shown = {(rel, int(number)): form for rel, lines in (data.get("shown") or {}).items()
+                 for number, form in lines.items()}
     except Exception:
         return {}
+    if forms is not None:
+        forms.update(shown)
+    return texts
 
 
-def _write_shown(results_dir, run_signature, kept):
-    """results/`SHOWN_FILE`, whole (a temp file replaced): the same bytes for the same lines (sorted, no time)."""
+def _write_shown(results_dir, run_signature, kept, forms=None):
+    """results/`SHOWN_FILE`, whole (a temp file replaced): the same bytes for the same lines (sorted, no time);
+    `forms` {(rel, number): what Context shows} of the lines led by digits, beside their text."""
     import gzip
-    lines = {}
+    lines, shown = {}, {}
     for (rel, number), text in sorted(kept.items()):
         lines.setdefault(rel, {})[str(number)] = text
+    for (rel, number), form in sorted((forms or {}).items()):
+        shown.setdefault(rel, {})[str(number)] = form
+    data = {"run_signature": run_signature, "lines": lines}
+    if shown:
+        data["shown"] = shown
     path = os.path.join(results_dir, SHOWN_FILE)
     tmp = f"{path}.{os.getpid()}.tmp"
     try:
         with open(tmp, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=6, mtime=0,
                                                    filename="") as f:
-            f.write(json.dumps({"run_signature": run_signature, "lines": lines}, separators=(",", ":"),
-                               ensure_ascii=False).encode("utf-8"))
+            f.write(json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -5858,6 +5904,17 @@ def drawn_day():
     return datetime.date.today().isoformat()
 
 
+def young_stamp(young):
+    """The young words a draw weighed ({lemma: weight}, `connect.sentences.young_weights`) as the redraw marker names
+    them (release 2, E-JOURNEY): a short digest of the words and their weights, order-free — None for none (no Anki,
+    never synced, every card mature: the marker of before, no key). Weights to two decimals: today's come from whole
+    days (twenty-firsts, all apart); one moving by the hour (a fractional day) would owe a redraw at every look."""
+    rows = sorted((str(w), round(float(v), 2)) for w, v in (young or {}).items())
+    if not rows:
+        return None
+    return hashlib.sha1(json.dumps(rows, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+
+
 def redrawn_for(results_dir):
     """The redraw marker in `results_dir` ({"plan", "run"}), or None (none, or unreadable). Never raises."""
     try:
@@ -5880,12 +5937,15 @@ def _json_list_entries(text):
     return [parts[0] + "\n    }"] + ["    {" + p + "\n    }" for p in parts[1:-1]] + ["    {" + parts[-1]]
 
 
-def _write_redraw_marker(plan_signature, run_signature):
-    """The redraw marker, written whole (a temp file replaced): `run_signature` None while the redraw writes."""
+def _write_redraw_marker(plan_signature, run_signature, young=None):
+    """The redraw marker, written whole (a temp file replaced): `run_signature` None while the redraw writes. `young`
+    (release 2): the stamp of the young words the draw weighed (`ListSentences.young_at`), None for none."""
     path = os.path.join(RESULTS_DIR, REDRAW_FILE)
     marker = {"plan": plan_signature, "run": run_signature}
     if plan_rules.SENTENCE_TABLE >= 2:
         marker["day"] = drawn_day()         # release 2: the remembered context fades by the day (`journey.moved_state`)
+        if young is not None:
+            marker["young"] = young         # ... and the young words it weighed: a sync since that changed them owes one
     with open(path + ".tmp", "w", encoding="utf-8") as f:
         json.dump(marker, f)
     os.replace(path + ".tmp", path)
@@ -8006,6 +8066,8 @@ def main():
             if not _empty:
                 break
             _left_off |= _empty
+        if _chooser is not None:
+            _chooser.memo.clear()           # (the rounds are over: what they shared — every file's text — let go)
         output_rows, _l2_valid = _rows, valid_lrs
         words_skipped_i_plus_one = len(_left_off)
         n_columns = plan_rules.context_columns(args.max_contexts, (len(cols) // 2 for cols in _got.values()))
@@ -8475,7 +8537,9 @@ def main():
     # the store.
     if _run_sig and plan_rules.SENTENCE_TABLE >= 2:
         try:
-            _write_redraw_marker(_run_sig, _run_sig)    # release 2: this run's journey is today's (`drawn_for`)
+            # release 2: this run's journey is today's (`drawn_for`), with the young words its list weighed (the
+            # chooser's own stamp: a sync since that moves them owes one redraw, `journey.moved_state`)
+            _write_redraw_marker(_run_sig, _run_sig, young=_chooser.young_at if _chooser is not None else None)
         except OSError as e:                # never fails a finished Generate: with none it is redrawn once
             print(f"Warning: could not mark the journey as today's: {e}")
     _set_run_stamp(RESULTS_DIR, _run_sig)

@@ -366,7 +366,7 @@ def _moment_arrays(tab, moment, order, root, srcs=None, kept=None):
         arrays, placed_files = kept["arrays"], kept["files"]
     else:
         by_file, placed_files = _files_kept(tab, moment, root)
-        arrays = dict(_rows_kept(tab, moment, order))
+        arrays = dict(_rows_kept(tab, moment, order, kept))
         arrays.update(by_file)
         if kept is not None:
             kept["arrays"], kept["files"] = arrays, placed_files
@@ -422,13 +422,22 @@ def _files_kept(tab, moment, root):
 _ROWS = []                  # [(the table, its keys and places, the moment's known and young words, the rows' arrays)]
 
 
-def _rows_kept(tab, moment, order):
+def _rows_kept(tab, moment, order, kept=None):
     """`_row_arrays`, kept across picks for one table while its keys and places (the same objects: the entry holds them)
     and the moment's known and young words are the same (a session's picks: the arrays were built at every pick); with
-    an `order` handed in (a move's), built each time. The kept arrays are read-only: a reader that wrote into them
-    would fail (its caller's own path), never change the next pick's."""
+    an `order` handed in (a move's, a Generate's round), the order's arrays built each time over the order-free ones
+    (`_row_free`) a pick's memo `kept` holds across its orders — *Only i+1*'s second round built them again (E-L2G 4).
+    The kept arrays (across picks, across a memo's orders) are read-only: a reader that wrote into them would fail (its
+    caller's own path), never change the next pick's."""
     if order is not None:
-        return _row_arrays(tab, moment, order)
+        if kept is None:
+            return _row_arrays(tab, moment, order)
+        if "free" not in kept:
+            free = _row_free(tab, moment)
+            for a in free.values():
+                a.flags.writeable = False   # (shared by the memo's orders: read-only, as the arrays kept across picks)
+            kept["free"] = free
+        return _row_arrays(tab, moment, order, kept["free"], kept.get("rows"))
     try:
         key = (frozenset(moment.known or ()), tuple(sorted(_young(moment).items())))
     except TypeError:                       # (a moment whose words can't be compared: built each time)
@@ -444,8 +453,24 @@ def _rows_kept(tab, moment, order):
     return arrays
 
 
-def _row_arrays(tab, moment, order):
-    """The moment's arrays over the table's rows: the list's order, the words known since, the young words."""
+def _row_free(tab, moment):
+    """The moment's arrays over the table's rows that no order changes: each row's lemma code ("lemma"), each co-word's
+    row ("own") and its young weight ("young")."""
+    import numpy as np
+    keys = tab.head["keys"]
+    rows = len(keys)
+    codes = {}
+    lemma = np.fromiter((codes.setdefault(key[0], len(codes)) for key in keys), np.int64, rows)
+    own = np.asarray(tab.formulas()[0], np.int64)
+    young_of = _young(moment)
+    young = np.fromiter((young_of.get(keys[o][0], 0.0) if 0 <= o < rows else 0.0 for o in own.tolist()),
+                        np.float64, len(own))
+    return {"own": own, "lemma": lemma, "young": young}
+
+
+def _row_arrays(tab, moment, order, free=None, key_rows=None):
+    """The moment's arrays over the table's rows: the list's order, the words known since, the young words. `free`:
+    `_row_free`'s for this table and moment (None: built now); `key_rows`: `_key_rows`' of its keys (None: made now)."""
     import numpy as np
     keys = tab.head["keys"]
     rows = len(keys)
@@ -463,29 +488,23 @@ def _row_arrays(tab, moment, order):
     placed_now = placed.copy()
     known = moment.known or ()
     if known:
-        exact, by_lemma = _key_rows(keys)
+        exact, by_lemma = key_rows if key_rows is not None else _key_rows(keys)
         for key in known:
             hits = by_lemma.get(key[0], ()) if not key[1] else [exact.get((key[0], key[1]))]
             for k in hits:
                 if k is not None:
                     placed_now[k] = -1
-    codes = {}
-    lemma = np.fromiter((codes.setdefault(key[0], len(codes)) for key in keys), np.int64, rows)
-    formulas = tab.formulas()
-    own = np.asarray(formulas[0], np.int64)
-    young_of = _young(moment)
-    young = np.fromiter((young_of.get(keys[o][0], 0.0) if 0 <= o < rows else 0.0 for o in own.tolist()),
-                        np.float64, len(own))
-    return {"placed": placed, "placed_now": placed_now, "known_at": known_at(formulas, placed_now), "own": own,
-            "lemma": lemma, "young": young}
+    if free is None:
+        free = _row_free(tab, moment)
+    return {"placed": placed, "placed_now": placed_now, "known_at": known_at(tab.formulas(), placed_now), **free}
 
 
 def _kept(memo, tab, moment, order, root):
     """A pick's memo (`choose`'s `memo`) for this table, moment, order and data folder — what its asks share, built at
     the first and kept for the rest; emptied when any of the four differs from the asks before — but for another
     order alone, which keeps what no order changes (the rows' index, the columns taken, each file's text, check and
-    stamp: *Only i+1*'s second round read them all again, E-L2G) and drops the rows' arrays and the costs, which are
-    the order's. None: no memo."""
+    stamp: *Only i+1*'s second round read them all again, E-L2G; the rows' order-free arrays, `_row_free`: E-L2G 4)
+    and drops the rows' other arrays and the costs, which are the order's. None: no memo."""
     if memo is None:
         return None
     was = memo.get("for")

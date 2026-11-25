@@ -2,7 +2,7 @@
 
 On RP-2's real Japanese and Chinese libraries (tests/plan_file_cases.py), each Generated at level 2 in a child process
 as the dashboard runs it. What these prove:
-  - **the redraw's word_stats.json is written whole or not at all** (E-REDRAW's crash drill: a redraw killed while it
+  - **the redraw's word_stats.json (and its file_statistics.json / .txt) is written whole or not at all** (E-REDRAW's crash drill: a redraw killed while it
     wrote the file left it empty, and the next look ran a whole Generate): a redraw that dies part-way through that
     write leaves the last one as it was, and the next look redraws.
   - **a list call reads the lines' text without their tokens** (`token_index.Store.file_texts`; E-L2G: decoding each
@@ -42,8 +42,9 @@ def _child(root, script, *args):
     assert p.returncode == 0, p.stdout[-2000:] + p.stderr[-2000:]
     return json.loads(p.stdout.strip().splitlines()[-1])
 
-# Loaded first in the child (a sitecustomize on its path): the first write to word_stats.json — the file itself or a
-# temp beside it — writes half its text and the process dies there, as a crash would.
+# Loaded first in the child (a sitecustomize on its path): the first write to word_stats.json (or the file
+# E_L2G_DIE_IN names) — the file itself or a temp beside it — writes half its text and the process dies there, as a
+# crash would.
 _DIE_IN_WORD_STATS = r"""
 import builtins, os
 _open = builtins.open
@@ -70,13 +71,49 @@ class _Dying:
 
 def _opened(file, mode="r", *args, **kwargs):
     f = _open(file, mode, *args, **kwargs)
-    if "w" in mode and os.path.basename(str(file)).startswith("word_stats.json"):
+    if "w" in mode and os.path.basename(str(file)).startswith(os.environ.get("E_L2G_DIE_IN", "word_stats.json")):
         return _Dying(f)
     return f
 
 
 builtins.open = _opened
 """
+
+
+def _killed_in(language, tmp_path, name):
+    """A level-2 library, one show moved, and its redraw killed half-way through writing results/`name` -> (the
+    file before, after, the root)."""
+    root = _generated(language, tmp_path / "lib")
+    _move(root, language, "top")
+    stats = os.path.join(root, "results", name)
+    with open(stats, encoding="utf-8") as f:
+        before = f.read()
+    hook = tmp_path / "hook"
+    hook.mkdir()
+    (hook / "sitecustomize.py").write_text(_DIE_IN_WORD_STATS, encoding="utf-8")
+    env = _env(root)
+    env["PYTHONPATH"] = str(hook) + os.pathsep + env.get("PYTHONPATH", "")
+    env["E_L2G_DIE_IN"] = name
+    p = subprocess.run([sys.executable, os.path.join(cases.REPO, "app", "analyzer.py"), f"--language={language}",
+                        "--static", "--no-open", "--from-plan"], cwd=cases.REPO, env=env, capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
+    assert p.returncode == 9, f"the redraw died inside {name}'s write: " + (p.stdout + p.stderr)[-1500:]
+    with open(stats, encoding="utf-8") as f:
+        return before, f.read(), root
+
+
+@pytest.mark.parametrize("language, name", [("ja", "file_statistics.json"), ("zh", "file_statistics.json"),
+                                            ("ja", "file_statistics.txt"), ("zh", "file_statistics.txt")])
+def test_a_redraw_killed_while_it_writes_the_file_statistics_leaves_the_last_ones_and_the_next_look_redraws(
+        language, name, tmp_path):
+    # why: the lead's ruling 3 — the redraw rewrote file_statistics.json and .txt in place, so a kill there left them
+    # cut until the next redraw; each is written whole or not at all, as word_stats.json
+    before, after, root = _killed_in(language, tmp_path, name)
+    assert after == before, f"a redraw killed mid-write leaves the last {name} whole"
+    if name.endswith(".json"):
+        json.loads(after)
+    out = _redraw(root, language)
+    assert "Redrew the journey" in out and "generating" not in out.lower(), out[-1500:]
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])

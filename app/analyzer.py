@@ -4649,23 +4649,29 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
             file_stats = [file_stats[i] for i in moved]
             with open(OUTPUT_STATS, encoding="utf-8") as f:
                 head = f.read().split("\nFile: ", 1)[0].rstrip("\n") + "\n\n"
-            with open(OUTPUT_STATS, 'w', encoding='utf-8') as f:
-                f.write(head)
-                for stat in file_stats:
-                    f.write(f"File: {stat['File']}\n")
-                    f.write(f"  Total Words: {stat['Total Words']}\n")
-                    f.write(f"  Known Words: {stat['Known Count']}\n")
-                    f.write(f"  Coverage: {stat['Coverage (%)']}%\n")
-                    f.write("\n")
+
+            def _write_text_stats(tmp):             # (both whole or not at all, as word_stats.json: `write_list`)
+                with open(tmp, 'w', encoding='utf-8') as f:
+                    f.write(head)
+                    for stat in file_stats:
+                        f.write(f"File: {stat['File']}\n")
+                        f.write(f"  Total Words: {stat['Total Words']}\n")
+                        f.write(f"  Known Words: {stat['Known Count']}\n")
+                        f.write(f"  Coverage: {stat['Coverage (%)']}%\n")
+                        f.write("\n")
+            write_list(_write_text_stats, OUTPUT_STATS)
             # The Generate's own text, its entries moved whole (re-encoding with an indent is the slow encoder)
             with open(as_generated, encoding="utf-8") as f:
                 text = f.read()
             blocks = _json_list_entries(text) if text.startswith("[\n    {") else None
-            with open(stats_json, 'w', encoding='utf-8') as f:
-                if blocks is not None and len(blocks) == len(moved):
-                    f.write("[\n" + ",\n".join(blocks[i] for i in moved) + "\n]")
-                else:
-                    f.write(json.dumps(file_stats, indent=4, ensure_ascii=False))
+
+            def _write_json_stats(tmp):
+                with open(tmp, 'w', encoding='utf-8') as f:
+                    if blocks is not None and len(blocks) == len(moved):
+                        f.write("[\n" + ",\n".join(blocks[i] for i in moved) + "\n]")
+                    else:
+                        f.write(json.dumps(file_stats, indent=4, ensure_ascii=False))
+            write_list(_write_json_stats, stats_json)
     except Exception as e:
         print(f"Warning: could not reorder the file statistics: {e}")
 

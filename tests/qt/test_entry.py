@@ -134,7 +134,7 @@ def test_the_window_start_brings_in_no_pandas_numpy_or_requests(tmp_path, level)
     probe = tmp_path / "probe.json"
     entry = os.path.join(ROOT, "app_entry.py")
     env = dict(os.environ, PYTHONPATH=ROOT, SURASURA_TEST_ROOT=str(root), SURASURA_SHELL_PROBE=str(probe),
-               SURASURA_SHELL_PROBE_IDLE="8", TELEMETRY_ENV="dev", TELEMETRY_URL="",
+               SURASURA_SHELL_PROBE_IDLE="8", SURASURA_SHELL_PROBE_WARM="60", TELEMETRY_ENV="dev", TELEMETRY_URL="",
                APPDATA=str(tmp_path / "appdata"), LOCALAPPDATA=str(tmp_path / "localappdata"),
                PYTHONUSERBASE=site.getuserbase())     # the packages installed for this user stay importable
     env.pop("SURASURA_NO_UI_TIMERS", None)            # the start's timers run (a chore at 1.5 s is the start's too)
@@ -161,7 +161,9 @@ def test_the_window_start_brings_in_no_pandas_numpy_or_requests(tmp_path, level)
     log = log_file.read_text(encoding="utf-8")
     assert "Launching the window" in log
     # booted first (Haya-LD): the duties start once the list from disk is drawn — an empty root's store is built
-    # first (~2 s here) — and the start's timers count from then, so the probe's idle is 8 s (it was 4.5)
+    # first (~2 s here) — and the start's timers count from then, so the probe's idle is 8 s (it was 4.5); and its
+    # quit waits on the warm-up's own event too (SURASURA_SHELL_PROBE_WARM, ≤ 60 s from the first frame): under load
+    # the start's 3 s timer rang past the idle alone (FLAKES row 140, train 79)
     assert "window (shell): booted" in log
     assert "duties not made" not in log and "duties at start" not in log
     heavy, ran, tk = json.loads(proc.stdout.strip().splitlines()[-1])

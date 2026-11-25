@@ -2499,6 +2499,20 @@ REPORT_FLAG_TICKED = "Goes"
 REPORT_FLAG_UNTICKED = "Left out"
 REPORT_FLAGS_NONE_TIP = "Nothing is ticked and no report is saved, so there's nothing to send"
 # --- end the flagged sentences in Send report
+# --- the learner's swaps in Send report (SWAPS-REPORT, OPEN-FOR-SONIC § 92; words PROVISIONAL)
+REPORT_SWAPS_HEADING = "Swaps you asked for: untick one to leave it out of this report"
+REPORT_SWAPS_TIP = ("Each ticked swap goes with this report: the word, its old sentence and the new one\n"
+                    "• Click or Space: tick or untick\n• Each swap goes once; again only when it changes")
+REPORT_SWAPS_NAME = "Swaps you asked for"
+REPORT_SWAP_NEW = "→ {line}"
+REPORT_SWAP_NO_OLD = "(its old sentence isn't known)"
+REPORT_SWAP_NO_NEW = "→ (no new sentence yet)"
+REPORT_SWAP_ASKED = "asked {when}"
+REPORT_SWAP_STATES = {"waiting": "waiting", "made": "made", "dropped": "dropped", "undone": "undone"}
+REPORT_SWAP_WHY = {"known": "the word is Known now", "ignored": "the word is Ignored now",
+                   "taken back": "taken back in Anki", "undone": "undone"}
+REPORT_SWAP_STATE_WHY = "{state} ({why})"
+# --- end the learner's swaps in Send report
 
 # --- J-STONES (3.0.19; journey v3 SPEC §2.4): pre-studied on the window's stones, and *1 card* (the plural fix)
 ROWS_STONE_STATE_ONE = " · 1 card in Anki"                 # `ROWS_STONE_STATE["raw"]` for one card: never *1 cards*

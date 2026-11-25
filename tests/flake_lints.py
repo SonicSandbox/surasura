@@ -19,9 +19,12 @@ Each allowlist names a place by (file, the test or function it is in) and says w
 entry fails too, so the lists stay true (not the dates' list: a listed date that has passed is no fault).
 """
 import ast
+import collections
 import datetime
+import gc
 import os
 import re
+import unicodedata
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -69,11 +72,37 @@ def _text(root, path):
     return _TEXT[key]
 
 
+def as_read(text):
+    """The text for a prefilter, as Python reads its names: it NFKC-normalises identifiers (`ｔｓｕｂａｓａ` is
+    `tsubasa`), so a file that isn't plain ASCII is searched in both forms."""
+    return text if text.isascii() else text + "\n" + unicodedata.normalize("NFKC", text)
+
+
 def _parse(root, path):
     key = (root, path)
     if key not in _TREE:
-        _TREE[key] = ast.parse(_text(root, path), filename=path)
+        was = gc.isenabled()
+        gc.disable()              # (a tree has no cycles: a collection while one is built only re-scans the trees
+        try:                      # already kept — 2.7 of the app's 4.4 s; TOOLS-TIDY, 2026-11-24)
+            _TREE[key] = ast.parse(_text(root, path), filename=path)
+        finally:
+            if was:
+                gc.enable()
     return _TREE[key]
+
+
+_BLOCKS = (ast.stmt, ast.excepthandler, ast.match_case)
+
+
+def _statements(tree):
+    """Every statement of `tree` (and each `except:` / `case` that holds some), in `ast.walk`'s order: the walk with
+    the expressions left out, where no class or def can sit. A tenth of the nodes: the app's whole tree is 2 M, and
+    `app_qt_classes` walked all of it each guard run (TOOLS-TIDY, 2026-11-24)."""
+    todo = collections.deque([tree])
+    while todo:
+        node = todo.popleft()
+        yield node
+        todo.extend(c for c in ast.iter_child_nodes(node) if isinstance(c, _BLOCKS))
 
 
 def _owners(tree):
@@ -138,7 +167,19 @@ PARENTLESS_ALLOWED = {
 }
 
 
-_BARE_CALL = re.compile(r"\b(?:" + "|".join(sorted(NON_WIDGET_QT)) + r")\(\s*\)")
+_EMPTY_CALL, _WORD_END = re.compile(r"\(\s*\)"), re.compile(r"\w+$")
+
+
+def _empty_calls(text):
+    """Every name the text calls with nothing in its brackets (`QTimer()`, `Watch( )`): the word that ends right at
+    each `(`, found from the brackets (one alternation of every class name, tried at each letter, took 2.4 s a run).
+    A word longer than the 80 letters looked back on is no class name."""
+    out = set()
+    for m in _EMPTY_CALL.finditer(text):
+        word = _WORD_END.search(text, max(0, m.start() - 80), m.start())
+        if word:
+            out.add(word.group())
+    return out
 
 
 def _parent_given(call):
@@ -154,7 +195,7 @@ def app_qt_classes(root=ROOT):
     bases = {}
     for path in app_files(root):
         if "class " in _text(root, path):
-            for node in ast.walk(_parse(root, path)):
+            for node in _statements(_parse(root, path)):
                 if isinstance(node, ast.ClassDef):
                     bases[node.name] = [ast.unparse(b).split(".")[-1] for b in node.bases]
     out, grown = set(NON_WIDGET_QT), True
@@ -174,11 +215,9 @@ def parentless_qt_objects(root=ROOT, files=None):
     apps = set(app_files(root)) if files is None else {f for f in files if not f.startswith("tests/")
                                                        and "/tests/" not in f}
     own = app_qt_classes(root) if apps else frozenset()
-    own_call = re.compile(r"\b(?:" + "|".join(sorted(own)) + r")\(\s*\)") if own else None
     for path in files if files is not None else test_files(root) + app_files(root):
-        text = _text(root, path)
         mine = own if path in apps else frozenset()
-        if not (_BARE_CALL.search(text) or (mine and own_call.search(text))):
+        if not _empty_calls(_text(root, path)) & (NON_WIDGET_QT | mine):
             continue                                          # (read as text first: parsed only where one may be)
         tree = _parse(root, path)
         owners = _owners(tree)

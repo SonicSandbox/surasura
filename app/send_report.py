@@ -18,8 +18,10 @@ Anything else keeps the outbox zip for *Send now* — never sent again by itself
 the app's log (`_logged`: what came of it, the receiver's host; never the name, nonce or sender code).
 
 **On this PC** (`report_send.json`, written atomically): the day's count (5 a day, refused before any request), the
-Discord name when one was typed, and the sender code: 8 random letters made once (never the telemetry id, nothing
-read from the PC), sent with each report so Sonic can tell one sender's reports apart; *New code* makes another.
+Discord name when one was typed, the sender code: 8 random letters made once (never the telemetry id, nothing
+read from the PC), sent with each report so Sonic can tell one sender's reports apart; *New code* makes another —
+and the swaps sent (`swaps_sent`: {language: {id: the state it went in}}, SWAPS-REPORT), so a swap goes once a state:
+Send report's own record of what it sent, never a second record of the swap (the swap queue's entry is the one).
 """
 import base64
 import datetime
@@ -65,7 +67,8 @@ class TooBig(Exception):
 class Outbox:
     """The zip waiting to be sent: `path`, `nonce`, `sha256`, `size`, `created` (ISO), `language`, `zipped`
     ({rid: report.json's sha256}), `removed`, `left_out`, `entries` ([(name, size)]), `flags` ({id: changed_ns}: the
-    flagged sentences it holds now) and `flag_lines` (every one What goes shows, ticked or not, each with its `id`)."""
+    flagged sentences it holds now) and `flag_lines` (every one What goes shows, ticked or not, each with its `id`);
+    `swaps` ({id: state}) and `swap_lines` the same for the learner's swaps."""
 
     def __init__(self, path, meta):
         self.path = path
@@ -80,6 +83,8 @@ class Outbox:
         self.entries = [tuple(e) for e in meta.get("entries") or []]
         self.flags = dict(meta.get("flags") or {})
         self.flag_lines = list(meta.get("flag_lines") or [])
+        self.swaps = dict(meta.get("swaps") or {})
+        self.swap_lines = list(meta.get("swap_lines") or [])
 
     def describe(self):
         """Every file that goes and its size (the scrubbed names, as zipped), then what's left out and why."""
@@ -176,6 +181,12 @@ def remember_name(name):
     _save_state(data)
 
 
+def swaps_sent(language):
+    """{swap id: the state it was sent in} for `language` (`swap.for_report` leaves those out while unchanged)."""
+    got = (_state().get("swaps_sent") or {}).get(language)
+    return dict(got) if isinstance(got, dict) else {}
+
+
 def sent_today(now=None):
     data = _state()
     return int(data.get("sent") or 0) if data.get("day") == _today(now) else 0
@@ -234,11 +245,12 @@ def build(language, include_results=True, library=None, root=None, extra=None, n
             raise
         was = waiting()                                              # the same reports again: the same nonce, so a
         same = (was is not None and was.zipped == made.zipped and was.removed == made.removed   # sent one keeps its #ID
-                and was.flags == made.flags)
+                and was.flags == made.flags and was.swap_lines == made.swap_lines)
         meta = {"nonce": was.nonce if same else secrets.token_hex(16), "sha256": digest, "size": size, "language": language,
                 "created": (now or datetime.datetime.now().astimezone()).isoformat(timespec="seconds"),
                 "zipped": made.zipped, "removed": made.removed, "left_out": made.left_out, "entries": made.entries,
-                "flags": made.flags, "flag_lines": made.flag_lines}
+                "flags": made.flags, "flag_lines": made.flag_lines, "swaps": made.swaps,
+                "swap_lines": made.swap_lines}
         try:
             os.remove(meta_path)                                     # (the zip and its record are replaced together)
         except FileNotFoundError:
@@ -249,11 +261,14 @@ def build(language, include_results=True, library=None, root=None, extra=None, n
 
 
 def _refit(ob, keep):
-    """(Under _BUSY.) The waiting zip with only the flagged sentences `keep` (ids) of the ones What goes showed: written
-    again when that changes what it holds (`report.rewrite_flagged`; a new nonce, since its bytes are new). -> the
-    Outbox as it now is."""
+    """(Under _BUSY.) The waiting zip with only the flagged sentences and swaps `keep` (ids) of the ones What goes
+    showed: written again when that changes what it holds (`report.rewrite_flagged`; a new nonce, since its bytes are
+    new). Swaps go beside a report, never alone: none of its flagged lines ticked and no saved report is nothing to
+    send. -> the Outbox as it now is."""
+    keep = set(keep)
+    keep_swaps = {i for i in keep if any(line.get("id") == i for line in ob.swap_lines)}
     keep = {i for i in keep if any(line.get("id") == i for line in ob.flag_lines)}
-    if keep == set(ob.flags):
+    if keep == set(ob.flags) and keep_swaps == set(ob.swaps):
         return ob
     if not keep and not ob.zipped:                                   # (refused before anything is written)
         raise ValueError("nothing is ticked to send")
@@ -262,22 +277,25 @@ def _refit(ob, keep):
             raise ValueError("the waiting zip changed since it was made")
     lines = [{k: v for k, v in line.items() if k not in ("id", "changed")} for line in ob.flag_lines
              if line.get("id") in keep]
-    entries = report.rewrite_flagged(ob.path, ob.language, lines, ob.left_out)
+    swaps = [{k: v for k, v in line.items() if k not in ("id", "changed")} for line in ob.swap_lines
+             if line.get("id") in keep_swaps]
+    entries = report.rewrite_flagged(ob.path, ob.language, lines, ob.left_out, swaps=swaps)
     with open(ob.path, "rb") as f:
         body = f.read()
     meta_path = os.path.join(os.path.dirname(ob.path), OUTBOX_META)
     with open(meta_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
     meta.update(nonce=secrets.token_hex(16), sha256=hashlib.sha256(body).hexdigest(), size=len(body), entries=entries,
-                flags={line["id"]: line.get("changed") for line in ob.flag_lines if line.get("id") in keep})
+                flags={line["id"]: line.get("changed") for line in ob.flag_lines if line.get("id") in keep},
+                swaps={line["id"]: line.get("changed") for line in ob.swap_lines if line.get("id") in keep_swaps})
     report._atomic_write(meta_path, report._json_bytes(meta))
     return Outbox(ob.path, meta)
 
 
 def refit(keep, nonce=None):
-    """What goes' ticks (`keep`: the flagged sentences' ids still ticked) onto the waiting zip, so *Open the zip* shows
-    what *Send* would send. `nonce`: the Outbox the page showed. Raises ValueError when nothing (or another zip) is
-    waiting, report.Unsafe. -> the Outbox as it now is (a new nonce when it changed)."""
+    """What goes' ticks (`keep`: the flagged sentences' and swaps' ids still ticked) onto the waiting zip, so *Open
+    the zip* shows what *Send* would send. `nonce`: the Outbox the page showed. Raises ValueError when nothing (or
+    another zip) is waiting, report.Unsafe. -> the Outbox as it now is (a new nonce when it changed)."""
     with _BUSY:
         ob = waiting()
         if ob is None or (nonce is not None and ob.nonce != nonce):
@@ -342,9 +360,9 @@ def _outcome(status):
 def send(name="", url=None, root=None, now=None, nonce=None, keep=None):
     """*Send* (the What goes page's) or *Send now*: the waiting zip to the receiver, once. `name`: the Discord name in
     the field as pressed (remembered; empty forgets it); `nonce`: the Outbox the page showed (another one waiting
-    instead is never sent); `keep`: the flagged sentences still ticked there (`_refit` first; None: as it is). The 6th
-    send of a day is refused before any request. Raises ValueError when nothing (or another zip) is waiting, or when
-    nothing is left to send. -> a Result."""
+    instead is never sent); `keep`: the flagged sentences and swaps still ticked there (`_refit` first; None: as it
+    is). The 6th send of a day is refused before any request. Raises ValueError when nothing (or another zip) is
+    waiting, or when nothing is left to send. -> a Result."""
     import requests
     with _BUSY:
         ob = waiting()
@@ -390,11 +408,17 @@ def _logged(result, endpoint):
 
 
 def _sent(ob, rid, root, now):
-    """The receiver has it: counted, its reports off the list, the zip kept as `report_sent/<id>.zip`."""
+    """The receiver has it: counted, its reports off the list, its swaps remembered as sent (in the state they went),
+    the zip kept as `report_sent/<id>.zip`."""
     data = _state()
     day = _today(now)
     data["sent"] = (int(data.get("sent") or 0) if data.get("day") == day else 0) + 1
     data["day"] = day
+    if ob.swaps:
+        every = data.get("swaps_sent") if isinstance(data.get("swaps_sent"), dict) else {}
+        mine = every.get(ob.language) if isinstance(every.get(ob.language), dict) else {}
+        every[ob.language] = dict(mine, **ob.swaps)
+        data["swaps_sent"] = every
     _save_state(data)
     report._clear(root or report.folder(), ob.zipped, ob.removed)
     if ob.flags:                                                     # the flagged sentences it held: off the list now

@@ -971,6 +971,15 @@ class Probe(QObject):
         QTimer.singleShot(600, update)
 
     def _finish(self):
+        # SURASURA_SHELL_PROBE_WARM=<s> (tests/qt/test_entry.py's start guard): past the idle, the quit also waits for
+        # the start's last timer to have run — the Rarity warm-up's own event, `chores.warmed` — at most <s> seconds
+        # from the first frame (a start slowed by load lost to the fixed idle alone: FLAKES row 140)
+        bound = os.environ.get("SURASURA_SHELL_PROBE_WARM")
+        if bound and time.perf_counter() < self.result["first_frame_wall"] + float(bound):
+            chores = self.window.services.chores
+            if chores is None or not chores.warmed.is_set():
+                QTimer.singleShot(50, self._finish)
+                return
         self.result["memory"] = _memory_mb()
         self.result["phases"] = phases()
         if self.hud is not None:

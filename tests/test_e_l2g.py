@@ -11,7 +11,8 @@ as the dashboard runs it. What these prove:
     store and over made lines (quotes, backslashes, the cut inside a line, an empty token list, control characters).
   - ***Only i+1*'s second round reads nothing again** (row 15: round 2 repeated the whole pick, +1.29 s at 2k): one
     reader asked twice in two orders, as the Generate's rounds ask it, reads each file's text and the table's columns
-    once, and answers what a fresh reader answers.
+    once, and answers what a fresh reader answers — and (E-L2G 4) parses the last run's shown.json.gz once and builds
+    the rows' order-free arrays once: only the order's own are built again.
   - **a redraw whose lines are all kept makes no tagger** (row 11: 0.09 s of the redraw was a fresh Japanese tagger for
     `strip_verse_number` on a line led by digits): shown.json.gz keeps what Context shows of such a line beside its
     text, so a line read back from it is shown as the Generate showed it, with no tagger loaded.
@@ -386,6 +387,65 @@ def test_only_i_plus_ones_second_round_reads_no_files_text_and_no_column_again(g
     assert got["first"] > got["left"] > 0, got
     assert got["counts"]["twice"] == 0 and got["counts"]["taken"] == 1, got
     assert got["counts"]["files"] > 0 and got["same"], got
+
+
+# One reader asked twice, as the Generate's *Only i+1* rounds ask it (the second round: the words left, in their own
+# order), its two answers' row arrays and each parse of the last run's shown.json.gz kept; then the table's run
+# signature changed under it and a third ask; then fresh readers asked each round alone.
+_ROUNDS_ONCE = r"""
+import json, os, sys
+from app import analyzer, sentence_score, sentence_table
+language, results, keys = sys.argv[1], sys.argv[2], [tuple(k) for k in json.loads(sys.argv[3])]
+parsed, built = [0], []
+read_shown, moment_arrays = analyzer._read_shown, sentence_score._moment_arrays
+def counted_read(*args, **kwargs):
+    parsed[0] += 1
+    return read_shown(*args, **kwargs)
+def kept_arrays(*args, **kwargs):
+    arrays, files = moment_arrays(*args, **kwargs)
+    built.append(dict(arrays))          # (the arrays themselves held: an id is never reused while they live)
+    return arrays, files
+analyzer._read_shown, sentence_score._moment_arrays = counted_read, kept_arrays
+table = sentence_table.open_table(os.path.join(results, sentence_table.TABLE_FILE), language=language,
+                                  engine=analyzer.engine_id(), run_signature=analyzer.read_run_stamp(results))
+one = analyzer.ListSentences(language, 3, True, results_dir=results, table=table)     # (the Generate's own table)
+first = one(keys, {k: at for at, k in enumerate(keys)})
+left = [k for k in keys if first.get(k)]
+if len(left) == len(keys):              # (every word has a clean line: every seventh left off, as a round would)
+    left = [k for at, k in enumerate(keys) if at % 7]
+order = {k: at for at, k in enumerate(left)}
+second = one(left, order)
+counts = {"parsed": parsed[0], "asks": len(built),
+          "free_once": all(built[-1][name] is built[0][name] for name in ("own", "lemma", "young")),
+          "placed_again": built[-1]["placed"] is not built[0]["placed"]}
+run = table.head.get("run_signature")
+table.head["run_signature"] = "another run"
+third = one(left, dict(order))          # (another run: its own shown.json.gz, none here — every text from the store)
+table.head["run_signature"] = run
+counts["parsed_another_run"] = parsed[0]
+fresh_first = analyzer.ListSentences(language, 3, True, results_dir=results)(keys, {k: at for at, k in enumerate(keys)})
+fresh = analyzer.ListSentences(language, 3, True, results_dir=results)(left, dict(order))
+print(json.dumps({"counts": counts, "left": len(left), "first": len(first), "same_first": first == fresh_first,
+                  "same": second == fresh, "same_third": third == second}))
+"""
+
+
+def test_only_i_plus_ones_second_round_parses_shown_once_and_builds_no_order_free_row_array_again(gen):
+    # why: E-L2G 4, row 15 (+0.79 s at 2k, +0.60 s zh400 against today) — round 2 built again the rows' arrays that no
+    # order changes (each row's lemma code, each co-word's row, its young weight) beside the order's own, and each
+    # round gunzipped and parsed the last run's shown.json.gz. Built and parsed once; the order's arrays (`placed`)
+    # still built at each order; another run's signature reads its own file; each round the answer a fresh reader gives
+    language, root = gen
+    results = os.path.join(root, "results")
+    assert os.path.isfile(os.path.join(results, analyzer.SHOWN_FILE)), "the level-2 Generate keeps the shown lines"
+    keys = json.dumps([list(k) for k in _columns(results)], ensure_ascii=False)
+    got = _child(root, _ROUNDS_ONCE, language, results, keys)
+    counts = got["counts"]
+    assert got["first"] > got["left"] > 0 and counts["asks"] >= 2, got
+    assert counts["parsed"] == 1, f"shown.json.gz parsed {counts['parsed']} times for one run's two rounds"
+    assert counts["free_once"], "round 2 built the order-free row arrays again"
+    assert counts["placed_again"] and counts["parsed_another_run"] == 2, counts
+    assert got["same_first"] and got["same"] and got["same_third"], got
 
 
 # Loaded first in the redraw's child: at its exit, whether a Japanese tagger was ever loaded (fugashi is imported only

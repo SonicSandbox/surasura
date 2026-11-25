@@ -4731,14 +4731,15 @@ class ListSentences:
     shows is the Generate's (`strip_verse_number`); a Src is the file's path from the data folder, as the plan's.
     The text of the lines it shows is kept in results/`SHOWN_FILE` (`keep`) and read from there before the token
     store the next time, with what Context shows of each line led by digits: one read back needs no tagger. Young words are not weighed: the list reads no Anki (PROVISIONAL, the prototype's). Its
-    calls share one moment and one memo (`sentence_score.choose`'s): *Only i+1*'s second round, in another order,
-    reads no file's text and no column again (E-L2G)."""
+    calls share one moment, one memo (`sentence_score.choose`'s) and one read of `SHOWN_FILE` while the table's run is
+    the same: *Only i+1*'s second round, in another order, reads no file's text, no column and no `SHOWN_FILE` again
+    (E-L2G, E-L2G 4)."""
 
     def __init__(self, language, max_contexts, clean_only=False, results_dir=None, table=None):
         self.language, self.n, self.clean_only = language, plan_rules.context_limit(max_contexts), clean_only
         self.results_dir, self.table = results_dir or RESULTS_DIR, table
         self.run, self.kept, self.read, self.forms, self.forms_read = None, {}, {}, {}, {}
-        self.moment, self.length, self.memo = None, None, {}
+        self.moment, self.length, self.memo, self.read_of = None, None, {}, None
 
     def __call__(self, keys, order=None):
         from app import sentence_score, sentence_corpus, sentence_table
@@ -4759,8 +4760,10 @@ class ListSentences:
             if tab is None:
                 return None
         self.run = tab.head.get("run_signature")
-        self.forms_read = {}
-        self.read = _read_shown(self.results_dir, self.run, self.forms_read)
+        if self.read_of != (self.run,):     # (the last run's shown lines, parsed once for this run's calls: *Only i+1*'s
+            self.forms_read = {}            # rounds parsed the file at each, E-L2G 4)
+            self.read = _read_shown(self.results_dir, self.run, self.forms_read)
+            self.read_of = (self.run,)
         got = sentence_score.choose(self.language, keys, n=self.n, length=self.length, order=order, whole=True,
                                     moment=self.moment, clean_only=self.clean_only, shown=self.read, table=tab,
                                     memo=self.memo)

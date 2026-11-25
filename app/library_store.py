@@ -10983,6 +10983,26 @@ def read_auto_band(language, data_dir):
     return value.get("band") if isinstance(value, dict) and isinstance(value.get("band"), str) else None
 
 
+def read_state(language, data_dir):
+    """The store's own count of what changed — (store_id, epoch, state_version): every command and status write moves
+    it, bookkeeping never (§6.6: the export's own commit, a reader's mark), nor a checkpoint folding the -wal in — or
+    None: no ready store, or not readable now. A `mode=ro` look: never built, never waits. Connect's dates read
+    (`connect/sentences._dates`) keeps its answer while this holds."""
+    db_path = library_db_path(language, data_dir)
+    if not os.path.exists(db_path) or os.path.exists(damaged_marker(db_path)):
+        return None
+    import pathlib
+    try:
+        conn = sqlite3.connect(pathlib.Path(db_path).as_uri() + "?mode=ro", uri=True, timeout=0.5)
+        try:
+            got = dict(conn.execute("SELECT key, value FROM meta WHERE key IN ('store_id', 'epoch', 'state_version')"))
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return (got["store_id"], got["epoch"], got["state_version"]) if len(got) == 3 else None
+
+
 UNREAD = "unread"       # `read_watched_marks`: a store there, its marks not readable at this moment
 
 

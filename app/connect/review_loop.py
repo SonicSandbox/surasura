@@ -319,3 +319,52 @@ def undo(language, sync_id):
         _save(language, state)
         words = [w for w, _b in back] + list(sync.get("known") or ()) + list(sync.get("swaps") or ())
         return {"undone": True, "words": list(dict.fromkeys(words)), "kept": kept}
+
+
+# --- Send report (SEND-EASY, 3.0.19): the cards the learner didn't want ------------------------------------------- #
+BY_FLAG, BY_DELETED = "flag", "deleted"
+
+
+def for_report(language, sent=None, newest=200):
+    """The cards the learner didn't want, for Send report's zip -> [(id, why, card)], newest first, at most `newest`
+    (the flagged sentences' cap, `flags.MAX_LINES`). `card` is exactly what `connect/not_wanted.json` holds for it:
+    `word`, `sentence` (the card's, plain text, or None where this PC has none), `why` (`ignore` · `known`), `by`
+    (`flag`: Suspend + the Ignore flag, read by this loop · `deleted`: a deleted card's answer) and `at` (when). Never a
+    card's or note's id.
+
+    **Read only, from the one record of each:** this loop's record (`cards`: an Ignore move whose sync wasn't undone)
+    and the deleted-card look's rows in Connect's ledger (`deleted.report_rows`: answered Known or Ignore; its other
+    answers go already, as a flagged sentence or a swap) — the ledger also for a red card's sentence, where Connect
+    made that card (Send report never reads Anki). `sent` ({id: why}: Send report's own record) leaves out a card sent
+    as it is now. Raises Unreadable (this record can't be read); a ledger that can't be read now leaves the deleted
+    cards out and the red cards' sentences None."""
+    from app.connect import deleted, swap
+    sent = dict(sent or {})
+    cards = load(language).get("cards")
+    red = [(str(c), r) for c, r in (cards.items() if isinstance(cards, dict) else ())
+           if isinstance(r, dict) and r.get("move") == IGNORE and not r.get("undone") and r.get("word")]
+    try:
+        rows, sentences = deleted.report_rows(language, [r.get("note") for _c, r in red])
+    except Exception:
+        import logging
+        logging.getLogger("surasura-cli").info("The review loop: the ledger couldn't be read for Send report",
+                                               exc_info=True)
+        rows, sentences = [], {}
+    out = []
+    for c, r in red:
+        line = swap._report_text(sentences.get(swap._int(r.get("note"))))
+        out.append((f"r:{c}", IGNORE, {"word": r["word"], "sentence": line, "why": IGNORE, "by": BY_FLAG,
+                                       "at": r.get("at")}))
+    out += [(f"d:{row['note_id']}", row["why"], {"word": row["word"], "sentence": swap._report_text(row["sentence"]),
+                                                 "why": row["why"], "by": BY_DELETED,
+                                                 "at": swap._report_time(row["why_at"])}) for row in rows]
+    out = [x for x in out if sent.get(x[0]) != x[1]]
+    out.sort(key=lambda x: str(x[2]["at"] or ""), reverse=True)
+    return out[:max(0, int(newest))]
+
+
+def report_bytes(language, cards):
+    """`connect/not_wanted.json`'s bytes for `cards` (`for_report`'s third parts), UTF-8."""
+    from app.connect import swap
+    return json.dumps({"format": swap.REPORT_FORMAT, "language": language, "cards": list(cards)}, ensure_ascii=False,
+                      indent=1).encode("utf-8")

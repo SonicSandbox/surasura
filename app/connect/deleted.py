@@ -273,6 +273,52 @@ def status_of(conn, language, now=None):
     return out
 
 
+REPORTED = (KNOWN, IGNORE)      # SEND-EASY: the answers Send report carries as cards not wanted (Parsing mistake goes
+#                                 as a flagged sentence, Bad card and Only in this sentence as a swap already)
+
+
+def report_rows(language, notes=()):
+    """Send report's read (SEND-EASY): the deleted cards answered Known or Ignore -> ([{note_id, word, sentence, why,
+    why_at}], {note: the sentence Connect made it from} for `notes`, the review loop's red cards); ([], {}) with no
+    ledger. Read only: a read-only connection, as `swap._report_rows`. Raises sqlite3.Error when it can't be read
+    now."""
+    import os
+    import sqlite3
+    from pathlib import Path
+    from app.connect import ledger as ledger_mod
+    db_path = ledger_mod.path()
+    if not os.path.exists(db_path):
+        return [], {}
+    conn = sqlite3.connect(Path(os.path.abspath(db_path)).as_uri() + "?mode=rw", uri=True, timeout=2.0)
+    try:
+        conn.execute("PRAGMA query_only=ON")
+        rows = []
+        if _has(conn, "deleted"):
+            cur = conn.execute(f"SELECT note_id, word, sentence, why, why_at FROM deleted WHERE language = ? AND "
+                               f"why IN ({', '.join('?' * len(REPORTED))}) ORDER BY why_at DESC, note_id DESC",
+                               (language,) + REPORTED)
+            rows = [dict(zip(("note_id", "word", "sentence", "why", "why_at"), r)) for r in cur.fetchall()]
+        sentences = {}
+        wanted = sorted({n for n in (_int(x) for x in notes or ()) if n is not None})
+        if wanted and _has(conn, "outcomes"):
+            for at in range(0, len(wanted), 500):
+                part = wanted[at:at + 500]
+                for note, sentence in conn.execute(
+                        f"SELECT note_id, sentence FROM outcomes WHERE outcome = 'made' AND sentence IS NOT NULL AND "
+                        f"note_id IN ({', '.join('?' * len(part))})", part):
+                    sentences.setdefault(int(note), sentence)
+    finally:
+        conn.close()
+    return rows, sentences
+
+
+def _int(value):
+    try:
+        return int(value) if value is not None and not isinstance(value, bool) else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _newer_cards(conn, language, words):
     """{word: the note ids Connect made for it that may still be in Anki}: none the look saw gone (`deleted`), none
     Surasura's own Tidy deleted (`tidies`, done — a Bad card's or a swap's new card its Undo took back among them)."""

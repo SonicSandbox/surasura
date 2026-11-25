@@ -18,9 +18,17 @@ from collections import namedtuple
 
 # One profile's mapping: `fields` is Anki Miner's own role -> field (unmapped roles left out); `word`, `sentence`,
 # `source` and `frequency_sort` are the fields those roles map to, or None. `own_deck` (Michi-DK): Anki Miner's own
-# deck when a run mines into Surasura's instead (`for_run`), else None.
-Mapping = namedtuple("Mapping", "deck note_type fields word sentence source frequency_sort own_deck",
-                     defaults=(None,))
+# deck when a run mines into Surasura's instead (`for_run`), else None. `quiet_mark` (BOOK-CARD): the profile's card
+# type is the audio card — the sentence card's mark a mine with no sound makes instead (`runfile.config`'s `quiet`),
+# or "" when the note type has none; None: any other card type, every mine keeps it.
+Mapping = namedtuple("Mapping", "deck note_type fields word sentence source frequency_sort own_deck quiet_mark",
+                     defaults=(None, None))
+
+# BOOK-CARD (3.0.19; the lead's lean (a), PROVISIONAL until Sonic's § 96 — (b), the plain word card, would be ""): a
+# card mined from a book or a text with no audiobook lined up has no sentence audio, so under the learner's audio card
+# that mine alone makes the sentence card. Anki Miner's card-type ids (its `config.card_type`); the learner's setting
+# is never changed (the run's `config` is for that run only)
+AUDIO_CARD, SENTENCE_CARD = "audio", "sentence"
 
 
 # Where each of these is set right: Surasura's own *Finish its setup* (A4M1-2b), never Anki Miner's window — offered
@@ -70,7 +78,26 @@ def from_export(export, language="ja", do=FINISH):
     if not fields.get("word"):
         raise NeedsYou("Anki Miner doesn't say which field holds the word. " + do)
     return Mapping(deck, note_type, fields, fields["word"], fields.get("sentence"), fields.get("source"),
-                   fields.get("frequency_sort"))
+                   fields.get("frequency_sort"), quiet_mark=_quiet_mark(settings))
+
+
+def _quiet_mark(settings):
+    """BOOK-CARD: `Mapping.quiet_mark` from the export's `settings` — the sentence card's mark field while the card
+    type is the audio card ("" when the mark map names none, or there's no map), else None."""
+    if settings.get("card_type") != AUDIO_CARD:
+        return None
+    marks = settings.get("card_type_marker_fields")
+    mark = marks.get(SENTENCE_CARD) if isinstance(marks, dict) else None
+    return mark.strip() if isinstance(mark, str) else ""
+
+
+def with_note_fields(mapping, model_fields):
+    """BOOK-CARD: `mapping` with its sentence card's mark none ("") when Anki's note type (`model_fields`) has no field
+    for it — Anki Miner refuses a run whose card type's mark the note type lacks (its preflight asks for the field);
+    `model_fields` None (not read): `mapping` as it is."""
+    if mapping.quiet_mark and model_fields is not None and mapping.quiet_mark not in model_fields:
+        return mapping._replace(quiet_mark="")
+    return mapping
 
 
 def surasura_deck(settings, language):

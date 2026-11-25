@@ -119,14 +119,16 @@ def sends_line_skip(app):
     return version is not None and (version + (0, 0, 0))[:3] >= LINE_SKIP_FROM
 
 
-def config(mapping, app, features=(), sentence_keys=None, word_audio=True, workers=None):
+def config(mapping, app, features=(), sentence_keys=None, word_audio=True, workers=None, quiet=False):
     """The run's `config`: every filter off, and the deck, note type and fields `mapping` names (fields.Mapping); the
     target bolded in its sentence where Anki Miner takes that (Z-5, 08-zero: sent per run; Junban and Backfill read
     the bold, K56). `sentence_keys` overrides the version's rule (the caller's one retry without them). `word_audio`
     False (`word_audio_on`): the word-audio field sent unmapped — Anki Miner fetches a word's audio only into a mapped
     one (3.12.0 `services/expression_audio_fetcher.py`), so nothing is asked of Google (Zh-C). `workers` (Michi-LP,
     `power.clip_cuts`): how many clips Anki Miner cuts at once in this run (`max_parallel_workers`; None: the
-    profile's own)."""
+    profile's own). `quiet` (BOOK-CARD): the run cuts no sound (a book or a text): under the profile's audio card it
+    makes the sentence card (`card_type`; "" for a note type with none: `fields.Mapping.quiet_mark`), this run only —
+    every other card type, and a run with sound, sends none (the profile's own)."""
     out = dict(FILTERS_OFF)
     out.update(anki_deck_name=mapping.deck, anki_note_type=mapping.note_type, anki_fields=dict(mapping.fields))
     if not word_audio:
@@ -137,6 +139,10 @@ def config(mapping, app, features=(), sentence_keys=None, word_audio=True, worke
         out["bold_target_in_sentence"] = True
     if workers is not None:
         out["max_parallel_workers"] = int(workers)
+    mark = getattr(mapping, "quiet_mark", None)
+    if quiet and mark is not None:
+        from app.connect.fields import SENTENCE_CARD
+        out["card_type"] = SENTENCE_CARD if mark else ""
     return out
 
 

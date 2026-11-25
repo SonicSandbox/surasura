@@ -2557,6 +2557,8 @@ def _mine_batch(steps, ledger, lang, job, picked, todo, attempt):
         done = steps.swap_new_card(lang, job, _part_read(steps, lang, job, picked), todo, attempt, ledger, row)             if row is not None else None
         if done is not None:
             return done                     # None: mined as any card (Anki takes it, or render didn't find the word)
+    if _meta(ledger, f"{AI_JOB}{int(job['id'])}") is not None:
+        picked = dict(picked, voiced=True)  # BOOK-CARD: the AI voice reads its cards after: the learner's card type
     if not _alone(ledger, job["id"]):
         return steps.mine(lang, job, _part_read(steps, lang, job, picked), todo, attempt)
     got, out, refused = {}, None, []
@@ -5279,7 +5281,7 @@ class Steps:
                                          show=self.show(lang, job), reading=picked.get("reading"),
                                          from_audio=bool(picked.get("from_audio")), names=picked.get("names"),
                                          word_audio=runfile.word_audio_on(now, lang), workers=workers, more=more,
-                                         should_pause=self._reviewing)
+                                         should_pause=self._reviewing, voiced=bool(picked.get("voiced")))
         except anki_miner.AnkiMinerError as e:
             held.clear()                        # any Anki Miner failure (a profile changed too): read again next time
             if e.kind == "profile-changed":

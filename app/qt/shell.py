@@ -1947,6 +1947,7 @@ class ShellWindow(QMainWindow):
         placing rules, the store's two lines and *Set up again* (`settings_store`). -> the page."""
         if self.settings_page is not None:
             return self.settings_page
+        window_idle.slice_ran()                 # the sliced build begins here: its imports and frame are its first slice
         from app.qt import settings_connect, settings_page, settings_rules, settings_sources, settings_store
         from app.qt import settings_io
         holder = self.page_widgets["settings"]

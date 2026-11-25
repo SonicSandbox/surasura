@@ -4568,6 +4568,7 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
         return None
     if chooser is not None:
         chooser.keep()                      # the text of the lines shown now: the next redraw reads only new ones
+        chooser.memo.clear()                # (its one call is over: every file's text let go before the list is drawn)
     if eng.unread:
         print(f"The journey can't be redrawn from the plan ({eng.unread} sentences' text can't be read): generating.")
         return None

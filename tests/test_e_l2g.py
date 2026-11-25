@@ -141,6 +141,52 @@ def test_a_redraw_killed_while_it_writes_word_stats_leaves_the_last_one_and_the_
     assert "Redrew the journey" in out and "generating" not in out.lower(), out[-1500:]
 
 
+# Loaded first in the redraw's child: every memo the one reader hands the score, and at the child's exit how many
+# entries they still hold.
+_MEMO_LEFT = r"""
+import atexit, json, os
+from app import sentence_score
+_choose, _memos = sentence_score.choose, []
+
+
+def _asked(*args, **kwargs):
+    if kwargs.get("memo") is not None:
+        _memos.append(kwargs["memo"])
+    return _choose(*args, **kwargs)
+
+
+def _said():
+    with open(os.environ["E_L2G_MEMO"], "w") as f:
+        json.dump({"asks": len(_memos), "left": sum(len(m) for m in _memos)}, f)
+
+
+sentence_score.choose = _asked
+atexit.register(_said)
+"""
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_redraw_lets_its_readers_memo_go_once_its_one_call_is_over(language, tmp_path):
+    # why: E-L2G 3, row 11's memory — the redraw's one reader kept its memo (every file's text, the rows' columns and
+    # arrays) to the redraw's end, through the list and the journey written after it: the redraw's memory rose 576 →
+    # 671 MB at 20,000 files against the same redraw with no memo. Its one call over, the memo is let go
+    root = _generated(language, tmp_path / "lib")
+    _move(root, language, "top")
+    hook = tmp_path / "hook"
+    hook.mkdir()
+    (hook / "sitecustomize.py").write_text(_MEMO_LEFT, encoding="utf-8")
+    env = _env(root)
+    env["PYTHONPATH"] = str(hook) + os.pathsep + env.get("PYTHONPATH", "")
+    env["E_L2G_MEMO"] = str(tmp_path / "memo.json")
+    p = subprocess.run([sys.executable, os.path.join(cases.REPO, "app", "analyzer.py"), f"--language={language}",
+                        "--static", "--no-open", "--from-plan"], cwd=cases.REPO, env=env, capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
+    assert p.returncode == 0 and "Redrew the journey" in p.stdout, (p.stdout + p.stderr)[-1500:]
+    with open(env["E_L2G_MEMO"], encoding="utf-8") as f:
+        got = json.load(f)
+    assert got["asks"] >= 1 and got["left"] == 0, got
+
+
 # The one reader asked for the list's rows as the level-2 Generate asks it (no kept text read: every line from the
 # token store), each file's whole-token decode counted; `doubt`: every text read is in doubt (the full decode instead).
 _COUNTED_READER = r"""
@@ -183,6 +229,42 @@ def test_a_list_call_reads_its_lines_text_without_decoding_any_files_tokens(gen,
     if not clean:
         got = {tuple(k): v for k, v in fast["got"]}
         assert {k: v for k, v in got.items() if v} == {k: v for k, v in listed.items() if v}, "the list's columns"
+
+
+# The one reader asked as Connect's pick asks it, with a young word weighed (each line's youngest word is read from its
+# tokens), each file's token decode and text-only read counted.
+_YOUNG_READER = r"""
+import json, os, sys
+from app import sentence_corpus, sentence_score, sentence_table, settings_manager, token_index
+from app.path_utils import get_data_path
+language, results, keys = sys.argv[1], sys.argv[2], [tuple(k) for k in json.loads(sys.argv[3])]
+n = {"tokens": 0, "texts": 0}
+tokens, texts = token_index.Store.file_tokens, token_index.Store.file_texts
+def counted_tokens(self, path):
+    n["tokens"] += 1
+    return tokens(self, path)
+def counted_texts(self, path):
+    n["texts"] += 1
+    return texts(self, path)
+token_index.Store.file_tokens, token_index.Store.file_texts = counted_tokens, counted_texts
+tab = sentence_table.open_table(os.path.join(results, sentence_table.TABLE_FILE), language=language)
+_lo, _hi, low, high = sentence_corpus.length_range(settings_manager.load_settings())
+moment = sentence_score.Moment(young={keys[1][0]: 1.0}, root=get_data_path(language))
+got = sentence_score.choose(language, keys[:5], n=3, length=(low, high), moment=moment, table=tab)
+print(json.dumps({"n": n, "rows": sum(1 for v in got.values() if v)}))
+"""
+
+
+def test_a_pick_that_weighs_a_young_word_still_reads_each_files_tokens(gen):
+    # why: E-L2G — `file_texts` stands in for a file's tokens only when no young word is weighed: a young word is found
+    # in a line's tokens (Connect's pick weighs a card's young co-words), so with one weighed every file the walk reads
+    # decodes its tokens, and none is read as text alone
+    language, root = gen
+    results = os.path.join(root, "results")
+    keys = json.dumps([list(k) for k in _columns(results)], ensure_ascii=False)
+    got = _child(root, _YOUNG_READER, language, results, keys)
+    assert got["rows"] > 0 and got["n"]["tokens"] > 0, got
+    assert got["n"]["texts"] == 0, f"a pick weighing a young word read {got['n']['texts']} files' texts alone"
 
 
 _ALL_TEXTS = r"""

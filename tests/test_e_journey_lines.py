@@ -79,7 +79,7 @@ for blob in re.findall(r'<script type="application/gzip-base64" id="j-c\d+">(.*?
                 out["books"] += 1       # the page's own key: no line a card can be cut from
                 continue
             lid = swap.line_id(item, at)
-            got = door_routes._line(steps, language, lid)
+            got = door_routes._line(steps, language, lid, w[0])     # (the body the page sends: the word, the id)
             out["lines"].append([w[0], ln[0], lid, item, None if got is None else [got[0], got[1]]])
 print(json.dumps(out, ensure_ascii=False))
 """

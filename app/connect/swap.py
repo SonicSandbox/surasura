@@ -348,16 +348,18 @@ def _chosen(language, keys, avoid, files, bad, reachable):
     return None
 
 
-def _resolve_line_id(steps, language, text):
+def _resolve_line_id(steps, language, text, word=None):
     """The learner's picked line -> (item id, its text), or None when it no longer exists (the item gone, its subtitle
-    gone or re-timed past it)."""
-    got = line_cue(steps, language, text)
+    gone or re-timed past it). `word`: the word it was picked for (`line_cue`)."""
+    got = line_cue(steps, language, text, word)
     return (got[0], got[1].text) if got else None
 
 
-def line_cue(steps, language, text):
+def line_cue(steps, language, text, word=None):
     """A line id (`line_id()`'s form) -> (item id, its `cues.Cue`, the subtitle it is in), or None when it no longer
-    exists — the one way a picked line is found: Swap's (`_resolve_line_id`) and the journey's clip (`clips.cut`)."""
+    exists — the one way a picked line is found: Swap's (`_resolve_line_id`) and the journey's clip (`clips.cut`).
+    Two cues that start together (two speakers at once) share one id: `word`, the word the line was pressed for (the
+    door's, a swap's), takes the first of them that holds it; no word, or none holds it, the first (E-JOURNEY 2)."""
     got = _parse_line_id(text)
     if got is None:
         return None
@@ -368,9 +370,14 @@ def line_cue(steps, language, text):
             return None
         from app import cues
         from app.cues import seconds
+        first = None
         for cue in cues.read(subtitle, language):
             if abs(int(round(seconds(cue.start) * 1000)) - ms) <= 5:
-                return item_id, cue, subtitle
+                if not word or word in (cue.text or ""):
+                    return item_id, cue, subtitle
+                first = first or cue
+        if first is not None:
+            return item_id, first, subtitle
     except Exception:
         log.info("Swap: a picked line couldn't be read", exc_info=True)
     return None
@@ -580,7 +587,7 @@ def _start(steps, ledger, language, row, store_id, anki, out, count=None, state_
     if avoid is None:
         return                              # an old card's sentence can't be read now: the next look
     tried = json.loads(row["tried"]) if row.get("tried") else []
-    picked = _resolve_line_id(steps, language, row["line_id"]) if row.get("line_id") else None
+    picked = _resolve_line_id(steps, language, row["line_id"], row["word"]) if row.get("line_id") else None
     if picked is not None and (sentences.same_line(picked[1], avoid) or picked[0] in tried):
         picked = None                       # never the old card's line, even picked
     if picked is None:

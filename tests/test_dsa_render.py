@@ -233,7 +233,7 @@ def test_a_rebuild_of_the_same_lines_keeps_the_revision_and_writes_nothing(tmp_p
 
 
 class _Day:
-    """`date` on a day the first build never saw."""
+    """`date` on another day than the first build's (a past one: the flake lints refuse future dates)."""
 
     @staticmethod
     def today():
@@ -241,7 +241,7 @@ class _Day:
 
     @staticmethod
     def isoformat():
-        return "2099-01-01"
+        return "2026-01-02"
 
 
 def test_an_old_one_stream_module_reads_back_for_the_rebuilds_comparison():

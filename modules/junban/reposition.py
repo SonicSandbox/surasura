@@ -423,7 +423,9 @@ def _known_memo(language, settings):
     the files they come from changes (KnownWord.json — its parse held the window's thread ~200 ms at every move —
     and the three word lists), the Chinese script does, or what else they read does (review 3 R5): the token store's
     known-words key (the names, phrases and pronouns switches, the library's name tables) and the key it holds, and
-    the library's names while Ignore names is on."""
+    the library's names while Ignore names is on. The token store is opened once a job, for the key and, after a
+    change, the read — or tried once, when it can't be opened (KYOU-MO-WASTE)."""
+    from app import token_index
     from app.path_utils import get_user_files_path
     user_files = get_user_files_path(language)
     key = [_script(settings)]
@@ -433,31 +435,45 @@ def _known_memo(language, settings):
             key.append((name, st.st_mtime_ns, st.st_size))
         except OSError:
             key.append((name, None))
-    key.append(_known_inputs(language, settings, os.path.join(user_files, "KnownWord.json")))
-    key = tuple(key)
-    hit = _KNOWN_MEMO.get(language)
-    if hit is None or hit[0] != key:
-        # Read as a run reads them (`_place_the_rest`: SANITIZE_JA per language), whatever another language's plan in
-        # this process left: both passes of a job read this one memo (KYOU-MO-HOLD)
-        from app import analyzer
-        analyzer.SANITIZE_JA = language == "ja"
-        hit = _KNOWN_MEMO[language] = (key, _known_sets(language, settings), {})
+    try:
+        store = token_index.open_store(language)
+    except Exception:
+        store = False                       # none to be had: read without it, never asked for again this job
+    try:
+        key.append(_known_inputs(language, settings, os.path.join(user_files, "KnownWord.json"), store))
+        key = tuple(key)
+        hit = _KNOWN_MEMO.get(language)
+        if hit is None or hit[0] != key:
+            # Read as a run reads them (`_place_the_rest`: SANITIZE_JA per language), whatever another language's plan
+            # in this process left: both passes of a job read this one memo (KYOU-MO-HOLD)
+            from app import analyzer
+            analyzer.SANITIZE_JA = language == "ja"
+            hit = _KNOWN_MEMO[language] = (key, _known_sets(language, settings, store), {})   # (closes it once read)
+    finally:
+        if store:
+            store.close()                   # closing it twice is nothing (`Store.close`)
     return hit[1], hit[2]
 
 
-def _known_inputs(language, settings, known_file):
+def _known_inputs(language, settings, known_file, store=None):
     """`_known_sets`' inputs that aren't files: the known-words key the token store would ask for now and the one it
-    holds (`Store._known_key`: the switches and the name tables), and the library's names Ignore names adds."""
+    holds (`Store._known_key`: the switches and the name tables), and the library's names Ignore names adds. `store`:
+    the token store, already open (the caller closes it); False, none to be had; else opened and closed here."""
     from app import token_index
-    try:
-        store = token_index.open_store(language)
+    known = None
+    if store is not False:
         try:
-            known = (store._known_key(token_index.known_signature(known_file, _script(settings))),
-                     store.get_meta("known_sig"))
-        finally:
-            store.close()
-    except Exception:
-        known = None
+            own = store is None
+            if own:
+                store = token_index.open_store(language)
+            try:
+                known = (store._known_key(token_index.known_signature(known_file, _script(settings))),
+                         store.get_meta("known_sig"))
+            finally:
+                if own:
+                    store.close()
+        except Exception:
+            known = None
     try:
         names = tuple(token_index.ignored_names(language))
     except Exception:
@@ -559,6 +575,8 @@ def _place_the_rest(cards, notes, language, settings, rank_of=None, answers=None
     (`_known_memo`, a job's): the known sets as last read, and each word's "known?" answer, kept while their files
     are unchanged. `needs` (Kyou-A, side by side on): a card placed with more unknowns carries them as `needs` (their
     lemmas), so the weave makes it i+1 once they are picked (`plan`'s `weave`).
+
+    Returns the sentence reading it built (`_learning`'s), for the unlocking word's pass to read with (KYOU-MO-WASTE).
     """
     from app import analyzer
     from modules.junban import connect
@@ -689,37 +707,50 @@ def _place_the_rest(cards, notes, language, settings, rank_of=None, answers=None
         card["tier"], card["sort"], card["why"] = by_sentence(card)
         if suggesting and not lean:
             card["check"] = check(card)
+    return word_unknown, units, _view
 
 
 class _SentenceWords:
     """The words of a Japanese sentence as the analyzer reads them, plus what `tokenize` leaves out:
     where each sits — and the learner's known words, to say which are easy — for "i+1 first" (§17).
     Imported here, never at import time (spec I4). `known` (a fast re-plan job's: `_known_memo`'s sets): the known
-    words as the job last read them — read afresh at every move, they held the window's thread (KYOU-MO-HOLD)."""
+    words as the job last read them — read afresh at every move, they held the window's thread (KYOU-MO-HOLD).
+    `learning` (`_place_the_rest`'s answer) and `tagger` (the run's tokenizer's): the reading the run already built
+    from the same known words, library and switches — read with, never built again (KYOU-MO-WASTE)."""
 
-    def __init__(self, language, settings, library=None, known=None):
+    def __init__(self, language, settings, library=None, known=None, learning=None, tagger=None):
         from app import analyzer
         from app.analyzer import _sanitize_term
         analyzer.SANITIZE_JA = True             # before the known words are read (see _place_the_rest; a job's memo
                                                 # was read after `_tokenizer` set it)
         self._analyzer, self._sanitize, self.language = analyzer, _sanitize_term, language
-        self.known_tuples, self.known_lemmas, self.ignore = known if known is not None else _known_sets(language,
-                                                                                                         settings)
-        self._tagger = analyzer.JapaneseTokenizer().tagger
+        self._tagger = tagger or analyzer.JapaneseTokenizer().tagger
         # The list's own learning rule (`_learning`): read already, and a rare compound as its parts.
-        self._unknown, _units, self.view = _learning(
-            language, (self.known_tuples, self.known_lemmas, self.ignore), library, self._tagger, _singles(settings))
+        if learning is not None:
+            self._unknown, _units, self.view = learning
+        else:
+            self._unknown, _units, self.view = _learning(
+                language, known if known is not None else _known_sets(language, settings), library, self._tagger,
+                _singles(settings))
         # A one-kanji word standing as a piece of something else is no word of the sentence (analyzer.bound_uses).
         self._skip = _skip(language, _singles(settings))
         # Without what the last Generate counted no compound is too rare, so none is taken apart (an empty table).
         self._compounds = self.view.parts if library else {}
+        self._read = {}
 
     def of(self, text):
         """`(lemma, reading, surface, orth, at)` per word — what the analyzer counts as one
         (`analyzer.word_lemma`: no punctuation, symbol or number; デルタ counts as デルタ), less the one-character
         words the list can't offer there (`_skip`). A name is a word like any other (the user, 2026-09-30: "you would
         still need to learn names"), unless Settings' Ignore names makes the library's names ignored words — the
-        known sets then hold them."""
+        known sets then hold them. Each text is read once a pass (KYOU-MO-WASTE: cards mined from one scene share a
+        sentence, and `blockers` weighs one for several cards)."""
+        found = self._read.get(text)
+        if found is None:
+            found = self._read[text] = tuple(self._words(text))
+        return found
+
+    def _words(self, text):
         at, words = 0, []
         for word in self._analyzer.join_affixes(self._tagger(text or "")):
             surface, feature = word.surface, word.feature
@@ -750,7 +781,8 @@ class _SentenceWords:
         return not self._unknown(lemma, reading, surface)
 
 
-def _ready_first_pass(cards, notes, rank_of, journey_of, order, language, settings, library=None, known=None):
+def _ready_first_pass(cards, notes, rank_of, journey_of, order, language, settings, library=None, known=None,
+                      learning=None, tagger=None):
     """The unlocking word first (Junban_Backlog_Spec §17, the user 2026-09-24; always since the mining model, Kyou-MO —
     no switch): a card placed with the list whose OWN sentence holds a word from the list that comes AFTER it is not
     i+1 when it comes up.
@@ -771,9 +803,10 @@ def _ready_first_pass(cards, notes, rank_of, journey_of, order, language, settin
     never count (waiting would never teach them), nor do one-character words the list can't offer there, or the
     user's own answers to "Same word as one on your list?" (so a tick previews as the run writes, I5). A sentence
     is read as the list reads it (`_learning`; `library`: what the last Generate counted; `known`: a job's known
-    sets, `_SentenceWords`). Returns `{"pulled", "kept"}`; changes the cards' `sort` and `why` in place.
+    sets; `learning` / `tagger`: the run's own reading, `_SentenceWords`). Returns `{"pulled", "kept"}`; changes the
+    cards' `sort` and `why` in place.
     """
-    words = _SentenceWords(language, settings, library, known)
+    words = _SentenceWords(language, settings, library, known, learning, tagger)
 
     def place(key):
         return journey_sort(order, journey_of.get(key), rank_of[key])
@@ -936,24 +969,27 @@ def known_test(language, settings, tokenizer=None):
                                                      sentence=sentence)
 
 
-def _known_sets(language, settings):
+def _known_sets(language, settings, store=None):
     """`(known_tuples, known_lemmas, ignore)` — the analyzer's own sets, read the way Generate reads
     them: the token store's cached known words, else `load_known_words`, plus the ignore, black and
-    graduated lists. Imported here, never at import time (spec I4)."""
+    graduated lists. Imported here, never at import time (spec I4). `store`: the token store, already open — closed
+    here once its cached words are read, before the slow read below; False, none to be had; else opened here."""
     from app import analyzer, token_index
     from app.path_utils import get_user_files_path
     script = _script(settings)
     user_files = get_user_files_path(language)
     known_file = os.path.join(user_files, "KnownWord.json")
     cached = None
-    try:
-        store = token_index.open_store(language)
+    if store is not False:
         try:
-            cached = store.get_cached_known(token_index.known_signature(known_file, script))
-        finally:
-            store.close()
-    except Exception:
-        cached = None
+            if store is None:
+                store = token_index.open_store(language)
+            try:
+                cached = store.get_cached_known(token_index.known_signature(known_file, script))
+            finally:
+                store.close()
+        except Exception:
+            cached = None
     if cached is None:
         tok = (analyzer.ChineseTokenizer(script=script) if language == "zh"
                else analyzer.JapaneseTokenizer())
@@ -2038,9 +2074,10 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
     suggestions = {}
     # A job's known words, read once for both passes below (KYOU-MO-HOLD: the unlocking word's read them again)
     known_memo = _known_memo(language, settings) if job is not None and tiers else None
+    learning = None
     if tiers:
         # Known words last; everything still unplaced by its own sentence, then FreqSort (§5.4).
-        _place_the_rest(cards, detail["notes"], language, settings, rank_of=rank_of, answers=answers,
+        learning = _place_the_rest(cards, detail["notes"], language, settings, rank_of=rank_of, answers=answers,
                         tokenize=tokenize, library=counted, forms=preview, lean=lean, known_memo=known_memo,
                         needs=bool(weave))
         banner = _banner(cards, detail["notes"], language)
@@ -2070,8 +2107,10 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
             entry["card_ids"].append(card["card_id"])
     # §17, the unlocking word first (always, Kyou-MO): a list card whose own sentence is not ready gets the word it
     # needs brought right before it, or keeps its place. Before the plan, so the preview and the run are one pass (I5).
+    # KYOU-MO-WASTE: it reads with the placement's own LearningView and the run's tagger, never a second of each
     ready_first = (_ready_first_pass(cards, detail["notes"], rank_of, index.journey_of, order, language,
-                                     settings, counted, known_memo[0] if known_memo else None)
+                                     settings, counted, known_memo[0] if known_memo else None, learning=learning,
+                                     tagger=getattr(getattr(tokenize, "__self__", None), "tagger", None))
                    if first_applies(settings, language) else None)
     # HC-N54: the cards you mined yourself since Connect's first go ahead of every other, in the order you mined them.
     yours = (connect.mark_yours(cards, detail["notes"], connect.first_connect_note(url), connect.own_tag(settings))

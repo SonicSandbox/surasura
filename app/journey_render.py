@@ -263,16 +263,18 @@ def _table(module):
 class WordMemo:
     """The meanings and pitch the last page looked up (`results/journey_words.json`, beside the ▶'s memos): a render
     with the same words reads them here instead of scanning the table and tagging every word again (SPEC §5.4's warm
-    row). A word's meaning is kept as the page's own JSON for it ("" = none), so a warm render writes it as it is.
+    row) — and each file's shown name (`shown`: a render is a process of its own, so LM1a's reading of 20,000 names
+    was made from nothing at every redraw, 0.8 s at 20,000 files; L2-WASTE), kept while the code that reads them is
+    the same (`names_key`). A word's meaning is kept as the page's own JSON for it ("" = none), so a warm render writes it as it is.
     Each half is kept only while its key holds (the meanings table's revision; unidic's dictionary file and the
     learner's Kanjium copy), pruned at `save` to the words this page asked; a missing or unreadable memo is an empty
     one (the render is the same, only slower). Holds only what the shipped table and unidic say — never the learner's
     own dictionaries' text."""
 
-    def __init__(self, path, gloss_key, pitch_key):
-        self.path, self.gloss_key, self.pitch_key = path, gloss_key, pitch_key
-        self.meanings, self.pinyins, self.pitch, self.dirty = {}, {}, {}, False
-        self._asked = (set(), set(), set())
+    def __init__(self, path, gloss_key, pitch_key, names_key="?"):
+        self.path, self.gloss_key, self.pitch_key, self.names_key = path, gloss_key, pitch_key, names_key
+        self.meanings, self.pinyins, self.pitch, self.names, self.dirty = {}, {}, {}, {}, False
+        self._asked = (set(), set(), set(), set())
         try:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
@@ -282,9 +284,12 @@ class WordMemo:
             if (data.get("v") == SHAPE and data.get("p_key") == pitch_key and "?" not in pitch_key
                     and isinstance(data.get("p"), dict)):
                 self.pitch = data["p"]
+            if (data.get("v") == SHAPE and data.get("n_key") == names_key and "?" not in names_key
+                    and isinstance(data.get("n"), dict)):
+                self.names = data["n"]
         except Exception:
             pass
-        self._held = (len(self.meanings), len(self.pinyins), len(self.pitch))
+        self._held = (len(self.meanings), len(self.pinyins), len(self.pitch), len(self.names))
 
     @staticmethod
     def _key(*parts):
@@ -323,17 +328,28 @@ class WordMemo:
             self.pitch[self._key(word, reading)] = value
         self.dirty = self.dirty or bool(found)
 
+    def shown(self, name):
+        """A file's shown name (`static_html_generator.shown_name`), the memo's when it holds it."""
+        self._asked[3].add(name)
+        found = self.names.get(name)
+        if not isinstance(found, str):
+            from app.static_html_generator import shown_name
+            found = self.names[name] = shown_name(name)
+            self.dirty = True
+        return found
+
     def save(self):
         """Write the memo, pruned to this page's words, when anything was added or dropped. Best-effort."""
         kept = [{k: v for k, v in held.items() if k in asked}
-                for held, asked in zip((self.meanings, self.pinyins, self.pitch), self._asked)]
+                for held, asked in zip((self.meanings, self.pinyins, self.pitch, self.names), self._asked)]
         if not self.dirty and tuple(len(k) for k in kept) == self._held:
             return
         try:
             tmp = self.path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 f.write(json.dumps({"v": SHAPE, "g_key": self.gloss_key, "m": kept[0], "y": kept[1],
-                                    "p_key": self.pitch_key, "p": kept[2]}, ensure_ascii=False,
+                                    "p_key": self.pitch_key, "p": kept[2], "n_key": self.names_key, "n": kept[3]},
+                                   ensure_ascii=False,
                                    separators=(",", ":")))
             os.replace(tmp, self.path)
         except Exception as e:
@@ -342,6 +358,23 @@ class WordMemo:
                 os.remove(tmp)
             except OSError:
                 pass
+
+
+def names_key():
+    """`WordMemo`'s key for the files' shown names: the code that reads them (`static_html_generator.shown_name`, LM1a's
+    `episode_names.identity`, the rows' `view_rows`) — a freeze's own build (`build_info.BUILD_ID`), from source those
+    three files (each by size and time). "?" when it can't be read: no memo holds it."""
+    try:
+        import sys
+        if getattr(sys, "frozen", False):
+            from app import build_info
+            return f"{MEMO_FORMAT}:build:{build_info.BUILD_ID}" if build_info.BUILD_ID else "?"
+        from app import episode_names, static_html_generator
+        from app.services import view_rows
+        stamps = (os.stat(module.__file__) for module in (episode_names, view_rows, static_html_generator))
+        return f"{MEMO_FORMAT}:" + "|".join(f"{st.st_size}:{st.st_mtime_ns}" for st in stamps)
+    except Exception:
+        return "?"
 
 
 def memo_keys(language):
@@ -1048,6 +1081,7 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
             kind = infer_source_type(s["File"])
             add_ep(None, s["File"], key, None, kind, show_of(f"n{key}", s["File"], kind), False, 0, False, None, None)
     from app.static_html_generator import shown_name
+    shown_name = memo.shown if memo is not None else shown_name      # (the last render's names, when it kept them)
     for n, e in enumerate(eps):
         e[2] = shown_name(e[1])
         if plan_pcts is not None and n in aside and ep_of[ep_keys[n]] != n:
@@ -1353,7 +1387,7 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
     def own(keys):                              # Yours: `build` asks only when *Meanings* is not English
         from app import own_dicts
         return own_dicts.lookup(keys)
-    memo = WordMemo(os.path.join(gen.RESULTS_DIR, WORD_MEMO), *memo_keys(language))
+    memo = WordMemo(os.path.join(gen.RESULTS_DIR, WORD_MEMO), *memo_keys(language), names_key())
     sources = Sources(language, source_map, None, media, timer)
     out = build(language, rows, stats, priority, facts, settings, backlog=backlog,
                 known=_known_terms(language, script),

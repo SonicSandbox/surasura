@@ -922,11 +922,13 @@ def test_a_picked_line_that_is_the_old_cards_own_is_never_the_line(ledger, monke
     _lists(lang)
     anki = _sentence_card(Anki(), 900, word, old)
     _queued(lang, word, line_id="3:1000")
-    monkeypatch.setattr(swap, "_resolve_line_id", lambda steps, l, text: (3, old))
+    asked = []                              # the word the line is found by (two lines at one start: E-JOURNEY)
+    monkeypatch.setattr(swap, "_resolve_line_id", lambda steps, l, text, word=None: asked.append(word) or (3, old))
     monkeypatch.setattr(swap, "choose_line", lambda *a, **k: (8, other))
     swap.look(Steps(), ledger, lang, anki=anki, files=5)
     row = swap._rows(ledger, "1 = 1")[0]
     assert (row["state"], row["item_id"], row["line"]) == (swap.QUEUED, 8, other)
+    assert asked == [word]
 
 
 def test_no_anki_to_read_an_old_cards_line_from_waits_too(ledger, monkeypatch):

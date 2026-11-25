@@ -15,8 +15,9 @@ What is kept for a line (one row of the table is a line and its word):
 
 The file: MAGIC, three little-endian 4-byte lengths, the head (zlib JSON: the format's version, the engine, the run's
 signature, the language, every list row's (word, reading) and its place in the list, the rows that have lines and
-each one's sizes — the head is the index), the sources (zlib JSON: [rel, kind, digest]), the formulas (zlib, four
-int32 arrays), then one zlib block a row: its lines' columns one after another, lines in (file, place) order.
+each one's sizes — the head is the index), the sources (zlib JSON: [rel, kind, digest]; the digest `source_digest`'s),
+the formulas (zlib, four int32 arrays), then one zlib block a row: its lines' columns one after another, lines in (file,
+place) order.
 Little-endian always; the head's keys in a fixed order; one compression level; no time, path of this PC or process id
 inside: the same run writes the same bytes, packed as the walk goes or at the end.
 
@@ -41,7 +42,8 @@ from operator import itemgetter
 
 TABLE_FILE = "sentences.bin"
 MAGIC = b"SURATBL\n"
-VERSION = 3                     # 3: each row's place in the list · 2: the two word numbers counted (1 wrote 0)
+VERSION = 4                     # 4: a source's digest signs its path in one spelling (`source_digest`) · 3: each
+                                # row's place in the list · 2: the two word numbers counted (1 wrote 0)
 LEVEL = 3                       # zlib: 0.44 s for 7.01 MB at 20,000 files (lighter 7.42 MB, harder 1.15 s: SPEC § 8.2)
 
 OVER = 1 << 2                   # marks: over *Never longer than* (a file's first sentence of the word; never chosen)
@@ -464,6 +466,17 @@ def _zjson(value):
     return zlib.compress(json.dumps(value, separators=_SEP, ensure_ascii=False, sort_keys=True).encode("utf-8"), LEVEL)
 
 
+def source_digest(path, stat, kind):
+    """A source's digest as the table holds it (SPEC § 5.4): `plan_rules.file_digest` of its path in one spelling — the
+    normalised one (`os.path.normcase(os.path.abspath(…))`, the token store's key) — its stat `[mtime, size]` and its
+    kind. The Generate signs it, the readers check it (`Table.as_read`, the score's `as_read`). A path is spelled as its
+    process spells the data folder (`H:/…` in one, with backslashes in another) and the file is the same: signed as
+    spelled, a reader that spelled the folder its own way refused every line. (The plan's own digest is the run signature's, its
+    path as spelled: unchanged.)"""
+    from app import plan_rules
+    return plan_rules.file_digest([os.path.normcase(os.path.abspath(path)), stat, None, None, kind])
+
+
 class Table:
     """The table, made by `Packer.finish` or read by `open_table` (the head; blocks on demand)."""
 
@@ -564,12 +577,12 @@ class Table:
         return {(keys[k][0], keys[k][1]): k for k in self.head["rows"]}
 
     def as_read(self, src, root):
-        """Is source `src`'s file the one the Generate read: there, its digest (path, time, size, kind) the table's
-        (SPEC § 5.4)? `root`: the language's data folder, a relative source's. No digest, gone, any error: False —
-        nothing of it is shown, never a line of another file. (The rule of the score's `as_read` for a source with a
-        digest, `app/sentence_score.py`; the word card's, E-HOVER.)"""
+        """Is source `src`'s file the one the Generate read: there, its digest (`source_digest`: its path in one
+        spelling, time, size, kind) the table's (SPEC § 5.4)? `root`: the language's data folder, a relative source's,
+        its separators, case and `.` parts as the caller writes them (another drive's name for it is another path). No
+        digest, gone, any error: False — nothing of it is shown, never a line of another file. (The rule of the score's
+        `as_read` for a source with a digest, `app/sentence_score.py`; the word card's, E-HOVER.)"""
         try:
-            from app import plan_rules
             if src < 0:
                 return False
             rel, kind, digest = self.sources()[src]
@@ -577,8 +590,7 @@ class Table:
                 return False
             path = rel if os.path.isabs(rel) else os.path.join(root, "") + rel.replace("/", os.sep)
             st = os.stat(path)
-            return any(plan_rules.file_digest([signed, [st.st_mtime, st.st_size], None, None, kinds]) == digest
-                       for signed in dict.fromkeys((os.path.join(root, rel), path))
+            return any(source_digest(path, [st.st_mtime, st.st_size], kinds) == digest
                        for kinds in ((kind, None) if not kind else (kind,)))
         except Exception:
             return False

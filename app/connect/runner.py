@@ -1820,9 +1820,10 @@ def _best(steps, ledger, lang, job, words, here):
             return words, []
         own = job["item_id"]
         mines = getattr(steps, "mines", None)
+        # (one line a word: the score's first and the mined episode's own are all it reads — the score's path)
         found = sentences.choose(lang, [(w["word"], w["reading"]) for w in words], here=here, dial=sentences.BEST,
                                  reach=lambda item_id: item_id != own and steps.video(lang, {"item_id": item_id})
-                                 is not None, books=bool(mines is not None and mines(lang, "books")))
+                                 is not None, books=bool(mines is not None and mines(lang, "books")), top=1)
     except Exception as e:      # never the mining's fault: the episode's own lines, as Nearest
         log.info("Connect: Best sentences not read (%s): %s", lang, e)
         return words, []

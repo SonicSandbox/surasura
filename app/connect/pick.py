@@ -684,10 +684,10 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
     with the words it may send -> {key: [line text, …]} the score's lines of each inside this file, best first, or
     None; never for a Swap with its `line` (chosen already). The score weighs the Length and the cap itself, so its
     order goes before `length` and `fits` here. The score chooses the line and the cut refuses what it can't make (SPEC § 11, overlap 78): of the lines its
-    refusals leave (sung, inside tsubasa's undetermined spans, Swap's old card's), the score's first it holds — its
-    line, or one inside the other (Swap's `same_line`), the same line first — after "a line no other word took" only
-    (no two cards share a sentence: PROVISIONAL); none of them there, or a word the score holds no line of, and its
-    own rule below, as today."""
+    refusals leave (sung, inside tsubasa's undetermined spans, Swap's old card's), the score's first it holds whose
+    card fits the 8 s cap uncut (`CAP_MS`), else its first (SPEC §§ 11-12) — its line, or one inside the other (Swap's
+    `same_line`), the same line first — after "a line no other word took" only (no two cards share a sentence:
+    PROVISIONAL); none of them there, or a word the score holds no line of, and its own rule below, as today."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
     found, new_in = occurrences(cues, tokens, language, is_known, skip_single, phrase_set, readable, ignore_names,
@@ -854,6 +854,17 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
                 return (n, 1)
         return (len(texts), 0) if exact is None else (exact, 0)
 
+    def chosen(o, texts, at):
+        """Where the score puts the cue of `o`: (a line it didn't name, its card past the 8 s cap, `placed`) — of its
+        lines, those whose card fits uncut first (one past the cap only when none of them fits), then a line it didn't
+        name (the cut's own rule below); every use alike without `texts`."""
+        place = placed(o, texts, at)
+        if not texts:
+            return (0, 0, place)
+        if place[0] >= len(texts):
+            return (1, 0, place)
+        return (0, 0 if fits(o.cue) else 1, place)
+
     words, not_offered, taken = [], [], set()
     from app import anki_match
     for key in candidates:
@@ -886,11 +897,12 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
             not_offered.append({"word": key[0], "reading": key[1], "orth": first.orth, "reason": reason,
                                 "why": REASONS[reason]})
             continue
-        # a line no other word took; the score's line (`ranked`); the word on its own (not inside a rare compound,
-        # Kantan-MA); no other new word; audio the subtitle gives no reason to doubt; a card that fits the cap uncut
-        # (else the shortest); written out
+        # a line no other word took; the score's line (`ranked`) — of its lines, the best that fits the 8 s cap uncut,
+        # else its first (SPEC §§ 11-12); the word on its own (not inside a rare compound, Kantan-MA); no other new
+        # word; audio the subtitle gives no reason to doubt; a card that fits the cap uncut (else the shortest);
+        # written out
         texts, at = scored(key)
-        best = min(usable, key=lambda o: (not taken.isdisjoint(span(o.cue)), placed(o, texts, at), o.inside,
+        best = min(usable, key=lambda o: (not taken.isdisjoint(span(o.cue)), chosen(o, texts, at), o.inside,
                                           others(o) > 0, doubts(o.cue),
                                           not fits(o.cue),
                                           length(o.cue), 0 if fits(o.cue) else card(o.cue)[3],

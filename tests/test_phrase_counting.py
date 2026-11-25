@@ -220,10 +220,12 @@ def test_a_phrase_whose_words_joined_are_a_word_is_no_row(library, monkeypatch):
 
 
 def test_a_new_phrase_puts_a_sentence_after_cleaner_ones_among_a_words_examples():
-    """やっと's example sentences, every other word in them known: its first sentence leads, as always; of the other
-    two, やっと気がついた holds the phrase 気が付く — a row further down the list (its words known: half score), so
-    still new at やっと's place — and やっと雨が止んだ holds none. On, the cleaner one comes first; off, file order. No
-    sentence is taken away: an i+1 sentence stays i+1 (the phrase is no unknown of its own)."""
+    """やっと's example sentences, every other word in them known: やっと気がついた holds the phrase 気が付く — a row
+    further down the list (its words known: half score), so still new at やっと's place — and the other two hold none.
+    On, the phrase's line comes after the cleaner ones; off, nothing weighs it. No sentence is taken away: an i+1
+    sentence stays i+1 (the phrase is no unknown of its own)."""
+    # why: level 2's reader weighs a new phrase (SPEC § 4.1 NEW_PHRASE) and Length, not file order: the old rules "the
+    # first sentence leads" and "off, file order" are level 0's (E-RETIRE)
     root = Path(os.environ["SURASURA_TEST_ROOT"])
     high = root / "data" / "ja" / "HighPriority"
     high.mkdir(parents=True)
@@ -238,8 +240,9 @@ def test_a_new_phrase_puts_a_sentence_after_cleaner_ones_among_a_words_examples(
     on = [rows["漸と"][f"Context {n}"] for n in (1, 2, 3)]
     _switch(root, False)
     off = [_run(root)["漸と"][f"Context {n}"] for n in (1, 2, 3)]
-    assert off == ["やっと晴れた。", "やっと気がついた。", "やっと雨が止んだ。"]
-    assert on == ["やっと晴れた。", "やっと雨が止んだ。", "やっと気がついた。"]
+    lines = {"やっと晴れた。", "やっと気がついた。", "やっと雨が止んだ。"}
+    assert set(on) == set(off) == lines, (on, off)
+    assert on[-1] == "やっと気がついた。" and off[-1] != "やっと気がついた。", (on, off)
 
 
 def test_chinese_is_never_read_for_phrases(monkeypatch):

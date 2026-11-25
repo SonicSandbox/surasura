@@ -225,9 +225,11 @@ def test_where_media_is_cut_a_lined_up_books_line_it_never_says_is_no_choice(no_
     # book's file answers its `Reach` — so a line its line-up never says (a chapter outside the audiobook's reach) went
     # in as Best's choice with no audio while the AI voice was off; it is left out line by line, as `_from_list` does
     from tests.connect.test_kantan_sd_dial import EASY, HARD, TODAY, _key, _lemmas
+    # (the Chinese lines are 11-14 characters: inside the library search's window at every level, 5 either side of
+    # *Length*, 14-25 since the flip — SPEC § 4.3 keeps that wall for a word with no row)
     from tests.connect.test_kantan_sd_dial import _library as _indexed
     from tests.connect.test_kantan_sd_dial import _place
-    easy, today, hard = (EASY, TODAY, HARD) if lang == "ja" else ("他接到电话了。", "我接到电话了。",
+    easy, today, hard = (EASY, TODAY, HARD) if lang == "ja" else ("他昨天晚上接到电话了。", "我昨天晚上接到电话了。",
                                                                   "那个陌生人打来的电话很奇怪。")
     lemma = "冒険" if lang == "ja" else "电话"
     here, book, other = _indexed(lang, {"第01話.txt": [hard], "本.txt": [easy], "第02話.txt": [today]},

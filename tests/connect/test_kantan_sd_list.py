@@ -27,6 +27,10 @@ from app import sentence_corpus as sc
 from app.connect import sentences
 from app.path_utils import get_data_path, get_user_file
 
+# why: this file proves Connect's list rows (`_from_list` over a format-4 plan's pools, `plan_engine.candidates`): the
+# path level 0 runs, which E-RETIRE removes with them
+pytestmark = pytest.mark.usefixtures("level_0")
+
 EASY = "明日から冒険に出かけよう。"          # every word known but 冒険
 TODAY = "今日から冒険に出かけよう。"         # the same, 今日 for 明日
 HARD = "未知の迷宮で壮絶な冒険が始まった。"    # 未知 迷宮 壮絶 unknown too

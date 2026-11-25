@@ -17,6 +17,10 @@ import pytest
 
 from app import analyzer
 
+# why: the list's forced audio slot and its shortlist of 24 (plan_rules.AUDIO_POOL) are level 0's; at level 2
+# *Ensure an audio example* is the card's (SPEC § 4.5) — E-RETIRE removes both
+pytestmark = pytest.mark.usefixtures("level_0")     # (conftest's; tests/sentence_level.py)
+
 
 # The situation the feature exists for: a word with plenty of GOOD prose examples and one
 # audio example that loses on merit. The subtitle lines are deliberately long (past the
@@ -119,8 +123,11 @@ def _run(root, extra_args):
     assertions still pass, because a real library contains the same vocabulary a test looks for.
     """
     results = root / "results"
+    # why: the list's sentences (level 2: analyzer.ListSentences) read the lines from the data folder path_utils names
     with patch("app.analyzer.get_user_file", side_effect=lambda p: str(root / p)), \
          patch("app.analyzer.get_data_path",
+               side_effect=lambda l=None: str(root / "data" / l) if l else str(root / "data")), \
+         patch("app.path_utils.get_data_path",
                side_effect=lambda l=None: str(root / "data" / l) if l else str(root / "data")), \
          patch("app.analyzer.get_user_files_path",
                side_effect=lambda l=None: str(root / "User Files" / l) if l else str(root / "User Files")), \

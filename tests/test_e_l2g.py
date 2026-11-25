@@ -203,12 +203,19 @@ def counted_tokens(self, path):
 def counted_texts(self, path):
     n["texts"] += 1
     return texts(self, path)
+some = getattr(token_index.Store, "some_texts", None)
+def counted_some(self, asked):
+    n["texts"] += len(asked)            # (each file whose lines are read alone: E-PICK)
+    return some(self, asked)
 token_index.Store.file_tokens = counted_tokens
 if texts is not None:
     token_index.Store.file_texts = counted_texts
+if some is not None:
+    token_index.Store.some_texts = counted_some
 if doubt == "1":
     token_index._decode_texts = lambda blob, lines: None
-analyzer._read_shown = lambda results_dir, run_signature, forms=None: {}
+    token_index._decode_some = lambda blob, lines, numbers: None
+analyzer._read_shown = lambda results_dir, run_signature, forms=None, silent=None: {}
 got = analyzer.ListSentences(language, 3, clean == "1", results_dir=results)([tuple(k) for k in keys], None)
 print(json.dumps({"n": n, "got": [[list(k), v] for k, v in got.items()]}, ensure_ascii=False))
 """
@@ -249,6 +256,11 @@ def counted_texts(self, path):
     n["texts"] += 1
     return texts(self, path)
 token_index.Store.file_tokens, token_index.Store.file_texts = counted_tokens, counted_texts
+some = token_index.Store.some_texts
+def counted_some(self, asked):
+    n["texts"] += len(asked)
+    return some(self, asked)
+token_index.Store.some_texts = counted_some
 tab = sentence_table.open_table(os.path.join(results, sentence_table.TABLE_FILE), language=language)
 _lo, _hi, low, high = sentence_corpus.length_range(settings_manager.load_settings())
 moment = sentence_score.Moment(young={keys[1][0]: 1.0}, root=get_data_path(language))
@@ -346,6 +358,7 @@ from app import analyzer, sentence_score, sentence_table, token_index
 language, results, keys = sys.argv[1], sys.argv[2], [tuple(k) for k in json.loads(sys.argv[3])]
 reads, taken = collections.Counter(), [0]
 tokens, texts, take = token_index.Store.file_tokens, getattr(token_index.Store, "file_texts", None), sentence_score._take
+some = getattr(token_index.Store, "some_texts", None)
 def counted_tokens(self, path):
     reads[path] += 1
     return tokens(self, path)
@@ -355,13 +368,22 @@ def counted_texts(self, path):
     if got is None:
         reads[path] -= 1                # (in doubt: its file_tokens read counts it)
     return got
+def counted_some(self, asked):
+    got = some(self, asked)
+    for path, numbers in asked.items():
+        if got.get(path) is not None:   # (in doubt: its whole read counts it)
+            for number in numbers:
+                reads[path, number] += 1
+    return got
 def counted_take(tab, want):
     taken[0] += 1
     return take(tab, want)
 token_index.Store.file_tokens, sentence_score._take = counted_tokens, counted_take
 if texts is not None:
     token_index.Store.file_texts = counted_texts
-analyzer._read_shown = lambda results_dir, run_signature, forms=None: {}
+if some is not None:
+    token_index.Store.some_texts = counted_some
+analyzer._read_shown = lambda results_dir, run_signature, forms=None, silent=None: {}
 table = sentence_table.open_table(os.path.join(results, sentence_table.TABLE_FILE), language=language,
                                   engine=analyzer.engine_id(), run_signature=analyzer.read_run_stamp(results))
 one = analyzer.ListSentences(language, 3, True, results_dir=results, table=table)     # (the Generate's own table)
@@ -380,7 +402,8 @@ print(json.dumps({"counts": counts, "left": len(left), "same": second == fresh, 
 def test_only_i_plus_ones_second_round_reads_no_files_text_and_no_column_again(gen):
     # why: E-L2G, row 15 — *Only i+1* asks the reader again for the words left, in their own order; each call made a
     # new moment and no memo, so round 2 took every column and decoded every file's text again. One reader keeps
-    # what no order changes: each file read once, the columns taken once, the answer a fresh reader's
+    # what no order changes: each file read whole once and each line read alone once (E-PICK: a file is opened
+    # again only for lines round 1 didn't take), the columns taken once, the answer a fresh reader's
     language, root = gen
     keys = json.dumps([list(k) for k in _columns(os.path.join(root, "results"))], ensure_ascii=False)
     got = _child(root, _ROUNDS, language, os.path.join(root, "results"), keys)

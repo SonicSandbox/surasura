@@ -235,13 +235,17 @@ class _Picked(Exception):
 
 @pytest.mark.parametrize("logic, lengths", [
     ({"context": {"min_chars": 12, "preferred_max_chars": 40, "max_chars": 90}}, (12, 40, 90)),
-    ({}, (10, 50, 150)),                                    # the settings' own defaults
-    ({"context": {"min_chars": "x", "preferred_max_chars": 5}}, (10, 10, 150)),     # not a number: its default; a
-    ({"context": {"min_chars": True, "preferred_max_chars": -3, "max_chars": 20}}, (10, 50, 50)),  # max under the
-    ({"context": {"max_chars": 0}}, (10, 50, 0)),          # min the min, a cap under it the max; 0: no cap
+    ({}, ("low", "high", 150)),                             # the settings' own defaults
+    ({"context": {"min_chars": "x", "preferred_max_chars": 5}}, ("low", "low", 150)),     # not a number: its default;
+    ({"context": {"min_chars": True, "preferred_max_chars": -3, "max_chars": 20}}, ("low", "high", "high")),  # a max
+    ({"context": {"max_chars": 0}}, ("low", "high", 0)),   # under the min the min, a cap under it the max; 0: no cap
 ])
 def test_the_pick_verb_hands_a_books_pick_the_learners_length(monkeypatch, logic, lengths):
-    # why: the setting reaches a book's pick only through the verb — a pick never handed it orders as before
+    # why: the setting reaches a book's pick only through the verb — a pick never handed it orders as before.
+    # "low" / "high": *Length*'s default at the tree's level (14-25 since the flip), read from its one home
+    from app.settings_manager import sentence_length_default
+    low, high = sentence_length_default()
+    lengths = tuple({"low": low, "high": high}.get(n, n) for n in lengths)
     got = {}
     monkeypatch.setattr(verbs, "settings", lambda: {"target_language": "ja", "logic": logic})
     monkeypatch.setattr(verbs, "require_set_up", lambda lang: None)

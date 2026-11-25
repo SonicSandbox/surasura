@@ -36,6 +36,20 @@ def _generate(root, language):
     return out
 
 
+def _rows(data):
+    import csv
+    import io
+    return list(csv.DictReader(io.StringIO(data.decode("utf-8-sig"))))
+
+
+def _but_sentences(row):
+    return {k: v for k, v in row.items() if not k.startswith(("Context ", "Src "))}
+
+
+def _shown_from(rows, rel):
+    return any(v == rel for r in rows for k, v in r.items() if k.startswith("Src "))
+
+
 def _child(root, code):
     """The last line `code` prints in a process with Generate's environment (its token store, its library store)."""
     p = subprocess.run([sys.executable, "-c", code], cwd=REPO, env=child_env(root), capture_output=True, text=True,
@@ -69,7 +83,17 @@ def test_a_missing_item_keeps_counting_in_generate(language):
     store.close()
     missing = _generate(root, language)
 
-    assert missing == present, "the missing file's words, sentences and places still count"
+    from app import plan_rules
+    if plan_rules.SENTENCE_TABLE < 2:
+        assert missing == present, "the missing file's words, sentences and places still count"
+    else:   # release 2: a gone file's lines are removed, no card can be made from them (SPEC § 4.3, § 5.4); its
+        gone = os.path.relpath(now2, data_dir).replace(os.sep, "/")      # words and places still count (9b)
+        for name in COMPARED:
+            was, now = _rows(present[name]), _rows(missing[name])
+            assert ([_but_sentences(r) for r in now] == [_but_sentences(r) for r in was]), (
+                f"{name}: the missing file's words and places still count")
+            assert _shown_from(was, gone), f"{name}: (its lines were shown while it was there)"
+            assert not _shown_from(now, gone), f"{name}: no line of the missing file is shown"
     assert _child(root, examples) == offered, "...and still offered once it is missing, as the list counts it"
     held = _child(root, f"from app import token_index as ti; s = ti.open_store('{language}'); "
                         f"print(ti._norm({now2!r}) in s.counted_files())")

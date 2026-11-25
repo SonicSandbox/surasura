@@ -360,7 +360,7 @@ def test_after_moves_the_journey_is_redrawn_from_the_plan_as_its_generate_writes
     a Generate of that order run now writes (the redraw changes when, never what)."""
     import subprocess
     import sys
-    from app import analyzer, library_store as ls, plan_engine
+    from app import analyzer, library_store as ls, plan_engine, plan_rules
     from tests import plan_file_cases as cases
 
     root = h.root()
@@ -465,9 +465,17 @@ def test_after_moves_the_journey_is_redrawn_from_the_plan_as_its_generate_writes
         del os.environ["SURASURA_FORCE_RUN"]
     assert controller.state().state == G.CURRENT
     at_once = _outputs(results)
-    assert analyzer.REDRAW_FILE not in at_once, "a Generate removes the redraw's marker"
+    if plan_rules.SENTENCE_TABLE < 2:
+        assert analyzer.REDRAW_FILE not in at_once, "a Generate removes the redraw's marker"
+    else:       # release 2: the Generate writes its own marker, drawn for its own run (E-REDRAW part 2)
+        own = analyzer.redrawn_for(results)
+        assert own is not None and own["plan"] == own["run"] != drawn["plan"], "the Generate's own marker"
     moved = sorted(name for name in at_once if redrawn.get(name) != at_once[name])
     print("moved:", moved)
+    if plan_rules.SENTENCE_TABLE >= 2:    # (and what carries the run's own signature: the table's head, the shown
+        from app import sentence_table   # lines' file, the marker: the Generate's own run, the redraw's the plan's)
+        moved = [name for name in moved
+                 if name not in (sentence_table.TABLE_FILE, analyzer.SHOWN_FILE, analyzer.REDRAW_FILE)]
     assert set(moved) <= set(REDRAW_OWN), moved
     for name in ("priority_learning_list.csv", "progressive_learning_list.csv", "reading_list_static.html",
                  "file_statistics.json", "file_statistics.txt"):

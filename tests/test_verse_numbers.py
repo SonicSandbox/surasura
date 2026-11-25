@@ -47,7 +47,7 @@ def test_a_number_that_counts_something_stays(tagger, sentence):
 
 
 @pytest.fixture
-def ja_env():
+def ja_env(monkeypatch):
     temp = tempfile.mkdtemp()
     data_dir = os.path.join(temp, "data", "ja")
     for bucket in ("HighPriority", "LowPriority", "GoalContent"):
@@ -62,6 +62,9 @@ def ja_env():
     os.makedirs(results)
 
     analyzer.get_data_path = lambda lang=None: data_dir
+    # why: the list's sentences (level 2: analyzer.ListSentences) read the lines from the data folder path_utils names
+    monkeypatch.setattr("app.path_utils.get_data_path",
+                        lambda lang=None: os.path.join(temp, "data", lang) if lang else os.path.join(temp, "data"))
     analyzer.get_user_files_path = lambda lang=None: user_files
     analyzer.RESULTS_DIR = results
     analyzer.OUTPUT_CSV = os.path.join(results, "priority_learning_list.csv")

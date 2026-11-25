@@ -17,7 +17,7 @@ from types import MappingProxyType
 
 import pytest
 
-from app import settings_manager, settings_placement
+from app import plan_rules, settings_manager, settings_placement
 from app.connect import settings_values
 from app.qt import settings_catalog as catalog
 from app.qt import settings_strings as S
@@ -280,6 +280,8 @@ def test_each_rows_change_writes_its_own_keys_and_nothing_else(language):
         riders = {catalog.CHOSEN} if row.id == "known_from_anki" else set()
         riders |= {"junban_off_list"} if row.id in catalog.ASIDE_TICKS else set()     # Kyou-MO: the switch's pin
         riders |= {catalog.SWAP_CHOSEN} if row.id == "swap_in_place" else set()      # FS-2: *Swap gives*' marker
+        if row.id == "sentence_length" and plan_rules.SENTENCE_TABLE >= 1:      # E-LENGTH: with the table on, the
+            riders |= {settings_manager.SENTENCE_LENGTH_CHOSEN}               # pair and the learner's mark
         assert set(changes) <= set(row.keys) | riders, f"{row.id} wrote {sorted(changes)}"
         assert (update is not None) == (row.keys[0] in catalog.PER_LANGUAGE), row.id
         for key in changes:
@@ -327,6 +329,9 @@ def test_toggles_choices_numbers_and_text_write_their_value():
         catalog.change(catalog.ROW["zh_script"], settings, "zh", "simplified")       # the mock's word, not a value
 
 
+# why: proves level 0's rule (one end written); with the sentence table on, a Length change writes the pair and
+# `sentence_length_chosen` (E-LENGTH, tests/test_e_length.py) — E-RETIRE removes the old one
+@pytest.mark.usefixtures("level_0")
 def test_the_sentence_length_range_writes_only_the_end_that_moved():
     settings = {"logic": {"context": {"min_chars": 10, "preferred_max_chars": 50}}}
     row = catalog.ROW["sentence_length"]

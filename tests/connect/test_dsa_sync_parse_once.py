@@ -158,18 +158,21 @@ def test_the_handed_down_copy_parses_again_when_the_bytes_change():
     assert known.read() == (None, None)                              # no file yet
     data = anki_sync._fresh_file([anki_sync._entry(a, 1, "ja", "2026-11-25T15:00:00")])
     known.write(data)
-    assert known.read()[1][0]["dictForm"] == a
+    assert known.read()[1][0]["dictForm"] == a and known.keys() == {a}
+    known.write(dict(data, words=data["words"] + [anki_sync._entry(b, 2, "ja", "2026-11-25T15:00:00")]))
+    assert known.keys() == {a, b}                                    # the keys of what it wrote, not of before
+    known.write(data)
     with open(path, "rb") as f:
         raw = f.read()
     with open(path, "wb") as f:                                      # same length, other bytes, written in place
         f.write(raw.replace(a.encode("utf-8"), b.encode("utf-8")))
-    assert known.read()[1][0]["dictForm"] == b
+    assert known.read()[1][0]["dictForm"] == b and known.keys() == {b}     # the keys go with the parse
     with open(path, "w", encoding="utf-8") as f:
         f.write('{"words": [')
     with pytest.raises(anki_sync._KnownFileError):
         known.read()
     os.remove(path)
-    assert known.read() == (None, None)
+    assert known.read() == (None, None) and known.keys() == frozenset()
 
 
 # --- the Known mark follows the sync's record ---------------------------------------------------------------------- #
@@ -301,3 +304,24 @@ def test_undo_of_known_words_already_gone_from_the_file_writes_nothing(anki, mon
         answer = review_loop.undo("ja", result.loop["sync"])
     assert answer["undone"] and n.writes == 0 and n.backups == 0
     assert open(_path("ja"), "rb").read() == before and _known("ja") == {studied}
+
+
+def test_a_words_second_undo_leaves_its_first_undo_as_it_was(anki, monkeypatch):
+    # why: the one pass over the record must take only the marks not undone yet — an older undone mark of the same
+    # word keeps its own date
+    word, other, *_ = WORDS["ja"]
+    stamps = iter(f"2026-11-25T16:00:{n:02d}" for n in range(60))
+    monkeypatch.setattr(known_signal, "_now", lambda: next(stamps))
+    anki.add(4, other)
+    _sync("ja")
+    anki.add(1, word, suspended=True, tags=["marked"])
+    _sync("ja")
+    known_signal.undo("ja", word, URL, cards_too=False)
+    first = [m["undone"] for m in known_signal.load("ja")["marked"]]
+    anki.add(2, word, suspended=True, tags=["marked"])              # another card of the word, marked: known again
+    _sync("ja")
+    assert _known("ja") == {word, other}
+    assert known_signal.undo("ja", word, URL, cards_too=False)["removed"] is True
+    marked = known_signal.load("ja")["marked"]
+    assert marked[0]["undone"] == first[0] and marked[1]["undone"] not in (None, first[0])
+    assert _known("ja") == {other}

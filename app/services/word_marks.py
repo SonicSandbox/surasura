@@ -182,12 +182,13 @@ def marks(language, known=None):
 def learning(language, known=None):
     """The words Still learning now: every word with an entry turned not known and no known entry (none for a file
     that can't be read), as its entry spells it. `known`: as `apply`'s."""
+    file = known
     try:
-        _data, words = _read_known(language, known)
+        _data, words = _read_known(language, file)
     except anki_sync._KnownFileError:
         return set()
     words = [e for e in words or () if isinstance(e, dict)]
-    known = anki_sync._known_keys(words)
+    known = file.keys() if file is not None else anki_sync._known_keys(words)
     return {str(e.get("dictForm") or "").strip() for e in words
             if _turned(e) and _norm(e.get("dictForm")) not in known and str(e.get("dictForm") or "").strip()}
 
@@ -247,7 +248,7 @@ def _apply_held(language, wanted, result, unknow=False, known=None):
         result.error = f"Nothing was changed: {word_lists.KINDS['ignore']} could not be read ({e})."
         return
     words = list(words or [])
-    known_any = anki_sync._known_keys(words)
+    known_any = set(known.keys()) if known is not None else anki_sync._known_keys(words)
     ours = {_norm(e.get("dictForm")) for e in words if _ours(e)}
     others = {_norm(e.get("dictForm")) for e in words if anki_sync._is_known(e) and not _ours(e)}
     turned = {_norm(e.get("dictForm")) for e in words if _turned(e)}

@@ -306,7 +306,7 @@ def _mark(language, found, state, now, why, terms=None, known=None):
     with _held(language, "Count as known in Anki"):
         file = known if known is not None else anki_sync.KnownFile(language)
         data, words = file.read()
-        known = anki_sync._known_keys(words or [])
+        known = set(file.keys())
         ours = {anki_sync._norm(w.get("dictForm", "")) for w in words or ()
                 if isinstance(w, dict) and w.get("knownBy") == KNOWN_BY}
         added, entries = [], []
@@ -416,11 +416,11 @@ def undo_words(language, words, url=None, cards_too=True, known=None):
     from app.path_utils import backup_to_trash
     with _held(language, "Count as known in Anki (undo)"):
         state = load(language)
+        wanted = set(words)
         mine = {}
-        for word in dict.fromkeys(words):
-            ms = [m for m in state.get("marked") or () if m.get("word") == word and not m.get("undone")]
-            if ms:
-                mine[word] = ms
+        for m in state.get("marked") or ():             # one pass over the record, whatever the words
+            if m.get("word") in wanted and not m.get("undone"):
+                mine.setdefault(m["word"], []).append(m)
         if not mine:
             return {"removed": [], "unsuspended": []}
         cards = [m["card"] for ms in mine.values() for m in ms if cards_too and m.get("card") is not None

@@ -231,29 +231,30 @@ def _known_parts(data):
 class KnownFile:
     """KnownWord.json parsed once and handed down (DSA-SYNC, the DSA audit's G10): a known-words sync's every reader
     and writer — the sync itself, Known from Anki, the review loop's lists, its read-back and total, its Undo — read
-    one parse of it instead of each parsing it again (up to 9 a sync; ~0.05 s each at 9,000 words). Every `read`
-    reads the file's bytes again (~1 ms) and parses only when they aren't the bytes it last parsed or wrote, so a write
-    by anyone else in between (another program, the window's mark while the lock was let go) is always read, never
-    written over. What it hands out is shared by its readers: none may change it in place (each writer builds new
-    lists, as `_sync` does)."""
+    one parse of it (and one set of its known keys, `keys`) instead of each parsing it again (up to 9 a sync; ~0.05 s
+    each at 9,000 words). Every `read` reads the file's bytes again (~1 ms) and parses only when they aren't the bytes
+    it last parsed or wrote, so a write by anyone else between two reads (another program, the window's mark while
+    the lock was let go) is always read, never written over; between a read and its write the known-words lock rules
+    out every Surasura writer, as before. What it hands out is shared by its readers: none may change it in place
+    (each writer builds new lists, as `_sync` does; a caller that adds to `keys` copies it first)."""
 
     def __init__(self, language, path=None):
         self.language = language
         self.path = path or _known_path(language)
-        self._raw = self._parts = None
+        self._raw = self._parts = self._keys = None
 
     def read(self):
         """(data, words), as `_read_known_file` answers: (None, None) when there is no file; raises _KnownFileError
         when it exists but can't be used (the caller must then write nothing)."""
         if not os.path.exists(self.path):
-            self._raw = self._parts = None
+            self._raw = self._parts = self._keys = None
             return None, None
         try:
             with open(self.path, "rb") as f:
                 raw = f.read()
             if raw != self._raw:
                 data = json.loads(decode_text(raw, self.language, "strict", name=os.path.basename(self.path)))
-                self._parts, self._raw = _known_parts(data), raw
+                self._parts, self._raw, self._keys = _known_parts(data), raw, None
         except (OSError, ValueError, UnicodeDecodeError) as e:
             raise _KnownFileError(f"Your known words file could not be read, so nothing was changed "
                                   f"({KNOWN_FILE}: {e}).")
@@ -261,9 +262,16 @@ class KnownFile:
 
     def write(self, data):
         """`data` written whole (atomic, as `_atomic_write_json` writes it) and kept as the parse of what's there."""
+        parts = _known_parts(data)                      # a shape it can't keep is refused before any write
         raw = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
         _atomic_write_bytes(self.path, raw)
-        self._parts, self._raw = _known_parts(data), raw
+        self._parts, self._raw, self._keys = parts, raw, None
+
+    def keys(self):
+        """`_known_keys` of the words `read` last answered (or `write` kept), worked out once for them: a frozenset."""
+        if self._keys is None:
+            self._keys = frozenset(_known_keys((self._parts or (None, None))[1] or []))
+        return self._keys
 
 
 def known_file_refusal(language, path=None):
@@ -810,7 +818,7 @@ def _sync(language, url, decks, fields, include_suspended, full, settings=None, 
         result.total_known = 0
         return result
 
-    known = _known_keys(words or [])
+    known = file.keys()
     now = _now_iso()
     held_back = turned_since(words or [], known)
     new_entries = [_entry(t, nid, language, now) for t, nid in _not_held(terms, newest, held_back)
@@ -828,7 +836,7 @@ def _sync(language, url, decks, fields, include_suspended, full, settings=None, 
         words = data if isinstance(data, list) else data["words"]
 
     result.added = len(new_entries)
-    result.total_known = len(_known_keys(words or []))
+    result.total_known = len(file.keys())
     _save_state(language, {
         "url": url, "decks": decks, "fields": fields, "include_suspended": include_suspended,
         "reading": READING_VERSION,
@@ -1018,7 +1026,8 @@ def sync_all(language, url, decks, fields, settings, include_suspended=False, fu
         result.loop = (signal or {}).get("loop") or None
         if result.loop and result.loop.get("unknown"):      # Ignore / Swap took known words out (the move rule)
             try:
-                result.total_known = len(_known_keys(known.read()[1] or []))
+                known.read()
+                result.total_known = len(known.keys())
             except _KnownFileError:
                 result.total_known = 0
     return result, signal

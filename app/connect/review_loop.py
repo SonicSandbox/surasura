@@ -212,8 +212,8 @@ def read(language, url, decks, fields, settings, known=None):
         changes, known_before = [], set()
         if marks:
             try:
-                _data, entries = known.read()
-                known_before = anki_sync._known_keys(entries or [])
+                known.read()
+                known_before = known.keys()
             except anki_sync._KnownFileError:
                 pass                                        # word_marks says why below, writing nothing
             done = word_marks.apply(language, marks, undoable=False, unknow=True, known=known)

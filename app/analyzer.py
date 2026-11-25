@@ -4096,7 +4096,7 @@ def group_sources(source_list):
 _VOLUME_SUFFIX_RE = re.compile(r"[_Vv\s\-]*\d+$")
 
 
-_DATA_PREFIX = {}                   # {data folder: its absolute path + separator} (`_series_name`)
+_DATA_PREFIX = {}                   # {data folder: itself + a separator, as the run joins it} (`_series_name`)
 
 
 def _series_name(file_path, data_dir):
@@ -4110,14 +4110,15 @@ def _series_name(file_path, data_dir):
     Loose files directly under a tier are each their own work, which is the honest reading: we
     have no evidence they belong together.
 
-    G9: a file under the data folder as written (the store's and the library's paths) is cut by its prefix, made once
-    a folder — `os.path.relpath` made both paths absolute and compared them part by part, for every file of a run (0.45
-    s of the songs' step at 20,000 files, and again in the walk). Anything else is `relpath`'s, as before.
+    G9: a file joined onto the data folder as the run spells it (`resolve_found_files`' and `aside_files`'
+    `os.path.join(data_dir, …)`: an `H:/…` root stays `H:/…`) is cut by that prefix, made once a folder —
+    `os.path.relpath` made both paths absolute and compared them part by part, for every file of a run (0.31 s at 20,000
+    files, in the songs' step and again in the walk). Anything else is `relpath`'s, as before.
     """
     prefix = _DATA_PREFIX.get(data_dir)
     if prefix is None:
-        prefix = _DATA_PREFIX[data_dir] = os.path.join(os.path.abspath(data_dir), "")
-    rel = file_path[len(prefix):].replace("\\", "/") if file_path.startswith(prefix) else None
+        prefix = _DATA_PREFIX[data_dir] = os.path.join(data_dir, "")
+    rel = file_path[len(prefix):].replace("\\", "/") if prefix and file_path.startswith(prefix) else None
     if not rel or "//" in rel or "/./" in f"/{rel}/" or "/../" in f"/{rel}/":
         try:
             rel = os.path.relpath(file_path, data_dir).replace("\\", "/")

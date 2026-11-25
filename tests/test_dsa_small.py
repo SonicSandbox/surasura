@@ -319,6 +319,27 @@ def test_a_files_work_is_cut_from_its_folder_once_never_relpath_a_file(tmp_path,
     assert calls == [], "a file under the data folder as written: no relpath"
 
 
+def test_a_work_is_cut_without_relpath_however_the_run_spells_its_root(tmp_path, monkeypatch):
+    """G9 (session 2's re-measure): a run joins each file onto the data folder as it spells it — `resolve_found_files`'
+    `os.path.join(data_dir, physical_path)`, under a root given as `H:/…` (a bench, a test root) or `H:\\…` (an
+    install). A prefix made with `abspath` turned `H:/…` into `H:\\…` and matched no file of such a run: every one
+    took `relpath` again (0.31 s at 20,000 files). The prefix as the run spells it matches every file, both ways."""
+    roots = [str(tmp_path).replace("\\", "/"), str(tmp_path)]
+    for root in roots:
+        data_dir = os.path.join(root, "data", "ja")
+        paths = [os.path.join(data_dir, rel) for rel in
+                 ("HighPriority/ぼっち・ざ・ろっく！/ep01.ja.srt", "LowPriority/薬屋のひとりごと 2/第3話.srt",
+                  "GoalContent/夜市.txt", "HighPriority/Show 0001/Show 0001 - 01.srt")]
+        want = [_relpath_series(p, data_dir) for p in paths]
+        calls = []
+        real = os.path.relpath
+        monkeypatch.setattr(os.path, "relpath", lambda *a: calls.append(a) or real(*a))
+        assert [analyzer._series_name(p, data_dir) for p in paths] == want == \
+            ["ぼっち・ざ・ろっく！", "薬屋のひとりごと", "夜市.txt", "Show"]
+        assert calls == [], f"the run's own spelling ({root[:3]}…): no relpath"
+        monkeypatch.setattr(os.path, "relpath", real)
+
+
 def test_a_kept_works_song_numbers_reach_the_walk_without_a_set_a_file(tmp_path):
     """G9: a work's kept answer is handed over as kept (each file's sorted numbers), the one read now the same shape
     — so a Generate after nothing changed makes no set per file — and the walk's reader blanks those lines by number

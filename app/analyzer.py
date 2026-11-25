@@ -4760,13 +4760,16 @@ class ListSentences:
     lines no audio is heard from (`Line.heard` silent: SPEC § 4.5) are kept beside them, {(Src, Context)} (`silent`):
     the journey marks them while *Ensure an audio example* is on (`journey_render.silent_lines`)."""
 
-    def __init__(self, language, max_contexts, clean_only=False, results_dir=None, table=None, young=None):
+    def __init__(self, language, max_contexts, clean_only=False, results_dir=None, table=None, young=None,
+                 tagger=None):
         self.language, self.n, self.clean_only = language, plan_rules.context_limit(max_contexts), clean_only
         self.results_dir, self.table, self.young = results_dir or RESULTS_DIR, table, young
         self.run, self.kept, self.read, self.forms, self.forms_read = None, {}, {}, {}, {}
         self.moment, self.length, self.memo, self.young_at, self.read_of = None, None, {}, None, None
         self.silent, self.read_silent, self.read_run = set(), set(), None
-        self.tagger = _LazyTagger() if language == "ja" else None      # (one a chooser: *Only i+1*'s rounds share it)
+        # One a chooser (*Only i+1*'s rounds share it): `tagger`, the run's own fugashi tagger when it has one (the
+        # Generate's: no second one, as the journey's pitch takes it), else one made at the first digit-led sentence
+        self.tagger = (tagger or _LazyTagger()) if language == "ja" else None
 
     def __call__(self, keys, order=None):
         from app import sentence_score, sentence_corpus, sentence_table
@@ -6115,8 +6118,8 @@ def write_rows(path, rows, columns=None, upto=None, keep=None):
             line = [_cell(column, row.get(column)) for column in columns]
             writer.writerow(line)
             if kept is not None and line:   # (an empty line is no row to the reader)
-                kept.append({name: _csv_text(line[n]) if sentence else once(_csv_text(line[n]), _csv_text(line[n]))
-                             for n, name, sentence in picks})
+                kept.append({name: text if sentence else once(text, text)
+                             for n, name, sentence in picks for text in (_csv_text(line[n]),)})
     return kept
 
 
@@ -8139,7 +8142,8 @@ def main():
 
         try:
             _finished = _finish_table()
-            _chooser = ListSentences(language, args.max_contexts, bool(ONLY_I_PLUS_ONE), table=_finished)
+            _chooser = ListSentences(language, args.max_contexts, bool(ONLY_I_PLUS_ONE), table=_finished,
+                                     tagger=tokenizer.tagger if language == "ja" else None)
         except Exception as e:
             print(f"Warning: could not make the sentence table ({e}); the list shows no sentences this time.")
         _left_off, _got, _files_read = set(), {}, None
@@ -8644,6 +8648,7 @@ def main():
         except Exception as e:
             print(f"Error: Could not generate static HTML: {e}")
             _report_failed = True
+        _page_rows = _page_priority = None      # (drawn: not held to the run's end)
 
     # All outputs are now written — record the run-signature so an identical re-run can skip
     # entirely next time (and the presentation fingerprint, signed with the stones the report was

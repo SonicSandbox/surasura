@@ -349,6 +349,19 @@ def test_only_i_plus_ones_rounds_share_one_tagger(tmp_path, monkeypatch):
     assert first[("そこ", "ソコ")][0] == "そこでモーサヤは、主に命じられたとおりにした。"      # (the verse number cut)
     assert second[("見る", "ミル")][0].startswith("見よ")
     assert len(made) == 1, "one tagger for both rounds"
+    made.clear()
+    rounds = iter([verses[:2]])
+    run_tagger = real().tagger                          # (the Generate's own tokenizer's)
+    (tmp_path / "b").mkdir()
+    given = analyzer.ListSentences("ja", 3, clean_only=True, results_dir=str(tmp_path / "b"), table=table, young={},
+                                   tagger=run_tagger)
+    assert given([("そこ", "ソコ"), ("荒れ野", "アレノ")])[("そこ", "ソコ")][0] == first[("そこ", "ソコ")][0]
+    assert made == [] and given.tagger is run_tagger, "the run's tagger given: none made"
+    assert analyzer.ListSentences("zh", 3, tagger=run_tagger).tagger is None
+    with open(analyzer.__file__, encoding="utf-8") as f:                    # (the Generate hands its own over)
+        source = f.read()
+    call = source[source.index("_chooser = ListSentences("):]
+    assert 'tagger=tokenizer.tagger if language == "ja" else None)' in call[:call.index("\n    ") + 200]
 
 
 def _relpath_series(file_path, data_dir):

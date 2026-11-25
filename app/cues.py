@@ -340,11 +340,19 @@ def tokens(cues, language="ja", script="asis", tokenizer=None):
     return out
 
 
+_SPACE_RE = re.compile(r"\s+")             # str.isspace's characters (sre's Unicode \s is the same test)
+
+
 def _squeezed(text):
     """`text` as a sentence is searched in it: no whitespace (a sentence as the tokenizer yields it holds none of the
     spaces between a subtitle's phrases or an .ass file's captions) and no invisible format character (a direction
-    mark, a zero-width space: Unicode Cf)."""
-    return "".join(ch for ch in text if not ch.isspace() and unicodedata.category(ch) != "Cf")
+    mark, a zero-width space: Unicode Cf). The spaces go in one pass; a character at a time only where one that
+    isn't printable is left (a Cf character never is: `isprintable`), so nearly every line is read in C (J-RENDER:
+    the first journey's ▶ times squeezed every subtitle a character at a time, 0.21 s of 2,016 files)."""
+    text = _SPACE_RE.sub("", text)
+    if text.isprintable():
+        return text
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
 
 
 class Timeline:

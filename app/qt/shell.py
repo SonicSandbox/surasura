@@ -1947,6 +1947,7 @@ class ShellWindow(QMainWindow):
         placing rules, the store's two lines and *Set up again* (`settings_store`). -> the page."""
         if self.settings_page is not None:
             return self.settings_page
+        window_idle.slice_ran()                 # the sliced build begins here: its imports and frame are its first slice
         from app.qt import settings_connect, settings_page, settings_rules, settings_sources, settings_store
         from app.qt import settings_io
         holder = self.page_widgets["settings"]
@@ -4948,8 +4949,10 @@ SWITCH_INTERVAL_S = 0.001
 # stretches waited up to 1 ms at many of those (17–23 ms; 11–14 at this). Under 1 ms Windows' Python waits 0 ms and
 # asks at once, spinning: two busy workers alone took 3.5× as long (and 5.5× the CPU) — so only while the window is
 # awake (`window_idle.busy`), 1 ms again the moment it rests (`window_idle.rest`) — or once its stretch outlasts
-# `window_idle.LONG_S` (a page built in slices, the start: the window never rests, and beside the start's ten busy
-# workers the spin left it ~1 % of the lock — Settings 21 s to build instead of 1.3 s)
+# `window_idle.LONG_S` while a page is built in slices (`window_idle.slice_ran`: Settings, the window never resting
+# between them; beside the start's ten busy workers the spin left it ~1 % of the lock — Settings 21 s to build instead
+# of 1.3 s). The start's own first stretch keeps the fine one (OPEN-GAP: at 1 ms the 20,000-file open's input waited
+# 0.7 s)
 AWAKE_SWITCH_INTERVAL_S = 0.00025
 
 
@@ -4969,7 +4972,8 @@ def wire_idle():
     """The window's idle for its process's background threads (`services.window_idle`): woken → busy, back to wait →
     idle — the event dispatcher's own signals, wired once a process (the writer, the reader and the numbers start a
     step only while the window rests, so a press's stretch never takes turns at Python's lock with them), and while it
-    is awake the lock comes back to it at once (`AWAKE_SWITCH_INTERVAL_S`)."""
+    is awake the lock comes back to it at once (`AWAKE_SWITCH_INTERVAL_S`) — but for a stretch that has run a page's
+    build slices (`window_idle.slice_ran`) and outlasted `window_idle.LONG_S`: that one hands it over as at rest."""
     from PyQt6.QtCore import QAbstractEventDispatcher
     d = QAbstractEventDispatcher.instance()
     if d is None or any(x is d for x in _IDLE_WIRED):

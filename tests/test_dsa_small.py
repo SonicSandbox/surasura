@@ -237,6 +237,8 @@ def test_the_journey_drawn_with_the_rows_never_reads_the_lists(tmp_path, monkeyp
     (the reuse path, a re-render) the page reads them from results, as before."""
     from app import journey_render, static_html_generator as gen
     seen = []
+    monkeypatch.setattr(gen, "PRIORITY_CSV", str(tmp_path / "p.csv"))         # (never the real results' lists)
+    monkeypatch.setattr(gen, "PROGRESSIVE_CSV", str(tmp_path / "q.csv"))
     monkeypatch.setattr(journey_render, "store_facts", lambda language: type("Facts", (), {"marks": None})())
     monkeypatch.setattr(journey_render, "render", lambda language, rows=None, priority=None, **kw: seen.append(
         (rows, priority)) or (_ for _ in ()).throw(RuntimeError("drawn")))

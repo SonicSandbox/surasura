@@ -145,34 +145,27 @@ def make_page(data=None, language="ja", found=EVERYTHING, size=(1100, 700), wait
     return page, store
 
 
-def test_the_build_in_slices_marks_the_windows_idle_till_built_and_a_page_gone_mid_build_ends_its_mark(qapp):
-    """OPEN-GAP (2026-11-25): only a page built in slices with no rest between hands Python's lock over as at rest
-    past `window_idle.LONG_S` (Settings during the start: 21 s at 0.25 ms) — the start's own long stretch keeps the
-    fine one (at 1 ms the 20,000-file open's input waited 0.7 s). So the page's mark is on from its first slice and
-    off once it is built; a page gone before it is built ends its mark too (else every later long stretch would hand
-    over as at rest for good), and the slice still due after it never ends it twice."""
+def test_each_build_slice_tells_the_windows_idle_and_a_built_or_gone_page_tells_it_nothing_more(qapp, monkeypatch):
+    """OPEN-GAP (2026-11-25): only a stretch that runs a page's slices hands Python's lock over as at rest past
+    `window_idle.LONG_S` (Settings during the start: 21 s at 0.25 ms) — the start's own long stretch keeps the fine one
+    (at 1 ms the 20,000-file open's input waited 0.7 s). So every slice of the build says so, and a page built, or gone
+    mid-build, says nothing more: nothing is left on for later stretches, however the build stops."""
     from PyQt6 import sip
     from app.services import window_idle
-    window_idle.sliced(True)                          # (another build under way: a second end would show)
-    try:
-        before = window_idle._sliced[0]
-        page, _store = make_page(wait=False)
-        assert window_idle._sliced[0] == before + 1
-        assert wait_until(lambda: page.built, 20)
-        assert window_idle._sliced[0] == before
-        page._slicing.end()                           # (once built, an end again is nothing)
-        assert window_idle._sliced[0] == before
-        gone, _store = make_page(wait=False)
-        assert window_idle._sliced[0] == before + 1 and not gone.built
-        slicing = gone._slicing
-        sip.delete(gone)                              # (its window closed mid-build)
-        assert window_idle._sliced[0] == before
-        slicing.end()                                 # (the slice still due: a second end is nothing)
-        QApplication.processEvents()
-        assert window_idle._sliced[0] == before
-        page.close()
-    finally:
-        window_idle.sliced(False)
+    told = []
+    monkeypatch.setattr(window_idle, "slice_ran", lambda: told.append(1))
+    page, _store = make_page()
+    assert len(told) == len(page.slice_ms) > 1
+    n = len(told)
+    QTest.qWait(30)
+    assert len(told) == n                             # (built: no slice after it)
+    gone, _store = make_page(wait=False)
+    assert wait_until(lambda: len(told) > n, 5) and not gone.built
+    sip.delete(gone)                                  # (its window closed mid-build)
+    m = len(told)
+    QTest.qWait(30)
+    assert len(told) == m
+    page.close()
 
 
 def open_all_folds(page):

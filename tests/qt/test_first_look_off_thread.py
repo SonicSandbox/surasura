@@ -18,6 +18,7 @@ from tests.fixtures import window_seed  # noqa: E402
 from tests.qt.conftest import wait_until  # noqa: E402
 from tests.qt.test_drag import FakeWriter, _stones_sheet, open_window  # noqa: E402,F401  (the stones' sheet fixture)
 from tests.qt.test_window_sources import RecordingLooks  # noqa: E402
+import app.services.source_looks  # noqa: E402,F401  (in, as at a later start: each test takes it out itself)
 
 LOOKS = "app.services.source_looks"     # (shell.LOOKS_MODULE: spelled here, so the test reads the same before it)
 
@@ -80,15 +81,30 @@ def _made_here(win, monkeypatch, looks):
     return runs
 
 
+def _landings(win, monkeypatch):
+    """The worker's answer landing (`_looks_module_in`, called once the module's read ended): the thread it ran on.
+    A test waits for it, never for the module in `sys.modules` (put there before its body runs)."""
+    landed = []
+    real = win._looks_module_in
+
+    def landing(module):
+        landed.append(threading.current_thread() is threading.main_thread())
+        return real(module)
+    monkeypatch.setattr(win, "_looks_module_in", landing)
+    return landed
+
+
 def test_the_first_look_reads_its_module_on_a_worker_and_makes_its_looks_on_the_window_thread(opened, monkeypatch,
                                                                                                   looks_imports):
     win, _services = opened()
     looks = RecordingLooks()
     runs = _made_here(win, monkeypatch, looks)
+    landed = _landings(win, monkeypatch)
     _unread(monkeypatch)
     win._start_looks()
     assert not any(looks_imports), "the window's thread read the looks' module in the first frame's step"
-    wait_until(lambda: runs and looks.asks)
+    assert wait_until(lambda: landed and runs and looks.asks)
+    assert landed == [True]                                    # the answer on the window's thread, once
     assert looks_imports and not any(looks_imports)          # read once, on a worker
     assert runs == [(True, True)]                              # the looks made here, the module in by then
     assert looks.asks == [(True, False, win.in_front())]       # the first look after start: a full one, as before
@@ -111,16 +127,21 @@ def test_a_module_read_already_or_a_tests_own_looks_are_made_at_once(opened, mon
     assert runs2 == [(True, True)] and looks2.asks == [(True, False, win2.in_front())]
 
 
-def test_no_looks_are_made_once_the_window_began_to_quit_before_the_module_came_in(opened, monkeypatch, looks_imports):
+@pytest.mark.parametrize("began", ["closing", "window"])
+def test_no_looks_are_made_once_the_window_began_to_quit_before_the_module_came_in(opened, monkeypatch, looks_imports,
+                                                                                    began):
     win, services = opened()
     looks = RecordingLooks()
     runs = _made_here(win, monkeypatch, looks)
+    landed = _landings(win, monkeypatch)
     _unread(monkeypatch)
     win._start_looks()
-    services.closing.set()                                     # the quit began while the module was being read
-    wait_until(lambda: looks_imports)
-    wait_until(lambda: LOOKS in sys.modules)
-    for _ in range(20):
-        from PyQt6.QtWidgets import QApplication
-        QApplication.processEvents()
+    # the quit began while the module was being read: the services' quit (`begin_quit`), or the window's own (`_quit`
+    # set, the services not told yet — "ready": the update's hand-over; E20's "waiting" brings its own timer and close)
+    if began == "closing":
+        services.closing.set()
+    else:
+        monkeypatch.setattr(win, "_quit", "ready")             # (put back before the window closes)
+    assert wait_until(lambda: landed)                          # the module read and its answer in: then nothing
+    assert landed == [True] and looks_imports and not any(looks_imports)
     assert runs == [] and looks.asks == [] and win.looks is None

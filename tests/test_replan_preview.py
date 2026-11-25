@@ -667,9 +667,9 @@ def test_a_moves_job_reads_the_known_words_only_when_their_files_change(lib, mon
     reads = []
     real = reposition._known_sets
 
-    def counted(language, settings):
+    def counted(language, settings, *store):
         reads.append(language)
-        return real(language, settings)
+        return real(language, settings, *store)
     with _patched(fake):
         host._job("catch-up")                    # the first job reads them (the window's warm-up, here)
         monkeypatch.setattr(reposition, "_known_sets", counted)
@@ -706,6 +706,234 @@ def test_a_jobs_known_words_are_read_as_a_run_reads_them_whatever_a_chinese_plan
     monkeypatch.setattr(analyzer, "SANITIZE_JA", False)       # what a Chinese plan leaves
     sets, _answered = reposition._known_memo("ja", settings)
     assert sets[0] == as_a_run[0] and sets[1] == as_a_run[1] and sets[2] == as_a_run[2]
+
+
+def _real_sentences(root, fake):
+    """Each card's sentence the list's own example line for its word (the library's real subtitles and books), the word
+    in bold as Anki Miner marks it — several cards share a line, as cards mined from one scene do. -> how many."""
+    with open(os.path.join(root, "results", "progressive_learning_list.csv"), encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    lines = {}
+    for row in rows:
+        line = (row.get("Context 1") or "").strip()
+        for word in ((row.get("Word") or "").strip(), (row.get("Orth") or "").strip()):
+            if word and line and word in line:
+                lines.setdefault(word, line)
+    swapped = 0
+    for note in fake.notes.values():
+        word = next(iter(note["fields"].values()))["value"]
+        if word in lines:
+            note["fields"]["Sentence"]["value"] = lines[word].replace(word, f"<b>{word}</b>", 1)
+            swapped += 1
+    return swapped
+
+
+class _Counts:
+    """What a job builds and reads, counted where it is made: LearningViews, taggers, each text a tagger reads (a
+    stretched-vowel re-read of the same text is its own call's), the token store's opens."""
+
+    def __init__(self, monkeypatch):
+        from app import token_index
+        self.views, self.taggers, self.texts, self.opens = 0, 0, {}, 0
+        view, made, read, opened = (analyzer.LearningView.__init__, analyzer.Tagger.__init__, analyzer.Tagger.__call__,
+                                    token_index.open_store)
+
+        def count_view(this, *args, **kwargs):
+            self.views += 1
+            view(this, *args, **kwargs)
+
+        def count_tagger(this, *args, **kwargs):
+            self.taggers += 1
+            made(this, *args, **kwargs)
+
+        def count_read(this, text, unread=()):
+            if not unread:
+                self.texts[text] = self.texts.get(text, 0) + 1
+            return read(this, text, unread)
+
+        def count_open(*args, **kwargs):
+            self.opens += 1
+            return opened(*args, **kwargs)
+        monkeypatch.setattr(analyzer.LearningView, "__init__", count_view)
+        monkeypatch.setattr(analyzer.Tagger, "__init__", count_tagger)
+        monkeypatch.setattr(analyzer.Tagger, "__call__", count_read)
+        monkeypatch.setattr(token_index, "open_store", count_open)
+
+    def clear(self):
+        self.views, self.taggers, self.texts, self.opens = 0, 0, {}, 0
+
+
+def _known_words_changed(root):
+    known = os.path.join(root, "User Files", _language(), "KnownWord.json")
+    with open(known, encoding="utf-8") as f:
+        data = json.load(f)
+    with open(known, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.utime(known, (time.time() + 5, time.time() + 5))
+
+
+@pytest.mark.parametrize("lib", ["ja", "zh"], indirect=True)
+def test_a_moves_job_builds_one_learning_view_and_one_tagger(lib, monkeypatch):
+    """KYOU-MO-WASTE (the margin under R6's 5 ms is 0.5-1 ms; every move pays this): the unlocking word's pass (§17)
+    built its own LearningView and its own fugashi tagger beside the ones the job's placement had just built from the
+    same known words, library and switches. One of each a job (Japanese); Chinese has no pass and no tagger."""
+    root, store = lib
+    fake = _deck(root)
+    assert _real_sentences(root, fake) >= 40
+    host, _lines = _host()
+    with _patched(fake):
+        host._job("catch-up")
+        counts = _Counts(monkeypatch)
+        _move_later_to_top(store)
+        fake.write_requests.clear()
+        host._job("move")
+        assert fake.write_requests, "the move reordered nothing"
+    assert counts.views == 1, f"a move's job built {counts.views} LearningViews"
+    assert counts.taggers == (1 if _language() == "ja" else 0), f"a move's job made {counts.taggers} taggers"
+
+
+@pytest.mark.parametrize("lib", ["ja", "zh"], indirect=True)
+def test_a_moves_job_reads_each_cards_sentence_once(lib, monkeypatch):
+    """KYOU-MO-WASTE: cards mined from one scene share a sentence, and the unlocking word's pass read a list card's
+    sentence again for every card it weighed it for (`blockers`: the card, then each card it would bring) — 2 to 7
+    times a move on the library's own lines. Each text is read once a job; Chinese reads none (jieba, no pass)."""
+    root, store = lib
+    fake = _deck(root)
+    assert _real_sentences(root, fake) >= 40
+    host, _lines = _host()
+    with _patched(fake):
+        host._job("catch-up")
+        counts = _Counts(monkeypatch)
+        _move_later_to_top(store)
+        fake.write_requests.clear()
+        host._job("move")
+        assert fake.write_requests, "the move reordered nothing"
+    again = {text: n for text, n in counts.texts.items() if n > 1}
+    assert not again, f"a move's job read {len(again)} sentence(s) more than once: {list(again.items())[:3]}"
+    if _language() == "ja":
+        assert len(counts.texts) >= 40, "the pass read no sentence: nothing was counted"
+    else:
+        assert not counts.texts
+
+
+@pytest.mark.parametrize("lib", ["ja", "zh"], indirect=True)
+def test_a_jobs_known_words_open_the_token_store_once(lib, monkeypatch):
+    """KYOU-MO-WASTE: a job's known words (`_known_memo`) opened the token store for their key, closed it, and — once
+    the learner's known words changed — opened it again to read them. At most one open a job, changed or not."""
+    root, store = lib
+    fake = _deck(root)
+    host, _lines = _host()
+    with _patched(fake):
+        host._job("catch-up")
+        counts = _Counts(monkeypatch)
+        _move_later_to_top(store)
+        host._job("move")
+        assert counts.opens <= 1, f"a move's job opened the token store {counts.opens} times"
+        counts.clear()
+        _known_words_changed(root)
+        _move_later_to_top(store)
+        fake.write_requests.clear()
+        host._job("move")
+        assert fake.write_requests, "the move reordered nothing"
+    assert counts.opens <= 1, f"a job after the known words changed opened the token store {counts.opens} times"
+
+
+@pytest.mark.parametrize("lib", ["ja", "zh"], indirect=True)
+def test_the_unlocking_pass_places_alike_with_the_jobs_reading_or_its_own(lib, monkeypatch):
+    """KYOU-MO-WASTE: the pass reads with the job's own LearningView and tagger, each sentence once — and places
+    every card as the pass did before, building its own and reading each sentence afresh (the shared reading is the
+    same reading): in a move's job, on real sentences, the pass run both ways on the same cards gives the same sort,
+    reason and counts, and it moves some. Chinese: no pass."""
+    import copy
+    root, store = lib
+    fake = _deck(root)
+    assert _real_sentences(root, fake) >= 40
+    host, _lines = _host()
+    real, runs = reposition._ready_first_pass, []
+    once = reposition._SentenceWords.of
+
+    def both(cards, notes, *args, learning=None, tagger=None, **kwargs):
+        own = copy.deepcopy(cards)
+        with monkeypatch.context() as afresh:              # as before: every sentence read again, no memo
+            afresh.setattr(reposition._SentenceWords, "of", lambda words, text: tuple(words._words(text)))
+            alone = real(own, notes, *args, **kwargs)
+        assert reposition._SentenceWords.of is once
+        shared = real(cards, notes, *args, learning=learning, tagger=tagger, **kwargs)
+        moved = sum(1 for card in cards if "after " in (card.get("why") or "") or "needs " in (card.get("why") or ""))
+        runs.append((learning is not None and tagger is not None, own == cards, alone == shared, moved > 0))
+        return shared
+    with _patched(fake):
+        host._job("catch-up")
+        monkeypatch.setattr(reposition, "_ready_first_pass", both)
+        _move_later_to_top(store)
+        fake.write_requests.clear()
+        host._job("move")
+        assert fake.write_requests, "the move reordered nothing"
+    if _language() == "ja":
+        assert runs == [(True, True, True, True)], runs
+    else:
+        assert runs == []
+
+
+@pytest.mark.parametrize("lib", ["ja", "zh"], indirect=True)
+def test_a_token_store_that_cant_be_opened_is_tried_once_a_job(lib, monkeypatch):
+    """KYOU-MO-WASTE review R1: when the token store can't be opened (busy past its 5 s wait, a damaged file), a job's
+    known words are read without it — the open is tried once, not again for the key and again for the read. The words
+    read are the files' own, as without the store before."""
+    from app import token_index
+    _root, _store = lib
+    settings = _junban_settings()
+    language = _language()
+    monkeypatch.setattr(reposition, "_KNOWN_MEMO", {})
+    monkeypatch.setattr(analyzer, "SANITIZE_JA", language == "ja")         # as the memo reads them (a run's setting)
+    as_without = reposition._known_sets(language, settings, False)
+    tries = []
+
+    def refused(*args, **kwargs):
+        tries.append(args)
+        raise OSError("database is locked")
+    monkeypatch.setattr(token_index, "open_store", refused)
+    sets, _answered = reposition._known_memo(language, settings)               # the first job: a miss
+    assert len(tries) == 1, f"a job tried the token store {len(tries)} times"
+    assert sets == as_without
+    tries.clear()
+    reposition._known_memo(language, settings)                                 # the next: a hit
+    assert len(tries) == 1, f"a job tried the token store {len(tries)} times"
+
+
+@pytest.mark.parametrize("lib", ["ja", "zh"], indirect=True)
+def test_a_jobs_token_store_is_closed_before_the_known_words_slow_read(lib, monkeypatch):
+    """KYOU-MO-WASTE review R2: the one open a job is closed as soon as the store's cached known words are read —
+    never held through the slow read of KnownWord.json that follows when they're stale (the store sets a damaged file
+    aside by renaming it, which an open handle blocks on Windows)."""
+    from app import token_index
+    _root, _store = lib
+    settings = _junban_settings()
+    language = _language()
+    monkeypatch.setattr(reposition, "_KNOWN_MEMO", {})
+    opened, open_at_the_read = [], []
+    real_open, real_read = token_index.open_store, analyzer.load_known_words
+
+    def counted_open(*args, **kwargs):
+        store = real_open(*args, **kwargs)
+        close = store.close
+
+        def closed():
+            store.closed = True
+            close()
+        store.closed, store.close = False, closed
+        opened.append(store)
+        return store
+
+    def slow_read(*args, **kwargs):
+        open_at_the_read.append(sum(1 for store in opened if not store.closed))
+        return real_read(*args, **kwargs)
+    monkeypatch.setattr(token_index, "open_store", counted_open)
+    monkeypatch.setattr(token_index.Store, "get_cached_known", lambda self, signature: None)     # stale: read again
+    monkeypatch.setattr(analyzer, "load_known_words", slow_read)
+    reposition._known_memo(language, settings)
+    assert len(opened) == 1 and open_at_the_read == [0], (len(opened), open_at_the_read)
+    assert all(store.closed for store in opened)
 
 
 def test_known_words_changed_without_a_move_asks_for_no_journey(lib):

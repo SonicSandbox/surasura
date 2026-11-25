@@ -1196,7 +1196,8 @@ def test_the_known_words_memo_reads_again_when_a_switch_or_the_librarys_names_ch
     from app import token_index
     monkeypatch.setattr(reposition, "_KNOWN_MEMO", {})
     reads = []
-    monkeypatch.setattr(reposition, "_known_sets", lambda language, settings: reads.append(1) or (set(), set(), set()))
+    monkeypatch.setattr(reposition, "_known_sets",
+                        lambda language, settings, *store: reads.append(1) or (set(), set(), set()))
     names, key = [], ["sig"]
     monkeypatch.setattr(token_index, "ignored_names", lambda language: list(names))
     monkeypatch.setattr(token_index.Store, "_known_key", lambda self, signature: key[0])

@@ -29,8 +29,10 @@ import json
 import os
 import re
 import time
+import zlib
 from array import array
 from collections import namedtuple
+from itertools import accumulate
 
 SHAPE = 1                       # the shape's version (SHAPE.md); a change is a NOTE to the page first
 SHAPE_MINOR = 1                 # 1.1 (2026-11-22): additive only — the head's `minor`, a source's item id, the seven
@@ -260,10 +262,47 @@ def _table(module):
     return [line.decode("utf-8") for line in _table_lines(module)]
 
 
+def _line_keys(line):
+    """The keys a meanings line (UTF-8 bytes) is found by, each once: its fields before the second tab, split at
+    commas (ja: kanji forms, readings · zh: 简, 繁). [] for a line without them. The build's INDEX holds these."""
+    first = line.find(b"\t")
+    second = line.find(b"\t", first + 1)
+    if first < 0 or second < 0:
+        return []
+    return [key for key in dict.fromkeys(line[:second].replace(b"\t", b",").split(b",")) if key]
+
+
+_GLOSS_INDEX = {}           # {module name: (each bucket's start in the block numbers, the block numbers)}
+
+
+def _gloss_lines(module, wanted):
+    """A meanings module's lines (bytes) in the blocks that may hold one of `wanted` (UTF-8 keys) — every line that
+    does among them, in the table's order — from its INDEX (each key's bucket names its blocks): only those blocks
+    decompressed, the caller checks each line (G4; scripts/build_gloss_data.py). The index is read once a process."""
+    import lzma
+    index = _GLOSS_INDEX.get(module.__name__)
+    if index is None:
+        raw = lzma.decompress(base64.b64decode(module.INDEX))
+        buckets = module.BUCKETS
+        index = _GLOSS_INDEX[module.__name__] = (array("I", accumulate(raw[:buckets], initial=0)), raw[buckets:])
+    starts, named = index
+    buckets, found = module.BUCKETS, set()
+    for key in wanted:
+        b = zlib.crc32(key) % buckets
+        found.update(named[starts[b]:starts[b + 1]])
+    if not found:
+        return
+    data, blocks = base64.b64decode(module.DATA), module.BLOCKS
+    filters = [{"id": lzma.FILTER_LZMA2, "dict_size": module.BLOCK_DICT}]
+    for block in sorted(found):
+        yield from lzma.decompress(data[blocks[block]:blocks[block + 1]], format=lzma.FORMAT_RAW,
+                                   filters=filters).split(b"\n")
+
+
 class WordMemo:
     """The meanings and pitch the last page looked up (`results/journey_words.json`, beside the ▶'s memos): a render
-    with the same words reads them here instead of scanning the table and tagging every word again (SPEC §5.4's warm
-    row) — and each file's shown name (`shown`: a render is a process of its own, so LM1a's reading of 20,000 names
+    with the same words reads them here instead of looking them up in the table and tagging every word again (SPEC
+    §5.4's warm row) — and each file's shown name (`shown`: a render is a process of its own, so LM1a's reading of 20,000 names
     was made from nothing at every redraw, 0.8 s at 20,000 files; L2-WASTE), kept while the code that reads them is
     the same (`names_key`). A word's meaning is kept as the page's own JSON for it ("" = none), so a warm render writes it as it is.
     Each half is kept only while its key holds (the meanings table's revision; unidic's dictionary file and the
@@ -419,8 +458,9 @@ def _pos_text(codes):
 class Meanings:
     """The shipped English meanings (app/gloss_ja_data.py · app/gloss_zh_data.py), read for the words asked only:
     `of(word, reading, orth)` -> [[pos, [gloss, …]], …] or None; `pinyin(word)` (zh) -> the first entry's pinyin.
-    The table is scanned as bytes and only the entries a page's words name are decoded and kept (the whole table
-    decoded is ~85 MB of strings; the page's part, a few MB); with a `WordMemo`, only for the words it lacks.
+    The table's index names the lines a page's words are on: only their blocks are decompressed and only those
+    entries decoded and kept (the whole table decoded is ~85 MB of strings; the page's part, a few MB); with a
+    `WordMemo`, only for the words it lacks.
     `of_json` is `of` as the page's JSON ("" = none), through the memo."""
 
     def __init__(self, language, memo=None):
@@ -435,22 +475,18 @@ class Meanings:
             from app import gloss_zh_data as module
         wanted = {key.encode("utf-8") for key in wanted}
         index, isdisjoint = {}, wanted.isdisjoint
-        for line in _table_lines(module):
-            first = line.find(b"\t")
-            second = line.find(b"\t", first + 1)
-            if second < 0:
-                continue
-            keys = line[:second].replace(b"\t", b",").split(b",")   # ja: kanji forms, readings · zh: 简, 繁
+        for line in _gloss_lines(module, wanted):       # (the index's blocks only: each line checked here)
+            keys = _line_keys(line)
             if isdisjoint(keys):
                 continue
             entry = line.decode("utf-8").split("\t")
-            for key in dict.fromkeys(keys):
+            for key in keys:
                 if key in wanted:
                     index.setdefault(key.decode("utf-8"), []).append(entry)
         return index
 
     def prepare(self, words):
-        """Index the table for these words' spellings only ([(word, reading, orth)], a page's words), scanned once —
+        """Index the table for these words' spellings only ([(word, reading, orth)], a page's words), looked up once —
         none of it for a word the memo holds."""
         memo, wanted = self.memo, set()
         for word, reading, orth in words:
@@ -1153,15 +1189,16 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
         sources.items = {item["rel_path"]: item_id for item_id, item in facts.items.items() if item.get("rel_path")}
 
     # The chunks: at most CHUNK_EPISODES episodes or CHUNK_BYTES of JSON; one episode alone past it is split. Each
-    # word is written as JSON once; a chunk is its words' JSON joined.
+    # word and each source row is written as JSON and encoded once (its bytes are what the cap counts); a chunk is
+    # their bytes joined (G11: each was encoded again in the chunk's text, each row's JSON written twice).
     chunks, ranges, glosses, chars = [], [], [], set()
     cur, cur_src, cur_rows, cur_bytes, cur_eps, cur_w0 = [], {}, [], 0, set(), 0
 
     def close():
         nonlocal cur, cur_src, cur_rows, cur_bytes, cur_eps, cur_w0
         if cur:
-            text = '{"w0":%d,"src":%s,"w":[%s]}' % (cur_w0, _json(cur_rows), ",".join(cur))
-            chunks.append(gzip.compress(text.encode("utf-8"), GZIP_LEVEL, mtime=0))
+            text = b'{"w0":%d,"src":[%s],"w":[%s]}' % (cur_w0, b",".join(cur_rows), b",".join(cur))
+            chunks.append(gzip.compress(text, GZIP_LEVEL, mtime=0))
             ranges.append([cur_w0, len(cur)])
         cur_w0 += len(cur)
         cur, cur_src, cur_rows, cur_bytes, cur_eps = [], {}, [], 0, set()
@@ -1213,12 +1250,14 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
         record = [word, "" if orth == word else orth, reading, _text(row.get("Kana")), forms, e, marks, count,
                   pitched, None]
         def sized():
-            """The word's JSON and the source rows it adds, and their bytes together (the chunk's table counts)."""
+            """The word's JSON and that of the source rows it adds, as UTF-8, and their bytes together (the chunk's
+            table counts)."""
             lines, added = numbered(found_lines)
             record[9] = lines
-            text = _json(record)
-            rows = [sources.row(rel) for rel, _n in sorted(added.items(), key=lambda item: item[1])]
-            return text, added, rows, len(text.encode("utf-8")) + sum(len(_json(r).encode("utf-8")) + 1 for r in rows)
+            text = _json(record).encode("utf-8")
+            rows = [_json(sources.row(rel)).encode("utf-8")
+                    for rel, _n in sorted(added.items(), key=lambda item: item[1])]
+            return text, added, rows, len(text) + sum(len(r) + 1 for r in rows)
         text, added, new_rows, size = sized()
         if cur and cur_bytes + size > CHUNK_BYTES:
             close()                             # its sources then go in the new chunk's table, numbered again

@@ -269,3 +269,34 @@ def test_the_cost_kept_for_other_columns_or_another_length_is_worked_out_again()
     other = dict(columns, chars=columns["chars"] + 7)
     got, whole = sentence_score.cost(other, moment, 5, 30, kept=kept), sentence_score.cost(other, moment, 5, 30)
     assert all(np.array_equal(g, w) for g, w in zip(got, whole)), "other columns"
+
+
+def test_the_cost_kept_for_another_moments_files_or_co_words_is_worked_out_again():
+    # why: the kept parts are told by the moment's order-free arrays BY VALUE (a round reads them from the picks'
+    # cache or the memo: other objects, the same values) — so arrays of the same kind with other values (another
+    # file's context, how it is heard, a co-word's own row) must never read the kept parts back: a stale "own" or
+    # "hear" would cost every line wrongly
+    rng = np.random.default_rng(5)
+    n, rows = 400, 30
+    ncow = rng.integers(0, 6, n)
+    columns = {"row": np.sort(rng.integers(0, rows, n)).astype(np.int64), "src": rng.integers(0, 9, n),
+               "chars": rng.integers(3, 90, n), "flags": np.zeros(n, np.int64), "besides": rng.integers(0, 6, n),
+               "start": rng.integers(0, 40, n), "cow": rng.integers(0, 50, int(ncow.sum())), "ncow": ncow,
+               "crowd": rng.integers(0, rows, 20), "ncrowd": np.bincount(rng.integers(0, n, 20), minlength=n)}
+    moment = {"placed": rng.permutation(rows + 1), "placed_now": rng.permutation(rows + 1),
+              "known_at": rng.integers(0, rows, 50), "own": rng.integers(-1, rows, 50),
+              "lemma": rng.integers(0, rows, rows + 1), "young": np.zeros(50), "ctx": rng.random(9),
+              "show_only": rng.random(9) < 0.3, "hear": rng.integers(0, 3, 9).astype(np.int8)}
+    kept = {}
+    sentence_score.cost(columns, moment, 10, 50, kept=kept)
+    same = dict(moment, own=moment["own"].copy(), ctx=moment["ctx"].copy(), hear=moment["hear"].copy())
+    got, whole = sentence_score.cost(columns, same, 10, 50, kept=kept), sentence_score.cost(columns, same, 10, 50)
+    assert all(np.array_equal(g, w) for g, w in zip(got, whole)), "the same values in other objects"
+    for name, value in (("own", np.where(moment["own"] >= 0, -1, 0)), ("ctx", 1 - moment["ctx"]),
+                        ("hear", ((moment["hear"] + 1) % 3).astype(np.int8)),
+                        ("show_only", ~moment["show_only"])):
+        other = dict(moment, **{name: value})
+        got = sentence_score.cost(columns, other, 10, 50, kept=kept)
+        whole = sentence_score.cost(columns, other, 10, 50)
+        assert all(np.array_equal(g, w) for g, w in zip(got, whole)), name
+        sentence_score.cost(columns, moment, 10, 50, kept=kept)         # (the kept parts back to the first moment's)

@@ -120,6 +120,17 @@ def _no_gui_update_check(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_anki_miner_calls(monkeypatch):
+    """Each test starts with no Anki Miner call under way (CONNECT-RACE: `anki_miner._CALLS` keeps the programs
+    `start` left running, so a settings write beside one is `busy`): an earlier test's started call — a fake `Popen`
+    with no `poll`, or a fake Anki Miner it never waited for — would answer for the next test. Only when the module is
+    already loaded: nothing is imported for the tests that never reach it."""
+    anki_miner = sys.modules.get("app.connect.anki_miner")
+    if anki_miner is not None:
+        monkeypatch.setattr(anki_miner, "_CALLS", anki_miner._Calls())
+
+
+@pytest.fixture(autouse=True)
 def _switch_interval_put_back():
     """A re-order host in this process lowers Python's switch interval while it lives (`replan_preview`'s
     `_share_the_window`, a hold of `window_idle`'s); a test that never stops its host would leave the rest of the run at

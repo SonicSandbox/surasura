@@ -1347,14 +1347,14 @@ def _anki_miner_setup(loaded, lang, run_dir, held=None):
             raise _miner_error(e) from None
         except fields.NeedsYou as e:
             raise CliError("needs-you", e.message, ask=e.message, need="anki-miner-setup") from None
-    _check_note_type(loaded, mapping, info)
+    checked = _check_note_type(loaded, mapping, info)   # (the set keeps the export's: the note type is asked each call)
     if held is not None:
         held.update(set=(info, profile, mapping, export), stamp=now,
                     at=read_at if kept is not None else time.monotonic())
     if kept is None:                    # Michi-DK: Anki Miner's own deck, for Settings' line (never a reason to stop)
         from app.connect import setup
         setup.note_miner_deck(lang, mapping.deck)
-    return info, profile, _run_mapping(loaded, lang, mapping)
+    return info, profile, _run_mapping(loaded, lang, checked)
 
 
 def _run_mapping(loaded, lang, mapping):
@@ -1378,14 +1378,15 @@ def _run_mapping(loaded, lang, mapping):
 def _check_note_type(loaded, mapping, info=None):
     """The note type Anki Miner fills must take its mapping (the word field first): asked of Anki when it answers;
     when it doesn't, Anki Miner's own `check` asks again before it mines. `info`: Anki Miner's version answer (where
-    it's set right: `fields.pointer`, A5F3)."""
+    it's set right: `fields.pointer`, A5F3). -> `mapping`, its sentence card's mark none when the note type has no
+    field for it (BOOK-CARD: `fields.with_note_fields`)."""
     from app import anki_connect
     from app.connect import fields
     if os.environ.get("SURASURA_NO_ANKI_SYNC"):
-        return
+        return mapping
     url = anki_connect.address(loaded)
     if not anki_connect.probe(url, timeout=2).get("ok"):
-        return
+        return mapping
     try:
         model_fields = anki_connect.invoke("modelFieldNames", url, modelName=mapping.note_type)
     except anki_connect.AnkiError:
@@ -1394,6 +1395,7 @@ def _check_note_type(loaded, mapping, info=None):
         fields.check_note_type(mapping, model_fields, fields.pointer(info))
     except fields.NeedsYou as e:
         raise CliError("needs-you", e.message, ask=e.message, need="anki-miner-setup") from None
+    return fields.with_note_fields(mapping, model_fields)
 
 
 def pick(args):
@@ -1517,7 +1519,8 @@ def pick(args):
                                           tags=runfile.job_tag(job), features=named, language=lang)
             data = runfile.build(run_dir, lang, [episode], profile=profile,
                                  run_config=runfile.config(mapping, info.get("app"), named,
-                                                           word_audio=runfile.word_audio_on(loaded, lang)))
+                                                           word_audio=runfile.word_audio_on(loaded, lang),
+                                                           quiet=bool(book)))      # BOOK-CARD: no sound
             try:
                 out["run_file"] = runfile.write(os.path.join(run_dir, "run-1.json"), data)
             except runfile.RunFileError as e:

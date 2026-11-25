@@ -1193,16 +1193,11 @@ def test_the_numbers_are_asked_again_when_a_drop_lands_elsewhere(stub_writer):
 
 
 # --- the numbers at the drop ---------------------------------------------------------------------------------------- #
-def write_plan(path, rel_paths, tiers, language="ja", seed=3, n_words=3000, header=None, words=None):
+def write_plan(path, rel_paths, tiers, language="ja", seed=3, n_words=3000, header=None):
     """A plan file shaped like a Generate's (`analyzer.plan_lines`, format 1): Zipf-like word uses over the files, each
-    file's known tokens before any file (`prog[1]`) and its counted tokens (`prog[0]`). `words`: [(form, reading)] —
-    the plan's words (default: `n_words` invented ones)."""
+    file's known tokens before any file (`prog[1]`) and its counted tokens (`prog[0]`)."""
     rnd = random.Random(seed)
-    if words is not None:
-        keys = [[w, r, False, False, 0] for w, r in words]
-        n_words = len(keys)
-    else:
-        keys = [[f"語{k}", f"ゴ{k}", False, False, 0] for k in range(n_words)]
+    keys = [[f"語{k}", f"ゴ{k}", False, False, 0] for k in range(n_words)]
     weights = [1.0 / (k + 1) ** 0.9 for k in range(n_words)]
     files, per_file = [], []
     for f, (rel, tier) in enumerate(zip(rel_paths, tiers)):

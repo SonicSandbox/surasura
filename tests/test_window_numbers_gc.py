@@ -13,6 +13,7 @@ cut of real text). The collector's thresholds are lowered so an unpaused load co
 proof, never a timing.
 """
 import gc
+import gzip
 import json
 import os
 import threading
@@ -45,6 +46,18 @@ def _real_words(language):
     return list(dict.fromkeys(out))
 
 
+def _write_plan(path, rel_paths, tiers, language):
+    """`write_plan`'s plan (a Generate's shape), its invented words replaced by real ones (`_real_words`)."""
+    words = _real_words(language)
+    write_plan(path, rel_paths, tiers, language=language, n_words=len(words))
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        lines = [json.loads(line) for line in f if line.strip()]
+    for key, row, (form, reading) in zip(lines[2]["keys"], lines[3]["rows"], words):
+        key[0], key[1], row[4] = form, reading, form
+    with open(path, "wb") as f:
+        f.write(gzip.compress(("\n".join(json.dumps(x, ensure_ascii=False) for x in lines) + "\n").encode("utf-8")))
+
+
 def _wait(pred, timeout):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
@@ -65,8 +78,7 @@ def window_library(language, monkeypatch):
         order = store.scheduled_ids()
         rel = {i: store.item(i)["rel_path"] for i, _t in order}
     plan_file = os.path.join(roots(language)[1], "plan.json.gz")
-    write_plan(plan_file, [rel[i] for i, _t in order], [t for _i, t in order], language=language,
-               words=_real_words(language))
+    _write_plan(plan_file, [rel[i] for i, _t in order], [t for _i, t in order], language)
     made = []
 
     def make(freeze_gc=True):

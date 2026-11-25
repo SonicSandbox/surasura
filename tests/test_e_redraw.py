@@ -207,14 +207,15 @@ def test_the_redraw_keeps_the_shown_lines_text_and_reads_it_back(moved, tmp_path
     # only lines that are new; a kept file of another run is never read
     results = moved.results
     table = sentence_table.open_table(os.path.join(results, sentence_table.TABLE_FILE), language=moved.language)
-    kept = analyzer._read_shown(results, table.head["run_signature"])
+    forms = {}
+    kept = analyzer._read_shown(results, table.head["run_signature"], forms)
     assert kept, "the shown lines' text is kept"
     shown = {v for cols in _columns(results).values() for v in cols[0::2] if v}
     assert len(kept) >= len(shown) > 0
     assert analyzer._read_shown(results, "another run") == {}, "another run's kept text is never read"
     with open(os.path.join(results, analyzer.SHOWN_FILE), "rb") as f:
         first = f.read()
-    analyzer._write_shown(str(tmp_path), table.head["run_signature"], kept)
+    analyzer._write_shown(str(tmp_path), table.head["run_signature"], kept, forms)
     with open(os.path.join(str(tmp_path), analyzer.SHOWN_FILE), "rb") as f:
         assert f.read() == first, "the same lines, the same bytes (no time inside)"
 

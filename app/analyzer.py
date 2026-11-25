@@ -4724,14 +4724,14 @@ class ListSentences:
     ceiling); `clean_only` *Only i+1* (a row with no line left is []: the Generate leaves it out). What a Context
     shows is the Generate's (`strip_verse_number`); a Src is the file's path from the data folder, as the plan's.
     The text of the lines it shows is kept in results/`SHOWN_FILE` (`keep`) and read from there before the token
-    store the next time. Young words are not weighed: the list reads no Anki (PROVISIONAL, the prototype's). Its
+    store the next time, with what Context shows of each line led by digits: one read back needs no tagger. Young words are not weighed: the list reads no Anki (PROVISIONAL, the prototype's). Its
     calls share one moment and one memo (`sentence_score.choose`'s): *Only i+1*'s second round, in another order,
     reads no file's text and no column again (E-L2G)."""
 
     def __init__(self, language, max_contexts, clean_only=False, results_dir=None, table=None):
         self.language, self.n, self.clean_only = language, plan_rules.context_limit(max_contexts), clean_only
         self.results_dir, self.table = results_dir or RESULTS_DIR, table
-        self.run, self.kept, self.read = None, {}, {}
+        self.run, self.kept, self.read, self.forms, self.forms_read = None, {}, {}, {}, {}
         self.moment, self.length, self.memo = None, None, {}
 
     def __call__(self, keys, order=None):
@@ -4753,7 +4753,8 @@ class ListSentences:
             if tab is None:
                 return None
         self.run = tab.head.get("run_signature")
-        self.read = _read_shown(self.results_dir, self.run)
+        self.forms_read = {}
+        self.read = _read_shown(self.results_dir, self.run, self.forms_read)
         got = sentence_score.choose(self.language, keys, n=self.n, length=self.length, order=order, whole=True,
                                     moment=self.moment, clean_only=self.clean_only, shown=self.read, table=tab,
                                     memo=self.memo)
@@ -4761,56 +4762,75 @@ class ListSentences:
             return None
         base = os.path.join(root, "")
         tagger = _LazyTagger() if self.language == "ja" else None
-        out, kept = {}, {}
+        out, kept, forms = {}, {}, {}
         for key, lines in got.items():
             columns = []
             for line in lines:
                 rel = (line.file[len(base):] if line.file.startswith(base) else line.file).replace(os.sep, "/")
-                kept[(rel, line.number)] = line.text
-                columns += (strip_verse_number(line.text, tagger) if tagger is not None and line.text else line.text,
-                            rel)
+                at = (rel, line.number)
+                kept[at] = line.text
+                shown = line.text
+                if tagger is not None and line.text and _LEADING_DIGITS_RE.match(line.text):
+                    # (a line led by digits shows what `strip_verse_number` makes of it, kept beside its text: read
+                    # back, it asks no tagger — the redraw's child loads none, E-L2G)
+                    shown = self.forms_read.get(at) if self.read.get(at) == line.text else None
+                    if shown is None:
+                        shown = strip_verse_number(line.text, tagger)
+                    forms[at] = shown
+                columns += (shown, rel)
             out[key] = columns
-        self.kept = kept
+        self.kept, self.forms = kept, forms
         return out
 
     def keep(self):
         """results/`SHOWN_FILE`: the text of the lines the last call showed, by the table's run — written only when it
         differs from what was read (never fails the run)."""
-        if self.run is None or self.kept == self.read:
+        if self.run is None or (self.kept == self.read and self.forms == self.forms_read):
             return
         try:
-            _write_shown(self.results_dir, self.run, self.kept)
+            _write_shown(self.results_dir, self.run, self.kept, self.forms)
         except Exception as e:
             print(f"Warning: could not keep the shown sentences: {e}")
 
 
-def _read_shown(results_dir, run_signature):
+def _read_shown(results_dir, run_signature, forms=None):
     """{(rel, number): text} of results/`SHOWN_FILE` when it is `run_signature`'s; {} else (none, another run's,
-    damaged)."""
+    damaged). `forms`, a dict: given what Context shows of the kept lines led by digits, {(rel, number): shown} (a file
+    written before them has none)."""
     import gzip
     try:
         with gzip.open(os.path.join(results_dir, SHOWN_FILE), "rb") as f:
             data = json.loads(f.read())
         if data.get("run_signature") != run_signature:
             return {}
-        return {(rel, int(number)): text for rel, lines in data["lines"].items() for number, text in lines.items()}
+        texts = {(rel, int(number)): text for rel, lines in data["lines"].items() for number, text in lines.items()}
+        shown = {(rel, int(number)): form for rel, lines in (data.get("shown") or {}).items()
+                 for number, form in lines.items()}
     except Exception:
         return {}
+    if forms is not None:
+        forms.update(shown)
+    return texts
 
 
-def _write_shown(results_dir, run_signature, kept):
-    """results/`SHOWN_FILE`, whole (a temp file replaced): the same bytes for the same lines (sorted, no time)."""
+def _write_shown(results_dir, run_signature, kept, forms=None):
+    """results/`SHOWN_FILE`, whole (a temp file replaced): the same bytes for the same lines (sorted, no time);
+    `forms` {(rel, number): what Context shows} of the lines led by digits, beside their text."""
     import gzip
-    lines = {}
+    lines, shown = {}, {}
     for (rel, number), text in sorted(kept.items()):
         lines.setdefault(rel, {})[str(number)] = text
+    for (rel, number), form in sorted((forms or {}).items()):
+        shown.setdefault(rel, {})[str(number)] = form
+    data = {"run_signature": run_signature, "lines": lines}
+    if shown:
+        data["shown"] = shown
     path = os.path.join(results_dir, SHOWN_FILE)
     tmp = f"{path}.{os.getpid()}.tmp"
     try:
         with open(tmp, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=6, mtime=0,
                                                    filename="") as f:
-            f.write(json.dumps({"run_signature": run_signature, "lines": lines}, separators=(",", ":"),
-                               ensure_ascii=False).encode("utf-8"))
+            f.write(json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
         os.replace(tmp, path)
     except BaseException:
         try:

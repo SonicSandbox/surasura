@@ -12,6 +12,9 @@ as the dashboard runs it. What these prove:
   - ***Only i+1*'s second round reads nothing again** (row 15: round 2 repeated the whole pick, +1.29 s at 2k): one
     reader asked twice in two orders, as the Generate's rounds ask it, reads each file's text and the table's columns
     once, and answers what a fresh reader answers.
+  - **a redraw whose lines are all kept makes no tagger** (row 11: 0.09 s of the redraw was a fresh Japanese tagger for
+    `strip_verse_number` on a line led by digits): shown.json.gz keeps what Context shows of such a line beside its
+    text, so a line read back from it is shown as the Generate showed it, with no tagger loaded.
 """
 import json
 import os
@@ -20,9 +23,9 @@ import sys
 
 import pytest
 
-from app import token_index
+from app import analyzer, token_index
 from tests import plan_file_cases as cases
-from tests.test_e_redraw import _columns, _env, _generated, _move, _redraw
+from tests.test_e_redraw import LEVEL_2, _columns, _env, _generated, _move, _redraw
 
 
 @pytest.fixture(scope="module", params=["ja", "zh"])
@@ -120,7 +123,7 @@ if texts is not None:
     token_index.Store.file_texts = counted_texts
 if doubt == "1":
     token_index._decode_texts = lambda blob, lines: None
-analyzer._read_shown = lambda results_dir, run_signature: {}
+analyzer._read_shown = lambda results_dir, run_signature, forms=None: {}
 got = analyzer.ListSentences(language, 3, clean == "1", results_dir=results)([tuple(k) for k in keys], None)
 print(json.dumps({"n": n, "got": [[list(k), v] for k, v in got.items()]}, ensure_ascii=False))
 """
@@ -232,7 +235,7 @@ def counted_take(tab, want):
 token_index.Store.file_tokens, sentence_score._take = counted_tokens, counted_take
 if texts is not None:
     token_index.Store.file_texts = counted_texts
-analyzer._read_shown = lambda results_dir, run_signature: {}
+analyzer._read_shown = lambda results_dir, run_signature, forms=None: {}
 table = sentence_table.open_table(os.path.join(results, sentence_table.TABLE_FILE), language=language,
                                   engine=analyzer.engine_id(), run_signature=analyzer.read_run_stamp(results))
 one = analyzer.ListSentences(language, 3, True, results_dir=results, table=table)     # (the Generate's own table)
@@ -258,3 +261,71 @@ def test_only_i_plus_ones_second_round_reads_no_files_text_and_no_column_again(g
     assert got["first"] > got["left"] > 0, got
     assert got["counts"]["twice"] == 0 and got["counts"]["taken"] == 1, got
     assert got["counts"]["files"] > 0 and got["same"], got
+
+
+# Loaded first in the redraw's child: at its exit, whether a Japanese tagger was ever loaded (fugashi is imported only
+# to make one: `JapaneseTokenizer`).
+_TAGGER_LOADED = r"""
+import atexit, json, os, sys
+
+
+def _said():
+    with open(os.environ["E_L2G_LOADED"], "w") as f:
+        json.dump({"fugashi": "fugashi" in sys.modules}, f)
+
+
+atexit.register(_said)
+"""
+
+
+def _with_verses(folder):
+    """RP-2's Japanese library with an episode whose captions read verses aloud, each led by its number (Test
+    Resources' verses_sample.srt: a book's text file loses them before the token store), among the now shows,
+    Generated at level 2."""
+    root = str(folder)
+    cases.build(root, "rp2-ja")
+    with open(os.path.join(cases.RES, "ja", "verses_sample.srt"), encoding="utf-8") as f:
+        text = f.read()
+    folder = os.path.join(root, "data", "ja", cases.TIER_FOLDER["now"])
+    path = os.path.join(folder, "verses_episode.srt")
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+    os.utime(path, (cases.MTIME, cases.MTIME))
+    manifest = os.path.join(root, "User Files", "ja", "master_manifest.json")
+    with open(manifest, encoding="utf-8") as f:
+        plan = json.load(f)
+    plan["schedule"][cases.PHASE["now"]].append({"physical_path": f"{cases.TIER_FOLDER['now']}/verses_episode.srt",
+                                                 "title": "verses_episode.srt", "origin_source": "Manual Import"})
+    with open(manifest, "w", encoding="utf-8") as f:
+        json.dump(plan, f, ensure_ascii=False, indent=2)
+    os.utime(manifest, (cases.MTIME, cases.MTIME))
+    cases.generate(root, "rp2-ja", extra_env=LEVEL_2)
+    return root
+
+
+def test_a_redraw_whose_lines_are_all_kept_loads_no_tagger_and_shows_the_verse_lines_as_the_generate(tmp_path):
+    # why: E-L2G, row 11 — the redraw's child loaded a Japanese tagger (0.09 s) only to strip a verse number off a
+    # line led by digits, a line the Generate had already shown stripped. Its shown form is kept with its text: the
+    # redraw of the Generate's own plan, nothing moved, loads none and shows every line as the Generate did
+    root = _with_verses(tmp_path / "lib")
+    results = os.path.join(root, "results")
+    listed = _columns(results)
+    kept = analyzer._read_shown(results, analyzer.read_run_stamp(results))
+    led = {text for text in kept.values() if analyzer._LEADING_DIGITS_RE.match(text)}
+    shown = {v for cols in listed.values() for v in cols[0::2] if v}
+    assert any(text not in shown and text.lstrip("0123456789") in shown for text in led), (
+        "a verse line is shown, its number cut", sorted(led)[:5])
+    os.remove(os.path.join(results, analyzer.REDRAW_FILE))      # (not today's: the keeper redraws it)
+    hook = tmp_path / "hook"
+    hook.mkdir()
+    (hook / "sitecustomize.py").write_text(_TAGGER_LOADED, encoding="utf-8")
+    env = _env(root)
+    env["PYTHONPATH"] = str(hook) + os.pathsep + env.get("PYTHONPATH", "")
+    env["E_L2G_LOADED"] = str(tmp_path / "loaded.json")
+    p = subprocess.run([sys.executable, os.path.join(cases.REPO, "app", "analyzer.py"), "--language=ja", "--static",
+                        "--no-open", "--from-plan"], cwd=cases.REPO, env=env, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    assert p.returncode == 0 and "Redrew the journey" in p.stdout, (p.stdout + p.stderr)[-1500:]
+    with open(env["E_L2G_LOADED"], encoding="utf-8") as f:
+        assert json.load(f) == {"fugashi": False}, "a redraw of kept lines loads no tagger"
+    assert _columns(results) == listed, "every line shown as the Generate showed it"

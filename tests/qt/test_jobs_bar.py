@@ -333,7 +333,7 @@ def test_header_the_journey_waits_for_a_journey_and_opens_on_a_worker(world, mon
     report = pathlib.Path(results) / shell.JOURNEY_FILE
     opened = []
     monkeypatch.setattr(static_html_generator, "open_report",
-                        lambda app_mode=False, file=None: opened.append((app_mode, threading.current_thread())) or True)
+                        lambda app_mode=False, file=None, item=None: opened.append((app_mode, threading.current_thread())) or True)
     world.start()
     journey = world.d.journey_button
     QTest.qWait(50)

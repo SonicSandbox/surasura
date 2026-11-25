@@ -437,6 +437,10 @@ def _known_memo(language, settings):
     key = tuple(key)
     hit = _KNOWN_MEMO.get(language)
     if hit is None or hit[0] != key:
+        # Read as a run reads them (`_place_the_rest`: SANITIZE_JA per language), whatever another language's plan in
+        # this process left: both passes of a job read this one memo (KYOU-MO-HOLD)
+        from app import analyzer
+        analyzer.SANITIZE_JA = language == "ja"
         hit = _KNOWN_MEMO[language] = (key, _known_sets(language, settings), {})
     return hit[1], hit[2]
 
@@ -690,14 +694,17 @@ def _place_the_rest(cards, notes, language, settings, rank_of=None, answers=None
 class _SentenceWords:
     """The words of a Japanese sentence as the analyzer reads them, plus what `tokenize` leaves out:
     where each sits — and the learner's known words, to say which are easy — for "i+1 first" (§17).
-    Imported here, never at import time (spec I4)."""
+    Imported here, never at import time (spec I4). `known` (a fast re-plan job's: `_known_memo`'s sets): the known
+    words as the job last read them — read afresh at every move, they held the window's thread (KYOU-MO-HOLD)."""
 
-    def __init__(self, language, settings, library=None):
+    def __init__(self, language, settings, library=None, known=None):
         from app import analyzer
         from app.analyzer import _sanitize_term
-        analyzer.SANITIZE_JA = True             # before the known words are read (see _place_the_rest)
+        analyzer.SANITIZE_JA = True             # before the known words are read (see _place_the_rest; a job's memo
+                                                # was read after `_tokenizer` set it)
         self._analyzer, self._sanitize, self.language = analyzer, _sanitize_term, language
-        self.known_tuples, self.known_lemmas, self.ignore = _known_sets(language, settings)
+        self.known_tuples, self.known_lemmas, self.ignore = known if known is not None else _known_sets(language,
+                                                                                                         settings)
         self._tagger = analyzer.JapaneseTokenizer().tagger
         # The list's own learning rule (`_learning`): read already, and a rare compound as its parts.
         self._unknown, _units, self.view = _learning(
@@ -743,7 +750,7 @@ class _SentenceWords:
         return not self._unknown(lemma, reading, surface)
 
 
-def _ready_first_pass(cards, notes, rank_of, journey_of, order, language, settings, library=None):
+def _ready_first_pass(cards, notes, rank_of, journey_of, order, language, settings, library=None, known=None):
     """The unlocking word first (Junban_Backlog_Spec §17, the user 2026-09-24; always since the mining model, Kyou-MO —
     no switch): a card placed with the list whose OWN sentence holds a word from the list that comes AFTER it is not
     i+1 when it comes up.
@@ -763,10 +770,10 @@ def _ready_first_pass(cards, notes, rank_of, journey_of, order, language, settin
     2026-09-30) — unless Ignore names makes the library's names ignored words. Words too rare for the list
     never count (waiting would never teach them), nor do one-character words the list can't offer there, or the
     user's own answers to "Same word as one on your list?" (so a tick previews as the run writes, I5). A sentence
-    is read as the list reads it (`_learning`; `library`: what the last Generate counted).
-    Returns `{"pulled", "kept"}`; changes the cards' `sort` and `why` in place.
+    is read as the list reads it (`_learning`; `library`: what the last Generate counted; `known`: a job's known
+    sets, `_SentenceWords`). Returns `{"pulled", "kept"}`; changes the cards' `sort` and `why` in place.
     """
-    words = _SentenceWords(language, settings, library)
+    words = _SentenceWords(language, settings, library, known)
 
     def place(key):
         return journey_sort(order, journey_of.get(key), rank_of[key])
@@ -2029,11 +2036,12 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
         files = show_tags.file_items(language, current=getattr(job, "rows", None) is not None)
         weave = pin_feed.side_groups(language, cards, detail["notes"], side=side, files=files)
     suggestions = {}
+    # A job's known words, read once for both passes below (KYOU-MO-HOLD: the unlocking word's read them again)
+    known_memo = _known_memo(language, settings) if job is not None and tiers else None
     if tiers:
         # Known words last; everything still unplaced by its own sentence, then FreqSort (§5.4).
         _place_the_rest(cards, detail["notes"], language, settings, rank_of=rank_of, answers=answers,
-                        tokenize=tokenize, library=counted, forms=preview, lean=lean,
-                        known_memo=_known_memo(language, settings) if job is not None else None,
+                        tokenize=tokenize, library=counted, forms=preview, lean=lean, known_memo=known_memo,
                         needs=bool(weave))
         banner = _banner(cards, detail["notes"], language)
         # Kyou-MO (F4, F24): past the list, a card Surasura made goes to the back, untouched (its word left the list;
@@ -2063,7 +2071,7 @@ def _plan_scope(settings, decks, url, job=None, unattended=False, front=None, ou
     # §17, the unlocking word first (always, Kyou-MO): a list card whose own sentence is not ready gets the word it
     # needs brought right before it, or keeps its place. Before the plan, so the preview and the run are one pass (I5).
     ready_first = (_ready_first_pass(cards, detail["notes"], rank_of, index.journey_of, order, language,
-                                     settings, counted)
+                                     settings, counted, known_memo[0] if known_memo else None)
                    if first_applies(settings, language) else None)
     # HC-N54: the cards you mined yourself since Connect's first go ahead of every other, in the order you mined them.
     yours = (connect.mark_yours(cards, detail["notes"], connect.first_connect_note(url), connect.own_tag(settings))

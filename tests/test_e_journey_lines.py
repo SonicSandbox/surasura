@@ -87,7 +87,7 @@ print(json.dumps(out, ensure_ascii=False))
 
 @pytest.fixture(scope="module", params=["ja", "zh"])
 def page(request, tmp_path_factory):
-    """A level-2 Generate of the language's library with its episodes' videos beside them, and the page's lines pressed."""
+    """A level-2 Generate of the language's library, its episodes' videos beside them; the page's lines pressed."""
     language = request.param
     case = _case(language)
     root = str(tmp_path_factory.mktemp(f"e-journey-lines-{language}"))
@@ -152,3 +152,42 @@ def test_a_books_line_gets_no_id_a_card_can_be_cut_from(page):
     assert got["books"] > 0, f"{language}: RP-2's books gave the page no line"
     assert swap._parse_line_id("p1a2b3c4d") is None
     assert door_routes.LINE_MAX >= len("123456:7200000")
+
+
+# --- two lines that start together (two speakers at once): the id names a start, the word tells them apart ---
+
+class _Steps:
+    """Connect's steps as the press reads them: the item's subtitle (repeated_lines: cues 4 and 5 start at 7.000 s)."""
+
+    def __init__(self, path):
+        self.path = path
+
+    def subtitle(self, language, job):
+        return self.path
+
+
+@pytest.mark.parametrize("word, said", [("でも", "でも まだ半分しか読んでない"), ("窓口", "早く窓口に返却しないと"),
+                                        (None, "早く窓口に返却しないと")])
+def test_two_lines_that_start_together_are_told_apart_by_the_word_pressed(word, said):
+    # why: found by the page's test above — a subtitle where two speakers talk at once has two cues with one start, so
+    # the line id (`<item>:<start ms>`) names both; ⇄ / *Add now* on the second made a card from the first's sentence.
+    # The press is for a word (the door's body, the swap's row): of the cues at that start, the first that holds it.
+    # No word, or none holds it: the first, as before (the clip: both cues are one span of audio)
+    from app.connect import door_routes, swap
+    steps = _Steps(os.path.join(cases.RES, "ja", "repeated_lines.ja.srt"))
+    lid = swap.line_id(6, 7.0)
+    got = swap.line_cue(steps, "ja", lid, word=word)
+    assert got is not None and got[0] == 6 and got[1].text.replace("\n", " ") == said, (word, got)
+    assert swap._resolve_line_id(steps, "ja", lid, word) == (6, got[1].text)
+    if word is not None:
+        assert door_routes._line(steps, "ja", lid, word) == (6, got[1].text)
+
+
+def test_a_word_at_a_start_no_line_holds_takes_the_first_line_as_before():
+    # why: edge case — a word inflected past its dictionary form (読む in 読んでない) or a start one cue alone has: the
+    # first cue at that start, today's answer, never "gone"
+    from app.connect import swap
+    steps = _Steps(os.path.join(cases.RES, "ja", "repeated_lines.ja.srt"))
+    assert swap.line_cue(steps, "ja", swap.line_id(6, 7.0), word="読む")[1].text == "早く窓口に返却しないと"
+    assert swap.line_cue(steps, "ja", swap.line_id(6, 1.0), word="ない")[1].text == "図書館の鍵を忘れちゃった"
+    assert swap.line_cue(steps, "ja", swap.line_id(6, 99.0), word="でも") is None

@@ -8,8 +8,9 @@ a reader of those files (the journey page, Junban, Connect, the window's word li
 day the switch flips. So the column lists are read from what level 0 writes, never typed here: a column a later lane
 adds to level 0's writer and not to level 2's turns this red.
 
-On RP-2's real Japanese and Chinese libraries (tests/plan_file_cases.py), each through a full Generate in a child process
-as the dashboard runs it, then a move and the keeper's redraw (`--from-plan`), once at level 0 and once at level 2.
+On RP-2's real Japanese and Chinese libraries (tests/plan_file_cases.py), each through a full Generate in a child
+process as the dashboard runs it, then a move and the keeper's redraw (`--from-plan`), once at level 0 and once at
+level 2.
 """
 import csv
 import json
@@ -27,7 +28,8 @@ STATS = "file_statistics.json"
 
 def _shape(results):
     """{file name: its columns} for every list results/ holds — a CSV's header in its order, file_statistics.json's
-    keys of each file's entry (the set of distinct key lists: every entry is one file's) — what a reader reads by name."""
+    keys of each file's entry (the set of distinct key lists: every entry is one file's) — what a reader reads by
+    name."""
     out = {}
     for name in sorted(os.listdir(results)):
         path = os.path.join(results, name)

@@ -279,6 +279,43 @@ def _decode_texts(blob, lines):
         return None
 
 
+_CUT_BYTES = _CUT.encode("ascii")
+# (a cut too many is a string ending in the cut's characters: its closing `"` is the cut's last, and what JSON writes
+# after a string's end follows — ", " or "]". A sentence's text never starts there unless it starts with one of them)
+_WRONG_CUTS = (_CUT_BYTES + b", ", _CUT_BYTES + b"]")
+
+
+def _decode_some(blob, lines, numbers):
+    """`_decode_texts(blob, lines)`'s texts of the sentences `numbers` alone -> {number: text} (a number past the
+    file's last sentence left out), None when it can't tell (the caller reads the whole file). The cuts are found in
+    the bytes (the cut is ASCII: never inside a character's UTF-8), and only the asked pieces are decoded — no whole
+    file's text, no step a sentence (E-PICK: the walk read 158,000 sentences' texts at 2k for its 1,461 lines). A cut
+    too many is seen without reading each piece: one is always followed by `_WRONG_CUTS`' bytes, so a file holding
+    them is read in full, as is one whose count isn't the row's `lines`. (The bytes are zlib's, checked by its own
+    sum: the UTF-8 written, never a damaged character.)"""
+    if not blob or not lines:
+        return None
+    try:
+        doc = zlib.decompress(blob)
+        count = len(json.loads(zlib.decompress(lines)))
+        if not doc.startswith(b'[["') or any(wrong in doc for wrong in _WRONG_CUTS):
+            return None
+        parts = doc[3:].split(_CUT_BYTES)
+        if len(parts) != count:
+            return None
+        out = {}
+        for number in numbers:
+            if 0 <= number < count:
+                part = parts[number].decode("utf-8")
+                text, end = _scanstring(part, 0)
+                if not part.startswith(", [", end):
+                    return None
+                out[number] = text
+        return out
+    except Exception:
+        return None
+
+
 # --------------------------------------------------------------------------- #
 # Schema
 # --------------------------------------------------------------------------- #
@@ -808,6 +845,27 @@ class Store:
         if not row:
             return []
         return _decode_texts(row[0], row[1])
+
+    def some_texts(self, asked):
+        """{path: sentence numbers} -> {path: {number: text}} — `file_texts`' texts of those sentences alone
+        (`_decode_some`), one query a batch of files: {} for a file the store doesn't hold, None for one it can't tell
+        that way (the caller reads `file_texts`)."""
+        keys = {}
+        for p in asked:
+            keys.setdefault(_norm(p), []).append(p)
+        out, wanted = {}, list(keys)
+        try:
+            for at in range(0, len(wanted), 500):
+                batch = wanted[at:at + 500]
+                for path, blob, lines in self.conn.execute(
+                        f"SELECT path, tokens, lines FROM files WHERE path IN ({','.join('?' * len(batch))})", batch):
+                    for p in keys[path]:
+                        out[p] = _decode_some(blob, lines, asked[p])
+        except sqlite3.OperationalError:
+            return {p: None for p in asked}         # (a store a build before the column made, opened to read only)
+        for p in asked:
+            out.setdefault(p, {})
+        return out
 
     def _named(self, sentences, names_blob, joined=None):
         """`sentences` with the library's name tables applied (`file_tokens`); `joined`, a set: receives the numbers

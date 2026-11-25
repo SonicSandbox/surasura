@@ -385,8 +385,11 @@ class Packer:
         del cow, cow_line, used, final
 
         phr = _view(self._phr, np.int32)
-        prow = {int(x): phrase_row(int(x)) for x in np.unique(phr).tolist()}
-        mapped = np.fromiter(((-1 if prow[x] is None else prow[x]) for x in phr.tolist()), np.int32, len(phr))
+        # (each phrase's row asked once, in its numbers' order; then one lookup — no Python step a phrase line)
+        uniq, inverse = np.unique(phr, return_inverse=True)
+        prow = [phrase_row(x) for x in uniq.tolist()]
+        mapped = np.array([-1 if x is None else x for x in prow], np.int32)[inverse]
+        del uniq, inverse, prow
         phr_ids, phr_at = _regroup(np.repeat(np.arange(len(nphr), dtype=np.int32), nphr), mapped, order, len(nphr))
         del phr, mapped
 
@@ -430,25 +433,34 @@ def _view(values, dtype):
 
 def _regroup(line, ids, order, n_lines):
     """A flat list of per-line ids (`line`: each one's line, ascending), -1 dropped, each line's ids ascending, lines
-    taken in `order` -> (the ids, each taken line's start among them, one more at the end). One sort of one key a
-    co-word (its line's place in `order`, then its id): the memory of two arrays the length of the ids, not six."""
+    taken in `order` -> (the ids, each taken line's start among them, one more at the end). Each line's ids are sorted
+    where they lie — `line` ascending, so one stable sort of (line, id) runs over stretches already in order (a merge
+    of two lines in order is one comparison) — then the lines are gathered in `order`. The same as one sort of (the
+    line's place in `order`, its id) over every id, which was a sort of 1.69 M keys in no order at a 400-file Chinese
+    library (E-PICK)."""
     np = _np()
-    pos = np.full(n_lines, -1, np.int64)
-    pos[order] = np.arange(len(order), dtype=np.int64)
-    at = pos[line] if len(line) else np.zeros(0, np.int64)
-    del pos
-    good = (ids >= 0) & (at >= 0)
-    at, ids = at[good], ids[good]
-    del good
-    counts = np.bincount(at, minlength=len(order))
+    taken = np.zeros(n_lines, bool)
+    taken[order] = True
+    if len(line):
+        good = (ids >= 0) & taken[line]
+        line, ids = line[good], ids[good]
+        del good
+    del taken
+    counts = np.bincount(line, minlength=n_lines) if len(line) else np.zeros(n_lines, np.int64)
     size = int(ids.max()) + 1 if len(ids) else 1
-    at *= size
-    at += ids
-    del ids
-    at.sort()
-    ids = (at % size).astype(np.int32)
-    del at
+    key = line.astype(np.int64) * size
+    key += ids
+    del line, ids
+    key.sort(kind="stable")
+    key %= size                                     # (each place still holds its own line's ids: now sorted)
+    first = np.zeros(n_lines + 1, np.int64)         # where each line's ids begin
+    np.cumsum(counts, out=first[1:])
+    counts = counts[order]
     starts = np.concatenate(([0], np.cumsum(counts, dtype=np.int64)))
+    at = np.repeat(first[order] - starts[:-1], counts)
+    del first
+    at += np.arange(len(at), dtype=np.int64)
+    ids = key[at].astype(np.int32)
     return ids, starts
 
 

@@ -549,19 +549,34 @@ def flag_texts(line):
     return out
 
 
+def swap_texts(line):
+    """A swap as What goes shows it (SWAPS-REPORT) -> [(text, dim)]: its old sentence; → the new one; the word, when it
+    was asked and what came of it (made · waiting · dropped (why) · undone)."""
+    state = strings.REPORT_SWAP_STATES.get(line.get("state"), line.get("state") or "")
+    if line.get("why") and line.get("state") == "dropped":
+        state = strings.REPORT_SWAP_STATE_WHY.format(state=state, why=strings.REPORT_SWAP_WHY.get(line["why"],
+                                                                                                  line["why"]))
+    asked = strings.REPORT_SWAP_ASKED.format(when=str(line["asked"])[:10]) if line.get("asked") else ""
+    return [(line.get("old") or strings.REPORT_SWAP_NO_OLD, False),
+            (strings.REPORT_SWAP_NEW.format(line=line["new"]) if line.get("new") else strings.REPORT_SWAP_NO_NEW, False),
+            (" · ".join(x for x in (line.get("word"), asked, state) if x), True)]
+
+
 class FlagList(QWidget):
     """What goes' flagged sentences (journey v3 SPEC §4): one painted list, never a widget per line. Each line, its
     word, where it's from with its time, the reasons, the note and a parsing line's split, with a tick (a click, or
     Space on the current line; ↑ ↓ move). Unticked: left out of this report, still flagged. `changed()`: told on each
-    tick."""
+    tick. The learner's swaps are the same list (SWAPS-REPORT): `texts` (a line -> [(text, dim)]), its tip and name."""
 
-    def __init__(self, parent=None, changed=None):
+    def __init__(self, parent=None, changed=None, texts=flag_texts, tip=strings.REPORT_FLAGS_TIP,
+                 name=strings.REPORT_FLAGS_NAME):
         super().__init__(parent)
         self.lines, self.kept, self.at, self.paints = [], set(), 0, 0
         self.changed = changed
+        self.texts = texts
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setToolTip(strings.REPORT_FLAGS_TIP)
-        self.setAccessibleName(strings.REPORT_FLAGS_NAME)
+        self.setToolTip(tip)
+        self.setAccessibleName(name)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def set_lines(self, lines):
@@ -592,14 +607,15 @@ class FlagList(QWidget):
         if self.lines:
             line = self.lines[self.at]
             state = strings.REPORT_FLAG_TICKED if line.get("id") in self.kept else strings.REPORT_FLAG_UNTICKED
-            self.setAccessibleDescription(strings.REPORT_FLAG_ROW_NAME.format(state=state, line=line.get("line") or ""))
+            self.setAccessibleDescription(strings.REPORT_FLAG_ROW_NAME.format(state=state,
+                                                                              line=self.texts(line)[0][0]))
 
     def _f(self):
         return theme.text_factor(style.current()[1])
 
     def _row_height(self, line):
         fm = QFontMetrics(self.font())
-        return len(flag_texts(line)) * fm.height() + round(8 * self._f())
+        return len(self.texts(line)) * fm.height() + round(8 * self._f())
 
     def sizeHint(self):
         return QSize(round(240 * self._f()), sum(self._row_height(x) for x in self.lines) + 2)
@@ -664,7 +680,7 @@ class FlagList(QWidget):
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawPath(tick)
             y = top + round(4 * f) + fm.ascent()
-            for text, dim in flag_texts(line):
+            for text, dim in self.texts(line):
                 p.setPen(rows.c("ink-faint" if not ticked else "ink-dim" if dim else "ink"))
                 p.drawText(QPointF(text_x, y), fm.elidedText(scrub.shown(text), Qt.TextElideMode.ElideRight, width))
                 y += fm.height()
@@ -966,7 +982,10 @@ class ReportWindow(SecondaryWindow):
             lines.addWidget(line)
         self.goes_flags_line = self._line(strings.REPORT_FLAGS_HEADING)          # (J-FLAGS: only with flagged lines)
         self.goes_flags = FlagList(inner, changed=self._flags_ticked)
-        for w in (self.goes_flags_line, self.goes_flags):
+        self.goes_swaps_line = self._line(strings.REPORT_SWAPS_HEADING)          # (SWAPS-REPORT: only with swaps)
+        self.goes_swaps = FlagList(inner, texts=swap_texts, tip=strings.REPORT_SWAPS_TIP,
+                                   name=strings.REPORT_SWAPS_NAME)
+        for w in (self.goes_flags_line, self.goes_flags, self.goes_swaps_line, self.goes_swaps):
             w.setVisible(False)
             lines.addWidget(w)
         self.goes_files = QLabel(inner)
@@ -1557,7 +1576,8 @@ class ReportWindow(SecondaryWindow):
         self.goes_gathering.setText(strings.REPORT_GATHERING)
         self.goes_gathering.setVisible(True)
         for w in (self.goes_placeholders, self.goes_name, self.goes_sender, self.goes_kept, self.goes_files,
-                  self.goes_pictures_line, self.goes_flags_line, self.goes_flags):
+                  self.goes_pictures_line, self.goes_flags_line, self.goes_flags, self.goes_swaps_line,
+                  self.goes_swaps):
             w.setVisible(False)
         self._clear(self.goes_pictures)
         self.goes_send.setEnabled(False)
@@ -1680,6 +1700,9 @@ class ReportWindow(SecondaryWindow):
         self.goes_flags.set_lines(outbox.flag_lines)
         for w in (self.goes_flags_line, self.goes_flags):
             w.setVisible(bool(outbox.flag_lines))
+        self.goes_swaps.set_lines(outbox.swap_lines)
+        for w in (self.goes_swaps_line, self.goes_swaps):
+            w.setVisible(bool(outbox.swap_lines))
         self._flags_ticked()
         self._clear(self.goes_pictures)
         self.pages.setCurrentIndex(self.GOES)
@@ -1704,10 +1727,11 @@ class ReportWindow(SecondaryWindow):
         self.goes_send.setToolTip(strings.REPORT_GOES_SEND_TIP if ok else strings.REPORT_FLAGS_NONE_TIP)
 
     def _keep(self, outbox):
-        """The ticked flagged sentences for `outbox` (None: it holds none, or it isn't the one What goes shows)."""
-        if outbox is not self.outbox or not outbox.flag_lines:
+        """The ticked flagged sentences and swaps for `outbox` (None: it holds neither, or it isn't the one What goes
+        shows)."""
+        if outbox is not self.outbox or not (outbox.flag_lines or outbox.swap_lines):
             return None
-        return self.goes_flags.keep()
+        return self.goes_flags.keep() + self.goes_swaps.keep()
 
     def _goes_hold(self, on):
         """While What goes is up (and while its zip is sent): the name, the code and the send row wait, so what goes
@@ -1801,7 +1825,7 @@ class ReportWindow(SecondaryWindow):
         if self.outbox is None:
             return
         keep = self._keep(self.outbox)
-        if keep is None or set(keep) == set(self.outbox.flags):
+        if keep is None or set(keep) == set(self.outbox.flags) | set(self.outbox.swaps):
             show_zip(self, self.outbox.path, control=self.goes_open)
             return
 

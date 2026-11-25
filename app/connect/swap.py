@@ -1304,3 +1304,126 @@ def status_of(conn, language, newest=5):
     except Exception:
         return {"made": [], "waits": []}
     return {"made": made, "waits": waits}
+
+
+# --------------------------------------------------------------------------- #
+# Send report (SWAPS-REPORT, 3.0.19; Sonic's yes, OPEN-FOR-SONIC § 92): the learner's swaps, read only
+# --------------------------------------------------------------------------- #
+REPORT_FORMAT = 1
+REPORT_LINE_MAX = 400           # a sentence as Send report carries it (the flagged lines' `flags.LINE_MAX`)
+
+
+def _report_time(at):
+    """The ledger's UTC stamp -> the local time the queue writes (ISO, seconds); None when there's none."""
+    try:
+        when = datetime.datetime.strptime(str(at), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    return when.astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
+
+
+def _report_text(text):
+    from app.card_translations import plain
+    text = " ".join(plain(text).split())[:REPORT_LINE_MAX]
+    return text or None
+
+
+def _report_rows(language):
+    """The ledger's swaps of `language`, read-only (as `asked_first`) -> ({ref: row}, [rows with no queue entry],
+    {old note: its sentence Connect made it from}); ({}, [], {}) with no ledger or none from this Surasura. Raises
+    sqlite3.Error when it can't be read now."""
+    import sqlite3
+    from pathlib import Path
+    from app.connect import ledger as ledger_mod
+    db_path = ledger_mod.path()
+    if not os.path.exists(db_path):
+        return {}, [], {}
+    conn = sqlite3.connect(Path(os.path.abspath(db_path)).as_uri() + "?mode=rw", uri=True, timeout=2.0)
+    try:
+        conn.execute("PRAGMA query_only=ON")
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'swaps'").fetchone():
+            return {}, [], {}
+        schema = conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
+        if schema and str(schema[0]).isdigit() and int(schema[0]) > ledger_mod.SCHEMA:
+            return {}, [], {}
+        cur = conn.execute("SELECT * FROM swaps WHERE language = ? AND by != ? ORDER BY id", (language, BY_ADD_NOW))
+        names = [d[0] for d in cur.description]
+        rows = [dict(zip(names, r)) for r in cur.fetchall()]
+        olds = {}
+        notes = sorted({int(r["old_note"]) for r in rows if r.get("old_note") is not None})
+        for at in range(0, len(notes), 500):
+            part = notes[at:at + 500]
+            for note, sentence in conn.execute(
+                    f"SELECT note_id, sentence FROM outcomes WHERE outcome = 'made' AND sentence IS NOT NULL AND "
+                    f"note_id IN ({', '.join('?' * len(part))})", part):
+                olds.setdefault(int(note), sentence)
+    finally:
+        conn.close()
+    by_ref = {str(r["ref"]): r for r in rows if r.get("ref") is not None}
+    return by_ref, [r for r in rows if r.get("ref") is None], olds
+
+
+def _report_sentences(row, olds):
+    """(the old card's sentence, the new card's) as the ledger holds them: the old one from Connect's record of the
+    note, else the first line the swap avoided (`_avoid` puts the old card's own first); None where it holds none."""
+    if row is None:
+        return None, None
+    old = olds.get(int(row["old_note"])) if row.get("old_note") is not None else None
+    if not old and row.get("avoid"):
+        try:
+            avoided = json.loads(row["avoid"])
+            old = avoided[0] if isinstance(avoided, list) and avoided else None
+        except (TypeError, ValueError):
+            old = None
+    return _report_text(old), _report_text(row.get("line"))
+
+
+def for_report(language, sent=None, newest=200):
+    """The learner's swaps for Send report's zip -> [(id, state, swap)], newest first, at most `newest` (the flagged
+    sentences' cap, `flags.MAX_LINES`). `swap` is exactly what `connect/swaps.json` holds for it: `word`, `old` and
+    `new` (the two sentences, plain text, or None), `asked` (when), `state` (waiting · made · dropped · undone), `why`
+    (a dropped one's), `at` (when it was made, dropped or undone, where the record says) and `by` (who asked: the
+    review loop's flag `swap`, the journey's ⇄ `journey`, *Bad card* `bad card`). Never a card's or note's id.
+
+    **Read only, from the one record** (`swap_queue`, the entry: word, when, state, why) — the ledger only for what
+    the entry lacks (the two sentences), and for the asks with no entry (the journey's ⇄ and *Bad card*: their ledger
+    row is their record). *Add now* is no swap (no old card). `sent` ({id: state}: what Send report already sent, its
+    own record) leaves out a swap sent in the state it's in now. Raises `swap_queue.Unreadable` (the queue can't be
+    read); a ledger that can't be read now leaves the sentences None and the ledger-only asks out."""
+    sent = dict(sent or {})
+    try:
+        by_ref, alone, olds = _report_rows(language)
+    except Exception:
+        log.info("Swap: the ledger couldn't be read for Send report", exc_info=True)
+        by_ref, alone, olds = {}, [], {}
+    out = []
+    for e in swap_queue.load(language):
+        if not e.get("id") or e.get("state") not in (swap_queue.WAITING, swap_queue.MADE, swap_queue.DROPPED,
+                                                     swap_queue.UNDONE):
+            continue
+        row = by_ref.get(str(e["id"]))
+        old, new = _report_sentences(row, olds)
+        state = e["state"]
+        at = ((e.get("made") or {}).get("at") if state == swap_queue.MADE else e.get("undone")
+              if state == swap_queue.UNDONE else _report_time(row.get("updated_at")) if row and state ==
+              swap_queue.DROPPED else None)
+        out.append((f"q:{e['id']}", state, {"word": e.get("word") or "", "old": old, "new": new,
+                                            "asked": e.get("queued"), "state": state, "why": e.get("why"), "at": at,
+                                            "by": (row or {}).get("by") or BY_SWAP}))
+    for row in alone:
+        state = row["state"] if row["state"] in (MADE, DROPPED, UNDONE) else swap_queue.WAITING
+        old, new = _report_sentences(row, olds)
+        out.append((f"l:{row['id']}", state, {"word": row.get("word") or "", "old": old, "new": new,
+                                              "asked": _report_time(row.get("at")), "state": state,
+                                              "why": row.get("why") if state == DROPPED else None,
+                                              "at": None if state == swap_queue.WAITING else
+                                              _report_time(row.get("updated_at")), "by": row.get("by") or BY_SWAP}))
+    out = [x for x in out if sent.get(x[0]) != x[1]]
+    out.sort(key=lambda x: str(x[2]["asked"] or ""), reverse=True)
+    return out[:max(0, int(newest))]
+
+
+def report_bytes(language, swaps):
+    """`connect/swaps.json`'s bytes for `swaps` (`for_report`'s third parts), UTF-8."""
+    return json.dumps({"format": REPORT_FORMAT, "language": language, "swaps": list(swaps)}, ensure_ascii=False,
+                      indent=1).encode("utf-8")

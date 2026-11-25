@@ -1405,9 +1405,22 @@ def pick(args):
     line: `reading`, the file Anki Miner reads): the words of the item's text (`file`), each with its sentence."""
     from app import cues
     from app.connect import pick as picking, runfile, sentences
-    loaded = settings()
+    # DSA-CONNECT (G6): Connect's runner hands in one pick context a job (`context`, a dict; never on the command
+    # line): what an episode's own pick reads once — settings, the tokenizer, the known test, the phrases, Anki
+    # Miner's look-ups and the note type, the carded set, the learning view, the young words — is the same for every
+    # other episode Best cuts a line from in that job (`runner._borrow`), so those picks read none of it again
+    context = getattr(args, "context", None)
+    kept = context if isinstance(context, dict) else {}
+    if kept.get("job") != args.job or "loaded" not in kept:
+        kept.clear()                    # another job's (or none yet): this pick reads its own
+        kept.update(job=args.job, loaded=settings())
+    loaded = kept["loaded"]
     lang = language(args, loaded)
-    require_set_up(lang)
+    if kept.get("lang") != lang:
+        require_set_up(lang)
+        for name in [k for k in kept if k not in ("job", "loaded")]:
+            del kept[name]
+        kept["lang"] = lang
     # Kantan-MO: the list (Level) decides, and *Cards for every new word* (`connect_every_word`) adds the rest;
     # `--words` still names any of pick's modes
     from app import settings_manager
@@ -1443,7 +1456,9 @@ def pick(args):
     # The episode's words, read as a Generate reads them (the cue reader cleans TV captions as it does); Anki Miner is
     # handed the job's copy (row 1.3.2: reading rows and arrows off) — the same lines at the same times
     from app import caption_clean
-    tokenizer, script = _reading(loaded, lang)
+    if "reading" not in kept:
+        kept["reading"] = _reading(loaded, lang)
+    tokenizer, script = kept["reading"]
     book = getattr(args, "reading", None)
     contract.emit_progress("reading the text" if book else "reading the subtitle", 0, 3)
     run_dir = os.path.join(_connect_folder(), "runs", job)
@@ -1460,8 +1475,9 @@ def pick(args):
         raise CliError("bad-data", f"The {'text' if book else 'subtitle'} can't be read: {e}") from None
     if not book:
         tokens = cues.tokens(read, lang, script, tokenizer)
-    is_known = _known_test(lang, tokenizer, script)
-    phrase_set = _phrase_set(loaded, lang)
+    if "known" not in kept:
+        kept["known"] = (_known_test(lang, tokenizer, script), _phrase_set(loaded, lang))
+    is_known, phrase_set = kept["known"]
 
     out = {"language": lang, "file": os.path.abspath(args.file), "subtitle": subtitle and os.path.abspath(subtitle),
            "mode": mode, "job": job, "run_file": None}
@@ -1469,19 +1485,25 @@ def pick(args):
     if args.video is not None or book:
         contract.emit_progress("asking Anki Miner", 1, 3)
         # Connect's run hands in its set of look-ups (`held`, row 25: never on the command line)
-        setup = _anki_miner_setup(loaded, lang, run_dir, held=getattr(args, "held", None))
+        if "setup" not in kept:
+            kept["setup"] = _anki_miner_setup(loaded, lang, run_dir, held=getattr(args, "held", None))
+        setup = kept["setup"]
         if setup is None:
             out["skipped"] = "anki miner absent"
 
     contract.emit_progress("choosing the words and their lines", 2, 3)
-    keys, source = picking.carded(lang, loaded, [d for d in (setup[2].deck, setup[2].own_deck) if d] if setup else ())
+    decks = tuple(d for d in (setup[2].deck, setup[2].own_deck) if d) if setup else ()
+    if kept.get("carded", (None,))[0] != decks:         # (the decks it was read for: Anki Miner's, once set up)
+        kept["carded"] = (decks, picking.carded(lang, loaded, list(decks)))
+    keys, source = kept["carded"][1]
     # Connect's runner (P2.4): every word it has made a card for, whatever became of the card (G1.3-4: a card you
     # deleted is never made again unless you ask), counted as carded — never on the command line (no flag)
     keys = set(keys) | set(getattr(args, "made", None) or ())
     from app import analyzer
     # the one learning rule, with the list's own counts (Kantan-MA): a rare compound counts toward its free parts
-    view = analyzer.LearningView(*_counted(lang), known=is_known)
-    young = sentences.young_weights(lang)
+    if "view" not in kept:
+        kept["view"] = (analyzer.LearningView(*_counted(lang), known=is_known), sentences.young_weights(lang))
+    view, young = kept["view"]
     chosen = picking.pick(read, tokens, lang, is_known, mode=mode, listed=listed, carded=keys, carded_source=source,
                           readable=view.readable if lang == "ja" else None,
                           ignore_names=bool((loaded.get("logic") or {}).get("ignore_names", False)),

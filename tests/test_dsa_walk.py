@@ -491,6 +491,50 @@ def test_a_generate_builds_the_tokens_of_only_the_sentences_with_something_to_do
     assert built["ranks"] == ["int"] if language == "ja" else "tuple" not in built["ranks"], built["ranks"]
 
 
+# The finished walk made to take every sentence of a finished file (as before the walk on ids), in the child.
+_EVERY_SENTENCE = r"""
+from app import token_index as ti
+ti.WalkFile.sentences = lambda self, mask: list(range(len(self)))
+"""
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_finished_walk_passes_over_only_sentences_that_can_be_no_example(tmp_path, language):
+    # why: a finished show is a sentence source (F7): on ids its walk reads only the sentences holding a list row's
+    # word that may be an unknown there — a word to name, a one-kanji word offered where it stands free (it is bound
+    # in some sentences, unknown in others), an unknown — or a set phrase; the rest can be no example. Real text: the
+    # token store's six files counted, a finished show of tests/Test Resources (test_finished_reference). Generated
+    # once as it ships and once with every finished sentence walked: the two lists byte for byte the same
+    from tests.plan_file_cases import REPO, child_env
+    from tests.test_finished_reference import _finished_show
+    from tests.test_generate_missing_item import COMPARED
+    from tests.test_token_store_kept import _library, _run_indexer
+    root = os.environ["SURASURA_TEST_ROOT"]
+    store, _data_dir, _ids = _library(language)
+    store.import_finished(_finished_show(language))
+    store.close()
+    _run_indexer(language)
+    hook = tmp_path / "hook"
+    hook.mkdir()
+    (hook / "sitecustomize.py").write_text(_EVERY_SENTENCE, encoding="utf-8")
+    lists = []
+    for every in (False, True):
+        env = child_env(root)
+        env.update(SURASURA_FORCE_RUN="1")
+        if every:
+            env["PYTHONPATH"] = str(hook) + os.pathsep + env["PYTHONPATH"]
+        p = subprocess.run([sys.executable, os.path.join(REPO, "app", "analyzer.py"), f"--language={language}",
+                            "--static", "--no-open"], cwd=REPO, env=env, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+        assert p.returncode == 0, (p.stdout + p.stderr)[-3000:]
+        made = {}
+        for name in COMPARED:
+            with open(os.path.join(root, "results", name), "rb") as f:
+                made[name] = f.read()
+        lists.append(made)
+    assert lists[0] == lists[1]
+
+
 # ---------------------------------------------------------------------------------------------------- #
 # G8: the known words normalized per term
 # ---------------------------------------------------------------------------------------------------- #
@@ -647,8 +691,11 @@ def test_types_written_since_the_walk_began_are_read_by_id_not_by_walking_the_ca
     asked = set()
     for p in paths:
         got = walk.file(p)
-        if got is not None:
-            asked.update(int(i) for i in got.ids if int(i) < ti._RUN)
+        if got is None:
+            # walked on ids, its late types read — never fallen back to its tokens (an empty file has no row)
+            assert os.path.getsize(p) == 0, p
+            continue
+        asked.update(int(i) for i in got.ids if int(i) < ti._RUN)
     assert held > 100 and asked
     assert seen[0] < held, "only the asked ids were read from the cache"
     assert all(walk.types[i] == store._types[i] for i in asked)

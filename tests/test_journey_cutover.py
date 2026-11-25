@@ -458,23 +458,25 @@ def test_the_automatic_generate_writes_the_journey_without_opening_it(tmp_path, 
     assert len(opened) == (1 if open_browser else 0)
 
 
-def test_the_journey_is_signed_with_the_marks_read_before_it_was_drawn_and_an_unread_read_signs_nothing(tmp_path):
-    # test_journey_stones' S-1: a mark landing mid-render is the next press's re-render, never a page recorded as
-    # current that shows the wrong stones; a read that failed (library_store.UNREAD) signs "" (`signed_render`)
+def test_the_journey_is_signed_with_the_marks_of_the_read_it_was_drawn_from_and_an_unread_read_signs_nothing(
+        tmp_path):
+    # test_journey_stones' S-1 and J-FIX 3: the page is signed with the marks of its own read of the store
+    # (`store_facts`), never a read before or after it — a mark landing between two reads was drawn but not signed, so
+    # its Undo left the stone; a read that failed (library_store.UNREAD) signs "" (`signed_render`), and with no
+    # facts read the page is never signed with stones (no store: None; a store there: UNREAD)
     from app import journey_render
-    reads = iter([[("ShowA_ep01.srt", "HighPriority", True, True)], [("ShowA_ep02.srt", "HighPriority", True, True)]])
-    real = journey_render.render
-
-    def landing(lang, **kw):
-        analyzer.journey_marks(lang)                 # a mark lands while the page is drawn
-        return real(lang, **kw)
+    drawn_marks = [("HighPriority/ShowA/ShowA_ep01.srt", "HighPriority", 1, 1, "fShowA", None)]
+    facts = journey_render.StoreFacts({}, {}, [], {}, {}, {}, "e1", frozenset(), drawn_marks)
+    other = [("HighPriority/ShowA/ShowA_ep02.srt", "HighPriority", 1, 1, "fShowA", None)]
     results, patches = _empty_results(tmp_path)
-    with patches[0], patches[1], patches[2], patches[3], patch.object(analyzer, "journey_marks", lambda _l: next(reads)), \
-            patch.object(journey_render, "render", landing):
-        drawn = gen.generate_static_html(open_browser=False, language="ja")
-    assert drawn == [("ShowA_ep01.srt", "HighPriority", True, True)], "the marks read before the render"
-    with patches[0], patches[1], patches[2], patches[3]:
-        assert gen.generate_static_html(open_browser=False, language="ja", marks=ls.UNREAD) == ls.UNREAD
+
+    def drawn(facts_read, marks_read):
+        with patches[0], patches[1], patches[2], patches[3],                 patch.object(journey_render, "store_facts", lambda _l: facts_read),                 patch.object(analyzer, "journey_marks", lambda _l: marks_read):
+            return gen.generate_static_html(open_browser=False, language="ja")
+    assert drawn(facts, other) == drawn_marks, "the marks of the read the page was drawn from"
+    assert drawn(facts._replace(marks=ls.UNREAD), other) == ls.UNREAD, "its marks unread: never signed current"
+    assert drawn(None, None) is None, "no store: no stones part"
+    assert drawn(None, other) == ls.UNREAD, "a store whose facts couldn't be read: never signed current"
     args = analyzer.parse_analysis_args(["--language=ja", "--static", "--no-open"])
     assert analyzer.signed_render(args, ls.UNREAD, True) == ""
 

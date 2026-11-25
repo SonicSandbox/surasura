@@ -201,14 +201,19 @@ def states(language, words):
     return out
 
 
+def marks_files(language):
+    """The two files `marks` reads: the known words' and the Ignore list's (a reader that keeps `left_out`'s answer
+    keeps it while both are as they were: Connect's `known_since`)."""
+    return anki_sync._known_path(language), word_lists.list_path("ignore", language)
+
+
 def left_out(language, since_ns=None):
     """The words marked here that the window's numbers leave out at once: every mark's word (`marks`). `since_ns`: a
     plan's time — neither file written since, the plan's Generate read them all and there is nothing to leave out (the
     known words aren't parsed at every plan read)."""
     if since_ns is not None:
         try:
-            times = [os.stat(p).st_mtime_ns for p in (anki_sync._known_path(language),
-                                                       word_lists.list_path("ignore", language)) if os.path.exists(p)]
+            times = [os.stat(p).st_mtime_ns for p in marks_files(language) if os.path.exists(p)]
         except OSError:
             times = None
         if times is not None and all(t < since_ns for t in times):

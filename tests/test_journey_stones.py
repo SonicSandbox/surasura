@@ -206,10 +206,56 @@ def test_with_keep_studying_on_a_stone_marks_the_counted_entry_and_moves_only_th
     store.close()
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_pages_facts_and_the_marks_it_is_signed_with_are_one_read_a_mark_committed_mid_read_is_in_neither(language):
+    # why (J-FIX 3): the page draws its stones from the store's feed and is signed with `watched_marks`; read apart, a
+    # mark committed between them is drawn and not signed (or signed and not drawn) — the page then stays "up to date"
+    # on the wrong stones. One read transaction: the window's mark, committed while the page reads, is in neither
+    from app import journey_render
+    _settings(language)
+    store = migrated(language)
+    target = store.ids("now")[1]
+    real = ls.Store.read_feed
+
+    def feed_then_mark(self, *a, **k):
+        out = real(self, *a, **k)
+        if self is not store:
+            store.set_watched([target])         # the window's own connection commits while the page reads
+        return out
+    with patch.object(ls.Store, "read_feed", feed_then_mark):
+        facts = journey_render.store_facts(language)
+    assert store.item(target)["watched"] == 1, "the mark committed"
+    assert not facts.items[target]["watched"] and facts.marks == [], "drawn and signed alike: without it"
+    again = journey_render.store_facts(language)
+    assert again.items[target]["watched"] and [m[0] for m in again.marks if m[2]] == [store.item(target)["rel_path"]]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_failed_read_of_the_store_is_never_read_again_by_the_render_so_no_stone_is_drawn_unsigned(language, tmp_path):
+    # why (J-FIX 3, the contract review): when the page's own read of the store fails, the render must not read it a
+    # second time — that read could draw a stone the page is never signed with (the run signs UNREAD or None)
+    from app import journey_render
+    _settings(language)
+    store = migrated(language)
+    counted = _now_names(store)
+    store.set_watched([store.ids("now")[0]])
+    calls = []
+
+    def failed(*a, **k):
+        calls.append(a)
+        return None
+    with patch.object(journey_render, "store_facts", failed):
+        data = _render(tmp_path, language, counted)
+    assert len(calls) == 1, "the page's one read, never a second inside the render"
+    assert _marked(data) == [], "nothing read: no stone drawn"
+    store.close()
+
+
 # J-RETIRE: the old page's "an aside file whose name a counted file has gets no entry of its own" (its sidebar keyed
-# each tab by basename) retires: the v3 page keys each episode by its item id (`journey_render.build`). Not ported:
-# what it also held — the counted file's words never drawn on a same-named episode set aside — fails on v3 (two
-# shows' 第01集.txt: `build` puts the words on the first episode of that name, the stone), a gap for the lead.
+# each tab by basename) retires: the v3 page keys each episode by its item id (`journey_render.build`). What it also
+# held — the counted file's words never drawn on a same-named episode set aside — is held on v3 by
+# `test_two_shows_one_file_name_the_set_aside_episode_never_takes_the_counted_ones_words` (J-FIX 3).
 
 
 # --- the Generate half: real runs, as the dashboard starts them ---------------------------------------------------- #
@@ -263,6 +309,51 @@ def _stones(data):
 
 def _words(data, name):
     return next(e for e in data["progressive"] if e["filename"] == name)["words"]
+
+
+# Two shows whose episodes share their file names (a library's 第01集 in every show's folder): two real books cut in
+# two, each episode named only by its number
+SAME_NAMED = {"ja": ("samples/ja/HighPriority/蜘蛛の糸（芥川龍之介）.txt", "samples/ja/LowPriority/ごん狐（新美南吉）.txt"),
+              "zh": SHOWS["zh"]}
+EP_NAMES = {"ja": "第{:02d}話.txt", "zh": "第{:02d}集.txt"}
+
+
+def _same_named(language):
+    """Show A Ep01–Ep02 then Show B Ep01–Ep02 in NOW, A's and B's episodes of one number sharing a file name ->
+    (store, {"A1": item id, ...}, [the two file names])."""
+    data_dir, user_files_dir = roots(language)
+    doc = {"schedule": {p: [] for p in ls.PHASES}}
+    rels = {}
+    for show, src in zip("AB", SAME_NAMED[language]):
+        for n, text in enumerate(_split_lines(_read(src), 2), 1):
+            rel = f"HighPriority/Show{show}/{EP_NAMES[language].format(n)}"
+            path = os.path.join(data_dir, *rel.split("/"))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
+            rels[f"{show}{n}"] = rel
+            doc["schedule"][ls.TIERS["now"][0]].append(entry(rel))
+    write_manifest(user_files_dir, doc)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    return store, {k: store.item_id(rel) for k, rel in rels.items()}, [EP_NAMES[language].format(n) for n in (1, 2)]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_shows_one_file_name_the_set_aside_episode_never_takes_the_counted_ones_words(language):
+    # why: the run's lists name a file only by its name, so with Show A's 第01集 watched and set aside, Show B's
+    # counted 第01集 had its words, its *% known* and its count ahead drawn on A's stone — the learner saw a show he
+    # finished holding another show's words, and the episode he is about to study empty
+    root = os.environ["SURASURA_TEST_ROOT"]
+    _settings(language)
+    store, ids, (one, two) = _same_named(language)
+    store.set_watched([ids["A1"]])
+    marked, _said = _generate(root, language)
+    eps = marked["progressive"]
+    assert _files(marked) == [one, two, one, two], "each show's episodes in the library's order, the stone in its place"
+    assert eps[0] == {"filename": one, "tier": 0, "pct": None, "words": [], "watched": True, "aside": True},         "the set-aside 第01集: no words, no % known"
+    assert eps[2]["words"] and eps[2]["pct"] is not None and not eps[2].get("watched"),         "Show B's counted 第01集 holds its own words and its % known"
+    store.close()
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -335,15 +426,15 @@ def test_drill_a2_step_6_every_episode_watched_then_finished_then_put_back_and_o
 # --- the review round (S-1 / IK-4, S-3 / IK-3, S-2) ----------------------------------------------------------------- #
 
 # A Generate whose page is drawn after something happened to the store mid-run (the window stays live while a
-# Generate runs): `mark` — the learner marks an episode just as the journey's marks are read (`analyzer.journey_marks`,
-# which `_write_journey` reads before the page reads the store); `late` — he marks it after that read, while the page
-# reads the store (`journey_render.store_facts`); `locked` — the store's marks can't be read at that moment. The
-# analyzer runs as `python app/analyzer.py` does, the journey's read wrapped.
+# Generate runs): `mark` — the learner marks an episode as the run starts writing its journey
+# (`static_html_generator.generate_static_html`); `late` — he marks it at the last moment, just before the page reads
+# the store (`journey_render.store_facts`); `locked` — the store's marks can't be read as the page reads the store.
+# The analyzer runs as `python app/analyzer.py` does, the journey's writer and its read wrapped.
 DRIVER = r'''
 import os, runpy, sqlite3, sys
-from app import analyzer, journey_render, library_store as ls
+from app import journey_render, library_store as ls, static_html_generator as gen
 language, data_dir, user_files_dir, mode, item = sys.argv[1:6]
-marks_read, facts_read = analyzer.journey_marks, journey_render.store_facts
+write, facts_read = gen.generate_static_html, journey_render.store_facts
 
 def mark():
     store = ls.open_store(language, data_dir, user_files_dir)
@@ -352,26 +443,25 @@ def mark():
     finally:
         store.close()
 
-def hooked(*a, **k):
+def writing(*a, **k):
     if mode == "mark":
         mark()
-        return marks_read(*a, **k)
-    if mode == "late":
-        return marks_read(*a, **k)
-    def locked(self):
-        raise sqlite3.OperationalError("database is locked")
-    real, ls.Store.watched_marks = ls.Store.watched_marks, locked
-    try:
-        return marks_read(*a, **k)
-    finally:
-        ls.Store.watched_marks = real
+    return write(*a, **k)
 
 def facts(*a, **k):
     if mode == "late":
         mark()
-    return facts_read(*a, **k)
+    if mode != "locked":
+        return facts_read(*a, **k)
+    def locked(self):
+        raise sqlite3.OperationalError("database is locked")
+    real, ls.Store.watched_marks = ls.Store.watched_marks, locked
+    try:
+        return facts_read(*a, **k)
+    finally:
+        ls.Store.watched_marks = real
 
-analyzer.journey_marks, journey_render.store_facts = hooked, facts
+gen.generate_static_html, journey_render.store_facts = writing, facts
 sys.argv = ["analyzer.py", f"--language={language}", "--static", "--no-open", "--min-freq", "1"]
 runpy.run_path(os.path.join(os.path.dirname(ls.__file__), "analyzer.py"), run_name="__main__")
 '''
@@ -412,9 +502,25 @@ def test_a_mark_landing_mid_generate_is_signed_as_drawn_so_its_undo_re_renders(l
     store.close()
 
 
-# Not held (J-RETIRE, a gap for the lead): a mark landing AFTER `_write_journey` read the marks it signs with, while
-# the page reads the store (`journey_render.store_facts`), is drawn but not signed; its Undo then finds the page
-# "already up to date" and the stone stays (DRIVER's `late` mode shows it, ja and zh).
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_mark_landing_while_the_page_reads_the_store_is_signed_as_drawn_so_its_undo_re_renders(language, tmp_path):
+    # why (J-RETIRE's find, J-FIX 3): the page was signed with marks read before it read the store itself, so a mark
+    # landing between the two reads was drawn but not signed — its Undo then found the page "already up to date" and
+    # the stone stayed on an episode he un-marked. The page is signed with the marks of the read it was drawn from.
+    root = os.environ["SURASURA_TEST_ROOT"]
+    _settings(language)
+    store, ids, names = _library(language)
+    store.set_library_options(keep_watched=True)
+    during, _said = _generate_during(root, language, "late", ids["A2"], tmp_path)
+    assert _stones(during) == {names["A2"]: False}, "the mark made while the page read the store is drawn"
+
+    store.set_watched([ids["A2"]], False)          # its Undo
+    after, said = _generate(root, language)
+    assert REUSED in said and "Re-rendering report" in said, "its Undo re-renders the report"
+    assert _stones(after) == {}, "no stone left on an episode he un-marked"
+    _again, said = _generate(root, language)
+    assert "Report already up to date" in said, "nothing changed since: the report is reopened, never redrawn"
+    store.close()
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

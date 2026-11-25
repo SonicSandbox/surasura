@@ -421,9 +421,11 @@ class _Calls:
         """Wait (the condition held) while `blocked()`; a write meeting a long call -> `busy`; a Stop -> Stopped."""
         state["held"] += 1
         try:
-            while blocked():
-                if write and self._running_long(key, state):
+            while True:
+                if write and self._running_long(key, state):   # (looked at again as it goes in, not only while held)
                     raise AnkiMinerError("busy", WRITE_BUSY, code="BUSY")
+                if not blocked():
+                    return
                 if stopping.pressed():
                     raise stopping.Stopped()
                 self._cond.wait(POLL_S)
@@ -431,7 +433,9 @@ class _Calls:
             state["held"] -= 1
 
     @contextlib.contextmanager
-    def one(self, path, command):
+    def one(self, path, command, started=()):
+        """One call of `command` on `path`'s Anki Miner, as the class says; `started` (`starting`'s): the programs it
+        started, under way from the moment its own slot ends — in the same hold, so no write slips in between."""
         key, write = self._key(path), command in WRITES
         mine = self._here.__dict__.setdefault("keys", {})
         with self._cond:
@@ -462,16 +466,17 @@ class _Calls:
                 else:
                     state["reads"] -= 1
                     state["long"] -= command in RUN_LOCKED
+                if started:
+                    self._running_long(key, state)      # (the ended ones dropped as these go in)
+                    self._started[key].extend(started)
                 self._cond.notify_all()
 
     @contextlib.contextmanager
     def starting(self, path, command):
         """`start`'s call: it waits for a write as any call does, and is under way after while its program runs."""
-        with self.one(path, command):
-            started = []
+        started = []
+        with self.one(path, command, started):
             yield started.append
-        with self._cond:
-            self._started.setdefault(self._key(path), []).extend(started)
 
     def waiting(self, path):
         """How many calls wait on `path`'s Anki Miner now (the tests' event: never a sleep)."""

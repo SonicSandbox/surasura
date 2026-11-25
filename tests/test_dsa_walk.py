@@ -493,8 +493,17 @@ def test_a_generate_builds_the_tokens_of_only_the_sentences_with_something_to_do
 
 # The finished walk made to take every sentence of a finished file (as before the walk on ids), in the child.
 _EVERY_SENTENCE = r"""
+import json, os
 from app import token_index as ti
-ti.WalkFile.sentences = lambda self, mask: list(range(len(self)))
+_mask = ti.WalkFile.sentences
+
+
+def _every(self, mask):
+    with open(os.environ["DSA_WALK_COUNT"], "a", encoding="utf-8") as f:
+        f.write(json.dumps([len(self), len(_mask(self, mask)), int(((self.cls == ti.W_BOUND) & mask).sum())]))
+        f.write(chr(10))
+    return list(range(len(self)))
+ti.WalkFile.sentences = _every
 """
 
 
@@ -505,22 +514,29 @@ def test_the_finished_walk_passes_over_only_sentences_that_can_be_no_example(tmp
     # sentences, unknown in others), an unknown — or a set phrase; the rest can be no example. Real text: the token
     # store's six files counted, a finished show of tests/Test Resources (test_finished_reference); the learner knows
     # every word of two characters or more and every word is listed (--min-freq 1), so the one-kanji words are the
-    # only examples left to find. Generated as it ships and with every finished sentence walked: the lists the same
+    # only examples left to find (Japanese). Generated as it ships and with every finished sentence walked: the lists the same,
+    # and the walk's mask passed over some sentences
     from tests.plan_file_cases import REPO, child_env
     from tests.test_finished_reference import _finished_show
     from tests.test_generate_missing_item import COMPARED
     from tests.test_library_store_support import roots
     from tests.test_token_store_kept import _library, _run_indexer
     root = os.environ["SURASURA_TEST_ROOT"]
+    # Set phrases off: on, a finished file's sentences are all searched for them (the store keeps the phrases it found
+    # only for counted files), so the walk's mask is the path a learner without phrase rows takes
+    with open(os.path.join(root, "settings.json"), "w", encoding="utf-8") as f:
+        json.dump({"logic": {"phrase_rows": False}}, f)
     store, _data_dir, ids = _library(language)
     show = _finished_show(language)
     store.import_finished(show)
     store.close()
     _run_indexer(language)
     with ti.open_store(language) as tokens:
-        lemmas = {t[0] for p in list(ids) + show for _s, toks in (tokens.file_tokens(p) or []) for t in toks}
+        lemmas = Counter(t[0] for p in list(ids) + show for _s, toks in (tokens.file_tokens(p) or []) for t in toks)
+    # (Chinese has no one-kanji rule: its unknowns are the words met twice at most, so some sentences hold none)
+    unknown = (lambda lemma: len(lemma) == 1) if language == "ja" else (lambda lemma: lemmas[lemma] <= 2)
     with open(os.path.join(roots(language)[1], "KnownWord.json"), "w", encoding="utf-8") as f:
-        json.dump([{"dictForm": lemma, "knownStatus": "KNOWN"} for lemma in sorted(lemmas) if len(lemma) > 1], f,
+        json.dump([{"dictForm": lemma, "knownStatus": "KNOWN"} for lemma in sorted(lemmas) if not unknown(lemma)], f,
                   ensure_ascii=False)
     hook = tmp_path / "hook"
     hook.mkdir()
@@ -528,7 +544,7 @@ def test_the_finished_walk_passes_over_only_sentences_that_can_be_no_example(tmp
     lists = []
     for every in (False, True):
         env = child_env(root)
-        env.update(SURASURA_FORCE_RUN="1")
+        env.update(SURASURA_FORCE_RUN="1", DSA_WALK_COUNT=str(tmp_path / "masked.jsonl"))
         if every:
             env["PYTHONPATH"] = str(hook) + os.pathsep + env["PYTHONPATH"]
         p = subprocess.run([sys.executable, os.path.join(REPO, "app", "analyzer.py"), f"--language={language}",
@@ -542,6 +558,11 @@ def test_the_finished_walk_passes_over_only_sentences_that_can_be_no_example(tmp
         lists.append(made)
     assert len(lists[0]["priority_learning_list.csv"].splitlines()) > 5, "some words listed"
     assert lists[0] == lists[1]
+    files = [json.loads(line) for line in (tmp_path / "masked.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(files) == len(show), "each finished file walked on its mask"
+    assert sum(masked for _n, masked, _bound in files) < sum(n for n, _m, _b in files), "some sentences passed over"
+    if language == "ja":
+        assert any(bound for _n, _m, bound in files), "a one-kanji word offered where it stands free is in the mask"
 
 
 # ---------------------------------------------------------------------------------------------------- #

@@ -37,6 +37,10 @@ class World:
 
     def __init__(self, monkeypatch, language="ja", level=1, settings=None):
         self.mp, self.language = monkeypatch, language
+        for thread in list(getattr(sentences, "_AHEAD", {}).values()):     # (a read ahead a test before left: done
+            thread.join(10)                                                 # before this world's stand-ins are in)
+            assert not thread.is_alive(), "a read of the dates ahead outlived its test"
+        getattr(sentences, "_AHEAD", {}).clear()
         self.lib = Library(get_data_path(language))
         self.info, self.tokens, self.reads = {}, {}, []
         self.settings = dict(SETTINGS, **(settings or {}))
@@ -476,6 +480,7 @@ def test_read_ahead_reads_the_tables_head_and_the_dates_at_level_one(monkeypatch
     w.place("ep01", 1)
     monkeypatch.setattr(sentences, "_store_stamp", lambda language: ("store", (1, 1), None), raising=False)
     assert sentences.read_ahead("ja") is True
+    sentences._AHEAD[("ja", False)].join(10)       # (the dates are a thread's read: E-FAST 6, row 16)
     assert w.reads == [True] and ("ja", False) in sentences._DATES
     sentences.choose("ja", [FEST], dial=sentences.BEST, young={})
     assert w.reads == [True], "the first pick reads no store: the dates were read ahead"

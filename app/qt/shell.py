@@ -694,9 +694,10 @@ class Services:
         every start; the start-light fix)."""
         return os.path.exists(os.path.join(path_utils.get_user_file("results"), JOURNEY_FILE))
 
-    def open_journey(self, file=None):
+    def open_journey(self, file=None, item=None):
         """(A worker.) *Your journey ↗*: the report (`open_report`), drawn again first when only a setting it shows
-        changed (`draw_journey`); `file` (the report's name for an episode's file): opened on it — or, when the journey
+        changed (`draw_journey`); `file` (the report's name for an episode's file; `item` its library item id, which tells
+        two shows' 第01集 apart: E-NAMES): opened on it — or, when the journey
         doesn't list it yet (added since the last Generate), where it opens by itself, -> `JOURNEY_LACKS` (JO-1: the
         window says so); drawn before a Journey setting changed while a Generate is due, -> `JOURNEY_OLD_LOOK` (the
         window says its new look comes with that Generate). -> False with none."""
@@ -704,9 +705,9 @@ class Services:
         later = self.draw_journey()
         if self.closing.is_set():
             return None                                  # the window is going: no browser opened behind it
-        held = file is None or generator.report_holds(file)
+        held = file is None or generator.report_holds(file, item)
         opened = generator.open_report(app_mode=bool(self.settings.get().get("open_app_mode")),
-                                       file=file if held else None)
+                                       file=file if held else None, item=item if held else None)
         if opened and not held:
             return JOURNEY_LACKS
         return JOURNEY_OLD_LOOK if opened and later else opened
@@ -3854,7 +3855,9 @@ class ShellWindow(QMainWindow):
         def failed(info):
             self.say(strings.JOURNEY_FAILED.format(why=info[0]))
         file = journey_file(episode)
-        return qpress.run(control, "journey:open", self.services.open_journey, *((file,) if file else ()), then=done,
+        item = getattr(episode, "id", None) if file else None      # (E-NAMES: the item, two shows' 第01集 apart)
+        return qpress.run(control, "journey:open", self.services.open_journey,
+                          *((file,) if file else ()) + ((item,) if item is not None else ()), then=done,
                           failed=failed, win=self, at=at)
 
     # the bar's marks

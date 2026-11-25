@@ -292,7 +292,6 @@ def test_a_generate_writes_the_counts_table_beside_the_plan_and_its_counts_are_t
     # (+109 MB at the 20,000-file first render). Same answer: every listed word's count in every episode, and every
     # episode's *% known*, are the plan's own.
     from app import journey_render, plan_engine
-    from app.path_utils import report_name
     store, _ids, _names = _library(language)
     store.close()
     root = os.environ["SURASURA_TEST_ROOT"]
@@ -302,8 +301,8 @@ def test_a_generate_writes_the_counts_table_beside_the_plan_and_its_counts_are_t
     table = plan_engine.read_counts(os.path.join(results, plan_engine.COUNTS_FILE),
                                     streamed.header["run_signature"])
     assert table is not None, "the Generate wrote the table beside its plan"
-    names = [report_name(entry[0]) for entry in streamed.files]
-    assert [report_name(entry[0]) for entry in table.files] == names and len(names) > 1
+    names = [entry[0] for entry in streamed.files]       # each file's path (E-NAMES: the table holds the plan's)
+    assert [entry[0] for entry in table.files] == names and len(names) > 1
     listed = _listed(root)
     assert listed and _listed(root, "progressive_learning_list.csv") <= listed
     # each word's count ahead (`build`'s: its uses in its own episode and the next AHEAD - 1, -1 where its own has
@@ -319,10 +318,7 @@ def test_a_generate_writes_the_counts_table_beside_the_plan_and_its_counts_are_t
     words = sorted(listed)
     word_eps = [w % len(names) for w in range(len(words))]
     word_id = {key: w for w, key in enumerate(words)}
-    first = {}                                   # an episode is its report name's first file (shows share names)
-    for f, name in enumerate(names):
-        first.setdefault(name, f)
-    ep = [whole[first[name]] for name in names]
+    ep = whole                                   # an episode is its own file, by path (shows share names: E-NAMES)
     want = []
     for key, e in zip(words, word_eps):
         here = ep[e].get(key)

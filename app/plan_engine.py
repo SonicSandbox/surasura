@@ -448,6 +448,7 @@ def counts(path):
 
 
 COUNTS_FILE = "plan_counts.bin"         # results/: the journey's counts, beside the plan (`CountsTable`)
+COUNTS_FORMAT = 2                       # its head's "counts" (2, E-NAMES: its files are paths; 1 held report names)
 _NO_PHRASES = ()
 
 
@@ -457,7 +458,8 @@ class CountsTable:
     only words a Generate's page or the redraw's can show; `journey_render._ahead` sums them so) and its `prog`'s first
     two numbers, the tokens counted and those known before any file (*% known*, `_plan_pcts`). `analyzer.plan_lines`
     hands each file's line here as it makes it; `write` puts the table beside the plan once that is written;
-    `read_counts` reads it as `counts` reads the plan. The file: one JSON line (the run, the keys, the files, the
+    `read_counts` reads it as `counts` reads the plan. Format 2 (E-NAMES): its files are the plan's paths (1: their
+    report names, two shows' 第01集 one file). The file: one JSON line (the run, the keys, the files, the
     arrays' lengths and CRC), then the arrays as 32-bit ints — at 20,000 files the render held 44 MB of the plan's
     tables, and reading the table's 578,317 uses as JSON took 0.26 s."""
 
@@ -466,8 +468,8 @@ class CountsTable:
         self.uses, self.at, self.total, self.baseline = array("i"), array("i", [0]), array("i"), array("i")
 
     def start(self, keys, rows, names):
-        """The plan's keys, its rows (None: not listed) and its files' report names (`path_utils.report_name`, all the
-        journey reads of a file's path: the caller's, so the engine stays pure), before its first file's line."""
+        """The plan's keys, its rows (None: not listed) and its files' paths (the plan's `files`: what tells two files
+        of one name apart, E-NAMES), before its first file's line."""
         self.__init__()
         for k, row in enumerate(rows):
             if row is not None:
@@ -498,7 +500,7 @@ class CountsTable:
         tmp = f"{path}.{os.getpid()}.tmp"
         try:
             body = b"".join(a.tobytes() for a in _little(self.at, self.total, self.baseline, self.uses))
-            head = {"counts": 1, "run_signature": run_signature, "keys": self.keys, "files": self.files,
+            head = {"counts": COUNTS_FORMAT, "run_signature": run_signature, "keys": self.keys, "files": self.files,
                     "uses": len(self.uses), "crc": zlib.crc32(body)}
             with open(tmp, "wb") as f:
                 f.write(json.dumps(head, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n")
@@ -549,8 +551,8 @@ class _Strings:
 
 
 class _Names:
-    """`read_counts`' files, each read as `counts` gives one ([its path]): here its report name (`report_name`, the
-    journey's one use of the path), kept packed (`_Strings`) rather than a list a file."""
+    """`read_counts`' files, each read as `counts` gives one ([its path]), kept packed (`_Strings`) rather than a list
+    a file."""
     __slots__ = ("_names",)
 
     def __init__(self, names):
@@ -608,7 +610,7 @@ class _CountLines:
 
 def read_counts(path, run_signature):
     """The counts table `CountsTable.write` put beside the plan -> `Counts`, shaped as `counts` reads the plan (`files`
-    [[its report name]] — `report_name` of a name is the name —, `keys` [[Word, Reading]], `per_file`: each file's
+    [[its path]], `keys` [[Word, Reading]], `per_file`: each file's
     {"main", "ph", "prog"}, the listed rows' uses under "main", `prog`'s first two numbers), so the journey reads
     either alike; None when absent, damaged (its CRC, its
     lengths, a key out of range), or another run's. Held lean for the render's peak (the lead's ruling: no cost bought
@@ -617,7 +619,7 @@ def read_counts(path, run_signature):
         with open(path, "rb") as f:
             head = json.loads(f.readline())
             body = f.read()
-        if not isinstance(head, dict) or head.get("counts") != 1 or not run_signature or \
+        if not isinstance(head, dict) or head.get("counts") != COUNTS_FORMAT or not run_signature or \
                 head.get("run_signature") != run_signature or zlib.crc32(body) != head["crc"]:
             return None
         keys, files, n = head["keys"], head["files"], head["uses"]
@@ -638,7 +640,7 @@ def read_counts(path, run_signature):
             return None
         if n and max(uses) < 1 << 16 and min(uses) >= 0:
             uses = array("H", uses)         # the narrower type when every key and count fits (2 bytes a number, not 4)
-        return Counts({"run_signature": run_signature, "counts": 1}, _Names(files), _Keys(keys),
+        return Counts({"run_signature": run_signature, "counts": COUNTS_FORMAT}, _Names(files), _Keys(keys),
                       _CountLines(uses, at, total, baseline))
     except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError):
         return None
@@ -1012,6 +1014,7 @@ class Engine:
         self._lemma = [key[0] for key in keys]
         self._occ = [key[4] for key in keys]           # Occurrences, grown by the files the engine adds
         self._source = [entry[0].rsplit("/", 1)[-1] for entry in files]      # each file's Source File
+        self._path = [entry[0] for entry in files]                           # and its Source Path (E-NAMES)
         # Per file: its keys and uses (words, then the phrase rows' own entries) — a Generate's insertion order: files
         # in the order, each file's words as first counted, phrases after words. A key's place in `ks` is its place
         # in that order within the file (words before phrases, as the rank needs).
@@ -1387,6 +1390,7 @@ class Engine:
             ks, us = self._without(ks, us)
         self._uses.append((ks, us))
         self._source.append(str(record.get("name") or str(item_id).replace("\\", "/").rsplit("/", 1)[-1]))
+        self._path.append(str(record.get("path") or str(item_id).replace("\\", "/")))
         self._prog.append(prog)
         self._fs.append(array("i"))         # (its sentences aren't the plan's: none is a row's, until the Generate)
         if sp:
@@ -1561,12 +1565,13 @@ class Engine:
         progressive = []
         for (f, (file_rows, baseline_pct, total)) in zip(order, passes):
             seq = seq_of[f]
-            source = self._source[f]
+            source, source_path = self._source[f], self._path[f]
             for k, count, known_count, start_pct, end_pct in file_rows:
                 orth, forms, _tier = spelling(k, spelled)
                 row = rows[k]
-                out = {"Sequence": seq, "Source File": source, "Word": keys[k][0], "Orth": orth, "Forms": forms,
-                       "Reading": keys[k][1], "Kana": self._kana(k, orth), "Tier": row[1] or row[0], "Score": score[k],
+                out = {"Sequence": seq, "Source File": source, "Source Path": source_path, "Word": keys[k][0],
+                       "Orth": orth, "Forms": forms, "Reading": keys[k][1], "Kana": self._kana(k, orth),
+                       "Tier": row[1] or row[0], "Score": score[k],
                        "Occurrences (Global)": self._occ[k], "Occurrences (File)": count,
                        "Count (High)": counts[k][0],
                        "Count (Low)": counts[k][1], "Count (Goal)": counts[k][2], "Modality": row[2]}

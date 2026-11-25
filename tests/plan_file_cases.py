@@ -263,6 +263,8 @@ def _normal(name, data, spellings, stamp):
         data = re.sub(rb'"\d{4}-\d{2}-\d{2}"', b'"<DAY>"', data)
     if name == "journey_words.json":           # the memo's pitch key names unidic's file by size and time:
         data = re.sub(rb'"p_key":"[^"]*"', b'"p_key":""', data, count=1)   # this install's, not the run's
+        data = re.sub(rb'"n_key":"[^"]*"', b'"n_key":""', data, count=1)   # its names key, the code's files by
+        #                                                                     size and time (L2-WASTE): this copy's
     return data
 
 

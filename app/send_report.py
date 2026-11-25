@@ -245,7 +245,7 @@ def build(language, include_results=True, library=None, root=None, extra=None, n
             raise
         was = waiting()                                              # the same reports again: the same nonce, so a
         same = (was is not None and was.zipped == made.zipped and was.removed == made.removed   # sent one keeps its #ID
-                and was.flags == made.flags and was.swaps == made.swaps)
+                and was.flags == made.flags and was.swap_lines == made.swap_lines)
         meta = {"nonce": was.nonce if same else secrets.token_hex(16), "sha256": digest, "size": size, "language": language,
                 "created": (now or datetime.datetime.now().astimezone()).isoformat(timespec="seconds"),
                 "zipped": made.zipped, "removed": made.removed, "left_out": made.left_out, "entries": made.entries,

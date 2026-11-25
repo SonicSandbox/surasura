@@ -1317,9 +1317,9 @@ def _report_time(at):
     """The ledger's UTC stamp -> the local time the queue writes (ISO, seconds); None when there's none."""
     try:
         when = datetime.datetime.strptime(str(at), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
-    except (TypeError, ValueError):
+        return when.astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
+    except (TypeError, ValueError, OverflowError, OSError):
         return None
-    return when.astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
 
 
 def _report_text(text):
@@ -1350,7 +1350,7 @@ def _report_rows(language):
         names = [d[0] for d in cur.description]
         rows = [dict(zip(names, r)) for r in cur.fetchall()]
         olds = {}
-        notes = sorted({int(r["old_note"]) for r in rows if r.get("old_note") is not None})
+        notes = sorted({n for n in (_int(r.get("old_note")) for r in rows) if n is not None})
         for at in range(0, len(notes), 500):
             part = notes[at:at + 500]
             for note, sentence in conn.execute(
@@ -1368,7 +1368,7 @@ def _report_sentences(row, olds):
     note, else the first line the swap avoided (`_avoid` puts the old card's own first); None where it holds none."""
     if row is None:
         return None, None
-    old = olds.get(int(row["old_note"])) if row.get("old_note") is not None else None
+    old = olds.get(_int(row.get("old_note")))
     if not old and row.get("avoid"):
         try:
             avoided = json.loads(row["avoid"])
@@ -1404,7 +1404,8 @@ def for_report(language, sent=None, newest=200):
         row = by_ref.get(str(e["id"]))
         old, new = _report_sentences(row, olds)
         state = e["state"]
-        at = ((e.get("made") or {}).get("at") if state == swap_queue.MADE else e.get("undone")
+        made = e.get("made") if isinstance(e.get("made"), dict) else {}
+        at = (made.get("at") if state == swap_queue.MADE else e.get("undone")
               if state == swap_queue.UNDONE else _report_time(row.get("updated_at")) if row and state ==
               swap_queue.DROPPED else None)
         out.append((f"q:{e['id']}", state, {"word": e.get("word") or "", "old": old, "new": new,

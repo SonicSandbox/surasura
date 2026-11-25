@@ -805,8 +805,8 @@ def plan(language, include_results=True, library=None, root=None, extra=None, re
     else:
         p.left_out.append(f"results\\: left out ({results_why or 'Include my last lists was unticked'})")
     p.left_out.append("never taken: your subtitle and book files, Anki's cards, keys and tokens, the library's "
-                      "database; Connect's titles and words and Anki Miner's sentences are counted, never copied "
-                      f"(but your swaps' words and sentences, {SWAPS})")
+                      "database; Connect's titles and words and Anki Miner's sentences are counted, never copied"
+                      + (f" (but your swaps' words and sentences, {SWAPS})" if p.swaps else ""))
     ident = scrubbing.identity(fresh=True)                         # every name and line as the zip will hold it
     for e in p.entries:
         e.name = scrubbing.name(e.name, ident)

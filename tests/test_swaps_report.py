@@ -314,3 +314,24 @@ def test_swaps_ticked_beside_flags_all_unticked_and_no_report_is_nothing_to_send
     with pytest.raises(ValueError):
         send_report.send(keep=[ob.swap_lines[0]["id"]])
     assert receiver.got == [] and send_report.swaps_sent("zh") == {}
+
+
+def test_left_out_names_the_swaps_only_when_the_zip_holds_them(pc, tmp_path):
+    report.save("一件目", "")
+    plain = report.make_send_zip(str(tmp_path / "a.zip"), "ja")
+    assert not any(report.SWAPS in x for x in plain.left_out)                 # a flags-only or report-only zip: as before
+    _ask("ja", 8500, old=CASES["ja"][1])
+    held = report.make_send_zip(str(tmp_path / "b.zip"), "ja")
+    assert any(x.startswith("never taken") and report.SWAPS in x for x in held.left_out)
+
+
+def test_a_swap_whose_sentence_came_in_since_gets_a_new_nonce(pc):
+    """The same state, new content (the ledger found the new line while the swap still waits): new bytes, new nonce."""
+    entry, row = _ask("zh", 8600, old=CASES["zh"][1])
+    report.save("等新句子", "")
+    first = send_report.build("zh")
+    assert send_report.build("zh").nonce == first.nonce                       # nothing changed: the same nonce
+    with Ledger() as ledger:
+        swap._set(ledger, row, line=CASES["zh"][2])
+    again = send_report.build("zh")
+    assert again.nonce != first.nonce and again.swap_lines[0]["new"] == CASES["zh"][2]

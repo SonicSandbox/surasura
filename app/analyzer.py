@@ -26,8 +26,8 @@ from datetime import datetime
 import abc
 
 from app.path_utils import (get_user_file, get_resource, get_data_path, get_user_files_path,
-                            is_content_file, infer_source_type, library_available, list_reader, read_source_marker,
-                            read_text, report_name, SUBTITLE_EXTENSIONS)
+                            is_content_file, infer_source_type, library_available, library_path, list_reader,
+                            read_source_marker, read_text, report_name, SUBTITLE_EXTENSIONS)
 from app import settings_manager
 from app import word_selection
 from app import modality
@@ -215,7 +215,11 @@ ENSURE_AUDIO_EXAMPLE = False
 #     listed rows' uses in each file and each file's known / counted tokens, from the lines that write the plan), which
 #     the journey reads instead of the plan's tables (J-CUT, the lead's ruling). The plan and the lists are unchanged;
 #     SCHEMA_VERSION stays 28. 3.0.19.
-ENGINE_REVISION = 48
+# 49: the run's per-file rows name a file by its path from the data folder (E-NAMES; `path_utils.library_path`, the
+#     library store's rel_path): the progressive list's `Source Path` beside `Source File`, file statistics' `Path`
+#     beside `File`, the counts table's files (its format 2) — two shows' 第01集 were one file to every reader. No
+#     tokenizing changed: SCHEMA_VERSION stays 28. 3.0.19.
+ENGINE_REVISION = 49
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -4354,14 +4358,12 @@ def plan_lines(run):
         "reference": list(run["signature_parts"].get("reference") or ()),
     }
     yield _plan_json(header)
-    prefix = os.path.join(data_dir, "")
     signed = run["signature_parts"]["files"]
     if [entry[0] for entry in signed] != [f[0] for f in found_files]:
         raise ValueError("the signature's files aren't the run's")
     # [rel_path, tier, the file's own digest, its kind]: the digest tells a re-plan which files are still the same
     # (E1.3); the kind, which of its sentences can be heard (F7).
-    files = [[(f[0][len(prefix):] if f[0].startswith(prefix) else os.path.relpath(f[0], data_dir)).replace("\\", "/"),
-              _PLAN_TIERS.get(f[1], "goal"), plan_rules.file_digest(entry), f[3] or ""]
+    files = [[library_path(f[0], data_dir), _PLAN_TIERS.get(f[1], "goal"), plan_rules.file_digest(entry), f[3] or ""]
              for f, entry in zip(found_files, signed)]
     pick = run["pick"]
     if pick["keys"] != keys:
@@ -4392,7 +4394,7 @@ def plan_lines(run):
     counted = [0] * len(keys)
     table = run.get("counts")           # J-CUT: the journey's counts, from these very lines (`plan_engine.CountsTable`)
     if table is not None:
-        table.start(keys, rows, [report_name(entry[0]) for entry in files])
+        table.start(keys, rows, [entry[0] for entry in files])
     for f, (file_path, _label, _weight, _type) in enumerate(found_files):
         uses, unusual, phrase_unusual, row_firsts = plan_files[f]
         # [k, its first sentence here (an id in `sentences`), …] for the listed rows met here
@@ -4551,11 +4553,8 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
     if verdict is not None or plan.header.get("format") != plan_engine.FORMAT:
         print(f"The journey can't be redrawn from the plan ({verdict}): generating.")
         return None
-    prefix = os.path.join(data_dir, "")
-    order = []
-    for file_path, label, _weight, _type in found_files:
-        rel = (file_path[len(prefix):] if file_path.startswith(prefix) else os.path.relpath(file_path, data_dir))
-        order.append((rel.replace("\\", "/"), _PLAN_TIERS.get(label, "goal")))
+    order = [(library_path(file_path, data_dir), _PLAN_TIERS.get(label, "goal"))
+             for file_path, label, _weight, _type in found_files]
     _progress("Picking sentences")
     eng = plan_engine.Engine(plan)
     chooser = None
@@ -5095,18 +5094,25 @@ def prepare_library(language, data_dir=None, user_files_dir=None):
     return out
 
 
+def _row_path(file_path, data_dir):
+    """A run's per-file row's `Source Path` / file statistics' `Path` (E-NAMES): the file's path from the data folder
+    (`library_path`, the library store's rel_path); a file on another drive, its whole path with "/"."""
+    try:
+        return library_path(file_path, data_dir)
+    except ValueError:
+        return file_path.replace("\\", "/")
+
+
 def _growth_figures(data_dir, found_files, file_growth):
     """Kura-GS: {rel_path: (known, counted, unknown)} of the files the run counted, from its progressive pass (the
     window's *% known* is the same count, the plan's) — what the store keeps as each item's growth snapshots. A file
     off the library's drive (no path from it) is left out, never an error at the run's end."""
-    prefix = os.path.join(data_dir, "")
     out = {}
     for f, fig in zip(found_files, file_growth):
         try:
-            rel = f[0][len(prefix):] if f[0].startswith(prefix) else os.path.relpath(f[0], data_dir)
+            out[library_path(f[0], data_dir)] = fig
         except ValueError:
             continue
-        out[rel.replace("\\", "/")] = fig
     return out
 
 
@@ -7331,6 +7337,7 @@ def main():
         coverage = (file_known_words / file_total_words * 100) if file_total_words > 0 else 0
         file_stats.append({
             "File": os.path.basename(file_path),
+            "Path": _row_path(file_path, data_dir),
             "Total Words": file_total_words,
             "Known Count": file_known_words,
             "Coverage (%)": round(coverage, 2)
@@ -8344,6 +8351,7 @@ def main():
                 _progressive_files(), session_known, session_lemmas, itemgetter(0), _listed, _rank,
                 args.target_coverage)), 1):
         filename = report_name(file_path)
+        source_path = _row_path(file_path, data_dir)
         for (lemma, reading), count, known_count, start_pct, end_pct in file_rows:
             tier_labels = get_tier_label(lemma, freq_data)
             tier_str = ";".join([f"{source}:{tier}" for source, tier in tier_labels]) if tier_labels else "Outside"
@@ -8351,6 +8359,7 @@ def main():
             row = {
                 "Sequence": seq_idx,
                 "Source File": filename,
+                "Source Path": source_path,      # what tells two files of one name apart (E-NAMES): the store's rel_path
                 "Word": lemma,
                 # Same spelling the priority list shows, in the same position relative to Word.
                 # Both files are read by the same consumers (the exporters, and junban's content

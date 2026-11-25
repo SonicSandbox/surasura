@@ -1541,8 +1541,8 @@ def helper_main(argv=None):
 
 PRIORITY_COLUMNS = ("Word", "Reading", "Kana", "Score", "Occurrences", "Count (High)", "Count (Low)", "Count (Goal)", "Orth",
                     "Forms", "Tier")
-PROGRESSIVE_COLUMNS = ("Sequence", "Source File", "Word", "Reading", "Kana", "Score", "Occurrences (Global)",
-                       "Occurrences (File)", "Count (High)", "Count (Low)", "Count (Goal)", "Known Count",
+PROGRESSIVE_COLUMNS = ("Sequence", "Source File", "Source Path", "Word", "Reading", "Kana", "Score",
+                       "Occurrences (Global)", "Occurrences (File)", "Count (High)", "Count (Low)", "Count (Goal)", "Known Count",
                        "Total Count", "Baseline %", "Current %", "New %", "Orth", "Forms", "Tier")
 
 

@@ -47,17 +47,21 @@ def open_as_app(file_path):
 OPEN_ON_NAME = "journey_open.html"     # the small page that opens the report on one file (`open_report(file=)`)
 
 
-def report_holds(file):
+def report_holds(file, item=None):
     """Whether the report on disk lists `file` (a name as the report names it, `path_utils.report_name`) — a counted,
     set-aside or Target-met file alike: each is an entry with that `"filename"` in its data, written as
-    `generate_static_html` writes it (`json.dumps`). False with no report."""
+    `generate_static_html` writes it (`json.dumps`). `item` (the file's library item id): a v3 page whose episodes
+    carry ids holds it only by that id — two shows' 第01集 are two items, one name (E-NAMES). False with no report."""
     try:
         text = read_text(os.path.join(get_user_file("results"), REPORT_NAME))
     except OSError:
         return False
     head = _journey_head(text)
-    if head is not None:                                   # a v3 page: its episodes' names, as its `#file=` reads them
-        return any(isinstance(e, list) and len(e) > 1 and e[1] == file for e in head.get("eps") or ())
+    if head is not None:                                   # a v3 page: its episodes' ids or names, as `#file=` reads them
+        eps = [e for e in head.get("eps") or () if isinstance(e, list) and len(e) > 1]
+        if item is not None and any(e[0] is not None for e in eps):
+            return any(e[0] == item for e in eps)
+        return any(e[1] == file for e in eps)
     return f'"filename": {json.dumps(file)}' in text      # (a name holds no "/", so no "</" for the dump to escape)
 
 
@@ -78,7 +82,7 @@ def _journey_head(text):
     return head if isinstance(head, dict) else None
 
 
-def open_report(app_mode=False, file=None):
+def open_report(app_mode=False, file=None, item=None):
     """Open the ALREADY-generated report without re-rendering it — the fast path when neither the
     analysis nor what the page draws (the render signature) changed. Returns False if there is
     no report on disk yet (caller should render instead). The file is looked for in `results` as it is now, where the
@@ -86,8 +90,9 @@ def open_report(app_mode=False, file=None):
     earlier root, whose report then opened a browser in the next test).
 
     `file` (a file's name as the report names it, its basename; Sonic 2026-10-24): open the report ON that file, its
-    tab clicked (`#file=<name>`, read as the report loads). Windows drops a file URL's fragment on its way to the
-    default browser, so a small page beside the report carries it (`OPEN_ON_NAME`): it replaces itself with the report
+    tab clicked (`#file=<name>`, read as the report loads; `item`, the file's library item id: `&id=<item>` after it,
+    which the page opens by — two shows' 第01集 share a name, E-NAMES). Windows drops a file URL's fragment on its way
+    to the default browser, so a small page beside the report carries it (`OPEN_ON_NAME`): it replaces itself with the report
     at that fragment. Written at each such open (~200 bytes; cheaper than checking whether it already holds the name),
     and left beside the report. A name the report doesn't hold opens where it opens by itself; a page that can't be
     written (results read-only, a lock) opens the report itself.
@@ -98,13 +103,13 @@ def open_report(app_mode=False, file=None):
     if not os.path.exists(path):
         return False
     from urllib.parse import quote
+    fragment = f"file={quote(file, safe='')}" + (f"&id={int(item)}" if item is not None else "") if file else ""
     door = sys.modules.get("app.door")      # (not imported: no door is open here, and none is imported to find that)
-    launched = door.launch_page(os.path.dirname(path), REPORT_NAME,
-                                f"file={quote(file, safe='')}" if file else "") if door is not None else None
+    launched = door.launch_page(os.path.dirname(path), REPORT_NAME, fragment) if door is not None else None
     if launched:
         path = launched
     elif file:
-        target = json.dumps(f"{REPORT_NAME}#file={quote(file, safe='')}")     # (quoted: no < or / left in it)
+        target = json.dumps(f"{REPORT_NAME}#{fragment}")     # (quoted: no < or / left in it)
         page = os.path.join(os.path.dirname(path), OPEN_ON_NAME)
         try:
             with open(page, "w", encoding="utf-8") as f:

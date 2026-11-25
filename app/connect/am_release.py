@@ -37,9 +37,10 @@ REPO = "0xzerolight/anki_miner"
 # then we should make that the new default"): the one Anki Miner Surasura installs and offers as an update — the
 # version drill LOOP passed at, run from its source tag (3.13.0: 2026-11-16, Michi-AM13, Japanese + Chinese + the Stop
 # step; 3.12.0: 2026-11-12, Zh-C; 3.11.0: 2026-11-02, run 9, with the Stop and Z-9 drills; 3.10.1 before it) — and
-# its Windows installer's sha256 as GitHub lists it (the Install drill downloads and checks
-# the installer, never runs it: that would replace the drill PC's own Anki Miner). A newer release is offered only
-# once the drill passes at it and these two lines are bumped (the planning folder's
+# its Windows installer's sha256 as GitHub lists it (the Install drill downloads and checks the installer, never runs
+# it). The drill PC's own Anki Miner is this one too since 2026-11-24 (AM-UP: 3.5.0 → 3.13.0 through Connect's own
+# install route, the installer checked against the sha256), and the drills run that install. A newer release is
+# offered only once the drill passes at it and these two lines are bumped (the planning folder's
 # `tracks/pipeline/work/alpha4/anki-miner-pin.md`). A newer Anki Miner you installed yourself still runs.
 APPROVED = "3.13.0"
 APPROVED_SHA256 = "bc2b36f1298b3bd60786147456d3980f413e9d33e81e445c07abd688a89d9693"

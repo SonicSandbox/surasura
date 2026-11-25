@@ -548,3 +548,61 @@ def test_a_sync_that_adds_a_word_reads_only_that_word_again(tmp_path, language, 
         assert store.known_terms(getattr(tok, "script", "asis")) == {}
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_indexer_after_a_sync_reads_only_the_added_words(tmp_path, language, ja_resources_dir, zh_resources_dir):
+    # why: G8's saving must reach the learner — the window's indexer refreshes the known-words cache right after a sync
+    # (app/indexer.py), before the next Generate finds it warm, and it read every known term again (the bench's 9,315
+    # keys); it now reads through the store's per-term cache, so only the words the sync added are tokenized, and the
+    # cache it leaves is the one a fresh read of the whole file gives
+    from unittest.mock import patch
+    from app import analyzer, indexer
+    resources = ja_resources_dir if language == "ja" else zh_resources_dir
+    high = tmp_path / "data" / language / "HighPriority"
+    high.mkdir(parents=True)
+    shutil.copy(os.path.join(resources, "context_test.txt"), str(high / "context_test.txt"))
+    folder = tmp_path / "User Files" / language
+    folder.mkdir(parents=True)
+
+    def gdp(lang=None): return str(tmp_path / "data" / lang) if lang else str(tmp_path / "data")
+    def gufp(lang=None): return str(tmp_path / "User Files" / lang) if lang else str(tmp_path / "User Files")
+
+    cls = analyzer.JapaneseTokenizer if language == "ja" else analyzer.ChineseTokenizer
+    name = "tokenize_sentences" if language == "ja" else "tokenize"     # (what a known term is read by)
+    real = getattr(cls, name)
+    asked = []
+
+    def counted(self, text, *a, **k):
+        asked.append(text)
+        return real(self, text, *a, **k)
+
+    def run():
+        with patch("app.path_utils.get_data_path", side_effect=gdp), \
+             patch("app.path_utils.get_user_files_path", side_effect=gufp), \
+             patch.object(sys, "argv", ["indexer.py", "--language", language]), \
+             patch.object(cls, name, counted):
+            indexer.main()
+
+    path = _known_words_file(folder, resources, language)
+    terms = {w.get("dictForm") for w in json.load(open(path, encoding="utf-8"))["words"]}
+    run()
+    assert len(set(asked) & terms) > 3, "the first refresh reads the file's terms"
+    new = [w for w in (("寝坊", "鯨幕", "雪洞", "勘違い") if language == "ja" else ("夜市", "麻辣烫", "臭豆腐"))
+           if w not in terms][:2]
+    assert len(new) == 2, "two words the file doesn't hold"
+    os.remove(path)
+    path = _known_words_file(folder, resources, language, new)       # the sync's add (the content unchanged)
+    del asked[:]
+    run()
+    assert sorted(set(asked)) == sorted(new), "only the words the sync added are read"
+    from app import settings_manager
+    from app.zh_script import effective
+    script = effective(language, settings_manager.load_settings().get("zh_script", "asis"))
+    store = ti.open_store(language)
+    try:
+        cached = store.get_cached_known(ti.known_signature(path, script))
+    finally:
+        store.close()
+    tok = cls() if language == "ja" else cls(reinforce_segmentation=False, script=script)
+    assert cached is not None and cached == analyzer.load_known_words(path, tok)

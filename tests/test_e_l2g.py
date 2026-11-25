@@ -417,7 +417,8 @@ order = {k: at for at, k in enumerate(left)}
 second = one(left, order)
 counts = {"parsed": parsed[0], "asks": len(built),
           "free_once": all(built[-1][name] is built[0][name] for name in ("own", "lemma", "young")),
-          "placed_again": built[-1]["placed"] is not built[0]["placed"]}
+          "placed_again": built[-1]["placed"] is not built[0]["placed"],
+          "read_only": not any(built[-1][name].flags.writeable for name in ("own", "lemma", "young"))}
 run = table.head.get("run_signature")
 table.head["run_signature"] = "another run"
 third = one(left, dict(order))          # (another run: its own shown.json.gz, none here — every text from the store)
@@ -445,7 +446,40 @@ def test_only_i_plus_ones_second_round_parses_shown_once_and_builds_no_order_fre
     assert counts["parsed"] == 1, f"shown.json.gz parsed {counts['parsed']} times for one run's two rounds"
     assert counts["free_once"], "round 2 built the order-free row arrays again"
     assert counts["placed_again"] and counts["parsed_another_run"] == 2, counts
+    assert counts["read_only"], "the arrays the memo's orders share are read-only"
     assert got["same_first"] and got["same"] and got["same_third"], got
+
+
+# One reader asked for some of the list's words, its shown lines kept (results/shown.json.gz written: they differ from
+# the Generate's), then asked for every word and kept again — in a copy of results/ (the fixture's stays as it is).
+_KEPT_AGAIN = r"""
+import json, os, shutil, sys
+from app import analyzer, sentence_table
+language, results, keys, mine = sys.argv[1], sys.argv[2], [tuple(k) for k in json.loads(sys.argv[3])], sys.argv[4]
+shutil.copy2(os.path.join(results, analyzer.SHOWN_FILE), os.path.join(mine, analyzer.SHOWN_FILE))
+table = sentence_table.open_table(os.path.join(results, sentence_table.TABLE_FILE), language=language,
+                                  engine=analyzer.engine_id(), run_signature=analyzer.read_run_stamp(results))
+run = table.head.get("run_signature")
+one = analyzer.ListSentences(language, 3, False, results_dir=mine, table=table)
+one(keys[: max(1, len(keys) // 3)], None)
+one.keep()
+some = analyzer._read_shown(mine, run)
+one(keys, None)
+one.keep()
+every = analyzer._read_shown(mine, run)
+print(json.dumps({"some": len(some), "every": len(every), "as_kept": every == one.kept}))
+"""
+
+
+def test_a_reader_asked_again_after_it_kept_its_lines_keeps_the_new_ones(gen, tmp_path):
+    # why: E-L2G 4 — a reader parses shown.json.gz once for its run's calls; once its keep() has written the file, the
+    # file is what the reader read no more: a later call reads it again, so its keep() compares against what is
+    # written and writes the new lines (else it would see its old read, call them kept, and leave the file short)
+    language, root = gen
+    results = os.path.join(root, "results")
+    keys = json.dumps([list(k) for k in _columns(results)], ensure_ascii=False)
+    got = _child(root, _KEPT_AGAIN, language, results, keys, str(tmp_path))
+    assert 0 < got["some"] < got["every"] and got["as_kept"], got
 
 
 # Loaded first in the Generate's child: every progressive pass's `files` (each file as the pass reads it) held, and at

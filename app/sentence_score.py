@@ -427,13 +427,16 @@ def _rows_kept(tab, moment, order, kept=None):
     and the moment's known and young words are the same (a session's picks: the arrays were built at every pick); with
     an `order` handed in (a move's, a Generate's round), the order's arrays built each time over the order-free ones
     (`_row_free`) a pick's memo `kept` holds across its orders — *Only i+1*'s second round built them again (E-L2G 4).
-    The arrays kept across picks are read-only: a reader that wrote into them would fail (its caller's own path), never
-    change the next pick's (the memo's, through that same reader, are never written either)."""
+    The kept arrays (across picks, across a memo's orders) are read-only: a reader that wrote into them would fail (its
+    caller's own path), never change the next pick's."""
     if order is not None:
         if kept is None:
             return _row_arrays(tab, moment, order)
         if "free" not in kept:
-            kept["free"] = _row_free(tab, moment)
+            free = _row_free(tab, moment)
+            for a in free.values():
+                a.flags.writeable = False   # (shared by the memo's orders: read-only, as the arrays kept across picks)
+            kept["free"] = free
         return _row_arrays(tab, moment, order, kept["free"], kept.get("rows"))
     try:
         key = (frozenset(moment.known or ()), tuple(sorted(_young(moment).items())))

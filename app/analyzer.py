@@ -4798,6 +4798,7 @@ class ListSentences:
             return
         try:
             _write_shown(self.results_dir, self.run, self.kept, self.forms)
+            self.read_of = None             # (the file just written: a later call reads it again)
         except Exception as e:
             print(f"Warning: could not keep the shown sentences: {e}")
 

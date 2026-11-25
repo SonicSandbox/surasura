@@ -242,6 +242,34 @@ def test_chinese_sentences_are_chosen_by_the_same_rules(no_store):
     assert _texts(near)[0] == hard
 
 
+# A word's lines by length: one inside the zone (14–25 since the flip), a 7-character one, a 4-character one — every
+# word known but the target — and a harder one inside the zone
+_SHORT = {"ja": ("冒険", "明日から友達と冒険に出かけよう。", "冒険に出よう。", "冒険だ。", HARD),
+          "zh": ("电话", "昨天晚上他在家里接到电话了。", "他接到电话了。", "有电话。", "那个陌生人打来的电话很奇怪。")}
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+@pytest.mark.parametrize("n", [2, 0])
+def test_a_short_line_is_a_candidate_at_level_2_ranked_by_its_length_and_level_0_keeps_its_floor(no_store, monkeypatch,
+                                                                                                  lang, n):
+    # why: SPEC § 4.6 (the lead's ruling, 2026-11-25) — at level 2 nothing is thrown out for being short: a word with
+    # no row is looked for in the library, and a line under *Length* − 5 (a 7-character line under 14–25) is still a
+    # candidate, after an equally easy one inside the zone, the shorter after the less short (each character outside
+    # the zone costs). Level 0 keeps its own window: its Length − 5 floor, inside or outside its range.
+    from tests.sentence_level import pin
+    pin(monkeypatch, n)
+    lemma, zone, seven, four, hard = _SHORT[lang]
+    assert (len(zone), len(seven), len(four)) == ((16, 7, 4) if lang == "ja" else (14, 7, 4))
+    files = {f"第0{i}話.txt": [line] for i, line in enumerate((hard, four, seven, zone), 1)}
+    paths = _library(lang, files, known=set().union(*(_lemmas(x, lang) for x in (zone, seven, four))) - {lemma})
+    key = _key(zone, lemma, lang)
+    got = sentences.choose(lang, [key], dial=sentences.BEST, files=paths, young={})[key]
+    if n == 2:
+        assert _texts(got) == [zone, seven, four, hard] and [c.others for c in got][:3] == [0, 0, 0]
+    else:       # 10–50 ± 5: the 4-character line under the floor; the 7-character one outside the range, after
+        assert _texts(got) == [zone, seven, hard]
+
+
 def test_young_words_come_from_anki_and_without_it_from_the_recently_known_seam(monkeypatch):
     # why: no Anki — the young record absent, empty or unreadable is no weight; the review loop's known dates stand in
     assert sentences.young_weights("ja", read=lambda lang: [("今日", 1), ("明日", 20), ("今日", 5)]) == {

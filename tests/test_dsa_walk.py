@@ -12,13 +12,20 @@ a CRLF one). What these prove:
     total, counted, aside); a file's counts are read only when it changed, left or moved class (20k: 13 s cold → the
     index's pages);
   - **an old store is never read as this one:** a reader opening a store of another schema gets None (the indexer
-    builds it again).
+    builds it again);
+  - **the walk on ids** (session 2, `token_index.Walk`): a file's totals, known count, multiset (in the order first
+    met) and the tokens with something to do are what walking its tokens one by one gives — song lines with no words,
+    the name joins' tokens, a file read as tokens — and a Generate builds the tokens of only the sentences that hold
+    something to do (RP-2, ja + zh: every sentence of every file before).
 """
 import json
 import os
 import shutil
 import sqlite3
+import subprocess
+import sys
 import zlib
+from collections import Counter
 
 import pytest
 
@@ -257,3 +264,287 @@ def test_a_splice_moves_every_later_sentences_start():
     new_starts, new_ids = ti._spliced(starts, ids, joins, lambda t: made[t[0]])
     assert list(new_starts) == [0, 2, 2, 6, 7]
     assert list(new_ids) == [90, 12, 20, 91, 22, 92, 93]
+
+
+
+# ---------------------------------------------------------------------------------------------------- #
+# The walk on ids (session 2)
+# ---------------------------------------------------------------------------------------------------- #
+def _classes(tokens):
+    """A made rule for each token's class (token_index.W_*), on the real words: the commonest lemmas known, a lemma of
+    no kana or kanji skipped where its surface has none either, one-character words named or bound by turns — every
+    class met, decided by the token alone, as the walk's `_class_of` decides it."""
+    common = [lemma for lemma, _n in Counter(t[0] for t in tokens).most_common(12)]
+
+    def classify(token):
+        lemma, reading, surface, _orth = token
+        key = (lemma, reading)
+        if not any("぀" <= ch <= "鿿" for ch in lemma + surface):
+            return ti.W_SKIP, key
+        if lemma in common:
+            return ti.W_KNOWN, key
+        if len(lemma) == 1:
+            return (ti.W_ONE, ti.W_NAMED, ti.W_BOUND)[ord(lemma) % 3], key
+        return ti.W_UNKNOWN, key
+    return classify
+
+
+def _walked_by_hand(sentences, classify):
+    """What walking each token one by one gives: (total, known, the multiset in the order first met, {sentence:
+    [(token number, class, key)]} of the tokens from W_NAMED up)."""
+    total = known = 0
+    counter, hot = Counter(), {}
+    for s_no, (_text, tokens) in enumerate(sentences):
+        for t_no, token in enumerate(tokens):
+            c, key = classify(tuple(token))
+            counter[key] += 1
+            if c >= ti.W_KNOWN:
+                total += 1
+            if ti.W_KNOWN <= c <= ti.W_NAMED:
+                known += 1
+            if c >= ti.W_NAMED:
+                hot.setdefault(s_no, []).append((t_no, c, key))
+    return total, known, list(counter.items()), hot
+
+
+def _as_walked(sentences):
+    return [(text, [tuple(t) for t in tokens]) for text, tokens in sentences]
+
+
+def test_the_walk_counts_each_file_as_walking_its_tokens_one_by_one_does(made):
+    # why: G1 — the walk looked every token up in Python (2k: 4.07 M tokens, 10.2 s of a 15.3 s Generate); on ids each
+    # type is decided once and a file is array lookups. Every number the walk reads of a file must be what the token by
+    # token walk gave: its totals, known count, its multiset in the order first met (`file_token_cache`, read by the
+    # progressive pass and *Only i+1*'s rounds), and the tokens it still walks — for every file (an empty one too), a
+    # file with its song lines blanked, and a file read as tokens (the store couldn't give it)
+    language, store, paths = made
+    every = [tuple(t) for p in paths for _s, tokens in store.file_tokens(p) for t in tokens]
+    classify = _classes(every)
+    walk = ti.Walk(store, classify)
+    seen = set()
+    for p in paths:
+        truth = store.file_tokens(p)
+        got = walk.file(p)
+        if not truth:
+            assert got is None, "a file with no sentence is read as tokens (a non-empty one tokenized again there)"
+            continue
+        total, known, counts, hot = _walked_by_hand(truth, classify)
+        seen.update(c for found in hot.values() for _t, c, _k in found)
+        assert got.counted() == (total, known), p
+        assert list(got.counter().items()) == counts, p
+        assert got.where(got.cls >= ti.W_NAMED) == hot, p
+        assert [got[n] for n in range(len(got))] == _as_walked(truth), p
+        assert got.sentences(got.cls >= ti.W_NAMED) == sorted(hot)
+        as_read = walk.read(truth)
+        assert (as_read.counted(), list(as_read.counter().items())) == ((total, known), counts), p
+        assert as_read.where(as_read.cls >= ti.W_NAMED) == hot and as_read[len(truth) - 1] == _as_walked(truth)[-1]
+        blank = {0, 2, len(truth) + 5}          # (a number past the file's last sentence: none)
+        songs = walk.file(p, blank)
+        left = [(t, [] if n in blank else k) for n, (t, k) in enumerate(truth)]
+        total, known, counts, hot = _walked_by_hand(left, classify)
+        assert (songs.counted(), list(songs.counter().items())) == ((total, known), counts), p
+        assert songs.where(songs.cls >= ti.W_NAMED) == hot and len(songs) == len(truth)
+        assert [songs[n] for n in range(len(songs))] == _as_walked(left), p
+    assert seen == {ti.W_NAMED, ti.W_BOUND, ti.W_UNKNOWN}, "every class with something to do met"
+    with pytest.raises(IndexError):
+        walk.file(paths[0])[10 ** 6]
+    assert walk.file(os.path.join(os.path.dirname(paths[0]), "no such file.srt")) is None
+
+
+def test_the_walk_decides_each_type_once_and_joins_the_names_as_file_tokens_does(tmp_path):
+    # why: the name tables join a library's names at read (メロンベンチ one word in every file): on ids a join is the
+    # run's own id (past any the store gives, whatever another process adds meanwhile); the walk's sentences must be
+    # `file_tokens`' own, and each type — a joined one too — is asked of once a run, however many files hold it
+    from tests.test_names import HOMURA, JIN, PARK, SHOP, STATION, _library as names_library
+    store, paths = names_library(tmp_path / "lib", {"station.txt": STATION, "shop.txt": SHOP, "park.txt": PARK,
+                                                    "a.txt": HOMURA, "b.txt": JIN})
+    try:
+        asked = Counter()
+        rule = _classes([tuple(t) for p in paths for _s, tokens in store.file_tokens(p) for t in tokens])
+
+        def classify(token):
+            asked[token] += 1
+            return rule(token)
+        walk = ti.Walk(store, classify)
+        for _twice in range(2):
+            for p in paths:
+                truth = store.file_tokens(p)
+                got = walk.file(p)
+                assert [got[n] for n in range(len(got))] == _as_walked(truth), p
+                total, known, counts, hot = _walked_by_hand(truth, rule)
+                assert (got.counted(), list(got.counter().items())) == ((total, known), counts), p
+                assert got.where(got.cls >= ti.W_NAMED) == hot, p
+        assert walk.own, "some token was a join's (the run's own id)"
+        assert all(i >= ti._RUN for i in walk.own_ids.values())
+        assert max(asked.values()) == 1, "each type asked of once a run"
+    finally:
+        store.close()
+
+
+# A Generate's sentences built in Python (each sentence whose tokens became lists), counted in the child, and what the
+# progressive pass's rank gives (loaded first: a sitecustomize on its path).
+_COUNT_BUILT = r"""
+import atexit, json, os
+from app import token_index as ti
+seen = {"built": 0, "tokens": 0}
+_stored = ti.Store._stored
+
+
+def _counted(self, *args, **kwargs):
+    out = _stored(self, *args, **kwargs)
+    seen["built"] += len(out)
+    seen["tokens"] += sum(len(s[1]) for s in out)
+    return out
+ti.Store._stored = _counted
+if hasattr(ti, "WalkFile"):
+    _get = ti.WalkFile.__getitem__
+
+    def _one(self, no):
+        new = no not in self._built
+        out = _get(self, no)
+        if new:
+            seen["built"] += 1
+            seen["tokens"] += len(out[1])
+        return out
+    ti.WalkFile.__getitem__ = _one
+from app import plan_rules
+_pass = plan_rules.progressive_pass
+seen["ranks"] = []
+
+
+def _counted_pass(files, known, lemmas, lemma_of, keep, rank, *args, **kwargs):
+    def _rank(key):
+        got = rank(key)
+        kind = type(got).__name__
+        if kind not in seen["ranks"]:
+            seen["ranks"].append(kind)
+        return got
+    return _pass(files, known, lemmas, lemma_of, keep, _rank, *args, **kwargs)
+plan_rules.progressive_pass = _counted_pass
+atexit.register(lambda: json.dump(seen, open(os.environ["DSA_WALK_COUNT"], "w")))
+"""
+
+_STORE_SIZE = r"""
+import json, sys
+from app import token_index as ti
+st = ti.open_reader(sys.argv[1])
+n = tokens = 0
+for (blob,) in st.conn.execute("SELECT ids FROM files WHERE counted=1"):
+    held = ti._read_ids(blob)
+    n += len(held[0]) - 1
+    tokens += len(held[1])
+counts, total = st.word_counts()
+common, at = [], 0
+for (lemma, _reading), uses in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+    if at >= 0.97 * total:
+        break                       # the words a learner knows: those that cover 97 % of the library's words
+    common.append(lemma)
+    at += uses
+print(json.dumps({"sentences": n, "tokens": tokens, "common": common}, ensure_ascii=False))
+"""
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_generate_builds_the_tokens_of_only_the_sentences_with_something_to_do(tmp_path, language):
+    # why: G1 — every Generate built every sentence's tokens of every file as Python lists and walked them one by one
+    # (2k: 692,968 sentences, 4.07 M tokens), though most sentences are an example for no word; on ids only a sentence
+    # holding an unknown, a word to name, a possible piece or a set phrase is built. RP-2's library, Generated twice at
+    # level 2 (the second a warm Generate, forced: the store indexed), the learner knowing the words that cover 97 %
+    # of it — the second counted
+    from tests import plan_file_cases as cases
+    from tests.test_e_redraw import LEVEL_2
+    root = str(tmp_path / "root")
+    cases.build(root, f"rp2-{language}")
+    cases.generate(root, f"rp2-{language}", extra_env=LEVEL_2)
+    q = subprocess.run([sys.executable, "-c", _STORE_SIZE, language], cwd=cases.REPO, env=cases.child_env(root),
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    assert q.returncode == 0, q.stderr[-2000:]
+    size = json.loads(q.stdout.strip().splitlines()[-1])
+    known_path = os.path.join(root, "User Files", language, "KnownWord.json")
+    with open(known_path, encoding="utf-8-sig") as f:
+        known = json.load(f)
+    words = known["words"] if isinstance(known, dict) else known
+    words.extend({"dictForm": lemma, "knownStatus": "KNOWN"} for lemma in size["common"])
+    with open(known_path, "w", encoding="utf-8") as f:
+        json.dump(known, f, ensure_ascii=False)
+    hook = tmp_path / "hook"
+    hook.mkdir()
+    (hook / "sitecustomize.py").write_text(_COUNT_BUILT, encoding="utf-8")
+    counted = tmp_path / "built.json"
+    env = cases.child_env(root)
+    env.update(LEVEL_2, SURASURA_FORCE_RUN="1", DSA_WALK_COUNT=str(counted),
+               PYTHONPATH=str(hook) + os.pathsep + env["PYTHONPATH"])
+    p = subprocess.run([sys.executable, os.path.join(cases.REPO, "app", "analyzer.py"), f"--language={language}",
+                        "--static", "--no-open"], cwd=cases.REPO, env=env, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    assert p.returncode == 0, p.stdout[-2000:] + p.stderr[-2000:]
+    built = json.loads(counted.read_text(encoding="utf-8"))
+    assert size["sentences"] > 300 and len(size["common"]) > 20
+    # Before: every sentence (and token) of every counted file, at least. On ids: well under half of them.
+    assert built["built"] < 0.5 * size["sentences"], (built, size)
+    assert built["tokens"] < 0.5 * size["tokens"], (built, size)
+    # G5: the progressive pass's rank of each listed word, one integer made once a round (ties sharing it), never a
+    # tuple made a word a file — the order the same (test_plan_file pins the pass's outputs byte for byte). (RP-2's
+    # Chinese, 97 % known, may leave no file two listed words to rank.)
+    assert built["ranks"] == ["int"] if language == "ja" else "tuple" not in built["ranks"], built["ranks"]
+
+
+# ---------------------------------------------------------------------------------------------------- #
+# G8: the known words normalized per term
+# ---------------------------------------------------------------------------------------------------- #
+def _known_words_file(folder, resources, language, extra=()):
+    """The real known-words file (ja: 11,582 entries; zh: its own), plus `extra` terms marked known — a sync's add."""
+    name = "KnownWord.json" if language == "ja" else "KnownWords.json"
+    with open(os.path.join(resources, name), encoding="utf-8-sig") as f:
+        data = json.load(f)
+    words = data["words"] if isinstance(data, dict) else data
+    words.extend({"dictForm": term, "knownStatus": "KNOWN"} for term in extra)
+    path = os.path.join(str(folder), "KnownWord.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    return path
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_sync_that_adds_a_word_reads_only_that_word_again(tmp_path, language, ja_resources_dir, zh_resources_dir):
+    # why: G8 — any sync that adds one word missed the store's whole cache, and every known term was tokenized again
+    # (the bench's 9,315 keys: 0.31-0.86 s a Generate after a sync); each term's words depend on the term alone (and on
+    # the switches, tables, script and tokenizer the store keys them on), so only the terms not read before are
+    # tokenized — and the sets are the very ones a fresh read of the whole file gives
+    from app import analyzer
+    resources = ja_resources_dir if language == "ja" else zh_resources_dir
+    store = ti.open_store(language, path=str(tmp_path / "store.db"))
+    store.switches = (False, False, False)
+    tok = analyzer.JapaneseTokenizer() if language == "ja" else analyzer.ChineseTokenizer()
+    asked = []
+    name = "tokenize_sentences" if language == "ja" else "tokenize"     # (what a known term is read by)
+    real = getattr(tok, name)
+    setattr(tok, name, lambda text, *a, **k: (asked.append(text), real(text, *a, **k))[1])
+    try:
+        path = _known_words_file(tmp_path, resources, language)
+        first = analyzer.read_known_words(store, path, ti.known_signature(path), tok)
+        whole = len(set(asked))
+        assert whole > 3 and first[0] and first[1]
+        held = {w.get("dictForm") for w in json.load(open(path, encoding="utf-8"))["words"]}
+        new = [w for w in (("寝坊", "鯨幕", "雪洞", "勘違い") if language == "ja" else ("夜市", "麻辣烫", "臭豆腐"))
+               if w not in held][:2]
+        assert len(new) == 2, "two words the file doesn't hold"
+        os.remove(path)
+        path = _known_words_file(tmp_path, resources, language, new)
+        del asked[:]
+        again = analyzer.read_known_words(store, path, ti.known_signature(path), tok)
+        assert sorted(set(asked)) == sorted(new), "only the words the sync added are read"
+        del asked[:]
+        fresh = analyzer.load_known_words(path, tok)
+        assert again == fresh and len(set(asked)) == whole + len(new)
+        assert again[0] > first[0] and again[1] > first[1]
+        # A removed word leaves the store's terms with it; another tokenizer (another build) reads every term again
+        os.remove(path)
+        path = _known_words_file(tmp_path, resources, language, new[:1])
+        new = tuple(new)
+        assert analyzer.read_known_words(store, path, ti.known_signature(path), tok) == analyzer.load_known_words(path, tok)
+        assert new[1] not in store.known_terms(getattr(tok, "script", "asis"))
+        store.set_meta("build_sig", "another tokenizer")
+        assert store.known_terms(getattr(tok, "script", "asis")) == {}
+    finally:
+        store.close()

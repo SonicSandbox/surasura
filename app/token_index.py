@@ -853,10 +853,246 @@ class _Interner:
         return found
 
 
+# --- A Generate's walk on ids (G1, DSA-WALK) ------------------------------------------------------------------------ #
+# What a run's per-token tests say of a token (`analyzer.main`'s walk), one number a type: decided once a type, then read
+# for every token by an array lookup. Ordered: every class from W_KNOWN up counts toward a file's total, W_KNOWN..W_NAMED
+# as known; from W_NAMED up a token needs the walk's Python (a one-character word the report names where it stands on
+# its own, a one-kanji word that may be a piece, an unknown) — every other sentence holds nothing to do but its counts.
+W_SKIP, W_KNOWN, W_ONE, W_NAMED, W_BOUND, W_UNKNOWN = 1, 2, 3, 4, 5, 6
+_RUN = 1 << 30                      # a run's own type ids (a name join's token, a file the store couldn't give) from here
+
+
+def _np():
+    """numpy, at the walk's first use only (`sentence_table._np`: the one door to it)."""
+    from app import sentence_table
+    return sentence_table._np()
+
+
+class Walk:
+    """A Generate's walk over its files on the store's type ids (G1): the vocabulary read once, each type's class and its
+    word's key decided once (`classify(token)` -> (class, key)), a file's counts by array lookups. Tokens the store
+    doesn't hold (a name join's, a file read without the store) get the run's own ids, `_RUN` up — never a store id,
+    whatever another process adds to the vocabulary meanwhile."""
+
+    def __init__(self, store, classify):
+        np = self.np = _np()
+        self.store, self.classify = store, classify
+        self.types = [None]             # store type id -> token; read whole once (every file of a run is walked)
+        if store is not None:
+            for row in store.conn.execute("SELECT id, lemma, reading, surface, orth FROM types ORDER BY id"):
+                if row[0] >= len(self.types):
+                    self.types.extend([None] * (row[0] - len(self.types)))
+                    self.types.append(row[1:])
+        self.own, self.own_ids = [], {}     # the run's own: id - _RUN -> token, token -> id
+        self.cls = np.zeros(len(self.types), np.uint8)      # 0: not decided yet
+        self.kid = np.zeros(len(self.types), np.int32)
+        self.own_cls, self.own_kid = np.zeros(64, np.uint8), np.zeros(64, np.int32)
+        self.keys, self._kids = [], {}      # key number -> the word's key (as `classify` gave it first), and back
+
+    def intern(self, token):
+        """A token's run-own id (`Store.file_ids`' joins; a file read without the store)."""
+        token = tuple(token)
+        found = self.own_ids.get(token)
+        if found is None:
+            found = self.own_ids[token] = _RUN + len(self.own)
+            self.own.append(token)
+        return found
+
+    def _decide(self, cls, kid, numbers, token_of):
+        """Class and key number of each type of `numbers` (its index into `cls` / `kid`) not decided yet."""
+        for t in numbers:
+            c, key = self.classify(token_of(t))
+            k = self._kids.get(key)
+            if k is None:
+                k = self._kids[key] = len(self.keys)
+                self.keys.append(key)
+            cls[t], kid[t] = c, k
+
+    def _states(self, ids):
+        """(classes, key numbers) of `ids`, a file's type ids — a type met first here decided now; None when an id names
+        no token (a damaged vocabulary: the caller reads the file as tokens)."""
+        np = self.np
+        own = ids >= _RUN
+        if own.any():
+            cls, kid = np.empty(len(ids), np.uint8), np.empty(len(ids), np.int32)
+            for part, of in ((~own, self._store_states), (own, self._own_states)):
+                got = of(ids[part])
+                if got is None:
+                    return None
+                cls[part], kid[part] = got
+            return cls, kid
+        return self._store_states(ids)
+
+    def _store_states(self, ids):
+        np = self.np
+        if not len(ids):
+            return self.cls[:0], self.kid[:0]
+        if int(ids.min()) < 1:
+            return None
+        top = int(ids.max())
+        if top >= len(self.types):      # written since the walk began (another process's index): read by id
+            held = self.store._tokens_of([int(i) for i in np.unique(ids[ids >= len(self.types)])])
+            self.types.extend([None] * (top + 1 - len(self.types)))
+            for i, token in held.items():
+                if i < len(self.types):
+                    self.types[i] = token
+        if len(self.cls) < len(self.types):
+            self.cls = np.concatenate([self.cls, np.zeros(len(self.types) - len(self.cls), np.uint8)])
+            self.kid = np.concatenate([self.kid, np.zeros(len(self.types) - len(self.kid), np.int32)])
+        cls = self.cls[ids]
+        if not cls.all():
+            new = np.unique(ids[cls == 0]).tolist()
+            if any(self.types[t] is None for t in new):
+                return None
+            self._decide(self.cls, self.kid, new, self.types.__getitem__)
+            cls = self.cls[ids]
+        return cls, self.kid[ids]
+
+    def _own_states(self, ids):
+        np = self.np
+        local = ids - _RUN
+        if len(self.own_cls) < len(self.own):
+            grow = max(len(self.own), 2 * len(self.own_cls)) - len(self.own_cls)
+            self.own_cls = np.concatenate([self.own_cls, np.zeros(grow, np.uint8)])
+            self.own_kid = np.concatenate([self.own_kid, np.zeros(grow, np.int32)])
+        cls = self.own_cls[local]
+        if not cls.all():
+            self._decide(self.own_cls, self.own_kid, np.unique(local[cls == 0]).tolist(), self.own.__getitem__)
+            cls = self.own_cls[local]
+        return cls, self.own_kid[local]
+
+    def token(self, i):
+        return self.own[i - _RUN] if i >= _RUN else self.types[i]
+
+    def file(self, path, blank=None):
+        """A file of the store as the walk reads it (`WalkFile`), the name tables' joins made (`Store.file_ids`) and the
+        sentences of `blank` (a set of sentence numbers: a show's song lines) holding no words; None when the store
+        can't give it (not indexed, unreadable, no sentence): the caller reads it as tokens (`read`)."""
+        held = self.store.file_ids(path, self.intern) if self.store is not None else None
+        if held is None:
+            return None
+        starts, ids, joined, texts, words = held
+        if len(starts) < 2:
+            return None                 # no sentence: read as tokens (a non-empty file is tokenized again there)
+        np = self.np
+        return self._made(np.frombuffer(starts, np.int32), np.frombuffer(ids, np.int32), texts, None, words,
+                          joined, blank)
+
+    def read(self, sentences):
+        """`WalkFile` of a file read as tokens ([(text, tokens), ...]: the store couldn't give it) — its tokens the
+        run's own ids."""
+        np, intern = self.np, self.intern
+        starts, ids = array(_INT, [0]), array(_INT)
+        for _text, tokens in sentences:
+            ids.extend(map(intern, tokens))
+            starts.append(len(ids))
+        return self._made(np.frombuffer(starts, np.int32), np.frombuffer(ids, np.int32), None,
+                          [text for text, _tokens in sentences], None, set(), None)
+
+    def _made(self, starts, ids, texts_blob, texts, words, joined, blank):
+        np = self.np
+        n = len(starts) - 1
+        if blank:
+            out = sorted(no for no in blank if 0 <= no < n)
+            if out:
+                lengths = np.diff(starts)
+                keep = np.ones(n, bool)
+                keep[out] = False
+                ids = ids[np.repeat(keep, lengths)]
+                lengths[out] = 0
+                starts = np.concatenate([[0], np.cumsum(lengths)]).astype(np.int32)
+        states = self._states(ids)
+        if states is None:
+            return None
+        return WalkFile(self, starts, ids, states[0], states[1], texts_blob, texts, words, joined)
+
+
+class WalkFile:
+    """One file as `Walk` reads it: `starts` / `ids` (sentence n's tokens are ids[starts[n]:starts[n + 1]]), each token's
+    class `cls` and key number `kid`; `words` the kept counts (`Store.file_words`), `joined` the sentences a name table
+    joined. A sentence's text and tokens are built only when asked (`self[n]`: what `analyzer.main` reads of a sentence
+    that holds something to do)."""
+
+    def __init__(self, walk, starts, ids, cls, kid, texts_blob, texts, words, joined):
+        self.walk, self.starts, self.ids, self.cls, self.kid = walk, starts, ids, cls, kid
+        self.n = len(starts) - 1
+        self._blob, self._texts, self.words, self.joined = texts_blob, texts, words, joined
+        self._raw = self._ends = None
+        self._built = {}
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, no):
+        """(text, tokens) of sentence `no` — tokens (lemma, reading, surface, orth) tuples, a new list each sentence."""
+        if not 0 <= no < self.n:
+            raise IndexError(no)
+        got = self._built.get(no)
+        if got is None:
+            token = self.walk.token
+            got = self._built[no] = (self.text(no), [token(i) for i in self.ids[self.starts[no]:self.starts[no + 1]]
+                                                     .tolist()])
+        return got
+
+    def text(self, no):
+        if self._texts is not None:
+            return self._texts[no]
+        if self._raw is None:
+            raw = zlib.decompress(self._blob)
+            n = int.from_bytes(raw[:4], "little", signed=True)
+            base = 4 * (n + 1)
+            ends = _from_int32s(raw[4:base])
+            if n != self.n or len(ends) != n or (n and base + ends[-1] != len(raw)):
+                raise ValueError("the texts are not the ids' sentences")
+            self._raw, self._ends, self._base = raw, ends, base
+        ends, base = self._ends, self._base
+        return self._raw[base + (ends[no - 1] if no else 0):base + ends[no]].decode("utf-8")
+
+    def counted(self):
+        """(the file's total words, known words) as the walk's per-token tests count them — every token counted from
+        W_KNOWN up, known W_KNOWN..W_NAMED (a one-kanji word standing as a piece: the walk adds it)."""
+        np = self.walk.np
+        by = np.bincount(self.cls, minlength=W_UNKNOWN + 1)
+        return int(by[W_KNOWN:].sum()), int(by[W_KNOWN:W_NAMED + 1].sum())
+
+    def counter(self):
+        """Counter of every token's key, in the order first met (the walk's `file_token_cache`); `self.first` the same
+        as two arrays, (key numbers, uses) — what the progressive pass reads (G5)."""
+        np = self.walk.np
+        out = Counter()
+        kids, first, counts = np.unique(self.kid, return_index=True, return_counts=True)
+        order = np.argsort(first, kind="stable")
+        self.first = kids, counts = kids[order], counts[order]
+        keys = self.walk.keys
+        dict.update(out, zip([keys[k] for k in kids.tolist()], counts.tolist()))
+        return out
+
+    def sentences(self, mask):
+        """The numbers of the sentences holding a token `mask` holds, in order."""
+        np = self.walk.np
+        return np.unique(np.searchsorted(self.starts, np.flatnonzero(mask), side="right") - 1).tolist()
+
+    def where(self, mask):
+        """{sentence number: [(token number in it, class, key), ...]} of the tokens `mask` holds, in order."""
+        np = self.walk.np
+        at = np.flatnonzero(mask)
+        out = {}
+        if len(at):
+            sentence = np.searchsorted(self.starts, at, side="right") - 1
+            keys = self.walk.keys
+            for s, t, c, k in zip(sentence.tolist(), (at - self.starts[sentence]).tolist(), self.cls[at].tolist(),
+                                  self.kid[at].tolist()):
+                found = out.get(s)
+                if found is None:
+                    found = out[s] = []
+                found.append((t, c, keys[k]))
+        return out
+
+
 # --------------------------------------------------------------------------- #
 # The store
 # --------------------------------------------------------------------------- #
-READINGS_CHUNK = 500                # lemmas per query of `Store.readings` (SQLite's own limit is 32766)
+READINGS_CHUNK = 500               # lemmas per query of `Store.readings` (SQLite's own limit is 32766)
 
 
 class Store:
@@ -1355,6 +1591,39 @@ class Store:
             return set(kept[1]), set(kept[2])
         except Exception:
             return None
+
+    def _terms_key(self, script):
+        """What decides how one known term reads, but the term (G8): the language, the script, the tokenizer's identity
+        (`build_sig`) and the known words' own switches and tables (`_known_key`) — any change reads every term again."""
+        return self._known_key(json.dumps(["terms", self.language, script, self.get_meta("build_sig")]))
+
+    def known_terms(self, script="asis"):
+        """{term: (its (lemma, reading)s, its lemmas)}: each known term as the last normalization read it, while what
+        decides how a term reads is unchanged (`_terms_key`) — else {} (`analyzer.load_known_words` reads them all)."""
+        raw = self.get_meta("known_terms")
+        if not raw:
+            return {}
+        try:
+            key, terms = json.loads(zlib.decompress(raw if isinstance(raw, bytes) else bytes.fromhex(raw)))
+        except Exception:
+            return {}
+        if key != self._terms_key(script):
+            return {}
+        return {term: ({tuple(t) for t in tuples}, set(lemmas)) for term, tuples, lemmas in terms}
+
+    def set_known_terms(self, script, terms):
+        value = zlib.compress(json.dumps([self._terms_key(script), [[term, [list(t) for t in tuples], list(lemmas)]
+                                                                       for term, (tuples, lemmas) in terms.items()]],
+                                         ensure_ascii=False).encode("utf-8"), _BLOB_LEVEL).hex()
+        cur = self.conn.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+        try:
+            cur.execute("INSERT INTO meta(key, value) VALUES('known_terms', ?) ON CONFLICT(key) DO UPDATE SET value=?",
+                        (value, value))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def set_cached_known(self, signature, known_tuples, known_lemmas):
         signature = self._known_key(signature)

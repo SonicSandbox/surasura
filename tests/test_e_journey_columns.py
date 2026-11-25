@@ -87,6 +87,7 @@ def test_the_level_2_generate_writes_every_column_level_0_writes(shapes):
     language, got = shapes
     level0, level2 = got[0][0], got[2][0]
     assert "priority_learning_list.csv" in level0 and STATS in level0, (language, sorted(level0))
+    assert "Word" in level0["priority_learning_list.csv"] and level0[STATS], (language, level0)   # (never two empties)
     for name, columns in level0.items():
         assert name in level2, (language, name, "level 0 writes it, level 2 doesn't")
         assert level2[name] == columns, (language, name, "level 0:", columns, "level 2:", level2[name])
@@ -97,6 +98,7 @@ def test_the_level_2_redraw_after_a_move_writes_every_column_level_0_writes(shap
     # one reader at level 2) — its columns must be today's too, and the same as its own Generate's
     language, got = shapes
     level0, level2 = got[0][1], got[2][1]
+    assert "Word" in level0.get("priority_learning_list.csv", ()) and level0.get(STATS), (language, level0)
     for name, columns in level0.items():
         assert name in level2, (language, name, "level 0's redraw writes it, level 2's doesn't")
         assert level2[name] == columns, (language, name, "level 0:", columns, "level 2:", level2[name])

@@ -271,6 +271,7 @@ def test_the_level_2_generate_marks_the_young_words_its_list_weighed(run):
     # made with a young card as owed and the journey is redrawn once for nothing (part 1's lens finding, documented
     # then; `moved_state`'s young check is the parametrized test above); its list's first sentence is the card's
     # too. A Generate forced (the young file is no input of the run's)
+    assert run.found, f"{run.language}: no word to weigh (the marker's check would pass on none)"
     words = [w for _k, w in run.found]
     young = _young_file(run.root, run.language, words)
     try:
@@ -292,6 +293,7 @@ def test_the_redraw_after_a_move_shows_the_cards_sentence_and_marks_the_young_wo
     # names those young words (so `moved_state` reads it as drawn until a sync moves them). Last in the module: it
     # moves the fixture's library.
     from tests.test_e_redraw import _columns, _move, _redraw
+    assert run.found, f"{run.language}: no word to weigh (the marker's check would pass on none)"
     words = [w for _k, w in run.found]
     young = _young_file(run.root, run.language, words)
     try:

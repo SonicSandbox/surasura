@@ -358,8 +358,9 @@ def _resolve_line_id(steps, language, text, word=None):
 def line_cue(steps, language, text, word=None):
     """A line id (`line_id()`'s form) -> (item id, its `cues.Cue`, the subtitle it is in), or None when it no longer
     exists — the one way a picked line is found: Swap's (`_resolve_line_id`) and the journey's clip (`clips.cut`).
-    Two cues that start together (two speakers at once) share one id: `word`, the word the line was pressed for (the
-    door's, a swap's), takes the first of them that holds it; no word, or none holds it, the first (E-JOURNEY 2)."""
+    The cue at the id's own start, else the nearest within 5 ms (a subtitle re-timed a little); two that start
+    together (two speakers at once) share one id: `word`, the word the line was pressed for, tells them apart
+    (`_pressed`)."""
     got = _parse_line_id(text)
     if got is None:
         return None
@@ -370,17 +371,44 @@ def line_cue(steps, language, text, word=None):
             return None
         from app import cues
         from app.cues import seconds
-        first = None
+        near = []
         for cue in cues.read(subtitle, language):
-            if abs(int(round(seconds(cue.start) * 1000)) - ms) <= 5:
-                if not word or word in (cue.text or ""):
-                    return item_id, cue, subtitle
-                first = first or cue
-        if first is not None:
-            return item_id, first, subtitle
+            off = abs(int(round(seconds(cue.start) * 1000)) - ms)
+            if off <= 5:
+                near.append((off, cue))
+        if near:
+            least = min(off for off, _cue in near)
+            return item_id, _pressed([cue for off, cue in near if off == least], language, word), subtitle
     except Exception:
         log.info("Swap: a picked line couldn't be read", exc_info=True)
     return None
+
+
+def _pressed(same, language, word):
+    """Of the cues at one start (in the file's order) the line pressed. With `word` (the door's, a swap's: the list's
+    word, its dictionary form) the first the analyzer reads it in — 読む in 読んでない, never 本 inside 日本 — else the
+    first that writes it (a set phrase the tokenizer reads as parts), else the first. With none (the page's ▶ asks a
+    clip by its id alone) the one that ends last: its span holds every voice said then (E-JOURNEY 3)."""
+    if len(same) == 1:
+        return same[0]
+    if not word:
+        return max(same, key=lambda cue: cue.end)       # (the first of those that end together)
+    texts = [cue.text or "" for cue in same]
+    try:
+        from app import analyzer
+        if language == "zh":            # the list's words are in the learner's script: the lines read in it too
+            from app import settings_manager, zh_script
+            script = zh_script.effective(language, settings_manager.load_settings().get("zh_script"))
+            texts = [zh_script.convert(t, script) for t in texts]
+            tokenize = analyzer.ChineseTokenizer().tokenize
+        else:
+            tokenize = analyzer.JapaneseTokenizer().tokenize
+        for cue, t in zip(same, texts):
+            if any(word in (token[0], token[3]) for token in tokenize(t)):
+                return cue
+    except Exception:
+        log.info("Swap: the words of a line pressed couldn't be read", exc_info=True)
+    return next((cue for cue, t in zip(same, texts) if word in t), same[0])
 
 
 # --------------------------------------------------------------------------- #

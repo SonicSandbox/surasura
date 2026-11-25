@@ -162,6 +162,9 @@ def _seed_generate(lang="ja"):
             f.write("x")
     write_plan_header(results, signature)
     analyzer._set_run_stamp(results, signature)
+    if analyzer.plan_rules.SENTENCE_TABLE >= 2:  # release 2: a Generate also writes the journey's marker, drawn for
+        with patch("app.analyzer.RESULTS_DIR", results):     # its own run today (no marker: not today's, `drawn_for`)
+            analyzer._write_redraw_marker(signature, signature)
     store = token_index.open_store(lang)
     try:
         store.set_meta("last_run_signature", signature)

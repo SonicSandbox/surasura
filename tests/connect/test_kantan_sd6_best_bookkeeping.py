@@ -10,6 +10,7 @@ On `tests/connect/test_p33_replan.py`'s harness: the RP-2 Japanese library (real
 and ledger, a stand-in only where Anki Miner sits (one note a word, no duplicate check of its own — so a second card
 would show here).
 """
+import os
 from collections import Counter
 
 import pytest
@@ -86,6 +87,11 @@ def test_the_band_lowered_between_two_jobs_under_best_makes_every_extra_word_onc
     # why (Kantan-SD 5 checked it by hand): the lowered band adds words to the second job's pick; under Best some of
     # them are cut from other episodes' lines — each must still be made exactly once, none dropped on the way
     root, store, _generates, ledger_path = connect
+    # (the Generate's own token store, not conftest's empty one: at level 2 Best reads its lines' text there — level 0
+    # read the plan's copy)
+    from app import token_index
+    monkeypatch.setattr(token_index, "store_path_for",
+                        lambda language: os.path.join(root, "index", f"token_store_{language}.db"))
     _settings_file(root, connect_enabled=True, connect_sentence_dial="best")
     fake = _deck(root)
     items = _episodes(store)[:2]

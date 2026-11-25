@@ -128,6 +128,7 @@ body.focus .hd { opacity:.35; } body.focus .hd:hover { opacity:1; }
 .wf-icon .src .sn { display:none; }
 .pl { width:32px; height:32px; border-radius:7px; border:1px solid var(--line-hi); background:var(--surface); color:var(--accent); cursor:pointer; flex:none; display:grid; place-items:center; margin-top:4px; padding:0; }
 .pl.none { visibility:hidden; }
+.pl.mute { border-color:transparent; background:none; color:var(--ink-dim); cursor:default; }
 .pl.wait > svg { display:none; }   /* a line being cut (clip/cut): the spinner in the triangle's place */
 .fl { margin-left:auto; opacity:0; border:0; background:none; color:var(--ink-faint); cursor:pointer; font-size:14px; min-width:32px; min-height:32px; border-radius:6px; flex:none; }
 .ln:hover .fl, .fl.lit, .fl.wait, .fl.queued { opacity:1; } .fl.lit { color:var(--warn); }
@@ -942,8 +943,11 @@ function lineHtml(id, w, k, p, sel, meet) {         // line k of the word's, sho
   const lid = lineId(ln, src), lit = FLAGGED.has(lid), fw = shownWait(FWAIT.get(lid));
   const flag = built("line/flag") ? `<button class="fl ${lit ? "lit" : ""} ${fw}" data-flag="${k}" aria-label="Flag this sentence" data-tip="${lit ? "Flagged for Send report" : "Flag this sentence for Send report"}${fw === "queued" ? "\n" + waitWord() : ""}">⚑</button>` : "";
   const tags = [k === 0 && (w[6] & 8) ? "On your card" : "", meet ? "Where you'll first meet it" : ""].filter(Boolean);
+  // marked silent (SPEC § 4.5: the render sets ln[4] only while Always include one with audio is on): in the ▶'s
+  // place, never beside a ▶ that plays
+  const mute = ln[4] === 1 && !can;
   const oc = tags.length ? `<div class="oc">${tags.join(" · ")}</div>` : "";
-  return `<div class="ln ${sel ? "sel" : ""}${meet ? " fm" : ""}" data-li="${p}"><button class="pl ${can ? "" : "none"}" data-play="${k}" aria-label="Play the line" data-tip="▶ the line${kt("line")}"><svg class="i" viewBox="0 0 16 16"><path d="M5 3.5v9l7-4.5z" fill="currentColor"/></svg></button><div class="lt">${oc}<div class="tx">${hl(ln[0], w)}</div><div class="src" data-tip="${esc(label)}">${kindIcon(kind)}<span class="sn">${esc(label)}</span></div></div>${flag}</div>`;
+  return `<div class="ln ${sel ? "sel" : ""}${meet ? " fm" : ""}" data-li="${p}">${mute ? `<span class="pl mute" role="img" aria-label="No audio" data-tip="No audio: nothing to hear this line from\nIts card takes a line you can hear first"><svg class="i" viewBox="0 0 16 16"><path d="M3 6v4h2.5L9 13V3L5.5 6z"/><path d="M11.5 6.5l3 3m0-3l-3 3"/></svg></span>` : `<button class="pl ${can ? "" : "none"}" data-play="${k}" aria-label="Play the line" data-tip="▶ the line${kt("line")}"><svg class="i" viewBox="0 0 16 16"><path d="M5 3.5v9l7-4.5z" fill="currentColor"/></svg></button>`}<div class="lt">${oc}<div class="tx">${hl(ln[0], w)}</div><div class="src" data-tip="${esc(label)}">${kindIcon(kind)}<span class="sn">${esc(label)}</span></div></div>${flag}</div>`;
 }
 function linesShown(w) { const n = Number(SET.sentences) || 0; return n > 0 ? Math.min(n, w[9].length) : w[9].length; }
 /* The first-meeting line (SPEC § Sentences are the list's; Sonic: its own marked line, shown by default, hideable):
@@ -1254,7 +1258,7 @@ function sheet(id, html) {
   $("layer").innerHTML = `<div class="scrim" data-close="1"><div class="sheet" id="${id}" role="dialog" aria-modal="true">${html}</div></div>`;
 }
 const HELP = {
-  lines: [["Sentences", ["The first is the one on your card, or the one Surasura would put on it.", "The rest follow in your list's ranking.", "▶ plays the line where your file can be played here."]], ["Under each line", ["Its kind (anime, book, YouTube…), the show and the episode.", "⚑ flags a line for Send report: you see it before anything is sent."]]],
+  lines: [["Sentences", ["The first is the one on your card, or the one Surasura would put on it.", "The rest follow in your list's ranking.", "▶ plays the line where your file can be played here.", "With Always include one with audio on, a line with no audio shows a muted speaker: its card takes one you can hear."]], ["Under each line", ["Its kind (anime, book, YouTube…), the show and the episode.", "⚑ flags a line for Send report: you see it before anything is sent."]]],
   more: [["More", ["Forms you'll meet: the forms of the word in your content.", "Kanji: hover one for its meaning and readings."]]],
   tones: [["Tones", ["1 high · 2 rising · 3 dipping · 4 falling.", "A dot a syllable, in its tone's colour."]]],
   rail: [["The rail", ["‹ › the episode before and after (PgUp / PgDn).", "The title opens the picker: every show, one row each.", "The stone is the episode's state in Surasura; click it to mark it pre-studied."]], ["Marks", ["✦ high leverage · ⚖ lots soon, rare later · 文 a reading word.", "✓ known · ⊘ ignored, greyed in the list."]], ["Stones", ["Rock: no cards yet · raw gem: cards in Anki · cut gem: watched or read.", "The sheen and sparkle: pre-studied."]]],

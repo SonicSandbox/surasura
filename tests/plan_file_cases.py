@@ -251,7 +251,31 @@ def _normal_parts(root):
     return spellings, stamp
 
 
+_TABLE_MAGIC = b"SURATBL\n"     # app/sentence_table.py's MAGIC
+
+
+def _table_normal(data, spellings, stamp):
+    """Release 2's sentence table (`sentences.bin`) as compared: its head and its sources read out of their zlib, the
+    head's run signature written as <STAMP> and each source's digest blanked — `source_digest` hashes the file's path
+    where it is (the root's; the sources name it from the data folder already) — the rest its own bytes."""
+    import struct
+    import zlib
+    hl, sl, _fl = struct.unpack("<III", data[len(_TABLE_MAGIC):len(_TABLE_MAGIC) + 12])
+    at = len(_TABLE_MAGIC) + 12
+    head = _normal("head", zlib.decompress(data[at:at + hl]), spellings, stamp)
+    sources = json.loads(zlib.decompress(data[at + hl:at + hl + sl]))
+    blanked = json.dumps([[rel, kind, ""] for rel, kind, _digest in sources], ensure_ascii=False).encode("utf-8")
+    return b"\n".join((_TABLE_MAGIC, head, _normal("sources", blanked, spellings, stamp), data[at + hl + sl:]))
+
+
 def _normal(name, data, spellings, stamp):
+    # Release 2's files hold the run's signature inside their compression (and the table each source's digest):
+    # read out first, then as the rest (the root's spellings, the stamp)
+    if name == "sentences.bin" and data.startswith(_TABLE_MAGIC):
+        return _table_normal(data, spellings, stamp)
+    if name == "shown.json.gz":
+        import gzip
+        data = gzip.decompress(data)
     for s in spellings:
         data = data.replace(s, b"<ROOT>")
     if stamp:
@@ -265,6 +289,8 @@ def _normal(name, data, spellings, stamp):
         data = re.sub(rb'"p_key":"[^"]*"', b'"p_key":""', data, count=1)   # this install's, not the run's
         data = re.sub(rb'"n_key":"[^"]*"', b'"n_key":""', data, count=1)   # its names key, the code's files by
         #                                                                     size and time (L2-WASTE): this copy's
+    if name == "journey_redrawn.json":         # release 2's marker names the day it was drawn (the daily redraw)
+        data = re.sub(rb'"day": "\d{4}-\d{2}-\d{2}"', b'"day": ""', data, count=1)
     return data
 
 
@@ -275,7 +301,8 @@ def normalised(root, name, data):
 
 def output_hashes(root):
     """{relative path under results/: sha256} of every file the run wrote there but NOT_COMPARED, the root's path
-    written as <ROOT> (and the v3 page's render time and days blanked: `_normal`)."""
+    written as <ROOT> (and the v3 page's render time and days blanked; at level 2 the sentence table and the shown
+    lines read out of their compression, the table's source digests and the redraw marker's day blanked: `_normal`)."""
     results = os.path.join(root, "results")
     out = {}
     parts = _normal_parts(root)

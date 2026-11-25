@@ -319,8 +319,9 @@ def progressive_pass(files, known, lemmas, lemma_of, keep, rank, target_coverage
 # ENGINE_REVISION together (without the bump an unchanged library would reuse its old run and never get a table).
 # A child process (a Generate is one) takes it from SURASURA_SENTENCE_TABLE=0|1|2, read here once, at import: the
 # test harness's way to run a level; any other value is the tree's.
+# 2 since 3.0.19 (E-JOURNEY's flip, 0 → 2 directly: level 1 never ships).
 SENTENCE_TABLE_LEVELS = (0, 1, 2)
-SENTENCE_TABLE = 0
+SENTENCE_TABLE = 2
 
 
 def sentence_table_level(environ=None, default=SENTENCE_TABLE):

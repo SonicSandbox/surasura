@@ -390,9 +390,10 @@ def _generate(tmp_path, text, known=(), args=(), ignored=(), extra=()):
         (high / name).write_text(body, encoding="utf-8")
     results = tmp_path / "results"
     results.mkdir()
+    data = (lambda l=None: str(tmp_path / "data" / l) if l else str(tmp_path / "data"))
+    # why: the list's sentences (level 2: analyzer.ListSentences) read the lines from the data folder path_utils names
     with patch("app.analyzer.get_user_file", side_effect=lambda p: str(tmp_path / p)), \
-         patch("app.analyzer.get_data_path",
-               side_effect=lambda l=None: str(tmp_path / "data" / l) if l else str(tmp_path / "data")), \
+         patch("app.analyzer.get_data_path", side_effect=data), patch("app.path_utils.get_data_path", side_effect=data), \
          patch("app.analyzer.get_user_files_path",
                side_effect=lambda l=None: str(tmp_path / "User Files" / l) if l else str(tmp_path / "User Files")), \
          patch("app.analyzer.RESULTS_DIR", str(results)), \
@@ -494,7 +495,10 @@ WALKS = ("毎朝この公園の近くを歩いている。\n毎晩この公園�
 HEARD = "毎朝この公園の近くを歩いている利用者は、毎晩も同じ公園の近くを歩いていると、毎朝この公園の近くで静かに話していた。"
 
 
+@pytest.mark.usefixtures("level_0")
 def test_the_sentence_you_can_hear_counts_a_word_read_through_its_known_word_as_known(tmp_path):
+    # why: proves the old path's audio shortlist forcing a heard line into the list's last slot; at level 2 no run
+    # reads *Ensure an audio example* (SPEC § 4.5: the card's heard-first) and E-RETIRE removes both
     # "Always include a sentence with audio" gives the last slot to the best i+1 subtitle line. Its one
     # other new word, 利用者, reads through the known 利用 (U9), so in strict i+1 it still qualifies.
     listed = _generate(tmp_path, WALKS, extra=[("z_episode.srt", f"1\n00:00:01,000 --> 00:00:05,000\n{HEARD}\n")],

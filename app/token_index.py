@@ -137,7 +137,10 @@ from operator import itemgetter
 # v28 each file also keeps each sentence's line and its song marks (`lines`: app/song_lines.file_lines, ENGINE_REVISION
 #    46), which a run reads to leave a show's opening and ending songs out of the counts: a v27 row has none — users
 #    rebuild once.
-SCHEMA_VERSION = 28
+# v29 each file also keeps each line's counts for the sentence table (`file_words` in `words`: E-INDEX, read by a
+#    Generate at plan_rules.SENTENCE_TABLE >= 1; ENGINE_REVISION 50, the flip to 2): a v28 row has none, and the
+#    walk would count every line itself (the same table, a slower Generate) — users rebuild once.
+SCHEMA_VERSION = 29
 
 # The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,
 # Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.

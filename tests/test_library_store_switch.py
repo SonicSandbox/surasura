@@ -10,6 +10,7 @@ words (tests/test_library_store_support.py); every store proof runs for both lan
 only in the timed run (`SURASURA_STORE_BENCH=1`).
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -92,6 +93,12 @@ def _generated(language):
     from tests.plan_file_cases import write_plan_header
     write_plan_header(results, sig)              # the run's plan (the 3.0 line: every Generate writes one)
     analyzer._set_run_stamp(results, sig)
+    from app import plan_rules
+    if plan_rules.SENTENCE_TABLE >= 2:
+        # level 2: a Generate marks its own draw too (its run, its day: `analyzer._write_redraw_marker`); without one
+        # the journey isn't today's and is redrawn once (`analyzer.drawn_for`)
+        with open(os.path.join(results, analyzer.REDRAW_FILE), "w", encoding="utf-8") as f:
+            json.dump({"plan": sig, "run": sig, "day": analyzer.drawn_day()}, f)
     return argv
 
 

@@ -22,6 +22,8 @@ from tests.harness_guards import (_guard_real_local_data, _guard_anki_port,  # n
                                   _clear_destroyed_default_root, pytest_collection, pytest_runtest_protocol,
                                   pytest_runtest_teardown, pytest_runtestloop, session_finish_guards,
                                   configure_guards)
+# A test of the path level 0 runs pins itself there (`pytest.mark.usefixtures("level_0")`): the tree is at 2.
+from tests.sentence_level import level_0, module_level_0  # noqa: F401
 
 quiet_windows()                             # test windows open on a desktop of their own: never seen, never typed into
 

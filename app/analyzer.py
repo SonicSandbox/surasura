@@ -219,7 +219,11 @@ ENSURE_AUDIO_EXAMPLE = False
 #     library store's rel_path): the progressive list's `Source Path` beside `Source File`, file statistics' `Path`
 #     beside `File`, the counts table's files (its format 2) — two shows' 第01集 were one file to every reader. No
 #     tokenizing changed: SCHEMA_VERSION stays 28. 3.0.19.
-ENGINE_REVISION = 49
+# 50: the sentence choice is on (plan_rules.SENTENCE_TABLE 0 → 2, E-JOURNEY's flip): a Generate writes the sentence
+#     table alone (results/sentences.bin, no shortlists, no first-sentence tables), the plan's format 5, and the
+#     list's, the journey's and the word card's sentences are the one reader's (app/sentence_score.py), as the card's
+#     are. Every token store is indexed again with each line's counts: SCHEMA_VERSION 29. 3.0.19.
+ENGINE_REVISION = 50
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -4738,13 +4742,16 @@ class ListSentences:
     `young_at` the stamp of the ones the last call weighed (`young_stamp`), for the redraw marker (a sync since that
     changes them owes the journey a redraw: `journey.moved_state`). Its calls share one moment, one memo
     (`sentence_score.choose`'s) and one read of `SHOWN_FILE` while the table's run is the same: *Only i+1*'s second
-    round, in another order, reads no file's text, no column and no `SHOWN_FILE` again (E-L2G, E-L2G 4)."""
+    round, in another order, reads no file's text, no column and no `SHOWN_FILE` again (E-L2G, E-L2G 4). The shown
+    lines no audio is heard from (`Line.heard` silent: SPEC § 4.5) are kept beside them, {(Src, Context)} (`silent`):
+    the journey marks them while *Ensure an audio example* is on (`journey_render.silent_lines`)."""
 
     def __init__(self, language, max_contexts, clean_only=False, results_dir=None, table=None, young=None):
         self.language, self.n, self.clean_only = language, plan_rules.context_limit(max_contexts), clean_only
         self.results_dir, self.table, self.young = results_dir or RESULTS_DIR, table, young
         self.run, self.kept, self.read, self.forms, self.forms_read = None, {}, {}, {}, {}
         self.moment, self.length, self.memo, self.young_at, self.read_of = None, None, {}, None, None
+        self.silent, self.read_silent, self.read_run = set(), set(), None
 
     def __call__(self, keys, order=None):
         from app import sentence_score, sentence_corpus, sentence_table
@@ -4765,11 +4772,11 @@ class ListSentences:
                                             run_signature=read_run_stamp(self.results_dir))
             if tab is None:
                 return None
-        self.run = tab.head.get("run_signature")
+        self.run = self.read_run = tab.head.get("run_signature")
         self.young_at = young_stamp(self.moment.young)
         if self.read_of != (self.run,):     # (the last run's shown lines, parsed once for this run's calls: *Only i+1*'s
-            self.forms_read = {}            # rounds parsed the file at each, E-L2G 4)
-            self.read = _read_shown(self.results_dir, self.run, self.forms_read)
+            self.forms_read, self.read_silent = {}, set()      # rounds parsed the file at each, E-L2G 4)
+            self.read = _read_shown(self.results_dir, self.run, self.forms_read, self.read_silent)
             self.read_of = (self.run,)
         got = sentence_score.choose(self.language, keys, n=self.n, length=self.length, order=order, whole=True,
                                     moment=self.moment, clean_only=self.clean_only, shown=self.read, table=tab,
@@ -4778,7 +4785,7 @@ class ListSentences:
             return None
         base = os.path.join(root, "")
         tagger = _LazyTagger() if self.language == "ja" else None
-        out, kept, forms = {}, {}, {}
+        out, kept, forms, silent = {}, {}, {}, set()
         for key, lines in got.items():
             columns = []
             for line in lines:
@@ -4793,27 +4800,35 @@ class ListSentences:
                     if shown is None:
                         shown = strip_verse_number(line.text, tagger)
                     forms[at] = shown
+                if line.heard is None and shown:    # (sentence_score.SILENT: no clip of its own, no AI voice)
+                    silent.add((rel, shown))
                 columns += (shown, rel)
             out[key] = columns
-        self.kept, self.forms = kept, forms
+        self.kept, self.forms, self.silent = kept, forms, silent
         return out
 
     def keep(self):
-        """results/`SHOWN_FILE`: the text of the lines the last call showed, by the table's run — written only when it
-        differs from what was read (never fails the run)."""
-        if self.run is None or (self.kept == self.read and self.forms == self.forms_read):
+        """results/`SHOWN_FILE`: the text of the lines the last call showed, their forms and their silent ones, by the
+        table's run — written only when one of them differs from what was read, or the run was signed again since the
+        read (`run` set after the call: a band Automatic chose; never fails the run)."""
+        if self.run is None or (self.run == self.read_run and self.kept == self.read and self.forms == self.forms_read
+                                and self.silent == self.read_silent):
             return
         try:
-            _write_shown(self.results_dir, self.run, self.kept, self.forms)
+            _write_shown(self.results_dir, self.run, self.kept, self.forms, self.silent)
             self.read_of = None             # (the file just written: a later call reads it again)
         except Exception as e:
             print(f"Warning: could not keep the shown sentences: {e}")
 
 
-def _read_shown(results_dir, run_signature, forms=None):
+SILENT_KEY = "silent"            # results/`SHOWN_FILE`'s silent lines: [[Src, Context], …] (`journey_render.silent_lines`)
+
+
+def _read_shown(results_dir, run_signature, forms=None, silent=None):
     """{(rel, number): text} of results/`SHOWN_FILE` when it is `run_signature`'s; {} else (none, another run's,
     damaged). `forms`, a dict: given what Context shows of the kept lines led by digits, {(rel, number): shown} (a file
-    written before them has none)."""
+    written before them has none). `silent`, a set: given its silent lines, {(rel, Context)} (`SILENT_KEY`; none in a
+    file written without them)."""
     import gzip
     try:
         with gzip.open(os.path.join(results_dir, SHOWN_FILE), "rb") as f:
@@ -4823,16 +4838,20 @@ def _read_shown(results_dir, run_signature, forms=None):
         texts = {(rel, int(number)): text for rel, lines in data["lines"].items() for number, text in lines.items()}
         shown = {(rel, int(number)): form for rel, lines in (data.get("shown") or {}).items()
                  for number, form in lines.items()}
+        quiet = {(rel, text) for rel, text in data.get(SILENT_KEY) or ()}
     except Exception:
         return {}
     if forms is not None:
         forms.update(shown)
+    if silent is not None:
+        silent.update(quiet)
     return texts
 
 
-def _write_shown(results_dir, run_signature, kept, forms=None):
+def _write_shown(results_dir, run_signature, kept, forms=None, silent=()):
     """results/`SHOWN_FILE`, whole (a temp file replaced): the same bytes for the same lines (sorted, no time);
-    `forms` {(rel, number): what Context shows} of the lines led by digits, beside their text."""
+    `forms` {(rel, number): what Context shows} of the lines led by digits, beside their text; the silent ones
+    (`silent`, {(rel, Context)}) beside them when there are any (none: the file as before)."""
     import gzip
     lines, shown = {}, {}
     for (rel, number), text in sorted(kept.items()):
@@ -4842,6 +4861,8 @@ def _write_shown(results_dir, run_signature, kept, forms=None):
     data = {"run_signature": run_signature, "lines": lines}
     if shown:
         data["shown"] = shown
+    if silent:
+        data[SILENT_KEY] = [list(pair) for pair in sorted(silent)]
     path = os.path.join(results_dir, SHOWN_FILE)
     tmp = f"{path}.{os.getpid()}.tmp"
     try:

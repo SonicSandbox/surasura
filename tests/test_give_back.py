@@ -264,13 +264,20 @@ def test_a_word_takes_example_sentences_only_where_it_stands_on_its_own(library)
 
 def test_in_a_sentence_a_rare_compound_is_its_parts_unless_one_is_bound(library, monkeypatch):
     """How hard a sentence is: トランスジェンダー (rare, free halves) is トランス + ジェンダー; 千載一遇 (rare, bound
-    halves) stays one word. Read off the candidate sentences the run kept for 選手 and 好機."""
-    monkeypatch.setenv("SURASURA_DEBUG_WORD_STATS", "1")
+    halves) stays one word. Read off the new words the sentence table holds for 選手's and 好機's lines."""
+    # why: the sentence table (level 2) is what the one reader weighs a line by: its co-words, as the run hands them
+    # in (the old shortlist's candidate_contexts are level 0's, which E-RETIRE removes)
+    from app import plan_rules, sentence_table
+    held, real = {}, sentence_table.Packer.add
+
+    def add(self, word, src, number, chars, text_hash, cowords=(), *rest, **options):
+        held.setdefault((tuple(word), text_hash), set()).update(map(tuple, cowords))
+        return real(self, word, src, number, chars, text_hash, cowords, *rest, **options)
+    monkeypatch.setattr(sentence_table.Packer, "add", add)
     _run(library, "--min-freq", "3")
-    stats = json.loads((library / "results" / "word_stats.json").read_text(encoding="utf-8"))
 
     def units_with(word, text):
-        return {tuple(lr) for ctx in stats[word]["candidate_contexts"] if ctx[4] == text for lr in ctx[3]}
+        return held.get((tuple(word.split("|")), plan_rules.text_hash_of(text)), set())
     players = units_with("選手|センシュ", "トランスジェンダーの選手が出場した。")
     assert {("トランス", "トランス"), ("ジェンダー", "ジェンダー")} <= players
     assert ("トランスジェンダー", "トランスジェンダー") not in players

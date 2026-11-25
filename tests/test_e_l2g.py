@@ -208,7 +208,7 @@ if texts is not None:
     token_index.Store.file_texts = counted_texts
 if doubt == "1":
     token_index._decode_texts = lambda blob, lines: None
-analyzer._read_shown = lambda results_dir, run_signature, forms=None: {}
+analyzer._read_shown = lambda results_dir, run_signature, forms=None, silent=None: {}
 got = analyzer.ListSentences(language, 3, clean == "1", results_dir=results)([tuple(k) for k in keys], None)
 print(json.dumps({"n": n, "got": [[list(k), v] for k, v in got.items()]}, ensure_ascii=False))
 """
@@ -361,7 +361,7 @@ def counted_take(tab, want):
 token_index.Store.file_tokens, sentence_score._take = counted_tokens, counted_take
 if texts is not None:
     token_index.Store.file_texts = counted_texts
-analyzer._read_shown = lambda results_dir, run_signature, forms=None: {}
+analyzer._read_shown = lambda results_dir, run_signature, forms=None, silent=None: {}
 table = sentence_table.open_table(os.path.join(results, sentence_table.TABLE_FILE), language=language,
                                   engine=analyzer.engine_id(), run_signature=analyzer.read_run_stamp(results))
 one = analyzer.ListSentences(language, 3, True, results_dir=results, table=table)     # (the Generate's own table)

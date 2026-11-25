@@ -118,7 +118,10 @@ def test_pick_and_a_subtitles_list_read_text_but_load_no_gui_toolkit_pandas_or_n
     tokenizer loads — and nothing of Connect's beyond what it calls."""
     library = os.path.join(generated, "data", "ja", "HighPriority")
     code, loaded = _loaded([a.replace("{library}", library) for a in argv], generated)
-    assert code == 0 and not loaded & set(NOT_HEAVY), loaded
+    # why: `pick` reads the one sentence reader (app/sentence_score.py, level 2), whose numpy is its accepted fixed
+    # cost in Connect's own process (the lead, 2026-11-24): never a numpy-free second path. A list loads none.
+    heavy = set(NOT_HEAVY) - {"numpy"} if argv[0] == "pick" else set(NOT_HEAVY)
+    assert code == 0 and not loaded & heavy, loaded
 
 
 def test_nothing_of_connect_loads_unless_a_verb_needs_it(tmp_path):

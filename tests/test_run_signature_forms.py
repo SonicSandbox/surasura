@@ -26,6 +26,7 @@ def test_the_full_signature_is_the_base_digest_on_fixed_inputs(tmp_path):
     parts."""
     # Re-pinned on purpose for ENGINE_REVISION 36 (a written number opening a sentence is kept); ENGINE 35 gives the old pins.
     # The engine part holds __version__ too: each release stamp re-pins them (3.0.0: plan_file_cases.py --record)
+    # ENGINE_REVISION 50 with SCHEMA_VERSION 29 (the sentence choice's flip) re-pinned them the same way
     assert cases.signatures(str(tmp_path / "empty")) == _base()["signatures"]
 
 

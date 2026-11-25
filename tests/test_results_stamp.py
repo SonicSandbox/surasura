@@ -42,8 +42,11 @@ def env(tmp_path):
 def _run(env, language):
     """One analyzer run, exactly as the harness in test_selection_integration.py does it."""
     root, results = env["root"], env["results"]
+    # why: the list's sentences (level 2: analyzer.ListSentences) read the lines from the data folder path_utils names
     with patch("app.analyzer.get_user_file", side_effect=lambda p: str(root / p)), \
          patch("app.analyzer.get_data_path",
+               side_effect=lambda lang=None: str(root / "data" / lang) if lang else str(root / "data")), \
+         patch("app.path_utils.get_data_path",
                side_effect=lambda lang=None: str(root / "data" / lang) if lang else str(root / "data")), \
          patch("app.analyzer.get_user_files_path",
                side_effect=lambda lang=None: str(root / "User Files" / lang) if lang else str(root / "User Files")), \
@@ -144,7 +147,11 @@ def _fast_path_state(stamp):
             f.write("x")
     from tests.plan_file_cases import write_plan_header
     write_plan_header(results, sig)              # the run's plan (the 3.0 line: every Generate writes one)
-    analyzer._set_run_stamp(results, sig if stamp == "this run" else stamp)
+    stamped = sig if stamp == "this run" else stamp
+    analyzer._set_run_stamp(results, stamped)
+    if analyzer.plan_rules.SENTENCE_TABLE >= 2:  # release 2: a Generate also writes the journey's marker, drawn for
+        with patch("app.analyzer.RESULTS_DIR", results):     # its own run today (no marker: not today's, `drawn_for`)
+            analyzer._write_redraw_marker(stamped, stamped)
     return argv
 
 

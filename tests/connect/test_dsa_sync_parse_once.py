@@ -266,3 +266,38 @@ def test_the_per_word_undo_of_the_known_window_is_unchanged(anki, monkeypatch):
     assert known_signal.undo("ja", word, URL, cards_too=False) == {"removed": True, "unsuspended": []}
     assert _known("ja") == {other}
     assert known_signal.undo("ja", word, URL, cards_too=False) == {"removed": False, "unsuspended": []}
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_undo_of_one_sync_leaves_another_syncs_known_words(anki, language):
+    # why: one write for a sync's words must take out only that sync's — never another sync's Known marks
+    a, b, studied, *_ = WORDS[language]
+    anki.add(4, studied)
+    _sync(language)
+    anki.add(1, a, suspended=True, tags=["marked"])
+    first, _ = _sync(language)
+    anki.add(2, b, suspended=True, tags=["marked"])
+    _sync(language)
+    review_loop.undo(language, first.loop["sync"])
+    assert _known(language) == {b, studied}
+
+
+def test_undo_of_known_words_already_gone_from_the_file_writes_nothing(anki, monkeypatch):
+    # why: a Known word whose entry another program took out since has nothing left to take out — no dated copy, no
+    # write of the learner's file
+    word, studied, *_ = WORDS["ja"]
+    anki.add(4, studied)
+    _sync("ja")
+    anki.add(1, word, suspended=True, tags=["marked"])
+    result, _ = _sync("ja")
+    assert result.loop["known"] == 1
+    with open(_path("ja"), encoding="utf-8") as f:
+        data = json.load(f)
+    data["words"] = [w for w in data["words"] if w.get("dictForm") != word]      # an editor took it out
+    with open(_path("ja"), "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    before = open(_path("ja"), "rb").read()
+    with Count(monkeypatch, "ja") as n:
+        answer = review_loop.undo("ja", result.loop["sync"])
+    assert answer["undone"] and n.writes == 0 and n.backups == 0
+    assert open(_path("ja"), "rb").read() == before and _known("ja") == {studied}

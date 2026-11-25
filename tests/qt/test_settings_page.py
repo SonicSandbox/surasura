@@ -157,14 +157,12 @@ def test_each_build_slice_tells_the_windows_idle_and_a_built_or_gone_page_tells_
     page, _store = make_page()
     assert len(told) == len(page.slice_ms) > 1
     n = len(told)
-    QTest.qWait(30)
-    assert len(told) == n                             # (built: no slice after it)
+    assert not wait_until(lambda: len(told) > n, 0.05)   # (built: no slice after it)
     gone, _store = make_page(wait=False)
     assert wait_until(lambda: len(told) > n, 5) and not gone.built
     sip.delete(gone)                                  # (its window closed mid-build)
     m = len(told)
-    QTest.qWait(30)
-    assert len(told) == m
+    assert not wait_until(lambda: len(told) > m, 0.05)
     page.close()
 
 

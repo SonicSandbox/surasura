@@ -4740,17 +4740,17 @@ class ListSentences:
     `User Files/<lang>/anki_young.json` (`anki_sync.sync_young`), read once, into the moment; no file (never synced,
     Anki absent): none, as before. No Anki call: the file only. `young` {lemma: weight} hands them in instead (tests);
     `young_at` the stamp of the ones the last call weighed (`young_stamp`), for the redraw marker (a sync since that
-    changes them owes the journey a redraw: `journey.moved_state`). Its calls share one moment and one memo
-    (`sentence_score.choose`'s): *Only i+1*'s second round, in another order, reads no file's text and no column
-    again (E-L2G). The shown lines no audio is heard from (`Line.heard` silent: SPEC § 4.5) are kept beside them,
-    {(Src, Context)} (`silent`): the journey marks them while *Ensure an audio example* is on
-    (`journey_render.silent_lines`)."""
+    changes them owes the journey a redraw: `journey.moved_state`). Its calls share one moment, one memo
+    (`sentence_score.choose`'s) and one read of `SHOWN_FILE` while the table's run is the same: *Only i+1*'s second
+    round, in another order, reads no file's text, no column and no `SHOWN_FILE` again (E-L2G, E-L2G 4). The shown
+    lines no audio is heard from (`Line.heard` silent: SPEC § 4.5) are kept beside them, {(Src, Context)} (`silent`):
+    the journey marks them while *Ensure an audio example* is on (`journey_render.silent_lines`)."""
 
     def __init__(self, language, max_contexts, clean_only=False, results_dir=None, table=None, young=None):
         self.language, self.n, self.clean_only = language, plan_rules.context_limit(max_contexts), clean_only
         self.results_dir, self.table, self.young = results_dir or RESULTS_DIR, table, young
         self.run, self.kept, self.read, self.forms, self.forms_read = None, {}, {}, {}, {}
-        self.moment, self.length, self.memo, self.young_at = None, None, {}, None
+        self.moment, self.length, self.memo, self.young_at, self.read_of = None, None, {}, None, None
         self.silent, self.read_silent, self.read_run = set(), set(), None
 
     def __call__(self, keys, order=None):
@@ -4774,8 +4774,10 @@ class ListSentences:
                 return None
         self.run = self.read_run = tab.head.get("run_signature")
         self.young_at = young_stamp(self.moment.young)
-        self.forms_read, self.read_silent = {}, set()
-        self.read = _read_shown(self.results_dir, self.run, self.forms_read, self.read_silent)
+        if self.read_of != (self.run,):     # (the last run's shown lines, parsed once for this run's calls: *Only i+1*'s
+            self.forms_read, self.read_silent = {}, set()      # rounds parsed the file at each, E-L2G 4)
+            self.read = _read_shown(self.results_dir, self.run, self.forms_read, self.read_silent)
+            self.read_of = (self.run,)
         got = sentence_score.choose(self.language, keys, n=self.n, length=self.length, order=order, whole=True,
                                     moment=self.moment, clean_only=self.clean_only, shown=self.read, table=tab,
                                     memo=self.memo)
@@ -4814,6 +4816,7 @@ class ListSentences:
             return
         try:
             _write_shown(self.results_dir, self.run, self.kept, self.forms, self.silent)
+            self.read_of = None             # (the file just written: a later call reads it again)
         except Exception as e:
             print(f"Warning: could not keep the shown sentences: {e}")
 
@@ -8052,13 +8055,17 @@ def main():
             _chooser = ListSentences(language, args.max_contexts, bool(ONLY_I_PLUS_ONE), table=_finished)
         except Exception as e:
             print(f"Warning: could not make the sentence table ({e}); the list shows no sentences this time.")
-        _left_off, _got = set(), {}
+        _left_off, _got, _files_read = set(), {}, None
         while True:
             _rows = [r for r in output_rows if (r["Word"], r["Reading"]) not in _left_off]
             valid_lrs = _covered(_rows)
-            _passes = list(plan_rules.progressive_pass(_progressive_files(), set(known_words_initial),
-                                                       set(known_lemmas_initial), itemgetter(0), _listed, _rank,
-                                                       args.target_coverage))
+            if _files_read is None and ONLY_I_PLUS_ONE and _chooser is not None:
+                # (each file as the pass reads it: the same at every round, only the words listed change — *Only
+                # i+1*'s rounds built them all again, E-L2G 4; kept for the rounds alone)
+                _files_read = list(_progressive_files())
+            _passes = list(plan_rules.progressive_pass(_files_read if _files_read is not None else _progressive_files(),
+                                                       set(known_words_initial), set(known_lemmas_initial),
+                                                       itemgetter(0), _listed, _rank, args.target_coverage))
             if _chooser is None:
                 break
             _order, _at = {}, 0
@@ -8087,6 +8094,7 @@ def main():
             if not _empty:
                 break
             _left_off |= _empty
+        _files_read = None                  # (the rounds are over: each file as the pass read it, let go)
         if _chooser is not None:
             _chooser.memo.clear()           # (the rounds are over: what they shared — every file's text — let go)
         output_rows, _l2_valid = _rows, valid_lrs

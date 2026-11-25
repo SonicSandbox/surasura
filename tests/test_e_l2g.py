@@ -11,7 +11,8 @@ as the dashboard runs it. What these prove:
     store and over made lines (quotes, backslashes, the cut inside a line, an empty token list, control characters).
   - ***Only i+1*'s second round reads nothing again** (row 15: round 2 repeated the whole pick, +1.29 s at 2k): one
     reader asked twice in two orders, as the Generate's rounds ask it, reads each file's text and the table's columns
-    once, and answers what a fresh reader answers.
+    once, and answers what a fresh reader answers — and (E-L2G 4) parses the last run's shown.json.gz once and builds
+    the rows' order-free arrays once: only the order's own are built again.
   - **a redraw whose lines are all kept makes no tagger** (row 11: 0.09 s of the redraw was a fresh Japanese tagger for
     `strip_verse_number` on a line led by digits): shown.json.gz keeps what Context shows of such a line beside its
     text, so a line read back from it is shown as the Generate showed it, with no tagger loaded.
@@ -386,6 +387,144 @@ def test_only_i_plus_ones_second_round_reads_no_files_text_and_no_column_again(g
     assert got["first"] > got["left"] > 0, got
     assert got["counts"]["twice"] == 0 and got["counts"]["taken"] == 1, got
     assert got["counts"]["files"] > 0 and got["same"], got
+
+
+# One reader asked twice, as the Generate's *Only i+1* rounds ask it (the second round: the words left, in their own
+# order), its two answers' row arrays and each parse of the last run's shown.json.gz kept; then the table's run
+# signature changed under it and a third ask; then fresh readers asked each round alone.
+_ROUNDS_ONCE = r"""
+import json, os, sys
+from app import analyzer, sentence_score, sentence_table
+language, results, keys = sys.argv[1], sys.argv[2], [tuple(k) for k in json.loads(sys.argv[3])]
+parsed, built = [0], []
+read_shown, moment_arrays = analyzer._read_shown, sentence_score._moment_arrays
+def counted_read(*args, **kwargs):
+    parsed[0] += 1
+    return read_shown(*args, **kwargs)
+def kept_arrays(*args, **kwargs):
+    arrays, files = moment_arrays(*args, **kwargs)
+    built.append(dict(arrays))          # (the arrays themselves held: an id is never reused while they live)
+    return arrays, files
+analyzer._read_shown, sentence_score._moment_arrays = counted_read, kept_arrays
+table = sentence_table.open_table(os.path.join(results, sentence_table.TABLE_FILE), language=language,
+                                  engine=analyzer.engine_id(), run_signature=analyzer.read_run_stamp(results))
+one = analyzer.ListSentences(language, 3, True, results_dir=results, table=table)     # (the Generate's own table)
+first = one(keys, {k: at for at, k in enumerate(keys)})
+left = [k for k in keys if first.get(k)]
+if len(left) == len(keys):              # (every word has a clean line: every seventh left off, as a round would)
+    left = [k for at, k in enumerate(keys) if at % 7]
+order = {k: at for at, k in enumerate(left)}
+second = one(left, order)
+counts = {"parsed": parsed[0], "asks": len(built),
+          "free_once": all(built[-1][name] is built[0][name] for name in ("own", "lemma", "young")),
+          "placed_again": built[-1]["placed"] is not built[0]["placed"],
+          "read_only": not any(built[-1][name].flags.writeable for name in ("own", "lemma", "young"))}
+run = table.head.get("run_signature")
+table.head["run_signature"] = "another run"
+third = one(left, dict(order))          # (another run: its own shown.json.gz, none here — every text from the store)
+table.head["run_signature"] = run
+counts["parsed_another_run"] = parsed[0]
+fresh_first = analyzer.ListSentences(language, 3, True, results_dir=results)(keys, {k: at for at, k in enumerate(keys)})
+fresh = analyzer.ListSentences(language, 3, True, results_dir=results)(left, dict(order))
+print(json.dumps({"counts": counts, "left": len(left), "first": len(first), "same_first": first == fresh_first,
+                  "same": second == fresh, "same_third": third == second}))
+"""
+
+
+def test_only_i_plus_ones_second_round_parses_shown_once_and_builds_no_order_free_row_array_again(gen):
+    # why: E-L2G 4, row 15 (+0.79 s at 2k, +0.60 s zh400 against today) — round 2 built again the rows' arrays that no
+    # order changes (each row's lemma code, each co-word's row, its young weight) beside the order's own, and each
+    # round gunzipped and parsed the last run's shown.json.gz. Built and parsed once; the order's arrays (`placed`)
+    # still built at each order; another run's signature reads its own file; each round the answer a fresh reader gives
+    language, root = gen
+    results = os.path.join(root, "results")
+    assert os.path.isfile(os.path.join(results, analyzer.SHOWN_FILE)), "the level-2 Generate keeps the shown lines"
+    keys = json.dumps([list(k) for k in _columns(results)], ensure_ascii=False)
+    got = _child(root, _ROUNDS_ONCE, language, results, keys)
+    counts = got["counts"]
+    assert got["first"] > got["left"] > 0 and counts["asks"] >= 2, got
+    assert counts["parsed"] == 1, f"shown.json.gz parsed {counts['parsed']} times for one run's two rounds"
+    assert counts["free_once"], "round 2 built the order-free row arrays again"
+    assert counts["placed_again"] and counts["parsed_another_run"] == 2, counts
+    assert counts["read_only"], "the arrays the memo's orders share are read-only"
+    assert got["same_first"] and got["same"] and got["same_third"], got
+
+
+# One reader asked for some of the list's words, its shown lines kept (results/shown.json.gz written: they differ from
+# the Generate's), then asked for every word and kept again — in a copy of results/ (the fixture's stays as it is).
+_KEPT_AGAIN = r"""
+import json, os, shutil, sys
+from app import analyzer, sentence_table
+language, results, keys, mine = sys.argv[1], sys.argv[2], [tuple(k) for k in json.loads(sys.argv[3])], sys.argv[4]
+shutil.copy2(os.path.join(results, analyzer.SHOWN_FILE), os.path.join(mine, analyzer.SHOWN_FILE))
+table = sentence_table.open_table(os.path.join(results, sentence_table.TABLE_FILE), language=language,
+                                  engine=analyzer.engine_id(), run_signature=analyzer.read_run_stamp(results))
+run = table.head.get("run_signature")
+one = analyzer.ListSentences(language, 3, False, results_dir=mine, table=table)
+one(keys[: max(1, len(keys) // 3)], None)
+one.keep()
+some = analyzer._read_shown(mine, run)
+one(keys, None)
+one.keep()
+every = analyzer._read_shown(mine, run)
+print(json.dumps({"some": len(some), "every": len(every), "as_kept": every == one.kept}))
+"""
+
+
+def test_a_reader_asked_again_after_it_kept_its_lines_keeps_the_new_ones(gen, tmp_path):
+    # why: E-L2G 4 — a reader parses shown.json.gz once for its run's calls; once its keep() has written the file, the
+    # file is what the reader read no more: a later call reads it again, so its keep() compares against what is
+    # written and writes the new lines (else it would see its old read, call them kept, and leave the file short)
+    language, root = gen
+    results = os.path.join(root, "results")
+    keys = json.dumps([list(k) for k in _columns(results)], ensure_ascii=False)
+    got = _child(root, _KEPT_AGAIN, language, results, keys, str(tmp_path))
+    assert 0 < got["some"] < got["every"] and got["as_kept"], got
+
+
+# Loaded first in the Generate's child: every progressive pass's `files` (each file as the pass reads it) held, and at
+# the child's exit how many passes ran and how many `files` were built for them.
+_PASSES = r"""
+import atexit, json, os
+from app import plan_rules
+_pass, _files = plan_rules.progressive_pass, []
+
+
+def _counted(files, *args, **kwargs):
+    _files.append(files)                # (held: an id is never reused while it lives)
+    return _pass(files, *args, **kwargs)
+
+
+def _said():
+    with open(os.environ["E_L2G_PASSES"], "w") as f:
+        json.dump({"passes": len(_files), "built": len({id(files) for files in _files})}, f)
+
+
+plan_rules.progressive_pass = _counted
+atexit.register(_said)
+"""
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_only_i_plus_ones_rounds_read_each_file_for_the_progressive_pass_once(language, tmp_path):
+    # why: E-L2G 4, row 15 — each round of *Only i+1* at level 2 ran the progressive pass again over every file, and
+    # built again each file as the pass reads it (its words not known before any file, their counts: the same at every
+    # round — only the words listed change). Profiled at 2,000 files: 1.07 s of the 2 rounds' 2.15 s. Built once for
+    # the rounds; the pass itself still runs at each (the words listed are the round's); the list is the reader's
+    hook = tmp_path / "hook"
+    hook.mkdir()
+    (hook / "sitecustomize.py").write_text(_PASSES, encoding="utf-8")
+    counted = tmp_path / "passes.json"
+    env = dict(LEVEL_2, PYTHONPATH=str(hook) + os.pathsep + cases.REPO, E_L2G_PASSES=str(counted))
+    root = str(tmp_path / "lib")
+    cases.build(root, f"rp2-{language}")
+    cases.generate(root, f"rp2-{language}", extra_env=env, extra_args=["--only-i-plus-one"])
+    with open(counted, encoding="utf-8") as f:
+        got = json.load(f)
+    assert got["passes"] >= 2, f"no second round on this library: {got}"
+    assert got["built"] == 1, f"{got['built']} builds of every file's pass input for {got['passes']} rounds"
+    listed = _columns(os.path.join(root, "results"))
+    assert listed and all(cols and cols[0] for cols in listed.values()), "every word left on shows a sentence"
 
 
 # Loaded first in the redraw's child: at its exit, whether a Japanese tagger was ever loaded (fugashi is imported only

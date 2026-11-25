@@ -215,7 +215,11 @@ ENSURE_AUDIO_EXAMPLE = False
 #     listed rows' uses in each file and each file's known / counted tokens, from the lines that write the plan), which
 #     the journey reads instead of the plan's tables (J-CUT, the lead's ruling). The plan and the lists are unchanged;
 #     SCHEMA_VERSION stays 28. 3.0.19.
-ENGINE_REVISION = 48
+# 50: the sentence choice is on (plan_rules.SENTENCE_TABLE 0 → 2, E-JOURNEY's flip): a Generate writes the sentence
+#     table alone (results/sentences.bin, no shortlists, no first-sentence tables), the plan's format 5, and the
+#     list's, the journey's and the word card's sentences are the one reader's (app/sentence_score.py), as the card's
+#     are. Every token store is indexed again with each line's counts: SCHEMA_VERSION 29. 3.0.19.
+ENGINE_REVISION = 50
 
 # Load Logic Settings from settings.json
 LOGIC = {

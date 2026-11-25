@@ -1,11 +1,11 @@
 """The sentence table (the sentence choice): Generate keeps every candidate sentence of every list word as numbers.
 
 What these prove, so far — the switch, `plan_rules.SENTENCE_TABLE`, before anything reads it:
-  - it is 0 in the tree, and a level is only ever one of 0, 1, 2;
+  - it is 2 in the tree since the flip (3.0.19: 0 → 2 directly), and a level is only ever one of 0, 1, 2;
   - a child process (a Generate is one) takes its level from SURASURA_SENTENCE_TABLE, read once at import; any other
     value is the tree's;
-  - off is today: a Generate with the switch at 0 writes every file in results/ the same bytes as one with no switch
-    set at all, and no table.
+  - the tree's level is the one a Generate runs: with no switch set it writes every file in results/ the same bytes
+    as one with the switch at 2, the table included (before the flip: at 0, the same bytes as the code before).
 
 What a wrong answer would cost a learner: a build half switched on in a release that was meant to change nothing —
 sentences on their cards or their list moving before the release that says so.
@@ -39,18 +39,19 @@ def _child_level(env_value):
 # --------------------------------------------------------------------------- #
 # 1. The switch
 # --------------------------------------------------------------------------- #
-def test_the_switch_is_off_in_the_tree():
-    # why: every lane of the build lands inert; a flip is its own commit (with ENGINE_REVISION), never a side effect
+def test_the_switch_is_at_release_2_in_the_tree():
+    # why: the flip is its own commit (with ENGINE_REVISION and SCHEMA_VERSION), never a side effect; level 1 never
+    # ships (one release: the list and the cards change together)
     with open(os.path.join(REPO, "app", "plan_rules.py"), encoding="utf-8") as f:
         tree = ast.parse(f.read())
     literals = [node.value.value for node in tree.body
                 if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
                 and any(isinstance(t, ast.Name) and t.id == "SENTENCE_TABLE" for t in node.targets)]
-    assert literals == [0]
+    assert literals == [2]
     assert plan_rules.SENTENCE_TABLE_LEVELS == (0, 1, 2)
 
 
-@pytest.mark.parametrize("env_value, level", [(None, 0), ("0", 0), ("1", 1), ("2", 2)])
+@pytest.mark.parametrize("env_value, level", [(None, 2), ("0", 0), ("1", 1), ("2", 2)])
 def test_a_child_process_takes_its_level_from_the_environment(env_value, level):
     # why: a Generate is a subprocess; the harness runs a level by its environment, read once at import
     assert _child_level(env_value) == level
@@ -59,8 +60,8 @@ def test_a_child_process_takes_its_level_from_the_environment(env_value, level):
 @pytest.mark.parametrize("raw", ["", " ", "3", "-1", "1.0", "on", "true", "２", "0x1"])
 def test_anything_but_a_level_reads_as_the_trees_value(raw):
     # why: a typo or a stray value must never switch a release on (the full-width ２ included: int() would take it)
-    assert plan_rules.sentence_table_level({"SURASURA_SENTENCE_TABLE": raw}) == plan_rules.SENTENCE_TABLE_LEVELS[0]
-    assert plan_rules.sentence_table_level({"SURASURA_SENTENCE_TABLE": raw}, default=2) == 2
+    assert plan_rules.sentence_table_level({"SURASURA_SENTENCE_TABLE": raw}) == plan_rules.SENTENCE_TABLE == 2
+    assert plan_rules.sentence_table_level({"SURASURA_SENTENCE_TABLE": raw}, default=0) == 0
 
 
 def test_a_level_with_spaces_around_it_is_that_level():
@@ -86,9 +87,9 @@ def _outputs():
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])
-def test_a_generate_with_the_switch_off_writes_what_one_without_it_writes(language, monkeypatch):
-    # why: at 0 every file in results/ is byte for byte the code before (the build's inert rule); a reader of the
-    # switch that leaks into a run at 0 shows up here as a changed file or a table
+def test_a_generate_with_no_switch_set_writes_what_one_at_the_trees_level_writes(language, monkeypatch):
+    # why: the tree's level (2 since the flip) is what a learner's Generate runs — a reader that took its level from
+    # anywhere but the switch shows up here as a changed file, or as no table
     from tests import services_helpers as h
     monkeypatch.delenv("SURASURA_SENTENCE_TABLE", raising=False)
     from tests.test_services_progress import _analyzer
@@ -97,12 +98,12 @@ def test_a_generate_with_the_switch_off_writes_what_one_without_it_writes(langua
     # one hash seed for both runs: word_stats.json and file_words.json list a word's files from a set, so their bytes
     # follow the seed (as test_services_progress.py's flag test fixes it) — the switch is what this compares
     found = []
-    for env in ({}, {"SURASURA_SENTENCE_TABLE": "0"}):
+    for env in ({}, {"SURASURA_SENTENCE_TABLE": "2"}):
         proc = _analyzer(language, env=dict(env, SURASURA_FORCE_RUN="1", PYTHONHASHSEED="0"))
         assert proc.returncode == 0, proc.stdout.decode("utf-8", "replace")[-2000:]
         found.append(_outputs())
     assert found[0] == found[1]
-    assert "plan.json.gz" in found[0] and "sentences.bin" not in found[0]
+    assert "plan.json.gz" in found[0] and "sentences.bin" in found[0]
 
 
 # --------------------------------------------------------------------------- #

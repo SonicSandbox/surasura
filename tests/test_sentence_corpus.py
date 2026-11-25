@@ -61,19 +61,35 @@ def _files_of(best):
 # ---------------------------------------------------------------------------------------------- #
 # Which sentences, in what order
 # ---------------------------------------------------------------------------------------------- #
-def test_the_length_window_is_the_users_own_setting_widened_by_five():
-    """D2: 'good length' is THEIR setting — they may want a different minimum or maximum — with ±5
-    characters of leeway, never below one character and never past their hard cap."""
-    def context(**kw):
-        return {"logic": {"context": kw}}
+def _context(**kw):
+    return {"logic": {"context": kw}}
 
-    assert sc.length_range(context(min_chars=10, preferred_max_chars=35, max_chars=150)) == (5, 40, 10, 35)
-    assert sc.length_range(context(min_chars=20, preferred_max_chars=60, max_chars=150)) == (15, 65, 20, 60)
-    assert sc.length_range(context(min_chars=3, preferred_max_chars=148, max_chars=150)) == (1, 150, 3, 148)
-    # why: the shipped default is the level's (14–25 since the flip, 10–50 at level 0): read from its one home
+
+def test_the_length_window_is_the_users_own_setting_widened_by_five(level_0):
+    """D2: 'good length' is THEIR setting — they may want a different minimum or maximum — with ±5
+    characters of leeway, never below one character and never past their hard cap (level 0's window)."""
+    assert sc.length_range(_context(min_chars=10, preferred_max_chars=35, max_chars=150)) == (5, 40, 10, 35)
+    assert sc.length_range(_context(min_chars=20, preferred_max_chars=60, max_chars=150)) == (15, 65, 20, 60)
+    assert sc.length_range(_context(min_chars=3, preferred_max_chars=148, max_chars=150)) == (1, 150, 3, 148)
+    # why: the shipped default is the level's (10–50 at level 0, 14–25 since the flip): read from its one home
     from app import settings_manager
     low, high = settings_manager.sentence_length_default()
-    assert sc.length_range({}) == (max(1, low - sc.LENGTH_LEEWAY), high + sc.LENGTH_LEEWAY, low, high)
+    assert (low, high) == (10, 50)
+    assert sc.length_range({}) == (low - sc.LENGTH_LEEWAY, high + sc.LENGTH_LEEWAY, low, high)
+
+
+def test_at_level_2_the_length_window_throws_out_no_line_for_being_short(monkeypatch):
+    """SPEC § 4.6 (the lead's ruling, 2026-11-25): at level 2 a line is never thrown out for being short — the
+    window starts at one character (`collect` ranks a short line by how far under the range it is); its top end and
+    the hard cap are as before."""
+    from tests.sentence_level import pin
+    pin(monkeypatch, 2)
+    assert sc.length_range(_context(min_chars=10, preferred_max_chars=35, max_chars=150)) == (1, 40, 10, 35)
+    assert sc.length_range(_context(min_chars=20, preferred_max_chars=148, max_chars=150)) == (1, 150, 20, 148)
+    from app import settings_manager
+    low, high = settings_manager.sentence_length_default()
+    assert (low, high) == (14, 25)
+    assert sc.length_range({}) == (1, high + sc.LENGTH_LEEWAY, low, high)
 
 
 def test_the_fewest_unknown_words_come_first_not_the_first_one_met():
@@ -125,6 +141,28 @@ def test_the_users_own_range_comes_before_the_leeway_and_outside_lengths_are_lef
     words = _collect({"a.txt": lines}, known=known)
 
     assert _texts(_best(words, "冒険")) == [lines[2], lines[0]]
+
+
+@pytest.mark.parametrize("n", [2, 0])
+def test_a_line_outside_the_range_ranks_by_how_far_outside_it_is_at_level_2_and_flat_at_level_0(monkeypatch, n):
+    """SPEC § 4.2's zone in `collect`'s order (the lead's ruling, 2026-11-25): at level 2 each character outside the
+    user's 10–35 counts, so with the same unknown words the 37-character line (2 over) leads the 7 (3 under), and the
+    7 the 4 (6 under); two lines inside cost nothing, in the file's order, before them all. Level 0 weighs only
+    inside or outside: the two inside first, then the three outside tie, in the file's order."""
+    from tests.sentence_level import pin
+    pin(monkeypatch, n)
+    lines = ["冒険だ。",                                                                    # 4
+             "冒険に出よう。",                                                              # 7
+             "この本は彼の冒険について書かれているので、ぜひ最後まで読んでみてください。",   # 37
+             "明日から友達と冒険に出かけよう。",                                            # 16
+             "彼は毎日冒険に出かけます。"]                                                  # 13
+    assert [len(line) for line in lines] == [4, 7, 37, 16, 13]
+    known = set().union(*(_lemmas(line) for line in lines)) - {"冒険"}
+
+    words = _collect({"a.txt": lines}, known=known, window=(1, 40, 10, 35))
+
+    inside, outside = lines[3:], lines[:3]
+    assert _texts(_best(words, "冒険")) == inside + (outside[::-1] if n == 2 else outside)
 
 
 def test_at_most_two_sentences_come_from_one_file_when_others_have_the_word():

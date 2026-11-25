@@ -191,6 +191,34 @@ def test_with_the_ai_voice_on_no_shown_line_is_silent_and_the_kept_file_says_so(
     assert after["run_signature"] == before["run_signature"]
 
 
+_RESIGNED = r"""
+import json, sys
+from app import analyzer
+language, results, keys = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
+chooser = analyzer.ListSentences(language, 3, results_dir=results)
+chooser([tuple(k) for k in keys], None)
+chooser.run = "re-signed"           # (the Generate's own step: a band Automatic chose re-signs the run before `keep`)
+chooser.keep()
+"""
+
+
+def test_a_run_re_signed_after_its_lines_were_chosen_keeps_them_under_its_new_signature(run, tmp_path):
+    # why: a Generate whose Automatic band moved re-signs its run after the list's lines were chosen; the plan and the
+    # table carry the new signature. The same lines as the kept file's must still be written under it — else the page
+    # (`journey_render.silent_lines`: the file's run against the plan's) loses every silent mark, and the next redraw
+    # reads none of the kept text back
+    results = str(tmp_path / "results")
+    shutil.copytree(run.results, results)
+    before = _shown_file(results)
+    assert before.get("silent"), "the Generate kept silent lines (the AI voice off)"
+    with open(os.path.join(results, "progressive_learning_list.csv"), encoding="utf-8-sig", newline="") as f:
+        keys = [[r["Word"], r["Reading"]] for r in csv.DictReader(f)]
+    _child(run.root, _RESIGNED, run.language, results, json.dumps(keys, ensure_ascii=False))
+    after = _shown_file(results)
+    assert after["run_signature"] == "re-signed", "kept under the run's new signature"
+    assert after["lines"] == before["lines"] and after.get("silent") == before["silent"], "the same lines and marks"
+
+
 # ---- the page's data ----
 
 def test_the_page_marks_each_silent_line_only_while_the_setting_is_on_at_release_2(run):

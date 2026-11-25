@@ -4751,7 +4751,7 @@ class ListSentences:
         self.results_dir, self.table, self.young = results_dir or RESULTS_DIR, table, young
         self.run, self.kept, self.read, self.forms, self.forms_read = None, {}, {}, {}, {}
         self.moment, self.length, self.memo, self.young_at = None, None, {}, None
-        self.silent, self.read_silent = set(), set()
+        self.silent, self.read_silent, self.read_run = set(), set(), None
 
     def __call__(self, keys, order=None):
         from app import sentence_score, sentence_corpus, sentence_table
@@ -4772,7 +4772,7 @@ class ListSentences:
                                             run_signature=read_run_stamp(self.results_dir))
             if tab is None:
                 return None
-        self.run = tab.head.get("run_signature")
+        self.run = self.read_run = tab.head.get("run_signature")
         self.young_at = young_stamp(self.moment.young)
         self.forms_read, self.read_silent = {}, set()
         self.read = _read_shown(self.results_dir, self.run, self.forms_read, self.read_silent)
@@ -4806,9 +4806,10 @@ class ListSentences:
         return out
 
     def keep(self):
-        """results/`SHOWN_FILE`: the text of the lines the last call showed, by the table's run — written only when it
-        differs from what was read (never fails the run)."""
-        if self.run is None or (self.kept == self.read and self.forms == self.forms_read
+        """results/`SHOWN_FILE`: the text of the lines the last call showed, their forms and their silent ones, by the
+        table's run — written only when one of them differs from what was read, or the run was signed again since the
+        read (`run` set after the call: a band Automatic chose; never fails the run)."""
+        if self.run is None or (self.run == self.read_run and self.kept == self.read and self.forms == self.forms_read
                                 and self.silent == self.read_silent):
             return
         try:

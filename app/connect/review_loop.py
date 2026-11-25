@@ -32,8 +32,9 @@ word (`known_signal._words_of`, the word only), and:
 
 **Undo per sync** (`undo`): each read that moved something is one *sync* in the record (its id, the Known words, the
 list changes with each word's state before): Undo puts each word back **while it is still as that sync left it**
-(a later move of the same word stands), takes the Known words it marked out (`known_signal.undo(..., cards_too=False)`),
-and drops its waiting swaps; twice is nothing more. **No card is ever touched** — no suspend, flag, tag, unsuspend or
+(a later move of the same word stands), takes the Known words it marked out in one write
+(`known_signal.undo_words(..., cards_too=False)`), and drops its waiting swaps; twice is nothing more. **No card is
+ever touched** — no suspend, flag, tag, unsuspend or
 delete — and Anki is only read (findCards, cardsInfo, notesInfo): so a review going on is never disturbed, and there is
 nothing to hold for one (Haya-LD2's rule is for writers). An undone card stays read while it keeps its move (it isn't
 moved again until it loses the move and gets it back).

@@ -19,6 +19,8 @@ import sys
 
 import pytest
 
+from tests.flake_lints import _parse, _text
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FORBIDDEN = ("tkinter", "_tkinter", "PyQt6", "PySide6", "PyQt5", "PySide2", "pandas")
 
@@ -74,6 +76,7 @@ def test_importing_a_service_brings_in_no_qt_tk_or_pandas(module):
 
 
 _QT = re.compile(r"^\s*(?:from|import)\s+(PyQt6|PySide6|PyQt5|PySide2)\b", re.M)
+_QT_WORD = re.compile(r"\bqt")        # `app.qt`, `from .qt`, `from . import qt`, `app.qt_x`: a word starting `qt`
 
 
 def test_no_file_outside_the_windows_folders_imports_qt():
@@ -102,11 +105,12 @@ ALLOWED_QT = {"PyQt6", "PyQt6.QtCore", "PyQt6.QtGui", "PyQt6.QtWidgets", "PyQt6.
 _DYNAMIC = {"import_module", "__import__"}
 
 
-def imports_of(source, module):
-    """Every module `source` (the file of `module`, dotted) imports, anywhere in it, as absolute dotted names."""
+def imports_of(source, module, tree=None):
+    """Every module `source` (the file of `module`, dotted; or its parsed `tree`) imports, anywhere in it, as absolute
+    dotted names."""
     package = module.rsplit(".", 1)[0] if "." in module else ""
     names = set()
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(tree or ast.parse(source)):
         if isinstance(node, ast.Import):
             names.update(a.name for a in node.names)
         elif isinstance(node, ast.ImportFrom):
@@ -196,15 +200,17 @@ def test_nothing_outside_the_window_reaches_qt_or_the_window_but_the_entrys_one_
     found = {}
     for path in _headless_files():
         module = _module_of(path)
-        with open(path, encoding="utf-8") as f:
-            source = f.read()
-        tree = ast.parse(source)
+        rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
+        source = _text(ROOT, rel)
+        if module != "app_entry" and "PyQt6" not in source and not _QT_WORD.search(source):
+            continue                # (each way in spells PyQt6 or a word starting `qt`: parsed only where one may be)
+        tree = _parse(ROOT, rel)    # (once a run, shared with the other guards)
         if module == "app_entry":
             door = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_qt_window"]
             outside = [n for n in tree.body if n not in door]
-            source = "\n".join(ast.unparse(n) for n in outside)
+            source, tree = "\n".join(ast.unparse(n) for n in outside), None
             assert door and imports_of(ast.unparse(door[0]), module) >= {"app.qt.shell"}
-        bad = {n for n in imports_of(source, module) if n == "PyQt6" or n.startswith(("PyQt6.", "app.qt"))}
+        bad = {n for n in imports_of(source, module, tree) if n == "PyQt6" or n.startswith(("PyQt6.", "app.qt"))}
         if bad:
             found[os.path.relpath(path, ROOT)] = sorted(bad)
     assert found == {}

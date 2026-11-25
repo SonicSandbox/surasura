@@ -273,9 +273,13 @@ def test_nothing_of_surasuras_imports_tsubasa():
     found = []
     for path in _python_files():
         try:
+            with open(path, encoding="utf-8") as f:
+                source = f.read()
+            if "tsubasa" not in source:
+                continue                                     # (every way in names it: parsed only where it is)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")              # another file's old escapes, not ours
-                tree = ast.parse(open(path, encoding="utf-8").read())
+                tree = ast.parse(source)
         except (SyntaxError, UnicodeDecodeError):
             continue
         found += [os.path.relpath(path, PROJECT) for n in _imported_names(tree) if n.split(".")[0] == "tsubasa"]

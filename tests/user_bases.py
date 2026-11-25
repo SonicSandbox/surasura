@@ -24,8 +24,7 @@ BASE_NAMES = ("LOCALAPPDATA", "APPDATA", "XDG_DATA_HOME")
 def redirect():
     """Point %LOCALAPPDATA%, %APPDATA% and XDG_DATA_HOME at a new folder in TEMP (removed when this process exits);
     PYTHONUSERBASE keeps naming this user's packages (Python looks for them under %APPDATA%), for the children too."""
-    import site
-    os.environ.setdefault("PYTHONUSERBASE", site.getuserbase())
+    os.environ.setdefault("PYTHONUSERBASE", real_user_base())
     forget_stale()
     bases = tempfile.mkdtemp(prefix=ROOTS_PREFIX)
     atexit.register(shutil.rmtree, bases, True)   # before any test's exit hook, so it runs after them
@@ -69,6 +68,31 @@ def names_the_real_profile():
         if not value or _same_folder(value, os.path.join(home, *parts)):
             return True
     return False
+
+
+def real_user_base():
+    """This user's own Python user base (where `pip install --user` put their packages), whatever %APPDATA% names
+    now: Python's rule (`site.getuserbase`, %APPDATA%\\Python on Windows) read against the real profile, as
+    `names_the_real_profile` reads it. `site.getuserbase()` alone is the base as this process started: a lane's
+    redirected %APPDATA% gave its throwaway folder. Elsewhere the base never moves with these bases (~/.local)."""
+    if sys.platform != "win32":
+        import site
+        return site.getuserbase()
+    return os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "Python")
+
+
+def keep_user_site(environ):
+    """PYTHONUSERBASE set in `environ` to `real_user_base()` when it is unset and %APPDATA% names another folder, so
+    a process started with it still imports this user's packages. -> the base set, or None (nothing to do).
+    2026-11-24: a lane's APPDATA at its throwaway folder hid them from run_tests.py's children — certifi: three of a
+    level-2 --all's shards ran nothing."""
+    if environ.get("PYTHONUSERBASE") or sys.platform != "win32":
+        return None
+    real = real_user_base()
+    if _same_folder(os.path.join(environ.get("APPDATA") or "", "Python"), real):
+        return None
+    environ["PYTHONUSERBASE"] = real
+    return real
 
 
 def isolate():

@@ -157,7 +157,10 @@ def _loads_by_name():
         for file in files:
             if file.endswith(".py"):
                 path = os.path.join(root, file)
-                tree = ast.parse(_source(path))
+                source = _source(path)
+                if "import_module" not in source and "__import__" not in source:
+                    continue                    # (no loader named, none aliased: parsed only where a load may be)
+                tree = ast.parse(source)
                 Loads(os.path.relpath(path, PROJECT).replace(os.sep, "/"), tree).visit(tree)
     return names, packages, sites
 

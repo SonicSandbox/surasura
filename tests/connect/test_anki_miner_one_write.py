@@ -194,3 +194,47 @@ def test_reads_still_run_side_by_side_and_another_anki_miner_never_waits(tmp_pat
     _release(gate, first, second)
     assert first.error is None and second.error is None
     assert fake_miner.commands() == ["check", "check", "settings-import"]
+
+
+def test_a_read_asked_while_a_write_waits_goes_after_the_write(tmp_path, fake_miner):
+    """A write waiting for a read under way is not passed by the reads asked after it (else the check beside the
+    mining, asking between the run's look-ups, might never get its turn): read, write, then the later read."""
+    gate = _gate(fake_miner, tmp_path, "check")
+    read = _Call(lambda: anki_miner.check(fake_miner.path, "ja", "p-surasura"))
+    read.start()
+    _until(lambda: "check" in fake_miner.commands())
+    write = _Call(lambda: anki_miner.settings_import(fake_miner.path, "ja", {}, str(tmp_path / "setup"),
+                                                     profile="p-surasura"))
+    write.start()
+    _until(lambda: _waiting(fake_miner.path) == 1 or "settings-import" in fake_miner.commands())
+    later = _Call(lambda: anki_miner.settings_export(fake_miner.path, "ja", str(tmp_path / "export.json"),
+                                                     profile="p-surasura"))
+    later.start()
+    _until(lambda: _waiting(fake_miner.path) == 2 or "settings-export" in fake_miner.commands())
+    assert fake_miner.commands() == ["check"], "a call started beside the read while the write waited"
+    _release(gate, read, write, later)
+    assert (read.error, write.error, later.error) == (None, None, None)
+    assert fake_miner.commands() == ["check", "settings-import", "settings-export"]
+
+
+def test_a_call_made_inside_a_call_under_way_never_waits_behind_the_write_it_holds_up(tmp_path, fake_miner):
+    """A call under way that asks Anki Miner again on its own thread (from its `on_poll`) while a write waits for it:
+    the inner call runs at once — waiting would hold the write for ever, and the write it."""
+    gate = _gate(fake_miner, tmp_path, "check")
+    inner = []
+
+    def poll():
+        if not inner and _waiting(fake_miner.path) == 1:
+            inner.append(anki_miner.api(fake_miner.path, ["version"]))
+
+    read = _Call(lambda: anki_miner.api(fake_miner.path, ["check", "--language", "ja"], on_poll=poll))
+    read.start()
+    _until(lambda: "check" in fake_miner.commands())
+    write = _Call(lambda: anki_miner.settings_import(fake_miner.path, "ja", {}, str(tmp_path / "setup"),
+                                                     profile="p-surasura"))
+    write.start()
+    _until(lambda: bool(inner) or "settings-import" in fake_miner.commands())
+    assert fake_miner.commands() == ["check", "version"], "the inner call waited, or the write ran beside the read"
+    _release(gate, read, write)
+    assert read.error is None and write.error is None, (read.error, write.error)
+    assert fake_miner.commands() == ["check", "version", "settings-import"]

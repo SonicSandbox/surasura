@@ -159,3 +159,17 @@ def test_a_line_moved_in_settings_gathers_again_and_the_card_goes(world, monkeyp
     for _ in range(5):
         QApplication.processEvents()
     assert card_of(ny) is None
+
+
+def test_a_language_switch_forgets_the_left_languages_count(world, monkeypatch):
+    # why: the bar's count is one language's — the other library's card must never be judged by it
+    win, ny, _said = opened(world, "ja", monkeypatch)
+    assert card_of(ny) is not None
+    ny._switched()
+    assert ny.backlog is None
+    gather(ny)
+    assert card_of(ny) is None, "no count known for this language yet: nothing asked"
+    n = ny.gathers
+    ny.backlog_in(4)                                     # the bar's next tick, this language's
+    assert wait_until(lambda: ny.gathers > n and not ny._running, 10)
+    assert card_of(ny) is not None

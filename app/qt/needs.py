@@ -988,6 +988,7 @@ class NeedsYou(QObject):
     def _switched(self):
         """The shell showed another language's library (`library_switched`): its cards are that library's from here."""
         self.language = getattr(self.win, "language", None) or self.language
+        self.backlog = None                      # ONB-4: the left language's count; the bar's next tick says this one's
 
     def view_in(self, view):
         old, self.view = self.view, view

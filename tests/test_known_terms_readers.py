@@ -65,17 +65,23 @@ def test_a_mine_that_moves_the_known_words_file_tokenizes_only_the_terms_it_adde
     asked = counting(monkeypatch, language)
     path, held = known_file(language, resources)
     store = ti.open_store(language, path=str(tmp_path / "store.db"))
+    kept = []
+    real_keep = ti.Store.set_known_terms
+    monkeypatch.setattr(ti.Store, "set_known_terms", lambda self, *a: (kept.append(1), real_keep(self, *a))[1])
     try:
         first = sc.known_sets(language, store, settings)
         whole = set(asked)
         assert len(whole & held) > 50 and first[0] and first[1], "the first read reads the file's terms"
+        assert kept == [1], "the terms kept for the next read"
 
-        # A card Connect made: the file's signature moves, no term is new — nothing is tokenized
+        # A card Connect made: the file's signature moves, no term is new — nothing is tokenized, and the ~10k terms'
+        # blob isn't written again for nothing
         known_file(language, resources, carded=True)
         del asked[:]
         again = sc.known_sets(language, store, settings)
         assert not set(asked) & held, "no term read before is tokenized again"
         assert again[:2] == first[:2]
+        assert kept == [1], "no term changed: the terms' blob is not rewritten"
 
         # A sync's two new words: only those
         new = [w for w in _NEW[language] if w not in held][:2]
@@ -84,6 +90,7 @@ def test_a_mine_that_moves_the_known_words_file_tokenizes_only_the_terms_it_adde
         del asked[:]
         grown = sc.known_sets(language, store, settings)
         assert set(new) <= set(asked) and not set(asked) & held, "only the words the sync added are read"
+        assert kept == [1, 1], "two terms more: kept"
         fresh = analyzer.load_known_words(path, analyzer.JapaneseTokenizer() if language == "ja"
                                           else analyzer.ChineseTokenizer())
         assert grown[:2] == fresh, "the very sets a fresh read of the whole file gives"

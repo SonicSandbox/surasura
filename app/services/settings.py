@@ -177,7 +177,7 @@ class SettingsService:
         window (a test harness, a headless tool), never a window's thread."""
         if not changes and update is None:
             return
-        keys = tuple(keys) if update is not None else ()
+        keys = ((keys,) if isinstance(keys, str) else tuple(keys)) if update is not None else ()
         for key in list(changes) + list(keys):
             if not isinstance(key, str) or not key or (("." in key) and not key.startswith("logic.")):
                 raise ValueError(f"not a settings key: {key!r}")

@@ -1464,6 +1464,15 @@ def test_a_deck_taken_out_leaves_no_waiting_count_but_the_same_decks_answered_em
         count, error = anki_sync.sync_backlog("ja", URL, kept + ["Japanese::Jalup Sentences"], [])
     assert count == 260 and "kept" in error and _backlog_file() == saved
 
+    # Every deck taken out: no read of Anki, and the saved backlog says no card waits (0, not the last 260)
+    with mock.patch("urllib.request.urlopen", FakeCollection(offline=True)):
+        assert anki_sync.clear_backlog("ja") is True
+    assert anki_sync.count_backlog("ja") == 0 and _backlog_file()["decks"] == []
+    before = _read_bytes(_backlog_path())
+    assert anki_sync.clear_backlog("ja") is False and _read_bytes(_backlog_path()) == before, "none held: untouched"
+    assert anki_sync.clear_backlog("zh") is False, "never synced: nothing written"
+    assert not os.path.exists(_backlog_path("zh"))
+
 
 def _backlog_path(language="ja"):
     return os.path.join(get_user_files_path(language), "anki_backlog.json")

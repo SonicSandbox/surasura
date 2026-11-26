@@ -3069,11 +3069,14 @@ def read_known_words(store, known_file, known_sig, tokenizer, keep=True):
             terms = store.known_terms(getattr(tokenizer, "script", "asis"))
         except Exception:
             terms = None
+    held = set(terms) if terms is not None else None
     known = load_known_words(known_file, tokenizer, terms)
     if store and keep:
         try:
             store.set_cached_known(known_sig, *known)
-            if terms is not None:
+            # The per-term cache written only when its terms changed: a move that adds no term (a card Connect
+            # wrote) rewrote all ~10k terms' blob for nothing (SYQF-FIX).
+            if terms is not None and set(terms) != held:
                 store.set_known_terms(getattr(tokenizer, "script", "asis"), terms)
         except Exception:
             pass

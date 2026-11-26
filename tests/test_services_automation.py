@@ -961,9 +961,16 @@ def test_a_deck_change_reads_the_backlog_again_and_a_second_one_during_the_read_
     _settle(auto, registry)
     assert anki.backlogs == [("ja", ("Japanese::Mining Deck", "Japanese::Anki Miner")),
                              ("ja", ("Japanese::Mining Deck",))], "each pick read once, the last one last"
+    # Every deck taken out: nothing to read in Anki, and the saved backlog says none waits
+    cleared = []
+    monkeypatch.setattr(anki_sync, "clear_backlog", cleared.append)
+    settings.values["anki_sync_decks"] = {"ja": [], "zh": ["中文"]}
+    auto.decks_changed()
+    _settle(auto, registry)
+    assert cleared == ["ja"] and len(anki.backlogs) == 2
     auto.close()
     auto.decks_changed()                        # closed: nothing asked, never an error
-    assert len(anki.backlogs) == 2
+    assert len(anki.backlogs) == 2 and cleared == ["ja"]
 
 
 def test_close_leaves_nothing(live, monkeypatch):

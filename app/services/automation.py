@@ -396,11 +396,14 @@ class AutoSync:
                 url = anki_connect.address(settings)
                 if anki_connect.probe(url).get("ok"):
                     asked = (decks, fields)
-                    while asked[0]:
+                    while True:
                         anki_sync.sync_backlog(language, url, *asked)
                         now = scope(o.settings_now())       # the decks changed while it read (a second click in
                         if now == asked:                    # the Anki window: `decks_changed` found this one
                             break                           # running): read again for them, so none is left unread
+                        if not now[0]:
+                            anki_sync.clear_backlog(language)   # every deck taken out meanwhile: none waits
+                            break
                         asked = now
             except Exception as e:
                 print(f"Anki backlog skipped: {e}")
@@ -408,6 +411,22 @@ class AutoSync:
         o.registry.submit("anki-backlog", BACKLOG_LABEL, automatic=True, on_quit="detach",
                           start=lambda job: o.thread(work, job), cause=causes.Cause(WHY_BACKLOG, time.time(), "known"))
         return None
+
+    def decks_changed(self):
+        """(The worker.) The known-words decks or fields changed (`Automation.decks_changed`): the backlog read again
+        for them — or, every deck taken out, the saved backlog says none waits (`anki_sync.clear_backlog`)."""
+        o = self._owner
+        settings = o.settings_now()
+        if not settings.get("anki_backlog_on_generate", True) or os.environ.get("SURASURA_NO_ANKI_SYNC"):
+            return "off"
+        if (settings.get("anki_sync_decks") or {}).get(o.language):
+            return self.backlog()
+        try:
+            from app import anki_sync
+            anki_sync.clear_backlog(o.language)
+        except Exception as e:
+            print(f"Anki backlog skipped: {e}")
+        return "no-decks"
 
 
 class AutoGenerate:
@@ -780,7 +799,7 @@ class Automation:
         """The known-words decks (or fields) changed: Anki's backlog read again for them, never waited for — *N
         waiting* follows the decks read, not the next sync or Generate (#SYQF6C). Any thread; returns at once."""
         if not self.closed:
-            self.worker.put(self.sync.backlog)
+            self.worker.put(self.sync.decks_changed)
 
     def close(self):
         """No timer, no trigger acting from here on, the worker stopped (a running sync or 順 finishes)."""

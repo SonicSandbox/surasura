@@ -298,8 +298,9 @@ def test_a_deck_taken_out_here_is_the_settings_rows_pick_and_the_waiting_count_i
     # the backlog again: *260 waiting* stayed after the deck holding them was taken out (#SYQF6C)
     from app.services import automation as automation_module
     asked = []
-    monkeypatch.setattr(automation_module.AutoSync, "backlog", lambda self: asked.append(
-        list((self._owner.settings_now().get("anki_sync_decks") or {}).get("ja") or [])))
+    monkeypatch.setattr(automation_module.AutoSync, "decks_changed", lambda self: asked.append(      # (the read
+        list((self._owner.settings_now().get("anki_sync_decks") or {}).get("ja") or [])), raising=False)  # itself:
+    #                                                                     test_services_automation; Anki is off here)
     _choose(main, **{"anki_sync_decks": {"ja": ["TheBank", "Grammar"], "zh": ["中文"]}})
     page = main.mount_settings()
     assert wait_until(lambda: page.built, 20)
@@ -357,7 +358,8 @@ def test_shift_click_re_reads_every_card(main, anki, monkeypatch):
 
 def test_its_result_reaches_the_automation_service(main, anki):
     heard = []
-    main.services.automation = type("A", (), {"anki_synced": lambda self, r, lang: heard.append((r.added, lang))})()
+    main.services.automation = type("A", (), {"anki_synced": lambda self, r, lang: heard.append((r.added, lang)),
+                                              "decks_changed": lambda self: None})()   # (the decks saved below)
     _choose(main)
     w = _open(main)
     w.btn_sync.click()
@@ -400,6 +402,9 @@ def test_a_sync_by_hand_reads_the_known_words_once(main, anki, monkeypatch):
     seq = [100]
 
     class Service:                                     # publishes as `AutoSync.ended` does, from the job's thread
+        def decks_changed(self):
+            pass
+
         def anki_synced(self, result, language):
             seq[0] += 1
             main.bridge.automation_changed.emit(State("synced", language, result.added, result.added, None, None,

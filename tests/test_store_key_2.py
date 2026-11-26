@@ -148,3 +148,26 @@ def test_the_handed_settings_decide_ignore_names_and_a_partial_dict_reads_the_fi
         assert {"スドウ", "ミロナイ"} <= sc.known_sets("ja", store, {})[2], "no logic handed: settings.json's"
     finally:
         store.close()
+
+
+def test_the_kept_parse_follows_the_stored_tables_and_a_bare_reader_reads_them_too(tmp_path):
+    # why: the parse is kept only while the stored text is the same — an index that computes new tables (this
+    # process's reconcile or another's) is read at the next ask, never the old dict; and a reader made on a connection
+    # alone (`Store.__new__`, as surasura-cli's known-words lookup makes one) reads the tables as an opened store does
+    first = {"k": {"スドウ": [3, "スドウ", "スドウ", "スドウ"]}, "j": {}, "w": {}, "stamp": "a1"}
+    later = {"k": {"ミロナイ": [2, "ミロナイ", "ミロナイ", "ミロナイ"]}, "j": {}, "w": {}, "stamp": "b2"}
+    store = ti.open_store("ja", path=str(tmp_path / "store.db"))
+    try:
+        assert store.names_tables() is None, "none before the first index"
+        store.set_meta("names_tables", json.dumps(first, ensure_ascii=False))
+        got = store.names_tables()
+        assert got == first and store.names_tables() is got, "parsed once while the text is the same"
+        store.set_meta("names_tables", json.dumps(later, ensure_ascii=False))
+        assert store.names_tables() == later, "new tables stored: read again"
+        assert ":b2" in store._known_key("sig"), "the known-words key's stamp: the new tables'"
+
+        reader = ti.Store.__new__(ti.Store)
+        reader.conn, reader.language = store.conn, "ja"
+        assert reader.names_tables() == later
+    finally:
+        store.close()

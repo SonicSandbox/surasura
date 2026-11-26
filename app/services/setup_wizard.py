@@ -313,7 +313,7 @@ def save(settings_service, page, answers, language):
                              keys=("anki_sync_decks",))     # heard: the Decks row, the backlog's read (#SYQF6C)
     elif page == START and "connect_backlog_cap" in changes:       # ONB-1: this language's cap, merged at write time
         cap = START_SIZES[answers["start"]][1]
-        settings_service.set({k: v for k, v in changes.items() if k != "connect_backlog_cap"},
+        settings_service.set(dict({k: v for k, v in changes.items() if k != "connect_backlog_cap"}, **mark),
                              update=_cap_update(_language(language), cap), keys=("connect_backlog_cap",))
     elif changes:
         settings_service.set(dict(changes, **mark))
@@ -802,8 +802,9 @@ def start_items(language, sizes=None):
     store = _window_store(_language(language), role="reader")
     if store is None:
         return {}
-    with store:
-        return {s: list(library.mine_line(store, n)) for s, n in sizes.items()}
+    with store:                                          # (one read per size: full and pre-studied share theirs)
+        by_n = {n: list(library.mine_line(store, n)) for n in set(sizes.values())}
+    return {s: list(by_n[n]) for s, n in sizes.items()}
 
 
 def start_numbers(items, view, per_day):
@@ -811,12 +812,16 @@ def start_numbers(items, view, per_day):
     episodes carry the plan's *N new*) -> {"top": the first episode's title (None: nothing to show), "top_labels": its
     episodes' labels among the small start's, "per_day", and per start {"episodes", "titles", "cards" (the summed
     *N new*; None while any is unknown: the list still being made), "days" (cards ÷ per day, rounded up; None as
-    cards)}}. One walk of the view's episodes into a dict by id; each start's ≤ 20 ids looked up once."""
+    cards)}}. One walk of the view's episodes, keeping only the starts' ≤ 20 ids (a set), ending once all are found."""
     import math
+    wanted = {i for ids in (items or {}).values() for i in ids}
     by_id = {}
-    for row in getattr(view, "rows", None) or ():
+    for row in (getattr(view, "rows", None) or ()) if wanted else ():
         for ep in row.episodes:
-            by_id[ep.id] = (row, ep)
+            if ep.id in wanted:
+                by_id[ep.id] = (row, ep)
+        if len(by_id) == len(wanted):
+            break
     per_day = per_day if isinstance(per_day, int) and per_day > 0 else None
     out = {"top": None, "top_labels": (), "per_day": per_day}
     for start, ids in (items or {}).items():

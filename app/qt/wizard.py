@@ -2880,7 +2880,7 @@ class StartPage(_Page):
         self.box.addWidget(self.channel)
         self.box.addWidget(_label("wizhint", S.START_HINT, self))
         self.box.addStretch(1)
-        self.items = {}                                   # `start_items`' ids (read once a page entry)
+        self.items = None                                 # `start_items`' ids (read once a page entry; None: not yet)
         self.numbers = None
         self.cap = {k: setup_wizard.START_SIZES[k][1] for k in self.cards}
         self._shown = None
@@ -2902,7 +2902,7 @@ class StartPage(_Page):
 
     def language_changed(self, language):
         self.channel.language = language
-        self.items, self.numbers, self._shown = {}, None, None
+        self.items, self.numbers, self._shown = None, None, None
 
     def show_numbers(self, numbers):
         """`setup_wizard.start_numbers`' answer (None: nothing read yet) — repainted only when it moved (S19)."""
@@ -3463,6 +3463,7 @@ class SetupWizard(QWidget):
         what was chosen and saved (AD-9) and only read again what they show for it."""
         self.language = language
         self.anki = None
+        self._start_offered = False                       # (ONB-1: read again for this language on *Your list*)
         self._anki_seq += 1
         self._anki_looking = False
         self._unpress("_anki_press")
@@ -4465,7 +4466,7 @@ class SetupWizard(QWidget):
         self._start_reading, self._start_again = True, False
         self._start_seq += 1
         seq, language, api = self._start_seq, self.language, self.api
-        items = page.items if again and page.items else None
+        items = page.items if again and page.items is not None else None
         reader = getattr(self.services, "library", None)
         per_day = self._settings().get("words_per_day")
 
@@ -4509,11 +4510,13 @@ class SetupWizard(QWidget):
                                     failed=self.alive(self._start_failed), win=self)
 
     def _started(self, _ids):
-        made = strings.NEEDS_FIRST_CARDS_MADE             # (D1's own words: cards made by themselves from now on)
-        if settings_manager.paused(self._settings() or {}, "miner"):
-            made = strings.NEEDS_FIRST_CARDS_MADE_PAUSED  # (nothing starts while Anki Miner is paused)
-        windows.say_in_bar(self.shell, made)
-        self._close("started")
+        try:
+            made = strings.NEEDS_FIRST_CARDS_MADE         # (D1's own words: cards made by themselves from now on)
+            if settings_manager.paused(self._settings() or {}, "miner"):
+                made = strings.NEEDS_FIRST_CARDS_MADE_PAUSED      # (nothing starts while Anki Miner is paused)
+            windows.say_in_bar(self.shell, made)
+        finally:
+            self._close("started")                        # (never a wizard held by its own *Start*)
 
     def _start_failed(self, info):
         applog.log("wizard", f"your start: {info[0]}")

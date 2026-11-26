@@ -109,6 +109,8 @@ def test_generate_goes_straight_on_to_your_start_while_the_list_is_made_and_noth
     assert wiz.steps.ids[-1] == "start" and wiz.steps.current == 6
     assert ("generate",) in api.calls and ("finish",) in api.calls
     assert wiz.btn_back.isHidden(), "no Back: the list is already being made (PROVISIONAL)"
+    wiz.back()                                                     # (a Back press by key or reader: still here —
+    assert wiz.page.id == "start"                                  # *Your list* would be held while the list is made)
     assert wiz.btn_next.text() == S.START and wiz.btn_next.isEnabled() and wiz.btn_next.toolTip() == S.START_TIP
     from app.services import generate
     assert wiz.say_line.text() == S.MAKING_SHORT.format(pct=generate.percent(GenState("running", "Counting words", 3, 10)))
@@ -129,6 +131,16 @@ def test_without_the_first_cards_line_generate_closes_as_before(make):
     shell.bridge.generate_changed.emit(GenState("running", "Counting words", 3, 10))
     shell.bridge.generate_changed.emit(GenState("current"))
     assert seen == ["generated"]
+
+
+def test_another_language_drops_the_offer_until_its_own_line_is_read(make):
+    # why: the offer is one language's line — Back to page 1 and another language must not reach *Your start* on it
+    api = StartApi(offered=True)
+    wiz, shell, api, settings, _m = make(api=api, data={"connect_enabled": True})
+    go_to(wiz, "level")
+    assert wait_until(lambda: wiz.shown()[-1] == "start")
+    wiz._language_changed("zh")
+    assert wiz._start_offered is False and wiz.pages[6].items is None
 
 
 def test_arrows_choose_a_start_and_start_pressed_early_keeps_the_choice_and_closes(make):

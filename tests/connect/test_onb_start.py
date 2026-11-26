@@ -70,6 +70,17 @@ def test_the_items_each_start_covers_come_from_connects_own_rule():
         assert got["full"] == library.mine_line(s, 20)
 
 
+def test_starts_of_one_size_share_one_read_of_the_line(monkeypatch):
+    # why: full and pre-studied both cover the top 20 — the line is read once per size, never once per start
+    monkeypatch.setitem(settings_manager.DEFAULT_SETTINGS, SW.PRESTUDIED_KEY, False)
+    c.library("ja", extra=24)
+    sizes, real = [], library.mine_line
+    monkeypatch.setattr(library, "mine_line", lambda store, n=None: sizes.append(n) or real(store, n))
+    got = SW.start_items("ja")
+    assert sorted(sizes) == [3, 20] and got["full"] == got["prestudied"] and len(got["full"]) == 20
+    assert got["full"] is not got["prestudied"]                    # (each its own list: a caller may change one)
+
+
 def test_start_items_with_no_library_is_empty():
     # why: setup without a library yet (nothing read) shows no numbers, never fails the page
     h.write_settings({"target_language": "ja", "connect_enabled": True})

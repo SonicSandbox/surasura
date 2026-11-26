@@ -2261,6 +2261,7 @@ def _may_be_bound(text, surface):
     kanji = _KANJI_RE.match
     one = len(surface) == 1 and kanji(surface) is not None
     size, length = len(surface), len(text)
+    suffix = surface in _AFTER_A_WORD
     at = text.find(surface)
     while at >= 0:
         if at:
@@ -2269,7 +2270,7 @@ def _may_be_bound(text, surface):
                 return True
             if one and ch in _LETTERS and _after_label(text, at):
                 return True
-            if surface in _AFTER_A_WORD and _after_a_word(text, at):
+            if suffix and _after_a_word(text, at):
                 return True
         end = at + size
         if one and end < length:

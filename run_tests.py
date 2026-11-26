@@ -1010,6 +1010,14 @@ GUARDS = {
      "test_nothing_outside_the_window_reaches_qt_or_the_window_but_the_entrys_one_door"): ("app/", "modules/"),
     "tests/test_import_guard.py::test_the_window_imports_only_the_qt_modules_the_stack_names": ("app/", "modules/"),
     "tests/test_list_reader.py::test_no_list_reader_goes_around_the_shared_one": ("app/", "modules/"),
+    ("tests/test_no_console_windows.py::"
+     "test_every_process_the_app_starts_opens_no_console_window"): ("app/", "modules/", "app_entry.py"),
+    ("tests/test_no_console_windows.py::"
+     "test_only_another_programs_window_is_started_detached"): ("app/", "modules/", "app_entry.py"),
+    ("tests/test_no_console_windows.py::"
+     "test_every_allowed_entry_still_names_its_starts_and_says_why"): ("app/", "modules/", "app_entry.py"),
+    ("tests/test_no_console_windows.py::"
+     "test_run_tests_starts_every_child_through_its_two_wrappers"): ("run_tests.py",),
     "tests/test_packaging_config.py": ("app/", "modules/", "packaging/", "app_entry.py", "package_app.py"),
     "tests/test_profile_parts.py::test_every_place_the_code_names_a_data_root_is_counted_here": ("app/", "modules/"),
     ("tests/test_run_tests_runner.py::"

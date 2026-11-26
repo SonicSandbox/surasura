@@ -441,6 +441,36 @@ def pytest_runtestloop(session):
 _watch_children()
 
 
+# --- No child opens a console window ------------------------------------------------------------------------------- #
+# A pytest with no console of its own (a plain `python -m pytest` from an AI app's shell or a scheduled task; under
+# run_tests.py it always has one, `_quiet`) started each console child on a NEW console, whose window took the focus:
+# a test's `python -c`, git, ffmpeg, each worker of a pool (Python's multiprocessing starts those with no flags). In
+# such a process every child now starts with CREATE_NO_WINDOW unless it names a console of its own: it gets a console
+# with no window, and what it starts shares that one. subprocess and multiprocessing both start through
+# `_winapi.CreateProcess`. A pytest on a console (a terminal, run_tests.py's) changes nothing (TERM-POPUPS, 3.0.21).
+CREATE_NO_WINDOW = 0x08000000
+_OWN_CONSOLE = 0x00000008 | 0x00000010 | CREATE_NO_WINDOW   # DETACHED_PROCESS | CREATE_NEW_CONSOLE | CREATE_NO_WINDOW
+
+
+def _no_window_children():
+    if sys.platform != "win32":
+        return
+    import _winapi
+    import ctypes
+    if ctypes.windll.kernel32.GetConsoleCP() or getattr(_winapi.CreateProcess, "_no_window", False):
+        return                                  # a console: its children share it, as they always did
+    create = _winapi.CreateProcess
+
+    def CreateProcess(name, command, process_attrs, thread_attrs, inherit, flags, *rest):
+        return create(name, command, process_attrs, thread_attrs, inherit,
+                      flags if flags & _OWN_CONSOLE else flags | CREATE_NO_WINDOW, *rest)
+    CreateProcess._no_window = True
+    _winapi.CreateProcess = CreateProcess
+
+
+_no_window_children()
+
+
 # --- No test reaches a real Anki ---------------------------------------------------------------------------------- #
 # Every suite's AnkiConnect is a stand-in (a patched `urlopen`, Junban's helpers patched, an adapter's methods faked),
 # so nothing listens on the AnkiConnect port while the tests run — unless Anki is open on this machine, with the user's

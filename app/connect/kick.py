@@ -27,7 +27,7 @@ LOCK = "connect"
 MINING = "connect-mining"
 WAKE = "wake"
 _STAMPS = itertools.count(1)    # this process's kicks: two in one tick of Windows' clock (~16 ms) still differ
-DETACHED_PROCESS = 0x00000008
+CREATE_NO_WINDOW = 0x08000000              # a console of its own with no window: what it starts shares that one
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000      # outlives a caller's job object (hato closing its own children)
 
@@ -103,7 +103,10 @@ def kick(settings, videos=False):
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
     if sys.platform != "win32":
         return subprocess.Popen(command(), start_new_session=True, **options)
-    flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP          # no console, no Ctrl+C from the caller's
+    # A console of its own with no window, never DETACHED_PROCESS: surasura-cli.exe is a console program, and with no
+    # console at all, each console child it starts without flags of its own (a worker pool's: Python starts those
+    # flag-less) would open a window (TERM-POPUPS, 3.0.21). No Ctrl+C from the caller's either: not its console.
+    flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
     try:
         return subprocess.Popen(command(), creationflags=flags | CREATE_BREAKAWAY_FROM_JOB, **options)
     except OSError:             # a job that forbids breaking away: Connect lives as long as its caller's job

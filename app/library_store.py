@@ -10016,7 +10016,9 @@ def spawn_maintain(language, *extra):
         return None
     flags = 0
     if sys.platform == "win32":
-        flags = 0x00000008 | 0x00000200 | 0x08000000   # DETACHED_PROCESS | NEW_PROCESS_GROUP | NO_WINDOW
+        # NEW_PROCESS_GROUP | NO_WINDOW: a console of its own with no window. Never DETACHED_PROCESS: beside it
+        # NO_WINDOW is ignored, and each console child the helper starts flag-less would open a window (TERM-POPUPS).
+        flags = 0x00000200 | 0x08000000
     from app.connect.power import popen_below_normal          # a7: background work, below the window
     proc = popen_below_normal(_helper_args(language, "maintain", *extra), env=_helper_env(), creationflags=flags,
                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

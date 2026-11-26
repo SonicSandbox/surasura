@@ -228,7 +228,10 @@ ENSURE_AUDIO_EXAMPLE = False
 # 51: two lines of a caption one character each join with nothing between them (_join_lines: a line typeset one
 #     character an event read as お願い, never 御 + 願), and a one-kanji word right after a lone Latin letter is a piece
 #     of the label, as after a number (_after_label: A棟's 棟 offers no むね). SCHEMA_VERSION 31. 3.0.19.
-ENGINE_REVISION = 51
+# 52: a verb's stem + つかれ in kana is 疲れる, never 突く's passive (_tsukare: 歩きつかれた is 歩き疲れる, 書きつかれた
+#     書き + 疲れる), and 棟 right after a kanji or a katakana word is a piece of it (_after_a_word: 研究棟's 棟 is とう,
+#     never the noun むね). SCHEMA_VERSION 32. 3.0.20.
+ENGINE_REVISION = 52
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -926,7 +929,8 @@ def join_affixes(words, joins=None, library=True, compounds=None, cut_words=None
     あ = まあ) and a sound said over and over that the dictionary doesn't know is its sound word (ハァハァハァ is はあはあ);
     then a sound word + と is that word shown with と (ドキッと); then a word the dictionary lists that the tagger cuts
     at its grammar is that word (§ Words the tagger cuts: くだらない, 知らせる, いつも, ちなみに; `cut_words` defaults to
-    `cut_word_tables()`, ({}, {}) joins none). These depend on the text alone, so the token store caches them.
+    `cut_word_tables()`, ({}, {}) joins none); then the Kansai forms (§ Kansai), and a verb's stem + つかれ in kana is
+    疲れる (§ 〜つかれた: 歩きつかれた). These depend on the text alone, so the token store caches them.
 
     Then a name the tagger cut into pieces is made one word (app/names.py): a katakana name no dictionary
     list spells (logic.names_katakana), and — with `library`, from the library's own tables — a katakana name
@@ -972,6 +976,8 @@ def join_affixes(words, joins=None, library=True, compounds=None, cut_words=None
     if cut_words[0] or cut_words[1]:
         words = _join_cut_words(words, cut_words[0], cut_words[1])
     words = _kansai(words)
+    if _TSUKA in map(_SURFACE, words):
+        words = _tsukare(words)
     if LOGIC.get("names_katakana", True):
         words = names.join_katakana(words)
     if library:
@@ -1897,6 +1903,66 @@ def _kansai(words):
     return out
 
 
+# --- 〜つかれた: a verb's stem + 疲れる written in kana --------------------------------------------------------------- #
+# UniDic knows the つく compounds as words of their own (抱き付く, 噛み付く, 住み着く, 纏わり付く, 辿り着く), so 抱きつかれた
+# is one verb + れる. A stem it leaves before a kana つか read as a verb (突く 'poke', 付く) + れる is its guess at a run it
+# can't read: 歩きつかれた, 探しつかれて, 走りつかれた say 疲れる 'tired from …' (突く's passive follows a noun and を / に:
+# 不意をつかれる, never a verb's stem). So that つか + れる is 疲れる — one word with the stem where the tagger reads the
+# stem + 疲れる whole (歩き疲れる, 探し疲れる, as it reads them written in kanji), else the stem and 疲れる (書き + 疲れる) —
+# except where the stem + つく said aloud is a verb the tagger knows (とりつく, いきつく): the letters are that verb's
+# passive or honorific there too (執りつかれた is 取り憑かれた), and the tagger's reading stands. The stem is a verb's
+# 連用形 or a noun UniDic also reads as one (走り, 笑い). A line holding no つか passes in C. A change here changes cached
+# tokenization: SCHEMA_VERSION + ENGINE_REVISION. Decision: STEM-TSUKARE (the suite's decisions_ja_reported.py).
+_TSUKA = "つか"
+
+
+def _verb_stem(word):
+    """Is `word` a verb's stem as the tagger left it: its 連用形 (歩き, 探し — never する's), or a noun UniDic also reads
+    as that 連用形 (走り, 笑い)? A word joined from pieces never is."""
+    if word.is_unk or isinstance(word, JoinedWord):
+        return False
+    f = word.feature
+    if f.pos1 == "動詞":
+        return _stem(word)
+    return f.pos1 == "名詞" and any(x.pos1 == "動詞" and x.cForm == "連用形-一般"
+                                    for x in names._listed_as(word.surface))
+
+
+def _tsukare(words):
+    """join_affixes' 〜つかれた (§ above): `words` with each stem + つか + れる read as 疲れる — the same list when there is
+    none. Only the tokens written つか are looked at."""
+    out, last, n = None, 0, len(words)
+    for i in compress(range(n), map(_TSUKA.__eq__, map(_SURFACE, words))):
+        if not 0 < i < n - 1 or i - 1 < last:
+            continue
+        stem, w, ending = words[i - 1], words[i], words[i + 1]
+        if (w.feature.pos1 != "動詞" or ending.feature.lemma != "れる" or ending.feature.pos1 != "助動詞"
+                or getattr(w, "white_space", "") or getattr(ending, "white_space", "") or not _verb_stem(stem)):
+            continue
+        said = names._read_whole(names._hira(stem.feature.kana or "") + "つく")
+        if said is not None and said.pos1 == "動詞":
+            continue                    # とりつく, いきつく: the つく verb's passive is a reading too
+        f = ending.feature
+        tired = ReadNode(_TSUKA + ending.surface, f._replace(
+            pos1="動詞", pos2="一般", pos3="*", pos4="*", cType="下一段-ラ行", lForm="ツカレル", lemma="疲れる",
+            orth=_TSUKA + ending.surface, orthBase="疲れる", pron="ツカ" + (f.pron or ""), pronBase="ツカレル",
+            kana="ツカ" + (f.kana or ""), kanaBase="ツカレル", form="ツカ" + (f.form or ""), formBase="ツカレル"),
+            False, "")
+        whole = names._read_whole(stem.surface + "疲れる")
+        if out is None:
+            out = []
+        out.extend(words[last:i - 1])
+        if whole is not None and whole.pos1 == "動詞" and whole.lemma.endswith("疲れる"):
+            out.append(_joined([stem, tired], stem.surface + "疲れる", "動詞", (whole.lemma, whole.lForm)))
+        else:
+            out.extend((stem, tired))
+        last = i + 2
+    if out is None:
+        return words
+    out.extend(words[last:])
+    return out
+
+
 def see_through_base(lemma, reading, tagger, joins=None):
     """(lemma, reading) of the word inside a word + suffixes that make a noun — 利用 in 利用者, 可能 in 可能性,
     母 in 母さん, and 茶 in お茶: the polite お / ご the one prefix read through — else None. Never another prefix word
@@ -2165,6 +2231,21 @@ _LETTERS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
                      "ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ")
 
 
+# A one-kanji word that is a suffix of another word right after a word (研究棟, 特別棟, ホテル棟: 棟 is とう 'building'
+# there — JMdict 棟 とう, suf — never the noun むね 'ridge' UniDic reads): glued after a kanji or a katakana word it is a
+# piece of that word, as after a number or a letter. The one-kanji list's other words glued after a noun are the
+# same word (仙台市's 市, 京都駅's 駅) and stay uses. Decision: NOUN-TOU-PIECES (the suite's decisions_ja_reported.py).
+_AFTER_A_WORD = frozenset("棟")
+
+
+def _after_a_word(text, at):
+    """Is text[at] (one of `_AFTER_A_WORD`) right after a kanji or a katakana word (§ above)?"""
+    if not at:
+        return False
+    ch = text[at - 1]
+    return "\u30a1" <= ch <= "\u30fa" or ch == "\u30fc" or _KANJI_RE.match(ch) is not None
+
+
 def _after_label(text, at):
     """Is text[at] right after a lone Latin letter (§ above)? A one-kanji word there is the label's counter or suffix,
     as after a number (A棟's 棟 is とう, never the noun むね)."""
@@ -2180,6 +2261,7 @@ def _may_be_bound(text, surface):
     kanji = _KANJI_RE.match
     one = len(surface) == 1 and kanji(surface) is not None
     size, length = len(surface), len(text)
+    suffix = surface in _AFTER_A_WORD
     at = text.find(surface)
     while at >= 0:
         if at:
@@ -2187,6 +2269,8 @@ def _may_be_bound(text, surface):
             if ch.isnumeric() or ((ch >= "\u3400" or ch == "\u3005") and kanji(ch) is not None):
                 return True
             if one and ch in _LETTERS and _after_label(text, at):
+                return True
+            if suffix and _after_a_word(text, at):
                 return True
         end = at + size
         if one and end < length:
@@ -2233,6 +2317,8 @@ def _bound_at(text, spans, i):
     one = end - start == 1 and _KANJI_RE.match(text[start]) is not None
     if one and _after_label(text, start):
         return True                     # a letter's counter or suffix: A棟, Ｂ組, x軸
+    if text[start] in _AFTER_A_WORD and end - start == 1 and _after_a_word(text, start):
+        return True                     # a word's suffix: 研究棟, ホテル棟
     if start:
         before = _beside(spans, i, -1)
         if before is not None and before[1] == start:

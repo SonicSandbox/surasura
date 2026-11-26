@@ -386,12 +386,22 @@ class AutoSync:
             return "running"
         fields = list((settings.get("anki_sync_fields") or {}).get(language) or [])
 
+        def scope(now):
+            return (list((now.get("anki_sync_decks") or {}).get(language) or []),
+                    list((now.get("anki_sync_fields") or {}).get(language) or []))
+
         def work(job):
             try:
                 from app import anki_connect, anki_sync
                 url = anki_connect.address(settings)
                 if anki_connect.probe(url).get("ok"):
-                    anki_sync.sync_backlog(language, url, decks, fields)
+                    asked = (decks, fields)
+                    while asked[0]:
+                        anki_sync.sync_backlog(language, url, *asked)
+                        now = scope(o.settings_now())       # the decks changed while it read (a second click in
+                        if now == asked:                    # the Anki window: `decks_changed` found this one
+                            break                           # running): read again for them, so none is left unread
+                        asked = now
             except Exception as e:
                 print(f"Anki backlog skipped: {e}")
             job.finish(ok=True)

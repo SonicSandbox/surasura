@@ -5294,14 +5294,31 @@ def resolve_found_files(language, verbose=True, schedule=None, read_store=True, 
                 no_fallback = isinstance(manifest.get("surasura_library"), dict)
                 schedule = manifest.get("schedule", {})
             phases = ["PHASE_1_NOW", "PHASE_2_SOON", "PHASE_3_LATER"]  # order matters
+
+            def _abs(item):
+                rel_path = item.get("physical_path", "")
+                return os.path.join(data_dir, rel_path[2:] if rel_path.startswith("./") else rel_path)
+            # Which scheduled files are on the disk: one listing a folder (the library store's `_listed_stats`, R6),
+            # os.path.exists for a name no listing gives — never one os.path.exists a file (20k: 20,000 at every
+            # start's check, DSA-PHRASE).
+            there = None
+            if not keep_missing:
+                folders = {}
+                for phase_key in phases:
+                    for item in schedule.get(phase_key, []):
+                        folder, name = os.path.split(_abs(item))
+                        folders.setdefault(folder, set()).add(name)
+                ls = _library_store()
+                there = set()
+                for folder, names in folders.items():
+                    listed = ls._listed_stats(folder, names) if ls is not None and folder else {}
+                    there.update((folder, name) for name in names
+                                 if name in listed or os.path.exists(os.path.join(folder, name)))
             seen_paths = set()
             for phase_key in phases:
                 for item in schedule.get(phase_key, []):
-                    rel_path = item.get("physical_path", "")
-                    if rel_path.startswith("./"):
-                        rel_path = rel_path[2:]
-                    abs_path = os.path.join(data_dir, rel_path)
-                    if not keep_missing and not os.path.exists(abs_path):
+                    abs_path = _abs(item)
+                    if there is not None and os.path.split(abs_path) not in there:
                         if verbose:
                             print(f"Warning: Manifest file not found: {abs_path}")
                         continue
@@ -7673,7 +7690,7 @@ def main():
             else:
                 numbers = walked.sentences((walked.cls >= _W_BOUND) & _listed_kids()[walked.kid])
                 if found_at:
-                    numbers = sorted(found_at.keys().union(numbers))
+                    numbers = sorted(found_at.keys() | set(numbers))
             for s_no in numbers:
                 s_text, s_tokens = walked[s_no]
                 if len(s_text) > max_chars:

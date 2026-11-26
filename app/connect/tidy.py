@@ -41,6 +41,7 @@ import base64
 import contextlib
 import datetime
 import hashlib
+import heapq
 import json
 import logging
 import os
@@ -822,9 +823,11 @@ def pending_tidies(ledger, language):
     return [dict(zip(names, r)) for r in cur.fetchall()]
 
 
-def finish_pending(anki, ledger, language, open_store=None):
+def finish_pending(anki, ledger, language, open_store=None, then=None):
     """Every tidy and Undo a kill left half-way, finished (a Connect run's first look), holding Anki's write lock ->
-    how many. While you review: none (Reviewing; the next look)."""
+    how many. While you review: none (Reviewing; the next look). `then(row, done)`: after a remake's tidy is
+    finished with its words freed (`REMAKE`: the caller queues them again, `requeue`) — one a kill or a library that
+    couldn't be written left half-way."""
     ensure(ledger)
     rows = pending_tidies(ledger, language)
     cur = ledger.conn.execute("SELECT * FROM tidies WHERE language = ? AND state = ? ORDER BY id", (language, RESTORING))
@@ -836,7 +839,12 @@ def finish_pending(anki, ledger, language, open_store=None):
         if anki.reviewing():
             raise Reviewing()
         for row in rows:
-            finish(anki, ledger, row, open_store)
+            done = finish(anki, ledger, row, open_store)
+            if then is not None and row.get("why") == REMAKE and not done["pending"]:
+                try:
+                    then(row, dict(done, id=row["id"]))
+                except Exception:       # the cards are gone, the words free: Connect meets them in the list's order
+                    log.exception("Connect's remake: the freed words weren't queued again (%s)", language)
         for row in restoring:
             _restored(anki, ledger, row, open_store)
     return len(rows) + len(restoring)
@@ -1104,6 +1112,7 @@ SYNC_BUSY = "Anki is busy just now (syncing or checking its collection). Try aga
 SYNC_FAILED = ("Anki couldn't sync with AnkiWeb just now, so a card you studied on your phone might not be in yet. "
                "Nothing was deleted: try again once Anki syncs.")
 NOTHING_NEW = "No card in Surasura's deck is waiting unstudied: there's nothing to make again."
+REMAKE_OFF = "Cards made for you is off: turn it on to make your cards again."
 # SORT-BAR's lock (`kick.MINING`: held only while a look of Connect's mines); PROVISIONAL words
 REMAKE_MINING = "Surasura is making cards right now: make your cards again once they're made."
 MINING_WAIT = 2.0                           # s: as *Sort again* (`library_store.RESET_WAIT`): a look's short hold ends
@@ -1157,7 +1166,7 @@ def remake_notes(anki, decks):
 
 def connect_models(anki, made):
     """The note type Connect mines into, as its newest card still in Anki has it -> frozenset (none: empty)."""
-    newest = sorted(made)[-CHUNK:]
+    newest = heapq.nlargest(CHUNK, made)       # the newest CHUNK made notes (a note id is its creation time)
     infos = [n for n in (anki.notes(newest) if newest else []) if isinstance(n, dict) and n.get("noteId")]
     if not infos:
         return frozenset()
@@ -1225,7 +1234,8 @@ def requeue(steps, ledger, language, done, settings=None, open_store=None):
     from app.connect import level, sentences
     row = tidy_row(ledger, done["id"])
     deleted = {int(n) for n in json.loads(row["deleted"] or "[]")}
-    freed = set(done.get("freed") or ()) - _made_words(open_store)
+    made_now = _made_words(open_store)          # read once: a word with a card made anywhere now is never queued
+    freed = set(done.get("freed") or ()) - made_now
     item_of = {}
     for item, _word, ids, _at, _batch in (json.loads(row["made"] or "{}").get("words") or ()):
         for n in ids:
@@ -1243,7 +1253,7 @@ def requeue(steps, ledger, language, done, settings=None, open_store=None):
                 own.setdefault((word, reading), item_of[int(note_id)])
     legacy = deleted - set(item_of)
     if legacy:
-        keys |= _listed_keys_of(ledger, language, settings, row, legacy)
+        keys |= {k for k in _listed_keys_of(ledger, language, settings, row, legacy) if k[0] not in made_now}
     best = {}
     if keys and sentences.dial_of(settings) == sentences.BEST:
         mines = getattr(steps, "mines", None)
@@ -1348,7 +1358,10 @@ def act_remake(settings, language, before=False, steps=None, anki=None):
 
     def go(ledger):
         done = remake(anki, ledger, language, settings, lambda: library.open_store(language), before=before)
-        again = requeue(steps, ledger, language, done, settings, lambda: library.open_store(language))
+        if done.get("pending"):         # the library couldn't be written now: Connect's next look frees the words and
+            again = {"queued": 0, "ahead": 0, "pending": True}      # queues them (`finish_pending`'s `then`)
+        else:
+            again = requeue(steps, ledger, language, done, settings, lambda: library.open_store(language))
         late = [int(n) for n, w in done.get("meanwhile") or () if w == undo.STUDIED]
         return {"cards": len(done["deleted"]), "id": done["id"], "kept": len(done["kept"]), **again,
                 "studied": _named(tidy_row(ledger, done["id"]), late, card_word_of(settings, language))}
@@ -1373,8 +1386,9 @@ def _named(row, note_ids, word_of):
         if wanted & {int(n) for n in ids}:
             words.add(word)
             found |= wanted & {int(n) for n in ids}
-    for info in _backed_up(row) if wanted - found else ():
-        if int(info.get("noteId") or 0) in wanted - found:
+    rest = wanted - found
+    for info in _backed_up(row) if rest else ():
+        if int(info.get("noteId") or 0) in rest:
             word = word_of(info)
             if word:
                 words.add(word)
@@ -1400,15 +1414,14 @@ def _not_mining(verb):
 
 
 def _remake_off(settings):
-    """Why the remake can't run at all now -> {"cards": 0, "say": …}, or None. Raises CliError with no ledger."""
-    from app.cli.contract import CliError
+    """Why the remake can't run at all now -> {"cards": 0, "say": …}, or None."""
     from app.connect.ledger import path
     if not (settings or {}).get("connect_enabled"):
-        return {"cards": 0, "say": undo.PREVIEW_OFF}
+        return {"cards": 0, "say": REMAKE_OFF}
     if os.environ.get("SURASURA_NO_ANKI_SYNC"):
         return {"cards": 0, "say": undo.NO_ANKI}
-    if not os.path.exists(path()):
-        raise CliError("bad-data", undo.NO_LEDGER)
+    if not os.path.exists(path()):              # no card made yet, so none from before can be told apart either
+        return {"cards": 0, "say": NOTHING_NEW}
     return None
 
 

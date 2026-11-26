@@ -455,6 +455,62 @@ def test_a_word_from_before_is_queued_only_while_the_list_holds_it(ledger, monke
     assert again["queued"] == 7 and again["ahead"] == 0
 
 
+def test_a_word_from_before_with_a_card_made_since_isnt_queued(ledger, monkeypatch):
+    # why: review (failures lens #2) — a card from before is queued by its word field; a word Surasura holds a card
+    # for elsewhere now is never queued a second time (the same gate as the made cards')
+    item, tag, done_at = _mined(ledger, "ja")
+    ledger.conn.execute("INSERT INTO listed (language, word, reading) VALUES ('ja', ?, 'ふんいき')", (LEGACY["ja"][0],))
+    ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('listed:ja', 'sig')")
+    anki = _anki("ja", tag, done_at)
+    _legacy(anki, "ja", 201)
+    monkeypatch.setattr(sentences, "choose", lambda language, keys, **kw: {k: [] for k in keys})
+    done = _remake(anki, ledger, "ja", before=True)
+    with c.store("ja") as s:                                    # made since in another episode, its card kept
+        library.record_batch(s, s_item("ja"), {LEGACY["ja"][0]: [999]}, "2026-11-25T10:00:00Z", batch="t-2")
+    tidy.requeue(Steps(), ledger, "ja", done, {}, _opener("ja"))
+    assert LEGACY["ja"][0] not in {w for ks in _best_jobs(ledger, "ja").values() for w, _r in ks}
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_library_busy_at_the_end_has_its_words_queued_by_connects_next_look(ledger, lang, monkeypatch):
+    # why: review (failures lens #1) — the cards are gone but the store couldn't be written just then: the words are
+    # freed by Connect's next look (`finish_pending`), and queued again there, once — never lost
+    import sqlite3
+    item, tag, done_at = _mined(ledger, lang)
+    anki = _anki(lang, tag, done_at)
+    monkeypatch.setattr(sentences, "choose", lambda language, keys, **kw: {k: [] for k in keys})
+    real, calls = library.unmake, []
+
+    def unmake(*a, **k):
+        if not calls:
+            calls.append(1)
+            raise sqlite3.OperationalError("database is locked")
+        return real(*a, **k)
+    monkeypatch.setattr(library, "unmake", unmake)
+    done = _remake(anki, ledger, lang)
+    assert done["pending"] and not anki.notes_ and _best_jobs(ledger, lang) == {}
+    queued = []
+
+    def then(row, got):
+        queued.append(tidy.requeue(Steps(), ledger, lang, got, {}, _opener(lang)))
+    assert tidy.finish_pending(anki, ledger, lang, _opener(lang), then=then) == 1
+    assert queued == [{"queued": 6, "ahead": 0}]
+    assert _best_jobs(ledger, lang) == {item: sorted((w, "") for w in WORDS[lang])}
+    assert tidy.finish_pending(anki, ledger, lang, _opener(lang), then=then) == 0 and len(queued) == 1, "once"
+
+
+def test_a_plain_tidy_finished_by_the_next_look_is_never_queued(ledger, monkeypatch):
+    # why: only a remake's freed words come back as jobs; Tidy's own overflow stays free (met again in the order)
+    item, tag, done_at = _mined(ledger, "ja")
+    anki = _anki("ja", tag, done_at)
+    monkeypatch.setattr(tidy, "_backup", lambda *a: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):                      # a kill mid-tidy: the row left writing
+        tidy.run(anki, ledger, "ja", [106], open_store=_opener("ja"), limit=1)
+    seen = []
+    tidy.finish_pending(anki, ledger, "ja", _opener("ja"), then=lambda row, got: seen.append(row["id"]))
+    assert seen == []
+
+
 def test_a_word_no_job_can_take_now_is_said_as_ahead(ledger, monkeypatch):
     item, tag, done_at = _mined(ledger, "zh")
     anki = _anki("zh", tag, done_at)
@@ -644,6 +700,6 @@ def test_connect_only_waiting_never_refuses_and_the_remake_holds_the_lock_to_the
 
 def test_with_connect_off_neither_press_reads_anki(home_ledger):
     anki = RemakeAnki()
-    assert tidy.act_remake_plan({}, "ja", anki=anki) == {"cards": 0, "say": undo.PREVIEW_OFF}
-    assert tidy.act_remake({}, "ja", steps=Steps(), anki=anki) == {"cards": 0, "say": undo.PREVIEW_OFF}
+    assert tidy.act_remake_plan({}, "ja", anki=anki) == {"cards": 0, "say": tidy.REMAKE_OFF}
+    assert tidy.act_remake({}, "ja", steps=Steps(), anki=anki) == {"cards": 0, "say": tidy.REMAKE_OFF}
     assert anki.log == []

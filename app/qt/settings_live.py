@@ -1388,24 +1388,29 @@ class Live(QObject):
         if not made and not before:
             return self._remake_said({"say": _nothing_new()})
         kept = got.get("kept") or {}
-        lines = [S.REMAKE_COUNTS.format(made=made)]
+        lines = [S.REMAKE_COUNTS.format(made=made)] if made else []
         if kept:
             lines.append(S.REMAKE_KEPT.format(kept=sum(kept.values()),
                                               whys=" · ".join(f"{why} {n}" for why, n in sorted(kept.items()))))
         lines += [S.REMAKE_SYNC, S.REMAKE_EDITS]
-        n = made or before
+        asked = []                                  # this sheet's own tick, never a later sheet's
+        if made:
+            title = S.REMAKE_ASK_ONE if made == 1 else S.REMAKE_ASK.format(n=made)
+            tick = (S.REMAKE_BEFORE_ONE if before == 1 else S.REMAKE_BEFORE.format(n=before)) if before else None
+        else:                                       # only cards from before wait: the sheet asks about them alone
+            title, tick = S.REMAKE_ASK_BEFORE_ONE if before == 1 else S.REMAKE_ASK_BEFORE.format(n=before), None
         self.remake_card = confirm.ask(
-            self.page, S.REMAKE_ASK_ONE if n == 1 else S.REMAKE_ASK.format(n=n), "\n\n".join(lines),
-            S.REMAKE_YES, S.REMAKE_YES_TIP, default_no=True, danger=True,
-            check=(S.REMAKE_BEFORE_ONE if before == 1 else S.REMAKE_BEFORE.format(n=before)) if before else None,
-            check_tip=S.REMAKE_BEFORE_TIP,
-            on_answer=lambda yes: yes and self.remake_go(bool(getattr(self.remake_card, "checked", False))))
+            self.page, title, "\n\n".join(lines), S.REMAKE_YES, S.REMAKE_YES_TIP, default_no=True, danger=True,
+            check=tick, check_tip=S.REMAKE_BEFORE_TIP,
+            on_answer=lambda yes: yes and self.remake_go(language, not made or bool(asked[0].checked)))
+        asked.append(self.remake_card)
         return self.remake_card
 
-    def remake_go(self, before=False):
+    def remake_go(self, language, before=False):
+        """The sheet's yes for the language it counted (never the one shown now, if the learner switched)."""
         from app.cli.contract import CliError
         from app.connect import tidy
-        settings, language = dict(self._settings() or {}), self.page.language
+        settings = dict(self._settings() or {})
 
         def go():
             try:
@@ -1423,7 +1428,8 @@ class Live(QObject):
         got = got or {}
         n = int(got.get("cards") or 0)
         if n:
-            line = S.REMAKE_DONE.format(n=n, q=int(got.get("queued") or 0))
+            line = (S.REMAKE_DONE_LATER.format(n=n) if got.get("pending")
+                    else S.REMAKE_DONE.format(n=n, q=int(got.get("queued") or 0)))
             if got.get("studied"):
                 line += S.REMAKE_STUDIED.format(words="、".join(got["studied"]))
         elif got.get("why"):

@@ -87,7 +87,7 @@ def test_the_count_then_the_sheet_then_the_yes_with_the_tick_off(qapp, monkeypat
 @pytest.mark.parametrize("lang", ["ja", "zh"])
 def test_the_tick_on_takes_the_cards_from_before_and_a_card_studied_meanwhile_is_named(qapp, monkeypatch, lang):
     went = []
-    monkeypatch.setattr(tidy, "act_remake_plan", lambda s, language, anki=None: {"made": [], "before": [201],
+    monkeypatch.setattr(tidy, "act_remake_plan", lambda s, language, anki=None: {"made": [101], "before": [201],
                                                                                   "kept": {}, "decks": [], "models": []})
 
     def act_remake(settings, language, before=False, steps=None, anki=None):
@@ -103,6 +103,38 @@ def test_the_tick_on_takes_the_cards_from_before_and_a_card_studied_meanwhile_is
     assert wait_until(lambda: went, 5) and went == [True]
     line = S.REMAKE_DONE.format(n=1, q=1) + S.REMAKE_STUDIED.format(words="、".join(WORDS[lang]))
     assert wait_until(lambda: shell_.bar_line.lines[-1:] == [line], 5)
+
+
+def test_the_yes_runs_for_the_language_it_counted_even_after_a_switch(qapp, monkeypatch):
+    # why: the counts on the sheet are one language's; a switch while it is open never deletes the other's cards
+    went = []
+    monkeypatch.setattr(tidy, "act_remake_plan", lambda s, language, anki=None: dict(PLAN))
+    monkeypatch.setattr(tidy, "act_remake", lambda settings, language, before=False, steps=None, anki=None:
+                        went.append(language) or {"cards": 3, "queued": 3})
+    page, _store, _shell = _page(monkeypatch, "ja")
+    page.live.parts["connect_remake"]["remake"].click()
+    card = _sheet(page)
+    page.language = "zh"
+    card.yes.click()
+    assert wait_until(lambda: went, 5) and went == ["ja"]
+
+
+def test_only_cards_from_before_the_sheet_asks_about_them_alone_and_a_busy_library_is_said(qapp, monkeypatch):
+    # why: review (contract lens #3) — with nothing Surasura made waiting, a sheet that counted the cards from before
+    # but deleted nothing on Yes would mislead; it asks about them alone (no tick: the sheet is the choice)
+    went = []
+    monkeypatch.setattr(tidy, "act_remake_plan", lambda s, language, anki=None: {"made": [], "before": [201, 202],
+                                                                                  "kept": {}, "decks": [], "models": []})
+    monkeypatch.setattr(tidy, "act_remake", lambda settings, language, before=False, steps=None, anki=None:
+                        went.append(before) or {"cards": 2, "queued": 0, "ahead": 0, "pending": True})
+    page, _store, shell_ = _page(monkeypatch, "ja")
+    page.live.parts["connect_remake"]["remake"].click()
+    card = _sheet(page)
+    assert card.title.text() == S.REMAKE_ASK_BEFORE.format(n=2) and card.check is None
+    assert S.REMAKE_COUNTS.format(made=0) not in card.body.text()
+    card.yes.click()
+    assert wait_until(lambda: went, 5) and went == [True]
+    assert wait_until(lambda: shell_.bar_line.lines[-1:] == [S.REMAKE_DONE_LATER.format(n=2)], 5)
 
 
 def test_no_deletes_nothing_and_a_count_that_cant_run_opens_no_sheet(qapp, monkeypatch):

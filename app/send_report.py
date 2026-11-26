@@ -21,7 +21,9 @@ the app's log (`_logged`: what came of it, the receiver's host; never the name, 
 Discord name when one was typed, the sender code: 8 random letters made once (never the telemetry id, nothing
 read from the PC), sent with each report so Sonic can tell one sender's reports apart; *New code* makes another —
 and the swaps sent (`swaps_sent`: {language: {id: the state it went in}}, SWAPS-REPORT), so a swap goes once a state:
-Send report's own record of what it sent, never a second record of the swap (the swap queue's entry is the one).
+Send report's own record of what it sent, never a second record of the swap (the swap queue's entry is the one) — and
+the cards the learner didn't want the same way (`not_wanted_sent`: {language: {id: the answer it went with}},
+SEND-EASY; the review loop's record and the deleted cards' answers are theirs).
 """
 import base64
 import datetime
@@ -68,7 +70,8 @@ class Outbox:
     """The zip waiting to be sent: `path`, `nonce`, `sha256`, `size`, `created` (ISO), `language`, `zipped`
     ({rid: report.json's sha256}), `removed`, `left_out`, `entries` ([(name, size)]), `flags` ({id: changed_ns}: the
     flagged sentences it holds now) and `flag_lines` (every one What goes shows, ticked or not, each with its `id`);
-    `swaps` ({id: state}) and `swap_lines` the same for the learner's swaps."""
+    `swaps` ({id: state}) and `swap_lines` the same for the learner's swaps, `not_wanted` ({id: why}) and
+    `not_wanted_lines` for the cards they didn't want."""
 
     def __init__(self, path, meta):
         self.path = path
@@ -85,6 +88,8 @@ class Outbox:
         self.flag_lines = list(meta.get("flag_lines") or [])
         self.swaps = dict(meta.get("swaps") or {})
         self.swap_lines = list(meta.get("swap_lines") or [])
+        self.not_wanted = dict(meta.get("not_wanted") or {})
+        self.not_wanted_lines = list(meta.get("not_wanted_lines") or [])
 
     def describe(self):
         """Every file that goes and its size (the scrubbed names, as zipped), then what's left out and why."""
@@ -183,7 +188,18 @@ def remember_name(name):
 
 def swaps_sent(language):
     """{swap id: the state it was sent in} for `language` (`swap.for_report` leaves those out while unchanged)."""
-    got = (_state().get("swaps_sent") or {}).get(language)
+    return _sent_of("swaps_sent", language)
+
+
+def not_wanted_sent(language):
+    """{card id: the answer it was sent with} for `language` (`review_loop.for_report` leaves those out while
+    unchanged)."""
+    return _sent_of("not_wanted_sent", language)
+
+
+def _sent_of(key, language):
+    every = _state().get(key)
+    got = every.get(language) if isinstance(every, dict) else None
     return dict(got) if isinstance(got, dict) else {}
 
 
@@ -245,12 +261,14 @@ def build(language, include_results=True, library=None, root=None, extra=None, n
             raise
         was = waiting()                                              # the same reports again: the same nonce, so a
         same = (was is not None and was.zipped == made.zipped and was.removed == made.removed   # sent one keeps its #ID
-                and was.flags == made.flags and was.swap_lines == made.swap_lines)
+                and was.flags == made.flags and was.swap_lines == made.swap_lines and was.swaps == made.swaps
+                and was.not_wanted_lines == made.not_wanted_lines and was.not_wanted == made.not_wanted)
         meta = {"nonce": was.nonce if same else secrets.token_hex(16), "sha256": digest, "size": size, "language": language,
                 "created": (now or datetime.datetime.now().astimezone()).isoformat(timespec="seconds"),
                 "zipped": made.zipped, "removed": made.removed, "left_out": made.left_out, "entries": made.entries,
                 "flags": made.flags, "flag_lines": made.flag_lines, "swaps": made.swaps,
-                "swap_lines": made.swap_lines}
+                "swap_lines": made.swap_lines, "not_wanted": made.not_wanted,
+                "not_wanted_lines": made.not_wanted_lines}
         try:
             os.remove(meta_path)                                     # (the zip and its record are replaced together)
         except FileNotFoundError:
@@ -261,16 +279,17 @@ def build(language, include_results=True, library=None, root=None, extra=None, n
 
 
 def _refit(ob, keep):
-    """(Under _BUSY.) The waiting zip with only the flagged sentences and swaps `keep` (ids) of the ones What goes
-    showed: written again when that changes what it holds (`report.rewrite_flagged`; a new nonce, since its bytes are
-    new). Swaps go beside a report, never alone: none of its flagged lines ticked and no saved report is nothing to
-    send. -> the Outbox as it now is."""
+    """(Under _BUSY.) The waiting zip with only the flagged sentences, swaps and cards not wanted `keep` (ids) of the
+    ones What goes showed: written again when that changes what it holds (`report.rewrite_flagged`; a new nonce, since
+    its bytes are new). Nothing ticked and no saved report is nothing to send (SEND-EASY: any one ticked is).
+    -> the Outbox as it now is."""
     keep = set(keep)
     keep_swaps = {i for i in keep if any(line.get("id") == i for line in ob.swap_lines)}
+    keep_cards = {i for i in keep if any(line.get("id") == i for line in ob.not_wanted_lines)}
     keep = {i for i in keep if any(line.get("id") == i for line in ob.flag_lines)}
-    if keep == set(ob.flags) and keep_swaps == set(ob.swaps):
+    if keep == set(ob.flags) and keep_swaps == set(ob.swaps) and keep_cards == set(ob.not_wanted):
         return ob
-    if not keep and not ob.zipped:                                   # (refused before anything is written)
+    if not (keep or keep_swaps or keep_cards or ob.zipped):         # (refused before anything is written)
         raise ValueError("nothing is ticked to send")
     with open(ob.path, "rb") as f:                                   # (its other entries are copied as they are:
         if hashlib.sha256(f.read()).hexdigest() != ob.sha256:        #  only the zip its record names)
@@ -279,7 +298,9 @@ def _refit(ob, keep):
              if line.get("id") in keep]
     swaps = [{k: v for k, v in line.items() if k not in ("id", "changed")} for line in ob.swap_lines
              if line.get("id") in keep_swaps]
-    entries = report.rewrite_flagged(ob.path, ob.language, lines, ob.left_out, swaps=swaps)
+    cards = [{k: v for k, v in line.items() if k not in ("id", "changed")} for line in ob.not_wanted_lines
+             if line.get("id") in keep_cards]
+    entries = report.rewrite_flagged(ob.path, ob.language, lines, ob.left_out, swaps=swaps, not_wanted=cards)
     with open(ob.path, "rb") as f:
         body = f.read()
     meta_path = os.path.join(os.path.dirname(ob.path), OUTBOX_META)
@@ -287,14 +308,16 @@ def _refit(ob, keep):
         meta = json.load(f)
     meta.update(nonce=secrets.token_hex(16), sha256=hashlib.sha256(body).hexdigest(), size=len(body), entries=entries,
                 flags={line["id"]: line.get("changed") for line in ob.flag_lines if line.get("id") in keep},
-                swaps={line["id"]: line.get("changed") for line in ob.swap_lines if line.get("id") in keep_swaps})
+                swaps={line["id"]: line.get("changed") for line in ob.swap_lines if line.get("id") in keep_swaps},
+                not_wanted={line["id"]: line.get("changed") for line in ob.not_wanted_lines
+                            if line.get("id") in keep_cards})
     report._atomic_write(meta_path, report._json_bytes(meta))
     return Outbox(ob.path, meta)
 
 
 def refit(keep, nonce=None):
-    """What goes' ticks (`keep`: the flagged sentences' and swaps' ids still ticked) onto the waiting zip, so *Open
-    the zip* shows what *Send* would send. `nonce`: the Outbox the page showed. Raises ValueError when nothing (or
+    """What goes' ticks (`keep`: the flagged sentences', swaps' and cards' ids still ticked) onto the waiting zip, so
+    *Open the zip* shows what *Send* would send. `nonce`: the Outbox the page showed. Raises ValueError when nothing (or
     another zip) is waiting, report.Unsafe. -> the Outbox as it now is (a new nonce when it changed)."""
     with _BUSY:
         ob = waiting()
@@ -360,8 +383,8 @@ def _outcome(status):
 def send(name="", url=None, root=None, now=None, nonce=None, keep=None):
     """*Send* (the What goes page's) or *Send now*: the waiting zip to the receiver, once. `name`: the Discord name in
     the field as pressed (remembered; empty forgets it); `nonce`: the Outbox the page showed (another one waiting
-    instead is never sent); `keep`: the flagged sentences and swaps still ticked there (`_refit` first; None: as it
-    is). The 6th send of a day is refused before any request. Raises ValueError when nothing (or another zip) is
+    instead is never sent); `keep`: the flagged sentences, swaps and cards still ticked there (`_refit` first; None:
+    as it is). The 6th send of a day is refused before any request. Raises ValueError when nothing (or another zip) is
     waiting, or when nothing is left to send. -> a Result."""
     import requests
     with _BUSY:
@@ -408,17 +431,18 @@ def _logged(result, endpoint):
 
 
 def _sent(ob, rid, root, now):
-    """The receiver has it: counted, its reports off the list, its swaps remembered as sent (in the state they went),
-    the zip kept as `report_sent/<id>.zip`."""
+    """The receiver has it: counted, its reports off the list, its swaps and cards not wanted remembered as sent (as
+    they went), the zip kept as `report_sent/<id>.zip`."""
     data = _state()
     day = _today(now)
     data["sent"] = (int(data.get("sent") or 0) if data.get("day") == day else 0) + 1
     data["day"] = day
-    if ob.swaps:
-        every = data.get("swaps_sent") if isinstance(data.get("swaps_sent"), dict) else {}
-        mine = every.get(ob.language) if isinstance(every.get(ob.language), dict) else {}
-        every[ob.language] = dict(mine, **ob.swaps)
-        data["swaps_sent"] = every
+    for key, went in (("swaps_sent", ob.swaps), ("not_wanted_sent", ob.not_wanted)):
+        if went:
+            every = data.get(key) if isinstance(data.get(key), dict) else {}
+            mine = every.get(ob.language) if isinstance(every.get(ob.language), dict) else {}
+            every[ob.language] = dict(mine, **went)
+            data[key] = every
     _save_state(data)
     report._clear(root or report.folder(), ob.zipped, ob.removed)
     if ob.flags:                                                     # the flagged sentences it held: off the list now

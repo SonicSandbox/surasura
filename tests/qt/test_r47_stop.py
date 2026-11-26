@@ -11,6 +11,8 @@ What a wrong answer would cost a learner:
   * a refused stop that leaves the pill saying *Stopping…*, or says nothing about why;
   * an ask Connect has read still shown as a plain *Waiting* (Sonic's case), its reason hidden.
 """
+import json
+
 import pytest
 
 pytest.importorskip("PyQt6")
@@ -100,8 +102,9 @@ def test_a_stoppable_mining_job_carries_its_stop_and_one_past_the_stop_point_say
     assert (going.kind, going.label, going.tip, going.stop) == ("mining", "Stopping…",
                                                                 view_rows.STRINGS["tip_stopping"], None)
     # a cached first screen never offers a Stop (Connect's state isn't known from a cache)
-    cached = view_rows._row_from(view_rows._plain(view_rows.Row(*([None] * len(view_rows.Row._fields)))._replace(
-        status=st, episodes=(), chips=(), works=(), next_index=0, media=None, key="k", source=None)))
+    cached = view_rows._row_from(json.loads(json.dumps(view_rows.Row(*([None] * len(view_rows.Row._fields)))._replace(
+        status=st, episodes=(), chips=(), works=(), next_index=0, media=None, key="k", source=None))))   # as the cache
+    #                                                                                     writes and reads it back
     assert cached.status.stop is None and cached.status[:4] == st[:4]
 
 

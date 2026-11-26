@@ -50,6 +50,9 @@ FORMATS = (1, 2, 3, 4, 5) if plan_rules.SENTENCE_TABLE >= 2 else (1, 2, 3, 4)   
 PICKS_IN_TABLE = 5                         # from this format on a row's sentences are the table's (`Engine.contexts`)
 TIERS = ("now", "soon", "goal")            # the analysed tiers, in the order a Generate reads them
 _SLOT = {"now": 0, "soon": 1, "goal": 2}
+# What `Engine._numbers` works out for an order: the plan's own order's, at the first ask (`Engine.__getattr__`)
+_LIVE = frozenset(("_order", "_order_v", "_tier", "_pos", "_tier_count", "_raw", "_counts", "_first", "_first_idx",
+                   "_n_new", "_rank_of", "_ranked"))
 _GAP = 1 << 40                             # room between two items' places: a move takes a place between its
                                            # neighbours, so 40 drags into one spot before every item is numbered again
 _SHORT = 256                               # a word met in at most this many files finds its first file by looking
@@ -743,12 +746,13 @@ def _counts(value):
 # Is the plan still the library's?
 # --------------------------------------------------------------------------------------------------------------- #
 
-def check(plan, language, engine, run_stamp, signature_parts, epoch=None, added=()):
+def check(plan, language, engine, run_stamp, signature_parts, epoch=None, added=(), chunked=True):
     """Whether `plan` describes the library as it stands (01 §1, 04 §4). `engine`: the running app's
     `"<version>|schema<SCHEMA_VERSION>|rev<ENGINE_REVISION>"`; `run_stamp`: `analyzer.read_run_stamp(results)`;
     `signature_parts`: `analyzer.run_signature_parts(...)` for the library now (the caller computes it on its worker);
     `epoch`: the store's (None: not checked); `added`: the digests (`plan_rules.file_digest`) of the files the engine
-    added since the plan (`Engine.add`, E2.2 D9). Returns
+    added since the plan (`Engine.add`, E2.2 D9); `chunked`: `plan_rules.signature_digest`'s (False: one call of the C
+    encoder, for a caller no thread waits beside — the redraw's own process, G3). Returns
 
       None                        the plan is the library's: re-plan any order of it;
       ("replan-now", parts)       only the known words ("known"), the word lists ("lists"), files that left the
@@ -779,7 +783,7 @@ def check(plan, language, engine, run_stamp, signature_parts, epoch=None, added=
     if signature_parts is None:
         return ("generate-first", "signature")
     verdict = None
-    now = plan_rules.signature_digest(signature_parts, order_free=True)
+    now = plan_rules.signature_digest(signature_parts, order_free=True, chunked=chunked)
     if now is None:
         return ("generate-first", "signature")                    # the parts can't be read: never "current"
     if now != h["order_free_signature"]:
@@ -1058,7 +1062,19 @@ class Engine:
         self._added, self._reasons = [], {}     # the items `add` placed, in order; {item: [gates]}: those not exact
         self.renumbered = 0                  # how many times a move found no room and spaced every item afresh
         self.unread = 0                      # (F7) the shown sentences the last re-pick couldn't read the text of
-        self._numbers([(ids[f], entry[1]) for f, entry in enumerate(files) if ids[f] is not None])
+        # The plan's own order, checked now (a bad one is a PlanError here, as ever) and its live numbers worked out at
+        # the first ask (`__getattr__`) — never when a `replan` comes first (a redraw's): one pass over every use, not
+        # the plan's order's and then the replan's (G3)
+        self._plan_order = self._checked([(ids[f], entry[1]) for f, entry in enumerate(files) if ids[f] is not None])
+
+    def __getattr__(self, name):
+        """Only reached for an attribute not set: the live numbers (`_LIVE`) before the first `_numbers`, for the plan's
+        own order."""
+        pending = self.__dict__.get("_plan_order")
+        if pending is None or name not in _LIVE:
+            raise AttributeError(name)
+        self._numbers(None, pending)
+        return self.__dict__[name]
 
     # ----------------------------------------------------------------------------------------------------------- #
     # From scratch (02 §2): the referee
@@ -1074,8 +1090,9 @@ class Engine:
             self.set_pins(pins)
         return self.result(pick, texts, chooser)
 
-    def _numbers(self, order):
-        """The live numbers from scratch for `order` (replan's checks and work, without the result)."""
+    def _checked(self, order):
+        """`order` ([(item_id, tier)]) as ([plan file], [tier slot]), or a PlanError: an item the plan doesn't hold,
+        one twice, an unknown tier, the tiers out of order."""
         fs, tiers = [], []
         seen = set()
         last = 0
@@ -1094,9 +1111,16 @@ class Engine:
             seen.add(f)
             fs.append(f)
             tiers.append(slot)
+        return fs, tiers
+
+    def _numbers(self, order, checked=None):
+        """The live numbers from scratch for `order` (replan's checks and work, without the result); `checked`: its
+        `_checked` already."""
+        fs, tiers = checked if checked is not None else self._checked(order)
+        self.__dict__.pop("_plan_order", None)      # (from here on the order's numbers, never the plan's own)
         n_files = len(self._uses)
         self._order = fs
-        self._order_v = getattr(self, "_order_v", 0) + 1     # Hover-W: what `words_of`'s spellings are kept for
+        self._order_v = self.__dict__.get("_order_v", 0) + 1     # Hover-W: what `words_of`'s spellings are kept for
         self._tier = [None] * n_files
         self._pos = [None] * n_files
         for i, (f, slot) in enumerate(zip(fs, tiers)):

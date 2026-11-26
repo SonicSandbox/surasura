@@ -2,11 +2,12 @@
 flagged sentences — `swap.for_report` reads them from the one record (the swap queue's entry; Connect's ledger only for
 the two sentences the entry lacks, and for the asks with no entry: the journey's ⇄, *Bad card*), `report.plan` puts
 the ones not sent yet in `connect/swaps.json`, scrubbed like every entry, `send_report` ticks them on What goes and
-remembers the ones the receiver took.
+remembers the ones the receiver took. Since SEND-EASY (Sonic, 2026-11-25) swaps alone are something to send:
+`tests/test_send_easy.py`.
 
 What a wrong answer costs: a swap's record written over or doubled (the queue is the one record: nothing here writes
 it); a card's or note's id, a path or the learner's name in the zip; the same swaps sent with every report; an unticked
-swap sent anyway; swaps alone lighting Send report (a swap is a study move, not a report). Real lines from
+swap sent anyway. Real lines from
 tests/Test Resources (ja/library_episode.ass, zh/night_market.srt), the ledger real.
 """
 import datetime
@@ -205,10 +206,8 @@ def test_the_swaps_go_in_connect_swaps_json_scrubbed_beside_a_report_and_what_go
     assert scrub.leaks(made.path) == []
 
 
-def test_swaps_alone_make_no_report_and_no_swaps_no_entry(pc, tmp_path):
-    _ask("ja", 7100, old=CASES["ja"][1])
-    with pytest.raises(ValueError):
-        report.make_send_zip(str(tmp_path / "send.zip"), "ja")
+def test_swaps_alone_make_no_zip_by_hand_and_no_swaps_no_entry(pc, tmp_path):
+    _ask("ja", 7100, old=CASES["ja"][1])                                     # (Send report takes them: SEND-EASY)
     with pytest.raises(ValueError):
         report.make_zip(str(tmp_path / "out"), "ja")
     report.save("リストが空のまま", "")
@@ -306,13 +305,13 @@ def test_refit_writes_the_swaps_ticks_and_the_same_ticks_change_nothing(pc):
         assert _sent_words(f.read()) == [] and none.swaps == {}
 
 
-def test_swaps_ticked_beside_flags_all_unticked_and_no_report_is_nothing_to_send(pc, receiver):
+def test_swaps_and_flags_all_unticked_and_no_report_is_nothing_to_send(pc, receiver):
     _ask("zh", 8400, old=CASES["zh"][1])
     flagged = flags.add("zh", CASES["zh"][1], "夜市", "journey", key="e2:4.1", reasons=["too_long"])
     ob = send_report.build("zh")
     assert ob.zipped == {} and len(ob.swap_lines) == 1 and set(ob.flags) == {flagged["id"]}
     with pytest.raises(ValueError):
-        send_report.send(keep=[ob.swap_lines[0]["id"]])
+        send_report.send(keep=[])
     assert receiver.got == [] and send_report.swaps_sent("zh") == {}
 
 

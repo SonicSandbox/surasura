@@ -497,8 +497,10 @@ def test_every_process_of_a_level_1_generate_loads_numpy_with_one_blas_thread_an
 
 
 def test_at_level_0_the_generates_numpy_import_is_todays(tmp_path, monkeypatch):
-    # why: the switch is off in the tree — the Generate loads numpy through pandas as it does today, nothing set
+    # why: at level 0 nothing needs numpy: the Generate loaded it only through pandas, for the two lists, and their
+    # one writer is pandas-free now (E-WRITE, DSA-SMALL) — so no numpy at all, and no BLAS thread setting made
     log, seen = _spied_generate("ja", 0, tmp_path / "spy", monkeypatch)
     main = next(s for s in seen if s["kind"] == "main")
-    assert main["numpy"] and main["at_import"] == {n: None for n in _BLAS}
+    assert not main["numpy"], "level 0: no pandas, so no numpy in the Generate"
+    assert all(v is None for v in (main.get("at_import") or {}).values())
     assert not [s for s in seen if s["kind"] == "walk"]

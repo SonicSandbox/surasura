@@ -1392,15 +1392,21 @@ class Live(QObject):
         if kept:
             lines.append(S.REMAKE_KEPT.format(kept=sum(kept.values()),
                                               whys=" · ".join(f"{why} {n}" for why, n in sorted(kept.items()))))
-        lines += [S.REMAKE_SYNC, S.REMAKE_EDITS]
-        asked = []                                  # this sheet's own tick, never a later sheet's
+        from app.connect.settings_values import cap_of
+        # the pace: the learner's own cap for this language, read as its control shows it (`get()` is frozen: a
+        # per-language cap is a mapping, never a dict)
+        cap = cap_of(catalog.plain((self._settings() or {}).get("connect_backlog_cap", 300)), language)
+        pace = S.REMAKE_PACE.format(cap=cap) if cap else S.REMAKE_PACE_ALL
+        lines += [pace, S.REMAKE_SYNC, S.REMAKE_EDITS]
+        asked = []                                # this sheet's own tick, never a later sheet's
         if made:
             title = S.REMAKE_ASK_ONE if made == 1 else S.REMAKE_ASK.format(n=made)
             tick = (S.REMAKE_BEFORE_ONE if before == 1 else S.REMAKE_BEFORE.format(n=before)) if before else None
         else:                                       # only cards from before wait: the sheet asks about them alone
             title, tick = S.REMAKE_ASK_BEFORE_ONE if before == 1 else S.REMAKE_ASK_BEFORE.format(n=before), None
         self.remake_card = confirm.ask(
-            self.page, title, "\n\n".join(lines), S.REMAKE_YES, S.REMAKE_YES_TIP, default_no=True, danger=True,
+            self.page, title, "\n\n".join(lines), S.REMAKE_YES,
+            S.REMAKE_YES_TIP.format(cap=cap) if cap else S.REMAKE_YES_TIP_ALL, default_no=True, danger=True,
             check=tick, check_tip=S.REMAKE_BEFORE_TIP,
             on_answer=lambda yes: yes and self.remake_go(language, not made or bool(asked[0].checked)))
         asked.append(self.remake_card)

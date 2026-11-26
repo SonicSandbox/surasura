@@ -869,7 +869,12 @@ REMAKE_BEFORE = "Also the {n} cards from before Surasura"
 REMAKE_BEFORE_ONE = "Also the 1 card from before Surasura"
 REMAKE_BEFORE_TIP = "Cards of the same note type in Surasura's deck that Surasura didn't make. Off: they stay."
 REMAKE_YES = "Delete and make again"
-REMAKE_YES_TIP = "Deletes them now; Surasura makes their words again, a few a day."
+# the pace is the backlog cap (`connect_backlog_cap`, *Keep up to*, the row above), never a daily rate: Connect refills
+# up to it as fast as it mines, then more as the learner studies (REMAKE 3's words fix; PROVISIONAL)
+REMAKE_PACE = "Surasura makes them again: up to {cap} waiting in Anki (Keep up to, above), then more as you study."
+REMAKE_PACE_ALL = "Surasura makes them all again as it mines (Keep up to, above: 0, no limit)."
+REMAKE_YES_TIP = "Deletes them now. Surasura makes them again: up to {cap} waiting (Keep up to), then more as you study."
+REMAKE_YES_TIP_ALL = "Deletes them now. Surasura makes them all again as it mines (Keep up to: 0, no limit)."
 REMAKE_DONE = "{n} cards deleted · {q} to make again · Put back… to undo"
 REMAKE_STUDIED = " · kept, you studied them meanwhile: {words}"
 REMAKE_NONE = "Nothing to make again: {why}"

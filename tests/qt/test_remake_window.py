@@ -84,6 +84,29 @@ def test_the_count_then_the_sheet_then_the_yes_with_the_tick_off(qapp, monkeypat
     assert store.calls == [], "the press writes no setting"
 
 
+@pytest.mark.parametrize("lang, cap, said", [("ja", {"ja": 40, "zh": 0}, 40), ("zh", {"ja": 40, "zh": 0}, 0),
+                                             ("ja", None, 300), ("zh", 120, 120)])
+def test_the_pace_is_the_learners_own_backlog_cap_never_a_daily_rate(qapp, monkeypatch, lang, cap, said):
+    # why: Connect makes the freed words again up to *Keep up to* (`connect_backlog_cap`, one per language, default
+    # 300, 0 = no limit), then more as the learner studies — a sheet that says "a few a day", or another language's
+    # number, tells the learner a pace their own setting doesn't have
+    monkeypatch.setattr(tidy, "act_remake_plan", lambda s, language, anki=None: dict(PLAN))
+    from tests.qt.test_settings_live import Fakes, make
+    page, _store, _shell = make(Fakes(monkeypatch), data=dict({"connect_enabled": True},
+                                                              **({} if cap is None else {"connect_backlog_cap": cap})))
+    page.language = lang
+    page.live.parts["connect_remake"]["remake"].click()
+    card = _sheet(page)
+    body, tip = card.body.text(), card.yes.toolTip()
+    if said:
+        assert S.REMAKE_PACE.format(cap=said) in body and tip == S.REMAKE_YES_TIP.format(cap=said)
+    else:
+        assert S.REMAKE_PACE_ALL in body and tip == S.REMAKE_YES_TIP_ALL
+    assert "Keep up to" in body and "Keep up to" in tip, "the sheet names the setting that sets the pace"
+    assert not any("a day" in v for k, v in vars(S).items() if k.startswith("REMAKE_") and isinstance(v, str))
+    card.no.click()
+
+
 @pytest.mark.parametrize("lang", ["ja", "zh"])
 def test_the_tick_on_takes_the_cards_from_before_and_a_card_studied_meanwhile_is_named(qapp, monkeypatch, lang):
     went = []

@@ -97,6 +97,7 @@ FILLED_BY = {
     "new_cards_from": _STORE,                   # --- Kyou-A: the library's *Learn two shows at once* (Mado-PZ2)
     "remove_downloaded_covers": _LIVE,          # --- W3.2 L3
     "connect_tidy": _LIVE,                      # --- Kyou-SH2: *Tidy now*
+    "connect_remake": _LIVE,                    # --- REMAKE: *Make my new cards again…*
     "practice_ai": _LIVE,                       # --- A6: the practice server's setup, one Copy per AI app
     "ai_audio": "modules.irodori.qt_settings",  # --- Iro-AA: the AI voice's beta (its switch, Install, Remove)
 }
@@ -277,6 +278,7 @@ ROWS = (
     _row("connect_open_anki", "anki", "choice", ("connect_open_anki",), options=(False, True), when=_CONNECT),
     _row("connect_backlog_cap", "anki", "number", ("connect_backlog_cap",), when=_CONNECT, bounds=(0, 5000)),
     _row("connect_tidy", "anki", "action", sub=True, when=_CONNECT),        # Kyou-SH2: *Tidy now* (PROVISIONAL)
+    _row("connect_remake", "anki", "action", sub=True, when=_CONNECT),      # REMAKE: *Make my new cards again…*
     _row("connect_trust_timing", "anki", "toggle", ("connect_trust_timing",), when=_CONNECT),
     # Mado-LT (3.0.18; WL mock 04, PROVISIONAL words): *Your daily loop* — the three moves, one formula each: the move =
     # what you do to its card in Anki. Known is *Count as known in Anki* (Kotoba-WS2: *Count suspended cards as known*

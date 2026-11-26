@@ -4500,9 +4500,16 @@ class ShellWindow(QMainWindow):
             self._reader_shown.start()                         # W3.2 P0: the first screen's cache read off the frame
             if self.moves is not None:
                 self.moves.start(on_worker=True)               # ... and the writer's first look at the store, its replay
-        # --- W3.2 Q6: the covers asked for meanwhile decode now; the disk scan once per open
+        # --- W3.2 Q6: the covers asked for meanwhile decode now; the disk scan once per open — OPEN-RACE: once the
+        # window has booted, as the duties (its own full read of the library and its folder walk took turns at Python's
+        # lock with the numbers' first load and the list's first build: nothing the first view with numbers doesn't
+        # need goes ahead of it). The boot's watch is armed by the duties' start (`start_duties`, main's first slot on
+        # `first_frame`, emitted above); a window opened without it scans at once, as before
         qcovers.release(self._stones_hold)
-        self.scan_covers()
+        if self._framed:
+            self._when_booted(self.scan_covers)
+        else:
+            self.scan_covers()
         self._start_looks()                                    # --- SRC W1b: the first look after start (full)
 
     def scan_covers(self, progress=None, then=None):

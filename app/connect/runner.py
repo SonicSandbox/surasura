@@ -4188,8 +4188,9 @@ class Steps:
         if not ledger.conn.execute("SELECT 1 FROM tidies WHERE language = ? AND state IN (?, ?) LIMIT 1",
                                    (lang, tidy.WRITING, tidy.RESTORING)).fetchone():
             return 0
-        return tidy.finish_pending(tidy.AnkiConnectTidy(self.url, wait=0.0), ledger, lang,
-                                   lambda: library.open_store(lang))
+        opener = lambda: library.open_store(lang)       # noqa: E731
+        return tidy.finish_pending(tidy.AnkiConnectTidy(self.url, wait=0.0), ledger, lang, opener,
+                                   then=lambda row, done: tidy.requeue(self, ledger, lang, done, self.loaded, opener))
 
     def _listed_keys(self, lang):
         """Junban's keys for the list Connect serves (`_list_order`: the re-plan's, else the last Generate's), each

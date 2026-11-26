@@ -34,26 +34,28 @@ _ON_WINDOWS = {"sys.platform == 'win32'", "os.name == 'nt'", "sys.platform.start
 _OFF_WINDOWS = {"sys.platform != 'win32'", "os.name != 'nt'", "sys.platform == 'darwin'", "sys.platform == 'linux'",
                 "sys.platform.startswith('linux')", "not sys.platform.startswith('win')"}
 
-# "file:function" (the function whose body starts it) -> why it needs no flag.
+# "file:function" (the function whose body starts it) -> (how many starts it holds on Windows, why they need no flag):
+# the count keeps a start added there later from passing unread.
 ALLOWED = {
-    "app/qt/screens.py:open_with_program": "the learner's own player for ▶ (`play.program_allowed`): a program whose "
-                                           "window is what the press asks for",
-    "app/qt/screens.py:show_in_folder": "Explorer at the file: a windowed program, never a console",
-    "app/static_html_generator.py:open_as_app": "the 2.x report in a browser's app window: a windowed program",
-    "modules/youtube_downloader/gui.py:open_output": "off Windows only: os.startfile is Windows', its AttributeError "
-                                                      "every other system's (open / xdg-open)",
+    "app/qt/screens.py:open_with_program": (1, "the learner's own player for ▶ (`play.program_allowed`): a program "
+                                               "whose window is what the press asks for"),
+    "app/qt/screens.py:show_in_folder": (1, "Explorer at the file: a windowed program, never a console"),
+    "app/static_html_generator.py:open_as_app": (1, "the 2.x report in a browser's app window: a windowed program"),
+    "modules/youtube_downloader/gui.py:open_output": (1, "off Windows only: os.startfile is Windows', its "
+                                                         "AttributeError every other system's (open / xdg-open)"),
 }
-# "file:function" -> the program it starts DETACHED: another program's own window, never a console Python of ours.
+# "file:function" -> (its starts, the program it starts DETACHED): another program's own window, never a Python of ours.
 DETACHED_ALLOWED = {
-    "app/connect/open_anki.py:start": "Anki, a windowed program (Connect opening it at a Windows session's start)",
-    "app/services/tools_found.py:start_hato": "hato's window, started as Anki is",
-    "app/updater.py:launch_installer": "the installer (frozen only): a windowed program that outlives us",
-    "app/updater.py:_launch_swapper": "updater.exe (frozen only): a windowed program (updater.spec console=False)",
-    "app/updater.py:launch_helper": "updater.exe (frozen only): a windowed program (updater.spec console=False)",
+    "app/connect/open_anki.py:start": (2, "Anki, a windowed program (Connect opening it at a Windows session's start; "
+                                          "the second start without breaking away)"),
+    "app/services/tools_found.py:start_hato": (2, "hato's window, started as Anki is"),
+    "app/updater.py:launch_installer": (1, "the installer (frozen only): a windowed program that outlives us"),
+    "app/updater.py:_launch_swapper": (1, "updater.exe (frozen only): a windowed program (updater.spec console=False)"),
+    "app/updater.py:launch_helper": (1, "updater.exe (frozen only): a windowed program (updater.spec console=False)"),
 }
 
 
-_MAY_START = re.compile(r"subprocess|popen_")     # a file without either starts nothing: it is never parsed
+_MAY_START = re.compile(r"subprocess|popen", re.I)  # a file without either starts nothing: it is never parsed
 _SCAN = {}
 
 
@@ -66,20 +68,23 @@ def _files():
             names = []
             for folder, dirs, files in os.walk(os.path.join(ROOT, top)):
                 dirs[:] = [d for d in dirs if d not in ("tests", "__pycache__")]
-                names += [os.path.relpath(os.path.join(folder, n), ROOT) for n in sorted(files) if n.endswith(".py")]
+                names += [os.path.relpath(os.path.join(folder, n), ROOT).replace(os.sep, "/") for n in sorted(files)
+                          if n.endswith(".py")]
         yield from (n for n in names if _MAY_START.search(_text(ROOT, n)))
 
 
 def _every_start():
     """{file: its starts} for every scanned file, worked out once for the four guards below."""
     if not _SCAN:
-        _SCAN.update({rel.replace(os.sep, "/"): _starts(rel) for rel in _files()})
+        _SCAN.update({rel: _starts(rel) for rel in _files()})       # "/" paths, as flake_lints' other guards key them
     return _SCAN
 
 
 def _starts(rel):
     """Each process start in `rel` -> (line, its function's name, the call, the function's node, off Windows)."""
     tree = _parse(ROOT, rel)
+    modules = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names
+               if a.name == "subprocess"}                                  # `import subprocess` (as …)
     imported = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == "subprocess"
                 for a in n.names if a.name in STARTS}
     found = []
@@ -99,7 +104,7 @@ def _starts(rel):
             f = node.func
             name = f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else None
             subprocess_call = (isinstance(f, ast.Attribute) and name in STARTS and isinstance(f.value, ast.Name)
-                               and f.value.id == "subprocess") or (isinstance(f, ast.Name) and name in imported)
+                               and f.value.id in modules | {"subprocess"})                 or (isinstance(f, ast.Name) and name in imported)
             if subprocess_call or name in WRAPPERS:
                 found.append((node.lineno, func.name if func else "<module>", node, func, off))
         for child in ast.iter_child_nodes(node):
@@ -181,12 +186,14 @@ def test_only_another_programs_window_is_started_detached():
     assert detached == [], "started DETACHED: " + "; ".join(detached)
 
 
-def test_every_allowed_entry_still_names_a_start_and_says_why():
-    """An entry whose function no longer starts anything would let the next start there go unread."""
-    starts = {f"{rel}:{name}" for rel, found in _every_start().items() for _line, name, _call, _func, _off in found}
+def test_every_allowed_entry_still_names_its_starts_and_says_why():
+    """An entry exempts its function's starts: one start more there (or one gone) would let the next go unread."""
+    import collections
+    starts = collections.Counter(f"{rel}:{name}" for rel, found in _every_start().items()
+                                 for _line, name, _call, _func, off in found if not off)
     for table in (ALLOWED, DETACHED_ALLOWED):
-        for key, why in table.items():
-            assert key in starts, f"{key} starts no process any more: take its entry out"
+        for key, (count, why) in table.items():
+            assert starts[key] == count, f"{key} starts {starts[key]} process(es) on Windows, not {count}: read them"
             assert len(why) > 20, key
 
 

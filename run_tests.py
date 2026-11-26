@@ -1015,7 +1015,7 @@ GUARDS = {
     ("tests/test_no_console_windows.py::"
      "test_only_another_programs_window_is_started_detached"): ("app/", "modules/", "app_entry.py"),
     ("tests/test_no_console_windows.py::"
-     "test_every_allowed_entry_still_names_a_start_and_says_why"): ("app/", "modules/", "app_entry.py"),
+     "test_every_allowed_entry_still_names_its_starts_and_says_why"): ("app/", "modules/", "app_entry.py"),
     ("tests/test_no_console_windows.py::"
      "test_run_tests_starts_every_child_through_its_two_wrappers"): ("run_tests.py",),
     "tests/test_packaging_config.py": ("app/", "modules/", "packaging/", "app_entry.py", "package_app.py"),

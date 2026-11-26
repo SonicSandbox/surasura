@@ -56,6 +56,7 @@ PLACED = {
     "hints_seen": "neither",                 # W-1: the one-time hints shown, each per library: never a run
     "setup_passed": "neither",               # the setup pages saved before setup finished (IK2-2): never a run
     "connect_backlog_cap": "neither",        # P2.4: how many of Connect's cards wait in Anki, never a run
+    "connect_prestudied_only": "neither",    # PRESTUDIED-MINE: which episodes Connect mines, never a run
     "known_from_anki": "neither",            # P2.4: its words reach KnownWord.json (known_sig), never as a key
     "known_from_anki_chosen": "neither",     # Kantan-B3: whether its states are the learner's pick, never a run
     "sentence_length_chosen": "neither",     # E-LENGTH: whether *Length* is the learner's pick, never a run

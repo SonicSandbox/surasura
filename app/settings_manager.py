@@ -207,6 +207,11 @@ DEFAULT_SETTINGS = {
     # relevant go to the shelf (suspended) only on a big gap (a quarter of it). Your own new cards count too (B3-2 A). Never in a
     # signature.
     "connect_backlog_cap": 300,
+    # *Mine only episodes I've pre-studied* (PRESTUDIED-MINE, 3.0.20, Sonic § 101 2; PROVISIONAL words): on — an
+    # episode Connect would mine on its own waits until the journey marks it pre-studied (the library store's J-STORE
+    # mark), a press (*Mine now*) still the yes; off (the default) — as before. One switch for every language, read
+    # through `prestudied_only()`. Never in a signature.
+    "connect_prestudied_only": False,
     # Where Connect looks for an episode's video when it isn't where its pairing says (P2.5, G1.3-12): these folders and
     # their subfolders, beside the folders your paired videos are in. A list for every language, or {lang: [...]}.
     # Never in a signature.
@@ -890,6 +895,14 @@ def connect_every_word(settings) -> bool:
     get = settings.get if hasattr(settings, "get") else (lambda _key: None)
     value = get("connect_every_word")
     return value if isinstance(value, bool) else get("connect_mine_words") == "unknown"
+
+
+def prestudied_only(settings) -> bool:
+    """*Mine only episodes I've pre-studied* (PRESTUDIED-MINE): `connect_prestudied_only` is True — only a real True
+    (a hand-edited "yes" reads off). Takes a settings dict, a frozen copy, or None (off). Read by Connect's gate
+    (`runner.Steps.prestudied_only`) and the journey's mark (`services.prestudied`: a mark kicks Connect)."""
+    get = settings.get if hasattr(settings, "get") else (lambda _key: None)
+    return get("connect_prestudied_only") is True
 
 
 def mine_mode(settings) -> str:

@@ -14,6 +14,11 @@ widget), keeps each write's Change for its Undo by id, and says a refusal in pla
 language now — an episode's id is its language's store's. The window hears of a press through the store's
 `state_version` bump, which its rows already follow.
 
+PRESTUDIED-MINE (3.0.20): with *Mine only episodes I've pre-studied* on, Connect mines only marked episodes — so a
+write that marks one (a press, the end card, an Undo that puts a mark back) kicks Connect (`_kick`): it starts, or the
+running one looks again within seconds, never at its 2-minute look. An un-mark kicks nothing (the episode waits at its
+next try); the switch off, nothing either.
+
 `at` in the body (ms since 1970, the page's clock): when a press the page kept while Surasura was closed was made — the
 store leaves an episode marked after it as it is, and the answer is `stale` (G4: a waiting press never erases newer
 work). `door_state` answers every mark, not only those since the render (`since_ns` unread): an un-mark has no date, so
@@ -100,6 +105,20 @@ def _drop(undo_id):
         _KEPT.pop(undo_id, None)
 
 
+def _kick():
+    """PRESTUDIED-MINE: Connect kicked when *Mine only episodes I've pre-studied* is on (`kick.kick`: started, or the
+    running one woken; it lets the episodes parked for a mark go, `runner._woken`). Never the route's failure."""
+    try:
+        from app import settings_manager
+        settings = settings_manager.load_settings()
+        if settings_manager.prestudied_only(settings):
+            from app.connect import kick
+            kick.kick(settings)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).info("Connect wasn't woken after a pre-studied mark", exc_info=True)
+
+
 def door_route(body, app=None):
     """`episode/prestudied`: the end card reached (`why` "end", `on` true) or a press on the episode's stone or R
     (`why` "press", on or off) -> {on, at, by, undo_id}: the episode's mark now, and the id its Undo asks with (None
@@ -129,6 +148,8 @@ def door_route(body, app=None):
     at, by = now.get("prestudied_at"), now.get("prestudied_by")
     if change is None and pressed_at is not None and at is not None and at > pressed_at:
         _refuse("That episode was marked since.", "stale")
+    if change is not None and at is not None:
+        _kick()                                                 # PRESTUDIED-MINE: marked now — Connect looks
     return {"on": at is not None, "at": at, "by": by, "undo_id": undo_id}
 
 
@@ -154,7 +175,10 @@ def door_undo(body, app=None):
     finally:
         store.close()
     _drop(undo_id)
-    return {"done": bool(out is not None and out.status)}
+    done = bool(out is not None and out.status)
+    if done and any(column == "prestudied_at" and new is not None for _i, column, _old, new in out.status):
+        _kick()                                                 # PRESTUDIED-MINE: an Undo that marks it again
+    return {"done": done}
 
 
 def door_state(language, since_ns=None, app=None):

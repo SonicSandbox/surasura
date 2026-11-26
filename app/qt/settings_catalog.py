@@ -277,6 +277,8 @@ ROWS = (
     _row("connect_zh_word_audio", "anki", "toggle", ("connect_zh_word_audio",), when=_all(_CONNECT, _zh)),
     _row("connect_open_anki", "anki", "choice", ("connect_open_anki",), options=(False, True), when=_CONNECT),
     _row("connect_backlog_cap", "anki", "number", ("connect_backlog_cap",), when=_CONNECT, bounds=(0, 5000)),
+    # PRESTUDIED-MINE (3.0.20, Sonic § 101 2; PROVISIONAL words): Connect waits for the journey's pre-studied mark
+    _row("connect_prestudied_only", "anki", "toggle", ("connect_prestudied_only",), when=_CONNECT),
     _row("connect_tidy", "anki", "action", sub=True, when=_CONNECT),        # Kyou-SH2: *Tidy now* (PROVISIONAL)
     _row("connect_remake", "anki", "action", sub=True, when=_CONNECT),      # REMAKE: *Make my new cards again…*
     _row("connect_trust_timing", "anki", "toggle", ("connect_trust_timing",), when=_CONNECT),

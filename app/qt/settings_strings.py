@@ -316,6 +316,12 @@ ROWS = {
     "connect_backlog_cap": ("Keep up to", "new cards waiting in Anki, for this language. 0: no limit",
                             "Stop making cards when this many new cards on your list wait. 0: no limit.",   # Kyou-SH (PROVISIONAL)
                             "cap backlog waiting keep up to limit"),
+    # PRESTUDIED-MINE (3.0.20, PROVISIONAL): Connect waits for an episode's pre-studied mark in the journey
+    "connect_prestudied_only": ("Mine only episodes I’ve pre-studied",
+                                "Surasura makes an episode’s cards only once you’ve gone through it in the journey "
+                                "and marked it pre-studied. Mine now still makes them.",
+                                "Waits to make an episode’s cards until you pre-study it in the journey.",
+                                "pre-studied prestudied journey ready first only marked study before mine wait"),
     # Kyou-SH2 (PROVISIONAL): Tidy — by itself past 1.5 × the limit; this press past the limit
     "connect_tidy": ("Tidy waiting cards", "Past 1.5 × your limit, Surasura deletes the cards it made that you never "
                                            "studied, down to your limit, lowest first. A copy is kept: Undo in Needs "

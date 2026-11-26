@@ -988,9 +988,10 @@ def _known_sets(language, settings, store=None):
             if store is None:
                 store = token_index.open_store(language)
             try:
-                cached = store.get_cached_known(token_index.known_signature(known_file, script))
+                suffix = store.known_suffix()      # the key's settings and tables, once for the miss (STORE-KEY)
+                cached = store.get_cached_known(token_index.known_signature(known_file, script), suffix)
                 if cached is None:
-                    terms = store.known_terms(script)       # (the tokenizer's script: "asis" for Japanese)
+                    terms = store.known_terms(script, suffix)   # (the tokenizer's script: "asis" for Japanese)
             finally:
                 store.close()
         except Exception:

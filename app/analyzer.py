@@ -3140,30 +3140,35 @@ def load_ignore_set(user_files_dir, script="asis", language=None):
     return ignore
 
 
-def read_known_words(store, known_file, known_sig, tokenizer, keep=True):
+def read_known_words(store, known_file, known_sig, tokenizer, keep=True, missed=None):
     """(known (lemma, reading)s, known lemmas) as a run starts with them: the token store's cached normalization while
     KnownWord.json is unchanged (`known_sig`), else read and normalized here — and kept in the store for the next run
-    when `keep` (a reader that writes nothing passes False). Japanese: read after the library's name tables are set."""
-    cached = store.get_cached_known(known_sig) if store else None
-    if cached is not None:
-        print("Reused cached known-words normalization.")
-        return cached
+    when `keep` (a reader that writes nothing passes False). Japanese: read after the library's name tables are set.
+    `missed`: the `Store.known_suffix` a caller's own `get_cached_known` just missed with — the store isn't asked again,
+    and the miss's every step takes that one key (STORE-KEY: each working-out reads settings.json and the name tables)."""
+    suffix = missed
+    if store and suffix is None:
+        suffix = store.known_suffix()
+        cached = store.get_cached_known(known_sig, suffix)
+        if cached is not None:
+            print("Reused cached known-words normalization.")
+            return cached
     # Changed (a sync added a word): each term read before is taken from the store's own (G8), the new ones read here.
+    script = getattr(tokenizer, "script", "asis")
     terms = None
     if store:
         try:
-            terms = store.known_terms(getattr(tokenizer, "script", "asis"))
+            terms = store.known_terms(script, suffix)
         except Exception:
             terms = None
     held = set(terms) if terms is not None else None
     known = load_known_words(known_file, tokenizer, terms)
     if store and keep:
         try:
-            store.set_cached_known(known_sig, *known)
             # The per-term cache written only when its terms changed: a move that adds no term (a card Connect
-            # wrote) rewrote all ~10k terms' blob for nothing (SYQF-FIX).
-            if terms is not None and set(terms) != held:
-                store.set_known_terms(getattr(tokenizer, "script", "asis"), terms)
+            # wrote) rewrote all ~10k terms' blob for nothing (SYQF-FIX); with the signature, in one commit.
+            store.set_cached_known(known_sig, *known, suffix=suffix,
+                                   terms=terms if terms is not None and set(terms) != held else None, script=script)
         except Exception:
             pass
     return known

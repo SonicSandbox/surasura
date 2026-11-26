@@ -225,7 +225,10 @@ ENSURE_AUDIO_EXAMPLE = False
 #     table alone (results/sentences.bin, no shortlists, no first-sentence tables), the plan's format 5, and the
 #     list's, the journey's and the word card's sentences are the one reader's (app/sentence_score.py), as the card's
 #     are. Every token store is indexed again with each line's counts: SCHEMA_VERSION 29. 3.0.19.
-ENGINE_REVISION = 50
+# 51: two lines of a caption one character each join with nothing between them (_join_lines: a line typeset one
+#     character an event read as お願い, never 御 + 願), and a one-kanji word right after a lone Latin letter is a piece
+#     of the label, as after a number (_after_label: A棟's 棟 offers no むね). SCHEMA_VERSION 31. 3.0.19.
+ENGINE_REVISION = 51
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -2156,9 +2159,22 @@ def _numberish(ch):
     return ch.isnumeric() or _KANJI_RE.match(ch) is not None
 
 
+# A letter that labels what follows it (A棟 'building A', Ｂ組 'class B', x軸 'the x-axis'): a Latin letter, half- or
+# full-width, standing alone — no letter or digit right before it (10m下's m is a unit, OK今's K ends a word).
+_LETTERS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                     "ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ")
+
+
+def _after_label(text, at):
+    """Is text[at] right after a lone Latin letter (§ above)? A one-kanji word there is the label's counter or suffix,
+    as after a number (A棟's 棟 is とう, never the noun むね)."""
+    return (at > 0 and text[at - 1] in _LETTERS
+            and (at == 1 or (text[at - 2] not in _LETTERS and not text[at - 2].isnumeric())))
+
+
 def _may_be_bound(text, surface):
-    """Could a one-kanji word written `surface` be bound anywhere in `text` — after a digit, a numeral or a kanji, or,
-    written as one kanji, before a kanji? Most uses stand beside kana (手を, 私は) and are passed over without locating
+    """Could a one-kanji word written `surface` be bound anywhere in `text` — after a digit, a numeral, a kanji or a
+    lone letter, or, written as one kanji, before a kanji? Most uses stand beside kana (手を, 私は) and are passed over without locating
     a word. Every token of a library's one-kanji words is asked as the token store indexes it, so the tests are
     written out: kana and Latin sort below U+3400, where Han begins but for 々 and 〇."""
     kanji = _KANJI_RE.match
@@ -2169,6 +2185,8 @@ def _may_be_bound(text, surface):
         if at:
             ch = text[at - 1]
             if ch.isnumeric() or ((ch >= "\u3400" or ch == "\u3005") and kanji(ch) is not None):
+                return True
+            if one and ch in _LETTERS and _after_label(text, at):
                 return True
         end = at + size
         if one and end < length:
@@ -2206,13 +2224,15 @@ def _beside(spans, i, step):
 
 
 def _bound_at(text, spans, i):
-    """Is word `i` (located at spans[i]) a piece of something else — glued to a one-kanji piece, after a number, or
-    after a number's counter (the 目 of ２時間目)?"""
+    """Is word `i` (located at spans[i]) a piece of something else — glued to a one-kanji piece, after a number, after
+    a number's counter (the 目 of ２時間目), or after a lone letter (the 棟 of A棟)?"""
     span = spans[i]
     if span is None:
         return False                    # not found: taken as standing on its own
     start, end = span
     one = end - start == 1 and _KANJI_RE.match(text[start]) is not None
+    if one and _after_label(text, start):
+        return True                     # a letter's counter or suffix: A棟, Ｂ組, x軸
     if start:
         before = _beside(spans, i, -1)
         if before is not None and before[1] == start:
@@ -3491,7 +3511,10 @@ def close_cue(block_text):
 # A caption's lines are read as CSS Text 3 reads a line break in running text (its segment break rules): nothing
 # between two East Asian wide characters (width F, W or H, and not Hangul) — 我觉得 / 他不会来 is 我觉得他不会来, not
 # 我觉得 他不会来 — and a space elsewhere (我买了 / T恤). Japanese keeps the space: the tagger reads it as the word
-# boundary the subtitler broke the line at, and the sentence it shows drops it — the same text.
+# boundary the subtitler broke the line at, and the sentence it shows drops it — the same text. But not between two
+# lines of one character each (ENGINE_REVISION 51): no subtitler breaks a line after one character — such lines are a
+# line typeset one character an event (an effect's お / 願 / い …, one timing), and a space after each made the tagger
+# read every character as a word (御 + 願 for お願い).
 _HANGUL_RE = re.compile('[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7ff\uffa0-\uffdc]')
 
 
@@ -3502,7 +3525,12 @@ def _wide(ch):
 def _join_lines(lines, language='ja'):
     """A caption's `lines` — cleaned, none empty — as one text (§ above)."""
     if language == 'ja' or not lines:
-        return " ".join(lines)
+        if len(lines) < 2:
+            return " ".join(lines)
+        text = lines[0]
+        for before, line in zip(lines, lines[1:]):
+            text += line if len(before) == 1 == len(line) else " " + line
+        return text
     text = lines[0]
     for line in lines[1:]:
         text += line if _wide(text[-1]) and _wide(line[0]) else " " + line
@@ -4605,7 +4633,7 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
         print(f"The journey can't be redrawn from the plan ({e}): generating.")
         return None
     verdict = plan_engine.check(plan, language, engine_id(), read_run_stamp(RESULTS_DIR), sig_parts,
-                                (library or {}).get("epoch"))
+                                (library or {}).get("epoch"), chunked=False)   # G3: no thread waits beside a redraw
     if verdict is not None or plan.header.get("format") != plan_engine.FORMAT:
         print(f"The journey can't be redrawn from the plan ({verdict}): generating.")
         return None
@@ -5294,14 +5322,31 @@ def resolve_found_files(language, verbose=True, schedule=None, read_store=True, 
                 no_fallback = isinstance(manifest.get("surasura_library"), dict)
                 schedule = manifest.get("schedule", {})
             phases = ["PHASE_1_NOW", "PHASE_2_SOON", "PHASE_3_LATER"]  # order matters
+
+            def _abs(item):
+                rel_path = item.get("physical_path", "")
+                return os.path.join(data_dir, rel_path[2:] if rel_path.startswith("./") else rel_path)
+            # Which scheduled files are on the disk: one listing a folder (the library store's `_listed_stats`, R6),
+            # os.path.exists for a name no listing gives — never one os.path.exists a file (20k: 20,000 at every
+            # start's check, DSA-PHRASE).
+            there = None
+            if not keep_missing:
+                folders = {}
+                for phase_key in phases:
+                    for item in schedule.get(phase_key, []):
+                        folder, name = os.path.split(_abs(item))
+                        folders.setdefault(folder, set()).add(name)
+                ls = _library_store()
+                there = set()
+                for folder, names in folders.items():
+                    listed = ls._listed_stats(folder, names) if ls is not None and folder else {}
+                    there.update((folder, name) for name in names
+                                 if name in listed or os.path.exists(os.path.join(folder, name)))
             seen_paths = set()
             for phase_key in phases:
                 for item in schedule.get(phase_key, []):
-                    rel_path = item.get("physical_path", "")
-                    if rel_path.startswith("./"):
-                        rel_path = rel_path[2:]
-                    abs_path = os.path.join(data_dir, rel_path)
-                    if not keep_missing and not os.path.exists(abs_path):
+                    abs_path = _abs(item)
+                    if there is not None and os.path.split(abs_path) not in there:
                         if verbose:
                             print(f"Warning: Manifest file not found: {abs_path}")
                         continue
@@ -7673,7 +7718,7 @@ def main():
             else:
                 numbers = walked.sentences((walked.cls >= _W_BOUND) & _listed_kids()[walked.kid])
                 if found_at:
-                    numbers = sorted(found_at.keys().union(numbers))
+                    numbers = sorted(found_at.keys() | set(numbers))
             for s_no in numbers:
                 s_text, s_tokens = walked[s_no]
                 if len(s_text) > max_chars:

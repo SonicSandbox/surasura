@@ -19,6 +19,7 @@ import time
 
 import pytest
 
+from app import analyzer, plan_rules, sentence_table
 from app.services import generate as G
 from app.services import jobs as J
 from app.services.generate import GenerateController
@@ -151,9 +152,14 @@ def test_a_cancel_while_reading_files_stops_the_run_itself_and_leaves_the_last_j
     controller = GenerateController(JobRegistry(), settle=0)
     controller.request("ja", settings=_settings())
     assert _settled(controller) and controller.state().state == G.CURRENT
-    before = _outputs(skip=("run_signature.txt",))
+    # the stamp — and at level 2 the journey's draw marker with it (`analyzer._forget_redraw`) — the run drops as it
+    # starts; level 2 also writes the sentence table and the shown lines' text (SPEC § 5.3)
+    level_2 = plan_rules.SENTENCE_TABLE >= 2
+    dropped = ("run_signature.txt",) + ((analyzer.REDRAW_FILE,) if level_2 else ())
+    extra = {sentence_table.TABLE_FILE, analyzer.SHOWN_FILE} if level_2 else set()
+    before = _outputs(skip=dropped)
     # 12, and since the journey v3 cut-over (J-CUT) the page's counts (plan_counts.bin) and its word memo
-    assert len(before) == 14 and {"plan_counts.bin", "journey_words.json"} <= set(before), sorted(before)
+    assert len(before) == 14 + len(extra) and {"plan_counts.bin", "journey_words.json"} | extra <= set(before),         sorted(before)
 
     monkeypatch.setenv("SURASURA_FORCE_RUN", "1")
     run = controller.request("ja", settings=_settings())
@@ -162,7 +168,7 @@ def test_a_cancel_while_reading_files_stops_the_run_itself_and_leaves_the_last_j
     assert _settled(controller, 60)
     assert controller.state().state == G.STALE and run.cancel_sent
     assert run.proc.returncode == 76 and run.final[1]["code"] == "cancelled"
-    assert _outputs(skip=("run_signature.txt",)) == before
+    assert _outputs(skip=dropped) == before
     assert not os.path.exists(os.path.join(h.root(), "results", "run_signature.txt"))
     assert not os.path.exists(run.cancel_file), "the cancel file goes with its run"
 

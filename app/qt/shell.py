@@ -21,6 +21,7 @@ through one app-wide filter (`AppFilter`, a9.1).
 
 Run it: `python app_entry.py` on the 3.0 line (or `main()` here).
 """
+import importlib
 import json
 import math
 import os
@@ -694,9 +695,10 @@ class Services:
         every start; the start-light fix)."""
         return os.path.exists(os.path.join(path_utils.get_user_file("results"), JOURNEY_FILE))
 
-    def open_journey(self, file=None):
+    def open_journey(self, file=None, item=None):
         """(A worker.) *Your journey ↗*: the report (`open_report`), drawn again first when only a setting it shows
-        changed (`draw_journey`); `file` (the report's name for an episode's file): opened on it — or, when the journey
+        changed (`draw_journey`); `file` (the report's name for an episode's file; `item` its library item id, which tells
+        two shows' 第01集 apart: E-NAMES): opened on it — or, when the journey
         doesn't list it yet (added since the last Generate), where it opens by itself, -> `JOURNEY_LACKS` (JO-1: the
         window says so); drawn before a Journey setting changed while a Generate is due, -> `JOURNEY_OLD_LOOK` (the
         window says its new look comes with that Generate). -> False with none."""
@@ -704,9 +706,9 @@ class Services:
         later = self.draw_journey()
         if self.closing.is_set():
             return None                                  # the window is going: no browser opened behind it
-        held = file is None or generator.report_holds(file)
+        held = file is None or generator.report_holds(file, item)
         opened = generator.open_report(app_mode=bool(self.settings.get().get("open_app_mode")),
-                                       file=file if held else None)
+                                       file=file if held else None, item=item if held else None)
         if opened and not held:
             return JOURNEY_LACKS
         return JOURNEY_OLD_LOOK if opened and later else opened
@@ -1945,6 +1947,7 @@ class ShellWindow(QMainWindow):
         placing rules, the store's two lines and *Set up again* (`settings_store`). -> the page."""
         if self.settings_page is not None:
             return self.settings_page
+        window_idle.slice_ran()                 # the sliced build begins here: its imports and frame are its first slice
         from app.qt import settings_connect, settings_page, settings_rules, settings_sources, settings_store
         from app.qt import settings_io
         holder = self.page_widgets["settings"]
@@ -3854,7 +3857,9 @@ class ShellWindow(QMainWindow):
         def failed(info):
             self.say(strings.JOURNEY_FAILED.format(why=info[0]))
         file = journey_file(episode)
-        return qpress.run(control, "journey:open", self.services.open_journey, *((file,) if file else ()), then=done,
+        item = getattr(episode, "id", None) if file else None      # (E-NAMES: the item, two shows' 第01集 apart)
+        return qpress.run(control, "journey:open", self.services.open_journey,
+                          *((file,) if file else ()) + ((item,) if item is not None else ()), then=done,
                           failed=failed, win=self, at=at)
 
     # the bar's marks
@@ -4237,7 +4242,26 @@ class ShellWindow(QMainWindow):
 
     # --- SRC W1b: the source folders (app/services/source_looks.py; the RUNBOOK §1b S4, S10 / D5, S14 / D6) -------- #
     def _start_looks(self):
-        """After the first frame: the looks made for the library open, and the first look after start (a full one)."""
+        """After the first frame: the looks made for the library open, and the first look after start (a full one).
+        Their module (`app/services/source_looks.py`, with `app/sources.py`'s and `app/audiobooks.py`'s patterns) is
+        read on a worker, never on this thread: read here, in the first frame's step, it took turns at Python's lock
+        with the numbers' plan read and held this thread 250–310 ms at 2,000 files (E-L2W, level 2); the looks are made
+        here once it is in (`_looks_module_in`)."""
+        if self.looks is None and getattr(self.services, "source_looks", None) is None \
+                and LOOKS_MODULE not in sys.modules:
+            bridge.run_in_worker(importlib.import_module, LOOKS_MODULE, then=self._looks_module_in,
+                                 failed=lambda _e: self._looks_module_in(None))
+            return
+        if self.looks is None:
+            self._open_looks(self.services.writer)
+        self.look_at_sources(focused=True)
+
+    def _looks_module_in(self, _module):
+        """(This thread.) The looks' module read on its worker: the looks made and the first look asked, as
+        `_start_looks` does — none once the window closed or its quit began (a failed read: made here, as before)."""
+        closing = getattr(self.services, "closing", None)
+        if sip.isdeleted(self) or self._quit is not None or (closing is not None and closing.is_set()):
+            return
         if self.looks is None:
             self._open_looks(self.services.writer)
         self.look_at_sources(focused=True)
@@ -4476,9 +4500,16 @@ class ShellWindow(QMainWindow):
             self._reader_shown.start()                         # W3.2 P0: the first screen's cache read off the frame
             if self.moves is not None:
                 self.moves.start(on_worker=True)               # ... and the writer's first look at the store, its replay
-        # --- W3.2 Q6: the covers asked for meanwhile decode now; the disk scan once per open
+        # --- W3.2 Q6: the covers asked for meanwhile decode now; the disk scan once per open — OPEN-RACE: once the
+        # window has booted, as the duties (its own full read of the library and its folder walk took turns at Python's
+        # lock with the numbers' first load and the list's first build: nothing the first view with numbers doesn't
+        # need goes ahead of it). The boot's watch is armed by the duties' start (`start_duties`, main's first slot on
+        # `first_frame`, emitted above); a window opened without it scans at once, as before
         qcovers.release(self._stones_hold)
-        self.scan_covers()
+        if self._framed:
+            self._when_booted(self.scan_covers)
+        else:
+            self.scan_covers()
         self._start_looks()                                    # --- SRC W1b: the first look after start (full)
 
     def scan_covers(self, progress=None, then=None):
@@ -4914,6 +4945,9 @@ def _log_unhandled(kind, value, tb):
     sys.__stderr__ and sys.__stderr__.write(text)
 
 
+# E-L2W: the source-folder looks' module, read on a worker after the first frame (`ShellWindow._start_looks`)
+LOOKS_MODULE = "app.services.source_looks"
+
 # Python's lock is handed between threads every 5 ms by default: a busy worker (a service's thread, a pool task) could
 # hold the GUI thread off for that long — over the 4 ms step. 1 ms keeps one wait under the budget (W2.1 review A3).
 SWITCH_INTERVAL_S = 0.001
@@ -4922,8 +4956,10 @@ SWITCH_INTERVAL_S = 0.001
 # stretches waited up to 1 ms at many of those (17–23 ms; 11–14 at this). Under 1 ms Windows' Python waits 0 ms and
 # asks at once, spinning: two busy workers alone took 3.5× as long (and 5.5× the CPU) — so only while the window is
 # awake (`window_idle.busy`), 1 ms again the moment it rests (`window_idle.rest`) — or once its stretch outlasts
-# `window_idle.LONG_S` (a page built in slices, the start: the window never rests, and beside the start's ten busy
-# workers the spin left it ~1 % of the lock — Settings 21 s to build instead of 1.3 s)
+# `window_idle.LONG_S` while a page is built in slices (`window_idle.slice_ran`: Settings, the window never resting
+# between them; beside the start's ten busy workers the spin left it ~1 % of the lock — Settings 21 s to build instead
+# of 1.3 s). The start's own first stretch keeps the fine one (OPEN-GAP: at 1 ms the 20,000-file open's input waited
+# 0.7 s)
 AWAKE_SWITCH_INTERVAL_S = 0.00025
 
 
@@ -4943,7 +4979,8 @@ def wire_idle():
     """The window's idle for its process's background threads (`services.window_idle`): woken → busy, back to wait →
     idle — the event dispatcher's own signals, wired once a process (the writer, the reader and the numbers start a
     step only while the window rests, so a press's stretch never takes turns at Python's lock with them), and while it
-    is awake the lock comes back to it at once (`AWAKE_SWITCH_INTERVAL_S`)."""
+    is awake the lock comes back to it at once (`AWAKE_SWITCH_INTERVAL_S`) — but for a stretch that has run a page's
+    build slices (`window_idle.slice_ran`) and outlasted `window_idle.LONG_S`: that one hands it over as at rest."""
     from PyQt6.QtCore import QAbstractEventDispatcher
     d = QAbstractEventDispatcher.instance()
     if d is None or any(x is d for x in _IDLE_WIRED):

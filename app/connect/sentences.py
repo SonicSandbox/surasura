@@ -41,6 +41,7 @@ import functools
 import logging
 import os
 import re
+import threading
 import time
 import unicodedata
 from collections import namedtuple
@@ -73,6 +74,7 @@ YOUNG_LINES = 4             # ...and how many of a row's leading candidates have
 GROW = 4                    # the score's path: a row whose best lines the cut can't make is asked again for this many
 GROW_MOST = 2048            # ...times more lines, up to this many (or every line it has)
 DATES_KEPT_S = 3600         # the library's dates kept between picks while the store's file is unchanged: an hour at most
+DATES_AHEAD_WAIT_S = 30     # ...and a read of them waits this long at most for the one read ahead (`dates_ahead`)
 
 # One sentence a word can be cut from: its file and item (None: no library item), the text, how many other words in it
 # you don't know, its weight (young words + context), whether it is the episode being mined, whether it is heard at
@@ -210,6 +212,9 @@ def _library(language, store=None, ai=False, only=None, scored=False):
         place = {item_id: n for n, item_id in enumerate(library.ahead(store))}
         paired = library.paired_parts(store)
         root = get_data_path(language)
+        # (the score's read, every file: a path from the folder's own join, the same string as os.path.join(root,
+        # *parts) for parts that are neither empty nor a drive — the others take os.path.join itself)
+        head = os.path.join(root, "x")[:-1] if scored else None
         out = {}
         query = ("SELECT i.id, i.rel_path, i.tier, i.watched, i.work_id, i.parent_folder, i.source_type, w.media_type "
                  "FROM items i LEFT JOIN works w ON w.id = i.work_id")
@@ -231,7 +236,12 @@ def _library(language, store=None, ai=False, only=None, scored=False):
             seen = own_date or show.get("watched_at") or show.get("finished_at")
             if not seen and (watched or show.get("finished") or tier == "graduated"):
                 seen = "earlier"            # a mark made before the store kept dates (Kyou-PB, PROVISIONAL)
-            path = os.path.join(root, *str(rel).replace("\\", "/").split("/"))
+            slashed = str(rel).replace("\\", "/")
+            parts = slashed.split("/")
+            if head is not None and "" not in parts and ":" not in slashed:
+                path = head + os.sep.join(parts)
+            else:
+                path = os.path.join(root, *parts)
             text = library.text_only({"rel_path": rel, "source_type": source_type})
             show_only = False
             if (scored and not own_date and not watched and tier != "graduated" and not show.get("finished")
@@ -351,7 +361,7 @@ def _from_list(language, kept, listed, here_key, never, young, files, reach, boo
     stamp), its media there (`reach`), never a line of `never`. The young words are read for a row's first
     YOUNG_LINES of those only (a sentence's known words are the token store's, a file decoded for each): they order
     a row's best-placed candidates, the rest weigh by context. `window`: the learner's length range as the library
-    search reads it (`sentence_corpus.length_range`)."""
+    search reads it (`sentence_corpus.length_range`: at `plan_rules.SENTENCE_TABLE` >= 2 from one character)."""
     from app import plan_rules, token_index, sentence_corpus
     from app.connect import library
     from app.path_utils import get_data_path
@@ -367,7 +377,7 @@ def _from_list(language, kept, listed, here_key, never, young, files, reach, boo
             row = sentences[s] if 0 <= s < len(sentences) else None
             if (row is None or not row[plan_rules.TEXT] or not window[0] <= len(row[plan_rules.TEXT]) <= window[1]
                     or row[plan_rules.HASH] in seen):
-                continue        # a length outside the learner's range is no candidate (the library search's window)
+                continue        # a length outside the library search's window is no candidate
             seen.add(row[plan_rules.HASH])
             line.append(s)
         lines[key] = line
@@ -493,7 +503,10 @@ def _from_list(language, kept, listed, here_key, never, young, files, reach, boo
 # --------------------------------------------------------------------------------------------------------------- #
 # The score's path (the sentence choice, release 1: `plan_rules.SENTENCE_TABLE` >= 1 with a table there)
 # --------------------------------------------------------------------------------------------------------------- #
-_DATES = {}                 # (language, ai) -> (the store file's stamp, when read, `_library`'s, the score's files)
+_DATES = {}                 # (language, ai) -> (the store file's stamp, when read, `_library`'s, the score's files,
+                            # the store's own count of what changed then: `_store_state`)
+_AHEAD = {}                 # (language, ai) -> the thread reading them ahead (`dates_ahead`), the last one started
+_AHEAD_LOCK = threading.Lock()
 
 
 def _store_stamp(language):
@@ -515,31 +528,96 @@ def _store_stamp(language):
         return None
 
 
-def _dates(language, ai):
+def _store_state(language):
+    """The store's own count of what changed (`library_store.read_state`: its id, epoch and `state_version`), or None
+    (can't tell): what the file's stamp moving says only when this moved too — the export's own commit after a move
+    (`spawn_maintain`'s, a second or two into a Generate or redraw) and a checkpoint move the stamp, never this."""
+    try:
+        from app import library_store
+        from app.path_utils import get_data_path
+        return library_store.read_state(language, get_data_path(language))
+    except Exception:
+        return None
+
+
+def _dates(language, ai, wait=True):
     """(`_library`'s answer with the show-only mark, the score's {path: Seen}) for the whole library, read once and
-    kept between picks while the store's file is unchanged, an hour at most (days pass) — one read of the store was
-    nearly all of a pick's time (SPEC § 5.3); a paired book's hearing asked again at every pick (`_heard_now`)."""
+    kept between picks while the store's file is unchanged — or, its stamp moved, while the store's own count of what
+    changed holds (`_store_state`: the export's commit after a move, a checkpoint) — an hour at most (days pass): one
+    read of the store was nearly all of a pick's time (SPEC § 5.3); a paired book's hearing asked again at every pick
+    (`_heard_now`). A read
+    ahead of them still running (`dates_ahead`) is waited for, DATES_AHEAD_WAIT_S at most: its answer is then kept
+    (`wait` False: that read's own call)."""
+    ahead = _AHEAD.get((language, ai)) if wait else None
+    if ahead is not None:
+        ahead.join(DATES_AHEAD_WAIT_S)
+        with _AHEAD_LOCK:                   # (waited for once: a read stuck past the wait is never waited for again)
+            if _AHEAD.get((language, ai)) is ahead:
+                del _AHEAD[(language, ai)]
     stamp = _store_stamp(language)          # (before the read: a commit during it is read again next time)
     now = time.monotonic()
     hit = _DATES.get((language, ai))
-    if hit is not None and stamp is not None and hit[0] == stamp and now - hit[1] < DATES_KEPT_S:
+    kept = hit is not None and stamp is not None and now - hit[1] < DATES_KEPT_S
+    if kept and hit[0] == stamp:
         return _heard_now(hit[2], hit[3], ai)
+    state = _store_state(language) if stamp is not None else None      # (before the read too: as the stamp)
+    if kept and state is not None and state == hit[4]:
+        _DATES[(language, ai)] = (stamp,) + hit[1:]          # only bookkeeping since (the export's commit): kept
+        return _heard_now(hit[2], hit[3], ai)
+    from app import sentence_score
+    from app.connect import lineup
     info = _library(language, None, ai, scored=True)
-    seen = {at: _seen_of(v, ai) for at, v in info.items()}
+    seen = {at: _seen(v, ai, sentence_score.Seen, lineup) for at, v in info.items()}   # (two imports a read, not a file)
     if stamp is None or not info:           # (an empty answer — no store, or one busy at its open — is never kept)
         _DATES.pop((language, ai), None)
     else:
-        _DATES[(language, ai)] = (stamp, now, info, seen)
-    return info, seen
+        _DATES[(language, ai)] = (stamp, now, info, seen, state)
+    return _heard_now(info, seen, ai)       # (the same answers as the read's: the next pick's objects from the first)
+
+
+def files_seen(language, ai):
+    """The score's {path: Seen} for the whole library now — the dates Connect's card weighs (`_dates`: one read, kept
+    while the store is unchanged, a read ahead waited for): what the level-2 list asks (`analyzer.ListSentences`), so
+    the list shows what a card would get."""
+    return _dates(language, ai)[1]
+
+
+def dates_ahead(language, ai):
+    """The library's dates (`_dates`) read now on a thread of its own, so the asker goes on — Connect's run to its
+    shelf and its first job (SPEC § 6.3 row 16), a level-2 Generate or redraw to its plan (`analyzer.main`): the next
+    read of (`language`, `ai`) waits for this one and takes what it kept. One read ahead at a time a (language, ai);
+    one that failed leaves nothing kept (the next reads itself)."""
+    key = (language, ai)
+    with _AHEAD_LOCK:
+        thread = _AHEAD.get(key)
+        if thread is None or not thread.is_alive():
+            thread = threading.Thread(target=_read_dates, args=key, name=f"surasura-dates-{language}", daemon=True)
+            thread.start()                  # (kept once started: one that could not start is never waited for)
+            _AHEAD[key] = thread
+    return thread
+
+
+def _read_dates(language, ai):
+    try:
+        _dates(language, ai, wait=False)
+    except Exception:
+        log.info("Connect: the library's dates weren't read ahead (%s)", language, exc_info=True)
 
 
 def _seen_of(v, ai):
     """`_library`'s value -> the score's `Seen`: a lined-up book heard line by line, its line-up's answer (Kyou-PB)."""
     from app import sentence_score
     from app.connect import lineup
+    return _seen(v, ai, sentence_score.Seen, lineup)
+
+
+def _seen(v, ai, seen, lineup):
     if isinstance(v[2], lineup.Reach):
-        return sentence_score.Seen(v[0], v[1], REAL, v[4], functools.partial(lineup.said, v[2]), heard(True, False, ai))
-    return sentence_score.Seen(v[0], v[1], v[2], v[4])
+        return seen(v[0], v[1], REAL, v[4], functools.partial(lineup.said, v[2]), heard(True, False, ai))
+    return seen(v[0], v[1], v[2], v[4])
+
+
+_HEARD = {}                 # ai -> (the kept dates' {path: Seen}, each paired book's answer, `_heard_now`'s answer)
 
 
 def _heard_now(info, seen, ai):
@@ -550,39 +628,69 @@ def _heard_now(info, seen, ai):
     paired = [at for at, v in info.items() if len(v) > 5 and v[5] is not None]
     if not paired:
         return info, seen
-    info, seen, reach = dict(info), dict(seen), {}
+    reach = {}
     for at in paired:
-        v = info[at]
-        key, record = v[5]
+        key, record = info[at][5]
         if key not in reach:
             try:
                 reach[key] = lineup.reach(record)
             except Exception:       # a line-up's state not as written: no clip promised (`_library`'s rule)
                 reach[key] = None
-        got = reach[key]
+    # (each book's answer the same object as the pick before — `lineup.reach` keeps one while its files are unchanged —
+    # so the fresh dates are the same: the same objects back, and the score keeps its files' arrays by them)
+    was = _HEARD.get(ai)
+    if was is not None and was[0] is seen and was[1].keys() == reach.keys() and all(
+            was[1][k] is got for k, got in reach.items()):
+        return was[2]
+    kept_seen, info, seen = seen, dict(info), dict(seen)
+    for at in paired:
+        v = info[at]
+        got = reach[v[5][0]]
         info[at] = v[:2] + (got if isinstance(got, lineup.Reach) else heard(v[3], got is not None, ai),) + v[3:]
         seen[at] = _seen_of(info[at], ai)
+    _HEARD[ai] = (kept_seen, reach, (info, seen))
     return info, seen
+
+
+_SINCE = {}                 # language -> (the table's and the two marks files' stamps, `known_since`'s answer)
+
+
+def _stamp(path):
+    try:
+        st = os.stat(path)
+        return st.st_mtime_ns, st.st_size
+    except OSError:
+        return None
 
 
 def known_since(language):
     """The words marked Known or Ignore since the last Generate wrote its table -> {(lemma, "")} (every row of the
     lemma): the window's own rule (`word_marks.left_out`, what its numbers leave out at once) — so a sentence holding a
-    word you marked since counts it known at once (SPEC § 5.4). {} when nothing was marked since, or unreadable."""
+    word you marked since counts it known at once (SPEC § 5.4). {} when nothing was marked since, or unreadable. Kept
+    while the table and both marks files (`word_marks.marks_files`) are as they were: a pick parsed them every time."""
     try:
+        from app import sentence_score
+        sentence_score.numpy_one_thread()           # (before the table brings numpy in: its BLAS held to one thread)
         from app import sentence_table
         from app.path_utils import get_user_file
         from app.services import word_marks
-        since = os.stat(os.path.join(get_user_file("results"), sentence_table.TABLE_FILE)).st_mtime_ns
-        return {(word, "") for word in word_marks.left_out(language, since_ns=since)}
+        table = os.path.join(get_user_file("results"), sentence_table.TABLE_FILE)
+        stamps = (_stamp(table),) + tuple(_stamp(p) for p in word_marks.marks_files(language))
+        hit = _SINCE.get(language)
+        if hit is not None and hit[0] == stamps:
+            return hit[1]
+        got = frozenset((word, "") for word in word_marks.left_out(language, since_ns=os.stat(table).st_mtime_ns))
+        _SINCE[language] = (stamps, got)
+        return got
     except Exception:
         return set()
 
 
 def read_ahead(language):
-    """Connect's read-ahead for a session (its `prepare`): at level >= 1, the table's head and the library's dates read
-    now, so the first pick of the session reads only its words' blocks -> True when a table was there. Level 0, no
-    table, any failure: False, nothing kept. The window's process never calls it (SPEC § 6.3 row 16)."""
+    """Connect's read-ahead for a session (its `prepare`): at level >= 1, the table's head read now and the library's
+    dates on a thread of their own (`dates_ahead`: the run goes on to its shelf meanwhile), so the first pick of the
+    session reads only its words' blocks -> True when a table was there. Level 0, no table, any failure: False,
+    nothing kept, no thread. The window's process never calls it (SPEC § 6.3 row 16)."""
     from app import plan_rules
     if plan_rules.SENTENCE_TABLE < 1:
         return False
@@ -590,11 +698,27 @@ def read_ahead(language):
         from app import sentence_score, settings_manager
         if sentence_score.choose(language, (), moment=sentence_score.Moment(), length=(1, 1)) is None:
             return False
-        _dates(language, ai_voice(settings_manager.load_settings(), language))
+        dates_ahead(language, ai_voice(settings_manager.load_settings(), language))
         return True
     except Exception:
         log.info("Connect: the sentence table wasn't read ahead (%s)", language, exc_info=True)
         return False
+
+
+_UNNAMED = {}               # ai -> how a file outside the store is heard (`_unnamed_of`)
+
+
+def _unnamed_of(ai):
+    """How a file outside the store is heard — a book or a text by its own extension -> REAL / AI_VOICE / SILENT: the
+    moment's `unnamed`, one function for each `ai` (the score keeps its files' arrays while it is the same object)."""
+    got = _UNNAMED.get(ai)
+    if got is None:
+        from app.connect import library
+
+        def got(path):
+            return heard(library.text_only({"rel_path": path}), False, ai)
+        _UNNAMED[ai] = got
+    return got
 
 
 def _scored(language, keys, here_key, never, young, files, reach, books, ai, settings, only=None, top=TOP):
@@ -609,7 +733,8 @@ def _scored(language, keys, here_key, never, young, files, reach, books, ai, set
     merely worse: a video whose media can't be cut (`reach`), a book's line where books can't be mined (`books`
     off); a silent line is weighed, never removed. A lined-up book's line its line-up never says is weighed as its
     own book with no audiobook inside the score (`_dates`: `Seen.said`, line by line — the lead's ruling, 2026-11-23);
-    a file outside the store, which the score hears by its own clip, is moved by the two hearing rates here."""
+    a file outside the store is heard inside the score by Connect's own rule (`_unnamed_of`); a line Connect hears
+    otherwise than the score did is moved by the two hearing rates here."""
     from app import plan_rules
     if plan_rules.SENTENCE_TABLE < 1:
         return None
@@ -617,7 +742,8 @@ def _scored(language, keys, here_key, never, young, files, reach, books, ai, set
     from app.connect import library
     info, seen = _dates(language, ai)
     _lo, _hi, low, high = sentence_corpus.length_range(settings)
-    moment = sentence_score.Moment(files=seen, young=dict(young or {}), known=known_since(language))
+    moment = sentence_score.Moment(files=seen, young=dict(young or {}), known=known_since(language),
+                                   unnamed=_unnamed_of(ai))
     rate = sentence_score.rates()
     hearing = {REAL: rate.heard_real, AI_VOICE: rate.heard_ai, SILENT: rate.heard_silent}
     inside = only
@@ -669,8 +795,9 @@ def _scored(language, keys, here_key, never, young, files, reach, books, ai, set
         for key, lines in got.items():
             choices = [c for c in map(as_choice, lines) if c is not None]
             out[key] = choices
-            if len(choices) < top and len(lines) >= n and n < GROW_MOST:
-                again.append(key)           # some of its best lines can't be made: ask for more of them
+            unheard = heard_first and lines and lines[0].heard is not SILENT and not any(c.audio for c in choices)
+            if (len(choices) < top or unheard) and len(lines) >= n and n < GROW_MOST:
+                again.append(key)           # some of its best lines (or its heard ones) can't be made: ask for more
         asked, n = again, n * GROW
     if here_key and only is None:
         lacking = [key for key, choices in out.items() if not any(c.here for c in choices)]
@@ -713,7 +840,7 @@ def lines_in(language, keys, path, *, young=None):
 
 
 def choose(language, keys, *, here=None, dial=None, never=None, young=None, files=None, reach=None, store=None,
-           books=True):
+           books=True, top=TOP):
     """The sentences each word's card can be cut from -> {(lemma, reading): [Choice, …]}, best first by the dial
     (the module's docstring); a word with no sentence: []. `keys`: [(lemma, reading)]; `here`: the episode's subtitle
     (Nearest: its lines first; Best: one candidate, kept on a tie); `dial`: NEAREST / BEST, None = the learner's
@@ -723,7 +850,8 @@ def choose(language, keys, *, here=None, dial=None, never=None, young=None, file
     media can't be cut is no choice; a book's or a text's line isn't asked (`heard`: with a `reach`, one heard by
     nothing is no choice); `books`: can a book's or a text's line be mined at all (Connect: while Anki Miner reads
     books). A sentence of the library outside the learner's length range is not a candidate
-    (the corpus's window), so a word met only in short lines gets [] here and keeps its own episode's line.
+    (the corpus's window), so a word met only in short lines gets [] here and keeps its own episode's line — at
+    `plan_rules.SENTENCE_TABLE` >= 2 only one over the range's top is: a short line is a candidate (SPEC § 4.6).
 
     A word that is a row of the list (a word with no reading: the lemma's one row, `_row_of`) gets the list's
     candidates (`_from_list`: the module's docstring) — Best, and Nearest asked with no `here`; at most TOP, and the
@@ -732,7 +860,9 @@ def choose(language, keys, *, here=None, dial=None, never=None, young=None, file
 
     At `plan_rules.SENTENCE_TABLE` >= 1 with a table there, a word that is a row of the table is chosen by the score
     instead (`_scored`: every line of the word, one cost, `Choice.cost` set) — Nearest inside the mined episode alone;
-    with no table (never generated since, another engine, damaged) everything above, as today."""
+    with no table (never generated since, another engine, damaged) everything above, as today. `top`: how many of the
+    score's lines a word gets back at most (the card reads its first and the mined episode's own, Swap the first it can
+    use: each asks for 1 — every line returned is read from the token store); the score's lines only."""
     from app import settings_manager, sentence_corpus, analyzer, token_index
     keys = list(dict.fromkeys(tuple(k) for k in keys or ()))
     if not keys:
@@ -747,7 +877,7 @@ def choose(language, keys, *, here=None, dial=None, never=None, young=None, file
     nearest = dial == NEAREST and here_key
     try:
         scored = _scored(language, keys, here_key, never, young, files, reach, books, ai, settings,
-                         only=[here_key] if nearest else None)
+                         only=[here_key] if nearest else None, top=top)
     except Exception:                       # the score's path never makes a pick worse than today's: today's
         log.info("Connect: the sentence score wasn't asked (%s)", language, exc_info=True)
         scored = None

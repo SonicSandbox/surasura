@@ -14,6 +14,7 @@ from app.services import phase as P
 from app.services import status as S
 from app.services.jobs import JobRegistry
 from app.services.press import Presses
+from tests.flake_lints import _parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -43,7 +44,7 @@ def registered_kinds():
             for name in names:
                 if name.endswith(".py"):
                     path = os.path.join(folder, name)
-                    tree = ast.parse(open(path, encoding="utf-8").read())
+                    tree = _parse(ROOT, os.path.relpath(path, ROOT).replace(os.sep, "/"))   # (parsed once a run)
                     files.append((path, tree))
                     for k, v in _constants(tree).items():
                         consts.setdefault(k, v)
@@ -67,17 +68,17 @@ def registered_kinds():
                 return set()                                                  # arrivals-<lang>: in RESOURCES
             return None
 
-        passed = set()                    # a function's own parameter (`tools.run`'s `kind`): its callers are read
-        for fn in ast.walk(tree):
-            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                for call in ast.walk(fn):
-                    if isinstance(call, ast.Call):
-                        names = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
-                        if any(isinstance(a, ast.Name) and a.id in names for a in call.args[:2]):
-                            passed.add(id(call))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute) or id(node) in passed:
+        todo = [(tree, frozenset())]      # (a node, the parameters of every function around it): one walk a file
+        while todo:
+            node, params = todo.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                params = params | {a.arg for a in node.args.args + node.args.kwonlyargs}
+            todo.extend((child, params) for child in ast.iter_child_nodes(node))
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute) \
+                    or node.func.attr not in ("submit", "record", "run"):
                 continue
+            if any(isinstance(a, ast.Name) and a.id in params for a in node.args[:2]):
+                continue                  # a function's own parameter (`tools.run`'s `kind`): its callers are read
             receiver = ast.unparse(node.func.value)
             arg = None
             if node.func.attr in ("submit", "record") and ("registry" in receiver or receiver.endswith("[0]")):

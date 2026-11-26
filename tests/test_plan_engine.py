@@ -25,13 +25,16 @@ from tests import plan_file_cases as cases
 from tests.test_plan_file import (PRIORITY_COLUMNS, PROGRESSIVE_COLUMNS, _same, read_csv, read_run, replay,
                                   _rp2_orders)
 
+# why: this file proves the format-4 plan's engine (its re-pick from the pools / per-file first sentences, the lean
+# load without them, format 5 a foreign one): the path level 0 runs, which E-RETIRE removes with this file's rewrite.
+pytestmark = pytest.mark.usefixtures("level_0")
 
 # --------------------------------------------------------------------------------------------------------------- #
 # The runs
 # --------------------------------------------------------------------------------------------------------------- #
 
 @pytest.fixture(scope="module")
-def runs(tmp_path_factory):
+def runs(module_level_0, tmp_path_factory):
     """Each case's library and its Generate, in its own order (a child process each, as the dashboard runs it)."""
     out = {}
     for case in cases.ALL_CASES:
@@ -43,7 +46,7 @@ def runs(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
-def other_orders(runs, tmp_path_factory):
+def other_orders(module_level_0, runs, tmp_path_factory):
     """RP-2's other orders of the cases the parity test moves, each a full Generate of that order."""
     out = {}
     for case, name in ORDERED:

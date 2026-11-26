@@ -269,6 +269,23 @@ def test_a_window_whose_main_window_is_gone_counts_as_gone(qapp):
     assert services.settings.flush(10)
 
 
+@pytest.mark.parametrize("said", ["Nothing was changed. Connect is making cards right now: sort your library again "
+                                  "once they're made.", "Added: 1"])
+def test_a_line_said_in_the_bar_outlasts_the_next_status_update_then_gives_the_slot_back(main, said):
+    # Send report (3.0.18): `say_in_bar` wrote straight into the bar, so the next status snapshot overwrote a press's
+    # answer at once (an empty bar after a refused Sort again). Every caller goes through `shell.say`: the line holds
+    # the slot for DRAG["message-ms"], then the status line is back
+    import time
+    status = main.services.status.snapshot()._replace(lines=("Anki · 250 waiting",), bar_lines=None)
+    main.show_status(status)
+    windows.say_in_bar(main, said)
+    main.show_status(status)
+    assert main.bar_line.full() == said
+    main._message_until = time.monotonic() - 1                          # its time is up
+    main._paint_slot()
+    assert main.bar_line.full() == "Anki · 250 waiting"
+
+
 def test_a_door_whose_rule_fails_stays_hidden(main, monkeypatch):
     def broken(_s, _lang):
         raise KeyError("enable_koe")

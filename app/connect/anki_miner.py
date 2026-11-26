@@ -9,7 +9,8 @@ timeout and is killed at it; nothing opens a window (CREATE_NO_WINDOW).
   its default folder (%LOCALAPPDATA%\\Programs\\AnkiMiner). Absent -> None: the mine step is `skipped`, never an error.
 - `version`, `profiles`, `settings_export` — read once a Connect run, again after any failure, every 15 min and
   whenever Anki Miner's program or settings files change (`stamp`; LF-mining row 25, amending E10's "read before
-  every batch, never cached": PROVISIONAL, Michi's technical rule; `verbs._anki_miner_setup`); `check` before every batch, never cached (E9, E10: it updates itself).
+  every batch, never cached": PROVISIONAL, Michi's technical rule; `verbs._anki_miner_setup`) — `version` and
+  `profiles` kept from one run to the next while they hold (`kept_look_ups`, DSA-CONNECT 2); `check` before every batch, never cached (E9, E10: it updates itself).
 - `mine_batch(...)` — one batch, holding Surasura's Anki-write lock (`anki-writer`, E1.4) from start to end: the
   version and `features` read again (or handed in: `known`), the profile chosen (`choose_profile`), the whitelist
   file rewritten (N10, until Z-1), the run file written (`runfile`: from 3.7, one entry a word, its `surface` and
@@ -28,6 +29,7 @@ Anki Miner that doesn't name `reading`, Z-9: never sent), `no-audio` (the same f
 `unreadable` (a video, audio file, subtitle or book it can't read), `setup` (its
 setup is incomplete: `check`'s items name what), `absent`.
 """
+import contextlib
 import json
 import os
 import shutil
@@ -253,6 +255,163 @@ def stamp(path):
         return None
 
 
+# DSA-CONNECT 2: Anki Miner's `version` and `profiles` answers kept from one Connect run to the next, beside the run's
+# own set (`verbs._anki_miner_setup`, row 25), so a run's first pick starts Anki Miner once (its `settings-export`)
+# where it started it three times (~1.2 s each). Each answer is a function of what `stamp` watches (3.13's
+# `cli/api/commands.py`: the program; the profiles folder and gui_config.json): kept while the program, its home, the
+# installer's version and the stamp are the same; dropped by Surasura's own writes to Anki Miner (`DROPS`: *Finish its
+# setup*'s `settings-import` and `setup`) and by any failure (`verbs.drop_anki_miner_held`). Never the export: it may
+# hold a key (clips: never kept on disk).
+LOOK_UPS_KEPT = "anki-miner-look-ups.json"
+DROPS = frozenset(("settings-import", "setup"))
+
+
+def _kept_path(name=LOOK_UPS_KEPT):
+    from app.path_utils import get_local_data_path
+    return os.path.join(get_local_data_path(), "connect", name)
+
+
+def _kept_key(path, now):
+    """What the kept answers hold for, as JSON reads it back (its tuples lists)."""
+    return json.loads(json.dumps({"program": os.path.normcase(os.path.abspath(path)),
+                                  "home": os.path.normcase(os.path.abspath(home())),
+                                  "installed": installed_version(), "stamp": now}))
+
+
+def kept_look_ups(path, now):
+    """(the `version` answer, the `profiles` list) kept for the Anki Miner at `path` whose files stamp `now`, or None
+    (none kept, another program or home, an update, a file changed, unreadable)."""
+    if now is None or not path:
+        return None
+    try:
+        with open(_kept_path(), encoding="utf-8") as f:
+            kept = json.load(f)
+        if not isinstance(kept, dict) or kept.get("key") != _kept_key(path, now):
+            return None
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return None                     # (none kept, unreadable; a test with no root keeps none)
+    info, listed = kept.get("version"), kept.get("profiles")
+    return (info, listed) if isinstance(info, dict) and isinstance(listed, list) else None
+
+
+def keep_look_ups(path, now, info, listed):
+    """Keep `info` (a `version` answer) and `listed` (`profiles`), read while the files stamped `now`. Atomically
+    (temp + replace); a failure costs only the next run's look-ups. Never raises."""
+    if now is None or not path:
+        return
+    _write_kept(LOOK_UPS_KEPT, lambda: {"key": _kept_key(path, now), "version": info, "profiles": listed})
+
+
+def _write_kept(name, made):
+    """`made()` written as the kept file `name`, atomically (temp + replace). Never raises."""
+    try:
+        target = _kept_path(name)
+    except RuntimeError:
+        return                          # (a test with no root keeps none)
+    temp = f"{target}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(temp, "w", encoding="utf-8") as f:
+            json.dump(made(), f, ensure_ascii=False)
+        os.replace(temp, target)
+    except (OSError, TypeError, ValueError):
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+
+
+def drop_look_ups():
+    """The kept answers gone — the look-ups and `speech_ready`'s kept no alike: the next run's first pick reads Anki
+    Miner again, and its speech check asks `check` again. Never raises."""
+    for name in (LOOK_UPS_KEPT, NO_SPEECH_KEPT):
+        try:
+            os.remove(_kept_path(name))
+        except (OSError, RuntimeError):
+            pass                        # (none kept; a test with no root never kept one)
+
+
+# DSA-CONNECT 4: `speech_ready`'s no kept from one Connect run to the next (it asked `check`, and imported a model,
+# at every run: ~1.2 s a start). What `check` reads for its `speech_model` item (3.13's `readiness.speech_problem`) is
+# the profile's settings (`asr_model`, `asr_device`, its language: the files `stamp` watches), the program, and its
+# home's speech folders — `asr_models` (the models, `ggml/` beside them) and `asr_pack` (the engine) — so the no is
+# kept while all are as they were: `_kept_key`'s program, home, installer's version and stamp, and `speech_folders`'
+# entries two levels down with their stamps (a model installed in Anki Miner's own window shows there). Dropped with
+# the kept look-ups by Surasura's own writes (`DROPS`) and every failure. Never a yes (asked again each run) and never
+# a no only a busy Anki Miner gave (Michi-T1).
+NO_SPEECH_KEPT = "anki-miner-no-speech.json"
+SPEECH_FOLDERS = ("asr_models", "asr_pack")
+NO_SPEECH_KEEP = 8                      # (language, profile) answers kept at most
+
+
+def speech_folders():
+    """Anki Miner's speech folders (`SPEECH_FOLDERS`, in its home) as a change signal: each entry's (name, mtime_ns,
+    size), and the same for the entries of each folder inside them; a folder not there -> (); unreadable -> None.
+    Two levels, a few dozen entries: a model or the engine is put in place whole (its folder, or a file in `ggml/`)."""
+    def listing(folder, depth):
+        try:
+            with os.scandir(folder) as found:
+                entries = sorted(found, key=lambda e: e.name)
+        except FileNotFoundError:
+            return ()
+        out = []
+        for e in entries:
+            st = os.stat(e.path, follow_symlinks=False)  # (never DirEntry.stat: on Windows it is the folder index's
+            #   copy, updated late — a file just written in a folder inside reads its old time and size there)
+            inner = listing(e.path, depth - 1) if depth > 1 and e.is_dir(follow_symlinks=False) else None
+            out.append((e.name, st.st_mtime_ns, st.st_size, inner))
+        return tuple(out)
+    try:
+        return tuple((name, listing(os.path.join(home(), name), 2)) for name in SPEECH_FOLDERS)
+    except OSError:
+        return None
+
+
+def _no_speech_key(path, now, folders):
+    return dict(_kept_key(path, now), speech=json.loads(json.dumps(folders)))
+
+
+def _kept_no_speech(path, now, folders):
+    """The kept nos' [language, profile] entries while they hold for the Anki Miner at `path` whose files stamp `now`
+    and whose speech folders read `folders`, else []."""
+    if now is None or folders is None or not path:
+        return []
+    try:
+        with open(_kept_path(NO_SPEECH_KEPT), encoding="utf-8") as f:
+            kept = json.load(f)
+        if not isinstance(kept, dict) or not isinstance(kept.get("no"), list) or                 kept.get("key") != _no_speech_key(path, now, folders):
+            return []
+        return kept["no"]
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return []                       # (none kept, unreadable; a test with no root keeps none)
+
+
+def kept_no_speech(path, language, profile):
+    """True when `speech_ready` said no for `language` under `profile` in an earlier run and nothing `check` reads for
+    it has changed since (the program, its settings files, its speech folders). Never raises."""
+    try:
+        return [language, profile] in _kept_no_speech(path, stamp(path), speech_folders())
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return False
+
+
+def _keep_no_speech(path, now, folders, entries):
+    if now is None or folders is None or not path:
+        return
+    _write_kept(NO_SPEECH_KEPT, lambda: {"key": _no_speech_key(path, now, folders), "no": entries[-NO_SPEECH_KEEP:]})
+
+
+def keep_no_speech(path, language, profile, now, folders, kept=None):
+    """Keep `speech_ready`'s no for `language` under `profile`, answered while Anki Miner's files stamped `now` (taken
+    before the last `check`) and its speech folders were `folders` (taken before the first); `kept`: the entries
+    already kept for that key, when the caller has read them. Never raises."""
+    try:
+        kept = _kept_no_speech(path, now, folders) if kept is None else kept
+        _keep_no_speech(path, now, folders, [e for e in kept if e != [language, profile]] + [[language, profile]])
+    except (OSError, ValueError, TypeError, RuntimeError):
+        pass
+
+
 WINDOW_MARKER = "instance.window-"     # Anki Miner's window holds instance.window-<pid>.lock in its home while open
 
 
@@ -381,7 +540,113 @@ def _communicate(proc, timeout, on_poll=None, look_up=False):
     return stopping.wait(proc, timeout, on_poll, _stop, look_up=look_up, every=POLL_S)[0]
 
 
-def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None, bind=True, look_up=None, env=None, below=False):
+# CONNECT-RACE (2026-11-25, E-HIST 2's Best smokes): Anki Miner's `settings-import` rewrites a profile's file (3.13
+# `ProfileStore.write_profile`: a temp file replaced in) under its run lock, but `check`, `settings-export`, `media`,
+# `render` … read that file with no lock — on Windows a read beside the replace fails (Errno 13: PROFILE_UNREADABLE),
+# and a `mine` beside the write answers BUSY. The speech check beside the mining (`speech_ready`) met the mine's own
+# calls that way: the episode waited with no cards.
+WRITES = frozenset(("settings-import",))     # the one command that writes a profile (3.13 `cli/api/settings_write`)
+RUN_LOCKED = frozenset(("mine", "setup"))     # under Anki Miner's own run lock: a write beside one is BUSY there
+WRITE_BUSY = "Anki Miner is working on another of Surasura's calls. Try again once it has finished."
+
+
+class _Calls:
+    """This process's calls of each Anki Miner (by program path), so a settings write runs alone on its program: it
+    waits for the calls under way to end (each ends within its own timeout; the job's *Stop* ends the wait), and calls
+    asked meanwhile wait for it; a write that meets a mine, a setup or a call `start` left running (hours) is `busy` at
+    once, nothing started — Anki Miner would refuse it, or it would wait for hours. Reads run side by side as before."""
+
+    def __init__(self):
+        self._cond = threading.Condition()
+        self._of = {}           # key -> {"reads": n under way, "long": n of them RUN_LOCKED, "writing": bool,
+        #                                 "wanted": writes waiting, "held": calls waiting (`waiting`)}
+        self._started = {}      # key -> [Popen]: `start`'s calls, under way while their program runs
+        self._here = threading.local()      # .keys: {key: calls this thread has under way} — it never waits on itself
+
+    @staticmethod
+    def _key(path):
+        return os.path.normcase(os.path.abspath(path))
+
+    def _state(self, key):
+        return self._of.setdefault(key, {"reads": 0, "long": 0, "writing": False, "wanted": 0, "held": 0})
+
+    def _running_long(self, key, state):
+        procs = [p for p in self._started.get(key, ()) if p.poll() is None]
+        self._started[key] = procs
+        return bool(state["long"] or procs)
+
+    def _wait(self, key, state, blocked, write):
+        """Wait (the condition held) while `blocked()`; a write meeting a long call -> `busy`; a Stop -> Stopped."""
+        state["held"] += 1
+        try:
+            while True:
+                if write and self._running_long(key, state):   # (looked at again as it goes in, not only while held)
+                    raise AnkiMinerError("busy", WRITE_BUSY, code="BUSY")
+                if not blocked():
+                    return
+                if stopping.pressed():
+                    raise stopping.Stopped()
+                self._cond.wait(POLL_S)
+        finally:
+            state["held"] -= 1
+
+    @contextlib.contextmanager
+    def one(self, path, command, started=()):
+        """One call of `command` on `path`'s Anki Miner, as the class says; `started` (`starting`'s): the programs it
+        started, under way from the moment its own slot ends — in the same hold, so no write slips in between."""
+        key, write = self._key(path), command in WRITES
+        mine = self._here.__dict__.setdefault("keys", {})
+        with self._cond:
+            state = self._state(key)
+            if write:
+                if self._running_long(key, state) or mine.get(key):     # (its own call under way: never a wait on it)
+                    raise AnkiMinerError("busy", WRITE_BUSY, code="BUSY")
+                state["wanted"] += 1
+                try:
+                    self._wait(key, state, lambda: state["writing"] or state["reads"], True)
+                finally:
+                    state["wanted"] -= 1
+                    self._cond.notify_all()
+                state["writing"] = True
+            else:
+                if not mine.get(key):       # a call made inside its own call never waits behind a write wanted
+                    self._wait(key, state, lambda: state["writing"] or state["wanted"], False)
+                state["reads"] += 1
+                state["long"] += command in RUN_LOCKED
+        mine[key] = mine.get(key, 0) + 1
+        try:
+            yield
+        finally:
+            mine[key] -= 1
+            with self._cond:
+                if write:
+                    state["writing"] = False
+                else:
+                    state["reads"] -= 1
+                    state["long"] -= command in RUN_LOCKED
+                if started:
+                    self._running_long(key, state)      # (the ended ones dropped as these go in)
+                    self._started[key].extend(started)
+                self._cond.notify_all()
+
+    @contextlib.contextmanager
+    def starting(self, path, command):
+        """`start`'s call: it waits for a write as any call does, and is under way after while its program runs."""
+        started = []
+        with self.one(path, command, started):
+            yield started.append
+
+    def waiting(self, path):
+        """How many calls wait on `path`'s Anki Miner now (the tests' event: never a sleep)."""
+        with self._cond:
+            return self._of.get(self._key(path), {}).get("held", 0)
+
+
+_CALLS = _Calls()
+
+
+def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None, bind=True, look_up=None, env=None, below=False,
+        keeps=False):
     """Run `<path> --api <args…>` and return its verdict (a dict). Raises AnkiMinerError for a call with no verdict
     (absent, quarantined, crashed, timeout, unknown-version); a verdict with `ok: false` is returned as it is.
     `on_poll`: called every POLL_S while the call runs. A look-up (LOOK_UPS) still under way at the job's *Stop* is
@@ -390,29 +655,53 @@ def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None, bind=True, look_up=None
     whenever Surasura quits (review A2-4). `look_up` True: ended at the job's *Stop* as a look-up is (Stage B's
     spot-check: `media` and `transcribe` write only their own run folder). `env`: the program's environment (Michi-YT:
     `fetch` with the YouTube downloader's yt-dlp on its PATH), else this process's. `below`: started below normal
-    priority (`_popen`)."""
+    priority (`_popen`). A settings write runs alone on its program (`_Calls`, CONNECT-RACE): a call may first wait
+    for one, and a write for the calls under way — or it is `busy` at once beside a mine, a setup or a started call.
+    `keeps` (DSA-CONNECT 4: `settings_import`'s, for an `asr_model` alone on an existing profile, which changes no
+    `version` or `profiles` answer and no kept no — `speech_ready` tries every model whichever the profile holds):
+    the kept answers that held just before the write are kept again for the files' stamp after it, inside the write's
+    own hold (nothing else writes meanwhile); a write that fails, or whose value Anki Miner refused, drops them as any
+    other does."""
     flags = CREATE_NO_WINDOW if sys.platform == "win32" else 0
     if look_up is None:
         look_up = bool(args) and args[0] in LOOK_UPS    # row 56: read before the program starts, never after
-    try:
-        proc = _popen(_command(path) + ["--api", *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                      stderr=subprocess.DEVNULL, creationflags=flags, env=env, below=below)
-        if bind:
-            _bind(proc)
-    except FileNotFoundError:
-        raise AnkiMinerError("absent", "Anki Miner isn't installed where Surasura looked.") from None
-    except OSError as e:
-        if getattr(e, "winerror", None) == WINERROR_VIRUS:
-            raise AnkiMinerError("quarantined", "Windows Security blocked Anki Miner. Check Windows Security → "
-                                 "Protection history, then allow it if you trust it.") from None
-        raise AnkiMinerError("crashed", f"Anki Miner couldn't be started: {e}") from None
-    try:
-        stdout = _communicate(proc, timeout, on_poll, look_up=look_up)
-    except subprocess.TimeoutExpired:
-        _stop(proc)
-        raise AnkiMinerError("timeout", f"Anki Miner didn't answer within {int(timeout)} s, so it was stopped.") \
-            from None
-    return _verdict(proc.returncode, stdout)
+    dropping = bool(args) and args[0] in DROPS
+    with _CALLS.one(path, args[0] if args else None):
+        held = None
+        if dropping:
+            if keeps:
+                now, folders = stamp(path), speech_folders()
+                held = (kept_look_ups(path, now), _kept_no_speech(path, now, folders))
+            drop_look_ups()             # DSA-CONNECT 2: Anki Miner's settings rewritten: never answered from before
+        try:
+            proc = _popen(_command(path) + ["--api", *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, creationflags=flags, env=env, below=below)
+            if bind:
+                _bind(proc)
+        except FileNotFoundError:
+            raise AnkiMinerError("absent", "Anki Miner isn't installed where Surasura looked.") from None
+        except OSError as e:
+            if getattr(e, "winerror", None) == WINERROR_VIRUS:
+                raise AnkiMinerError("quarantined", "Windows Security blocked Anki Miner. Check Windows Security → "
+                                     "Protection history, then allow it if you trust it.") from None
+            raise AnkiMinerError("crashed", f"Anki Miner couldn't be started: {e}") from None
+        try:
+            stdout = _communicate(proc, timeout, on_poll, look_up=look_up)
+        except subprocess.TimeoutExpired:
+            _stop(proc)
+            raise AnkiMinerError("timeout", f"Anki Miner didn't answer within {int(timeout)} s, so it was stopped.") \
+                from None
+        finally:
+            if dropping:
+                drop_look_ups()         # (again once it ended: a look-up beside it keeps nothing of before)
+        verdict = _verdict(proc.returncode, stdout)
+        if held is not None and verdict.get("ok") and not (verdict.get("result") or {}).get("invalid_fields"):
+            now = stamp(path)           # (the stamp the write left: the next run's)
+            if held[0] is not None:
+                keep_look_ups(path, now, *held[0])
+            if held[1]:
+                _keep_no_speech(path, now, folders, held[1])
+        return verdict
 
 
 def _verdict(returncode, stdout):
@@ -436,19 +725,24 @@ def start(path, args, out, bind=True):
     stderr nowhere, no window, and bound to this process (`_bind`: it ends with Connect; Anki Miner keeps each audio
     file it finished, so the next start goes on from there) — `bind` False for Anki Miner's own setup, which finishes
     whenever Connect quits (review B-17). -> the Popen (`ended` reads its verdict). Raises
-    AnkiMinerError `absent` / `quarantined` / `crashed` as `api` does."""
+    AnkiMinerError `absent` / `quarantined` / `crashed` as `api` does. It waits for a settings write as `api`'s calls
+    do, and a write meets it with `busy` while it runs (`_Calls`, CONNECT-RACE)."""
     flags = CREATE_NO_WINDOW if sys.platform == "win32" else 0
-    try:
-        with open(out, "wb") as f:
-            proc = _popen(_command(path) + ["--api", *args], stdin=subprocess.DEVNULL, stdout=f,
-                          stderr=subprocess.DEVNULL, creationflags=flags)
-    except FileNotFoundError:
-        raise AnkiMinerError("absent", "Anki Miner isn't installed where Surasura looked.") from None
-    except OSError as e:
-        if getattr(e, "winerror", None) == WINERROR_VIRUS:
-            raise AnkiMinerError("quarantined", "Windows Security blocked Anki Miner. Check Windows Security → "
-                                 "Protection history, then allow it if you trust it.") from None
-        raise AnkiMinerError("crashed", f"Anki Miner couldn't be started: {e}") from None
+    if args and args[0] in DROPS:
+        drop_look_ups()                 # DSA-CONNECT 2: its setup (the speech model) may rewrite its settings
+    with _CALLS.starting(path, args[0] if args else None) as under_way:
+        try:
+            with open(out, "wb") as f:
+                proc = _popen(_command(path) + ["--api", *args], stdin=subprocess.DEVNULL, stdout=f,
+                              stderr=subprocess.DEVNULL, creationflags=flags)
+        except FileNotFoundError:
+            raise AnkiMinerError("absent", "Anki Miner isn't installed where Surasura looked.") from None
+        except OSError as e:
+            if getattr(e, "winerror", None) == WINERROR_VIRUS:
+                raise AnkiMinerError("quarantined", "Windows Security blocked Anki Miner. Check Windows Security → "
+                                     "Protection history, then allow it if you trust it.") from None
+            raise AnkiMinerError("crashed", f"Anki Miner couldn't be started: {e}") from None
+        under_way(proc)
     if bind:
         _bind(proc)
     return proc
@@ -658,7 +952,7 @@ SPEECH_NO_S = 15 * 60   # a no is asked again after this long (review B-11: neve
 SPEECH_BUSY_S = 60      # Michi-T1: a no only because Anki Miner was busy (a mine beside the check) is asked sooner
 
 
-def speech_ready(path, language, profile, folder):
+def speech_ready(path, language, profile, folder, export=None, read_with=None):
     """Can this Anki Miner listen in `language` under `profile` now — a speech model it already has, for the profile
     Connect mines with (AB-Q2 (a), Sonic 2026-11-02: one it has is used as it is, never a second download, never
     asked)? `check`'s `speech_model` item; not ok, each of SPEECH_MODELS set on that profile in turn
@@ -666,24 +960,44 @@ def speech_ready(path, language, profile, folder):
     again, so a model downloaded for the other size is found. -> True / False. Kept True for this run (a check a look
     costs nothing once it is there); False is asked again (a model installed since is seen). Raises AnkiMinerError
     from `check` (busy, setup …). A no is kept SPEECH_NO_S (cleared once Anki Miner's setup installed one); a no
-    because Anki Miner was busy setting the other model (a mine beside a check, Michi-T1) only SPEECH_BUSY_S."""
+    because Anki Miner was busy setting the other model (a mine beside a check, Michi-T1) only SPEECH_BUSY_S.
+    DSA-CONNECT 4: `export` (the settings export this run read for `profile`, its files' stamp then `read_with`:
+    used only while they still stamp so) names the model the profile holds: the first `check` already asked about it, so it is never imported
+    again (each import rewrote the profile, which dropped the kept look-ups); its import, for a model the profile
+    doesn't hold, keeps them (`settings_import`'s `keeps`). A no is also kept from run to run (`keep_no_speech`)
+    while nothing `check` reads for it has changed: the program, its settings files, its speech folders."""
     key = (path, language, profile)
     said = _SPEECH.get(key)
     if said and (said[0] or time.monotonic() - said[1] < SPEECH_NO_S):
         return said[0]
+    folders, now = speech_folders(), stamp(path)        # before the first `check`: a model installed meanwhile shows
+    kept = _kept_no_speech(path, now, folders)
+    if [language, profile] in kept:
+        _SPEECH[key] = (False, time.monotonic(), None)
+        return False
+    settings = export.get("settings") if isinstance(export, dict) and read_with == now else None
+    holds = settings.get("asr_model") if isinstance(settings, dict) else None
+    asked = {holds} if isinstance(holds, str) else set()    # (the model the profile holds, as the export said)
     ok, set_to, at = _speech_ok(check(path, language, profile)), None, time.monotonic()
+    keep = True
     for model in SPEECH_MODELS if not ok and profile else ():
+        if model in asked:
+            continue                    # (the first `check` asked about the model the profile held)
         try:
-            settings_import(path, language, {"asr_model": model}, folder, profile=profile)
+            settings_import(path, language, {"asr_model": model}, folder, profile=profile, keeps=True)
         except AnkiMinerError as e:
             if e.kind == "busy":        # asked again soon, not in 15 minutes: the other size may be there
                 at -= SPEECH_NO_S - SPEECH_BUSY_S
+            keep = e.kind == "refused"  # (the window's profile: as it is; any other failure: never kept)
             break                       # the window's profile, or a busy Anki Miner: as it is
-        set_to = model
+        set_to, kept = model, None
+        now = stamp(path)               # (its own write moved it: the last `check` reads what that left)
         ok = _speech_ok(check(path, language, profile))
         if ok:
             break
     _SPEECH[key] = (ok, at, set_to)
+    if not ok and keep:
+        keep_no_speech(path, language, profile, now, folders, kept)
     return ok
 
 
@@ -731,7 +1045,7 @@ def speech_setup_done(verdict):
     return item.get("message") or "its speech model didn't install"
 
 
-def settings_import(path, language, values, folder, name=None, profile=None):
+def settings_import(path, language, values, folder, name=None, profile=None, keeps=False):
     """Anki Miner's own `settings-import` (Z-3, A4M1-2b): `values` (its settings keys: the deck, note type and fields,
     or {} for the language alone) written into the profile `profile` (an id), or into a new profile called `name`, a
     copy of the one its window uses — never that one (Anki Miner refuses it: `refused`). `language` is the profile's
@@ -739,7 +1053,8 @@ def settings_import(path, language, values, folder, name=None, profile=None):
     The file it reads is written in `folder` (which must exist) and removed after. Under its run lock: its window open
     or a run of its own -> `busy`. Never ended with Surasura (`bind=False`: a settings write is finished, never cut).
     -> its `result` ({"profile", "created", "invalid_fields"}); a value it refused -> AnkiMinerError `refused` naming
-    it (the profile keeps its own value for it)."""
+    it (the profile keeps its own value for it). `keeps` (`speech_ready`'s): the kept answers re-keyed across the write
+    (`api`) — only for `asr_model` alone into an existing profile; any other write drops them."""
     if bool(name) == bool(profile):
         raise ValueError("settings_import takes a new profile's name or an existing profile, one of them")
     os.makedirs(folder, exist_ok=True)
@@ -749,7 +1064,9 @@ def settings_import(path, language, values, folder, name=None, profile=None):
             json.dump(values, f, ensure_ascii=False)
         args = ["settings-import", file, "--language", language] + (["--name", name] if name else
                                                                     ["--profile", profile])
-        result = _result(api(path, args, bind=False))
+        keeps = bool(keeps and profile and isinstance(values, dict) and set(values) == {"asr_model"})
+        # (`keeps` passed only when it keeps: a stand-in of `api` written before it still takes every other call)
+        result = _result(api(path, args, bind=False, **({"keeps": True} if keeps else {})))
     finally:
         try:
             os.remove(file)
@@ -981,7 +1298,7 @@ def tag_names(url, words, outcomes):
 def mine_batch(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, url, attempt=1,
                subtitle_offset=0.0, timeout=MINE_TIMEOUT, wait=0.0, expect_profile=None, on_progress=None,
                known=None, should_stop=None, show=None, reading=None, from_audio=False, names=None,
-               word_audio=True, workers=None, more=None, should_pause=None):
+               word_audio=True, workers=None, more=None, should_pause=None, voiced=False):
     """One batch of one episode, end to end (§ above), holding `anki-writer` (waiting up to `wait` s for another
     writer; still held -> AnkiMinerError `busy`). `words`: pick's; `mapping`: fields.Mapping (from this profile's
     export); `profile_name`: `connect_anki_miner_profile`; `url`: AnkiConnect's address, for the names' tag. Returns
@@ -1014,7 +1331,9 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
     its cards under the same job tag; `outcomes` then holds `words`' and each of `more`'s in turn, `on_progress` is
     told which run works (`run`, of `runs`), a Stop cancels every run, and one whose file can't be read leaves its
     words `not_attempted` with the code in `run_error` while the others are made (the episode's own refused that way
-    with cards made elsewhere: `refused`, the error, instead of raising it)."""
+    with cards made elsewhere: `refused`, the error, instead of raising it). `voiced` (BOOK-CARD): a book's cards
+    the AI voice reads after (the runner's `AI_JOB`): they keep the learner's card type; any other `reading` run
+    makes the sentence card under the audio card (`runfile.config`'s `quiet`)."""
     from app import anki_connect, locks
     try:
         # #BS0A1K: a Stop pressed while another writer holds Anki (Junban's reorder) ends the wait for it at once
@@ -1030,7 +1349,7 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
         try:
             done = _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
                               subtitle_offset, timeout, expect_profile, on_progress, known, should_stop, show,
-                              reading, from_audio, names, word_audio, workers, more, should_pause)
+                              reading, from_audio, names, word_audio, workers, more, should_pause, voiced)
         except runfile.RunFileError as e:
             raise AnkiMinerError("refused", f"The run file for Anki Miner couldn't be written: {e}") from None
         done["tagged"], done["tag_pending"] = [], []
@@ -1080,7 +1399,7 @@ ZH_UPDATE = ("Chinese cards need Anki Miner 3.12 or newer. Update Anki Miner fro
 def _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
                subtitle_offset, timeout, expect_profile=None, on_progress=None, known=None, should_stop=None,
                show=None, reading=None, from_audio=False, names=None, word_audio=True, workers=None, more=None,
-               should_pause=None):
+               should_pause=None, voiced=False):
     info, profile = preflight(path, language, profile_name, known)
     if expect_profile is not None and profile != expect_profile:
         raise AnkiMinerError("profile-changed", "Anki Miner's profile changed since the words were picked.")
@@ -1118,9 +1437,11 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
             tags=" ".join(t for t in (runfile.job_tag(job), runfile.from_tag(extra.get("show"))) if t),
             subtitle_offset=float(extra.get("subtitle_offset") or 0.0), features=named, language=language))
         others.append((other, extra["words"]))
+    # BOOK-CARD: a book's or a text's run cuts no sound — under the audio card it makes the sentence card, unless the
+    # AI voice reads its cards after (`voiced`: the runner's `AI_JOB` mark)
     data = runfile.build(run_dir, language, episodes, profile=profile,
                          run_config=runfile.config(mapping, info.get("app"), named, word_audio=word_audio,
-                                                   workers=workers))
+                                                   workers=workers, quiet=reading is not None and not voiced))
     run_path = runfile.write(os.path.join(run_dir, f"run-{attempt}.json"), data)
     before = result_names(run_dir, run_id)
     others = [(other, theirs, result_names(run_dir, other)) for other, theirs in others]

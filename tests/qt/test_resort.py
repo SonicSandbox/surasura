@@ -118,6 +118,41 @@ def test_sort_again_lands_every_title_in_new_arrivals_for_the_sort_screen_and_sa
     assert len(_backups(user_files_dir)) == 1                              # the old order, in one backup
 
 
+def test_sort_again_runs_while_connect_waits_on_battery_and_lands_every_title_for_sorting(tmp_path):
+    # Send report (3.0.18): a laptop on battery all session, Connect looking every 2 minutes and mining nothing, held
+    # its one lock all along: every Sort again was refused, in words saying it was making cards. A real Connect loop
+    # (stand-in steps, every job on battery) waits on its own thread, as `connect_verbs._loop` runs it
+    from app import locks
+    from app.connect import kick, runner
+    from app.connect.ledger import Ledger
+    from tests.connect.fake_steps import FakeSteps
+    opener, data_dir, user_files_dir = _library()
+    looks = _looks(opener)
+    steps = FakeSteps(str(tmp_path), {"line": {"ja": [1]}, "queue": {"ja": [1]}, "blocked": runner.ON_BATTERY})
+    cancel = threading.Event()
+
+    def connect():
+        with Ledger(str(tmp_path / "ledger.sqlite")) as ledger, locks.take(kick.LOCK, "Connect"):
+            runner.run({}, ["ja"], steps=steps, ledger=ledger, cancel=cancel)
+    thread = threading.Thread(target=connect, daemon=True)
+    try:
+        _added(looks, _source(shows=SHOWS))
+        thread.start()
+        assert wait_until(lambda: ("blocked", "ja") in steps.log
+                          and not locks.in_use(kick.MINING, looks=1, gap=0.0), 10), \
+            "Connect waits on battery: nothing held but its one-instance lock"
+        assert kick.running(), "still the one Connect: a kick starts no second one"
+        answer, scanned, _said = _fresh(looks)
+        assert answer["done"], answer
+        assert {t for t, _r in _tiers(data_dir, user_files_dir)} == {"arrivals"}, "read for sorting"
+        assert scanned["found"] == 4
+    finally:
+        cancel.set()
+        thread.join(10)
+        looks.close()
+    assert not thread.is_alive()
+
+
 def test_a_refused_sort_again_answers_why_reads_nothing_and_never_says_scanned(monkeypatch):
     opener, data_dir, user_files_dir = _library()
     looks = _looks(opener)
@@ -308,6 +343,9 @@ def test_stop_on_the_load_screen_stops_the_read_and_a_refusal_lifts_the_cover(wi
     run = settings_sources.sort_again(win)
     assert wait_until(lambda: run.ended, 5) and settings_sources.running(win) is None
     assert win.bar_line.full() == S.FRESH_REFUSED.format(reason=ls.RESET_CONNECT)
+    win.show_status(win.services.status.snapshot()._replace(lines=("Anki · 250 waiting",), bar_lines=None))
+    assert win.bar_line.full() == S.FRESH_REFUSED.format(reason=ls.RESET_CONNECT), \
+        "the refusal outlasts the next status update (Send report: he saw an empty bar)"
 
 
 def test_a_read_that_found_nothing_goes_to_current_and_says_so(window):

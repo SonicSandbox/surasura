@@ -29,14 +29,18 @@ import json
 import os
 import re
 import time
+import zlib
 from array import array
 from collections import namedtuple
+from itertools import accumulate
 
 SHAPE = 1                       # the shape's version (SHAPE.md); a change is a NOTE to the page first
 SHAPE_MINOR = 1                 # 1.1 (2026-11-22): additive only — the head's `minor`, a source's item id, the seven
 #                                 settings, `stamp` in ms; a v1 reader reads a 1.1 page as before
 MARKER = "<!--JOURNEY-DATA-->"  # where the page's template takes the data, once
 WORD_MEMO = "journey_words.json"   # in results/, beside the ▶'s memos: `WordMemo`
+SHOWN_FILE = "shown.json.gz"        # in results/: the list reader's shown lines (`analyzer.SHOWN_FILE`), its silent ones
+PLAN_FILE = "plan.json.gz"          # in results/: the plan file (`analyzer.PLAN_FILE`), its header the run's signature
 MEMO_FORMAT = 1                 # in the memo's keys: bump when a meaning's JSON or a pitch is written another way
 CHUNK_EPISODES = 100
 CHUNK_BYTES = 240_000           # a chunk's JSON closes past this (≈ 60–80 KB gzipped for Japanese sentences)
@@ -71,9 +75,12 @@ HEAD_SETTINGS = {
 }
 
 _Ep = namedtuple("_Ep", "watched cards status missing removed in_top")
-StoreFacts = namedtuple("StoreFacts", "items works order cards pre growth library")
+StoreFacts = namedtuple("StoreFacts", "items works order cards pre growth library counted marks",
+                        defaults=(None, None))
 #   items {id: feed row} · works {id: row} · order [id] (the study order, set-aside watched items in their place) ·
-#   cards {id: n} · pre {id: (day, by)} · growth {id: {kind: {...}}} · library: the queue's key (D31)
+#   cards {id: n} · pre {id: (day, by)} · growth {id: {kind: {...}}} · library: the queue's key (D31) ·
+#   counted {id}: the items Generate's list reads (None: all of `order`) · marks: `Store.watched_marks`' from the same
+#   read (`library_store.UNREAD` when they couldn't be read), what the page is signed with (`_write_journey`)
 
 
 # --- values --------------------------------------------------------------------------------------------------------- #
@@ -255,19 +262,61 @@ def _table(module):
     return [line.decode("utf-8") for line in _table_lines(module)]
 
 
+def _line_keys(line):
+    """The keys a meanings line (UTF-8 bytes) is found by, each once: its fields before the second tab, split at
+    commas (ja: kanji forms, readings · zh: 简, 繁). [] for a line without them. The build's INDEX holds these."""
+    first = line.find(b"\t")
+    second = line.find(b"\t", first + 1)
+    if first < 0 or second < 0:
+        return []
+    return [key for key in dict.fromkeys(line[:second].replace(b"\t", b",").split(b",")) if key]
+
+
+_GLOSS_INDEX = {}           # {module name: (each bucket's start in the block numbers, the block numbers, DICT)}
+
+
+def _gloss_lines(module, wanted):
+    """A meanings module's lines (bytes) in the blocks that may hold one of `wanted` (UTF-8 keys) — every line that
+    does among them, in the table's order — from its INDEX (each key's bucket names its blocks): only those blocks
+    decompressed (each a zstd frame against the table's DICT), the caller checks each line (G4;
+    scripts/build_gloss_data.py). The index is read once a process; a decompressor is made each call (one is never
+    shared between threads)."""
+    import zstandard
+    index = _GLOSS_INDEX.get(module.__name__)
+    if index is None:
+        raw = zlib.decompress(base64.b64decode(module.INDEX))
+        buckets = module.BUCKETS
+        index = _GLOSS_INDEX[module.__name__] = (array("I", accumulate(raw[:buckets], initial=0)), raw[buckets:],
+                                                 base64.b64decode(module.DICT))
+    starts, named, trained = index
+    buckets, found = module.BUCKETS, set()
+    for key in wanted:
+        b = zlib.crc32(key) % buckets
+        found.update(named[starts[b]:starts[b + 1]])
+    if not found:
+        return
+    data, blocks = base64.b64decode(module.DATA), module.BLOCKS
+    reader = (zstandard.ZstdDecompressor(dict_data=zstandard.ZstdCompressionDict(trained)) if trained
+              else zstandard.ZstdDecompressor())
+    for block in sorted(found):
+        yield from reader.decompress(data[blocks[block]:blocks[block + 1]]).split(b"\n")
+
+
 class WordMemo:
     """The meanings and pitch the last page looked up (`results/journey_words.json`, beside the ▶'s memos): a render
-    with the same words reads them here instead of scanning the table and tagging every word again (SPEC §5.4's warm
-    row). A word's meaning is kept as the page's own JSON for it ("" = none), so a warm render writes it as it is.
+    with the same words reads them here instead of looking them up in the table and tagging every word again (SPEC
+    §5.4's warm row) — and each file's shown name (`shown`: a render is a process of its own, so LM1a's reading of 20,000 names
+    was made from nothing at every redraw, 0.8 s at 20,000 files; L2-WASTE), kept while the code that reads them is
+    the same (`names_key`). A word's meaning is kept as the page's own JSON for it ("" = none), so a warm render writes it as it is.
     Each half is kept only while its key holds (the meanings table's revision; unidic's dictionary file and the
     learner's Kanjium copy), pruned at `save` to the words this page asked; a missing or unreadable memo is an empty
     one (the render is the same, only slower). Holds only what the shipped table and unidic say — never the learner's
     own dictionaries' text."""
 
-    def __init__(self, path, gloss_key, pitch_key):
-        self.path, self.gloss_key, self.pitch_key = path, gloss_key, pitch_key
-        self.meanings, self.pinyins, self.pitch, self.dirty = {}, {}, {}, False
-        self._asked = (set(), set(), set())
+    def __init__(self, path, gloss_key, pitch_key, names_key="?"):
+        self.path, self.gloss_key, self.pitch_key, self.names_key = path, gloss_key, pitch_key, names_key
+        self.meanings, self.pinyins, self.pitch, self.names, self.dirty = {}, {}, {}, {}, False
+        self._asked = (set(), set(), set(), set())
         try:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
@@ -277,9 +326,12 @@ class WordMemo:
             if (data.get("v") == SHAPE and data.get("p_key") == pitch_key and "?" not in pitch_key
                     and isinstance(data.get("p"), dict)):
                 self.pitch = data["p"]
+            if (data.get("v") == SHAPE and data.get("n_key") == names_key and "?" not in names_key
+                    and isinstance(data.get("n"), dict)):
+                self.names = data["n"]
         except Exception:
             pass
-        self._held = (len(self.meanings), len(self.pinyins), len(self.pitch))
+        self._held = (len(self.meanings), len(self.pinyins), len(self.pitch), len(self.names))
 
     @staticmethod
     def _key(*parts):
@@ -318,17 +370,28 @@ class WordMemo:
             self.pitch[self._key(word, reading)] = value
         self.dirty = self.dirty or bool(found)
 
+    def shown(self, name):
+        """A file's shown name (`static_html_generator.shown_name`), the memo's when it holds it."""
+        self._asked[3].add(name)
+        found = self.names.get(name)
+        if not isinstance(found, str):
+            from app.static_html_generator import shown_name
+            found = self.names[name] = shown_name(name)
+            self.dirty = True
+        return found
+
     def save(self):
         """Write the memo, pruned to this page's words, when anything was added or dropped. Best-effort."""
         kept = [{k: v for k, v in held.items() if k in asked}
-                for held, asked in zip((self.meanings, self.pinyins, self.pitch), self._asked)]
+                for held, asked in zip((self.meanings, self.pinyins, self.pitch, self.names), self._asked)]
         if not self.dirty and tuple(len(k) for k in kept) == self._held:
             return
         try:
             tmp = self.path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 f.write(json.dumps({"v": SHAPE, "g_key": self.gloss_key, "m": kept[0], "y": kept[1],
-                                    "p_key": self.pitch_key, "p": kept[2]}, ensure_ascii=False,
+                                    "p_key": self.pitch_key, "p": kept[2], "n_key": self.names_key, "n": kept[3]},
+                                   ensure_ascii=False,
                                    separators=(",", ":")))
             os.replace(tmp, self.path)
         except Exception as e:
@@ -337,6 +400,23 @@ class WordMemo:
                 os.remove(tmp)
             except OSError:
                 pass
+
+
+def names_key():
+    """`WordMemo`'s key for the files' shown names: the code that reads them (`static_html_generator.shown_name`, LM1a's
+    `episode_names.identity`, the rows' `view_rows`) — a freeze's own build (`build_info.BUILD_ID`), from source those
+    three files (each by size and time). "?" when it can't be read: no memo holds it."""
+    try:
+        import sys
+        if getattr(sys, "frozen", False):
+            from app import build_info
+            return f"{MEMO_FORMAT}:build:{build_info.BUILD_ID}" if build_info.BUILD_ID else "?"
+        from app import episode_names, static_html_generator
+        from app.services import view_rows
+        stamps = (os.stat(module.__file__) for module in (episode_names, view_rows, static_html_generator))
+        return f"{MEMO_FORMAT}:" + "|".join(f"{st.st_size}:{st.st_mtime_ns}" for st in stamps)
+    except Exception:
+        return "?"
 
 
 def memo_keys(language):
@@ -381,8 +461,9 @@ def _pos_text(codes):
 class Meanings:
     """The shipped English meanings (app/gloss_ja_data.py · app/gloss_zh_data.py), read for the words asked only:
     `of(word, reading, orth)` -> [[pos, [gloss, …]], …] or None; `pinyin(word)` (zh) -> the first entry's pinyin.
-    The table is scanned as bytes and only the entries a page's words name are decoded and kept (the whole table
-    decoded is ~85 MB of strings; the page's part, a few MB); with a `WordMemo`, only for the words it lacks.
+    The table's index names the lines a page's words are on: only their blocks are decompressed and only those
+    entries decoded and kept (the whole table decoded is ~85 MB of strings; the page's part, a few MB); with a
+    `WordMemo`, only for the words it lacks.
     `of_json` is `of` as the page's JSON ("" = none), through the memo."""
 
     def __init__(self, language, memo=None):
@@ -397,9 +478,10 @@ class Meanings:
             from app import gloss_zh_data as module
         wanted = {key.encode("utf-8") for key in wanted}
         index, isdisjoint = {}, wanted.isdisjoint
-        for line in _table_lines(module):
-            first = line.find(b"\t")
-            second = line.find(b"\t", first + 1)
+        for line in _gloss_lines(module, wanted):       # (the index's blocks only: each line checked here)
+            # `_line_keys` inline and its dedupe only on a hit: this runs for every line of the blocks read (all of
+            # them for a memo-less page), so a call and a dict a line cost a third more than the scan it replaced
+            second = line.find(b"\t", line.find(b"\t") + 1)
             if second < 0:
                 continue
             keys = line[:second].replace(b"\t", b",").split(b",")   # ja: kanji forms, readings · zh: 简, 繁
@@ -412,7 +494,7 @@ class Meanings:
         return index
 
     def prepare(self, words):
-        """Index the table for these words' spellings only ([(word, reading, orth)], a page's words), scanned once —
+        """Index the table for these words' spellings only ([(word, reading, orth)], a page's words), looked up once —
         none of it for a word the memo holds."""
         memo, wanted = self.memo, set()
         for word, reading, orth in words:
@@ -635,7 +717,9 @@ _WORK_FIELDS = ("id", "media_type", "title", "youtube_channel")
 def store_facts(language, data_dir=None, user_files_dir=None):
     """The episodes' facts from the library store, read in one go through its readers (`read_feed`, `scheduled_ids`,
     `cards_of`, and — once their lanes land — `prestudied_marks`, `growth_of`), or None with no ready store (the page
-    then names episodes by file only). Never writes, never raises."""
+    then names episodes by file only). One read transaction (`_reading`), the stones' marks (`watched_marks`) in it:
+    the page and the render signature it is signed with read the same store (J-FIX 3: a mark landing between two reads
+    was drawn but not signed, so its Undo left the stone). Never writes, never raises."""
     try:
         from app import library_store
         from app.path_utils import get_data_path, get_user_files_path
@@ -647,31 +731,36 @@ def store_facts(language, data_dir=None, user_files_dir=None):
     if store is None:
         return None
     try:
-        feed = store.read_feed()
-        items = {row["id"]: {k: row.get(k) for k in _ITEM_FIELDS} for row in feed["items"]}
-        works = {row["id"]: {k: row.get(k) for k in _WORK_FIELDS} for row in feed["works"]}
-        epoch = feed.get("epoch")
-        del feed                                # the rest of the feed (each item's ~40 fields) isn't held
-        counted = [i for i, _tier in store.scheduled_ids()]
-        order = _with_aside(counted, items)
-        cards = {i: len(notes) for i, notes in store.cards_of(order).items() if notes}
-        pre = {}
-        reader = getattr(store, "prestudied_marks", None)        # J-STORE's reader (SPEC §2.2)
-        try:                                                     # a seam that fails is its empty state, alone
-            for item, mark in ((reader() or {}) if reader is not None else {}).items():
-                pre[item] = (mark[0], mark[1]) if isinstance(mark, (list, tuple)) else (mark, None)
-        except Exception as e:
+        with store._reading():                  # one read: what the page draws is what it is signed with
+            feed = store.read_feed()
+            items = {row["id"]: {k: row.get(k) for k in _ITEM_FIELDS} for row in feed["items"]}
+            works = {row["id"]: {k: row.get(k) for k in _WORK_FIELDS} for row in feed["works"]}
+            epoch = feed.get("epoch")
+            del feed                                # the rest of the feed (each item's ~40 fields) isn't held
+            counted = [i for i, _tier in store.scheduled_ids()]
+            order = _with_aside(counted, items)
+            cards = {i: len(notes) for i, notes in store.cards_of(order).items() if notes}
             pre = {}
-            print(f"Warning: the journey couldn't read what was pre-studied: {e}")
-        growth = {}
-        grower = getattr(store, "growth_of", None)               # Kura-GS's reader (#585)
-        try:
-            if grower is not None:
-                growth = grower(order, kinds=("added", "done", "last")) or {}
-        except Exception as e:
+            reader = getattr(store, "prestudied_marks", None)        # J-STORE's reader (SPEC §2.2)
+            try:                                                     # a seam that fails is its empty state, alone
+                for item, mark in ((reader() or {}) if reader is not None else {}).items():
+                    pre[item] = (mark[0], mark[1]) if isinstance(mark, (list, tuple)) else (mark, None)
+            except Exception as e:
+                pre = {}
+                print(f"Warning: the journey couldn't read what was pre-studied: {e}")
             growth = {}
-            print(f"Warning: the journey couldn't read the growth snapshots: {e}")
-        return StoreFacts(items, works, order, cards, pre, growth, str(epoch or ""))
+            grower = getattr(store, "growth_of", None)               # Kura-GS's reader (#585)
+            try:
+                if grower is not None:
+                    growth = grower(order, kinds=("added", "done", "last")) or {}
+            except Exception as e:
+                growth = {}
+                print(f"Warning: the journey couldn't read the growth snapshots: {e}")
+            try:
+                marks = store.watched_marks()
+            except Exception:
+                marks = library_store.UNREAD        # drawn, never signed as current (`analyzer.signed_render`)
+        return StoreFacts(items, works, order, cards, pre, growth, str(epoch or ""), frozenset(counted), marks)
     except Exception as e:
         print(f"Warning: the journey couldn't read the library store: {e}")
         return None
@@ -779,7 +868,8 @@ class Sources:
     def __init__(self, language, source_map=None, ep_of=None, media=None, timer=None):
         self.language = language
         self.map = source_map or {}
-        self.ep_of = ep_of or {}
+        self.ep_of = ep_of or {}               # {an episode's key: its index} (`build`'s: its path, or an older
+        self.by_path = False                    # run's lists, its name alone — `by_path` False)
         self.media = media or {}
         self.timer = timer
         self.titles = {}                        # {file name: its shown name}: the head's, so each is made once
@@ -806,8 +896,8 @@ class Sources:
             title = self.titles.get(name)
             if title is None:
                 title = self.titles[name] = shown_name(name)
-            found = self._rows[rel] = [title, kind, self.ep_of.get(name, -1), play, link,
-                                       self.items.get(rel.replace("\\", "/"))]
+            ep = self.ep_of.get(rel.replace("\\", "/") if self.by_path else name, -1)
+            found = self._rows[rel] = [title, kind, ep, play, link, self.items.get(rel.replace("\\", "/"))]
         return found
 
     def prepare(self, texts, rels):
@@ -874,24 +964,25 @@ Render = namedtuple("Render", "head chunks blobs stones")
 #   head: dict · chunks: [bytes gz] · blobs: {name: bytes gz} · stones: dict
 
 
-def _plan_files(plan):
-    """{file name: its index in the plan} (a name's first file), what `_plan_pcts` and `_ahead` look a page's episode
-    up by; None without a plan."""
+def _plan_files(plan, by_path=True):
+    """{file's path: its index in the plan} (the plan's `files`, the counts table's: E-NAMES), what `_plan_pcts` and
+    `_ahead` look a page's episode up by — `by_path` False (an older run's lists, names alone): {file name: a name's
+    first file}; None without a plan."""
     if plan is None:
         return None
     try:
         from app.path_utils import report_name
         by_name = {}
         for f, entry in enumerate(plan.files):
-            by_name.setdefault(report_name(entry[0]), f)
+            by_name.setdefault(entry[0] if by_path else report_name(entry[0]), f)
         return by_name
     except Exception:
         return None
 
 
 def _plan_pcts(plan, by_name=None):
-    """{file name: *% known*} from the plan's per-file `prog` (the tokens known before any file over the tokens
-    counted) — the very count the window's rows read (`moves.Numbers`); None without a plan. `by_name`: `_plan_files`'
+    """{file's key (`_plan_files`'): *% known*} from the plan's per-file `prog` (the tokens known before any file over
+    the tokens counted) — the very count the window's rows read (`moves.Numbers`); None without a plan. `by_name`: `_plan_files`'
     (made here when not handed in)."""
     if plan is None:
         return None
@@ -911,8 +1002,8 @@ def _ahead(plan, names, word_eps, word_id, by_name=None):
     """Each page word's count ahead -> array, one number a word: its uses in its own episode and the next AHEAD - 1,
     from the plan's per-file counts (`plan_engine.Plan`, `Counts`), or -1 where its own episode has no count for it (no
     line in the plan, or the word not met there: the page then shows its count in its own episode); None without a
-    plan. `names` the page's episodes' file names in order, `word_eps` each word's episode index (in word order),
-    `word_id` {(Word, Reading): its word index} (`build`'s); the plan's keys are distinct. At 20,000 files the
+    plan. `names` the page's episodes' keys in order (`_plan_files`'), `word_eps` each word's episode index (in word
+    order), `word_id` {(Word, Reading): its word index} (`build`'s); the plan's keys are distinct. At 20,000 files the
     {episode: {key: count}} dicts this was, and the asked sets that cut them, were 12.5 MB of the render's peak (J-CUT
     5's gate); here a window of AHEAD episodes' words at a time. `by_name`: `_plan_files`' (made here when not handed
     in)."""
@@ -955,14 +1046,15 @@ def _ahead(plan, names, word_eps, word_id, by_name=None):
 
 
 def build(language, rows, stats=(), priority=None, facts=None, settings=None, *, backlog=(), known=(), ranks=None,
-          pitch=None, sources=None, plan=None, own=None, stamp=None, memo=None, nothing=()):
+          pitch=None, sources=None, plan=None, own=None, stamp=None, memo=None, nothing=(), silent=()):
     """The page's data (`Render`) from a Generate's outputs, every input given (`render` gathers them):
     `rows` the progressive list's records in order, `stats` file_statistics.json's entries in order, `priority` the
     priority list's records (*Most frequent first*; None: no such order), `facts` `store_facts`' (None: no store),
     `backlog` the Anki backlog's keys, `known` the learner's known terms, `pitch` a `Pitch`, `sources` a `Sources`,
     `plan` the plan file (the count ahead), `own` a callable [(word, reading)] -> {key: (title, text)} (Yours),
     `memo` a `WordMemo` (the meanings and pitch looked up last time; None: everything looked up), `nothing` the
-    items Connect mined with nothing new to make (`nothing_new`: their stones)."""
+    items Connect mined with nothing new to make (`nothing_new`: their stones), `silent` the shown lines no audio is
+    heard from, {(Src, Context)} (`silent_lines`: each such line's 5th field is 1, the page's mark)."""
     settings = settings or {}
     logic = settings.get("logic") if isinstance(settings.get("logic"), dict) else {}
     shown_settings = page_settings(settings)
@@ -972,9 +1064,19 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
     from app.path_utils import infer_source_type, report_name
     from app.services import stone_plan
 
-    # The episodes, in the study order: the store's (by id) when there is one, else the run's files by name
+    # The episodes, in the study order: the store's (by id) when there is one, else the run's files. Each is told by
+    # its path from the data folder (E-NAMES: the store's rel_path, the lists' Source Path, file statistics' Path), so
+    # two shows' 第01集, both counted, keep their own words, *% known* and count ahead. An older run's lists name a file
+    # by its name alone (`by_path` False): there a name is the episode the run COUNTED of that name, never a set-aside
+    # one (J-FIX 3)
     stats = [s for s in (stats or ()) if isinstance(s, dict) and s.get("File")]
-    shows, show_index, eps, ep_of_name = [], {}, [], {}
+    first_row = next(iter(rows or ()), None)
+    by_path = "Source Path" in first_row if first_row is not None else (not stats or "Path" in stats[0])
+
+    def key_of(path, name):
+        return (path or name) if by_path else name
+
+    shows, show_index, eps, ep_keys, ep_of, aside = [], {}, [], [], {}, set()
 
     def show_of(key, title, kind):
         if key not in show_index:
@@ -984,13 +1086,17 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
 
     # *% known*: the window's own figure (the plan's count), never the stats file's Coverage (%) — the plan when the
     # caller hands it in, else the store's 'last' snapshot (the same count, kept by that Generate); else none
-    plan_files = _plan_files(plan)
+    plan_files = _plan_files(plan, by_path)
     plan_pcts = _plan_pcts(plan, plan_files) if plan_files is not None else None
 
-    def add_ep(item_id, name, tier, kind, show, watched, cards, missing, pre, growth, last=None):
-        coverage = plan_pcts.get(name) if plan_pcts is not None else _pct(last)
+    def add_ep(item_id, name, key, tier, kind, show, watched, cards, missing, pre, growth, last=None, counted=True):
+        coverage = plan_pcts.get(key) if plan_pcts is not None else _pct(last)
         flags = (1 if watched else 0) | (2 if missing else 0) | (4 if cards else 0)
-        ep_of_name.setdefault(name, len(eps))
+        if key not in ep_of or (counted and ep_of[key] in aside):
+            ep_of[key] = len(eps)
+        if not counted:
+            aside.add(len(eps))
+        ep_keys.append(key)
         eps.append([item_id, name, None, show, tier, kind, coverage, 0, 0,
                     _stone_state(watched, cards, item_id is not None and item_id in nothing), flags, pre, growth])
 
@@ -1007,35 +1113,40 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
             kind = work.get("media_type") or item.get("source_type") or infer_source_type(item["rel_path"])
             key = library_store._show_of(item_id, item.get("work_id"), item.get("parent_folder"))
             pre = facts.pre.get(item_id)
-            add_ep(item_id, name, tiers.get(item.get("tier")), kind, show_of(key, _show_name(work, item), kind),
-                   item.get("watched"), facts.cards.get(item_id, 0), item.get("availability") == "missing",
+            add_ep(item_id, name, key_of(item["rel_path"].replace("\\", "/"), name), tiers.get(item.get("tier")),
+                   kind, show_of(key, _show_name(work, item), kind), item.get("watched"), facts.cards.get(item_id, 0), item.get("availability") == "missing",
                    [_day(pre[0]) or pre[0], pre[1]] if pre else None, growth_row(facts.growth.get(item_id)),
-                   (facts.growth.get(item_id) or {}).get("last"))
-    named = {e[1] for e in eps}
+                   (facts.growth.get(item_id) or {}).get("last"), facts.counted is None or item_id in facts.counted)
+    named = set(ep_keys)
     for s in stats:
-        if s["File"] not in named:
-            named.add(s["File"])
+        key = key_of(s.get("Path"), s["File"])
+        if key not in named:
+            named.add(key)
             kind = infer_source_type(s["File"])
-            add_ep(None, s["File"], None, kind, show_of(f"n{s['File']}", s["File"], kind), False, 0, False, None, None)
+            add_ep(None, s["File"], key, None, kind, show_of(f"n{key}", s["File"], kind), False, 0, False, None, None)
     from app.static_html_generator import shown_name
-    for e in eps:
+    shown_name = memo.shown if memo is not None else shown_name      # (the last render's names, when it kept them)
+    for n, e in enumerate(eps):
         e[2] = shown_name(e[1])
+        if plan_pcts is not None and n in aside and ep_of[ep_keys[n]] != n:
+            e[6] = None                         # the plan's figure is its counted namesake's (an older run's lists)
 
     # The words, each once, at the episode it is first met in
     by_file = {}
     for row in rows or ():
-        by_file.setdefault(_text(row.get("Source File")), []).append(row)
-    for name in by_file:
-        if name not in ep_of_name:
+        by_file.setdefault(key_of(_text(row.get("Source Path")), _text(row.get("Source File"))), []).append(row)
+    for key in by_file:
+        if key not in ep_of:
+            name = report_name(key)
             kind = infer_source_type(name)
-            add_ep(None, name, None, kind, show_of(f"n{name}", name, kind), False, 0, False, None, None)
+            add_ep(None, name, key, None, kind, show_of(f"n{key}", name, kind), False, 0, False, None, None)
             eps[-1][2] = shown_name(name)
     owners = anki_owners(priority if priority is not None else (rows or ()), language) if backlog else {}
     keys = set(backlog or ())
     seen, words, word_rows, word_id = set(), [], [], {}
     for e, ep in enumerate(eps):
         ep[8] = len(words)
-        for row in by_file.get(ep[1], ()) if ep_of_name.get(ep[1]) == e else ():
+        for row in by_file.get(ep_keys[e], ()) if ep_of.get(ep_keys[e]) == e else ():
             key = (_text(row.get("Word")), _text(row.get("Reading")))
             if not key[0] or key in seen:
                 continue
@@ -1044,12 +1155,14 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
             words.append((e, row))
         ep[7] = len(words) - ep[8]
     # The count ahead, one number a word: its uses in its own episode and the next AHEAD - 1
-    ahead = _ahead(plan, [e[1] for e in eps], [e for e, _row in words], word_id, plan_files)         if plan_files is not None else None
+    names = [k if ep_of.get(k) == n else None for n, k in enumerate(ep_keys)]    # a set-aside namesake: none
+    ahead = _ahead(plan, names, [e for e, _row in words], word_id, plan_files) if plan_files is not None else None
+    del names
     del plan_files
 
     sources = sources or Sources(language)
     if not sources.ep_of:
-        sources.ep_of = ep_of_name              # each source's episode, as this head numbers them
+        sources.ep_of, sources.by_path = ep_of, by_path     # each source's episode, as this head numbers them
     # Every word's lines, read once: [text] and [its source] side by side (a tuple a line held to the loop below was
     # 6 MB at 20,000 files), and each word's first line in them
     texts, rels, first = [], [], []
@@ -1084,15 +1197,17 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
         sources.items = {item["rel_path"]: item_id for item_id, item in facts.items.items() if item.get("rel_path")}
 
     # The chunks: at most CHUNK_EPISODES episodes or CHUNK_BYTES of JSON; one episode alone past it is split. Each
-    # word is written as JSON once; a chunk is its words' JSON joined.
+    # word and each source row is written as JSON and encoded once (its bytes are what the cap counts); a chunk is
+    # their bytes joined (G11: each was encoded again in the chunk's text, each row's JSON written twice).
     chunks, ranges, glosses, chars = [], [], [], set()
+    row_json = {}                       # {rel: its source row's JSON as UTF-8}: once a build, though each chunk lists it
     cur, cur_src, cur_rows, cur_bytes, cur_eps, cur_w0 = [], {}, [], 0, set(), 0
 
     def close():
         nonlocal cur, cur_src, cur_rows, cur_bytes, cur_eps, cur_w0
         if cur:
-            text = '{"w0":%d,"src":%s,"w":[%s]}' % (cur_w0, _json(cur_rows), ",".join(cur))
-            chunks.append(gzip.compress(text.encode("utf-8"), GZIP_LEVEL, mtime=0))
+            text = b'{"w0":%d,"src":[%s],"w":[%s]}' % (cur_w0, b",".join(cur_rows), b",".join(cur))
+            chunks.append(gzip.compress(text, GZIP_LEVEL, mtime=0))
             ranges.append([cur_w0, len(cur)])
         cur_w0 += len(cur)
         cur, cur_src, cur_rows, cur_bytes, cur_eps = [], {}, [], 0, set()
@@ -1109,6 +1224,8 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
                     if src is None:
                         src = added[rel] = len(cur_rows) + len(added)
             line = [text, src, at, end]
+            if silent and (rel, text) in silent:
+                line.append(1)                  # marked silent (SPEC § 4.5): its ▶ time, if any, stays where it is
             while line[-1] is None:
                 line.pop()
             lines.append(line)
@@ -1142,17 +1259,19 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
         record = [word, "" if orth == word else orth, reading, _text(row.get("Kana")), forms, e, marks, count,
                   pitched, None]
         def sized():
-            """The word's JSON and the source rows it adds, and their bytes together (the chunk's table counts)."""
+            """The word's JSON and that of the source rows it adds, as UTF-8, and their bytes together (the chunk's
+            table counts)."""
             lines, added = numbered(found_lines)
             record[9] = lines
-            text = _json(record)
-            rows = [sources.row(rel) for rel, _n in sorted(added.items(), key=lambda item: item[1])]
-            return text, added, rows, len(text.encode("utf-8")) + sum(len(_json(r).encode("utf-8")) + 1 for r in rows)
+            text = _json(record).encode("utf-8")
+            rows = [row_json[rel] if rel in row_json else row_json.setdefault(rel, _json(sources.row(rel)).encode("utf-8"))
+                    for rel in added]           # (`numbered` adds them in their numbers' order)
+            return text, added, rows, len(text) + sum(len(r) + 1 for r in rows)
         text, added, new_rows, size = sized()
         if cur and cur_bytes + size > CHUNK_BYTES:
             close()                             # its sources then go in the new chunk's table, numbered again
             text, added, new_rows, size = sized()
-        for (rel, _n), source_row in zip(sorted(added.items(), key=lambda item: item[1]), new_rows):
+        for rel, source_row in zip(added, new_rows):
             cur_src[rel] = len(cur_rows)
             cur_rows.append(source_row)
         cur.append(text)
@@ -1208,8 +1327,8 @@ def build(language, rows, stats=(), priority=None, facts=None, settings=None, *,
     return Render(head, chunks, blobs, stone_pictures())
 
 
-ROW_COLUMNS = frozenset(("Source File", "Word", "Orth", "Forms", "Reading", "Kana", "Modality", "Occurrences",
-                         "Occurrences (Global)", "Occurrences (File)", "Count (High)", "Count (Low)"))
+ROW_COLUMNS = frozenset(("Source File", "Source Path", "Word", "Orth", "Forms", "Reading", "Kana", "Modality",
+                         "Occurrences", "Occurrences (Global)", "Occurrences (File)", "Count (High)", "Count (Low)"))
 PRIORITY_COLUMNS = frozenset(("Word", "Orth", "Forms", "Reading"))
 
 
@@ -1284,6 +1403,8 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
             stats = []
     if facts is None:
         facts = store_facts(language)
+    elif facts is False:                        # the caller's read found no store: never a second read (J-FIX 3)
+        facts = None
     backlog = gen.anki_backlog_keys(language, settings, gen.PRIORITY_CSV)
     source_map = gen._load_source_map()
     rels = set()
@@ -1314,12 +1435,13 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
     def own(keys):                              # Yours: `build` asks only when *Meanings* is not English
         from app import own_dicts
         return own_dicts.lookup(keys)
-    memo = WordMemo(os.path.join(gen.RESULTS_DIR, WORD_MEMO), *memo_keys(language))
+    memo = WordMemo(os.path.join(gen.RESULTS_DIR, WORD_MEMO), *memo_keys(language), names_key())
     sources = Sources(language, source_map, None, media, timer)
     out = build(language, rows, stats, priority, facts, settings, backlog=backlog,
                 known=_known_terms(language, script),
                 ranks=ranks, pitch=Pitch(language, tagger), sources=sources,
-                plan=plan, own=own, stamp=stamp, memo=memo, nothing=nothing_new(language))
+                plan=plan, own=own, stamp=stamp, memo=memo, nothing=nothing_new(language),
+                silent=silent_lines(gen.RESULTS_DIR, settings))
     out.head["dirs"] = dirs
     if timer is not None and not sources.saved:
         timer.save_memo()
@@ -1329,6 +1451,27 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
         from app.path_utils import get_data_path
         out.head["library"] = library_store.library_key(get_data_path(language))
     return out
+
+
+def silent_lines(results_dir, settings):
+    """The shown lines no audio is heard from, {(Src, Context)}, as the list's one reader kept them beside the lines it
+    showed (`analyzer.ListSentences.keep`, results/`SHOWN_FILE`'s "silent") — only while *Ensure an audio example* is
+    on (SPEC § 4.5: they stay in their true order, marked silent) and the list is the reader's (release 2); set()
+    otherwise, with none kept, or kept by another run than the plan's (a Generate whose reader kept nothing leaves the
+    last one's: never its marks). Read here, not through the analyzer: a run's analyzer is `__main__`."""
+    from app import plan_rules
+    if plan_rules.SENTENCE_TABLE < 2 or not (settings or {}).get("ensure_audio_example"):
+        return set()
+    try:
+        with gzip.open(os.path.join(results_dir, SHOWN_FILE), "rb") as f:
+            data = json.loads(f.read())
+        with gzip.open(os.path.join(results_dir, PLAN_FILE), "rb") as f:
+            run = json.loads(f.readline()).get("run_signature")    # (its first line only: the header)
+        if not run or data.get("run_signature") != run:
+            return set()
+        return {(_text(rel), _text(text)) for rel, text in data.get("silent") or ()}
+    except Exception:
+        return set()
 
 
 # --- the page ------------------------------------------------------------------------------------------------------ #

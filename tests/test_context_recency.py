@@ -17,6 +17,10 @@ import pytest
 
 from app import analyzer, plan_rules
 
+# why: recency is a rung of the old pick's ladder (plan_rules.ContextPicker): level 0's; level 2's one reader has
+# none — E-RETIRE removes both
+pytestmark = pytest.mark.usefixtures("level_0")     # (conftest's; tests/sentence_level.py)
+
 # One file per "episode". 神殿 is met in ep01 (long ago), 森 in ep02, 灯台 in ep06 (recent).
 # ep07 introduces the target 遭遇 in three sentences that differ ONLY by which of those it reuses.
 EPISODES = {
@@ -55,8 +59,9 @@ def _run(env):
     csv = results / "priority_learning_list.csv"
     if csv.exists():
         csv.unlink()
+    # why: the list's sentences (level 2: analyzer.ListSentences) read the lines from the data folder path_utils names
     with patch("app.analyzer.get_user_file", side_effect=env["guf"]), \
-         patch("app.analyzer.get_data_path", side_effect=env["gdp"]), \
+         patch("app.analyzer.get_data_path", side_effect=env["gdp"]), patch("app.path_utils.get_data_path", side_effect=env["gdp"]), \
          patch("app.analyzer.get_user_files_path", side_effect=env["gufp"]), \
          patch("app.analyzer.RESULTS_DIR", str(results)), \
          patch("app.analyzer.OUTPUT_CSV", str(csv)), \

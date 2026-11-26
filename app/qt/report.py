@@ -51,6 +51,7 @@ from app.qt import bridge, rows, screens, strings, style
 from app.qt import settings_strings as SS
 from app.qt import press as qpress
 from app.qt import windows
+from app.qt.tooltip import AboutMark
 from app.qt.windows import SecondaryWindow
 
 NAME = "report"                 # `windows.show`'s kind: one report window per main window
@@ -549,19 +550,52 @@ def flag_texts(line):
     return out
 
 
+def swap_texts(line):
+    """A swap as What goes shows it (SWAPS-REPORT) -> [(text, dim)]: its old sentence; → the new one; the word, when it
+    was asked and what came of it (made · waiting · dropped (why) · undone)."""
+    state = strings.REPORT_SWAP_STATES.get(line.get("state"), line.get("state") or "")
+    if line.get("why") and line.get("state") == "dropped":
+        state = strings.REPORT_SWAP_STATE_WHY.format(state=state, why=strings.REPORT_SWAP_WHY.get(line["why"],
+                                                                                                  line["why"]))
+    asked = strings.REPORT_SWAP_ASKED.format(when=str(line["asked"])[:10]) if line.get("asked") else ""
+    return [(line.get("old") or strings.REPORT_SWAP_NO_OLD, False),
+            (strings.REPORT_SWAP_NEW.format(line=line["new"]) if line.get("new") else strings.REPORT_SWAP_NO_NEW, False),
+            (" · ".join(x for x in (line.get("word"), asked, state) if x), True)]
+
+
+def card_texts(line):
+    """A card the learner didn't want as What goes shows it (SEND-EASY) -> [(text, dim)]: its sentence; the word, why
+    (Ignore · Known) and how (flagged in Anki · deleted) with the day."""
+    when = str(line["at"])[:10] if line.get("at") else ""
+    why = strings.REPORT_CARD_WHY.get(line.get("why"), line.get("why") or "")
+    by = strings.REPORT_CARD_BY.get(line.get("by"), "{when}").format(when=when).strip()
+    return [(line.get("sentence") or strings.REPORT_CARD_NO_SENTENCE, False),
+            (" · ".join(x for x in (line.get("word"), why, by) if x), True)]
+
+
+def waiting_words(flagged, swaps, cards):
+    """The form's line for what waits to go (SEND-EASY): each kind with its count, once; "" when nothing waits."""
+    parts = [(one if n == 1 else many.format(n=n)) for n, (one, many) in
+             ((flagged, strings.REPORT_NEXT_FLAGS), (swaps, strings.REPORT_NEXT_SWAPS),
+              (cards, strings.REPORT_NEXT_CARDS)) if n]
+    return strings.REPORT_NEXT.format(what=" · ".join(parts)) if parts else ""
+
+
 class FlagList(QWidget):
     """What goes' flagged sentences (journey v3 SPEC §4): one painted list, never a widget per line. Each line, its
     word, where it's from with its time, the reasons, the note and a parsing line's split, with a tick (a click, or
     Space on the current line; ↑ ↓ move). Unticked: left out of this report, still flagged. `changed()`: told on each
-    tick."""
+    tick. The learner's swaps are the same list (SWAPS-REPORT): `texts` (a line -> [(text, dim)]), its tip and name."""
 
-    def __init__(self, parent=None, changed=None):
+    def __init__(self, parent=None, changed=None, texts=flag_texts, tip=strings.REPORT_FLAGS_TIP,
+                 name=strings.REPORT_FLAGS_NAME):
         super().__init__(parent)
         self.lines, self.kept, self.at, self.paints = [], set(), 0, 0
         self.changed = changed
+        self.texts = texts
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setToolTip(strings.REPORT_FLAGS_TIP)
-        self.setAccessibleName(strings.REPORT_FLAGS_NAME)
+        self.setToolTip(tip)
+        self.setAccessibleName(name)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def set_lines(self, lines):
@@ -592,14 +626,15 @@ class FlagList(QWidget):
         if self.lines:
             line = self.lines[self.at]
             state = strings.REPORT_FLAG_TICKED if line.get("id") in self.kept else strings.REPORT_FLAG_UNTICKED
-            self.setAccessibleDescription(strings.REPORT_FLAG_ROW_NAME.format(state=state, line=line.get("line") or ""))
+            self.setAccessibleDescription(strings.REPORT_FLAG_ROW_NAME.format(state=state,
+                                                                              line=self.texts(line)[0][0]))
 
     def _f(self):
         return theme.text_factor(style.current()[1])
 
     def _row_height(self, line):
         fm = QFontMetrics(self.font())
-        return len(flag_texts(line)) * fm.height() + round(8 * self._f())
+        return len(self.texts(line)) * fm.height() + round(8 * self._f())
 
     def sizeHint(self):
         return QSize(round(240 * self._f()), sum(self._row_height(x) for x in self.lines) + 2)
@@ -664,7 +699,7 @@ class FlagList(QWidget):
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawPath(tick)
             y = top + round(4 * f) + fm.ascent()
-            for text, dim in flag_texts(line):
+            for text, dim in self.texts(line):
                 p.setPen(rows.c("ink-faint" if not ticked else "ink-dim" if dim else "ink"))
                 p.drawText(QPointF(text_x, y), fm.elidedText(scrub.shown(text), Qt.TextElideMode.ElideRight, width))
                 y += fm.height()
@@ -696,6 +731,7 @@ class ReportWindow(SecondaryWindow):
         self.from_piyo = False                                    # the form holds words Piyo handed over (`fill_from_piyo`)
         self.outbox = None                                        # the zip the What goes page shows (send_report.Outbox)
         self.flag_count = 0                                       # the flagged sentences waiting (`flags.count`)
+        self.swap_count = self.card_count = 0                     # the swaps and cards not wanted not sent yet
         self.waiting = None                                       # a zip kept after a send that didn't go
         self.tries = {}                                           # {a zip's nonce: its failed sends} (`_tried`)
         self.sent_id = None                                       # the last report sent (#ID), for Copy
@@ -821,7 +857,7 @@ class ReportWindow(SecondaryWindow):
         for p in self.presses.showing():                           # (none live: a failed one's mark forgotten)
             self.presses.forget(p.key)
         self._holds.clear()
-        self.say(strings.REPORT_EMPTY if self.reports == [] else "")   # (the list's own line as its read says it:
+        self.say(strings.REPORT_EMPTY if self.reports == [] and not self._waits() else "")   # (the list's own line:
         #                                                     the window never grows as it lands — Mado-SO)
         self.opened_id = self.sent_opened = self.outbox = self.sent_id = self.last_removed = None
         self.sending = False
@@ -874,7 +910,14 @@ class ReportWindow(SecondaryWindow):
         page = QWidget(self)
         box = QVBoxLayout(page)
         box.setContentsMargins(0, 0, 0, 0)
-        box.addWidget(self._heading(strings.REPORT_WHAT))
+        heading = QHBoxLayout()                                   # the heading, then its ? (SEND-EASY: no subtitle)
+        self.what_heading = self._heading(strings.REPORT_WHAT)
+        heading.addWidget(self.what_heading)
+        self.what_about = AboutMark(strings.HELP_MARK, page)
+        self.what_about.set_about(strings.REPORT_WHAT, strings.REPORT_WHAT_ABOUT)
+        heading.addWidget(self.what_about)
+        heading.addStretch(1)
+        box.addLayout(heading)
         self.what = self._text(strings.REPORT_WHAT_TIP, strings.REPORT_WHAT, 4)
         self.what.setPlaceholderText(strings.REPORT_WHAT_HINT)
         self.what.textChanged.connect(self._form_changed)
@@ -966,7 +1009,14 @@ class ReportWindow(SecondaryWindow):
             lines.addWidget(line)
         self.goes_flags_line = self._line(strings.REPORT_FLAGS_HEADING)          # (J-FLAGS: only with flagged lines)
         self.goes_flags = FlagList(inner, changed=self._flags_ticked)
-        for w in (self.goes_flags_line, self.goes_flags):
+        self.goes_swaps_line = self._line(strings.REPORT_SWAPS_HEADING)          # (SWAPS-REPORT: only with swaps)
+        self.goes_swaps = FlagList(inner, changed=self._flags_ticked, texts=swap_texts, tip=strings.REPORT_SWAPS_TIP,
+                                   name=strings.REPORT_SWAPS_NAME)
+        self.goes_cards_line = self._line(strings.REPORT_CARDS_HEADING)          # (SEND-EASY: only with such cards)
+        self.goes_cards = FlagList(inner, changed=self._flags_ticked, texts=card_texts, tip=strings.REPORT_CARDS_TIP,
+                                   name=strings.REPORT_CARDS_NAME)
+        for w in (self.goes_flags_line, self.goes_flags, self.goes_swaps_line, self.goes_swaps, self.goes_cards_line,
+                  self.goes_cards):
             w.setVisible(False)
             lines.addWidget(w)
         self.goes_files = QLabel(inner)
@@ -1225,19 +1275,25 @@ class ReportWindow(SecondaryWindow):
     def read(self, then_say=None):
         language = self.language
 
-        def got(both):
-            self._flags_counted(both[1])
-            self._show(both[0], then_say)
-        bridge.run_in_worker(lambda: (core.listed(), flags_waiting(language)), then=self.alive(got),
+        def got(read):
+            self._flags_counted(read[1], *read[2])
+            self._show(read[0], then_say)
+        bridge.run_in_worker(lambda: (core.listed(), flags_waiting(language), others_waiting(language)),
+                             then=self.alive(got),
                              failed=self.alive(lambda info: self.say(strings.REPORT_READ_FAILED.format(why=info[0]))))
 
-    def _flags_counted(self, n):
-        """The flagged sentences waiting: said under the list (nothing while there are none) - Send report works with
-        them alone."""
-        self.flag_count = n
-        if n:
-            self.flags_line.setText(strings.REPORT_FLAGS_ONE if n == 1 else strings.REPORT_FLAGS_N.format(n=n))
-        self.flags_line.setVisible(bool(n) and self.pages.currentIndex() != self.GOES)
+    def _flags_counted(self, n, swaps=0, cards=0):
+        """The flagged sentences, swaps and cards not wanted waiting: said under the list (nothing while there are
+        none) - Send report works with any of them alone (SEND-EASY)."""
+        self.flag_count, self.swap_count, self.card_count = n, swaps, cards
+        words = waiting_words(n, swaps, cards)
+        if words and self.flags_line.text() != words:
+            self.flags_line.setText(words)
+        self.flags_line.setVisible(bool(words) and self.pages.currentIndex() != self.GOES)
+
+    def _waits(self):
+        """Something waits to go without a saved report: flagged sentences, swaps or cards not wanted."""
+        return bool(self.flag_count or self.swap_count or self.card_count)
 
     def _show(self, reports, line=None):
         reports = list(reports)
@@ -1261,10 +1317,10 @@ class ReportWindow(SecondaryWindow):
             button.set_count(n)
         if line is not None:
             self.say(line)
-        elif not n and not self.status.text():
+        elif not n and not self.status.text() and not self._waits():
             self.say(strings.REPORT_EMPTY)
-        elif n and self._unheld == strings.REPORT_EMPTY:           # (the list's own line, gone with its emptiness —
-            self._unheld = ""                                      # ... a held line kept showing until it goes)
+        elif (n or self._waits()) and self._unheld == strings.REPORT_EMPTY:   # (the list's own line, gone with its
+            self._unheld = ""                     # ... emptiness or once something waits — a held line kept until it goes)
             if not self._holds:
                 self._show_status("")
 
@@ -1295,11 +1351,12 @@ class ReportWindow(SecondaryWindow):
 
     def _send_ready(self):
         """*Send report*, *Show me what's in it* and *Make a zip instead*: ready with a saved report, or with words
-        typed (saved first — Fresh-U row 3: never grey after typing, waiting on *Save to my list*); each one's tip says
-        what it needs while it is grey, and the status line says it in plain sight (`REPORT_EMPTY`)."""
+        typed (saved first — Fresh-U row 3: never grey after typing, waiting on *Save to my list*); *Send report* also
+        with swaps or cards not wanted alone (SEND-EASY: nothing has to be written); each one's tip says what it needs
+        while it is grey, and the status line says it in plain sight (`REPORT_EMPTY`)."""
         if not hasattr(self, "send_button"):                      # (the form is built before the send row)
             return
-        ready = bool(self.reports) or bool(self.flag_count) or self.save_button.isEnabled() or self.sending
+        ready = bool(self.reports) or self._waits() or self.save_button.isEnabled() or self.sending
         self.send_button.setEnabled(ready and not self.gathering)    # (What goes is up, gathering: pressed already)
         self.send_button.setToolTip(strings.REPORT_SEND_TIP if ready else strings.REPORT_SEND_NONE_TIP)
         held = self.pages.currentIndex() == self.GOES                # (What goes up, or gathering: `_goes_hold`'s)
@@ -1540,7 +1597,7 @@ class ReportWindow(SecondaryWindow):
             if self.save(then=lambda: self._build(saved=True) if self.gathering else self._sending(False),
                          control=self.send_button, broke=self._not_gathered) is None:
                 self._not_gathered()
-        elif self.reports or self.flag_count:
+        elif self.reports or self._waits():
             self._gather()
             self._build()
 
@@ -1557,7 +1614,8 @@ class ReportWindow(SecondaryWindow):
         self.goes_gathering.setText(strings.REPORT_GATHERING)
         self.goes_gathering.setVisible(True)
         for w in (self.goes_placeholders, self.goes_name, self.goes_sender, self.goes_kept, self.goes_files,
-                  self.goes_pictures_line, self.goes_flags_line, self.goes_flags):
+                  self.goes_pictures_line, self.goes_flags_line, self.goes_flags, self.goes_swaps_line,
+                  self.goes_swaps, self.goes_cards_line, self.goes_cards):
             w.setVisible(False)
         self._clear(self.goes_pictures)
         self.goes_send.setEnabled(False)
@@ -1599,7 +1657,7 @@ class ReportWindow(SecondaryWindow):
 
     def _build(self, saved=False):
         """(The window's thread.) The outbox zip made on a worker; `saved`: a report was just saved."""
-        if not self.reports and not saved and not self.flag_count:
+        if not self.reports and not saved and not self._waits():
             self._sending(False)
             self.say(strings.REPORT_EMPTY)
             return
@@ -1680,6 +1738,12 @@ class ReportWindow(SecondaryWindow):
         self.goes_flags.set_lines(outbox.flag_lines)
         for w in (self.goes_flags_line, self.goes_flags):
             w.setVisible(bool(outbox.flag_lines))
+        self.goes_swaps.set_lines(outbox.swap_lines)
+        for w in (self.goes_swaps_line, self.goes_swaps):
+            w.setVisible(bool(outbox.swap_lines))
+        self.goes_cards.set_lines(outbox.not_wanted_lines)
+        for w in (self.goes_cards_line, self.goes_cards):
+            w.setVisible(bool(outbox.not_wanted_lines))
         self._flags_ticked()
         self._clear(self.goes_pictures)
         self.pages.setCurrentIndex(self.GOES)
@@ -1697,17 +1761,22 @@ class ReportWindow(SecondaryWindow):
         self.goes_send.setFocus()
 
     def _flags_ticked(self):
-        """A tick on What goes: *Send* needs a saved report in the zip or a ticked line."""
-        ok = self.outbox is not None and (bool(self.outbox.zipped) or bool(self.goes_flags.keep()))
+        """A tick on What goes: *Send* needs a saved report in the zip or a ticked line (a flagged sentence, a swap or a
+        card not wanted: SEND-EASY)."""
+        ok = self.outbox is not None and (bool(self.outbox.zipped) or bool(self._ticked()))
         self.goes_send.setEnabled(ok)
         self.goes_open.setEnabled(ok)                               # (nothing ticked: no zip to look at either)
         self.goes_send.setToolTip(strings.REPORT_GOES_SEND_TIP if ok else strings.REPORT_FLAGS_NONE_TIP)
 
+    def _ticked(self):
+        return self.goes_flags.keep() + self.goes_swaps.keep() + self.goes_cards.keep()
+
     def _keep(self, outbox):
-        """The ticked flagged sentences for `outbox` (None: it holds none, or it isn't the one What goes shows)."""
-        if outbox is not self.outbox or not outbox.flag_lines:
+        """The ticked flagged sentences, swaps and cards not wanted for `outbox` (None: it holds none, or it isn't the
+        one What goes shows)."""
+        if outbox is not self.outbox or not (outbox.flag_lines or outbox.swap_lines or outbox.not_wanted_lines):
             return None
-        return self.goes_flags.keep()
+        return self._ticked()
 
     def _goes_hold(self, on):
         """While What goes is up (and while its zip is sent): the name, the code and the send row wait, so what goes
@@ -1717,7 +1786,7 @@ class ReportWindow(SecondaryWindow):
             w.setEnabled(not on)
         for w in (self.list_heading, self.list, self.hint):       # (the page's room: the list is in the zip it shows)
             w.setVisible(not on)
-        self.flags_line.setVisible(not on and bool(self.flag_count))
+        self.flags_line.setVisible(not on and bool(waiting_words(self.flag_count, self.swap_count, self.card_count)))
         self.sent_box.setEnabled(not on)                          # (a sent #ID opens once What goes is left)
         if not on:
             self.new_code_button.setEnabled(bool(self.sender_line.text()))
@@ -1801,7 +1870,7 @@ class ReportWindow(SecondaryWindow):
         if self.outbox is None:
             return
         keep = self._keep(self.outbox)
-        if keep is None or set(keep) == set(self.outbox.flags):
+        if keep is None or set(keep) == set(self.outbox.flags) | set(self.outbox.swaps):
             show_zip(self, self.outbox.path, control=self.goes_open)
             return
 
@@ -2049,6 +2118,22 @@ def flags_waiting(language):
         return flags.count(language)
     except Exception:
         return 0
+
+
+def others_waiting(language):
+    """(A worker.) (swaps, cards not wanted) not sent yet, as Send report would take them (SEND-EASY; 0 for one that
+    can't be read)."""
+    try:
+        from app.connect import swap
+        swaps = len(swap.for_report(language, sent=send_report.swaps_sent(language)))
+    except Exception:
+        swaps = 0
+    try:
+        from app.connect import review_loop
+        cards = len(review_loop.for_report(language, sent=send_report.not_wanted_sent(language)))
+    except Exception:
+        cards = 0
+    return swaps, cards
 
 
 def discard(sha256=None, tries=5):

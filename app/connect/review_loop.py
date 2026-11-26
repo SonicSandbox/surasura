@@ -32,8 +32,9 @@ word (`known_signal._words_of`, the word only), and:
 
 **Undo per sync** (`undo`): each read that moved something is one *sync* in the record (its id, the Known words, the
 list changes with each word's state before): Undo puts each word back **while it is still as that sync left it**
-(a later move of the same word stands), takes the Known words it marked out (`known_signal.undo(..., cards_too=False)`),
-and drops its waiting swaps; twice is nothing more. **No card is ever touched** — no suspend, flag, tag, unsuspend or
+(a later move of the same word stands), takes the Known words it marked out in one write
+(`known_signal.undo_words(..., cards_too=False)`), and drops its waiting swaps; twice is nothing more. **No card is
+ever touched** — no suspend, flag, tag, unsuspend or
 delete — and Anki is only read (findCards, cardsInfo, notesInfo): so a review going on is never disturbed, and there is
 nothing to hold for one (Haya-LD2's rule is for writers). An undone card stays read while it keeps its move (it isn't
 moved again until it loses the move and gets it back).
@@ -159,11 +160,14 @@ def _ints(values):
     return out
 
 
-def read(language, url, decks, fields, settings):
+def read(language, url, decks, fields, settings, known=None):
     """One read, beside the known-words sync -> `known_signal.read`'s answer, plus `loop`: the payoff
     ({"sync": its id, "known": n, "swap": n, "ignored": n, "unknown": n known words taken out}) when the phone sent
-    something, else None (and `loop_error` when the moves couldn't be read or written this time)."""
-    out = dict(known_signal.read(language, url, decks, fields, settings) or {})
+    something, else None (and `loop_error` when the moves couldn't be read or written this time). `known`: the sync's
+    `anki_sync.KnownFile`: Known's mark, the lists' states and write and the read-back read its one parse (DSA-SYNC)."""
+    from app import anki_sync
+    known = known if known is not None else anki_sync.KnownFile(language)
+    out = dict(known_signal.read(language, url, decks, fields, settings, known=known) or {})
     out["loop"] = None
     queries = {m: query(m, decks, settings) for m in MOVES}
     if not decks:
@@ -201,25 +205,24 @@ def read(language, url, decks, fields, settings):
                 set_by.setdefault(r.get("word"), set()).add("ignore" if r["move"] == IGNORE else "learning")
         known_words = list(out.get("marked") or ())
         loop_known = [w for w in known_words if w in set_by]
-        now = word_marks.states(language, loop_known) if loop_known else {}
+        now = word_marks.states(language, loop_known, known=known) if loop_known else {}
         marks = [(w, None) for w in loop_known if now.get(w) in set_by[w]]
         marks += [(w, "learning") for w, c, _n in words if move_of.get(c) == SWAP]
         marks += [(w, "ignore") for w, c, _n in words if move_of.get(c) == IGNORE]    # last: Ignore wins
         changes, known_before = [], set()
         if marks:
-            from app import anki_sync
             try:
-                _data, entries = anki_sync._read_known_file(language)
-                known_before = anki_sync._known_keys(entries or [])
+                known.read()
+                known_before = known.keys()
             except anki_sync._KnownFileError:
                 pass                                        # word_marks says why below, writing nothing
-            done = word_marks.apply(language, marks, undoable=False, unknow=True)
+            done = word_marks.apply(language, marks, undoable=False, unknow=True, known=known)
             if done.error is not None:
                 out["loop_error"] = done.error              # nothing written: read again at the next sync
                 return out
-            read_back = word_marks.states(language, [w for w, _b, _a in done.done])   # as Undo will read it (a
-            changes = [{"word": w, "before": b, "mark": a, "after": read_back.get(w)}  # Still learning with
-                       for w, b, a in done.done]                                     # nothing turned reads None)
+            # as Undo will read it (a Still learning with nothing turned reads None)
+            read_back = word_marks.states(language, [w for w, _b, _a in done.done], known=known)
+            changes = [{"word": w, "before": b, "mark": a, "after": read_back.get(w)} for w, b, a in done.done]
         ignored = sorted({w for w, c, _n in words if move_of.get(c) == IGNORE})
         queued = []
         try:
@@ -299,17 +302,19 @@ def undo(language, sync_id):
         later = [s for s in syncs[syncs.index(sync) + 1:] if isinstance(s, dict) and not s.get("undone")]
         moved_since = {c.get("word") for s in later for c in s.get("changes") or () if isinstance(c, dict)}
         known_since = {w for s in later for w in s.get("known") or ()}
-        now = word_marks.states(language, [c["word"] for c in changes])
+        from app import anki_sync
+        known = anki_sync.KnownFile(language)       # one parse for the lists' Undo and the Known words' (DSA-SYNC)
+        now = word_marks.states(language, [c["word"] for c in changes], known=known)
         back = [(c["word"], c["before"]) for c in reversed(changes)          # a word a later sync moved again
                 if now.get(c["word"]) == c["after"] and c["word"] not in moved_since]   # (to the same state too)
         kept = [c["word"] for c in changes if now.get(c["word"]) != c["after"] or c["word"] in moved_since]
         if back:
-            done = word_marks.apply(language, back, undoable=False, unknow=True)   # an Ignore put back is the
-            if done.error is not None:                                              # loop's: no known word
+            done = word_marks.apply(language, back, undoable=False, unknow=True, known=known)   # an Ignore put back
+            if done.error is not None:                                    # is the loop's: no known word
                 raise RuntimeError(done.error)
-        for word in sync.get("known") or ():
-            if word not in known_since:
-                known_signal.undo(language, word, None, cards_too=False)
+        marked = [w for w in sync.get("known") or () if w not in known_since]
+        if marked:                                  # one write for them all, never one a word (DSA-SYNC)
+            known_signal.undo_words(language, marked, None, cards_too=False, known=known)
         swap_queue.drop_sync(language, sync_id, "undone")
         stamp = _now()
         for record in (state.get("cards") or {}).values():
@@ -319,3 +324,53 @@ def undo(language, sync_id):
         _save(language, state)
         words = [w for w, _b in back] + list(sync.get("known") or ()) + list(sync.get("swaps") or ())
         return {"undone": True, "words": list(dict.fromkeys(words)), "kept": kept}
+
+
+# --- Send report (SEND-EASY, 3.0.19): the cards the learner didn't want ------------------------------------------- #
+BY_FLAG, BY_DELETED = "flag", "deleted"
+
+
+def for_report(language, sent=None, newest=200):
+    """The cards the learner didn't want, for Send report's zip -> [(id, why, card)], newest first, at most `newest`
+    (the flagged sentences' cap, `flags.MAX_LINES`). `card` is exactly what `connect/not_wanted.json` holds for it:
+    `word`, `sentence` (the card's, plain text, or None where this PC has none), `why` (`ignore` · `known`), `by`
+    (`flag`: Suspend + the Ignore flag, read by this loop · `deleted`: a deleted card's answer) and `at` (when). Never a
+    card's or note's id.
+
+    **Read only, from the one record of each:** this loop's record (`cards`: an Ignore move whose sync wasn't undone)
+    and the deleted-card look's rows in Connect's ledger (`deleted.report_rows`: answered Known or Ignore; its other
+    answers go already, as a flagged sentence or a swap) — the ledger also for a red card's sentence, where Connect
+    made that card (Send report never reads Anki). `sent` ({id: why}: Send report's own record) leaves out a card sent
+    as it is now. Raises Unreadable (this record can't be read); a ledger that can't be read now leaves the deleted
+    cards out and the red cards' sentences None."""
+    from app.connect import deleted, swap
+    sent = dict(sent or {})
+    cards = load(language).get("cards")
+    red = [(str(c), r) for c, r in (cards.items() if isinstance(cards, dict) else ())
+           if isinstance(r, dict) and r.get("move") == IGNORE and not r.get("undone") and r.get("word")
+           and isinstance(r["word"], str)]
+    try:
+        rows, sentences = deleted.report_rows(language, [r.get("note") for _c, r in red])
+    except Exception:
+        import logging
+        logging.getLogger("surasura-cli").info("The review loop: the ledger couldn't be read for Send report",
+                                               exc_info=True)
+        rows, sentences = [], {}
+    out = []
+    for c, r in red:
+        line = swap._report_text(sentences.get(deleted._int(r.get("note"))))
+        out.append((f"r:{c}", IGNORE, {"word": r["word"], "sentence": line, "why": IGNORE, "by": BY_FLAG,
+                                       "at": r.get("at")}))
+    out += [(f"d:{row['note_id']}", row["why"], {"word": row["word"], "sentence": swap._report_text(row["sentence"]),
+                                                 "why": row["why"], "by": BY_DELETED,
+                                                 "at": swap._report_time(row["why_at"])}) for row in rows]
+    out = [x for x in out if sent.get(x[0]) != x[1]]
+    out.sort(key=lambda x: str(x[2]["at"] or ""), reverse=True)
+    return out[:max(0, int(newest))]
+
+
+def report_bytes(language, cards):
+    """`connect/not_wanted.json`'s bytes for `cards` (`for_report`'s third parts), UTF-8."""
+    from app.connect import swap
+    return json.dumps({"format": swap.REPORT_FORMAT, "language": language, "cards": list(cards)}, ensure_ascii=False,
+                      indent=1).encode("utf-8")

@@ -322,6 +322,12 @@ ROWS = {
                                            "you.",
                      "Deletes now its never-studied cards past your limit; Undo brings them back.",
                      "tidy clean clear delete cards waiting backlog clutter limit cap overflow put back undo restore"),
+    # REMAKE (3.0.19, PROVISIONAL): *Make my new cards again…* — every never-studied card in Surasura's deck deleted
+    # (a copy kept), then made again by Connect with the best sentence
+    "connect_remake": ("Make my new cards again", "Deletes every card in Surasura's deck you never studied, then "
+                                                  "Surasura makes them again with the best sentence. A copy is kept.",
+                       "Start your new cards clean: the studied ones stay; Put back… brings these back.",
+                       "remake make again new cards clean start fresh delete unstudied backlog legacy old rebuild"),
     # a7 (DIAGNOSIS 5): an extra, under More options — the library's folders are always searched
     "connect_video_folders": ("More video folders",
                               "Library folders are searched already. Add others only if needed.",
@@ -455,8 +461,6 @@ ROWS = {
                  "Level, or a target coverage of your content", "coverage mode strategy"),
     "target_coverage": ("Coverage", "The share of your content you aim to know", "Target coverage, in percent",
                         "coverage percent target"),
-    "show_words_per_day": ("Show target days on your journey", "", "Show 'Target Days' on your journey",
-                           "target days words per day"),
     "min_count": ("A word must appear at least", "", "Fewer appearances than this and a word is never listed",
                   "min count appear at least"),
     "minutes_per_file": ("Minutes per file", "For the “every N hours” estimate",
@@ -596,18 +600,13 @@ ROWS = {
     "A word whose card is already waiting in Anki is marked",
                                  "Mark words that already have a new card waiting.",
                                  "label backlog anki waiting card mark"),
-    "inline_completed_files": ("Show ‘Target met’ in place", "Met files keep their order instead of moving down",
-                               "Keep met files in order instead of moving them down", "target met inline completed"),
     # The journey's line player — PROVISIONAL words (the default is settings_manager's `line_player`)
     "line_player": ("Play a line's own audio",
                     "▶ plays the sentence from its episode, repeated with a pause.",
                     "Play each sentence's own audio on your journey, looped with a pause",
                     "play line audio loop repeat chorus listen pause"),
-    "hide_audio_button": ("Hide the audio button", "No speaker icon on your journey’s sentences",
-                          "Hide the speaker icon on your journey", "audio button speaker hide"),
     "word_search_category": ("Lookup examples from", "", "Which kind of sentences the lookup opens",
                              "lookup nadeshiko category anime"),
-    "zen_limit": ("Zen mode shows", "", "How many words Zen mode shows", "zen limit"),
     "enable_koe": ("Speak sentences (Gemini)", "On your own key; each sentence goes to Google to be spoken",
                    "Hear a sentence read aloud (Gemini key; sentence goes to Google).",
                    "speech speak koe gemini voice"),
@@ -745,7 +744,7 @@ OPTIONS = {
     "placing_rules": {"wait": "Wait here, in New arrivals", "top": "Top of Current", "after-show": "After its show",
                       "soon": "Soon", "goal": "Goal", "finished": "Finished"},
     "theme": {"Default (Dark)": "Default (Dark)", "Dark Flow": "Dark Flow", "Midnight (Vibrant)": "Midnight (Vibrant)",
-              "Modern Light": "Modern Light", "Zen Mode": "Zen Mode"},
+              "Modern Light": "Modern Light"},
     "source_display": {"off": "Hidden", "icon": "Icon", "filename": "File name", "full": "Icon + file name"},
     "word_search_category": {"all": "All", "anime": "Anime", "liveaction": "Live action", "youtube": "YouTube"},
     "text_size": {"S": "Small", "M": "Medium", "L": "Large"},
@@ -855,6 +854,31 @@ TIDY_PAST_GONE = " · its copy is missing"
 TIDY_PAST_TIP = "Put these cards back in Anki."
 TIDY_PAST_BACK_TIP = "Already put back: a tidy goes back once."
 TIDY_PAST_GONE_TIP = "Its copy isn't on disk any more, so it can't go back."
+# REMAKE (3.0.19; PROVISIONAL words): *Make my new cards again…*'s press, its sheet and its answers
+REMAKE_NOW = "Make my new cards again…"
+REMAKE_ASK = "Delete {n} new cards and make them again?"
+REMAKE_ASK_ONE = "Delete 1 new card and make it again?"
+REMAKE_ASK_BEFORE = "Delete the {n} cards from before Surasura and make them again?"
+REMAKE_ASK_BEFORE_ONE = "Delete the 1 card from before Surasura and make it again?"
+REMAKE_DONE_LATER = "{n} cards deleted · made again once your library is free · Put back… to undo"
+REMAKE_COUNTS = "Made by Surasura, never studied: {made}"
+REMAKE_KEPT = "Kept: {kept} ({whys})"
+REMAKE_SYNC = "Anki syncs before and after the copy is made, so a card you study on your phone stays."
+REMAKE_EDITS = "Edits you made to these cards go with them; they stay in the copy. Put back… brings them all back."
+REMAKE_BEFORE = "Also the {n} cards from before Surasura"
+REMAKE_BEFORE_ONE = "Also the 1 card from before Surasura"
+REMAKE_BEFORE_TIP = "Cards of the same note type in Surasura's deck that Surasura didn't make. Off: they stay."
+REMAKE_YES = "Delete and make again"
+# the pace is the backlog cap (`connect_backlog_cap`, *Keep up to*, the row above), never a daily rate: Connect refills
+# up to it as fast as it mines, then more as the learner studies (REMAKE 3's words fix; PROVISIONAL)
+REMAKE_PACE = "Surasura makes them again: up to {cap} waiting in Anki (Keep up to, above), then more as you study."
+REMAKE_PACE_ALL = "Surasura makes them all again as it mines (Keep up to, above: 0, no limit)."
+REMAKE_YES_TIP = "Deletes them now. Surasura makes them again: up to {cap} waiting (Keep up to), then more as you study."
+REMAKE_YES_TIP_ALL = "Deletes them now. Surasura makes them all again as it mines (Keep up to: 0, no limit)."
+REMAKE_DONE = "{n} cards deleted · {q} to make again · Put back… to undo"
+REMAKE_STUDIED = " · kept, you studied them meanwhile: {words}"
+REMAKE_NONE = "Nothing to make again: {why}"
+REMAKE_CANT = "Not done: {why}"
 EXPORT_NEXT = "Save as…"
 EXPORT_NEXT_TIP = "Choose where the file goes"
 EXPORT_FORMAT_NAME = "Format"
@@ -1148,8 +1172,8 @@ SWITCH_TURNING_ON = "Turning on Cards made for you…"
 SWITCH_TURNING_OFF = "Turning off Cards made for you…"
 
 
-# --- Journey v3's rows (J-SET; SPEC §1.4, the settings table; every word PROVISIONAL): shown only after the cut-over
-# (`settings_catalog.use_v3`). The page's ⚙ says the same names (templates/journey/).
+# --- Journey v3's rows (J-SET; SPEC §1.4, the settings table; every word PROVISIONAL): Settings' Journey rows
+# (`settings_catalog._journey_rows`). The page's ⚙ says the same names (templates/journey/).
 ROWS.update({
     "journey_pitch": ("Pitch and tones", "", "Each word's pitch accent, or its tones in Chinese",
                       "pitch accent tones chinese show hide f"),

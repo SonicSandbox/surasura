@@ -105,6 +105,16 @@ class Table:
         return (cols, np.asarray([c for l in lines for c in l["cow"]], "<i4"),
                 np.asarray([c for l in lines for c in l["crowd"]], "<i4"))
 
+    def blocks(self, rows):
+        """`sentence_table.Table.blocks`: {row: block} of the rows with lines (each read through `block`, noted)."""
+        out = {}
+        for row in rows:
+            if row not in out:
+                got = self.block(row)
+                if got is not None:
+                    out[row] = got
+        return out
+
     def take(self, rows):
         """The cost's columns, as the reader takes them."""
         return SS._take(self, rows)
@@ -435,8 +445,9 @@ class Library:
         with open(path, "w", encoding="utf-8", newline="\r\n") as f:
             for n, text in enumerate(lines, 1):
                 f.write(f"{n}\n00:00:{n:02d},000 --> 00:00:{n:02d},900\n{text}\n\n")
+        from app import sentence_table
         st = os.stat(path)
-        return plan_rules.file_digest([os.path.join(self.root, rel), [st.st_mtime, st.st_size], None, None, "srt"])
+        return sentence_table.source_digest(path, [st.st_mtime, st.st_size], "srt")
 
     def table(self, keys, episodes, line, cowords=(), folder="show"):
         """`episodes` [(name, [text, …])]; `line(file, number, text)` -> `L` or None."""

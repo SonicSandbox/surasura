@@ -283,7 +283,8 @@ def list_words(args):
     out = {"language": lang}
     if args.file is not None:
         name = os.path.basename(args.file)
-        rows = [row for row in rows if row.get("Source File") == name]
+        rel = _library_rel(lang, args.file) if rows and "Source Path" in rows[0] else None
+        rows = [row for row in rows if (row.get("Source Path") == rel if rel else row.get("Source File") == name)]
         out["file"] = name
     kind = _kinds(lang)
     words, seen = [], set()
@@ -345,6 +346,17 @@ def _phrase_set(loaded, lang):
     return phrases.load()
 
 
+def _library_rel(lang, path):
+    """`path`'s Source Path (E-NAMES: its path from the library's data folder, as the run's rows name a file), or None
+    for a path outside it (or a bare name): the caller then matches the file by its name."""
+    from app.path_utils import get_data_path, library_path
+    try:
+        rel = library_path(os.path.abspath(path), os.path.abspath(get_data_path(lang)))
+    except ValueError:
+        return None
+    return None if rel == os.pardir or rel.startswith(os.pardir + "/") else rel
+
+
 def _the_librarys_file(lang, path):
     """Is `path` the library's one file of its name (so the journey's rows for that name are its own)?"""
     from app.path_utils import get_data_path
@@ -360,8 +372,9 @@ def _the_librarys_file(lang, path):
 def _file_encounter(args, loaded, lang):
     """One subtitle's list words in the order first said, read from the file itself by the cue reader (so a file is
     the path given, never a file name two shows share): each with `start` / `end` (seconds) of the line it is first
-    said on, how often the file says it, and `new` — whether this file is where the journey first meets it (null
-    when the file isn't the library's one file of its name: the journey keys files by name)."""
+    said on, how often the file says it, and `new` — whether this file is where the journey first meets it (by its
+    Source Path, E-NAMES; a list from before names files by name alone: null when the file isn't the library's one
+    file of its name, or not in the library)."""
     from app import cues
     from app.connect import pick as picking
     if not os.path.isfile(args.file):
@@ -376,10 +389,14 @@ def _file_encounter(args, loaded, lang):
     listed = {}
     for row in rows:
         listed.setdefault((row.get("Word", ""), row.get("Reading", "")), row)
-    # The journey names a file by its name only: `new` is told only for the library's one file of that name, this one
+    # The journey names a file by its Source Path (E-NAMES); a list from before by its name only: then `new` is told
+    # only for the library's one file of that name, this one
     name = os.path.basename(args.file)
+    rel = _library_rel(lang, args.file) if journey and "Source Path" in journey[0] else None
     new = None
-    if _the_librarys_file(lang, args.file):
+    if rel:
+        new = {(row.get("Word", ""), row.get("Reading", "")) for row in journey if row.get("Source Path") == rel}
+    elif _the_librarys_file(lang, args.file):
         new = {(row.get("Word", ""), row.get("Reading", "")) for row in journey if row.get("Source File") == name}
     tokenizer, script = _reading(loaded, lang)
     try:
@@ -1297,7 +1314,13 @@ def _anki_miner_setup(loaded, lang, run_dir, held=None):
     Michi's technical rule). The set is kept only while Anki Miner's files are as they were (`anki_miner.stamp`: its
     program, gui_config.json — the active profile and the mapping — and its profiles): a profile switched, a mapping
     edited or Anki Miner updated mid-run reads it all again, and the pick-to-mine guard sees the new profile
-    (P1.3-AM37 #5; IK-r2-3, R2-7). The command line's own `pick` holds none: read every call, as before."""
+    (P1.3-AM37 #5; IK-r2-3, R2-7). The command line's own `pick` holds none: read every call, as before.
+
+    DSA-CONNECT 2: the set's `version` and `profiles` are also kept for the next run (`anki_miner.kept_look_ups`:
+    the same program, home, installed version and stamp), so a run's first look starts Anki Miner once, for the export
+    (which may hold a key: never kept on disk), where it started it three times. An export naming another version than
+    the kept one reads them again; a failure drops both (`drop_anki_miner_held`), as Surasura's own writes to Anki Miner
+    do (*Finish its setup*: `anki_miner.DROPS`)."""
     from app.connect import anki_miner, fields
     miner = anki_miner.find(loaded)
     if miner is None:
@@ -1307,6 +1330,9 @@ def _anki_miner_setup(loaded, lang, run_dir, held=None):
     now = anki_miner.stamp(miner) if held is not None else None    # taken before the reads: a save meanwhile shows
     kept = (held.get("set") if held and time.monotonic() - read_at < SETUP_FOR_S and now is not None
             and held.get("stamp") == now else None)
+    # DSA-CONNECT 2: a run's first look (its set never filled; a failure's drop took the kept answers too) may take
+    # Anki Miner's `version` and `profiles` from the run before (`anki_miner.kept_look_ups`): one start, the export
+    looked = anki_miner.kept_look_ups(miner, now) if held is not None and not held else None
     if held is not None:
         held.clear()                    # filled again only once every look-up and the note type's check answered
     if kept is not None:
@@ -1321,23 +1347,51 @@ def _anki_miner_setup(loaded, lang, run_dir, held=None):
     else:
         name = loaded.get("connect_anki_miner_profile") or "Surasura"
         try:
-            info = anki_miner.version(miner)
-            profile = anki_miner.choose_profile(info, anki_miner.profiles(miner), name)    # 3.7: else your active one
-            os.makedirs(run_dir, exist_ok=True)
-            export = anki_miner.settings_export(miner, lang, export_path, profile)
+            while True:
+                info, listed = looked or (anki_miner.version(miner), anki_miner.profiles(miner))
+                try:
+                    profile = anki_miner.choose_profile(info, listed, name)    # 3.7: else your active one
+                    os.makedirs(run_dir, exist_ok=True)
+                    export = anki_miner.settings_export(miner, lang, export_path, profile)
+                except anki_miner.AnkiMinerError:
+                    if looked is None:
+                        raise
+                    looked = None       # never a kept answer's failure: read again, and say only that one's
+                    continue
+                said = export.get("app_version") if isinstance(export, dict) else None
+                if looked is None or said in (None, info.get("app")):
+                    break
+                looked = None           # the kept answers are another version's (an update they missed): read again
             mapping = fields.from_export(export, lang, fields.pointer(info))     # A5F3: a pointer it can act on
         except anki_miner.AnkiMinerError as e:
+            drop_anki_miner_held(held)
             raise _miner_error(e) from None
         except fields.NeedsYou as e:
+            drop_anki_miner_held(held)
             raise CliError("needs-you", e.message, ask=e.message, need="anki-miner-setup") from None
-    _check_note_type(loaded, mapping, info)
+    try:
+        checked = _check_note_type(loaded, mapping, info)   # (the set keeps the export's: asked each call)
+    except CliError:
+        drop_anki_miner_held(held)
+        raise
     if held is not None:
         held.update(set=(info, profile, mapping, export), stamp=now,
                     at=read_at if kept is not None else time.monotonic())
+        if kept is None and looked is None:
+            anki_miner.keep_look_ups(miner, now, info, listed)
     if kept is None:                    # Michi-DK: Anki Miner's own deck, for Settings' line (never a reason to stop)
         from app.connect import setup
         setup.note_miner_deck(lang, mapping.deck)
-    return info, profile, _run_mapping(loaded, lang, mapping)
+    return info, profile, _run_mapping(loaded, lang, checked)
+
+
+def drop_anki_miner_held(held):
+    """Row 25's "read again after any failure", for the run's set (`held`, None: the command line's) and the answers
+    kept for the next run (DSA-CONNECT 2) alike."""
+    from app.connect import anki_miner
+    if held is not None:
+        held.clear()
+    anki_miner.drop_look_ups()
 
 
 def _run_mapping(loaded, lang, mapping):
@@ -1361,14 +1415,15 @@ def _run_mapping(loaded, lang, mapping):
 def _check_note_type(loaded, mapping, info=None):
     """The note type Anki Miner fills must take its mapping (the word field first): asked of Anki when it answers;
     when it doesn't, Anki Miner's own `check` asks again before it mines. `info`: Anki Miner's version answer (where
-    it's set right: `fields.pointer`, A5F3)."""
+    it's set right: `fields.pointer`, A5F3). -> `mapping`, its sentence card's mark none when the note type has no
+    field for it (BOOK-CARD: `fields.with_note_fields`)."""
     from app import anki_connect
     from app.connect import fields
     if os.environ.get("SURASURA_NO_ANKI_SYNC"):
-        return
+        return mapping
     url = anki_connect.address(loaded)
     if not anki_connect.probe(url, timeout=2).get("ok"):
-        return
+        return mapping
     try:
         model_fields = anki_connect.invoke("modelFieldNames", url, modelName=mapping.note_type)
     except anki_connect.AnkiError:
@@ -1377,6 +1432,7 @@ def _check_note_type(loaded, mapping, info=None):
         fields.check_note_type(mapping, model_fields, fields.pointer(info))
     except fields.NeedsYou as e:
         raise CliError("needs-you", e.message, ask=e.message, need="anki-miner-setup") from None
+    return fields.with_note_fields(mapping, model_fields)
 
 
 def pick(args):
@@ -1386,9 +1442,22 @@ def pick(args):
     line: `reading`, the file Anki Miner reads): the words of the item's text (`file`), each with its sentence."""
     from app import cues
     from app.connect import pick as picking, runfile, sentences
-    loaded = settings()
+    # DSA-CONNECT (G6): Connect's runner hands in one pick context a job (`context`, a dict; never on the command
+    # line): what an episode's own pick reads once — settings, the tokenizer, the known test, the phrases, Anki
+    # Miner's look-ups and the note type, the carded set, the learning view, the young words — is the same for every
+    # other episode Best cuts a line from in that job (`runner._borrow`), so those picks read none of it again
+    context = getattr(args, "context", None)
+    kept = context if isinstance(context, dict) else {}
+    if kept.get("job") != args.job or "loaded" not in kept:
+        kept.clear()                    # another job's (or none yet): this pick reads its own
+        kept.update(job=args.job, loaded=settings())
+    loaded = kept["loaded"]
     lang = language(args, loaded)
-    require_set_up(lang)
+    if kept.get("lang") != lang:
+        require_set_up(lang)
+        for name in [k for k in kept if k not in ("job", "loaded")]:
+            del kept[name]
+        kept["lang"] = lang
     # Kantan-MO: the list (Level) decides, and *Cards for every new word* (`connect_every_word`) adds the rest;
     # `--words` still names any of pick's modes
     from app import settings_manager
@@ -1404,10 +1473,11 @@ def pick(args):
     listed = getattr(args, "listed", None)
     if listed is None:
         listed = _listed(args, lang)
-    level_job = _level_job(args.job, lang)
     # Kantan-SD 6 (Connect's runner, never on the command line): the words a job cuts from this episode's lines though
-    # it mines another (`runner._borrow`) — picked as a Best sentence's own job picked them, by name
+    # it mines another (`runner._borrow`) — picked as a Best sentence's own job picked them, by name (the ledger's row
+    # isn't read for it: these words are the job, DSA-CONNECT)
     only = getattr(args, "only", None)
+    level_job = None if only else _level_job(args.job, lang)
     if only:
         from app.connect import level
         level_job = {"kind": "level", "source": level.BEST, "words": [tuple(key) for key in only]}
@@ -1424,7 +1494,9 @@ def pick(args):
     # The episode's words, read as a Generate reads them (the cue reader cleans TV captions as it does); Anki Miner is
     # handed the job's copy (row 1.3.2: reading rows and arrows off) — the same lines at the same times
     from app import caption_clean
-    tokenizer, script = _reading(loaded, lang)
+    if "reading" not in kept:
+        kept["reading"] = _reading(loaded, lang)
+    tokenizer, script = kept["reading"]
     book = getattr(args, "reading", None)
     contract.emit_progress("reading the text" if book else "reading the subtitle", 0, 3)
     run_dir = os.path.join(_connect_folder(), "runs", job)
@@ -1441,8 +1513,9 @@ def pick(args):
         raise CliError("bad-data", f"The {'text' if book else 'subtitle'} can't be read: {e}") from None
     if not book:
         tokens = cues.tokens(read, lang, script, tokenizer)
-    is_known = _known_test(lang, tokenizer, script)
-    phrase_set = _phrase_set(loaded, lang)
+    if "known" not in kept:
+        kept["known"] = (_known_test(lang, tokenizer, script), _phrase_set(loaded, lang))
+    is_known, phrase_set = kept["known"]
 
     out = {"language": lang, "file": os.path.abspath(args.file), "subtitle": subtitle and os.path.abspath(subtitle),
            "mode": mode, "job": job, "run_file": None}
@@ -1450,19 +1523,25 @@ def pick(args):
     if args.video is not None or book:
         contract.emit_progress("asking Anki Miner", 1, 3)
         # Connect's run hands in its set of look-ups (`held`, row 25: never on the command line)
-        setup = _anki_miner_setup(loaded, lang, run_dir, held=getattr(args, "held", None))
+        if "setup" not in kept:
+            kept["setup"] = _anki_miner_setup(loaded, lang, run_dir, held=getattr(args, "held", None))
+        setup = kept["setup"]
         if setup is None:
             out["skipped"] = "anki miner absent"
 
     contract.emit_progress("choosing the words and their lines", 2, 3)
-    keys, source = picking.carded(lang, loaded, [d for d in (setup[2].deck, setup[2].own_deck) if d] if setup else ())
+    decks = tuple(d for d in (setup[2].deck, setup[2].own_deck) if d) if setup else ()
+    if kept.get("carded", (None,))[0] != decks:         # (the decks it was read for: Anki Miner's, once set up)
+        kept["carded"] = (decks, picking.carded(lang, loaded, list(decks)))
+    keys, source = kept["carded"][1]
     # Connect's runner (P2.4): every word it has made a card for, whatever became of the card (G1.3-4: a card you
     # deleted is never made again unless you ask), counted as carded — never on the command line (no flag)
     keys = set(keys) | set(getattr(args, "made", None) or ())
     from app import analyzer
     # the one learning rule, with the list's own counts (Kantan-MA): a rare compound counts toward its free parts
-    view = analyzer.LearningView(*_counted(lang), known=is_known)
-    young = sentences.young_weights(lang)
+    if "view" not in kept:
+        kept["view"] = (analyzer.LearningView(*_counted(lang), known=is_known), sentences.young_weights(lang))
+    view, young = kept["view"]
     chosen = picking.pick(read, tokens, lang, is_known, mode=mode, listed=listed, carded=keys, carded_source=source,
                           readable=view.readable if lang == "ja" else None,
                           ignore_names=bool((loaded.get("logic") or {}).get("ignore_names", False)),
@@ -1500,7 +1579,8 @@ def pick(args):
                                           tags=runfile.job_tag(job), features=named, language=lang)
             data = runfile.build(run_dir, lang, [episode], profile=profile,
                                  run_config=runfile.config(mapping, info.get("app"), named,
-                                                           word_audio=runfile.word_audio_on(loaded, lang)))
+                                                           word_audio=runfile.word_audio_on(loaded, lang),
+                                                           quiet=bool(book)))      # BOOK-CARD: no sound
             try:
                 out["run_file"] = runfile.write(os.path.join(run_dir, "run-1.json"), data)
             except runfile.RunFileError as e:

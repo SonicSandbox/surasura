@@ -92,8 +92,8 @@ ANALYSED = tuple(t for t, v in TIERS.items() if v[2])                    # now, 
 # episode by this rule. Written once in Python (`counts`) and once in SQL (`counts_sql`), from the same constants; a
 # test holds the two equal. Who reads it today: here, `Store.schedule` (Generate's list, and its set-aside items for
 # the run signature's "reference" part), `_mine_ids`, `text_lists`, `_moves_counted`, `_watched_aside`,
-# `_store_has_content`, `read_only_schedule` (the copy) and `watched_marks` (the journey's stones: the report's
-# `static_html_generator._journey_stones`, the render signature's `analyzer._stones_fingerprint`); outside,
+# `_store_has_content`, `read_only_schedule` (the copy) and `watched_marks` (the journey's stones: the render signature's
+# `analyzer._stones_fingerprint`); outside,
 # `moves._set_aside` (the window's numbers) and Connect's `library.counting` / `library.counts` (`library.ahead` beyond
 # the line, a gap's `inbox._gone`; M-W1 — `level.watched_out` stays stricter, LF4-1). Not yet: the window's drawn
 # lines (`view_rows._mine_ids`, `drag.lines_for`).
@@ -6118,9 +6118,8 @@ class Store:
         through the partial index `items_watched` (`STONES_EXIST_SQL`: a library with no stone pays one look, S19).
         `counts` is the one rule's (`counts`): a watched item counts only with `keep_watched` on. `show`: which show or
         book it is of, as the window's rows read it (`view_rows._show_key`: its work, else its folder, else itself) —
-        `w<id>` / `f<folder>` / `i<id>`; `media`: its work's type as the learner typed it, else None (a6: the journey
-        folds a run of watched parts of one show into one row, `static_html_generator._journey_folds`). Finished stays
-        out (its own view). One read transaction."""
+        `w<id>` / `f<folder>` / `i<id>`; `media`: its work's type as the learner typed it, else None (a6: the render
+        signature's part, `analyzer._stones_fingerprint`). Finished stays out (its own view). One read transaction."""
         with self._reading():
             if not self.conn.execute(STONES_EXIST_SQL).fetchone()[0]:
                 return []
@@ -10982,6 +10981,26 @@ def read_auto_band(language, data_dir):
     except (sqlite3.Error, ValueError, TypeError):
         return None
     return value.get("band") if isinstance(value, dict) and isinstance(value.get("band"), str) else None
+
+
+def read_state(language, data_dir):
+    """The store's own count of what changed — (store_id, epoch, state_version): every command and status write moves
+    it, bookkeeping never (§6.6: the export's own commit, a reader's mark), nor a checkpoint folding the -wal in — or
+    None: no ready store, or not readable now. A `mode=ro` look: never built, never waits. Connect's dates read
+    (`connect/sentences._dates`) keeps its answer while this holds."""
+    db_path = library_db_path(language, data_dir)
+    if not os.path.exists(db_path) or os.path.exists(damaged_marker(db_path)):
+        return None
+    import pathlib
+    try:
+        conn = sqlite3.connect(pathlib.Path(db_path).as_uri() + "?mode=ro", uri=True, timeout=0.5)
+        try:
+            got = dict(conn.execute("SELECT key, value FROM meta WHERE key IN ('store_id', 'epoch', 'state_version')"))
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return (got["store_id"], got["epoch"], got["state_version"]) if len(got) == 3 else None
 
 
 UNREAD = "unread"       # `read_watched_marks`: a store there, its marks not readable at this moment
@@ -16097,6 +16116,7 @@ def repair_store(db_path, language, data_dir, user_files_dir, lock):
 RESET_PREFIX = "library-reset-"   # User Files/<lang>/.trash/library-reset-<YYYYmmdd-HHMMSS>/ (that .trash is never purged)
 RESET_RECORD = "reset.json"       # in it: what came from where, enough to put the old library back by hand
 RESET_WAIT = 2.0                  # s: another writer's commit is waited for this long, then the reset is refused
+CONNECT_MINING = "connect-mining"  # `kick.MINING`: held by Connect only while a look mines (never its one-instance lock)
 # Emptied by the reset; `roots` stays (the folders he reads, their ids kept), and so does every exclusion but Remove's
 # — but never Connect's never-again sets (`made_words`, `made_lines`, G1.3-4: a word whose card he deleted is never made
 # again; item ids are never reused, so their stale ids meet no new item: I-R1 / LF-5)
@@ -16107,7 +16127,8 @@ RESET_KEEP_META = ("mine_line", "arrivals_on", "keep_watched", "log_seq")
 # Why a reset is refused (nothing changed), in the window's words
 RESET_UPDATE = "An update is being installed: sort your library again once it has finished."
 RESET_GENERATE = "A Generate is running: sort your library again once it has finished."
-RESET_CONNECT = "Connect is making cards: sort your library again once it has finished."
+# SORT-BAR (PROVISIONAL words): said only while a look of Connect's mines (`CONNECT_MINING`), never while it only waits
+RESET_CONNECT = "Connect is making cards right now: sort your library again once they're made."
 RESET_KNOWN = "Your known words are being updated: try again in a moment."
 RESET_BUSY = "Another Surasura program is saving your library: try again in a moment."
 RESET_DAMAGED = "Your library needs Repair first."
@@ -16357,8 +16378,10 @@ def start_fresh(store, forget_known=False, _step=None):
             held.append(locks.take("results", "Sorting your library again", owner=token))
         except locks.Busy:
             raise ResetRefused(RESET_GENERATE) from None
-        if locks.in_use("connect"):
-            raise ResetRefused(RESET_CONNECT)
+        try:                                            # SORT-BAR: refused only while Connect mines (a look),
+            held.append(locks.take(CONNECT_MINING, "Sorting your library again", wait=RESET_WAIT, owner=token))
+        except locks.Busy:                              # never while it only waits; held, so its next look
+            raise ResetRefused(RESET_CONNECT) from None  # waits for the new order
         if forget_known:
             from app.anki_sync import known_lock_name
             try:
@@ -16882,7 +16905,7 @@ def put_back_library(store, folder, _step=None):
         except locks.Busy:
             raise ResetRefused(RESET_GENERATE) from None
         try:
-            held.append(locks.take("connect", "Putting your library back", owner=token))
+            held.append(locks.take(CONNECT_MINING, "Putting your library back", wait=RESET_WAIT, owner=token))
         except locks.Busy:
             raise ResetRefused(RESET_CONNECT) from None
         lock = MaintenanceLock(store.db_path)
@@ -16950,7 +16973,7 @@ def _put_it_back(store, folder, record, moves):
         except locks.Busy:
             raise ResetRefused(RESET_GENERATE) from None
         try:
-            held.append(locks.take("connect", "Putting your library back", owner=token))
+            held.append(locks.take(CONNECT_MINING, "Putting your library back", wait=RESET_WAIT, owner=token))
         except locks.Busy:
             raise ResetRefused(RESET_CONNECT) from None
         lock = MaintenanceLock(store.db_path)

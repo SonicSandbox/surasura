@@ -1,11 +1,11 @@
 """The sentence table (the sentence choice): Generate keeps every candidate sentence of every list word as numbers.
 
 What these prove, so far — the switch, `plan_rules.SENTENCE_TABLE`, before anything reads it:
-  - it is 0 in the tree, and a level is only ever one of 0, 1, 2;
+  - it is 2 in the tree since the flip (3.0.19: 0 → 2 directly), and a level is only ever one of 0, 1, 2;
   - a child process (a Generate is one) takes its level from SURASURA_SENTENCE_TABLE, read once at import; any other
     value is the tree's;
-  - off is today: a Generate with the switch at 0 writes every file in results/ the same bytes as one with no switch
-    set at all, and no table.
+  - the tree's level is the one a Generate runs: with no switch set it writes every file in results/ the same bytes
+    as one with the switch at 2, the table included (before the flip: at 0, the same bytes as the code before).
 
 What a wrong answer would cost a learner: a build half switched on in a release that was meant to change nothing —
 sentences on their cards or their list moving before the release that says so.
@@ -39,18 +39,19 @@ def _child_level(env_value):
 # --------------------------------------------------------------------------- #
 # 1. The switch
 # --------------------------------------------------------------------------- #
-def test_the_switch_is_off_in_the_tree():
-    # why: every lane of the build lands inert; a flip is its own commit (with ENGINE_REVISION), never a side effect
+def test_the_switch_is_at_release_2_in_the_tree():
+    # why: the flip is its own commit (with ENGINE_REVISION and SCHEMA_VERSION), never a side effect; level 1 never
+    # ships (one release: the list and the cards change together)
     with open(os.path.join(REPO, "app", "plan_rules.py"), encoding="utf-8") as f:
         tree = ast.parse(f.read())
     literals = [node.value.value for node in tree.body
                 if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
                 and any(isinstance(t, ast.Name) and t.id == "SENTENCE_TABLE" for t in node.targets)]
-    assert literals == [0]
+    assert literals == [2]
     assert plan_rules.SENTENCE_TABLE_LEVELS == (0, 1, 2)
 
 
-@pytest.mark.parametrize("env_value, level", [(None, 0), ("0", 0), ("1", 1), ("2", 2)])
+@pytest.mark.parametrize("env_value, level", [(None, 2), ("0", 0), ("1", 1), ("2", 2)])
 def test_a_child_process_takes_its_level_from_the_environment(env_value, level):
     # why: a Generate is a subprocess; the harness runs a level by its environment, read once at import
     assert _child_level(env_value) == level
@@ -59,8 +60,8 @@ def test_a_child_process_takes_its_level_from_the_environment(env_value, level):
 @pytest.mark.parametrize("raw", ["", " ", "3", "-1", "1.0", "on", "true", "２", "0x1"])
 def test_anything_but_a_level_reads_as_the_trees_value(raw):
     # why: a typo or a stray value must never switch a release on (the full-width ２ included: int() would take it)
-    assert plan_rules.sentence_table_level({"SURASURA_SENTENCE_TABLE": raw}) == plan_rules.SENTENCE_TABLE_LEVELS[0]
-    assert plan_rules.sentence_table_level({"SURASURA_SENTENCE_TABLE": raw}, default=2) == 2
+    assert plan_rules.sentence_table_level({"SURASURA_SENTENCE_TABLE": raw}) == plan_rules.SENTENCE_TABLE == 2
+    assert plan_rules.sentence_table_level({"SURASURA_SENTENCE_TABLE": raw}, default=0) == 0
 
 
 def test_a_level_with_spaces_around_it_is_that_level():
@@ -86,9 +87,9 @@ def _outputs():
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])
-def test_a_generate_with_the_switch_off_writes_what_one_without_it_writes(language, monkeypatch):
-    # why: at 0 every file in results/ is byte for byte the code before (the build's inert rule); a reader of the
-    # switch that leaks into a run at 0 shows up here as a changed file or a table
+def test_a_generate_with_no_switch_set_writes_what_one_at_the_trees_level_writes(language, monkeypatch):
+    # why: the tree's level (2 since the flip) is what a learner's Generate runs — a reader that took its level from
+    # anywhere but the switch shows up here as a changed file, or as no table
     from tests import services_helpers as h
     monkeypatch.delenv("SURASURA_SENTENCE_TABLE", raising=False)
     from tests.test_services_progress import _analyzer
@@ -97,12 +98,12 @@ def test_a_generate_with_the_switch_off_writes_what_one_without_it_writes(langua
     # one hash seed for both runs: word_stats.json and file_words.json list a word's files from a set, so their bytes
     # follow the seed (as test_services_progress.py's flag test fixes it) — the switch is what this compares
     found = []
-    for env in ({}, {"SURASURA_SENTENCE_TABLE": "0"}):
+    for env in ({}, {"SURASURA_SENTENCE_TABLE": "2"}):
         proc = _analyzer(language, env=dict(env, SURASURA_FORCE_RUN="1", PYTHONHASHSEED="0"))
         assert proc.returncode == 0, proc.stdout.decode("utf-8", "replace")[-2000:]
         found.append(_outputs())
     assert found[0] == found[1]
-    assert "plan.json.gz" in found[0] and "sentences.bin" not in found[0]
+    assert "plan.json.gz" in found[0] and "sentences.bin" in found[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -627,18 +628,25 @@ def test_at_level_1_the_table_carries_each_lines_two_numbers(language, monkeypat
     assert all(start <= len(text) for start, text, _w in starts)
 
 
-def test_at_level_1_each_source_carries_the_plans_own_digest(monkeypatch):
-    # why: a reader skips a line whose file changed since the Generate (SPEC § 5.4) by the file's digest — the one the
-    # plan's files already carry (plan_rules.file_digest), so the table and the plan never disagree about a file
+def test_at_level_1_each_source_carries_its_files_own_digest_in_one_spelling(monkeypatch):
+    # why: a reader skips a line whose file changed since the Generate (SPEC § 5.4) by the file's digest — its path,
+    # time, size and kind, as the plan's files are signed, but its path in one spelling (st.source_digest), so a
+    # reader that spells the data folder another way still finds the file; the plan's files, in the plan's order
     import re
     from app import analyzer, plan_engine
+    from app.path_utils import get_data_path
     monkeypatch.delenv("SURASURA_SENTENCE_TABLE", raising=False)
     results = _seed("ja")
     _generate_at("ja", 1)
     table = st.open_table(os.path.join(results, st.TABLE_FILE), language="ja")
     plan = plan_engine.load(os.path.join(results, analyzer.PLAN_FILE))
     sources = table.sources()
-    assert [s[2] for s in sources[:len(plan.files)]] == [f[2] for f in plan.files]
+
+    def signed(rel, kind):
+        path = os.path.join(get_data_path("ja"), *rel.split("/"))
+        stat = os.stat(path)
+        return st.source_digest(path, [stat.st_mtime, stat.st_size], kind or None)
+    assert [s[2] for s in sources[:len(plan.files)]] == [signed(f[0], f[3]) for f in plan.files]
     assert [s[0] for s in sources[:len(plan.files)]] == [f[0] for f in plan.files]
     assert all(isinstance(s[2], str) and re.fullmatch(r"[0-9a-f]{16}", s[2]) for s in sources)
 
@@ -769,3 +777,82 @@ def test_at_level_1_generate_writes_the_same_table_whatever_the_hash_seed(langua
         blobs.append(open(path, "rb").read())
     assert blobs[0] == blobs[1]
     assert max(st.open_table(path).places()) >= 0
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_costs_young_pass_reads_only_co_words_with_a_weight_and_gives_the_old_passs_numbers(tmp_path, language):
+    # why: E-FAST 6 — the young pass ran over every co-word of the asked lines (1.69 M at a 400-file Chinese library)
+    # though only one with a weight above 0 can move a line's youngest; read now over those alone. The four answers
+    # must be the old pass's to the bit: no weight, some weights (others 0 or below), every co-word weighed; ja + zh
+    import numpy as np
+    from app import sentence_score as SS
+    lib = _Library(_sentences(language))
+    table = st.open_table(_write(lib.finish(lib.packer(), language), tmp_path))
+    arrays, _files = SS._moment_arrays(table, SS.Moment(), None, str(tmp_path))
+    cols = SS._take(table, sorted(table.rows().values()))
+    assert len(cols["cow"]) > 50, "enough co-words to tell a pass that skips the wrong ones"
+
+    def old_young(moment):
+        # the pass as it was before (E-FAST 5's head), every co-word read
+        row, cow = cols["row"].astype(np.int64), cols["cow"].astype(np.int64)
+        cow_line = np.repeat(np.arange(len(row), dtype=np.int64), cols["ncow"].astype(np.int64))
+        own_c = moment["own"][cow]
+        its_own = own_c == row[cow_line]
+        known = moment["known_at"][cow] < moment["placed"][row][cow_line]
+        lemma = moment["lemma"]
+        learning = ~its_own & known & (own_c >= 0) & (lemma[np.maximum(own_c, 0)] != lemma[row[cow_line]])
+        young = np.zeros(len(row))
+        if learning.any():
+            np.maximum.at(young, cow_line[learning], moment["young"].astype(np.float64)[cow[learning]])
+        return young
+
+    n = len(arrays["young"])
+    mixed = np.where(np.arange(n) % 3 == 0, 0.25 + (np.arange(n) % 7) / 10, np.where(np.arange(n) % 3 == 1, 0.0, -0.5))
+    for weights in (np.zeros(n), mixed, np.full(n, 0.6)):
+        moment = dict(arrays, young=weights)
+        # every co-word known from the start, so a weight can reach a line (with none known, every pass reads 0)
+        moment["known_at"] = np.full(len(arrays["known_at"]), -1, np.int64)
+        total, others, words, young = SS.cost(cols, moment, 14, 25)
+        want = old_young(moment)
+        assert young.tolist() == want.tolist()
+        assert (want > 0).any() == bool(weights.max() > 0), "a weight reaches some line, or none is there to reach"
+        ref = dict(moment, young=np.zeros(n))
+        total0 = SS.cost(cols, ref, 14, 25)[0]
+        fin = np.isfinite(total0)
+        assert np.array_equal(np.isfinite(total), fin)
+        assert np.allclose(total[fin], total0[fin] - SS.rates().young * want[fin], rtol=0, atol=1e-12)
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_readers_blocks_come_from_one_open_of_the_file_and_are_each_rows_own(tmp_path, language, monkeypatch):
+    # why: E-FAST 6 — a pick read its words' blocks one `open` of the table each (307 for one Chinese episode: 12 ms of
+    # a 224 ms pick); `blocks` reads them all through one, in the file's order, and gives what `block` gives row by row
+    # (a row asked twice or with no line: as `block` answers it); the score's `_take` asks it once a pick
+    from app import sentence_score as SS
+    import numpy as np
+    lib = _Library(_sentences(language))
+    path = _write(lib.finish(lib.packer(), language), tmp_path)
+    table = st.open_table(path)
+    rows = sorted(table.head["rows"])
+    assert len(rows) > 10
+    opened = []
+    real_open = open
+
+    def counted(file, *a, **k):
+        if os.path.abspath(str(file)) == os.path.abspath(path):
+            opened.append(file)
+        return real_open(file, *a, **k)
+    monkeypatch.setattr(st, "open", counted, raising=False)
+    asked = list(reversed(rows)) + [rows[0], len(lib.keys) + 5]        # (out of order, one twice, one with no line)
+    got = table.blocks(asked)
+    assert len(opened) == 1, "one open of the file for every block"
+    assert sorted(got) == rows, "every row with lines, once; a row with no line left out"
+    for k in rows:
+        cols, cow, phr = table.block(k)
+        mine, mine_cow, mine_phr = got[k]
+        assert sorted(mine) == sorted(cols) and all(np.array_equal(mine[c], cols[c]) for c in cols)
+        assert np.array_equal(mine_cow, cow) and np.array_equal(mine_phr, phr)
+    opened.clear()
+    cols = SS._take(table, rows)
+    assert len(opened) == 1, "the score's take: one open a pick"
+    assert cols["row"].tolist() == [k for k in rows for _n in range(len(table.block(k)[0]["number"]))]

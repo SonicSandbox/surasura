@@ -78,7 +78,7 @@ def _ask(body, journey):
     settings = settings_manager.load_settings()
     if not settings_manager.connect_on(settings):
         raise door.RouteError(OFF, "off")
-    picked = _line(runner.Steps(settings), lang, line_id)
+    picked = _line(runner.Steps(settings), lang, line_id, word)
     if picked is None:
         raise door.RouteError(GONE, "gone")
     try:
@@ -107,15 +107,16 @@ def _ask(body, journey):
     return got
 
 
-def _line(steps, lang, line_id):
+def _line(steps, lang, line_id, word=None):
     """The line pressed -> (item id, its text), None when it is gone — or the door's *busy* (as the other routes say
-    it: `kind` "busy") when the library store couldn't be read just now. Swap's `_resolve_line_id` reads every failure
+    it: `kind` "busy") when the library store couldn't be read just now. `word`: the word pressed (two lines that
+    start together are told apart by it: `swap.line_cue`). Swap's `_resolve_line_id` reads every failure
     as a line gone, so its one store read (`steps.subtitle`) is watched here: a store busy past its own wait (Connect's
     `Wait(LIBRARY_BUSY)` at the open, SQLite's "locked" in the read) is no line gone (J-FIX)."""
     from app import door
     from app.connect import swap
     busy = _watch(steps)
-    picked = swap._resolve_line_id(steps, lang, line_id)
+    picked = swap._resolve_line_id(steps, lang, line_id, word)
     if any(busy):
         raise door.RouteError(BUSY, "busy")
     return picked

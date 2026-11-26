@@ -1980,12 +1980,13 @@ LANGUAGE_SWITCHING = "Switching to {name}…"       # held in the bar while Sett
 # --- end round 8 row 45, P5
 # --- Report a problem (alpha 3 on; app/qt/report.py): the header's bug and its window
 REPORT_NAME = "Report a problem"                                  # the bug's name (icon-only: its tip starts with it)
-REPORT_TIP = "Report a problem\n• A note and a picture of the window."
-REPORT_TIP_COUNT = "Report a problem\n• {n} saved, ready to send in one report"
+REPORT_TIP = "Report a problem, or help us improve\n• A note and a picture of the window."    # SEND-EASY: PROVISIONAL
+REPORT_TIP_COUNT = "Report a problem, or help us improve\n• {n} saved, ready to send in one report"
 REPORT_WINDOW_NAME = "Report a problem"
-REPORT_WHAT = "What happened?"
-REPORT_WHAT_HINT = "What you did, and what went wrong"
-REPORT_WHAT_TIP = "What happened: what you did, and what went wrong"
+REPORT_WHAT = "What can we improve?"                     # SEND-EASY (PROVISIONAL): for improving, not only bugs
+REPORT_WHAT_ABOUT = ("A problem, or an idea. No note needed to send your swaps and the cards you didn't want")   # its ?
+REPORT_WHAT_HINT = "A problem, or something that could be better"
+REPORT_WHAT_TIP = "What can we improve: a problem, or something that could be better"
 REPORT_EXPECTED = "What did you expect? (optional)"
 REPORT_EXPECTED_TIP = "What you expected to happen instead (you can leave it empty)"
 REPORT_LEAVE_OUT = "Leave the picture out"
@@ -2009,7 +2010,7 @@ REPORT_LIST_NAME = "Your saved reports"
 REPORT_ROW = "{when}   {what}{notes}"
 REPORT_ROW_NOTES = "   · {n} note(s)"
 REPORT_ROW_BUTTON_NAME = "{action}: {what}"                      # a row's Open / Remove, named with its report
-REPORT_EMPTY = "Nothing saved yet: write what happened above to make a report"   # Fresh-U row 3: why they're grey
+REPORT_EMPTY = "Nothing to send yet: write what we can improve above"   # Fresh-U row 3: why they're grey
 REPORT_READ_FAILED = "Your saved reports couldn't be read: {why}"
 REPORT_OPEN = "Open"
 REPORT_OPEN_TIP = "See this report, its picture and its notes, and add a note"
@@ -2045,13 +2046,13 @@ REPORT_RESULTS_TIP = "Your last Generate's lists and journey; they quote lines f
 REPORT_SHOW = "Show me what's in it"
 REPORT_SHOW_TIP = "List every file the zip will hold, and what's left out"
 REPORT_SHOW_SAVES_TIP = REPORT_SHOW_TIP + "\n• What you've typed is saved to your list first"
-REPORT_SHOW_NONE_TIP = "Show me what's in it: write what happened first"
+REPORT_SHOW_NONE_TIP = "Show me what's in it: write what we can improve first"
 REPORT_CONTENTS_HEADING = "What the zip will hold"
 REPORT_CONTENTS_TIP = "Every file in the zip, its size, and what's left out."
 REPORT_ZIP = "Make a zip instead"
 REPORT_ZIP_TIP = ("Zip every saved report here, to post on Discord or GitHub yourself.\n• Your Windows name is taken "
                   "out; look it over first")
-REPORT_ZIP_NONE_TIP = "Make a zip instead: write what happened first"
+REPORT_ZIP_NONE_TIP = "Make a zip instead: write what we can improve first"
 REPORT_ZIP_SAVES_TIP = REPORT_ZIP_TIP + "\n• What you've typed is saved to your list first"
 REPORT_ZIPPED = "Made {name} in {folder}. Post it on Discord or GitHub Issues"
 REPORT_ZIPPED_CHECK = ("Made {name} in {folder}. {n} file(s) may still hold your Windows name: look them over (its "
@@ -2063,9 +2064,9 @@ REPORT_HINT = ("A report holds Surasura's logs and settings (never a key or toke
 # Send report (3.0, alpha 10; tracks/ship/work/send-report/SPEC.md §3): one press builds the scrubbed zip and shows
 # exactly what goes; Send sends it. Make a zip instead keeps the Discord / GitHub path by hand (SR-Q1, PROVISIONAL).
 REPORT_SEND = "Send report"
-REPORT_SEND_TIP = ("Make the report and show exactly what goes, before anything leaves.\n• Only Sonic, Surasura's "
-                   "developer, sees it")
-REPORT_SEND_NONE_TIP = "Send report: write what happened first"
+REPORT_SEND_TIP = ("Send what helps us improve: your notes, flagged sentences, swaps and the cards you didn't want\n"
+                   "• Shown first, before anything leaves. Only Sonic, Surasura's developer, sees it")
+REPORT_SEND_NONE_TIP = "Send report: nothing to send yet\n• Write what we can improve above"
 REPORT_PROMISE = "No personal data or identification is included"              # Sonic's words, as written
 REPORT_PROMISE_LISTS = " · your lists name your library's titles"   # Fresh-U 18 (PROVISIONAL): while the lists go
 REPORT_NAME_LABEL = "Your Discord name (optional, so Sonic can reply)"
@@ -2483,9 +2484,12 @@ NEXT_OK = "OK"
 NEXT_OK_TIP = "Put this card away"
 # --- end the feature guide's path
 # --- the flagged sentences in Send report (journey v3 SPEC §4, J-FLAGS; words PROVISIONAL)
-REPORT_FLAGS_ONE = "1 sentence you flagged goes with your next report."
-REPORT_FLAGS_N = "{n} sentences you flagged go with your next report."
-REPORT_FLAGS_LINE_TIP = "Sentences you flagged on your journey page\n• Send report shows each one before it goes"
+REPORT_NEXT = "Goes with your next report: {what}"         # SEND-EASY: what waits, each kind once (PROVISIONAL)
+REPORT_NEXT_FLAGS = ("1 sentence you flagged", "{n} sentences you flagged")
+REPORT_NEXT_SWAPS = ("1 swap", "{n} swaps")
+REPORT_NEXT_CARDS = ("1 card you didn't want", "{n} cards you didn't want")
+REPORT_FLAGS_LINE_TIP = ("What you flagged, swapped or didn't want, waiting to go\n"
+                         "• Send report shows each one before it goes")
 REPORT_FLAGS_HEADING = "Sentences you flagged: untick one to leave it out of this report"
 REPORT_FLAGS_TIP = ("Each ticked sentence goes with this report\n• Click or Space: tick or untick\n"
                     "• Unticked: left out this time, still flagged for your next report")
@@ -2499,6 +2503,29 @@ REPORT_FLAG_TICKED = "Goes"
 REPORT_FLAG_UNTICKED = "Left out"
 REPORT_FLAGS_NONE_TIP = "Nothing is ticked and no report is saved, so there's nothing to send"
 # --- end the flagged sentences in Send report
+# --- the learner's swaps in Send report (SWAPS-REPORT, OPEN-FOR-SONIC § 92; words PROVISIONAL)
+REPORT_SWAPS_HEADING = "Swaps you asked for: untick one to leave it out of this report"
+REPORT_SWAPS_TIP = ("Each ticked swap goes with this report: the word, its old sentence and the new one\n"
+                    "• Click or Space: tick or untick\n• Each swap goes once; again only when it changes")
+REPORT_SWAPS_NAME = "Swaps you asked for"
+REPORT_SWAP_NEW = "→ {line}"
+REPORT_SWAP_NO_OLD = "(its old sentence isn't known)"
+REPORT_SWAP_NO_NEW = "→ (no new sentence yet)"
+REPORT_SWAP_ASKED = "asked {when}"
+REPORT_SWAP_STATES = {"waiting": "waiting", "made": "made", "dropped": "dropped", "undone": "undone"}
+REPORT_SWAP_WHY = {"known": "the word is Known now", "ignored": "the word is Ignored now",
+                   "taken back": "taken back in Anki", "undone": "undone"}
+REPORT_SWAP_STATE_WHY = "{state} ({why})"
+# --- end the learner's swaps in Send report
+# --- the cards the learner didn't want, in Send report (SEND-EASY, 3.0.19; words PROVISIONAL)
+REPORT_CARDS_HEADING = "Cards you didn't want: untick one to leave it out of this report"
+REPORT_CARDS_TIP = ("Each ticked card goes with this report: its word, its sentence and why\n"
+                    "• Click or Space: tick or untick\n• Each card goes once; again only when its answer changes")
+REPORT_CARDS_NAME = "Cards you didn't want"
+REPORT_CARD_NO_SENTENCE = "(its sentence isn't known)"
+REPORT_CARD_WHY = {"ignore": "Ignore", "known": "Known"}
+REPORT_CARD_BY = {"flag": "flagged in Anki {when}", "deleted": "deleted {when}"}
+# --- end the cards the learner didn't want
 
 # --- J-STONES (3.0.19; journey v3 SPEC §2.4): pre-studied on the window's stones, and *1 card* (the plural fix)
 ROWS_STONE_STATE_ONE = " · 1 card in Anki"                 # `ROWS_STONE_STATE["raw"]` for one card: never *1 cards*

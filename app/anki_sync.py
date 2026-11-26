@@ -38,7 +38,7 @@ from datetime import datetime
 from app import anki_connect
 from app.anki_connect import AnkiError
 from app.anki_utils import clean_field_html
-from app.path_utils import get_user_files_path, read_text
+from app.path_utils import decode_text, get_user_files_path, read_text
 from app.token_index import known_signature
 from app.unicode_ranges import HAN, KANA
 
@@ -213,6 +213,11 @@ def _read_known_file(language, path=None):
     except (OSError, ValueError, UnicodeDecodeError) as e:
         raise _KnownFileError(f"Your known words file could not be read, so nothing was changed "
                               f"({KNOWN_FILE}: {e}).")
+    return _known_parts(data)
+
+
+def _known_parts(data):
+    """(data, words) of KnownWord.json's parsed `data`; raises _KnownFileError for a shape it doesn't know."""
     if isinstance(data, list):
         return data, data
     if isinstance(data, dict):
@@ -221,6 +226,52 @@ def _read_known_file(language, path=None):
             return data, words
     raise _KnownFileError(f"Your known words file is not in a format Surasura recognises, so "
                           f"nothing was changed ({KNOWN_FILE}).")
+
+
+class KnownFile:
+    """KnownWord.json parsed once and handed down (DSA-SYNC, the DSA audit's G10): a known-words sync's every reader
+    and writer — the sync itself, Known from Anki, the review loop's lists, its read-back and total, its Undo — read
+    one parse of it (and one set of its known keys, `keys`) instead of each parsing it again (up to 9 a sync; ~0.05 s
+    each at 9,000 words). Every `read` reads the file's bytes again (~1 ms) and parses only when they aren't the bytes
+    it last parsed or wrote, so a write by anyone else between two reads (another program, the window's mark while
+    the lock was let go) is always read, never written over; between a read and its write the known-words lock rules
+    out every Surasura writer, as before. What it hands out is shared by its readers: none may change it in place
+    (each writer builds new lists, as `_sync` does; a caller that adds to `keys` copies it first)."""
+
+    def __init__(self, language, path=None):
+        self.language = language
+        self.path = path or _known_path(language)
+        self._raw = self._parts = self._keys = None
+
+    def read(self):
+        """(data, words), as `_read_known_file` answers: (None, None) when there is no file; raises _KnownFileError
+        when it exists but can't be used (the caller must then write nothing)."""
+        if not os.path.exists(self.path):
+            self._raw = self._parts = self._keys = None
+            return None, None
+        try:
+            with open(self.path, "rb") as f:
+                raw = f.read()
+            if raw != self._raw:
+                data = json.loads(decode_text(raw, self.language, "strict", name=os.path.basename(self.path)))
+                self._parts, self._raw, self._keys = _known_parts(data), raw, None
+        except (OSError, ValueError, UnicodeDecodeError) as e:
+            raise _KnownFileError(f"Your known words file could not be read, so nothing was changed "
+                                  f"({KNOWN_FILE}: {e}).")
+        return self._parts
+
+    def write(self, data):
+        """`data` written whole (atomic, as `_atomic_write_json` writes it) and kept as the parse of what's there."""
+        parts = _known_parts(data)                      # a shape it can't keep is refused before any write
+        raw = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+        _atomic_write_bytes(self.path, raw)
+        self._parts, self._raw, self._keys = parts, raw, None
+
+    def keys(self):
+        """`_known_keys` of the words `read` last answered (or `write` kept), worked out once for them: a frozenset."""
+        if self._keys is None:
+            self._keys = frozenset(_known_keys((self._parts or (None, None))[1] or []))
+        return self._keys
 
 
 def known_file_refusal(language, path=None):
@@ -704,17 +755,18 @@ def _fresh_file(words):
 # --------------------------------------------------------------------------- #
 # Sync (append-only)
 # --------------------------------------------------------------------------- #
-def sync(language, url, decks, fields, include_suspended=False, full=False, settings=None):
+def sync(language, url, decks, fields, include_suspended=False, full=False, settings=None, known=None):
     """Append the words of newly studied notes to KnownWord.json. Never raises; errors come back in
     `SyncResult.error` with nothing written. `settings`: for the review loop's flags (`known_query`; None: the saved
-    settings)."""
+    settings). `known`: the `KnownFile` the rest of the sync reads after it (`sync_all`)."""
     with _LOCK:
         held, refused = _hold_known(language, "full" if full else "delta")
         if refused is not None:
             return refused
         try:
             return _sync(language, url or anki_connect.DEFAULT_URL, _clean_decks(decks),
-                         [str(f) for f in (fields or [])], _suspended_value(include_suspended), full, settings)
+                         [str(f) for f in (fields or [])], _suspended_value(include_suspended), full, settings,
+                         known)
         except AnkiError as e:
             return SyncResult(mode="full" if full else "delta", error=str(e),
                               total_known=count_known(language))
@@ -727,7 +779,7 @@ def sync(language, url, decks, fields, include_suspended=False, full=False, sett
                 held.release()
 
 
-def _sync(language, url, decks, fields, include_suspended, full, settings=None):
+def _sync(language, url, decks, fields, include_suspended, full, settings=None, known=None):
     if not decks:
         return SyncResult(mode="full" if full else "delta", error="Choose at least one deck first.",
                           total_known=count_known(language))
@@ -758,14 +810,15 @@ def _sync(language, url, decks, fields, include_suspended, full, settings=None):
     terms = _terms_from_notes(notes, fields, language, result, newest)
 
     # Re-read right before writing: never append to a stale in-memory copy.
+    file = known if known is not None else KnownFile(language)
     try:
-        data, words = _read_known_file(language)
+        data, words = file.read()
     except _KnownFileError as e:
         result.error = str(e)
         result.total_known = 0
         return result
 
-    known = _known_keys(words or [])
+    known = file.keys()
     now = _now_iso()
     held_back = turned_since(words or [], known)
     new_entries = [_entry(t, nid, language, now) for t, nid in _not_held(terms, newest, held_back)
@@ -779,11 +832,11 @@ def _sync(language, url, decks, fields, include_suspended, full, settings=None):
         else:
             data = dict(data)      # every other top-level key (e.g. databaseFile) kept untouched
             data["words"] = list(words) + new_entries
-        _atomic_write_json(known_path, data)
+        file.write(data)
         words = data if isinstance(data, list) else data["words"]
 
     result.added = len(new_entries)
-    result.total_known = len(_known_keys(words or []))
+    result.total_known = len(file.keys())
     _save_state(language, {
         "url": url, "decks": decks, "fields": fields, "include_suspended": include_suspended,
         "reading": READING_VERSION,
@@ -945,7 +998,9 @@ def sync_all(language, url, decks, fields, settings, include_suspended=False, fu
     `progress(what, done, total)`: the command line's progress lines. Never raises (each part keeps its own rule)."""
     if progress is not None:
         progress("reading Anki", 0, 3)
-    result = sync(language, url, decks, fields, include_suspended=include_suspended, full=full, settings=settings)
+    known = KnownFile(language)             # parsed once: the sync's, the signal's and the loop's reads (DSA-SYNC)
+    result = sync(language, url, decks, fields, include_suspended=include_suspended, full=full, settings=settings,
+                  known=known)
     if getattr(result, "error", None):
         return result, None                 # Anki or KnownWord.json can't be trusted this time: nothing more read
     if progress is not None:
@@ -962,7 +1017,7 @@ def sync_all(language, url, decks, fields, settings, include_suspended=False, fu
         print(f"Anki sync: the young cards' read failed ({e})")
     if isinstance(getattr(result, "read", None), list):
         result.read = []                    # read: the notes aren't kept past the sync
-    signal = read_known_signal(language, url, decks, fields, settings)
+    signal = read_known_signal(language, url, decks, fields, settings, known=known)
     marked = len((signal or {}).get("marked") or ())
     if marked and result is not None:
         result.added += marked
@@ -970,22 +1025,28 @@ def sync_all(language, url, decks, fields, settings, include_suspended=False, fu
     if result is not None:
         result.loop = (signal or {}).get("loop") or None
         if result.loop and result.loop.get("unknown"):      # Ignore / Swap took known words out (the move rule)
-            result.total_known = count_known(language)
+            try:
+                known.read()
+                result.total_known = len(known.keys())
+            except _KnownFileError:
+                result.total_known = 0
     return result, signal
 
 
-def read_known_signal(language, url, decks, fields, settings):
+def read_known_signal(language, url, decks, fields, settings, known=None):
     """The review loop's reader (Kyou-LR: `app/connect/review_loop.py`), beside this sync, in the same decks: Known
     from Anki first (P2.4 row 2.4.15: cards you suspended and marked, or the signal you chose, `known_from_anki`, mark
     their words known — `app/connect/known_signal.py`), then Suspend + Red (Ignore) and Suspend + Green (Swap). Only
     while Connect is on (its switch and, 3.0, D29's automation: `settings_manager.connect_on`, P4.1 row 4.1.1): off,
-    nothing is imported or asked (None). Never raises: a read that fails is tried at the next sync."""
+    nothing is imported or asked (None). Never raises: a read that fails is tried at the next sync. `known`: the sync's
+    `KnownFile` (`sync_all`), read instead of parsing the file again."""
     from app import settings_manager
     if not settings_manager.connect_on(settings):
         return None
     try:
         from app.connect import review_loop
-        return review_loop.read(language, url, _clean_decks(decks), [str(f) for f in (fields or [])], settings)
+        return review_loop.read(language, url, _clean_decks(decks), [str(f) for f in (fields or [])], settings,
+                                known=known)
     except Exception as e:
         print(f"Count as known in Anki skipped: {e}")
         return None

@@ -144,8 +144,9 @@ def test_a_file_moves_counted_aside_kept_and_back_with_no_tokenizing(language, t
 
 def test_a_kept_aside_flip_reads_the_names_again_and_leaves_the_phrase_table_alone(monkeypatch):
     """Finished to watched and back (kept <-> aside) moves no count but the names' evidence: the name tables are
-    computed again; the phrase table reads counted files alone, so it is neither counted again nor written (S19). A
-    counted file set aside still moves it (not vacuous)."""
+    computed again; the phrase table reads counted files alone, so it is neither counted again nor written (S19) —
+    only the file's matches follow it (a set-aside file's are kept for the finished walk, DSA-PHRASE; a kept one's
+    go). A counted file set aside still moves the table (not vacuous)."""
     a, b, _c, c, *_rest = _files("ja")         # c: its names change nothing the name tables join (a flip of
     tok = _counting("ja")                       # one that does reads the phrases again: they read through them)
     store = ti.open_store("ja")
@@ -166,7 +167,7 @@ def test_a_kept_aside_flip_reads_the_names_again_and_leaves_the_phrase_table_alo
         patched.setattr(ti.Store, "_update_names_tables", spy_names)
         store.reconcile([a, b], tok, kept=[], aside=[c])                 # Finished -> watched in Current
         store.reconcile([a, b], tok, kept=[c], aside=[])                 # ... and back
-        assert names == [1, 1] and [k for k in written if k.startswith("phrase")] == []
+        assert names == [1, 1] and [k for k in written if k.startswith("phrase")] == ["phrase_matches"] * 2
         store.reconcile([a], tok, kept=[c], aside=[b])                   # a counted episode watched
         assert names == [1, 1, 1] and "phrases" in written
     store.close()
@@ -268,8 +269,8 @@ def test_a_store_before_the_aside_column_opens_with_no_rebuild(language, tmp_pat
     conn = sqlite3.connect(db)
     conn.executescript(
         "CREATE TABLE files_old (path TEXT PRIMARY KEY, mtime REAL, size INTEGER, total INTEGER, counts BLOB, "
-        "tokens BLOB, names BLOB, bound BLOB, counted INTEGER NOT NULL DEFAULT 1);"
-        "INSERT INTO files_old SELECT path, mtime, size, total, counts, tokens, names, bound, counted FROM files "
+        "texts BLOB, ids BLOB, names BLOB, bound BLOB, counted INTEGER NOT NULL DEFAULT 1);"
+        "INSERT INTO files_old SELECT path, mtime, size, total, counts, texts, ids, names, bound, counted FROM files "
         "ORDER BY rowid; DROP TABLE files; ALTER TABLE files_old RENAME TO files;")
     conn.commit()
     conn.close()
@@ -289,8 +290,8 @@ def _before_the_aside_column(db):
     conn = sqlite3.connect(db)
     conn.executescript(
         "CREATE TABLE files_old (path TEXT PRIMARY KEY, mtime REAL, size INTEGER, total INTEGER, counts BLOB, "
-        "tokens BLOB, names BLOB, bound BLOB, counted INTEGER NOT NULL DEFAULT 1);"
-        "INSERT INTO files_old SELECT path, mtime, size, total, counts, tokens, names, bound, counted FROM files "
+        "texts BLOB, ids BLOB, names BLOB, bound BLOB, counted INTEGER NOT NULL DEFAULT 1);"
+        "INSERT INTO files_old SELECT path, mtime, size, total, counts, texts, ids, names, bound, counted FROM files "
         "ORDER BY rowid; DROP TABLE files; ALTER TABLE files_old RENAME TO files;")
     conn.commit()
     conn.close()

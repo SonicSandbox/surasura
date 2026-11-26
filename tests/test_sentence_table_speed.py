@@ -168,17 +168,33 @@ def _content(path):
     for size in (hl, sl, fl):
         parts.append(zlib.decompress(raw[at:at + size]))
         at += size
-    for size in json.loads(parts[0])["sizes"]:
-        parts.append(zlib.decompress(raw[at:at + size]))
+    # VERSION 5 (DSA-WALK, G11) compresses the rows in groups: each group read back into its rows, and the head as
+    # VERSION 4 wrote it (one zlib a row: its size; no groups), so the pins below hold the very same content
+    head = json.loads(parts[0])
+    lengths = iter([lines * st._BYTES + 4 * (cows + phrs)
+                    for lines, cows, phrs in zip(head["lines"], head["cows"], head["phrs"])])
+    rows = []
+    for n_rows, size in zip(head.pop("groups"), head["sizes"]):
+        data, cut = zlib.decompress(raw[at:at + size]), 0
         at += size
-    assert at == len(raw)
-    return hashlib.sha256(b"|".join(parts)).hexdigest()
+        for _row in range(n_rows):
+            n = next(lengths)
+            rows.append(data[cut:cut + n])
+            cut += n
+        assert cut == len(data)
+    assert at == len(raw) and head["v"] == st.VERSION == 5
+    head.update(v=4, sizes=[len(zlib.compress(row, st.LEVEL)) for row in rows])
+    parts[0] = json.dumps(head, separators=(",", ":"), ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(b"|".join(parts + rows)).hexdigest()
 
 
 # Pinned from 3.0-dev d171b0c7 (the table as E-TABLE built it), before the speed work: re-pin only with a change of
-# the table's bytes made on purpose (and its format's VERSION).
-PINNED = {"ja": "bc918e6d781de5bc56622ae4acec772a4d4dccbccefc44604146fed1ab562c3d",
-          "zh": "5988eb87850ebfbdc0bf8d1f75e474e647e69c8b908c467712d09f58bcf970ec"}
+# the table's bytes made on purpose (and its format's VERSION). Re-pinned for VERSION 4 (E-FAST: a source's digest in
+# one spelling) — the head's version only: packed at VERSION 3 the same lines give d171b0c7's pins
+# (ja bc918e6d…, zh 5988eb87…), and these lines' sources carry no digest. VERSION 5 (the rows in groups) read back
+# as VERSION 4 wrote them (`_content`): the same pins.
+PINNED = {"ja": "cf8db621212cfd2fb9213f256fe88d979028cae89f2627c1e0658314bdbcd2de",
+          "zh": "1849c6566a32a81d82d5912e9c2149d5266261a693ca739991d77ccac6bd71db"}
 
 
 def _frozen(language):

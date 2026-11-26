@@ -181,7 +181,10 @@ def only_moved(settings, language, plan_path=None):
 def moved_state(settings, language, plan_path=None):
     """`only_moved`'s answer and more (F7): None — not only the order (a Generate); "owed" — only the order moved and
     the journey isn't drawn for it; "drawn" — only the order moved and the journey was redrawn for this very order
-    (the results' redraw marker, `analyzer.redrawn_for`, names this plan and this run signature): nothing to do."""
+    (the results' redraw marker, `analyzer.redrawn_for`, names this plan and this run signature — and, at release 2,
+    today: decision 6, a card's sentence weighs how well each episode is remembered, which fades by the day; and the
+    young words it was drawn with, `analyzer.young_stamp`, still the card's: a sync since may have moved them):
+    nothing to do."""
     try:
         from app import analyzer, library_store, plan_engine, plan_rules
         from app.path_utils import get_data_path, get_user_file, get_user_files_path
@@ -199,11 +202,21 @@ def moved_state(settings, language, plan_path=None):
         marker = analyzer.redrawn_for(get_user_file("results"))
         if marker is not None and marker.get("plan") != header.get("run_signature"):
             marker = None                   # a redraw from another plan: not this one's (a Generate removes it)
-        if signature == header.get("run_signature") and marker is None:
+        drawn = marker is not None and marker.get("run") == signature
+        if drawn and plan_rules.SENTENCE_TABLE >= 2 and marker.get("day") != analyzer.drawn_day():
+            drawn = False                   # release 2: drawn on another day — its remembered context has faded since
+        if drawn and plan_rules.SENTENCE_TABLE >= 2:
+            from app.connect import sentences as connect_sentences
+            if marker.get("young") != analyzer.young_stamp(connect_sentences.young_weights(language)):
+                drawn = False               # ... or an Anki sync since changed the young words a card weighs (E-JOURNEY)
+        if signature == header.get("run_signature") and (marker is None if plan_rules.SENTENCE_TABLE < 2 else drawn):
             return None                     # nothing moved at all (a list file gone, the token store's run another's)
+        # (release 2: the Generate writes its own marker, drawn for its order today — nothing moved since is no move
+        # either; no marker is a journey Generated before that build — not today's, owed a redraw once; a plan the
+        # engine can't redraw from, format 4, is a Generate: `only_order`)
         if not plan_engine.only_order(header, language, *inputs):
             return None
-        return "drawn" if marker is not None and marker.get("run") == signature else "owed"
+        return "drawn" if drawn else "owed"
     except Exception as e:
         print(f"Journey: whether only the order moved couldn't be told ({e}); generating to be sure")
         return None
@@ -596,8 +609,8 @@ class JourneyKeeper:
 # --- shadow mode (E1.1 05 §3; the comparison as 2.x's replan_preview makes it) --------------------------------------- #
 PRIORITY_COLUMNS = ("Word", "Reading", "Kana", "Score", "Occurrences", "Count (High)", "Count (Low)", "Count (Goal)", "Orth",
                     "Forms", "Tier")
-PROGRESSIVE_COLUMNS = ("Sequence", "Source File", "Word", "Reading", "Kana", "Score", "Occurrences (Global)",
-                       "Occurrences (File)", "Count (High)", "Count (Low)", "Count (Goal)", "Known Count",
+PROGRESSIVE_COLUMNS = ("Sequence", "Source File", "Source Path", "Word", "Reading", "Kana", "Score",
+                       "Occurrences (Global)", "Occurrences (File)", "Count (High)", "Count (Low)", "Count (Goal)", "Known Count",
                        "Total Count", "Baseline %", "Current %", "New %", "Orth", "Forms", "Tier")
 
 

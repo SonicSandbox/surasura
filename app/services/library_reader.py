@@ -25,7 +25,10 @@ library store, on a plain thread of its own — never the window's thread.
   full collections too). A reader's stop gives everything back to the collector (`gc.unfreeze()`), so a library a
   language switch let go is freed; the next reader then never freezes its first view (the switch still holds the old
   library while it is built) and collects once before its first freeze (`_freeze`: the old library, let go by then, is
-  freed, never frozen).
+  freed, never frozen). The window's numbers load the same way (`moves.Numbers(freeze_gc=True)`, E-L2W: the plan read
+  and the engine set off full collections too, 50-100 ms each at 20,000 files) through the **one** switch here
+  (`pause_gc` / `resume_gc`: a count — off at the first pause, on again at the last — so a look and a load that cross
+  never turn it on under each other).
 - **The numbers** (*% known*, *N new*) come from a provider (the plan engine from W3.1; the seed's plan here):
   `numbers()` → (version, {item_id: (known_tokens, counted_tokens, n_new)}); a new version rebuilds the rows holding the
   items it changed when the provider says which (`numbers.changed(since)`, W3.1a's `moves.Numbers`: a drop moves *N new*
@@ -79,6 +82,8 @@ from app.services import window_idle
 
 POLL_S = 0.1                     # the store's FEED_POLL
 _THAWED = [False]                # A4 P-gil: a reader stopped since the last freeze (its library may still be held)
+_GC = threading.Lock()           # A4 P-gil (E-L2W): the collector's one switch in the window's process (`pause_gc`)
+_PAUSES = [0]                    # the builds that hold it paused now: the reader's looks, the numbers' loads
 MODE_RECHECK_S = 2.0             # while the store can't be used, its mode is asked again this often
 CACHE_LATEST_S = 5.0             # the first screen's cache waits for a quiet look at most this long
 CARDS_ALL_S = 2.0                # every item's cards asked again at most this often (between, only what changed)
@@ -92,6 +97,10 @@ NUMBERS_GRACE_S = 0.05
 # a4: the window's own command (`urgent`): for this long its numbers and its write build at once, a burst's hold-back aside
 URGENT_S = 1.0
 # --- end a4
+# OPEN-RACE: the first look waits for the numbers' first answer this long at most (`_first_numbers`: past it the list is
+# built without them, as before); and checks for it, and for a window ask, at least this often meanwhile
+FIRST_NUMBERS_S = 5.0
+FIRST_NUMBERS_LOOK_S = 0.05
 CACHE_VERSION = 6               # 2: keyed (store id, epoch, state version, plan version); 3: an episode's `deleted`;
 #                                  4: a status's words and tips (G2.3: ✓ N, a tip's action on a line of its own);
 #                                  5: `can_play` is ▶'s found file (row 55), and the seed of its answers
@@ -102,6 +111,35 @@ CACHE_VERSION = 6               # 2: keyed (store id, epoch, state version, plan
 #                                     `app`: the version that wrote it (another: the figures faded, `_seed_figures`)
 # `moves.Numbers.why()` until its first load has answered (the window asks for that load only after its first frame)
 NOT_READ = "not read yet"
+
+
+def pause_gc(frozen=False):
+    """(A4 P-gil) The collector paused for a build that will be frozen — the window process's one switch: the reader's
+    looks and the numbers' loads (`moves.Numbers`) each pause it here, and it is on again only once the last of them
+    is done (E-L2W: two switches would each turn it on under the other's build). A collector someone else turned off
+    (a batch run's, a test's) is left alone. `frozen`: a build outside the reader that `resume_gc(frozen=True)` freezes
+    — never paused after a reader's stop (a language switch may still hold the library it left: the reader's own next
+    freeze collects first and takes that build too). -> whether this call paused it: then `resume_gc` once, errors
+    included."""
+    with _GC:
+        if (frozen and _THAWED[0]) or (not _PAUSES[0] and not gc.isenabled()):
+            return False
+        _PAUSES[0] += 1
+        gc.disable()
+        return True
+
+
+def resume_gc(frozen=False):
+    """(A4 P-gil) A `pause_gc()` given back — `frozen`: what is alive moved out of the collector's sight first (unless
+    a reader stopped meanwhile) — and the collector on again when it was the last."""
+    with _GC:
+        try:
+            if frozen and not _THAWED[0]:
+                gc.freeze()
+        finally:
+            _PAUSES[0] -= 1
+            if not _PAUSES[0]:
+                gc.enable()
 
 
 class _Kept(dict):
@@ -647,6 +685,7 @@ class LibraryReader:
             pass                                    # a cache that can't be read is no cache
         if self.chips is not None and not self._stop.is_set():
             self._seed_chips()                      # Michi-CK2: before the first build
+        self._first_numbers()                       # OPEN-RACE: the first look builds the list once, with its numbers
         while not self._stop.is_set():
             window_idle.wait()                      # Up next 2: a look starts while the window rests (its stretch
             if self._stop.is_set():                 # never takes turns at Python's lock with a view's build)
@@ -658,12 +697,13 @@ class LibraryReader:
                 self._busy(e)
             finally:
                 if paused:
-                    gc.enable()
+                    resume_gc()
             self._wait()                            # W3.2 B: the bell, the watch or a retry (no watch: `poll`)
         self._unwatch()                             # W3.2 B
         if self.freeze_gc:                          # A4 P-gil: what it froze back in the collector's sight (a library
-            gc.unfreeze()                           # a switch lets go is freed, its cycles too)
-            _THAWED[0] = True
+            with _GC:                               # a switch lets go is freed, its cycles too) — never a numbers'
+                gc.unfreeze()                       # freeze between the two (E-L2W)
+                _THAWED[0] = True
         if self.play is not None:
             self.play.close()                       # row 55: its worker ends (a look running finishes first)
         if self.chips is not None:
@@ -697,6 +737,29 @@ class LibraryReader:
         self._cache_due = None
         with self._lock:
             self._answered = (self._answered[0], None)     # (its view let go with the rest)
+
+    def _first_numbers(self):
+        """OPEN-RACE: before the first look, while the numbers' first load is on its way (`moves.Numbers.wait_first`),
+        wait for its answer — `FIRST_NUMBERS_S` at most — so the first list is read and built once, with its numbers,
+        never built without them beside the load and then again (the two took turns at Python's lock: a 20,000-file
+        open's first view with numbers landed at 3.3, 4.2 or 5.7-6.7 s by which ran first). The first screen's cache,
+        if any, is already shown. A window ask (a learner's command, an expectation, a drag, a republish) or a stop ends
+        the wait at once: what the learner does is never held back for the numbers."""
+        wait = getattr(self.numbers, "wait_first", None)
+        if wait is None:
+            return
+        end = time.monotonic() + FIRST_NUMBERS_S
+        while not self._stop.is_set():
+            left = end - time.monotonic()
+            if left <= 0 or wait(0) or self._window_asked():
+                return
+            self._wake.wait(min(left, FIRST_NUMBERS_LOOK_S))   # (the numbers' answer wakes the reader: `refresh`)
+            self._wake.clear()
+
+    def _window_asked(self):
+        with self._lock:
+            asked = self._expected_new is not None or self._asks > self._answered[0]
+        return asked or self._hold.is_set() or time.monotonic() < self._urgent_until
 
     def _handle(self):
         """(mode, reason, handle). The mode is asked of the opener at the start, after a failed read, and every few
@@ -1361,10 +1424,9 @@ class LibraryReader:
         the library's objects anew (a full read: hundreds of thousands), and each full collection they set off walked
         them all under Python's lock (34-43 ms at 20,000 files, up to 110 ms at 60,000, two to seven in a first view).
         The freeze then takes them out of the collector's sight uncounted. -> whether it paused it."""
-        if not self.freeze_gc or not gc.isenabled() or (_THAWED[0] and self.builds < 1):
+        if not self.freeze_gc or (_THAWED[0] and self.builds < 1):
             return False                            # (after a switch the first view isn't frozen: never paused)
-        gc.disable()
-        return True
+        return pause_gc()                           # (the one switch: a numbers' load may hold it too)
 
     def _freeze(self):
         """(A4 P-gil) Everything alive moved out of the collector's sight after a build — but after another reader's stop
@@ -1523,8 +1585,9 @@ class LibraryReader:
                     "faded": bool(getattr(numbers, "kept", False)), "app": APP_VERSION}
             tmp = self.cache_file + ".tmp"
             os.makedirs(os.path.dirname(self.cache_file) or ".", exist_ok=True)
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
+            text = json.dumps(data, ensure_ascii=False)     # one pass of the C encoder (`json.dump` to a file never
+            with open(tmp, "w", encoding="utf-8") as f:     # uses it: a Python call per chunk; KEYMOVE-L2), the same
+                f.write(text)                               # text
             os.replace(tmp, self.cache_file)
         except OSError:
             pass                                    # a cache that can't be written is only slower next time

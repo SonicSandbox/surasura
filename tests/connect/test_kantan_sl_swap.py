@@ -922,11 +922,13 @@ def test_a_picked_line_that_is_the_old_cards_own_is_never_the_line(ledger, monke
     _lists(lang)
     anki = _sentence_card(Anki(), 900, word, old)
     _queued(lang, word, line_id="3:1000")
-    monkeypatch.setattr(swap, "_resolve_line_id", lambda steps, l, text: (3, old))
+    asked = []                              # the word the line is found by (two lines at one start: E-JOURNEY)
+    monkeypatch.setattr(swap, "_resolve_line_id", lambda steps, l, text, word=None: asked.append(word) or (3, old))
     monkeypatch.setattr(swap, "choose_line", lambda *a, **k: (8, other))
     swap.look(Steps(), ledger, lang, anki=anki, files=5)
     row = swap._rows(ledger, "1 = 1")[0]
     assert (row["state"], row["item_id"], row["line"]) == (swap.QUEUED, 8, other)
+    assert asked == [word]
 
 
 def test_no_anki_to_read_an_old_cards_line_from_waits_too(ledger, monkeypatch):
@@ -1087,9 +1089,12 @@ def _searched(monkeypatch):
     return asked
 
 
+@pytest.mark.usefixtures("level_0")
 @pytest.mark.parametrize("lang", ["ja", "zh"])
 def test_a_listed_word_swapped_with_no_reading_reaches_the_lists_kept_lines_never_the_library_search(
         placed, lang, monkeypatch):
+    # why: proves Connect's list rows (`_from_list`, a format-4 plan's pools) found with no reading; at level 2 the
+    # score's `_scored` reads the table instead, and E-RETIRE removes `_from_list` and this test together
     # Why: a swap from the review loop's queue carries no reading; the list's rows are keyed (lemma, reading), so the
     # word missed its row and went to the slow library search and another pool. One row with that lemma is the word.
     if lang == "ja":

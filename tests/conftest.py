@@ -22,6 +22,8 @@ from tests.harness_guards import (_guard_real_local_data, _guard_anki_port,  # n
                                   _clear_destroyed_default_root, pytest_collection, pytest_runtest_protocol,
                                   pytest_runtest_teardown, pytest_runtestloop, session_finish_guards,
                                   configure_guards)
+# A test of the path level 0 runs pins itself there (`pytest.mark.usefixtures("level_0")`): the tree is at 2.
+from tests.sentence_level import level_0, module_level_0  # noqa: F401
 
 quiet_windows()                             # test windows open on a desktop of their own: never seen, never typed into
 
@@ -117,6 +119,17 @@ def _no_gui_update_check(monkeypatch):
     developer's anonymous GitHub quota (60/hour) that the real app's own check also needs. The
     update logic is covered directly by test_update_checker.py with the HTTP layer patched."""
     monkeypatch.setenv("SURASURA_NO_UPDATE_CHECK", "1")
+
+
+@pytest.fixture(autouse=True)
+def _fresh_anki_miner_calls(monkeypatch):
+    """Each test starts with no Anki Miner call under way (CONNECT-RACE: `anki_miner._CALLS` keeps the programs
+    `start` left running, so a settings write beside one is `busy`): an earlier test's started call — a fake `Popen`
+    with no `poll`, or a fake Anki Miner it never waited for — would answer for the next test. Only when the module is
+    already loaded: nothing is imported for the tests that never reach it."""
+    anki_miner = sys.modules.get("app.connect.anki_miner")
+    if anki_miner is not None:
+        monkeypatch.setattr(anki_miner, "_CALLS", anki_miner._Calls())
 
 
 @pytest.fixture(autouse=True)
@@ -347,16 +360,6 @@ def _real_analyzer_imported_first():
         except Exception:
             pass
     yield
-
-
-@pytest.fixture
-def journey_pre_cut(monkeypatch):
-    """The journey as it was before the v3 cut-over (J-CUT): the door, the v3 page and its Settings rows off for this
-    test and every process it starts (`SURASURA_DOOR=0`), so Generate writes the old page (`web_app.html`). For the
-    old renderer's tests — still live for Zen's page and the helpers the YouTube preview loads; they retire with the
-    old renderer when the preview moves to v3 (journey v3 SPEC, the dup audit's row 13). A module asks for it with
-    `pytestmark = pytest.mark.usefixtures("journey_pre_cut")`."""
-    monkeypatch.setenv("SURASURA_DOOR", "0")
 
 
 @pytest.fixture(autouse=True)

@@ -35,6 +35,12 @@ def level(monkeypatch):
     """Set the sentence table's level for this process (a child process takes SURASURA_SENTENCE_TABLE instead)."""
     def to(n):
         monkeypatch.setattr(plan_rules, "SENTENCE_TABLE", n)
+        # why: DEFAULT_SETTINGS' pair is worked out once, at import, from the tree's level (2 since the flip): set it as
+        # an import at level n sets it, so level 0 here is a level-0 process's defaults (as the child-process test reads)
+        context = settings_manager.DEFAULT_SETTINGS["logic"]["context"]
+        low, high = settings_manager.sentence_length_default()
+        monkeypatch.setitem(context, "min_chars", low)
+        monkeypatch.setitem(context, "preferred_max_chars", high)
     return to
 
 

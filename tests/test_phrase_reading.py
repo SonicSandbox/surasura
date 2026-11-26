@@ -17,6 +17,7 @@ import pandas as pd
 import pytest
 
 from app import analyzer, plan_engine, plan_rules
+from app import static_html_generator as gen
 
 RES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Test Resources", "ja")
 TEMPLATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates", "web_app.html")
@@ -89,7 +90,14 @@ def run(tmp_path, monkeypatch):
     monkeypatch.setitem(analyzer.LOGIC, "phrase_rows", True)
     results = root / "results"
     results.mkdir(exist_ok=True)
-    with patch("app.analyzer.RESULTS_DIR", str(results)), \
+    # The report's paths too: static_html_generator binds them once, at its import (testing.md § 5.2), so a test file
+    # collected before this one leaves them on the repo's own results/ — the journey read that folder's
+    # file_statistics.json and journey_words.json, and wrote its page there
+    with patch.object(gen, "RESULTS_DIR", str(results)), \
+            patch.object(gen, "PRIORITY_CSV", str(results / "priority_learning_list.csv")), \
+            patch.object(gen, "PROGRESSIVE_CSV", str(results / "progressive_learning_list.csv")), \
+            patch.object(gen, "OUTPUT_FILE", str(results / gen.REPORT_NAME)), \
+            patch("app.analyzer.RESULTS_DIR", str(results)), \
             patch("app.analyzer.OUTPUT_CSV", str(results / "priority_learning_list.csv")), \
             patch("app.analyzer.OUTPUT_STATS", str(results / "file_statistics.txt")), \
             patch("app.analyzer.OUTPUT_PROGRESSIVE", str(results / "progressive_learning_list.csv")), \
@@ -132,9 +140,13 @@ def test_a_phrase_with_a_form_of_its_own_is_named_in_it_and_keeps_its_voicing(ru
 def test_the_replan_shows_the_same_kana_as_the_generate(run):
     # why: the journey's redraw after a move writes the engine's rows over the Generate's: Kana must survive it
     plan = plan_engine.load(str(run / analyzer.PLAN_FILE))
-    assert plan.header["format"] == plan_engine.FORMAT == analyzer.PLAN_FORMAT == 4
-    result = plan_engine.Engine(plan).result()
-    # a format-4 plan whose phrase entries lack the spelling is refused whole, never half-read
+    level2 = plan_rules.SENTENCE_TABLE >= 2                     # level 0 stays a supported fallback (format 4)
+    assert plan.header["format"] == plan_engine.FORMAT == analyzer.PLAN_FORMAT == (5 if level2 else 4)
+    # (a format-5 plan's sentences are the list reader's, asked as the redraw asks them: `_redraw_from_plan`)
+    result = plan_engine.Engine(plan).result(chooser=analyzer.ListSentences(
+        "ja", plan.header.get("max_contexts") or 0, bool(plan.header.get("only_i_plus_one")), results_dir=str(run))
+    ) if level2 else plan_engine.Engine(plan).result()
+    # a plan whose phrase entries lack the spelling is refused whole, never half-read
     lines = [json.loads(line) for line in __import__("gzip").decompress(
         (run / analyzer.PLAN_FILE).read_bytes()).split(b"\n") if line]
     lines[0]["phrase_entries"] = [entry[:2] for entry in lines[0]["phrase_entries"]]

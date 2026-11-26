@@ -204,8 +204,8 @@ def main():
                 # reinforce while the analyzer passed it, and both write this one cache entry.
                 tok = (analyzer.ChineseTokenizer(reinforce_segmentation=reinforce, script=script)
                        if language == "zh" else analyzer.JapaneseTokenizer())
-                known_tuples, known_lemmas = analyzer.load_known_words(known_file, tok)
-                store.set_cached_known(sig, known_tuples, known_lemmas)
+                # Through the store's per-term cache (G8): after a sync only the words it added are tokenized.
+                analyzer.read_known_words(store, known_file, sig, tok)
         finally:
             store.close()
         print(f"Indexer: reconciled {len(files)} files for '{language}'.")

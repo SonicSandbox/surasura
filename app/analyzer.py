@@ -9,15 +9,17 @@ import json
 import re
 import csv
 import hashlib
+import numbers
 import shutil
 import threading
 import time
 import unicodedata
 # Heavy libraries are imported LAZILY (inside the tokenizer classes / extract_text / main), NOT at
-# module top. `jieba` alone costs ~0.17s to import, `pandas` ~0.35s, `fugashi` loads for Japanese,
-# `pysrt` only for .srt files. Consequences: a "nothing changed" skip builds no tokenizer and writes
-# no CSV, so it imports NONE of them; a Japanese run never loads jieba; a Chinese run never loads
-# fugashi. (Python caches imports, so the repeated `import` inside a method is a cheap dict lookup.)
+# module top. `jieba` alone costs ~0.17s to import, `fugashi` loads for Japanese, `pysrt` only for
+# .srt files; pandas not at all (E-WRITE: the two lists are the csv module's, `write_rows`).
+# Consequences: a "nothing changed" skip builds no tokenizer and writes no CSV, so it imports NONE of
+# them; a Japanese run never loads jieba; a Chinese run never loads fugashi. (Python caches imports,
+# so the repeated `import` inside a method is a cheap dict lookup.)
 import bisect
 from collections import defaultdict, Counter, namedtuple
 from itertools import accumulate, chain, compress, repeat
@@ -26,8 +28,8 @@ from datetime import datetime
 import abc
 
 from app.path_utils import (get_user_file, get_resource, get_data_path, get_user_files_path,
-                            is_content_file, infer_source_type, library_available, list_reader, read_source_marker,
-                            read_text, report_name, SUBTITLE_EXTENSIONS)
+                            is_content_file, infer_source_type, library_available, library_path, list_reader,
+                            read_source_marker, read_text, report_name, SUBTITLE_EXTENSIONS)
 from app import settings_manager
 from app import word_selection
 from app import modality
@@ -215,7 +217,18 @@ ENSURE_AUDIO_EXAMPLE = False
 #     listed rows' uses in each file and each file's known / counted tokens, from the lines that write the plan), which
 #     the journey reads instead of the plan's tables (J-CUT, the lead's ruling). The plan and the lists are unchanged;
 #     SCHEMA_VERSION stays 28. 3.0.19.
-ENGINE_REVISION = 48
+# 49: the run's per-file rows name a file by its path from the data folder (E-NAMES; `path_utils.library_path`, the
+#     library store's rel_path): the progressive list's `Source Path` beside `Source File`, file statistics' `Path`
+#     beside `File`, the counts table's files (its format 2) — two shows' 第01集 were one file to every reader. No
+#     tokenizing changed: SCHEMA_VERSION stays 28. 3.0.19.
+# 50: the sentence choice is on (plan_rules.SENTENCE_TABLE 0 → 2, E-JOURNEY's flip): a Generate writes the sentence
+#     table alone (results/sentences.bin, no shortlists, no first-sentence tables), the plan's format 5, and the
+#     list's, the journey's and the word card's sentences are the one reader's (app/sentence_score.py), as the card's
+#     are. Every token store is indexed again with each line's counts: SCHEMA_VERSION 29. 3.0.19.
+# 51: two lines of a caption one character each join with nothing between them (_join_lines: a line typeset one
+#     character an event read as お願い, never 御 + 願), and a one-kanji word right after a lone Latin letter is a piece
+#     of the label, as after a number (_after_label: A棟's 棟 offers no むね). SCHEMA_VERSION 31. 3.0.19.
+ENGINE_REVISION = 51
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -2146,9 +2159,22 @@ def _numberish(ch):
     return ch.isnumeric() or _KANJI_RE.match(ch) is not None
 
 
+# A letter that labels what follows it (A棟 'building A', Ｂ組 'class B', x軸 'the x-axis'): a Latin letter, half- or
+# full-width, standing alone — no letter or digit right before it (10m下's m is a unit, OK今's K ends a word).
+_LETTERS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                     "ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ")
+
+
+def _after_label(text, at):
+    """Is text[at] right after a lone Latin letter (§ above)? A one-kanji word there is the label's counter or suffix,
+    as after a number (A棟's 棟 is とう, never the noun むね)."""
+    return (at > 0 and text[at - 1] in _LETTERS
+            and (at == 1 or (text[at - 2] not in _LETTERS and not text[at - 2].isnumeric())))
+
+
 def _may_be_bound(text, surface):
-    """Could a one-kanji word written `surface` be bound anywhere in `text` — after a digit, a numeral or a kanji, or,
-    written as one kanji, before a kanji? Most uses stand beside kana (手を, 私は) and are passed over without locating
+    """Could a one-kanji word written `surface` be bound anywhere in `text` — after a digit, a numeral, a kanji or a
+    lone letter, or, written as one kanji, before a kanji? Most uses stand beside kana (手を, 私は) and are passed over without locating
     a word. Every token of a library's one-kanji words is asked as the token store indexes it, so the tests are
     written out: kana and Latin sort below U+3400, where Han begins but for 々 and 〇."""
     kanji = _KANJI_RE.match
@@ -2159,6 +2185,8 @@ def _may_be_bound(text, surface):
         if at:
             ch = text[at - 1]
             if ch.isnumeric() or ((ch >= "\u3400" or ch == "\u3005") and kanji(ch) is not None):
+                return True
+            if one and ch in _LETTERS and _after_label(text, at):
                 return True
         end = at + size
         if one and end < length:
@@ -2196,13 +2224,15 @@ def _beside(spans, i, step):
 
 
 def _bound_at(text, spans, i):
-    """Is word `i` (located at spans[i]) a piece of something else — glued to a one-kanji piece, after a number, or
-    after a number's counter (the 目 of ２時間目)?"""
+    """Is word `i` (located at spans[i]) a piece of something else — glued to a one-kanji piece, after a number, after
+    a number's counter (the 目 of ２時間目), or after a lone letter (the 棟 of A棟)?"""
     span = spans[i]
     if span is None:
         return False                    # not found: taken as standing on its own
     start, end = span
     one = end - start == 1 and _KANJI_RE.match(text[start]) is not None
+    if one and _after_label(text, start):
+        return True                     # a letter's counter or suffix: A棟, Ｂ組, x軸
     if start:
         before = _beside(spans, i, -1)
         if before is not None and before[1] == start:
@@ -3032,10 +3062,19 @@ def read_known_words(store, known_file, known_sig, tokenizer, keep=True):
     if cached is not None:
         print("Reused cached known-words normalization.")
         return cached
-    known = load_known_words(known_file, tokenizer)
+    # Changed (a sync added a word): each term read before is taken from the store's own (G8), the new ones read here.
+    terms = None
+    if store:
+        try:
+            terms = store.known_terms(getattr(tokenizer, "script", "asis"))
+        except Exception:
+            terms = None
+    known = load_known_words(known_file, tokenizer, terms)
     if store and keep:
         try:
             store.set_cached_known(known_sig, *known)
+            if terms is not None:
+                store.set_known_terms(getattr(tokenizer, "script", "asis"), terms)
         except Exception:
             pass
     return known
@@ -3104,11 +3143,25 @@ def songs_left_out(files):
     return song_lines.left_out(episodes)
 
 
+def blank_songs(sentences, numbers):
+    """A file's sentences with its song lines (`numbers`, sorted: `song_sentences`' answer for it) given no words, in
+    their places — each blanked by its number, no set made and no line tested (G9); a number past the file's end (an
+    answer kept for a longer reading) is no line. No numbers: the sentences as they are."""
+    if not numbers:
+        return sentences
+    sentences = list(sentences)
+    for no in numbers:
+        if no < len(sentences):
+            sentences[no] = (sentences[no][0], [])
+    return sentences
+
+
 def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None):
-    """{path: {sentence number, …}} of every spoken file's song lines in a run's `found_files` ([(path, label, weight,
-    source type)]), each work on its own (§ above). With the store, a work's answer is kept (`Store.keep_songs`) under
-    a digest of its files' stamps and the rule's version, so a Generate after nothing changed in a work reads only its
-    stamps; without the store, each file is read and tokenized here. `stats`, a dict, receives "read" (the works whose
+    """{path: [sentence number, …] (sorted)} of every spoken file's song lines in a run's `found_files` ([(path, label,
+    weight, source type)]), each work on its own (§ above) — as kept, so a kept work makes no set a file (G9). With
+    the store, a work's answer is kept (`Store.keep_songs`) under a digest of its files' stamps and the rule's version,
+    so a Generate after nothing changed in a work reads only its stamps; without the store, each file is read and
+    tokenized here. `stats`, a dict, receives "read" (the works whose
     lines were read) and "kept" (the works whose kept answer was used)."""
     works = {}
     for file_path, _label, _weight, source_type in found_files:
@@ -3134,7 +3187,7 @@ def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None
             held = kept.get(work)
             if digest is not None and held and held[0] == digest:
                 keep[work] = held
-                out.update((path, set(numbers)) for path, numbers in held[1].items())
+                out.update(held[1])           # (each file's numbers as kept, sorted: no set made a file, G9)
                 used += 1
                 continue
         read += 1
@@ -3153,10 +3206,10 @@ def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None
                 lines = song_lines.file_lines(list(tokenizer.tokenize_sentences(extract_text(path, language, facts))),
                                               facts.get("song_marks") or ())
             files.append((path, lines))
-        found = {path: numbers for path, numbers in songs_left_out(files).items() if numbers}
+        found = {path: sorted(numbers) for path, numbers in songs_left_out(files).items() if numbers}
         out.update(found)
         if digest is not None and all(path in held for path in paths):   # never kept from a file without lines
-            keep[work] = [digest, {path: sorted(numbers) for path, numbers in found.items()}]
+            keep[work] = [digest, found]
     if stats is not None:
         stats.update(read=read, kept=used)
     if store is not None and keep != kept:
@@ -3262,7 +3315,11 @@ def get_tier_from_rank(rank):
             
     return str(len(thresholds) + 1)
 
-def load_known_words(json_path, tokenizer):
+def load_known_words(json_path, tokenizer, terms=None):
+    """(known (lemma, reading)s, known lemmas) of KnownWord.json's known and carded entries, each term read by
+    `tokenizer` (G8: what one term gives depends on the term alone — and on what `Store.known_terms` keys it on — so a
+    term met before isn't tokenized again). `terms`, a dict: {term: (its (lemma, reading)s, its lemmas)} read from,
+    then left holding this file's terms alone (the store keeps it); a term repeated in the file is read once."""
     try:
         print(f"Loading known words from {json_path}...")
     except UnicodeEncodeError:
@@ -3275,8 +3332,8 @@ def load_known_words(json_path, tokenizer):
     # BOM") or as UTF-16, json.load refused it and Generate stopped. The tokenizer says the language.
     data = json.loads(read_text(json_path, "ja" if isinstance(tokenizer, JapaneseTokenizer) else "zh"))
         
-    known_tuples = set()
-    known_lemmas = set()
+    all_tuples, all_lemmas = set(), set()
+    met, before = {}, terms or {}
     # A Chinese tokenizer reading in one script (`zh_script`) converts every term it tokenizes; the
     # raw term trusted below must be read in that same script or it can never match. Converted
     # separately from the ORIGINAL term, exactly as the tokenizer converts it, so the two can't drift.
@@ -3313,8 +3370,11 @@ def load_known_words(json_path, tokenizer):
             if SANITIZE_JA:
                 term = _known_term(term)     # a gloss cut off; a sentence kept whole
             
-            if term:
-                # Normalize using the same tokenizer
+            asked = term                    # (the term as the file gives it: the key, whatever it is read as)
+            held = (met.get(asked) or before.get(asked)) if asked else None
+            if term and held is None:
+                # Normalize using the same tokenizer: what this term gives, apart (the cache's)
+                known_tuples, known_lemmas = held = set(), set()
                 try:
                     # A known joined word marks its pieces known too, as it did before words kept their
                     # affixes: 時間 is known only through the user's 時間帯 (Patterns_Quality_Spec §6.2a).
@@ -3357,6 +3417,14 @@ def load_known_words(json_path, tokenizer):
                     # Fallback if tokenization fails
                     pass
                 
+            if held is not None:
+                met[asked] = held
+                all_tuples.update(held[0])
+                all_lemmas.update(held[1])
+    known_tuples, known_lemmas = all_tuples, all_lemmas
+    if terms is not None:
+        terms.clear()
+        terms.update(met)
     print(f"Loaded {len(known_tuples)} known word variations and {len(known_lemmas)} unique lemmas.")
     return known_tuples, known_lemmas
 
@@ -3443,7 +3511,10 @@ def close_cue(block_text):
 # A caption's lines are read as CSS Text 3 reads a line break in running text (its segment break rules): nothing
 # between two East Asian wide characters (width F, W or H, and not Hangul) — 我觉得 / 他不会来 is 我觉得他不会来, not
 # 我觉得 他不会来 — and a space elsewhere (我买了 / T恤). Japanese keeps the space: the tagger reads it as the word
-# boundary the subtitler broke the line at, and the sentence it shows drops it — the same text.
+# boundary the subtitler broke the line at, and the sentence it shows drops it — the same text. But not between two
+# lines of one character each (ENGINE_REVISION 51): no subtitler breaks a line after one character — such lines are a
+# line typeset one character an event (an effect's お / 願 / い …, one timing), and a space after each made the tagger
+# read every character as a word (御 + 願 for お願い).
 _HANGUL_RE = re.compile('[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7ff\uffa0-\uffdc]')
 
 
@@ -3454,7 +3525,12 @@ def _wide(ch):
 def _join_lines(lines, language='ja'):
     """A caption's `lines` — cleaned, none empty — as one text (§ above)."""
     if language == 'ja' or not lines:
-        return " ".join(lines)
+        if len(lines) < 2:
+            return " ".join(lines)
+        text = lines[0]
+        for before, line in zip(lines, lines[1:]):
+            text += line if len(before) == 1 == len(line) else " " + line
+        return text
     text = lines[0]
     for line in lines[1:]:
         text += line if _wide(text[-1]) and _wide(line[0]) else " " + line
@@ -4085,6 +4161,9 @@ def group_sources(source_list):
 _VOLUME_SUFFIX_RE = re.compile(r"[_Vv\s\-]*\d+$")
 
 
+_DATA_PREFIX = {}                   # {data folder: itself + a separator, as the run joins it} (`_series_name`)
+
+
 def _series_name(file_path, data_dir):
     """Which WORK a content file belongs to — the folder under its tier, volumes merged.
 
@@ -4095,11 +4174,21 @@ def _series_name(file_path, data_dir):
 
     Loose files directly under a tier are each their own work, which is the honest reading: we
     have no evidence they belong together.
+
+    G9: a file joined onto the data folder as the run spells it (`resolve_found_files`' and `aside_files`'
+    `os.path.join(data_dir, …)`: an `H:/…` root stays `H:/…`) is cut by that prefix, made once a folder —
+    `os.path.relpath` made both paths absolute and compared them part by part, for every file of a run (0.31 s at 20,000
+    files, in the songs' step and again in the walk). Anything else is `relpath`'s, as before.
     """
-    try:
-        rel = os.path.relpath(file_path, data_dir).replace("\\", "/")
-    except ValueError:      # different drive on Windows
-        return os.path.basename(file_path)
+    prefix = _DATA_PREFIX.get(data_dir)
+    if prefix is None:
+        prefix = _DATA_PREFIX[data_dir] = os.path.join(data_dir, "")
+    rel = file_path[len(prefix):].replace("\\", "/") if prefix and file_path.startswith(prefix) else None
+    if not rel or "//" in rel or "/./" in f"/{rel}/" or "/../" in f"/{rel}/":
+        try:
+            rel = os.path.relpath(file_path, data_dir).replace("\\", "/")
+        except ValueError:      # different drive on Windows
+            return os.path.basename(file_path)
     parts = [p for p in rel.split("/") if p]
     if len(parts) < 2:
         return rel                      # shouldn't happen; degrade to the path itself
@@ -4218,9 +4307,11 @@ def _backfill_sidecars(results_dir):
 # (E1.3, E3.1). Written last, just before the run's stamp, atomically: a run that dies between the two leaves a plan
 # whose run_signature no stamp matches. Never fails a Generate.
 PLAN_FILE = "plan.json.gz"
-PLAN_FORMAT = 4                 # 2 (E2.2, D8): every list word's spelling counts (`spell`), its phrase rows' entries;
+PLAN_FORMAT = 5 if plan_rules.SENTENCE_TABLE >= 2 else 4
+                                # 2 (E2.2, D8): every list word's spelling counts (`spell`), its phrase rows' entries;
                                 # 3 (F7): the rows' example-sentence pools, so the order's re-pick is the Generate's;
-                                # 4: each phrase row's entry with its dictionary spelling (`Kana` where spellings tie)
+                                # 4: each phrase row's entry with its dictionary spelling (`Kana` where spellings tie);
+                                # 5 (release 2, `plan_engine.FORMAT`'s): the rows' sentences are the sentence table's
 _PLAN_CHUNK = 2000              # table rows per line: no one line's decode holds a reader's interpreter long
 _PLAN_TIERS = {"HighPriority": "now", "LowPriority": "soon", "GoalContent": "goal"}
 
@@ -4352,14 +4443,12 @@ def plan_lines(run):
         "reference": list(run["signature_parts"].get("reference") or ()),
     }
     yield _plan_json(header)
-    prefix = os.path.join(data_dir, "")
     signed = run["signature_parts"]["files"]
     if [entry[0] for entry in signed] != [f[0] for f in found_files]:
         raise ValueError("the signature's files aren't the run's")
     # [rel_path, tier, the file's own digest, its kind]: the digest tells a re-plan which files are still the same
     # (E1.3); the kind, which of its sentences can be heard (F7).
-    files = [[(f[0][len(prefix):] if f[0].startswith(prefix) else os.path.relpath(f[0], data_dir)).replace("\\", "/"),
-              _PLAN_TIERS.get(f[1], "goal"), plan_rules.file_digest(entry), f[3] or ""]
+    files = [[library_path(f[0], data_dir), _PLAN_TIERS.get(f[1], "goal"), plan_rules.file_digest(entry), f[3] or ""]
              for f, entry in zip(found_files, signed)]
     pick = run["pick"]
     if pick["keys"] != keys:
@@ -4377,20 +4466,20 @@ def plan_lines(run):
     sentence_table = pick["sentences"]      # (tuples: JSON writes them as the lists they are read back as)
     pools = [[k, -1 if first is None else first, pool, audio]
              for k, (first, pool, audio) in sorted(pick["picked"].items()) if rows[k] is not None]
+    in_table = PLAN_FORMAT >= 5         # (release 2: a row's sentences are the sentence table's, SPEC § 3.6)
     for name, table in (("files", files),
                         ("keys", [[key[0], key[1], key in phrase_keys, key in run["halved"],
                                    word_stats[key]["total_count"]] for key in keys]),
-                        ("rows", rows), ("ties", ties), ("spell", spell), ("finished", finished),
-                        ("sentences", sentence_table),
-                        ("cowords", pick["cowords"]),
-                        ("pools", pools), ("firsts", [plan_rules.pack_firsts(pick["firsts"])])):
+                        ("rows", rows), ("ties", ties), ("spell", spell), ("finished", finished)) + (
+                        () if in_table else (("sentences", sentence_table), ("cowords", pick["cowords"]),
+                                             ("pools", pools), ("firsts", [plan_rules.pack_firsts(pick["firsts"])]))):
         for start in range(0, len(table), _PLAN_CHUNK):
             yield _plan_json({name: table[start:start + _PLAN_CHUNK]})
 
     counted = [0] * len(keys)
     table = run.get("counts")           # J-CUT: the journey's counts, from these very lines (`plan_engine.CountsTable`)
     if table is not None:
-        table.start(keys, rows, [report_name(entry[0]) for entry in files])
+        table.start(keys, rows, [entry[0] for entry in files])
     for f, (file_path, _label, _weight, _type) in enumerate(found_files):
         uses, unusual, phrase_unusual, row_firsts = plan_files[f]
         # [k, its first sentence here (an id in `sentences`), …] for the listed rows met here
@@ -4426,7 +4515,10 @@ def plan_lines(run):
         prog = _plan_progressive(run, f, file_path, index, met)
         if table is not None:
             table.add(main, phrases, prog)
-        yield _plan_json({"f": f, "main": main, "ph": phrases, "sp": spellings, "prog": prog, "fs": firsts})
+        line = {"f": f, "main": main, "ph": phrases, "sp": spellings, "prog": prog}
+        if not in_table:
+            line["fs"] = firsts
+        yield _plan_json(line)
     for k, key in enumerate(keys):
         if counted[k] != word_stats[key]["total_count"]:
             raise ValueError(f"the uses of {key} add up to {counted[k]}, not {word_stats[key]['total_count']}")
@@ -4475,15 +4567,12 @@ def _journey_plan(args, run_signature, results_dir=None):
     """The plan file as the v3 journey reads it — each word's count ahead and each episode's *% known*
     (`journey_render._ahead`, `_plan_pcts`): one source every piece reads (J-CUT, the lead's ruling), read after it is
     written, so a Generate, its reuse and a redraw draw the same page. results/'s plan, numbers only (`pools=False`),
-    when it is whole and written by the run `run_signature` names; None for Zen, before the cut-over, or without such a
-    plan (the render then counts each word in its own episode). The counts table the Generate wrote beside the plan
+    when it is whole and written by the run `run_signature` names; None without such a plan (the render then counts
+    each word in its own episode). The counts table the Generate wrote beside the plan
     (`plan_engine.read_counts`: the listed rows' counts alone, the lead's ruling) when it is this run's, else only the
     plan's tables the count reads (`plan_engine.counts`, a plan from before the table: the whole plan held ~130 MB more
     at the render's peak at 20,000 files, J-CUT 3; its tables +109 MB over none). Never raises."""
-    if not run_signature or args.theme in ZEN_THEMES:
-        return None
-    from app.services import journey_settings
-    if not journey_settings.v3():
+    if not run_signature:
         return None
     from app import plan_engine
     results = results_dir or RESULTS_DIR
@@ -4537,7 +4626,6 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
     -> main()'s exit value once drawn (0, or 1: the report failed); None when the plan can't serve this library, before
     anything is written: then a Generate runs."""
     from app import plan_engine
-    import pandas as pd
     plan_path = os.path.join(RESULTS_DIR, PLAN_FILE)
     try:
         plan = plan_engine.load(plan_path, trusted=True)
@@ -4545,18 +4633,26 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
         print(f"The journey can't be redrawn from the plan ({e}): generating.")
         return None
     verdict = plan_engine.check(plan, language, engine_id(), read_run_stamp(RESULTS_DIR), sig_parts,
-                                (library or {}).get("epoch"))
+                                (library or {}).get("epoch"), chunked=False)   # G3: no thread waits beside a redraw
     if verdict is not None or plan.header.get("format") != plan_engine.FORMAT:
         print(f"The journey can't be redrawn from the plan ({verdict}): generating.")
         return None
-    prefix = os.path.join(data_dir, "")
-    order = []
-    for file_path, label, _weight, _type in found_files:
-        rel = (file_path[len(prefix):] if file_path.startswith(prefix) else os.path.relpath(file_path, data_dir))
-        order.append((rel.replace("\\", "/"), _PLAN_TIERS.get(label, "goal")))
+    order = [(library_path(file_path, data_dir), _PLAN_TIERS.get(label, "goal"))
+             for file_path, label, _weight, _type in found_files]
     _progress("Picking sentences")
     eng = plan_engine.Engine(plan)
-    result = eng.replan(order, pick=True, texts=plan_texts(language, data_dir, store))
+    chooser = None
+    if plan.header.get("format", 0) >= plan_engine.PICKS_IN_TABLE:      # release 2: the one reader (SPEC § 5.2)
+        chooser = ListSentences(language, plan.header.get("max_contexts") or 0,
+                                bool(plan.header.get("only_i_plus_one")))
+    try:
+        result = eng.replan(order, pick=True, texts=plan_texts(language, data_dir, store), chooser=chooser)
+    except plan_engine.PlanError as e:
+        print(f"The journey can't be redrawn from the plan ({e}): generating.")
+        return None
+    if chooser is not None:
+        chooser.keep()                      # the text of the lines shown now: the next redraw reads only new ones
+        chooser.memo.clear()                # (its one call is over: every file's text let go before the list is drawn)
     if eng.unread:
         print(f"The journey can't be redrawn from the plan ({eng.unread} sentences' text can't be read): generating.")
         return None
@@ -4565,21 +4661,25 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
         return None                         # (a run with no list writes none: the Generate says so its own way)
     _progress("Writing your list")
 
-    def _rows_as(path, rows):
+    def _columns_of(path, rows):
+        """The list's header as the Generate wrote it (the redraw keeps its columns and their order)."""
         with open(path, encoding="utf-8-sig", newline="") as f:
             columns = next(list_reader(f, header=False), None)
         if not columns or (rows and set(columns) - set(rows[0])):
             raise ValueError(f"{os.path.basename(path)}'s columns aren't the plan's")
-        return pd.DataFrame(rows, columns=columns)
+        return columns
 
-    df = _rows_as(OUTPUT_CSV, result.priority)
-    df_prog = _rows_as(OUTPUT_PROGRESSIVE, result.progressive)
+    columns = _columns_of(OUTPUT_CSV, result.priority)
+    columns_prog = _columns_of(OUTPUT_PROGRESSIVE, result.progressive)
     # From the first write on, the outputs are neither the stamp's run nor this order's until the marker says so:
     # one stopped part-way is never current (`drawn_for` None), and the next look redraws it.
     _write_redraw_marker(plan.header["run_signature"], None)
-    write_list(lambda tmp: df.to_csv(tmp, index=False, encoding='utf-8-sig'), OUTPUT_CSV)
-    if not df_prog.empty:
-        write_list(lambda tmp: df_prog.to_csv(tmp, index=False, encoding='utf-8-sig'), OUTPUT_PROGRESSIVE)
+    page_priority = write_list(lambda tmp: write_rows(tmp, result.priority, columns, keep=_page_keep(args, True)),
+                               OUTPUT_CSV)
+    page_rows = None                        # (no progressive list written: the page reads the file, as before)
+    if result.progressive:
+        page_rows = write_list(lambda tmp: write_rows(tmp, result.progressive, columns_prog,
+                                                      keep=_page_keep(args, False)), OUTPUT_PROGRESSIVE)
 
     # word_stats.json's list rows: what the order moves (Score, the tier counts, the first file, the sentences)
     # (the columns the re-plan wrote: every row has them; under All, as many as its widest row)
@@ -4602,9 +4702,14 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
             entry[f"final_src_{i}"] = row.get(f"Src {i}", "")
     # One write, the fast encoder (no indent: the same data, every reader parses it); the sidecars hold each file's
     # words (sources), which no order moves: only their times follow word_stats.json's (the Content Manager's newer-
-    # than rule), written again only when one is missing
-    with open(word_stats_path, 'w', encoding='utf-8') as f:
-        f.write(json.dumps(stats, ensure_ascii=False))
+    # than rule), written again only when one is missing. Whole or not at all (`write_list`): a redraw killed here
+    # leaves the last one, so the next look redraws — never a whole Generate for a file it can't read
+    text = json.dumps(stats, ensure_ascii=False)
+
+    def _write_stats(tmp):
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write(text)
+    write_list(_write_stats, word_stats_path)
     try:
         sidecars = [os.path.join(RESULTS_DIR, name) for name in ("analyzed_files.json", "file_words.json")]
         if all(os.path.exists(p) for p in sidecars):
@@ -4632,23 +4737,23 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
             file_stats = [file_stats[i] for i in moved]
             with open(OUTPUT_STATS, encoding="utf-8") as f:
                 head = f.read().split("\nFile: ", 1)[0].rstrip("\n") + "\n\n"
-            with open(OUTPUT_STATS, 'w', encoding='utf-8') as f:
-                f.write(head)
-                for stat in file_stats:
-                    f.write(f"File: {stat['File']}\n")
-                    f.write(f"  Total Words: {stat['Total Words']}\n")
-                    f.write(f"  Known Words: {stat['Known Count']}\n")
-                    f.write(f"  Coverage: {stat['Coverage (%)']}%\n")
-                    f.write("\n")
-            # The Generate's own text, its entries moved whole (re-encoding with an indent is the slow encoder)
-            with open(as_generated, encoding="utf-8") as f:
-                text = f.read()
-            blocks = _json_list_entries(text) if text.startswith("[\n    {") else None
-            with open(stats_json, 'w', encoding='utf-8') as f:
-                if blocks is not None and len(blocks) == len(moved):
-                    f.write("[\n" + ",\n".join(blocks[i] for i in moved) + "\n]")
-                else:
-                    f.write(json.dumps(file_stats, indent=4, ensure_ascii=False))
+
+            def _write_text_stats(tmp):             # (both whole or not at all, as word_stats.json: `write_list`)
+                with open(tmp, 'w', encoding='utf-8') as f:
+                    f.write(head)
+                    for stat in file_stats:
+                        f.write(f"File: {stat['File']}\n")
+                        f.write(f"  Total Words: {stat['Total Words']}\n")
+                        f.write(f"  Known Words: {stat['Known Count']}\n")
+                        f.write(f"  Coverage: {stat['Coverage (%)']}%\n")
+                        f.write("\n")
+            write_list(_write_text_stats, OUTPUT_STATS)
+            text = json.dumps(file_stats, ensure_ascii=False)   # (the Generate's form: no indent, the C encoder)
+
+            def _write_json_stats(tmp):
+                with open(tmp, 'w', encoding='utf-8') as f:
+                    f.write(text)
+            write_list(_write_json_stats, stats_json)
     except Exception as e:
         print(f"Warning: could not reorder the file statistics: {e}")
 
@@ -4662,12 +4767,11 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
             except ImportError:
                 import static_html_generator
             _html = os.path.join(RESULTS_DIR, "reading_list_static.html")
-            marks = None if args.theme in ZEN_THEMES else journey_marks(language)
             made = _made_fingerprint(language)
             rendering = time.time()
-            drawn = static_html_generator.generate_static_html(
-                theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
-                open_browser=not args.no_open, language=language, marks=marks, found=found_files,
+            drawn = static_html_generator.generate_static_html(        # signed with the marks it was drawn from
+                app_mode=args.app_mode, open_browser=not args.no_open, language=language,
+                rows=page_rows, priority=page_priority,                 # the lists just written, as read
                 plan=plan_engine.read_counts(os.path.join(RESULTS_DIR, plan_engine.COUNTS_FILE),   # the Generate's
                                              plan.header.get("run_signature")) or plan)   # figures (its counts table)
             report_failed = not _report_written(_html, rendering)
@@ -4678,7 +4782,8 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
         except Exception as e:
             print(f"Error: Could not generate static HTML: {e}")
             report_failed = True
-    _write_redraw_marker(plan.header["run_signature"], run_sig)
+    _write_redraw_marker(plan.header["run_signature"], run_sig,
+                         young=chooser.young_at if chooser is not None else None)
     print("Redrew the journey from the plan (only the order moved).")
     return 1 if report_failed else 0
 
@@ -4693,6 +4798,167 @@ class _LazyTagger:
         if self._tagger is None:
             self._tagger = JapaneseTokenizer().tagger
         return self._tagger(text)
+
+
+SHOWN_FILE = "shown.json.gz"    # release 2: the text of the lines the list shows, by the table's run (SPEC § 5.3)
+
+
+class ListSentences:
+    """The list's own sentences at release 2 (`plan_rules.SENTENCE_TABLE >= 2`; SPEC § 5.2, *Context 1…n* in the list
+    and the journey): every row asked of the one reader in one pass (`sentence_score.choose(whole=True)`) at the
+    moment Connect's card weighs — the library's dates and how each file is heard (`connect.sentences._dates`), the
+    learner's *Length* (`sentence_corpus.length_range`) — so the list shows what a card would get (decision 6). The
+    call is `plan_engine.Engine.contexts`' chooser: `(keys, order) -> {key: [Context 1, Src 1, …]}`, None with no
+    table for `language` (the caller Generates). `order` {key: its place}: the list's order when it is not the last
+    Generate's (None: the table's own). `max_contexts` *Sentences per word* (0: All, `plan_rules.context_limit`'s
+    ceiling); `clean_only` *Only i+1* (a row with no line left is []: the Generate leaves it out). What a Context
+    shows is the Generate's (`strip_verse_number`); a Src is the file's path from the data folder, as the plan's.
+    The text of the lines it shows is kept in results/`SHOWN_FILE` (`keep`) and read from there before the token
+    store the next time, with what Context shows of each line led by digits: one read back needs no tagger. The young
+    words are the card's (E-JOURNEY): `connect.sentences.young_weights` — the young cards Connect's Anki sync keeps in
+    `User Files/<lang>/anki_young.json` (`anki_sync.sync_young`), read once, into the moment; no file (never synced,
+    Anki absent): none, as before. No Anki call: the file only. `young` {lemma: weight} hands them in instead (tests);
+    `young_at` the stamp of the ones the last call weighed (`young_stamp`), for the redraw marker (a sync since that
+    changes them owes the journey a redraw: `journey.moved_state`). Its calls share one moment, one memo
+    (`sentence_score.choose`'s) and one read of `SHOWN_FILE` while the table's run is the same: *Only i+1*'s second
+    round, in another order, reads no file's text, no column and no `SHOWN_FILE` again (E-L2G, E-L2G 4). The shown
+    lines no audio is heard from (`Line.heard` silent: SPEC § 4.5) are kept beside them, {(Src, Context)} (`silent`):
+    the journey marks them while *Ensure an audio example* is on (`journey_render.silent_lines`)."""
+
+    def __init__(self, language, max_contexts, clean_only=False, results_dir=None, table=None, young=None,
+                 tagger=None):
+        self.language, self.n, self.clean_only = language, plan_rules.context_limit(max_contexts), clean_only
+        self.results_dir, self.table, self.young = results_dir or RESULTS_DIR, table, young
+        self.run, self.kept, self.read, self.forms, self.forms_read = None, {}, {}, {}, {}
+        self.moment, self.length, self.memo, self.young_at, self.read_of = None, None, {}, None, None
+        self.silent, self.read_silent, self.read_run = set(), set(), None
+        # One a chooser (*Only i+1*'s rounds share it): `tagger`, the run's own fugashi tagger when it has one (the
+        # Generate's: no second one, as the journey's pitch takes it), else one made at the first digit-led sentence
+        self.tagger = (tagger or _LazyTagger()) if language == "ja" else None
+
+    def __call__(self, keys, order=None):
+        from app import sentence_score, sentence_corpus, sentence_table
+        from app.connect import sentences as connect_sentences
+        from app.path_utils import get_data_path
+        if self.moment is None:             # (one run's settings, dates and young words: the same for each of its calls)
+            settings = settings_manager.load_settings()
+            seen = connect_sentences.files_seen(self.language, connect_sentences.ai_voice(settings, self.language))
+            _lo, _hi, low, high = sentence_corpus.length_range(settings)
+            young = connect_sentences.young_weights(self.language) if self.young is None else dict(self.young)
+            self.moment = sentence_score.Moment(files=seen, young=young, root=get_data_path(self.language))
+            self.length = (low, high)
+        root = self.moment.root
+        tab = self.table
+        if tab is None:
+            tab = sentence_table.open_table(os.path.join(self.results_dir, sentence_table.TABLE_FILE),
+                                            language=self.language, engine=engine_id(),
+                                            run_signature=read_run_stamp(self.results_dir))
+            if tab is None:
+                return None
+        self.run = self.read_run = tab.head.get("run_signature")
+        self.young_at = young_stamp(self.moment.young)
+        if self.read_of != (self.run,):     # (the last run's shown lines, parsed once for this run's calls: *Only i+1*'s
+            self.forms_read, self.read_silent = {}, set()      # rounds parsed the file at each, E-L2G 4)
+            self.read = _read_shown(self.results_dir, self.run, self.forms_read, self.read_silent)
+            self.read_of = (self.run,)
+        got = sentence_score.choose(self.language, keys, n=self.n, length=self.length, order=order, whole=True,
+                                    moment=self.moment, clean_only=self.clean_only, shown=self.read, table=tab,
+                                    memo=self.memo)
+        if got is None:
+            return None
+        base = os.path.join(root, "")
+        tagger = self.tagger
+        out, kept, forms, silent = {}, {}, {}, set()
+        for key, lines in got.items():
+            columns = []
+            for line in lines:
+                rel = (line.file[len(base):] if line.file.startswith(base) else line.file).replace(os.sep, "/")
+                at = (rel, line.number)
+                kept[at] = line.text
+                shown = line.text
+                if tagger is not None and line.text and _LEADING_DIGITS_RE.match(line.text):
+                    # (a line led by digits shows what `strip_verse_number` makes of it, kept beside its text: read
+                    # back, it asks no tagger — the redraw's child loads none, E-L2G)
+                    shown = self.forms_read.get(at) if self.read.get(at) == line.text else None
+                    if shown is None:
+                        shown = strip_verse_number(line.text, tagger)
+                    forms[at] = shown
+                if line.heard is None and shown:    # (sentence_score.SILENT: no clip of its own, no AI voice)
+                    silent.add((rel, shown))
+                columns += (shown, rel)
+            out[key] = columns
+        self.kept, self.forms, self.silent = kept, forms, silent
+        return out
+
+    def keep(self):
+        """results/`SHOWN_FILE`: the text of the lines the last call showed, their forms and their silent ones, by the
+        table's run — written only when one of them differs from what was read, or the run was signed again since the
+        read (`run` set after the call: a band Automatic chose; never fails the run)."""
+        if self.run is None or (self.run == self.read_run and self.kept == self.read and self.forms == self.forms_read
+                                and self.silent == self.read_silent):
+            return
+        try:
+            _write_shown(self.results_dir, self.run, self.kept, self.forms, self.silent)
+            self.read_of = None             # (the file just written: a later call reads it again)
+        except Exception as e:
+            print(f"Warning: could not keep the shown sentences: {e}")
+
+
+SILENT_KEY = "silent"            # results/`SHOWN_FILE`'s silent lines: [[Src, Context], …] (`journey_render.silent_lines`)
+
+
+def _read_shown(results_dir, run_signature, forms=None, silent=None):
+    """{(rel, number): text} of results/`SHOWN_FILE` when it is `run_signature`'s; {} else (none, another run's,
+    damaged). `forms`, a dict: given what Context shows of the kept lines led by digits, {(rel, number): shown} (a file
+    written before them has none). `silent`, a set: given its silent lines, {(rel, Context)} (`SILENT_KEY`; none in a
+    file written without them)."""
+    import gzip
+    try:
+        with gzip.open(os.path.join(results_dir, SHOWN_FILE), "rb") as f:
+            data = json.loads(f.read())
+        if data.get("run_signature") != run_signature:
+            return {}
+        texts = {(rel, int(number)): text for rel, lines in data["lines"].items() for number, text in lines.items()}
+        shown = {(rel, int(number)): form for rel, lines in (data.get("shown") or {}).items()
+                 for number, form in lines.items()}
+        quiet = {(rel, text) for rel, text in data.get(SILENT_KEY) or ()}
+    except Exception:
+        return {}
+    if forms is not None:
+        forms.update(shown)
+    if silent is not None:
+        silent.update(quiet)
+    return texts
+
+
+def _write_shown(results_dir, run_signature, kept, forms=None, silent=()):
+    """results/`SHOWN_FILE`, whole (a temp file replaced): the same bytes for the same lines (sorted, no time);
+    `forms` {(rel, number): what Context shows} of the lines led by digits, beside their text; the silent ones
+    (`silent`, {(rel, Context)}) beside them when there are any (none: the file as before)."""
+    import gzip
+    lines, shown = {}, {}
+    for (rel, number), text in sorted(kept.items()):
+        lines.setdefault(rel, {})[str(number)] = text
+    for (rel, number), form in sorted((forms or {}).items()):
+        shown.setdefault(rel, {})[str(number)] = form
+    data = {"run_signature": run_signature, "lines": lines}
+    if shown:
+        data["shown"] = shown
+    if silent:
+        data[SILENT_KEY] = [list(pair) for pair in sorted(silent)]
+    path = os.path.join(results_dir, SHOWN_FILE)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=6, mtime=0,
+                                                   filename="") as f:
+            f.write(json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)                  # (no temp file left in results/)
+        except OSError:
+            pass
+        raise
 
 
 def plan_texts(language, data_dir, store):
@@ -4824,10 +5090,8 @@ def _build_analysis_parser():
     parser.add_argument("--visualize", action="store_true", help="Launch visualizer after analysis")
     parser.add_argument("--static", action="store_true", help="Generate static HTML after analysis")
     parser.add_argument("--app-mode", action="store_true", help="Open the static report in a dedicated app window")
-    parser.add_argument("--theme", type=str, default="default", help="Theme for static HTML (default, world-class, modern-light, zen-focus)")
     parser.add_argument("--target-coverage", type=int, default=0, help="Target cumulative coverage percent (0-100)")
     parser.add_argument("--language", type=str, default="ja", help="Target language code (ja, zh)")
-    parser.add_argument("--zen-limit", type=int, default=0, help="Limit words for Zen Mode")
     parser.add_argument("--only-i-plus-one", action="store_true", help="Only include words with i+1 sentences")
     parser.add_argument("--ensure-audio-example", action="store_true", help="Give the last example slot to a sentence that has audio, when none of the chosen ones do")
     parser.add_argument("--context-min", type=int, default=None, help="Ideal sentence minimum words/characters")
@@ -4946,18 +5210,25 @@ def prepare_library(language, data_dir=None, user_files_dir=None):
     return out
 
 
+def _row_path(file_path, data_dir):
+    """A run's per-file row's `Source Path` / file statistics' `Path` (E-NAMES): the file's path from the data folder
+    (`library_path`, the library store's rel_path); a file on another drive, its whole path with "/"."""
+    try:
+        return library_path(file_path, data_dir)
+    except ValueError:
+        return file_path.replace("\\", "/")
+
+
 def _growth_figures(data_dir, found_files, file_growth):
     """Kura-GS: {rel_path: (known, counted, unknown)} of the files the run counted, from its progressive pass (the
     window's *% known* is the same count, the plan's) — what the store keeps as each item's growth snapshots. A file
     off the library's drive (no path from it) is left out, never an error at the run's end."""
-    prefix = os.path.join(data_dir, "")
     out = {}
     for f, fig in zip(found_files, file_growth):
         try:
-            rel = f[0][len(prefix):] if f[0].startswith(prefix) else os.path.relpath(f[0], data_dir)
+            out[library_path(f[0], data_dir)] = fig
         except ValueError:
             continue
-        out[rel.replace("\\", "/")] = fig
     return out
 
 
@@ -5051,14 +5322,31 @@ def resolve_found_files(language, verbose=True, schedule=None, read_store=True, 
                 no_fallback = isinstance(manifest.get("surasura_library"), dict)
                 schedule = manifest.get("schedule", {})
             phases = ["PHASE_1_NOW", "PHASE_2_SOON", "PHASE_3_LATER"]  # order matters
+
+            def _abs(item):
+                rel_path = item.get("physical_path", "")
+                return os.path.join(data_dir, rel_path[2:] if rel_path.startswith("./") else rel_path)
+            # Which scheduled files are on the disk: one listing a folder (the library store's `_listed_stats`, R6),
+            # os.path.exists for a name no listing gives — never one os.path.exists a file (20k: 20,000 at every
+            # start's check, DSA-PHRASE).
+            there = None
+            if not keep_missing:
+                folders = {}
+                for phase_key in phases:
+                    for item in schedule.get(phase_key, []):
+                        folder, name = os.path.split(_abs(item))
+                        folders.setdefault(folder, set()).add(name)
+                ls = _library_store()
+                there = set()
+                for folder, names in folders.items():
+                    listed = ls._listed_stats(folder, names) if ls is not None and folder else {}
+                    there.update((folder, name) for name in names
+                                 if name in listed or os.path.exists(os.path.join(folder, name)))
             seen_paths = set()
             for phase_key in phases:
                 for item in schedule.get(phase_key, []):
-                    rel_path = item.get("physical_path", "")
-                    if rel_path.startswith("./"):
-                        rel_path = rel_path[2:]
-                    abs_path = os.path.join(data_dir, rel_path)
-                    if not keep_missing and not os.path.exists(abs_path):
+                    abs_path = _abs(item)
+                    if there is not None and os.path.split(abs_path) not in there:
                         if verbose:
                             print(f"Warning: Manifest file not found: {abs_path}")
                         continue
@@ -5142,8 +5430,8 @@ def journey_is_current(args, language):
     known words and these analysis settings; False when it would not (or never ran); None when it cannot
     tell. The analyzer's OWN signature (`compute_run_signature` + the token store's last one + the results
     stamp), so the Generate button's state can never disagree with what Generate then does —
-    `_try_open_existing_report` asks exactly this before reopening. Presentation (theme, Zen limit) is not
-    part of it: that re-renders in a moment and needs no nudge.
+    `_try_open_existing_report` asks exactly this before reopening. What the page draws (the render signature) is
+    not part of it: that re-renders in a moment and needs no nudge.
 
     With a library store (Library_Store_Spec §7): the disk is synced first (a hato drop then turns the ✓
     off), and the list and its `order_version` are read in one transaction; the signature still decides —
@@ -5282,7 +5570,7 @@ def compute_run_signature(language, found_files, args, order_free=False, aside=(
     """The run-signature: a filesystem fingerprint of everything that affects the analysis OUTPUT
     (content files + their order/weights, known words, ignore/blacklist/graduated lists, frequency
     lists, the analysis-affecting settings, the analysis-affecting args, and the engine version).
-    Presentation (theme / app-mode / zen / words-per-day) is deliberately excluded. Returns the
+    Presentation (the page's looks / app-mode) is deliberately excluded. Returns the
     sha256 hex or None. SHARED by main() (decide the skip) and the dashboard (decide, in-process,
     whether Generate can just reopen the existing report without spawning the analyzer).
 
@@ -5346,7 +5634,8 @@ def settings_signature(settings, language):
     never changed), so a caller can sign a settings dict that differs from the file by one key (Connect's level
     look, P3.3: which band the plan was cut at)."""
     _NON_ANALYSIS_SETTINGS = {
-        "theme", "open_app_mode", "zen_limit",
+        "theme", "open_app_mode",
+        "zen_limit",                    # Zen's size (retired with Zen, J-RETIRE): an older settings.json still holds it
         "words_per_day", "show_words_per_day",
         "open_count", "skipped_version", "failed_update_version",
         "source_display",   # badge rendering only — re-renders (see compute_render_signature)
@@ -5472,7 +5761,35 @@ def run_signature_parts(language, found_files, args, aside=()):
         known_sig = _token_index.known_signature(known_file, script)       # stat only
         available_freq_lists = discover_yomitan_frequency_lists(user_files_dir, language)  # paths only
 
+        # G7: a folder holding LISTED_STATS files or more gives their stats from one os.scandir listing
+        # (`library_store._listed_stats`, as the store's Add and the disk sync read them), not one os.stat each; a
+        # closed file's listed st_mtime and st_size are os.stat's (one still being written may lag until it closes, as
+        # in the sync). Fewer files a folder (a listing costs more than a stat or two), or a path the listing doesn't
+        # hold (gone, spelled otherwise, a folder that can't be listed): os.stat, as before. Listed afresh at every
+        # call, never kept across checks: an edit between two checks is seen by the second. Kept per path is only the
+        # [st_mtime, st_size] the signature holds anyway (handed out once); a folder's listing is let go once it's
+        # read, so a big window process gains no objects for its collector to walk.
+        _by_folder = {}
+        for p in ([fp for (fp, _l, _w, _st) in found_files] + [ignore_list_file, black_list_file, graduated_list_file]
+                  + list(available_freq_lists.values()) + [a.path for a in aside]):
+            _by_folder.setdefault(os.path.dirname(p), []).append(p)
+        _listed = {}
+        try:
+            from app.library_store import LISTED_STATS, _listed_stats
+            for _folder, _paths in _by_folder.items():
+                if len(_paths) >= LISTED_STATS:
+                    _stats = _listed_stats(_folder, [os.path.basename(p) for p in _paths])
+                    for p in _paths:
+                        _st = _stats.get(os.path.basename(p))
+                        if _st is not None:
+                            _listed[p] = [_st.st_mtime, _st.st_size]
+        except Exception:                         # no store module: every path stat'ed, as before
+            _listed = {}
+
         def _fsig(p):
+            _sig = _listed.pop(p, None)           # once: a path signed twice is stat'ed the second time
+            if _sig is not None:
+                return _sig
             try:
                 _st = os.stat(p)
                 return [_st.st_mtime, _st.st_size]
@@ -5548,9 +5865,9 @@ def compute_render_signature(args, marks=None, made=_READ_NOW):
     changes re-render instead of re-analyzing. SHARED with the dashboard's fast path so the two can
     never disagree about whether the existing report is still correct.
 
-    Anything static_html_generator INJECTS into the report belongs here. words_per_day /
-    show_words_per_day were injected but unlisted, so editing them left the report showing the old
-    "At N words a day..." estimate until something else forced a re-render.
+    Anything the journey's render reads belongs here (J-CUT: only what the v3 page's render reads; its looks are
+    applied in the page and read back through the door, J-SET's LOOKS). The page is v3's for every look (J-RETIRE): no
+    theme, no Zen and none of the old page's options are in it.
 
     `--app-mode` is deliberately excluded: it changes only HOW the browser opens the report, not a
     byte of its contents, so toggling it reopens the existing file instead of re-rendering.
@@ -5574,75 +5891,19 @@ def compute_render_signature(args, marks=None, made=_READ_NOW):
              _backlog_fingerprint(_language, "junban_pairs.json") if _backlog_on else None,
              (_made_fingerprint(_language) if made is _READ_NOW else made) if _backlog_on else None]
     _markers = {k: v for k, v in _markers.items() if k != "_comment"} if isinstance(_markers, dict) else _markers
-    if args.theme not in ZEN_THEMES:
-        # Journey v3 (J-CUT): only what its render reads — ⌕'s switch and category among them (the page's head). Its
-        # looks (the theme, the source's display and J-SET's) are applied in the page and read back through the door,
-        # and the old page's options (words a day, the study order's tab, Speech, the page size, its two switches, its
-        # templates) are read by no part of it, so a change of one draws nothing (the Redraw rule). A saved Zen look keeps the list below: Zen in or
-        # out re-renders. Read through `journey_settings.v3()`, never by importing the generator (pandas: the fast
-        # paths' cost); before the cut-over (or with SURASURA_DOOR=0) the old page's list, as it was.
-        from app.services import journey_settings as _journey_settings
-        if _journey_settings.v3():
-            _parts = ["journey v3", bool(_s.get("line_player", True)), _journey_settings.lookup_values(_s), *_anki,
-                      _markers]
-            _stones = _stones_fingerprint(_language, marks)
-            if _stones:
-                _parts.append(_stones)
-            _parts.append(_journey_fingerprint(_language, _s))
-            return json.dumps(_parts)
-    _parts = [
-        args.theme,
-        int(args.zen_limit or 0),
-        _s.get("source_display", "off"),
-        # Word lookup button: whether it renders at all, and which Nadeshiko category the link
-        # carries. Both are INJECTED into the report, so both must re-render — the same rule that
-        # words_per_day was missing above.
-        bool(_s.get("word_search_enabled", True)),
-        # The journey's line player: off, the render looks for no line's file and reads no line's times.
-        bool(_s.get("line_player", True)),
-        _s.get("word_search_category", "all"),
-        _s.get("words_per_day", 5),
-        bool(_s.get("show_words_per_day", True)),
-        # The study order (Kantan-MO): the journey opens on its list — INJECTED (`globalStudyOrder`), so re-render
-        settings_manager.study_order(_s),
-        # Speech (optional module) is INJECTED into the report — the helper endpoint, and which
-        # sentences already have audio. Toggling it must therefore re-render. Without this, turning
-        # speech on while the badge was already visible changed nothing in the signature, so the
-        # existing report was reused and its badges stayed mute. Absent module -> False, so this
-        # costs nothing for anyone who doesn't have it.
-        bool(_s.get("enable_koe", False)),
-        # "Label backlogged Anki words" (Junban_Backlog_Spec WP-B8): the switch, and — only while it
-        # is on — the backlog file the Anki sync keeps. Both are INJECTED, so a sync costs one
-        # re-render on the next Generate, never a re-analysis (§3 I3).
-        # …and the answers to Junban's "Same word as one on your list?": a "yes" labels its word too
-        # (Anki_Match_Consistency_Scope.md item 1), and Connect's record of the cards it made (F-6): a card is labelled
-        # on the row Connect made it for (static_html_generator._connect_rows, Japanese only), so a card made or
-        # deleted re-renders (`_anki`, above)
-        *_anki,
-        # The report's own logic keys, which the templates read from the logic block they embed
-        # (globalLogic): "Show 'Target Met' inline", "Hide Audio Button", the page size and the ✦ / ⚖
-        # thresholds. No run reads them, so compute_run_signature leaves them out: changing one
-        # re-renders, never re-analyzes. The report embeds the whole block, so a template that starts
-        # reading another logic key adds it here.
-        bool(_logic.get("inline_completed_files", False)),
-        bool(_logic.get("hide_audio_button", False)),
-        _logic.get("chunk_size", 50),
-        _markers,
-        # Speech's port: the report embeds it to reach the helper, but only while Speech is on.
-        _s.get("koe_port") if _s.get("enable_koe", False) else None,
-        # The templates themselves. Without this a template-only change (a new report tab, a CSS
-        # fix) was invisible to both fast paths: they reopened the old HTML until something else
-        # forced a re-render. Hashing makes it a cheap re-render, never a re-analysis.
-        _template_fingerprint(),
-    ]
-    # The journey's stones (static_html_generator._journey_stones): a stone with *Keep studying watched episodes* on,
-    # or a set-aside episode moved between counted ones, changes no run input but the report shows it. A part only
-    # while a stone is on the list, so a library with none keeps the signature it had. Zen (the generator's choice of
-    # template) shows no journey: no part, never read.
-    if args.theme not in ZEN_THEMES:
-        _stones = _stones_fingerprint(_language, marks)
-        if _stones:
-            _parts.append(_stones)
+    # Only what the v3 render reads — ⌕'s switch and category among them (the page's head). Its looks (the theme, the
+    # source's display and J-SET's) are applied in the page and read back through the door, and the old page's options
+    # (words a day, the study order's tab, Speech, the page size, its two switches) are read by no part of it, so a
+    # change of one draws nothing (the Redraw rule). "journey v3" first: no older page's signature ever matches it.
+    from app.services import journey_settings as _journey_settings
+    _parts = ["journey v3", bool(_s.get("line_player", True)), _journey_settings.lookup_values(_s), *_anki, _markers]
+    # The journey's stones (`_stones_fingerprint`): a stone with *Keep studying watched episodes* on, or a set-aside
+    # episode moved between counted ones, changes no run input but the page shows it. A part only while a stone is on
+    # the list, so a library with none keeps the signature it had.
+    _stones = _stones_fingerprint(_language, marks)
+    if _stones:
+        _parts.append(_stones)
+    _parts.append(_journey_fingerprint(_language, _s))
     return json.dumps(_parts)
 
 
@@ -5669,9 +5930,6 @@ def _journey_fingerprint(language, settings):
         return "journey unreadable"
 
 
-ZEN_THEMES = ("Zen Mode", "zen-focus")      # static_html_generator's choice of the Zen template (no journey)
-
-
 def journey_marks(language):
     """The journey's stones, read once from the library store (`library_store.read_watched_marks`): a list, None with
     no store, or `library_store.UNREAD` when it can't be read now (never raises)."""
@@ -5696,8 +5954,8 @@ def signed_render(args, drawn, written, made=_READ_NOW):
 
 def _stones_fingerprint(language, marks=None):
     """Short hash of the analysed tiers' watched items — each one's place in the library's order, path, tier, whether
-    it counts, and its show and typed media (a6: the journey's folds, `static_html_generator._journey_folds`: a part
-    put in another show, or a show typed anew, re-draws them) — `marks` (`journey_marks`'; None: read now, in one
+    it counts, and its show and typed media (the page's shows: a part put in another show, or a show typed anew,
+    re-draws them) — `marks` (`journey_marks`'; None: read now, in one
     read); None with no stone or no store, a part that matches nothing when they can't be read now (never raises)."""
     if marks is None:
         marks = journey_marks(language)
@@ -5731,9 +5989,9 @@ def _made_fingerprint(language):
         return None
 
 
-def _template_fingerprint(names=("web_app.html", "zen_app.html")):
-    """Short hash of the report's templates — both old pages, or `("journey",)`: the v3 page's folder (every file in
-    it, by name, sorted); a constant if they can't be read (never raises)."""
+def _template_fingerprint(names=("journey",)):
+    """Short hash of the journey's templates — `("journey",)`: the v3 page's folder (every file in it, by name,
+    sorted); a constant if they can't be read (never raises)."""
     h = hashlib.sha1()
     try:
         for name in names:
@@ -5767,12 +6025,46 @@ REDRAW_STATS_FILE = "file_statistics.generated.json"   # the Generate's file sta
 def drawn_for(results_dir):
     """The run signature the outputs in `results_dir` are now: the run stamp's, or — redrawn from the plan since (F7,
     `REDRAW_FILE`) — the order's it was redrawn for, while the marker names the stamp's plan; None when neither can be
-    told (no stamp, a redraw stopped part-way, a marker of another plan). Never raises."""
+    told (no stamp, a redraw stopped part-way, a marker of another plan). Never raises. At release 2 a Generate writes
+    the marker too (its own run, its day): none is a journey Generated before that build — not today's (the lead's
+    ruling, 2026-11-23), so None, and the keeper redraws it once (`journey.moved_state`)."""
     stamp = read_run_stamp(results_dir)
     marker = redrawn_for(results_dir)
     if marker is None:
-        return stamp
+        return stamp if plan_rules.SENTENCE_TABLE < 2 else None
+    if plan_rules.SENTENCE_TABLE >= 2 and marker.get("day") != drawn_day():
+        return None                         # release 2: drawn on an earlier day, redrawn once on a new day's first look
     return marker.get("run") if stamp and marker.get("plan") == stamp else None
+
+
+def _drawn_another_day(results_dir, run_signature):
+    """Release 2: the outputs are this very run's (the stamp's, nothing moved) but drawn on an earlier day, or with no
+    marker (ruling 4) — so a Generate with nothing changed redraws the journey from the plan (seconds) rather than
+    reuse it as it was (SPEC § 7 rows 14, 36; decision 6); `generate --force` (SURASURA_FORCE_RUN) runs whole, as
+    ever. Never raises."""
+    if (plan_rules.SENTENCE_TABLE < 2 or not run_signature or os.environ.get("SURASURA_FORCE_RUN")
+            or read_run_stamp(results_dir) != run_signature):
+        return False
+    marker = redrawn_for(results_dir)
+    return marker is None or (marker.get("plan") == run_signature and marker.get("run") == run_signature
+                              and marker.get("day") != drawn_day())
+
+
+def drawn_day():
+    """Today, as the redraw marker names the day it was drawn for (release 2, SPEC § 7 row 36): the local date."""
+    import datetime
+    return datetime.date.today().isoformat()
+
+
+def young_stamp(young):
+    """The young words a draw weighed ({lemma: weight}, `connect.sentences.young_weights`) as the redraw marker names
+    them (release 2, E-JOURNEY): a short digest of the words and their weights, order-free — None for none (no Anki,
+    never synced, every card mature: the marker of before, no key). Weights to two decimals: today's come from whole
+    days (twenty-firsts, all apart); one moving by the hour (a fractional day) would owe a redraw at every look."""
+    rows = sorted((str(w), round(float(v), 2)) for w, v in (young or {}).items())
+    if not rows:
+        return None
+    return hashlib.sha1(json.dumps(rows, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
 
 def redrawn_for(results_dir):
@@ -5785,23 +6077,17 @@ def redrawn_for(results_dir):
     return marker if isinstance(marker, dict) else None
 
 
-def _json_list_entries(text):
-    """The entries of a JSON list written with `indent=4` (file_statistics.json), each its own text: the list's top-level
-    objects are the only lines that are "    }" or "    {" — None when the text isn't that shape."""
-    body = text[2:-2] if text.endswith("\n]") else None
-    if not body:
-        return None
-    parts = body.split("\n    },\n    {")
-    if len(parts) == 1:
-        return [body]
-    return [parts[0] + "\n    }"] + ["    {" + p + "\n    }" for p in parts[1:-1]] + ["    {" + parts[-1]]
-
-
-def _write_redraw_marker(plan_signature, run_signature):
-    """The redraw marker, written whole (a temp file replaced): `run_signature` None while the redraw writes."""
+def _write_redraw_marker(plan_signature, run_signature, young=None):
+    """The redraw marker, written whole (a temp file replaced): `run_signature` None while the redraw writes. `young`
+    (release 2): the stamp of the young words the draw weighed (`ListSentences.young_at`), None for none."""
     path = os.path.join(RESULTS_DIR, REDRAW_FILE)
+    marker = {"plan": plan_signature, "run": run_signature}
+    if plan_rules.SENTENCE_TABLE >= 2:
+        marker["day"] = drawn_day()         # release 2: the remembered context fades by the day (`journey.moved_state`)
+        if young is not None:
+            marker["young"] = young         # ... and the young words it weighed: a sync since that changed them owes one
     with open(path + ".tmp", "w", encoding="utf-8") as f:
-        json.dump({"plan": plan_signature, "run": run_signature}, f)
+        json.dump(marker, f)
     os.replace(path + ".tmp", path)
 
 
@@ -5831,11 +6117,12 @@ def read_run_stamp(results_dir):
 
 
 def write_list(write, path):
-    """a7: a list written whole or not at all — `write(temp)` writes it beside `path` (`df.to_csv`, a csv writer), then
+    """a7: a list written whole or not at all — `write(temp)` writes it beside `path` (`write_rows`, a csv writer), then
     `os.replace`: a reader (New arrivals' worker, the journey's shadow compare, Connect) never reads half a list, only
     the last one or the new one. A reader holding the old one open (Windows refuses the replace) is waited for, tried
     every 50 ms for up to 10 s (a list is read in about a second); after that the temp is copied over it, as the list
-    was written before. The temp never stays; one a killed run left is removed by the next write, once a minute old."""
+    was written before. The temp never stays; one a killed run left is removed by the next write, once a minute old.
+    Returns what `write` returned (`write_rows`' rows for the journey)."""
     import shutil
     tmp = f"{path}.{os.getpid()}.tmp"
     folder, name = os.path.split(path)
@@ -5847,22 +6134,103 @@ def write_list(write, path):
             except OSError:
                 pass
     try:
-        write(tmp)
+        wrote = write(tmp)
         deadline = time.monotonic() + 10.0
         while True:
             try:
                 os.replace(tmp, path)
-                return
+                return wrote
             except PermissionError:
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(0.05)
         shutil.copyfile(tmp, path)
+        return wrote
     finally:
         try:
             os.remove(tmp)
         except OSError:
             pass
+
+
+def _number_kind(kind):
+    """"i" a whole-number type, "f" another real number's, None anything else (a bool, a str, None's)."""
+    if kind is bool or not issubclass(kind, numbers.Real):
+        return None
+    return "i" if issubclass(kind, numbers.Integral) else "f"
+
+
+def _csv_text(value):
+    """A cell's text as the csv module writes it: a str as it is, None empty, a float its repr, anything else str()."""
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    return repr(value) if isinstance(value, float) else str(value)
+
+
+def _page_keep(args, priority):
+    """`write_rows`' `keep` for a list this run's journey is drawn from (`journey_render._records`' columns: the
+    priority list's words, or the progressive list's columns with its sentences), or None when no page is drawn."""
+    if not getattr(args, "static", False):
+        return None
+    try:
+        from app import journey_render
+    except ImportError:
+        return None                         # (the page reads the lists from the file, as before)
+    return (journey_render.PRIORITY_COLUMNS, False) if priority else (journey_render.ROW_COLUMNS, True)
+
+
+def write_rows(path, rows, columns=None, upto=None, keep=None):
+    """E-WRITE: the one writer of the two lists (`OUTPUT_CSV`, `OUTPUT_PROGRESSIVE`) — the Generate's and the redraw's,
+    with the standard library's csv: the bytes `pandas.DataFrame(rows).to_csv(path, index=False, encoding='utf-8-sig')`
+    wrote (pandas was imported in both only for this, ~0.35 s a process). `columns`: the header (None: every row's keys
+    in the order first met); a row's other keys are left out, a column it lacks is empty. `upto`: only the first `upto`
+    rows are written (the coverage cut) — each column's kind is still read over all `rows`, as the frame was cut after
+    it was made. A column of numbers with a gap or a float is pandas' float column: its whole numbers are written 3.0;
+    a gap, None or NaN is empty everywhere. One pass over the cells for the kinds, one to write.
+    `keep` (`_page_keep`: the journey's `(columns, contexts)`): the rows written are also handed back as the journey's
+    reader would read them from this file (`journey_render._records`: each kept column's text as csv wrote it, a cell
+    that repeats held once), so the page this run draws never reads back the lists it was just given. None without."""
+    if columns is None:
+        columns = list(dict.fromkeys(chain.from_iterable(rows)))
+    floats, nans = set(), set()
+    for column in columns:
+        kinds = {type(row.get(column)) for row in rows}
+        gap = type(None) in kinds
+        kinds.discard(type(None))
+        marks = {_number_kind(kind) for kind in kinds}
+        if kinds and None not in marks and (gap or "f" in marks):
+            floats.add(column)
+        elif any(issubclass(kind, float) for kind in kinds):
+            nans.add(column)                # (a NaN among a column's text is empty too)
+
+    def _cell(column, value):
+        if value is None:
+            return ""
+        if column in floats:
+            return "" if value != value else repr(float(value))
+        if column in nans and isinstance(value, float) and value != value:
+            return ""
+        return value                        # (csv writes str(value))
+
+    kept = None
+    if keep is not None:
+        wanted, contexts = keep
+        picks = [(n, name, name.startswith("Context ")) for n, name in enumerate(columns)
+                 if name in wanted or (contexts and name.startswith(("Context ", "Src ")))]
+        once = {}.setdefault
+        kept = []
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.writer(f, lineterminator=os.linesep)      # (pandas' line ends: the system's)
+        writer.writerow(columns)
+        for row in rows if upto is None else rows[:upto]:
+            line = [_cell(column, row.get(column)) for column in columns]
+            writer.writerow(line)
+            if kept is not None and line:   # (an empty line is no row to the reader)
+                kept.append({name: text if sentence else once(text, text)
+                             for n, name, sentence in picks for text in (_csv_text(line[n]),)})
+    return kept
 
 
 def _set_run_stamp(results_dir, signature):
@@ -6266,13 +6634,13 @@ def main():
                 _html = os.path.join(RESULTS_DIR, "reading_list_static.html")
                 # Presentation fingerprint that decides whether the HTML must be RE-RENDERED (see
                 # compute_render_signature — shared with the dashboard so the two can't drift). The
-                # journey's stones are read once: the check and the re-render use the same marks.
-                _marks = None if args.theme in ZEN_THEMES else journey_marks(language)
+                # check reads the journey's stones here; a re-render is signed with the ones it drew (J-FIX 3).
+                _marks = journey_marks(language)
                 _made = _made_fingerprint(language)      # F-6: read once, before the report is drawn
                 _render_sig = compute_render_signature(args, marks=_marks, made=_made)
                 # Fast "same setting" path: if the presentation is ALSO unchanged, the existing
                 # report is already correct — just open it (no re-render, and pandas is never
-                # imported). Otherwise re-render with the new theme/Zen (still no re-analysis).
+                # imported). Otherwise re-render (still no re-analysis).
                 if os.path.exists(_html) and _store.get_meta("last_render_sig") == _render_sig:
                     print("Report already up to date - opening it.")
                     if not args.no_open:
@@ -6281,8 +6649,7 @@ def main():
                     print("Re-rendering report from existing results (presentation changed)...")
                     _rendering = time.time()
                     _drawn = static_html_generator.generate_static_html(
-                        theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
-                        open_browser=not args.no_open, language=language, marks=_marks,
+                        app_mode=args.app_mode, open_browser=not args.no_open, language=language,
                         plan=_journey_plan(args, read_run_stamp(RESULTS_DIR)))     # the plan checked just above
                     _report_failed = not _report_written(_html, _rendering)
                     try:
@@ -6295,13 +6662,21 @@ def main():
         _store.close()
         return 1 if _report_failed else None
 
-    # pandas is only needed from here on (to write the CSVs on a full run). Import it lazily so the
-    # "nothing changed" skip path above never pays its ~0.35s import cost.
-    import pandas as pd
+    # numpy is only needed from here on (the sentence table and its reader), never on the "nothing changed" skip
+    # path above; pandas never (E-WRITE: the two lists are `write_rows`', the csv module's).
+    if plan_rules.SENTENCE_TABLE >= 1:
+        from app import sentence_score
+        sentence_score.numpy_one_thread()   # (its BLAS held to one thread, as the table)
+    if plan_rules.SENTENCE_TABLE >= 2:
+        # The library's dates the list's sentences weigh (Connect's moment, `ListSentences`), read on a thread of their
+        # own from here — while numpy and the plan load — for the redraw and the Generate alike (E-FAST 6)
+        from app.connect import sentences as connect_sentences
+        connect_sentences.dates_ahead(language, connect_sentences.ai_voice(settings_manager.load_settings(), language))
 
     # F7: only the order moved since the last Generate, and the journey keeper asks for the journey: redrawn from that
     # Generate's plan — its re-pick is the Generate's pick — with no file read (else a Generate, below).
-    if getattr(args, "from_plan", False) and _store is not None and _run_sig and _analysis_outputs_present:
+    if ((getattr(args, "from_plan", False) or _drawn_another_day(RESULTS_DIR, _run_sig))
+            and _store is not None and _run_sig and _analysis_outputs_present):
         try:
             _redrawn = _redraw_from_plan(language, data_dir, found_files, _sig_parts, _run_sig, _library, _store, args)
         except Exception as e:
@@ -6454,10 +6829,7 @@ def main():
         tokenized here (`file_sentences`, the arrival record's reader too) — a song line's with no words
         (`song_sentences`, below). `words`: as `file_sentences`' (the sentence table's kept counts)."""
         sentences = file_sentences(_store, tokenizer, file_path, language, words)
-        out = _songs.get(file_path)
-        if out:
-            sentences = [(s[0], []) if no in out else s for no, s in enumerate(sentences)]
-        return sentences
+        return blank_songs(sentences, _songs.get(file_path))
 
     def _floor_count(total_tokens, own_freqs):
         """The word-selection floor (replaces the retired raw min_freq default): a density band's ppm floor as a
@@ -6760,7 +7132,10 @@ def main():
 
     # The sentence table (plan_rules.SENTENCE_TABLE >= 1; app/sentence_table.py): every candidate line of every word
     # and phrase, as numbers, appended where the shortlists below are offered one — off (0), None: nothing changes.
-    _table = None
+    # Release 2 (2) keeps the table alone (SPEC § 3.6): no shortlist and no first sentence a file are kept — the list's
+    # sentences are the one reader's over it (`ListSentences`, after the list below).
+    _table = _cores = None
+    _shortlists = plan_rules.SENTENCE_TABLE < 2
     if plan_rules.SENTENCE_TABLE >= 1 and _plan_on:
         from app import sentence_table
         _table = sentence_table.Packer()
@@ -6773,28 +7148,72 @@ def main():
         _held_words = [None, None]
         _file_words = [None]        # the file's lines as the indexer counted them (Store.file_words), or None
         _counted = [0, 0]           # lines read from those counts · lines counted here
+        # The lines' two numbers on other cores (E-CORES: sentence_table.Cores; one process on one core, a small
+        # library or no store): the walk offers the same lines in the same order, the numbers written in at the end.
+        _cores = sentence_table.Cores.start(len(found_files), _store, language, _people)
+        if _cores is not None:
+            _file_words = None      # the workers read the kept counts themselves
+
+            def _read_again(path):  # a file no worker answered: read as the walk reads it
+                words = [None]
+                return _sentences_of(path, words), words[0]
+            _cores.reads(_read_again, language, _people)
 
         def _line_words(s_text, s_tokens, s_no):
             """The line's words for the table's two numbers: as the indexer counted them (sentence_table.KeptWords,
             E-INDEX), else counted here (sentence_table.LineWords) — the same numbers. Made once a line. A line it
-            can't count reads as none (0, 0): the table never fails the run."""
+            can't count reads as none (0, 0): the table never fails the run. With workers: `_cores` keeps the
+            question."""
+            if _cores is not None:
+                return _cores.line(s_text, s_tokens, s_no)
             if _held_words[0] is not s_tokens:
-                kept, words = _file_words[0], None
-                if kept is not None:
-                    try:
-                        words = kept.line(s_no, s_tokens, s_text, _people)
-                    except Exception:
-                        pass                # counted here instead
-                if words is not None:
-                    _counted[0] += 1
-                else:
-                    _counted[1] += 1
-                    try:
-                        words = sentence_table.LineWords(s_tokens, s_text, language, _people)
-                    except Exception:
-                        words = sentence_table.LineWords((), "", language)
-                _held_words[0], _held_words[1] = s_tokens, words
+                _held_words[0], _held_words[1] = s_tokens, sentence_table.line_words(
+                    _file_words[0], s_no, s_tokens, s_text, language, _people, _counted)
             return _held_words[1]
+
+    # --- The walk on ids (G1, DSA-WALK; token_index.Walk) ---------------------------------------------------------- #
+    # Each token store type's class — what the walk's per-token tests say of it, below — is decided once (`_class_of`),
+    # with the word's key as first met (`_word_state`, which every file's counts and sentences then share), and a file's
+    # totals, known count and multiset are array lookups over its type ids. Only a sentence holding something to do —
+    # an unknown, a one-kanji word that may be a piece of something else, a one-character word the report names, a set
+    # phrase — is walked in Python, its text and tokens built for it alone: most sentences are examples for no word.
+    def _class_of(token):
+        """A type's class for the walk (token_index.W_*). The word's bits (`word_flags`, asked once a word): 1 known
+        (KnownWord.json) or ignored; 2 a lemma with no Target characters (SSA/ASS tags like {\\an8}, timestamps,
+        markup, other ASCII-only tokens) — such a token counts toward the totals, or as an unknown, only when its
+        surface has some. With the one-character rule on (§ One-character words): 4 a one-character word the list never
+        offers (16: one the report names for its file); 8 a one-kanji word it offers where it stands free."""
+        lemma, reading, surface, _orth = token
+        known = _word_state.get((lemma, reading))
+        if known is None:
+            key = (lemma, reading)
+            known = _word_state[key] = (word_flags(key, language, known_words_initial, known_lemmas_initial,
+                                                   ignore_list, skip_singles), key)
+        state, key = known
+        if state & 2 and not has_target_language(surface, language):
+            return _token_index.W_SKIP, key
+        if state & 1:
+            return _token_index.W_KNOWN, key
+        if state & 4:
+            return (_token_index.W_NAMED if state & 16 else _token_index.W_ONE), key
+        return (_token_index.W_BOUND if state & 8 else _token_index.W_UNKNOWN), key
+    _walk = _token_index.Walk(_store, _class_of)
+    _W_NAMED, _W_BOUND = _token_index.W_NAMED, _token_index.W_BOUND
+    file_id_cache = {}          # file path -> its multiset as the walk's arrays (key numbers, uses), for the pass (G5)
+
+    def _walked(file_path):
+        """A file on ids as the walk reads it (`token_index.WalkFile`): the store's (its song lines with no words), else
+        read as tokens (`_sentences_of`). The sentence table's kept counts go to `_file_words`, as `_sentences_of`
+        gives them."""
+        try:
+            walked = _walk.file(file_path, _songs.get(file_path))
+        except Exception:
+            walked = None               # read as tokens: the store's own error, if any, raised there
+        if walked is None:
+            return _walk.read(_sentences_of(file_path, _file_words if _table is not None else None))
+        if _table is not None and _file_words is not None:
+            _file_words[0] = walked.words
+        return walked
 
     # --- AGGREGATION PASS ---
     for seq_idx, (file_path, label, weight, source_type) in enumerate(found_files, 1):
@@ -6805,15 +7224,15 @@ def main():
             print(f"Processing file {seq_idx}...")
         src_idx = _source_idx(file_path, source_type)
 
-        # Cached tokenized sentences from the store (fresh for changed files, reused otherwise).
-        sentences = _sentences_of(file_path, _file_words if _table is not None else None)
+        # Its sentences on ids (`_walked`, above): the totals, the known count and the multiset of every (lemma,
+        # reading) it yields — mirrors tokenizer.tokenize() exactly, in first-appearance order, for the progressive pass
+        # to reuse — by array lookups.
+        walked = _walked(file_path)
+        if _table is not None and _cores is not None:
+            _cores.file(file_path, _table)
 
-        file_total_words = 0
-        file_known_words = 0
-        # Multiset of every (lemma, reading) this file yields — mirrors tokenizer.tokenize()
-        # exactly (built in first-appearance order) for the progressive pass to reuse.
-        file_counter = Counter()
-        file_count = file_counter.get
+        file_total_words, file_known_words = walked.counted()
+        file_counter = walked.counter()
         file_credits = Counter()                      # the words this file meets inside a rare compound
         file_phrases, file_bound = Counter(), Counter()   # its set phrases, and the uses its bound words give them
         file_pieces = Counter()     # one-kanji list words' uses here that are pieces of something else (三年's 年)
@@ -6829,60 +7248,43 @@ def main():
         library_series.add(file_series)
         if file_is_spoken:
             spoken_file_count += 1
-        # The set phrases of each sentence, as they were found before (above) — else searched for below.
+        # The set phrases of each sentence, as they were found before (above) — else searched for in every sentence.
         found_at = None
         if _phrase_set is not None:
-            sentences = list(sentences)
-            found_at = _phrases_at(file_path, sentences)
+            found_at = _phrases_at(file_path, walked)
+        # The tokens with something to do (from W_NAMED up), by sentence: every other sentence holds no unknown and no
+        # word to name — with no set phrase either, nothing to do at all.
+        hot = walked.where(walked.cls >= _W_NAMED)
+        if found_at is None and _phrase_set is not None:
+            numbers = range(len(walked))
+        elif found_at:
+            numbers = sorted(hot.keys() | found_at.keys())
+        else:
+            numbers = hot
 
-        for s_no, (s_text, s_tokens) in enumerate(sentences):
+        for s_no in numbers:
+            s_text, s_tokens = walked[s_no]
             # 1. Identify unknowns and calculate cost (relative to constant initial knowns)
             sentence_unknowns = []
             unknown_keys = []
             named = None        # [(token number, key, spelling)]: this sentence's words for the file's line (below)
-            for t_no, (lemma, reading, surface, orth) in enumerate(s_tokens):
-                # What the word is, asked once per word (`_word_state`), not per token: this loop runs over every
-                # token of the library. Bit 1: known (KnownWord.json) or ignored; bit 2: a lemma with no Target
-                # characters (e.g. SSA/ASS tags like {\an8}, timestamps, markup, or other ASCII-only tokens) — such a
-                # token counts toward the totals, or as an unknown, only when its surface has some. With the
-                # one-character rule on (§ One-character words): bit 4, a one-character word the list never offers
-                # (bit 16: one the report names for its file); bit 8, a one-kanji word it offers where it stands free.
-                # Kept with the word's key as first met, which every file's counts and sentences then share: each file's
-                # tokens are read anew from the store, and its own copy of each key (and of its text) stayed in memory
-                # with the file's counts until the run ended — some 150 MB on a large library.
-                known = _word_state.get((lemma, reading))
-                if known is None:
-                    key = (lemma, reading)
-                    known = _word_state[key] = (word_flags(key, language, known_words_initial, known_lemmas_initial,
-                                                           ignore_list, skip_singles), key)
-                state, key = known
-                # Cache EVERY token (before the target-language filter below) so the cached
-                # multiset matches what tokenizer.tokenize() yields for the progressive pass.
-                file_counter[key] = file_count(key, 0) + 1
-                if state & 2 and not has_target_language(surface, language):
+            for t_no, cls, key in hot.get(s_no, ()):
+                lemma, reading, surface, orth = s_tokens[t_no]
+                if cls == _W_NAMED:
+                    # A one-character word the list never offers, known to the file's coverage (`counted`), named for
+                    # the file where it stands on its own (never 卍 in a term's run, 条 after 第一) — once this
+                    # sentence's set phrases are known (below).
+                    if not bound_uses(s_text, s_tokens, only=(t_no,)):
+                        if named is None:
+                            named = []
+                        named.append((t_no, key, orth))
                     continue
-
-                file_total_words += 1
-                if state & 1:
+                if cls == _W_BOUND and bound_uses(s_text, s_tokens, only=(t_no,)):     # asked of this word alone
+                    # A one-kanji word standing as a piece of something else: never a use, an example or an unknown
+                    # here — nothing to learn, so known to the file's coverage, as in the progressive pass.
                     file_known_words += 1
+                    file_pieces[key] += 1
                     continue
-                if state & 12:
-                    # A one-character word counts only where the list can offer it: never one it doesn't list, never
-                    # a one-kanji word standing as a piece of something else. Neither is a use, an example or an
-                    # unknown here — nothing to learn, so known to the file's coverage, as in the progressive pass.
-                    if state & 4:
-                        file_known_words += 1
-                        # Named for the file where it stands on its own (never 卍 in a term's run, 条 after 第一) —
-                        # once this sentence's set phrases are known (below).
-                        if state & 16 and not bound_uses(s_text, s_tokens, only=(t_no,)):
-                            if named is None:
-                                named = []
-                            named.append((t_no, key, orth))
-                        continue
-                    if bound_uses(s_text, s_tokens, only=(t_no,)):     # asked of this word alone
-                        file_known_words += 1
-                        file_pieces[key] += 1
-                        continue
 
                 # It's an unknown word!
                 sentence_unknowns.append((lemma, reading, surface, orth))
@@ -7073,7 +7475,7 @@ def main():
                     inside = [(t[0], t[1]) for t in s_tokens[start:end]]
                     if not waits and unknown_uses.keys().isdisjoint(inside):
                         # No new word inside it and none waited for: the sentence's unknowns are its words' own (3.).
-                        if unk_freqs is None:
+                        if unk_freqs is None and _shortlists:
                             unk_freqs = _unknown_counts(unique_lrs)
                         lrs, freqs = unique_lrs, unk_freqs
                     else:
@@ -7086,14 +7488,18 @@ def main():
                         if rare:
                             lrs = ((lrs - rare)
                                    | {unit for lr in lrs & rare for unit in _view.units(lr) if not _known(unit)})
-                        freqs = _unknown_counts(lrs)
+                        freqs = _unknown_counts(lrs) if _shortlists else None
                     if s_hash is None:
                         s_hash = plan_rules.text_hash_of(s_text)
-                    new_ctx = _candidate(is_too_short, is_too_long, rolling_context_cost(_phrase_uses_of(index), freqs),
-                                         lrs, s_text, src_idx, marks, len(freqs), s_hash, s_no)
+                    if _shortlists:
+                        new_ctx = _candidate(is_too_short, is_too_long,
+                                             rolling_context_cost(_phrase_uses_of(index), freqs),
+                                             lrs, s_text, src_idx, marks, len(freqs), s_hash, s_no)
                     if _table is not None and (first_here or not is_over_hard_max):
                         _table.add(index, src_idx, s_no, len(s_text), s_hash, lrs, marks,
                                    *_line_words(s_text, s_tokens, s_no).of_span(start, end), over=is_over_hard_max)
+                    if not _shortlists:
+                        continue                    # (release 2: the table alone)
                     if first_here:
                         # its first sentence in this file: the plan's (Context 1 and a near candidate wherever the file
                         # goes) kept compact, and whole while it is one of the files nearest its first meeting here
@@ -7117,11 +7523,11 @@ def main():
             # The whole library's uses of each of this sentence's unknowns (ascending) — used to score
             # each candidate by its rarer-than-target co-words (see rolling_context_cost). A word the
             # learner can read through its known word (利用者) is not one of them (U9, above).
-            if unk_freqs is None:           # (worked out already when a set phrase here needed it, above)
+            if unk_freqs is None and _shortlists:   # (worked out already when a set phrase here needed it, above)
                 unk_freqs = _unknown_counts(unique_lrs)
             if s_hash is None:
                 s_hash = plan_rules.text_hash_of(s_text)
-            n_unknown = len(unk_freqs)
+            n_unknown = len(unk_freqs) if _shortlists else 0
             audio_too = ENSURE_AUDIO_EXAMPLE and file_is_spoken and not is_over_hard_max
 
             for key in targets:
@@ -7132,6 +7538,9 @@ def main():
                 if _table is not None and (not is_over_hard_max or entry.get("_fsq") != seq_idx):
                     _table.add(key, src_idx, s_no, len(s_text), s_hash, unique_lrs, marks or (),
                                *_line_words(s_text, s_tokens, s_no).of_word(key), over=is_over_hard_max)
+                if not _shortlists:
+                    entry["_fsq"] = seq_idx         # (release 2: the table alone — its first line here, kept above)
+                    continue
                 if entry.get("_fsq") != seq_idx:
                     # Its first sentence in this file: the plan's (Context 1 and a near candidate wherever the file
                     # goes) kept compact; whole while it is one of the files nearest its first meeting in this order
@@ -7180,6 +7589,7 @@ def main():
 
         
         file_token_cache[file_path] = file_counter
+        file_id_cache[file_path] = walked.first
         if _plan_on:
             plan_files.append(_plan_file(file_uses, word_stats, file_phrase_spelled, phrase_stats)
                               + (file_firsts, file_phrase_firsts))
@@ -7194,6 +7604,7 @@ def main():
         coverage = (file_known_words / file_total_words * 100) if file_total_words > 0 else 0
         file_stats.append({
             "File": os.path.basename(file_path),
+            "Path": _row_path(file_path, data_dir),
             "Total Words": file_total_words,
             "Known Count": file_known_words,
             "Coverage (%)": round(coverage, 2)
@@ -7296,6 +7707,19 @@ def main():
     _phrase_row_of = {index: key for key, index in phrase_keys.items() if key in _listed_rows}
     _finished = sorted((a.rank, a.path, a.source_type) for a in aside_files(language, _library["schedule"])
                        if a.rank is not None)
+    _listed_held = [None]
+
+    def _listed_kids():
+        """Each of the walk's key numbers: a list row's word, not a phrase's row (`_listed_rows`, below) — as an array,
+        made for the keys met so far (a finished file meets new ones: added)."""
+        held, keys = _listed_held[0], _walk.keys
+        if held is None or len(held) < len(keys):
+            at = 0 if held is None else len(held)
+            more = _walk.np.fromiter((key in _listed_rows and key not in phrase_keys for key in keys[at:]), bool,
+                                     len(keys) - at)
+            held = _listed_held[0] = more if held is None else _walk.np.concatenate([held, more])
+        return held
+
     if _finished and _listed_rows:
         if _phrase_set is not None and _store is not None:
             try:
@@ -7308,12 +7732,23 @@ def main():
                 src_place.append((plan_rules.NOT_FINISHED, 0))
             src_place[src_idx] = (rank, 0)
             try:
-                sentences = list(_sentences_of(file_path, _file_words if _table is not None else None))
+                walked = _walked(file_path)
+                if _table is not None and _cores is not None:
+                    _cores.file(file_path, _table)
             except Exception as e:
                 print(f"Warning: a finished file couldn't be read for example sentences ({e}).")
                 continue
-            found_at = _phrases_at(file_path, sentences) if _phrase_set is not None else None
-            for s_no, (s_text, s_tokens) in enumerate(sentences):
+            found_at = _phrases_at(file_path, walked) if _phrase_set is not None else None
+            # Only a sentence holding a list row's word that may be an unknown there, or a set phrase, can be an example
+            # (below): every other one is passed over on ids (the walk, above).
+            if found_at is None and _phrase_set is not None:
+                numbers = range(len(walked))
+            else:
+                numbers = walked.sentences((walked.cls >= _W_BOUND) & _listed_kids()[walked.kid])
+                if found_at:
+                    numbers = sorted(found_at.keys() | set(numbers))
+            for s_no in numbers:
+                s_text, s_tokens = walked[s_no]
                 if len(s_text) > max_chars:
                     continue
                 unknown_keys = []
@@ -7374,10 +7809,12 @@ def main():
                             rare_set = set(rare)
                             lrs = ((lrs - rare_set)
                                    | {unit for lr in lrs & rare_set for unit in _view.units(lr) if not _known(unit)})
-                    freqs = _unknown_counts(lrs)
+                    freqs = _unknown_counts(lrs) if _shortlists else None
                     if _table is not None:
                         _table.add(index, src_idx, s_no, len(s_text), s_hash, lrs, marks or (),
                                    *_line_words(s_text, s_tokens, s_no).of_span(start, end))
+                    if not _shortlists:
+                        continue                    # (release 2: the table alone)
                     entry = word_stats[_phrase_row_of[index]]
                     plan_rules.keep_best(entry.setdefault("finished_contexts", []),
                                          _candidate(short, long, rolling_context_cost(_phrase_uses_of(index), freqs),
@@ -7385,11 +7822,13 @@ def main():
                                          plan_rules.FINISHED_POOL, 7, 5, per_file=plan_rules.FINISHED_POOL,
                                          text_at=4)
                 if targets:
-                    unk_freqs = _unknown_counts(unique_lrs)
+                    unk_freqs = _unknown_counts(unique_lrs) if _shortlists else None
                     for key in targets:
                         if _table is not None:
                             _table.add(key, src_idx, s_no, len(s_text), s_hash, unique_lrs, marks or (),
                                        *_line_words(s_text, s_tokens, s_no).of_word(key))
+                        if not _shortlists:
+                            continue                # (release 2: the table alone)
                         plan_rules.keep_best(word_stats[key].setdefault("finished_contexts", []),
                                              _candidate(short, long, rolling_context_cost(_uses(key), unk_freqs),
                                                         unique_lrs, s_text, src_idx, marks, len(unk_freqs), s_hash,
@@ -7654,7 +8093,8 @@ def main():
         src_place.append((plan_rules.NOT_FINISHED, 0))
     picker = plan_rules.ContextPicker(sentences, cowords, plan_rules.context_limit(args.max_contexts), src_place.__getitem__,
                                       src_audio_rank.__getitem__, only_i_plus_one=ONLY_I_PLUS_ONE,
-                                      ensure_audio=ENSURE_AUDIO_EXAMPLE, recency_files=RECENCY_FILES)
+                                      ensure_audio=ENSURE_AUDIO_EXAMPLE,
+                                      recency_files=RECENCY_FILES) if _shortlists else None
 
     _progress("Picking sentences")
     output_rows = []
@@ -7664,23 +8104,299 @@ def main():
         target_seq = r["_MinSeq"]       # the file where the learner first meets THIS word
         k = row_of[target_lr]
         first, pool, audio = picked[k]
-        chosen = picker.pick(k, target_seq, first, pool + nearby[k], audio)
+        if picker is None:
+            chosen = ()                 # release 2: the one reader's, once the list's order is known (below)
+        else:
+            chosen = picker.pick(k, target_seq, first, pool + nearby[k], audio)
         if chosen is None:
             words_skipped_i_plus_one += 1
             continue                    # Only i+1 and no i+1 sentence: skip this word entirely
 
         chosen_rows.append((r, word_stats[target_lr], chosen))
         # Learned here: later rows count it as known, and prefer sentences that reuse it (recency)
-        picker.learn(k, target_lr in phrase_keys, target_seq)
+        if picker is not None:
+            picker.learn(k, target_lr in phrase_keys, target_seq)
 
         del r["_CandidateContexts"] # Cleanup
         if "_FirstContext" in r:
             del r["_FirstContext"]
         output_rows.append(r)
 
+    # The progressive pass's inputs (the pass itself runs after the list is written, below), made here: at release 2
+    # the list's sentences weigh what is taught before each word in the order it is studied, which the pass gives.
+    # Work with a COPY of known words so we don't pollute the global set if we re-run logic, 
+    # but here we just have one run.
+    # We need a new set tracking "Learned in this session" to exclude from later files.
+    
+    # Start with initial known
+    session_known = set(known_words_initial)
+    session_lemmas = set(known_lemmas_initial)
+    word_state = _word_state.get
+    # The plan file's: every list key (in word_stats' order) and, per file, what this pass reads of the words a list
+    # word's lemma names — (Total Count, the baseline known, [k, count, …], {k: uses a phrase took}, {lemma: count}).
+    plan_keys = row_keys if _plan_on else []        # (the pick's rows: the same keys, in word_stats' order)
+    plan_index = {key: k for k, key in enumerate(plan_keys)}
+    plan_lemmas = {key[0] for key in plan_keys if key not in phrase_keys}
+    plan_prog = []
+    file_growth = []        # Kura-GS: each file's (known before any file, counted, the words not known) — the store's
+    
+    _known_held = [None]
+
+    def _known_kids():
+        """Each of the walk's key numbers: known before any file, or a one-character word the list never offers
+        (`_word_state`'s bits 1 and 4) — as an array, made for the keys met so far."""
+        held, keys = _known_held[0], _walk.keys
+        if held is None or len(held) < len(keys):
+            at = 0 if held is None else len(held)
+            more = _walk.np.fromiter((_word_state[key][0] & 5 != 0 for key in keys[at:]), bool, len(keys) - at)
+            held = _known_held[0] = more if held is None else _walk.np.concatenate([held, more])
+        return held
+
+    def _progressive_files():
+        """Each file as the progressive pass reads it (`plan_rules.progressive_pass`), and the plan file's record of
+        it: the words not known before any file, in the file's order (their uses after pieces, and those a phrase
+        took), and the rare compounds' and the set phrases' credits. The plan's records (`plan_prog`, `file_growth`)
+        are made by the first pass only (release 2 asks the pass again with fewer words listed: the same records)."""
+        record = not plan_prog and not file_growth
+        for file_path, _label, _weight, _source_type in found_files:
+            # Reuse the (lemma, reading) multiset captured during the aggregation pass instead of
+            # re-tokenizing. Deterministic: same tokenizer + same text => same tokens. The rare
+            # cache-miss branch reads the file again as the walk reads it (its songs left out too), so behaviour is
+            # never wrong, only slower.
+            file_total_tokens = 0
+            file_baseline_known_count = 0     # Strictly initial known (JSON + Ignore)
+            held = file_id_cache.get(file_path)
+            if held is not None:
+                # On the walk's arrays (G5): the words known before any file — and the one-character words the list
+                # never offers, nothing to learn either (§ One-character words) — summed at once; only the others,
+                # in the file's order, walked below.
+                ids, uses = held
+                known = _known_kids()[ids]
+                file_total_tokens = int(uses.sum())
+                file_baseline_known_count = int(uses[known].sum())
+                fresh = zip([_walk.keys[k] for k in ids[~known].tolist()], uses[~known].tolist())
+            else:
+                file_counter = Counter((l, r) for _s_text, s_tokens in _sentences_of(file_path)
+                                       for (l, r, s, o) in s_tokens)
+                fresh = []
+                for key, count in file_counter.items():
+                    lemma = key[0]
+                    file_total_tokens += count
+                    # Check strictly against initial known list — known then in the session too (it starts from that
+                    # list) — and a one-character word the list never offers: nothing to learn either. The
+                    # aggregation asked both of every word it met (`_word_state`: bits 1 and 4); a file read here
+                    # again asks.
+                    known = word_state(key)
+                    if known is None:
+                        state = ((1 if (lemma in ignore_list or key in known_words_initial
+                                        or lemma in known_lemmas_initial) else 0) + (4 if _never(key) else 0))
+                    else:
+                        state = known[0]
+                    if state & 5:
+                        file_baseline_known_count += count
+                    else:
+                        fresh.append((key, count))
+
+            # A word whose every use here went to its phrase (it lives only inside it) is not met here on its own.
+            file_bound = file_bound_cache.get(file_path)
+            # A one-kanji list word's uses here as a piece of something else (三年's 年) are nothing to learn here.
+            file_pieces = file_piece_cache.get(file_path)
+            plan_tokens, plan_bound, plan_siblings = [], {}, {}
+            keys, counts, bounds = [], [], []
+
+            for key, count in fresh:
+                lemma = key[0]
+                if file_pieces and key in file_pieces:
+                    file_baseline_known_count += file_pieces[key]
+                    count -= file_pieces[key]
+                    if count <= 0:
+                        continue
+                bound = file_bound.get(key, 0) if file_bound else 0
+                if lemma in plan_lemmas:
+                    k = plan_index.get(key)
+                    if k is None:
+                        plan_siblings[lemma] = plan_siblings.get(lemma, 0) + count
+                    else:
+                        plan_tokens += (k, count)
+                        if file_bound and key in file_bound:
+                            plan_bound[k] = file_bound[key]
+                keys.append(key)
+                counts.append(count)
+                bounds.append(bound)
+
+            if record:
+                plan_prog.append((file_total_tokens, file_baseline_known_count, plan_tokens, plan_bound,
+                                  plan_siblings))
+                file_growth.append((file_baseline_known_count, file_total_tokens, len(keys)))
+
+            # A word met in this file only inside a rarer compound is met here too — its row sits here — but learning
+            # it makes none of this file's tokens known: coverage stays in the tokenizer's words.
+            credits = [(key, count) for key, count in file_credit_cache.get(file_path, {}).items()
+                       if not (key[0] in ignore_list or _never(key))]
+            # So is a set phrase met here — a row of its own, in the file it is first met in — which makes none of the
+            # file's tokens known either: learning 気がする adds nothing to what 気 and する already cover.
+            phrases = []
+            if phrase_keys:
+                for index, count in file_phrase_cache.get(file_path, {}).items():
+                    phrase = _phrase_set.entry(index)
+                    key = (phrase.word, phrase.reading)
+                    if key in phrase_keys:
+                        phrases.append((key, count))
+            yield file_total_tokens, file_baseline_known_count, (keys, counts, bounds), (), credits, phrases
+
+    _no_stats = {"score": 0, "total_count": 0, "high_count": 0, "low_count": 0, "goal_count": 0,
+                 "final_context_1": "", "final_context_2": "", "final_context_3": ""}
+
+    def _rank_of(key):
+        stats = word_stats.get(key, _no_stats)
+        return stats["score"], stats["total_count"]
+
+    if floor_count > 0:
+        # The pass's `keep` and `rank` (G5), asked once a word not known in each file: the words listed — on the
+        # list's rows (`valid_lrs`, made anew each round) and met as often as the cut-off asks — one set, and each
+        # one's rank (Score, then Occurrences, highest first) one integer, ties sharing it so the pass's stable sort
+        # keeps the order met: made once a round, never a lookup and a compare a word a file. (A cut-off of 0 lists a
+        # word no file counted too, which no set made of the counted holds: asked word by word, below.)
+        _listing = [object(), None, None]   # (made for no round yet)
+
+        def _listed(key):
+            if _listing[0] is not valid_lrs:
+                listed = frozenset(k for k in (word_stats if valid_lrs is None else valid_lrs)
+                                   if word_stats.get(k, _no_stats)["total_count"] >= floor_count)
+                at = {rank: n for n, rank in enumerate(sorted({_rank_of(k) for k in listed}))}
+                _listing[:] = valid_lrs, listed, {k: at[_rank_of(k)] for k in listed}
+            return key in _listing[1]
+
+        def _rank(key):
+            return _listing[2][key]
+    else:
+        def _listed(key):
+            if valid_lrs is not None and key not in valid_lrs:
+                return False
+            return word_stats.get(key, _no_stats)["total_count"] >= floor_count
+        _rank = _rank_of
+
+    def _finish_table():
+        """The sentence table this walk packed (`Packer.finish`), on the plan's rows, sources and co-words' rule (one
+        rule, numbered by key as the plan's are); its places and run signature are set as it is written (below)."""
+        if _cores is not None:
+            _cores.settle(_table)
+            _counted[:] = _cores.counted
+        signed = {os.path.abspath(entry[0]): entry for entry in (_sig_parts or {}).get("files") or ()}
+
+        def _source_digest(source):
+            """A source's own digest (`sentence_table.source_digest`: its path in one spelling, its stat and kind)
+            from its run-signature entry; a Finished file's as a set-aside file's is made (run_signature_parts'
+            "reference")."""
+            entry = signed.get(source["abs"])
+            if entry is None:
+                try:
+                    st = os.stat(source["abs"])
+                    stat = [st.st_mtime, st.st_size]
+                except OSError:
+                    stat = None
+                entry = [source["abs"], stat, None, None, source["type"]]
+            return sentence_table.source_digest(entry[0], entry[1], entry[4])
+        return _table.finish(
+            row_keys, lambda w: row_of.get(_phrase_row_of.get(w) if isinstance(w, int) else w),
+            lambda lr: plan_rules.clauses_or(_atom(lr), _view.known_when(lr, _atom)),
+            lambda lr: row_of.get(lr, -1) if lr not in phrase_keys else -1, _coword_key,
+            lambda index: row_of.get(_phrase_row_of.get(index)),
+            [[s["path"], s["type"], _source_digest(s)] for s in source_list],
+            {"engine": engine_id(), "run_signature": _run_sig, "language": language})
+
     # The Context / Src columns, once every row is picked: Sentences per word's own number, or under All (0) as many as
     # the row given the most has (`plan_rules.context_columns`). Still the last keys of each row, as before.
-    n_columns = plan_rules.context_columns(args.max_contexts, (len(chosen) for _r, _d, chosen in chosen_rows))
+    _passes = None                  # release 2: the progressive pass the list's sentences were weighed by (below)
+    _finished = _chooser = None     # release 2: the table, finished before the list is written, and its one reader
+    if picker is None:
+        # Release 2 (SPEC § 10.3, § 5.2): no shortlist was kept — the list's own sentences are the one reader's over
+        # the table this walk packed (`ListSentences`: the redraw's call too, so a Generate and a redraw show the
+        # same), weighed by what is taught before each word in the order it is studied (the progressive list: the
+        # table's `places`). *Only i+1*: a word the reader gives no clean line is left off and the order asked again
+        # without it, until every word left has one (the lead's ruling: by the study order, PROVISIONAL).
+        def _covered(rows):
+            """The listed words once the coverage target cuts `rows` (as the list is cut below); None: no list."""
+            if not rows:
+                return None
+            keys = [(r["Word"], r["Reading"]) for r in rows]
+            if args.target_coverage > 0:
+                total = sum(s['Total Words'] for s in file_stats)
+                known = sum(s['Known Count'] for s in file_stats)
+                if total > 0:
+                    if known / total * 100 >= args.target_coverage:
+                        return set()
+                    target, kept = args.target_coverage / 100 * total, set()
+                    for key, r in zip(keys, rows):
+                        kept.add(key)
+                        if key not in phrase_keys:
+                            known += r['Occurrences']
+                        if known >= target:
+                            break
+                    return kept
+            return set(keys)
+
+        try:
+            _finished = _finish_table()
+            _chooser = ListSentences(language, args.max_contexts, bool(ONLY_I_PLUS_ONE), table=_finished,
+                                     tagger=tokenizer.tagger if language == "ja" else None)
+        except Exception as e:
+            print(f"Warning: could not make the sentence table ({e}); the list shows no sentences this time.")
+        _left_off, _got, _files_read = set(), {}, None
+        while True:
+            _rows = [r for r in output_rows if (r["Word"], r["Reading"]) not in _left_off]
+            valid_lrs = _covered(_rows)
+            if _files_read is None and ONLY_I_PLUS_ONE and _chooser is not None:
+                # (each file as the pass reads it: the same at every round, only the words listed change — *Only
+                # i+1*'s rounds built them all again, E-L2G 4; kept for the rounds alone)
+                _files_read = list(_progressive_files())
+            _passes = list(plan_rules.progressive_pass(_files_read if _files_read is not None else _progressive_files(),
+                                                       set(known_words_initial), set(known_lemmas_initial),
+                                                       itemgetter(0), _listed, _rank, args.target_coverage))
+            if _chooser is None:
+                break
+            _order, _at = {}, 0
+            for _file_rows, _baseline, _total in _passes:
+                for _row in _file_rows:
+                    _order.setdefault(_row[0], _at)
+                    _at += 1
+            _asked = [(r["Word"], r["Reading"]) for r in _rows]
+            if valid_lrs is not None:
+                _asked = [key for key in _asked if key in valid_lrs]
+            try:
+                _got = _chooser(_asked, _order)
+            except Exception as e:
+                print(f"Warning: could not read the sentence table ({e}).")
+                _got = None
+            if _got is None:
+                # The reader could not answer (a table damaged inside, a moment it can't read): the list shows no
+                # sentences this time, and no word is left off for want of one — the list again with every word.
+                print("Warning: the list shows no sentences this time.")
+                _chooser, _got = None, {}
+                if _left_off:
+                    _left_off = set()
+                    continue
+                break
+            _empty = {key for key in _asked if not _got.get(key)} if ONLY_I_PLUS_ONE else None
+            if not _empty:
+                break
+            _left_off |= _empty
+        _files_read = None                  # (the rounds are over: each file as the pass read it, let go)
+        if _chooser is not None:
+            _chooser.memo.clear()           # (the rounds are over: what they shared — every file's text — let go)
+        output_rows, _l2_valid = _rows, valid_lrs
+        words_skipped_i_plus_one = len(_left_off)
+        n_columns = plan_rules.context_columns(args.max_contexts, (len(cols) // 2 for cols in _got.values()))
+        for r in output_rows:
+            data = word_stats[(r["Word"], r["Reading"])]
+            cols = _got.get((r["Word"], r["Reading"])) or ()
+            for i in range(n_columns):
+                context_val, src_val = (cols[2 * i], cols[2 * i + 1]) if len(cols) > 2 * i else ("", "")
+                r[f"Context {i+1}"], r[f"Src {i+1}"] = context_val, src_val
+                data[f"final_context_{i+1}"], data[f"final_src_{i+1}"] = context_val, src_val
+        chosen_rows = []
+    else:
+        n_columns = plan_rules.context_columns(args.max_contexts, (len(chosen) for _r, _d, chosen in chosen_rows))
     for r, data, chosen in chosen_rows:
         for i in range(n_columns):
             has_ctx = len(chosen) > i
@@ -7701,14 +8417,13 @@ def main():
     del chosen_rows
 
     _progress("Writing your list")          # results/ is written from here on: a cancel waits for the end (W1.3)
-    df = pd.DataFrame(output_rows)
     # The listed words, once the list is written; None: no list, so nothing below is held back. Bound here rather
     # than tested with `in locals()`, which copies every local of this function on each test (a word, per file).
     valid_lrs = None
-    if not df.empty:
-        # Drop the helper key if we added it (we need to add it to row first)
-        df_display = df.drop(columns=["_MinSeq"])
-        
+    _page_priority = _page_rows = None      # the two lists as the journey reads them, when this run wrote them
+    if output_rows:
+        n_listed = len(output_rows)         # (the rows the list keeps: the coverage target cuts it below)
+
         # TARGET COVERAGE LOGIC
         if args.target_coverage > 0:
             total_tokens = sum(s['Total Words'] for s in file_stats)
@@ -7720,35 +8435,33 @@ def main():
                 
                 if current_pct >= args.target_coverage:
                     print(f"Goal Achieved: Target coverage of {args.target_coverage}% is already met ({current_pct:.2f}%).")
-                    df = df.iloc[0:0] # Empty dataframe
+                    n_listed = 0            # (the list's header alone)
                 else:
-                    # Greedy selection logic
-                    needed_rows = []
+                    # Greedy selection logic: the list's first rows, until the target is reached
+                    n_listed = 0
                     running_known = current_known
                     target_tokens = (args.target_coverage / 100) * total_tokens
-                    
-                    for index, row in df.iterrows():
-                        needed_rows.append(row)
+
+                    for row in output_rows:
+                        n_listed += 1
                         # A phrase row makes no more of the text known than its words do: coverage is the tokens'.
                         if (row['Word'], row['Reading']) not in phrase_keys:
                             running_known += row['Occurrences']
                         if running_known >= target_tokens:
                             break
-                    
+
                     final_pct = (running_known / total_tokens) * 100
-                    df = pd.DataFrame(needed_rows)
-                    
+
                     if final_pct >= args.target_coverage:
-                        print(f"Successfully reached {final_pct:.2f}% coverage by adding {len(df)} words.")
+                        print(f"Successfully reached {final_pct:.2f}% coverage by adding {n_listed} words.")
                     else:
-                        print(f"Note: Could only reach {final_pct:.2f}% coverage after adding ALL {len(df)} unknown words.")
+                        print(f"Note: Could only reach {final_pct:.2f}% coverage after adding ALL {n_listed} unknown words.")
                         print(f"  (This is because some unique tokens remain that were not in the candidate list.)")
-            
-            # Use the filtered DF for output, but make sure to drop _MinSeq
-            df_display = df.drop(columns=["_MinSeq"], errors='ignore')
-            
-        valid_lrs = set(zip(df_display['Word'], df_display['Reading']))
-        write_list(lambda tmp: df_display.to_csv(tmp, index=False, encoding='utf-8-sig'), OUTPUT_CSV)
+
+        valid_lrs = {(r["Word"], r["Reading"]) for r in output_rows[:n_listed]}
+        _columns = [c for c in dict.fromkeys(chain.from_iterable(output_rows)) if c != "_MinSeq"]   # (a helper key)
+        _page_priority = write_list(lambda tmp: write_rows(tmp, output_rows, _columns, n_listed,
+                                                           _page_keep(args, True)), OUTPUT_CSV)
         try:
             print(f"Saved priority list to {OUTPUT_CSV}")
         except UnicodeEncodeError:
@@ -7775,7 +8488,7 @@ def main():
             print("Saved stats to file.")
     
     with open(OUTPUT_STATS_JSON, 'w', encoding='utf-8') as f:
-        f.write(json.dumps(file_stats, indent=4, ensure_ascii=False))
+        f.write(json.dumps(file_stats, ensure_ascii=False))       # (no indent: the C encoder; every reader parses it)
     try:
         print(f"Saved JSON stats to {OUTPUT_STATS_JSON}")
     except UnicodeEncodeError:
@@ -7838,8 +8551,8 @@ def main():
 
     with open(OUTPUT_WORD_STATS, 'w', encoding='utf-8') as f:
         # One write of the whole text: json.dump writes it piece by piece (about a million writes here), and only
-        # json.dumps uses the fast encoder where there is no indent (the source table, the frequency map). The same text.
-        f.write(json.dumps(serializable_stats, indent=2, ensure_ascii=False))
+        # json.dumps with no indent uses the fast (C) encoder — as the redraw writes it; every reader parses it (G11).
+        f.write(json.dumps(serializable_stats, ensure_ascii=False))
     try:
         print(f"Saved {'FULL' if _debug_word_stats else 'lean'} word stats to {OUTPUT_WORD_STATS}")
     except UnicodeEncodeError:
@@ -7967,114 +8680,14 @@ def main():
     # --- PROGRESSIVE REPORT PASS ---
     print("Generating Progressive Report...")
     progressive_rows = []
-    # Work with a COPY of known words so we don't pollute the global set if we re-run logic, 
-    # but here we just have one run.
-    # We need a new set tracking "Learned in this session" to exclude from later files.
-    
-    # Start with initial known
-    session_known = set(known_words_initial)
-    session_lemmas = set(known_lemmas_initial)
-    word_state = _word_state.get
-    # The plan file's: every list key (in word_stats' order) and, per file, what this pass reads of the words a list
-    # word's lemma names — (Total Count, the baseline known, [k, count, …], {k: uses a phrase took}, {lemma: count}).
-    plan_keys = row_keys if _plan_on else []        # (the pick's rows: the same keys, in word_stats' order)
-    plan_index = {key: k for k, key in enumerate(plan_keys)}
-    plan_lemmas = {key[0] for key in plan_keys if key not in phrase_keys}
-    plan_prog = []
-    file_growth = []        # Kura-GS: each file's (known before any file, counted, the words not known) — the store's
-    
-    def _progressive_files():
-        """Each file as the progressive pass reads it (`plan_rules.progressive_pass`), and the plan file's record of
-        it: the words not known before any file, in the file's order (their uses after pieces, and those a phrase
-        took), and the rare compounds' and the set phrases' credits."""
-        for file_path, _label, _weight, _source_type in found_files:
-            # Reuse the (lemma, reading) multiset captured during the aggregation pass instead of
-            # re-tokenizing. Deterministic: same tokenizer + same text => same tokens. The rare
-            # cache-miss branch reads the file again as the walk reads it (its songs left out too), so behaviour is
-            # never wrong, only slower.
-            file_counter = file_token_cache.get(file_path)
-            if file_counter is None:
-                file_counter = Counter((l, r) for _s_text, s_tokens in _sentences_of(file_path)
-                                       for (l, r, s, o) in s_tokens)
-
-            file_total_tokens = 0
-            file_baseline_known_count = 0     # Strictly initial known (JSON + Ignore)
-            # A word whose every use here went to its phrase (it lives only inside it) is not met here on its own.
-            file_bound = file_bound_cache.get(file_path)
-            # A one-kanji list word's uses here as a piece of something else (三年's 年) are nothing to learn here.
-            file_pieces = file_piece_cache.get(file_path)
-            plan_tokens, plan_bound, plan_siblings = [], {}, {}
-            keys, counts, bounds = [], [], []
-
-            for key, count in file_counter.items():
-                lemma = key[0]
-                file_total_tokens += count
-
-                # Check strictly against initial known list — known then in the session too (it starts from that
-                # list) — and a one-character word the list never offers: nothing to learn either (§ One-character
-                # words). The aggregation asked both of every word it met (`_word_state`: bits 1 and 4); a file read
-                # here again asks.
-                known = word_state(key)
-                if known is None:
-                    state = ((1 if (lemma in ignore_list or key in known_words_initial or lemma in known_lemmas_initial)
-                              else 0) + (4 if _never(key) else 0))
-                else:
-                    state = known[0]
-                if state & 5:
-                    file_baseline_known_count += count
-                    continue
-                if file_pieces and key in file_pieces:
-                    file_baseline_known_count += file_pieces[key]
-                    count -= file_pieces[key]
-                    if count <= 0:
-                        continue
-                bound = file_bound.get(key, 0) if file_bound else 0
-                if lemma in plan_lemmas:
-                    k = plan_index.get(key)
-                    if k is None:
-                        plan_siblings[lemma] = plan_siblings.get(lemma, 0) + count
-                    else:
-                        plan_tokens += (k, count)
-                        if file_bound and key in file_bound:
-                            plan_bound[k] = file_bound[key]
-                keys.append(key)
-                counts.append(count)
-                bounds.append(bound)
-
-            plan_prog.append((file_total_tokens, file_baseline_known_count, plan_tokens, plan_bound, plan_siblings))
-            file_growth.append((file_baseline_known_count, file_total_tokens, len(keys)))
-
-            # A word met in this file only inside a rarer compound is met here too — its row sits here — but learning
-            # it makes none of this file's tokens known: coverage stays in the tokenizer's words.
-            credits = [(key, count) for key, count in file_credit_cache.get(file_path, {}).items()
-                       if not (key[0] in ignore_list or _never(key))]
-            # So is a set phrase met here — a row of its own, in the file it is first met in — which makes none of the
-            # file's tokens known either: learning 気がする adds nothing to what 気 and する already cover.
-            phrases = []
-            if phrase_keys:
-                for index, count in file_phrase_cache.get(file_path, {}).items():
-                    phrase = _phrase_set.entry(index)
-                    key = (phrase.word, phrase.reading)
-                    if key in phrase_keys:
-                        phrases.append((key, count))
-            yield file_total_tokens, file_baseline_known_count, (keys, counts, bounds), (), credits, phrases
-
-    _no_stats = {"score": 0, "total_count": 0, "high_count": 0, "low_count": 0, "goal_count": 0,
-                 "final_context_1": "", "final_context_2": "", "final_context_3": ""}
-
-    def _listed(key):
-        if valid_lrs is not None and key not in valid_lrs:
-            return False
-        return word_stats.get(key, _no_stats)["total_count"] >= floor_count
-
-    def _rank(key):
-        stats = word_stats.get(key, _no_stats)
-        return stats["score"], stats["total_count"]
-
+    if _passes is not None and valid_lrs != _l2_valid:
+        _passes = None                  # (release 2: the list cut otherwise than its sentences were weighed by: anew)
     for seq_idx, ((file_path, _label, _weight, _source_type), (file_rows, baseline_pct, total)) in enumerate(zip(
-            found_files, plan_rules.progressive_pass(_progressive_files(), session_known, session_lemmas,
-                                                     itemgetter(0), _listed, _rank, args.target_coverage)), 1):
+            found_files, _passes if _passes is not None else plan_rules.progressive_pass(
+                _progressive_files(), session_known, session_lemmas, itemgetter(0), _listed, _rank,
+                args.target_coverage)), 1):
         filename = report_name(file_path)
+        source_path = _row_path(file_path, data_dir)
         for (lemma, reading), count, known_count, start_pct, end_pct in file_rows:
             tier_labels = get_tier_label(lemma, freq_data)
             tier_str = ";".join([f"{source}:{tier}" for source, tier in tier_labels]) if tier_labels else "Outside"
@@ -8082,6 +8695,7 @@ def main():
             row = {
                 "Sequence": seq_idx,
                 "Source File": filename,
+                "Source Path": source_path,      # what tells two files of one name apart (E-NAMES): the store's rel_path
                 "Word": lemma,
                 # Same spelling the priority list shows, in the same position relative to Word.
                 # Both files are read by the same consumers (the exporters, and junban's content
@@ -8116,9 +8730,9 @@ def main():
             row["Total Count"] = total
             progressive_rows.append(row)
         
-    df_prog = pd.DataFrame(progressive_rows)
-    if not df_prog.empty:
-        write_list(lambda tmp: df_prog.to_csv(tmp, index=False, encoding='utf-8-sig'), OUTPUT_PROGRESSIVE)
+    if progressive_rows:
+        _page_rows = write_list(lambda tmp: write_rows(tmp, progressive_rows, keep=_page_keep(args, False)),
+                                OUTPUT_PROGRESSIVE)
         print(f"Saved progressive report to {OUTPUT_PROGRESSIVE}")
     else:
         print("No progressive words found (all known).")
@@ -8183,41 +8797,27 @@ def main():
         except Exception as e:
             print(f"Warning: could not write the plan file ({e}); the last one is left as it was.")
         if _table is not None and _run_sig:
-            _signed = {}
-
-            def _source_digest(source):
-                """A source's own digest, as the plan's files carry it (`plan_rules.file_digest` of its run-signature
-                entry); a Finished file's as a set-aside file's is made (run_signature_parts' "reference")."""
-                entry = _signed.get(source["abs"])
-                if entry is None:
-                    try:
-                        st = os.stat(source["abs"])
-                        stat = [st.st_mtime, st.st_size]
-                    except OSError:
-                        stat = None
-                    entry = [source["abs"], stat, None, None, source["type"]]
-                return plan_rules.file_digest(entry)
-
-            # The sentence table beside the plan, on the plan's rows, sources and co-words' rule (one rule, numbered
-            # by key as the plan's are). Never fails the run: without it a reader takes today's path.
+            # The sentence table beside the plan (`_finish_table`; release 2 finished it before the list was written).
+            # Never fails the run: without it a reader takes today's path.
             try:
-                _signed.update((os.path.abspath(entry[0]), entry) for entry in (_sig_parts or {}).get("files") or ())
-                _listed_at = {}             # each row's place in the list just written (progressive_rows' order)
-                for _place, _row in enumerate(progressive_rows):
-                    _listed_at.setdefault((_row["Word"], _row["Reading"]), _place)
-                _table_size = _table.finish(
-                    row_keys, lambda w: row_of.get(_phrase_row_of.get(w) if isinstance(w, int) else w),
-                    lambda lr: plan_rules.clauses_or(_atom(lr), _view.known_when(lr, _atom)),
-                    lambda lr: row_of.get(lr, -1) if lr not in phrase_keys else -1, _coword_key,
-                    lambda index: row_of.get(_phrase_row_of.get(index)),
-                    [[s["path"], s["type"], _source_digest(s)] for s in source_list],
-                    {"engine": engine_id(), "run_signature": _run_sig, "language": language},
-                    places=[_listed_at.get(key, -1) for key in row_keys],
-                ).write(os.path.join(RESULTS_DIR, sentence_table.TABLE_FILE))
-                print(f"Saved the sentence table ({_table_size:,} bytes, {len(_table):,} lines offered; their words "
-                      f"counted when indexed: {_counted[0]:,} lines, here: {_counted[1]:,}).")
+                if _finished is None and _shortlists:
+                    _finished = _finish_table()
+                if _finished is not None:
+                    _listed_at = {}         # each row's place in the list just written (progressive_rows' order)
+                    for _place, _row in enumerate(progressive_rows):
+                        _listed_at.setdefault((_row["Word"], _row["Reading"]), _place)
+                    _finished.head["places"] = [int(_listed_at.get(key, -1)) for key in row_keys]
+                    _finished.head["run_signature"] = _run_sig      # (the band Automatic chose may re-sign the run)
+                    _table_size = _finished.write(os.path.join(RESULTS_DIR, sentence_table.TABLE_FILE))
+                    print(f"Saved the sentence table ({_table_size:,} bytes, {len(_table):,} lines offered; their "
+                          f"words counted when indexed: {_counted[0]:,} lines, here: {_counted[1]:,}).")
             except Exception as e:
                 print(f"Warning: could not write the sentence table ({e}); cards take today's path.")
+            if _chooser is not None:
+                _chooser.run = _run_sig
+                _chooser.keep()             # release 2: the text of the lines the list shows (SPEC § 5.3)
+        if _cores is not None:
+            _cores.close()
         del _table
 
     _drawn = None               # the journey's stones the report was drawn from (`signed_render`)
@@ -8236,19 +8836,27 @@ def main():
             _rendering = time.time()
             _made = _made_fingerprint(language)          # F-6: read before the report is drawn, signed with it
             _drawn = static_html_generator.generate_static_html(
-                theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
-                open_browser=not args.no_open, language=language,
+                app_mode=args.app_mode, open_browser=not args.no_open, language=language,
                 tagger=tokenizer.tagger if language == "ja" else None,     # J-CUT: the journey's pitch, no 2nd tagger
+                rows=_page_rows, priority=_page_priority,                   # the lists just written, as read
                 plan=_journey_plan(args, _run_sig))      # the plan written just above, if it was
             _report_failed = not _report_written(os.path.join(RESULTS_DIR, "reading_list_static.html"), _rendering)
         except Exception as e:
             print(f"Error: Could not generate static HTML: {e}")
             _report_failed = True
+        _page_rows = _page_priority = None      # (drawn: not held to the run's end)
 
     # All outputs are now written — record the run-signature so an identical re-run can skip
     # entirely next time (and the presentation fingerprint, signed with the stones the report was
     # drawn from, so a same-setting re-run can open the report without re-rendering), then close
     # the store.
+    if _run_sig and plan_rules.SENTENCE_TABLE >= 2:
+        try:
+            # release 2: this run's journey is today's (`drawn_for`), with the young words its list weighed (the
+            # chooser's own stamp: a sync since that moves them owes one redraw, `journey.moved_state`)
+            _write_redraw_marker(_run_sig, _run_sig, young=_chooser.young_at if _chooser is not None else None)
+        except OSError as e:                # never fails a finished Generate: with none it is redrawn once
+            print(f"Warning: could not mark the journey as today's: {e}")
     _set_run_stamp(RESULTS_DIR, _run_sig)
     if _store is not None:
         try:

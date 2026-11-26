@@ -633,6 +633,8 @@ class Plan:
         self.entries, self.left_out, self.reports, self.removed = [], [], [], []
         self.unchecked, self.flagged = [], []          # (written by the zip: what it kept unchecked, the guard's hits)
         self.flags, self.flag_lines = {}, []           # the flagged sentences in it: {id: changed_ns}, as shown
+        self.swaps, self.swap_lines = {}, []           # the learner's swaps in it: {id: state}, as shown (§ 92)
+        self.not_wanted, self.not_wanted_lines = {}, []    # the cards they didn't want: {id: why}, as shown
 
     def add(self, name, source=None, data=None, rid=None, scrubbed=False):
         self.entries.append(Entry(name, source, data, rid, scrubbed))
@@ -723,6 +725,46 @@ def _flagged_entry(plan, language):
     plan.flag_lines = [(rid, changed, line) for rid, changed, line in got]     # (scrubbed, then named, by `plan`)
 
 
+SWAPS = "connect/swaps.json"
+
+
+def _swaps_entry(plan, language):
+    """The learner's swaps (SWAPS-REPORT, Sonic's yes § 92: `swap.for_report`, read from the swap queue's entries),
+    the ones Send report hasn't sent in the state they're in now (`send_report.swaps_sent`): one entry when there are
+    any, and what What goes shows of each (`plan.swap_lines`). Swaps alone are something to send (SEND-EASY)."""
+    try:
+        from app import send_report
+        from app.connect import swap
+        got = swap.for_report(language, sent=send_report.swaps_sent(language))
+        if got:
+            plan.add(SWAPS, data=swap.report_bytes(language, [line for _, _, line in got]))
+    except Exception as e:                                         # help, never a reason to fail the report
+        plan.left_out.append(f"{SWAPS}: couldn't be read ({type(e).__name__})")
+        return
+    plan.swaps = {rid: state for rid, state, _ in got}
+    plan.swap_lines = [(rid, state, line) for rid, state, line in got]
+
+
+NOT_WANTED = "connect/not_wanted.json"
+
+
+def _not_wanted_entry(plan, language):
+    """The cards the learner didn't want (SEND-EASY: `review_loop.for_report`, read from the loop's record and the
+    deleted cards' answers), the ones Send report hasn't sent as they are now (`send_report.not_wanted_sent`): one entry
+    when there are any, and what What goes shows of each (`plan.not_wanted_lines`)."""
+    try:
+        from app import send_report
+        from app.connect import review_loop
+        got = review_loop.for_report(language, sent=send_report.not_wanted_sent(language))
+        if got:
+            plan.add(NOT_WANTED, data=review_loop.report_bytes(language, [line for _, _, line in got]))
+    except Exception as e:                                         # help, never a reason to fail the report
+        plan.left_out.append(f"{NOT_WANTED}: couldn't be read ({type(e).__name__})")
+        return
+    plan.not_wanted = {rid: why for rid, why, _ in got}
+    plan.not_wanted_lines = [(rid, why, line) for rid, why, line in got]
+
+
 def _scrubbed(obj, ident):
     """Every string in `obj` (dicts, lists) through the scrub."""
     if isinstance(obj, str):
@@ -777,19 +819,32 @@ def plan(language, include_results=True, library=None, root=None, extra=None, re
             p.add(name, data=data)
     p.add("library/summary.json", data=_json_bytes(library or {"library": "none open"}))
     _flagged_entry(p, language)
+    _swaps_entry(p, language)
+    _not_wanted_entry(p, language)
     if include_results:
         _results_entries(p)
     else:
         p.left_out.append(f"results\\: left out ({results_why or 'Include my last lists was unticked'})")
     p.left_out.append("never taken: your subtitle and book files, Anki's cards, keys and tokens, the library's "
-                      "database; Connect's titles and words and Anki Miner's sentences are counted, never copied")
+                      "database; Connect's titles and words and Anki Miner's sentences are counted, never copied"
+                      + _but_yours(p))
     ident = scrubbing.identity(fresh=True)                         # every name and line as the zip will hold it
     for e in p.entries:
         e.name = scrubbing.name(e.name, ident)
     p.left_out = [ident.scrub(x) for x in p.left_out]
     p.flag_lines = [dict(_scrubbed(line, ident), id=rid, changed=changed)   # (What goes shows them as the zip
                     for rid, changed, line in p.flag_lines]                     # ... holds them; their ids as kept)
+    p.swap_lines = [dict(_scrubbed(line, ident), id=rid, changed=state) for rid, state, line in p.swap_lines]
+    p.not_wanted_lines = [dict(_scrubbed(line, ident), id=rid, changed=why) for rid, why, line in p.not_wanted_lines]
     return p
+
+
+def _but_yours(p):
+    """The Left out line's exception: the words and sentences the learner's own swaps and cards carry, when it holds
+    them."""
+    held = [f"your swaps' words and sentences, {SWAPS}"] if p.swaps else []
+    held += [f"the cards you didn't want, {NOT_WANTED}"] if p.not_wanted else []
+    return f" (but {' and '.join(held)})" if held else ""
 
 
 def describe(p):
@@ -980,11 +1035,16 @@ def make_zip(dest, language, include_results=True, library=None, root=None, extr
 class Sendable:
     """A zip `make_send_zip` wrote: `path`, `zipped` ({rid: report.json's original sha256}, for `_clear` once it is
     sent), `removed` (the removed reports it clears), `left_out` (its list's lines), `entries` ([(name, size)]),
-    `flags` ({id: changed_ns}: the flagged sentences it holds) and `flag_lines` (each as it holds it, for What goes)."""
+    `flags` ({id: changed_ns}: the flagged sentences it holds) and `flag_lines` (each as it holds it, for What goes);
+    `swaps` ({id: state}) and `swap_lines` the same for the learner's swaps, `not_wanted` ({id: why}) and
+    `not_wanted_lines` for the cards they didn't want."""
 
-    def __init__(self, path, zipped, removed, left_out, entries, flags=None, flag_lines=None):
+    def __init__(self, path, zipped, removed, left_out, entries, flags=None, flag_lines=None, swaps=None,
+                 swap_lines=None, not_wanted=None, not_wanted_lines=None):
         self.path, self.zipped, self.removed, self.left_out, self.entries = path, zipped, removed, left_out, entries
         self.flags, self.flag_lines = dict(flags or {}), list(flag_lines or [])
+        self.swaps, self.swap_lines = dict(swaps or {}), list(swap_lines or [])
+        self.not_wanted, self.not_wanted_lines = dict(not_wanted or {}), list(not_wanted_lines or [])
 
 
 def make_send_zip(path, language, include_results=True, library=None, root=None, extra=None, tail=None,
@@ -994,8 +1054,8 @@ def make_send_zip(path, language, include_results=True, library=None, root=None,
     `zipped`). `step(done, total)`: told before each file is read (`_write`). -> a Sendable."""
     root = root or folder()
     p = plan(language, include_results, library, root, extra, results_why)
-    if not p.reports and not p.flags:                              # (flagged sentences alone are a report too)
-        raise ValueError("there are no saved reports to send")
+    if not (p.reports or p.flags or p.swaps or p.not_wanted):      # (SEND-EASY: any of them alone is a report)
+        raise ValueError("there is nothing to send")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     part = path + PART
     try:
@@ -1008,14 +1068,16 @@ def make_send_zip(path, language, include_results=True, library=None, root=None,
             pass
         raise
     return Sendable(path, zipped, list(p.removed), list(p.left_out), [(e.name, e.size) for e in p.entries], p.flags,
-                    p.flag_lines)
+                    p.flag_lines, p.swaps, p.swap_lines, p.not_wanted, p.not_wanted_lines)
 
 
-def rewrite_flagged(path, language, lines, left_out):
+def rewrite_flagged(path, language, lines, left_out, swaps=None, not_wanted=None):
     """Send report's zip at `path` again, its flagged sentences only `lines` (What goes' ticked ones, as it shows them;
-    none: the entry left out): every other entry copied as it is, this one through `_entry_bytes`, MANIFEST written
-    again (`left_out`: its list), read back whole, then the guard — a hit raises Unsafe and leaves the zip as it was.
-    -> [(name, size)] as it now holds them."""
+    none: the entry left out) and, given `swaps` / `not_wanted`, its swaps / cards not wanted only those (none: that
+    entry left out; None: as it is):
+    every other entry copied as it is, these through `_entry_bytes`, MANIFEST written again (`left_out`: its list),
+    read back whole, then the guard — a hit raises Unsafe and leaves the zip as it was. -> [(name, size)] as it now
+    holds them."""
     import hashlib
     ident = scrubbing.identity()
     p, hashes = Plan(), {}
@@ -1024,17 +1086,26 @@ def rewrite_flagged(path, language, lines, left_out):
     try:
         with zipfile.ZipFile(path) as old, zipfile.ZipFile(part, "x", zipfile.ZIP_DEFLATED) as z:
             names = [i.filename for i in old.infolist() if i.filename != "MANIFEST.txt"]
-            if FLAGGED not in names:
-                names.append(FLAGGED)
+            given = {FLAGGED: lines, SWAPS: swaps, NOT_WANTED: not_wanted}
+            for name in (n for n, kept in given.items() if kept is not None):
+                if name not in names:
+                    names.append(name)
             for name in names:
-                if name == FLAGGED:
-                    if not lines:
+                if given.get(name) is not None:
+                    if not given[name]:
                         continue
-                    from app.services import flags
-                    data, _note = _entry_bytes(Entry(name, data=b""), flags.entry_bytes(language, lines), language,
-                                               True, ident)
+                    if name == FLAGGED:
+                        from app.services import flags
+                        made = flags.entry_bytes(language, lines)
+                    elif name == SWAPS:
+                        from app.connect import swap
+                        made = swap.report_bytes(language, swaps)
+                    else:
+                        from app.connect import review_loop
+                        made = review_loop.report_bytes(language, not_wanted)
+                    data, _note = _entry_bytes(Entry(name, data=b""), made, language, True, ident)
                     if data is None:
-                        raise OSError(f"{FLAGGED} couldn't be written as text")
+                        raise OSError(f"{name} couldn't be written as text")
                 else:
                     data = old.read(name)
                 p.add(name, data=data)

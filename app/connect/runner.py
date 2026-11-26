@@ -59,6 +59,7 @@ day's words first:
 Every Anki call runs through `Steps` (the command line's own verbs, in this process); a test hands its own. Wrapped by
 `app/batch_gc.py` (CLAUDE.md §6): nothing here keeps a reference cycle per job.
 """
+import contextlib
 import datetime
 import json
 import logging
@@ -375,8 +376,20 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
     undos_looked = set()        # the languages whose half-done undos this run has finished (once a run)
     parked = {}                 # jobs waiting for the next start: never tried again this run (adversary P2.4-A #11)
                                 # — {job id: its ask when parked}; a newer ask tries it again (#42, review r42 #3)
+    mining = None               # SORT-BAR: `kick.MINING`, held while a look works, never in the pause between looks
     try:
         while True:
+            mining = _take_mining()
+            if mining is None:              # a Sort again or Put back holds it: the look waits for its end
+                stop = _stop(steps)
+                if stop:
+                    summary["stopped"] = stop
+                    return summary
+                if not _pause(LOOK_EVERY_S, sleep, cancel,     # (a window gone is `_stop`'s, at the next try)
+                              lambda: steps.update_staged() or _replaced(steps) or not _mining_in_use()):
+                    summary["stopped"] = "cancelled"
+                    break
+                continue
             summary["looks"] += 1
             _woken(steps, ledger, parked)   # a kick before this look is answered by it: no extra look after (S19)
             _copy_changed(ledger, parked)   # Michi-NT: a not-timed episode's subtitle fixed meanwhile
@@ -413,6 +426,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
                 if stop:
                     summary["stopped"] = stop
                     return summary
+            mining = _let_go(mining)        # the look's work is done: what is left only waits (Sort again may run)
             if summary.get("stopped"):
                 break
             if looks is not None and summary["looks"] >= looks:
@@ -439,6 +453,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
                 break
         return summary
     finally:
+        _let_go(mining)
         log.info("Connect: the run ends after %.1f s (%d looks)", _clock() - began, summary["looks"])
         if own:
             ledger.close()
@@ -450,6 +465,33 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
         _sweep_online(steps)                # Michi-YT: no downloaded video outlives the run
         if hasattr(steps, "_woken"):        # the last wake mark it read: one written since (a link while it settled,
             summary["wake_seen"] = steps._woken     # Michi-VF review r2) starts the next Connect (`connect_verbs._loop`)
+
+
+def _take_mining():
+    """SORT-BAR: the look's `kick.MINING` hold (one try of the OS lock: no wait) -> the hold, or None while a Sort
+    again or a Put back holds it (logged): the look waits for its end, never reads a library half set aside."""
+    from app import locks
+    from app.connect import kick
+    try:
+        return locks.take(kick.MINING, "Connect making cards")
+    except locks.Busy:
+        log.info("Connect: your library is being sorted again or put back: the next look waits for it")
+        return None
+
+
+def _mining_in_use():
+    """Is `kick.MINING` still held (by a Sort again or a Put back)? Two quick looks, asked every UPDATE_LOOK_S of the
+    pause only while one holds it."""
+    from app import locks
+    from app.connect import kick
+    return locks.in_use(kick.MINING, looks=2, gap=0.0)
+
+
+def _let_go(held):
+    """`held` let go (None: nothing held) -> None."""
+    if held is not None:
+        held.release()
+    return None
 
 
 def _say_machine(languages):
@@ -1149,6 +1191,25 @@ def _held():
     return library_store.held()
 
 
+def _drop_held(held):
+    """Any Anki Miner failure: the run's set of look-ups (`held`, row 25) read again, and the answers kept for the
+    next run with it (DSA-CONNECT 2, `verbs.drop_anki_miner_held`)."""
+    from app.cli import verbs
+    verbs.drop_anki_miner_held(held)
+
+
+def _speech_ready(steps, lang, miner, profile):
+    """`anki_miner.speech_ready` handed the settings export this run's set holds for `profile` (row 25) and the stamp
+    of Anki Miner's files it was read at (DSA-CONNECT 4: while they still stamp so, the model the profile holds is never
+    imported again); else none, and every model is set in turn as before. A stand-in with no set hands none."""
+    from app.connect import anki_miner, lineup
+    held = (getattr(steps, "_anki_miner_sets", None) or {}).get(lang) or {}
+    got = held.get("set")
+    export = got[3] if got and got[1] == profile else None
+    return anki_miner.speech_ready(miner, lang, profile, lineup.folder(lineup.SPEECH), export=export,
+                                   read_with=held.get("stamp") if export is not None else None)
+
+
 def _updating(ledger, lang, on):
     """F9 (P4.1 row 4.1.7): Connect's own Generate marked (`on`) or cleared in the ledger's meta, each in its own short
     transaction; nothing written when the mark already reads so (S19). A ledger fault is logged, never a reason not to
@@ -1755,8 +1816,10 @@ def _pick(steps, ledger, lang, job, record=True):
         skipped = ledger.skipped_words(lang, got["anki_miner"])       # Michi-RM3: *Skip this word*, any part
         declined |= skipped
     words = [w for w in got.get("words") or [] if (w.get("word"), w.get("reading")) not in declined]
-    words, best = _best(steps, ledger, lang, job, words, got.get("file")) if book is None else (words, [])
-    words, sources = _borrow(steps, lang, job, words)
+    seen = _VideosOnce(steps)       # DSA-CONNECT (G6): each other episode's video looked up once in this step
+    with _reads_once(steps):        # DSA-CONNECT 2: and its pairing and row read once, in one open
+        words, best = _best(seen, ledger, lang, job, words, got.get("file")) if book is None else (words, [])
+        words, sources = _borrow(seen, lang, job, words)
     picked = {"words": words, "file": got.get("file"), "subtitle": got.get("subtitle"),
               "video": video, "pairing": fit_check.version(pairing), "profile": got.get("profile"),
               "anki_miner": got.get("anki_miner")}
@@ -1802,6 +1865,42 @@ def _pick(steps, ledger, lang, job, record=True):
     return picked
 
 
+STORE_READS = "store reads"     # DSA-CONNECT 2: the pick context's (made words, plan), the job's own pick's
+
+
+@contextlib.contextmanager
+def _reads_once(steps):
+    """DSA-CONNECT 2: while Best looks at other episodes and picks their lines (`_best`, `_borrow`), each item's pairing
+    and row read once (`Steps._read_once`), whichever of `pairing`, `subtitle`, `title` and `video` asks first. A
+    stand-in `steps` reads as it does."""
+    if not isinstance(steps, Steps):
+        yield
+        return
+    steps._step_reads = {}
+    try:
+        yield
+    finally:
+        steps._step_reads = None
+
+
+class _VideosOnce:
+    """DSA-CONNECT (G6): `steps` for one pick step's `_best` and `_borrow`, each item's video looked up once (Best's
+    reach, its loop and `_borrow` asked it of the same few episodes up to 60 times, each a store open and the pairing);
+    everything else is `steps`' own. It lives as long as the step: the mine step looks at the disk again."""
+
+    def __init__(self, steps):
+        self._steps, self._videos = steps, {}
+
+    def video(self, lang, job):
+        key = (lang, job["item_id"])
+        if key not in self._videos:
+            self._videos[key] = self._steps.video(lang, job)
+        return self._videos[key]
+
+    def __getattr__(self, name):
+        return getattr(self._steps, name)
+
+
 def _best(steps, ledger, lang, job, words, here):
     """Kantan-SD, the sentence dial's Best (`app/connect/sentences.py`): each picked word whose best sentence is in
     another episode — strictly better than this one's own line (`sentences.better`), its video there — is cut from
@@ -1820,9 +1919,10 @@ def _best(steps, ledger, lang, job, words, here):
             return words, []
         own = job["item_id"]
         mines = getattr(steps, "mines", None)
+        # (one line a word: the score's first and the mined episode's own are all it reads — the score's path)
         found = sentences.choose(lang, [(w["word"], w["reading"]) for w in words], here=here, dial=sentences.BEST,
                                  reach=lambda item_id: item_id != own and steps.video(lang, {"item_id": item_id})
-                                 is not None, books=bool(mines is not None and mines(lang, "books")))
+                                 is not None, books=bool(mines is not None and mines(lang, "books")), top=1)
     except Exception as e:      # never the mining's fault: the episode's own lines, as Nearest
         log.info("Connect: Best sentences not read (%s): %s", lang, e)
         return words, []
@@ -2556,6 +2656,8 @@ def _mine_batch(steps, ledger, lang, job, picked, todo, attempt):
         done = steps.swap_new_card(lang, job, _part_read(steps, lang, job, picked), todo, attempt, ledger, row)             if row is not None else None
         if done is not None:
             return done                     # None: mined as any card (Anki takes it, or render didn't find the word)
+    if _meta(ledger, f"{AI_JOB}{int(job['id'])}") is not None:
+        picked = dict(picked, voiced=True)  # BOOK-CARD: the AI voice reads its cards after: the learner's card type
     if not _alone(ledger, job["id"]):
         return steps.mine(lang, job, _part_read(steps, lang, job, picked), todo, attempt)
     got, out, refused = {}, None, []
@@ -3060,6 +3162,8 @@ class Steps:
         self._served = set()        # the languages whose run plan the engine serves (prepare's, the Generate after
                                     # mining's): a plan read since that it can't serve defers the re-order (#4)
         self._anki_miner_sets = {}  # {lang: the set}: this run's Anki Miner look-ups, read once (LF-mining row 25)
+        self._pick_context = {}     # DSA-CONNECT (G6): the pick step's one context a job (`pick`)
+        self._step_reads = None     # DSA-CONNECT 2: each item's pairing + row, read once while `_reads_once` is on
         self._gone_looked = set()   # the languages whose deleted-cards look ran this run (`notes_gone`: once a run)
         self._ahead = _Ahead()      # Michi-T1: the releases heard beside the mining, one at a time
         self._heard_with = {}       # {lang: (Anki Miner, profile)}: the last fit's, for the releases heard ahead
@@ -3279,18 +3383,33 @@ class Steps:
         with store:
             return inbox.in_current(store, item_id)
 
+    def _read_once(self, lang, job):
+        """DSA-CONNECT 2: (the item's pairing, its row), both read in one open, once while `_reads_once` is on
+        (`_step_reads`): Best's borrows asked each other episode's pairing, row and title 4–5 times a pick step, each
+        a store open. The mine and fit steps read again."""
+        key = (lang, job["item_id"])
+        if key not in self._step_reads:
+            from app.connect import library
+            with self._open(lang) as store:
+                self._step_reads[key] = (library.pairing_of(store, job["item_id"]), store.item(job["item_id"]))
+        return self._step_reads[key]
+
     def title(self, lang, job):
         try:
-            store = self._open(lang)
+            if getattr(self, "_step_reads", None) is not None:   # (a stand-in borrowing the method has none)
+                item = self._read_once(lang, job)[1] or {}
+            else:
+                with self._open(lang) as store:
+                    item = store.item(job["item_id"]) or {}
         except (Wait, Needs):
             return None                     # a title only names the episode in a message
-        with store:
-            item = store.item(job["item_id"]) or {}
         entry = item.get("entry") or {}
         return entry.get("title") or (os.path.basename(item.get("rel_path") or "") or None)
 
     def pairing(self, lang, job):
         """The item's pairing; a busy store is a Wait, never "no pairing" (adversary P2.4-A #10)."""
+        if getattr(self, "_step_reads", None) is not None:   # (a stand-in borrowing the method has none)
+            return self._read_once(lang, job)[0]
         from app.connect import library
         with self._open(lang) as store:
             return library.pairing_of(store, job["item_id"])
@@ -3329,8 +3448,11 @@ class Steps:
 
     def subtitle(self, lang, job):
         from app.path_utils import get_data_path
-        with self._open(lang) as store:
-            item = store.item(job["item_id"])
+        if getattr(self, "_step_reads", None) is not None:   # (a stand-in borrowing the method has none)
+            item = self._read_once(lang, job)[1]
+        else:
+            with self._open(lang) as store:
+                item = store.item(job["item_id"])
         if item is None:
             return None
         return os.path.join(get_data_path(lang), *str(item["rel_path"]).replace("\\", "/").split("/"))
@@ -3441,7 +3563,7 @@ class Steps:
                 raise Needs(online.KIND, t.say, standing=True) from None
             raise own(t.say) from None
         except anki_miner.AnkiMinerError as e:
-            self._anki_miner_held(lang).clear()
+            _drop_held(self._anki_miner_held(lang))
             raise _miner_wait_or_needs(e, self.url) from None
         self._fetched = dict(getattr(self, "_fetched", {}), **{str(job["id"]): got})
         self.fetched_with = dict(getattr(self, "fetched_with", {}), **{str(job["id"]): source})
@@ -3457,7 +3579,7 @@ class Steps:
         Michi-YT5 (Sonic 2026-11-15): in `online.LARGE_ONLY`'s languages, only while that model is a large one
         (`anki_miner.listens_large`, from the profile's settings export this run read); a small one, medium or one
         not known -> `online.NOT_LARGE` (fetched with CAPTIONS, never the no-model note)."""
-        from app.connect import anki_miner, lineup, online
+        from app.connect import anki_miner, online
         source = online.subtitle_source(web)
         if source != online.TRANSCRIBE or str(job_id) in getattr(self, "_not_heard", set()):
             return online.CAPTIONS
@@ -3465,7 +3587,7 @@ class Steps:
         if refused is not None and time.monotonic() - refused < anki_miner.SPEECH_NO_S:
             return online.CAPTIONS
         try:
-            ready = anki_miner.speech_ready(miner, lang, profile, lineup.folder(lineup.SPEECH))
+            ready = _speech_ready(self, lang, miner, profile)
         except anki_miner.AnkiMinerError as e:
             log.info("Connect: Anki Miner's speech model couldn't be asked about (%s): YouTube's captions", e.message)
             ready = False
@@ -4066,8 +4188,9 @@ class Steps:
         if not ledger.conn.execute("SELECT 1 FROM tidies WHERE language = ? AND state IN (?, ?) LIMIT 1",
                                    (lang, tidy.WRITING, tidy.RESTORING)).fetchone():
             return 0
-        return tidy.finish_pending(tidy.AnkiConnectTidy(self.url, wait=0.0), ledger, lang,
-                                   lambda: library.open_store(lang))
+        opener = lambda: library.open_store(lang)       # noqa: E731
+        return tidy.finish_pending(tidy.AnkiConnectTidy(self.url, wait=0.0), ledger, lang, opener,
+                                   then=lambda row, done: tidy.requeue(self, ledger, lang, done, self.loaded, opener))
 
     def _listed_keys(self, lang):
         """Junban's keys for the list Connect serves (`_list_order`: the re-plan's, else the last Generate's), each
@@ -4390,30 +4513,47 @@ class Steps:
         from app.cli.contract import CliError
         from app.connect import library
         given = subtitle
+        # DSA-CONNECT (G6): one pick context a job (`verbs.pick`'s `context`) — an episode's own pick starts it, the
+        # picks `_borrow` makes for that job (`only`) read it; any other pick, and any failure, starts again
+        borrow = bool(job.get("only")) and self._pick_context.get("job") == str(job["id"])
+        # DSA-CONNECT 2: a borrow's made words and plan are its job's, read by the episode's own pick in this step
+        kept = self._pick_context.get(STORE_READS) if borrow else None
         with _held():                       # the store's reads, one open; never around `verbs.pick` (Anki Miner)
             subtitle = given or self.subtitle(lang, job)
-            with self._open(lang) as store:      # every word Connect ever made, or no pick at all
-                made = library.made_words_for(store, job)   # P4.1: an asked job makes a deleted card again (N15)
-            # P3.3: the re-plan's ranks (a move served), else the list's (None) — its look at the store's versions in
-            # the same open; a re-plan when something moved is the engine's (sub-second, no tokenizer, no Anki)
-            got = self._plan_now(lang)
+            if kept is not None:
+                made, got = kept
+            else:
+                with self._open(lang) as store:      # every word Connect ever made, or no pick at all
+                    made = library.made_words_for(store, job)   # P4.1: an asked job makes a deleted card again (N15)
+                # P3.3: the re-plan's ranks (a move served), else the list's (None) — its look at the store's versions
+                # in the same open; a re-plan when something moved is the engine's (sub-second, no tokenizer, no Anki)
+                got = self._plan_now(lang)
         if subtitle is None or not os.path.isfile(subtitle):
             raise Needs("no-subtitle", "An episode's subtitle isn't in Surasura's library any more.")
+        if not borrow:
+            self._pick_context = {}
         ns = SimpleNamespace(lang=lang, file=subtitle, video=video, reading=reading, words=None, job=str(job["id"]),
                              wait=WAIT_S, made=made, listed=got.listed if got is not None else None,
                              held=self._anki_miner_held(lang),
                              unsure=self.unsure(job, subtitle) if reading is None else [],   # Tsu-U
                              # Kantan-SD 6 (`_borrow`): another episode's line for these words only, its cleaned
                              # copy in a folder of its own inside the job's
-                             only=job.get("only"), aside=f"from-{job['item_id']}" if job.get("only") else None)
+                             only=job.get("only"), aside=f"from-{job['item_id']}" if job.get("only") else None,
+                             context=self._pick_context)
         try:
             out = verbs.pick(ns)
         except CliError as e:
-            ns.held.clear()                 # row 25: read again after any failure
+            _drop_held(ns.held)             # row 25: read again after any failure
+            self._pick_context = {}
             holds = verbs._results_language() if e.code == "not-set-up" else None
             if WAIT_FOR_OTHER_LIST and holds and holds != lang:     # you Generated another language meanwhile
                 raise Wait(OTHER_LIST.format(LANGUAGE_NAMES.get(holds, holds))) from None
             raise _wait_or_needs(e, None, self.url) from None
+        except Exception:
+            self._pick_context = {}         # (the next pick reads everything again)
+            raise
+        if not borrow:
+            self._pick_context[STORE_READS] = (made, got)
         miner = out.get("anki_miner") or {}
         return {"words": out.get("words") or [], "file": subtitle, "subtitle": out.get("subtitle"),
                 "profile": miner.get("profile"), "anki_miner": miner.get("app"),
@@ -4671,7 +4811,7 @@ class Steps:
                                         and anki_miner.setting_up()):
             raise Wait(downloading)
         try:
-            if anki_miner.speech_ready(miner, lang, profile, lineup.folder(lineup.SPEECH)):
+            if _speech_ready(self, lang, miner, profile):
                 return "ready"
         except anki_miner.AnkiMinerError as e:
             raise _miner_wait_or_needs(e, self.url) from None
@@ -4903,7 +5043,7 @@ class Steps:
             return None
         miner, profile = found
         try:
-            if not anki_miner.speech_ready(miner, lang, profile, lineup.folder(lineup.SPEECH)):
+            if not _speech_ready(self, lang, miner, profile):
                 return None
             if self.on_battery() and not job.get("asked_at"):
                 raise Wait(LINING_UP_BATTERY)
@@ -5019,7 +5159,7 @@ class Steps:
         if self.on_battery() and not job.get("asked_at"):
             return None                     # (before Anki Miner is asked anything: nothing started on battery)
         try:
-            if not anki_miner.speech_ready(miner, lang, profile, lineup.folder(lineup.SPEECH)):
+            if not _speech_ready(self, lang, miner, profile):
                 return None
             return lineup.spot_check(miner, lang, profile, video, subtitle, offset=offset)
         except anki_miner.AnkiMinerError as e:
@@ -5141,7 +5281,7 @@ class Steps:
                                          workers=power.clip_cuts(now.get("connect_clip_cuts", power.AUTO),
                                                                  own=power.profile_cuts(export)))
         except anki_miner.AnkiMinerError as e:
-            held.clear()
+            _drop_held(held)
             if e.kind in ("no-render", "refused", "failed", "crashed", "timeout", "unreadable"):
                 return None, None, swap.NO_RENDER if e.kind == "no-render" else None
             raise _miner_wait_or_needs(e, self.url) from None
@@ -5278,9 +5418,9 @@ class Steps:
                                          show=self.show(lang, job), reading=picked.get("reading"),
                                          from_audio=bool(picked.get("from_audio")), names=picked.get("names"),
                                          word_audio=runfile.word_audio_on(now, lang), workers=workers, more=more,
-                                         should_pause=self._reviewing)
+                                         should_pause=self._reviewing, voiced=bool(picked.get("voiced")))
         except anki_miner.AnkiMinerError as e:
-            held.clear()                        # any Anki Miner failure (a profile changed too): read again next time
+            _drop_held(held)                    # any Anki Miner failure (a profile changed too): read again
             if e.kind == "profile-changed":
                 raise Repick() from None
             if e.kind == "no-reading":          # Z-9: another Anki Miner since the pick: the book waits as before,
@@ -5313,7 +5453,7 @@ class Steps:
         doubt = refused is None and (bool(done.get("error")) or (bool(run) and not run.get("ok")))
         then = None
         if refused is not None and not (refused.kind == "cancelled" and done.get("stopped")):
-            held.clear()
+            _drop_held(held)
             then = _miner_wait_or_needs(refused, self.url)     # raised by `_mine` once the batch is recorded
         # Mattias #5: Anki refused a card (Anki Miner's MINING_FAILED, not transient — AnkiConnect's *cannot create
         # note …*): its words, in doubt, go a word at a time next (`runner._mine_batch`); a crash is no such answer

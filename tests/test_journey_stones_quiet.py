@@ -29,6 +29,7 @@ Each was proved able to fail by breaking its condition once by hand in app/ (the
 Japanese and Chinese alike, under the per-test SURASURA_TEST_ROOT, with real text from the bundled samples (the library
 builders of tests/test_journey_stones.py). Never a real %APPDATA%: child_env moves both under the test root.
 """
+import csv
 import glob
 import json
 import os
@@ -38,7 +39,7 @@ import sys
 
 import pytest
 
-from app import analyzer
+from app import analyzer, plan_rules
 from app.cli import verbs
 from tests.plan_file_cases import child_env
 from tests.test_journey_stones import REPO, REUSED, _files, _library, _report, _settings, _stones, _words
@@ -101,10 +102,6 @@ if _out:
 '''
 
 
-# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
-pytestmark = pytest.mark.usefixtures("journey_pre_cut")
-
-
 @pytest.fixture(autouse=True)
 def _the_childs_token_store(monkeypatch):
     """The window's questions are asked in this process of the store the Generate child wrote (under the test root, as
@@ -119,8 +116,8 @@ def _argv(language):
 
 
 def _generate(root, language, spy=None, tmp_path=None):
-    """A Generate in its own process, as the dashboard starts it (the store's helper after) -> (report data, what it
-    printed). `spy`: a file name; every process the Generate starts counts its tokenizer calls into it."""
+    """A Generate in its own process, as the dashboard starts it (the store's helper after) -> (the page's data —
+    test_journey_stones' `_payload` —, what it printed). `spy`: a file name; every process the Generate starts counts its tokenizer calls into it."""
     env = child_env(root)
     if spy:
         spy_dir = tmp_path / "spy"
@@ -144,6 +141,17 @@ def _spied(tmp_path, spy):
 
 def _results(root):
     return os.path.join(root, "results")
+
+
+def _counts(csvs):
+    """`_csvs`' lists with their example sentences (`Context N` / `Src N`) left out -> {name: [row text]}."""
+    out = {}
+    for name, data in csvs.items():
+        rows = data.decode("utf-8-sig").splitlines()
+        keep = [i for i, col in enumerate(next(csv.reader(rows[:1])))
+                if not (col.startswith("Context ") or col.startswith("Src "))]
+        out[name] = [[row[i] for i in keep if i < len(row)] for row in csv.reader(rows)]
+    return out
 
 
 def _csvs(root):
@@ -172,13 +180,13 @@ def _current(language):
 
 def _kept_on(language):
     """Show A Ep01–03 then Show B Ep01–03 in NOW, *Keep studying* on, one full Generate -> (store, ids, names, root,
-    the report data)."""
+    the page's data)."""
     root = os.environ["SURASURA_TEST_ROOT"]
     _settings(language)
     store, ids, names = _library(language)
     store.set_library_options(keep_watched=True)
     first, said = _generate(root, language)
-    assert REUSED not in said and (first is None or _stones(first) == {}), "a full Generate (the old page: no stone)"
+    assert REUSED not in said and _stones(first) == {}, "a full Generate, no stone"
     return store, ids, names, root, first
 
 
@@ -196,8 +204,13 @@ def test_d2_after_a_mark_and_its_quiet_run_the_counts_equal_a_full_generate_from
     shutil.rmtree(_results(root))                       # from scratch: no results for any reuse to start from
     full, said = _generate(root, language)
     assert REUSED not in said, "a full analysis"
-    assert _csvs(root) == quiet_csvs, "the full Generate's lists, byte for byte"
-    assert full == quiet, "and its journey: the same files, words, counts and stone"
+    if plan_rules.SENTENCE_TABLE >= 2:
+        # level 2: a list's example sentences weigh how well each episode is remembered (SPEC decision 6, § 4.1), so
+        # the mark moves them; the counts (every other column) are this test's promise, byte for byte
+        assert _counts(_csvs(root)) == _counts(quiet_csvs), "the full Generate's counts, byte for byte"
+    else:
+        assert _csvs(root) == quiet_csvs, "the full Generate's lists, byte for byte"
+    assert full == quiet, "and its journey: the same episodes, words, *% known* and stone"
     assert _stones(quiet) == {names["A2"]: False}, "counted AND watched"
     store.close()
 
@@ -213,12 +226,11 @@ def test_d2_a_finished_show_stays_out_of_the_journey_through_a_quiet_run(languag
     store.finish(show_b)
     finished, said = _generate(root, language)
     assert REUSED not in said, "a Finish is a Generate"
-    assert not b_names & set(_files(finished) + [f["filename"] for f in finished["completed_files"]])
+    assert not b_names & set(_files(finished))
     store.set_watched([ids["A2"]])
     quiet, said = _generate(root, language)
     assert REUSED in said and RE_RENDER in said
-    assert not b_names & set(_files(quiet) + [f["filename"] for f in quiet["completed_files"]]), \
-        "Finished stays out of the journey"
+    assert not b_names & set(_files(quiet)), "Finished stays out of the journey"
     assert _stones(quiet) == {names["A2"]: False}, "the one stone: A2's, counted"
     assert _files(quiet) == _files(finished)
     store.close()

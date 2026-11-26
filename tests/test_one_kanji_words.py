@@ -27,8 +27,6 @@ from app import analyzer, phrases, sentence_corpus, token_index
 TEMPLATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates", "web_app.html")
 
 
-# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
-pytestmark = pytest.mark.usefixtures("journey_pre_cut")
 
 
 @pytest.fixture(scope="module")
@@ -87,6 +85,22 @@ def test_a_one_kanji_word_after_a_numbers_counter_is_a_piece_of_the_count(tokeni
     assert _bound(tokenizer, "一時間半の遅刻だ。") == ["半"]
     assert _bound(tokenizer, "三の矢を放つ。") == []
     assert _bound(tokenizer, "毎日目が疲れる。") == []
+
+
+def test_a_one_kanji_word_after_a_lone_letter_is_a_piece_of_the_label(tokenizer):
+    """A letter before a one-kanji word names which one, as a number does: A棟 'building A' (棟 is the counter とう,
+    never the noun むね 'ridge' the tagger reads), Ｂ組 'class B' (full-width), x軸 'the x-axis' — the word is a piece
+    of the label, no use of 棟 / 組 / 軸 (ENGINE_REVISION 51). A word of letters (OK) labels nothing, nor does a unit
+    after a number (10m下: m follows a digit); spaces aren't kept in a sentence's text, so OK 今 reads as OK今."""
+    assert _bound(tokenizer, "はいA棟3階です。") == ["棟", "階"]
+    assert _bound(tokenizer, "Ｂ組の生徒が来た。") == ["組"]
+    assert _bound(tokenizer, "x軸の値を読む。") == ["軸"]
+    assert _bound(tokenizer, "OK 今行く。") == []
+    assert _bound(tokenizer, "地中の10m下にある。") == []
+    assert _bound(tokenizer, "棟を見上げた。") == []
+    sentence, tokens = _sentence(tokenizer, "はいA棟3階です。")
+    assert ("棟", "ムネ") not in {(tokens[i][0], tokens[i][1]) for i in range(len(tokens))
+                                 if i not in analyzer.unoffered(sentence, tokens)}
 
 
 def test_what_the_list_cant_offer_is_named_per_sentence_and_nothing_with_the_rule_off(tokenizer):
@@ -311,46 +325,15 @@ def test_a_phrase_waits_for_a_one_kanji_word_the_list_offers_and_never_for_one_i
 
 
 # --- the report and Settings ------------------------------------------------------------------------------------- #
-def _render(tmp_path, unlisted):
-    """A report whose one file names `unlisted` in file_statistics.json; -> the file's entry in the page's data."""
-    results = tmp_path / "results"
-    results.mkdir(parents=True)
-    pd.DataFrame([{"Word": "顔", "Reading": "カオ", "Tier": "Outside", "Score": 30, "Occurrences": 3,
-                   "Count (High)": 3, "Count (Low)": 0, "Count (Goal)": 0, "Sources": "diary.txt",
-                   "Context 1": "母の顔を思い出した。"}]
-                 ).to_csv(results / "priority_learning_list.csv", index=False, encoding="utf-8-sig")
-    pd.DataFrame([{"Sequence": 1, "Source File": "diary.txt", "Word": "顔", "Reading": "カオ", "Tier": "Outside",
-                   "Score": 30, "Occurrences (Global)": 3, "Occurrences (File)": 3, "Count (High)": 3,
-                   "Count (Low)": 0, "Count (Goal)": 0, "Context 1": "母の顔を思い出した。"}]
-                 ).to_csv(results / "progressive_learning_list.csv", index=False, encoding="utf-8-sig")
-    stats = {"File": "diary.txt", "Total Words": 40, "Known Count": 30, "Coverage (%)": 75.0}
-    if unlisted is not None:
-        stats["Not On List"] = unlisted
-    (results / "file_statistics.json").write_text(json.dumps([stats], ensure_ascii=False), encoding="utf-8")
-
-    from app import static_html_generator as gen
-    out = results / "reading_list_static.html"
-    with patch.object(gen, "RESULTS_DIR", str(results)), \
-            patch.object(gen, "PRIORITY_CSV", str(results / "priority_learning_list.csv")), \
-            patch.object(gen, "PROGRESSIVE_CSV", str(results / "progressive_learning_list.csv")), \
-            patch.object(gen, "OUTPUT_FILE", str(out)):
-        gen.generate_static_html(theme="default", open_browser=False)
-    payload = re.search(r"let globalData = (\{.*?\});\n", out.read_text(encoding="utf-8"), re.S)
-    (entry,) = json.loads(payload.group(1))["progressive"]
-    return entry
-
-
-def test_the_report_carries_each_files_words_not_on_the_list(tmp_path):
-    """The analyzer's per-file tally reaches the page with the file; a file with none carries an empty list."""
-    assert _render(tmp_path / "a", [["スバル", "昴", 3], ["簪", "簪", 1]])["unlisted"] == [["スバル", "昴", 3],
-                                                                                        ["簪", "簪", 1]]
-    assert _render(tmp_path / "b", None)["unlisted"] == []
+# The old journey page's per-file line (each file's words not on the list, the analyzer's tally carried with the file)
+# retired with it (J-RETIRE, 2026-11-23): the journey page shows no *not on your list* (J-CUT listed it for Sonic).
+# The YouTube preview's page (web_app.html) keeps the line's code, below.
 
 
 def test_the_per_file_line_is_the_reports_own_style_and_dictionary_extensions_read_only_the_words():
-    """One small line under the file's comprehension bar, as "already in Anki" is: the words as text (Yomitan can look
-    one up to make a card), the label, the counts and the dots drawn by CSS (hidden from dictionary extensions), a
-    plain-language hover; a completed file shows it too."""
+    """The YouTube preview's page (web_app.html): one small line under the file's comprehension bar, as "already in
+    Anki" is: the words as text (Yomitan can look one up to make a card), the label, the counts and the dots drawn by
+    CSS (hidden from dictionary extensions), a plain-language hover; a completed file shows it too."""
     with open(TEMPLATE, encoding="utf-8") as f:
         html = f.read()
     assert "function createUnlistedLine(unlisted)" in html and ".unlisted-line {" in html

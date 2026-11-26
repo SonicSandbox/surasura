@@ -57,6 +57,8 @@ def _shortlists(root):
     return out
 
 
+# why: proves the format-4 plan's shortlists (`pools`, POOL 60 / PER_FILE 2): level 0's, which E-RETIRE removes with it
+@pytest.mark.usefixtures("level_0")
 @pytest.mark.parametrize("case", ["rp2-ja", "rp2-zh"])
 def test_every_rows_shortlist_is_the_same_in_any_order(tmp_path, case):
     # why: the shortlist is what a re-plan re-picks from; ranked with the counts so far it moved with every drag
@@ -138,7 +140,8 @@ def test_a_finished_or_watched_show_lends_its_lines_and_counts_for_nothing(langu
         "every count the same: a Finished show is never a use"
     for lists, what in ((finished, "Finished"), (watched, "watched")):
         assert any(src in a_rel for r in lists for _c, src in _contexts(r)), f"some rows show a {what} line"
-        assert not any(src in a_rel for r in lists for _c, src in _contexts(r)[:1]), "never Context 1"
+        if plan_rules.SENTENCE_TABLE < 2:   # (level 2: one score weighs a remembered line too — it may lead, SPEC § 1)
+            assert not any(src in a_rel for r in lists for _c, src in _contexts(r)[:1]), "never Context 1"
 
 
 def _tiny(language="ja"):
@@ -162,6 +165,9 @@ def _tiny(language="ja"):
     return store, {rel: store.item_id(rel) for rel in files}
 
 
+# why: proves the old pick's ladder (Context 1 the first sentence, then the set-aside lines: watched, then Finished
+# newest first): level 0's, which E-RETIRE removes with it (level 2 weighs how recently each was seen: SPEC § 4.1)
+@pytest.mark.usefixtures("level_0")
 def test_among_equally_easy_lines_the_newest_finished_comes_first():
     # why: "finished would be more valuable. Then recent" — of two equally easy Finished lines the one finished last
     # leads; finishing them the other way round turns them round (another run: the signature's "finished" part)
@@ -232,7 +238,8 @@ def test_a_redraw_asked_after_a_known_word_change_is_a_generate():
     assert p.returncode == 0, p.stdout[-2000:] + p.stderr[-2000:]
     assert "Redrew the journey" not in p.stdout and "generating" in p.stdout
     results = os.path.join(root, "results")
-    assert analyzer.redrawn_for(results) is None, "a Generate: no redraw marker"
+    marker = analyzer.redrawn_for(results)      # (level 2: a Generate marks its own journey today's, plan = its run)
+    assert marker is None or marker.get("plan") == analyzer.read_run_stamp(results), "a Generate, not a redraw"
     assert analyzer.read_run_stamp(results) not in (None, stamp), "stamped as the new run"
 
 

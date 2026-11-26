@@ -674,8 +674,8 @@ def range_text(media, numbers, count):
 
 
 # --- a8 (Sonic 2026-10-31: "even after opening up, it keeps the ones together … you can still expand those too but only
-# after an additional motion"): a run of watched parts folded into one line — the journey's (a6, `static_html_generator.
-# _journey_folds`) and an opened row's (`app/qt/rows.py`), one rule
+# after an additional motion"): a run of watched parts folded into one line — an opened row's (`app/qt/rows.py`; the
+# old journey page's a6 folds retired with it, J-RETIRE)
 Fold = namedtuple("Fold", "id start end label ids")
 #   id: ("fold", its first part's id) — never a file's id, so the window holds it where it holds an episode's (the hand's,
 #   the keyboard's line); start, end: its first and last part's place in the row; label: *Ep 1–40 watched*; ids: its
@@ -2760,24 +2760,15 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
 
 
 # --- the first screen's cache (02 §2.1) ---------------------------------------------------------------------- #
-def _plain(value):
-    """namedtuples -> lists (JSON), recursively."""
-    if isinstance(value, tuple) and hasattr(value, "_fields"):
-        return [_plain(v) for v in value]
-    if isinstance(value, (list, tuple)):
-        return [_plain(v) for v in value]
-    if isinstance(value, dict):
-        return {k: _plain(v) for k, v in value.items()}
-    return value
-
-
 def to_cache(view, rows=CACHE_ROWS):
     """The first `rows` rows of Current, the lines among them, the counts, the subline and the Goal strip: what the
-    first frame shows before the store is read."""
+    first frame shows before the store is read. Its rows, lines and counts stay the namedtuples they are: `json.dumps`
+    (the C encoder) writes a tuple as an array, the text a copy into plain lists wrote (KEYMOVE-L2: that copy was a
+    Python call per row, episode and status, ~99,000 for 40 rows at 20,000 files, in front of a key move's view)."""
     kept = view.rows[:rows]
-    return {"rows": _plain([r._replace(string=None) for r in kept]),     # planned again as it's read (`_row_from`)
-            "lines": _plain([ln for ln in view.lines if ln.after < len(kept)]),
-            "goal": _plain(view.goal)[:5], "counts": _plain(view.counts), "subline": view.subline,   # (W3.2 Q2: no tiles)
+    return {"rows": [r._replace(string=None) for r in kept],             # planned again as it's read (`_row_from`)
+            "lines": [ln for ln in view.lines if ln.after < len(kept)],
+            "goal": view.goal[:5], "counts": view.counts, "subline": view.subline,   # (W3.2 Q2: no tiles)
             "badges": dict(view.badges), "keep_watched": bool(view.keep_watched)}                # W-1
 
 

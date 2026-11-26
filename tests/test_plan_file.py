@@ -249,6 +249,26 @@ def test_the_pages_hash_is_the_same_on_the_next_day(runs, case):
             == cases.normalised(root, "reading_list_static.html", today))
 
 
+@pytest.mark.parametrize("case", list(cases.CASES))
+def test_the_redraw_markers_hash_is_the_same_on_the_next_day(runs, case):
+    """At level 2 a Generate writes the journey's redraw marker with the day it was drawn (`drawn_day`: the daily
+    redraw reads it), so the hash list blanks that day as it blanks the page's: the same Generate a day later is the
+    same marker. Its plan and run are the stamp (<STAMP>)."""
+    if analyzer.plan_rules.SENTENCE_TABLE < 2:
+        pytest.skip("below level 2 a Generate writes no redraw marker")
+    root, _run = runs[case]
+    with open(os.path.join(root, "results", analyzer.REDRAW_FILE), "rb") as f:
+        today = f.read()
+    day = re.compile(rb'"day": "(\d{4}-\d{2}-\d{2})"')
+    assert day.search(today), "the marker names no day: the test proves nothing"
+    later = day.sub(lambda m: b'"day": "%s"' % (datetime.date.fromisoformat(m.group(1).decode())
+                                                + datetime.timedelta(days=1)).isoformat().encode(), today)
+    assert later != today
+    assert (cases.normalised(root, analyzer.REDRAW_FILE, later)
+            == cases.normalised(root, analyzer.REDRAW_FILE, today))
+    assert b"<STAMP>" in cases.normalised(root, analyzer.REDRAW_FILE, today), "the run's own signature, blanked"
+
+
 @pytest.mark.parametrize("case", list(cases.ALL_CASES))
 def test_the_plan_adds_up_to_the_runs_own_lists(runs, case):
     """01 §6's self-checks and more, in the run's own order: each word's uses add up to its Occurrences; Score, the
@@ -257,7 +277,7 @@ def test_the_plan_adds_up_to_the_runs_own_lists(runs, case):
     _root, run = runs[case]
     plan = run["plan"]
     h = plan["header"]
-    assert h["format"] == analyzer.PLAN_FORMAT == 4 and h["language"] == cases.ALL_CASES[case][0]
+    assert h["format"] == analyzer.PLAN_FORMAT == 5 and h["language"] == cases.ALL_CASES[case][0]   # 5: the flip
     assert h["run_signature"] == run["stamp"]
     assert h["files"] == len(plan["files"]) == len(plan["per_file"])
     assert h["keys"] == len(plan["keys"]) == len(plan["rows"]) > 0

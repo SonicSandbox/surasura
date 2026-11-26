@@ -31,7 +31,8 @@ SENTENCES_PER_WORD = 8
 # unless there aren't enough other files, when the best of the rest fill the remaining places.
 PER_FILE = 2
 # The good-length window is the user's own range (Settings → logic.context) widened by this much on
-# each side — their choice of "a bit more leeway" for a dictionary (D2).
+# each side — their choice of "a bit more leeway" for a dictionary (D2). At plan_rules.SENTENCE_TABLE >= 2 on the
+# top side only: no line is too short (SPEC § 4.6, `length_range`).
 LENGTH_LEEWAY = 5
 PROGRESS_EVERY = 100
 TERMS_PER_BANK = 10000       # what the installed dictionaries use; Yomitan reads any number of banks
@@ -139,14 +140,18 @@ def export_outcome(path, started, returncode, cancelled):
 def length_range(settings):
     """(lo, hi, own_lo, own_hi) in characters: the user's own `logic.context` range — read from THEIR
     settings on every export, since they may change it — widened by LENGTH_LEEWAY on each side. Never
-    below 1, never past the hard cap `max_chars` (longer sentences are never examples anywhere)."""
+    below 1, never past the hard cap `max_chars` (longer sentences are never examples anywhere). At
+    `plan_rules.SENTENCE_TABLE` >= 2 no line is thrown out for being short (SPEC § 4.6): `lo` is 1, and `collect`
+    ranks a line by how far outside the range it is."""
+    from app import plan_rules
     from app.settings_manager import sentence_length_default     # *Length*'s one default (E-LENGTH)
     context = (settings.get("logic") or {}).get("context") or {}
     low, high = sentence_length_default()
     own_lo = int(context.get("min_chars", low))
     own_hi = int(context.get("preferred_max_chars", high))
     cap = int(context.get("max_chars", 150))
-    return max(1, own_lo - LENGTH_LEEWAY), min(cap, own_hi + LENGTH_LEEWAY), own_lo, own_hi
+    lo = 1 if plan_rules.SENTENCE_TABLE >= 2 else max(1, own_lo - LENGTH_LEEWAY)
+    return lo, min(cap, own_hi + LENGTH_LEEWAY), own_lo, own_hi
 
 
 class _Best:
@@ -249,11 +254,13 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
     those where it stands on its own, and nothing else of one character is an entry or an unknown in a sentence (a
     card that wants one the list never offers — 簪, 例文 — still gets the sentences it stands on its own in); off,
     every one-character word counts, as it always has. Returns {(lemma, reading) or name: _Word}."""
+    from app import plan_rules
     from app.analyzer import (LearningView, affix_joins, bound_uses, compound_parts, has_target_language, single_kind,
                               unoffered)
 
     known_tuples, known_lemmas, ignore = known
     lo, hi, own_lo, own_hi = window
+    zone = plan_rules.SENTENCE_TABLE >= 2     # each character outside the range counts (SPEC § 4.2's zone, its order)
     words = {}
     lang_ok = {}                # memo: a string -> has target-language characters
     known_memo = {}             # memo: (lemma, reading) -> known / ignored / read already (below)
@@ -369,7 +376,10 @@ def collect(files, file_tokens, language, known, window, progress=None, wanted=N
                             if not _is_known(unit) and _offered(unit)}
                 unknown_units = unknowns()
                 unknown = len(unknown_units)
-            margin = 0 if own_lo <= size <= own_hi else 1
+            if zone:
+                margin = own_lo - size if size < own_lo else max(0, size - own_hi)
+            else:
+                margin = 0 if own_lo <= size <= own_hi else 1
             fresh = sum(_young(young, key) for key in present) if young else 0
             lemmas = [t[0] for t in tokens] if prefer else None
             for key, surface in alone.items():
@@ -799,7 +809,7 @@ def build(language, save_path, progress=print, show_source=False):
     """Library -> token store (only new or changed files tokenized) -> one pass -> the dictionary.
     Returns the number of words written (0: nothing to export, nothing written)."""
     import sqlite3
-    from app import analyzer, settings_manager, token_index
+    from app import analyzer, plan_rules, settings_manager, token_index
     from app.path_utils import get_data_path
     from app.zh_script import effective
 
@@ -818,7 +828,8 @@ def build(language, save_path, progress=print, show_source=False):
         progress("Your library is empty — add content first.")
         return 0
     progress(f"Sentences of {window[0]}–{window[1]} characters "
-             f"(your {window[2]}–{window[3]}, ±{LENGTH_LEEWAY}), up to {SENTENCES_PER_WORD} per word.")
+             f"(your {window[2]}–{window[3]}, {'+' if plan_rules.SENTENCE_TABLE >= 2 else '±'}{LENGTH_LEEWAY}), "
+             f"up to {SENTENCES_PER_WORD} per word.")
 
     store = token_index.open_store(language)
     try:

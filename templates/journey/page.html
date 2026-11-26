@@ -86,10 +86,11 @@ svg.i { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:1.
 body.focus .rail, body.focus .desk { opacity:0; pointer-events:none; }
 body.focus .stage { transform:translateX(-148px); }
 body.focus .hd { opacity:.35; } body.focus .hd:hover { opacity:1; }
-.sk { color:var(--ink-faint); font-size:12px; letter-spacing:.08em; text-transform:uppercase; padding:8px 0; }
+.sk { color:var(--ink-faint); font-size:12px; letter-spacing:.08em; text-transform:uppercase; padding:8px 0; overflow-wrap:anywhere; }
 /* the word */
-.meta { display:flex; align-items:center; gap:8px; font:700 11px var(--f-ui); letter-spacing:.08em; color:var(--ink-faint); text-transform:uppercase; }
-.meta .ml { text-transform:none; letter-spacing:0; font-weight:600; color:var(--ink-dim); font-family:var(--f-ja); }
+/* the word pane's heading is one line: a long name cuts with … in its own box, its full name on hover (JOURNEY-NAMES) */
+.meta { display:flex; align-items:center; gap:8px; font:700 11px var(--f-ui); letter-spacing:.08em; color:var(--ink-faint); text-transform:uppercase; white-space:nowrap; }
+.meta .ml { text-transform:none; letter-spacing:0; font-weight:600; color:var(--ink-dim); font-family:var(--f-ja); min-width:0; overflow:hidden; text-overflow:ellipsis; }
 .wrow { display:flex; align-items:center; gap:12px; margin:6px 0 0; flex-wrap:wrap; }
 .w { font:700 var(--wsz)/1.15 var(--f-ja); letter-spacing:.01em; }
 .zh .w { font-family:var(--f-zh); }
@@ -128,6 +129,7 @@ body.focus .hd { opacity:.35; } body.focus .hd:hover { opacity:1; }
 .wf-icon .src .sn { display:none; }
 .pl { width:32px; height:32px; border-radius:7px; border:1px solid var(--line-hi); background:var(--surface); color:var(--accent); cursor:pointer; flex:none; display:grid; place-items:center; margin-top:4px; padding:0; }
 .pl.none { visibility:hidden; }
+.pl.mute { border-color:transparent; background:none; color:var(--ink-dim); cursor:default; }
 .pl.wait > svg { display:none; }   /* a line being cut (clip/cut): the spinner in the triangle's place */
 .fl { margin-left:auto; opacity:0; border:0; background:none; color:var(--ink-faint); cursor:pointer; font-size:14px; min-width:32px; min-height:32px; border-radius:6px; flex:none; }
 .ln:hover .fl, .fl.lit, .fl.wait, .fl.queued { opacity:1; } .fl.lit { color:var(--warn); }
@@ -148,15 +150,18 @@ body.focus .hd { opacity:.35; } body.focus .hd:hover { opacity:1; }
 .endnav { display:flex; justify-content:center; gap:10px; margin-top:8px; }
 .end .k { font:700 11px var(--f-ui); letter-spacing:.1em; color:var(--accent); text-transform:uppercase; }
 .end h2 { font:700 26px var(--f-ja); margin:10px 0 16px; display:flex; align-items:center; justify-content:center; gap:10px; }
+.end h2 span { min-width:0; overflow-wrap:anywhere; }   /* the end card's name wraps, even a file name with no spaces */
 .prechip { display:inline-flex; align-items:center; gap:8px; height:32px; padding:0 12px; border:1px solid var(--line-hi); border-radius:99px; background:none; cursor:pointer; color:var(--ink-dim); font:600 12px var(--f-ui); }
 .prechip.on { color:var(--pre); border-color:var(--pre); }
 .gline { display:flex; align-items:center; justify-content:center; gap:4px 10px; flex-wrap:wrap; margin:16px 0 6px; color:var(--ink-dim); }
 .gline > span { white-space:nowrap; }
 .gline .up { color:var(--ok); font-weight:700; }
 .counts { color:var(--ink-faint); font-size:12px; }
-.next { margin:22px 0 18px; }
-.upn { border-top:1px solid var(--line); padding-top:14px; display:flex; align-items:center; justify-content:center; gap:10px; color:var(--ink-dim); font-size:12.5px; }
+.next { margin:22px 0 18px; } .next .btn { max-width:100%; } .next .btn .nt { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.upn { border-top:1px solid var(--line); padding-top:14px; display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:6px 10px; color:var(--ink-dim); font-size:12.5px; }
 .upn .k2 { font:700 10.5px var(--f-ui); letter-spacing:.1em; color:var(--ink-faint); text-transform:uppercase; }
+.upn .jp { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.upn > :not(.jp) { flex:none; white-space:nowrap; }
 /* growth bar · % bands · stones */
 .gb { display:inline-block; width:64px; height:4px; border-radius:2px; background:var(--line-hi); position:relative; overflow:hidden; vertical-align:middle; }
 .gb i { position:absolute; top:0; bottom:0; left:0; } .gb .a { background:var(--ink-faint); } .gb .n { background:var(--ok); }
@@ -942,8 +947,11 @@ function lineHtml(id, w, k, p, sel, meet) {         // line k of the word's, sho
   const lid = lineId(ln, src), lit = FLAGGED.has(lid), fw = shownWait(FWAIT.get(lid));
   const flag = built("line/flag") ? `<button class="fl ${lit ? "lit" : ""} ${fw}" data-flag="${k}" aria-label="Flag this sentence" data-tip="${lit ? "Flagged for Send report" : "Flag this sentence for Send report"}${fw === "queued" ? "\n" + waitWord() : ""}">⚑</button>` : "";
   const tags = [k === 0 && (w[6] & 8) ? "On your card" : "", meet ? "Where you'll first meet it" : ""].filter(Boolean);
+  // marked silent (SPEC § 4.5: the render sets ln[4] only while Always include one with audio is on): in the ▶'s
+  // place, never beside a ▶ that plays
+  const mute = ln[4] === 1 && !can;
   const oc = tags.length ? `<div class="oc">${tags.join(" · ")}</div>` : "";
-  return `<div class="ln ${sel ? "sel" : ""}${meet ? " fm" : ""}" data-li="${p}"><button class="pl ${can ? "" : "none"}" data-play="${k}" aria-label="Play the line" data-tip="▶ the line${kt("line")}"><svg class="i" viewBox="0 0 16 16"><path d="M5 3.5v9l7-4.5z" fill="currentColor"/></svg></button><div class="lt">${oc}<div class="tx">${hl(ln[0], w)}</div><div class="src" data-tip="${esc(label)}">${kindIcon(kind)}<span class="sn">${esc(label)}</span></div></div>${flag}</div>`;
+  return `<div class="ln ${sel ? "sel" : ""}${meet ? " fm" : ""}" data-li="${p}">${mute ? `<span class="pl mute" role="img" aria-label="No audio" data-tip="No audio: nothing to hear this line from\nIts card takes a line you can hear first"><svg class="i" viewBox="0 0 16 16"><path d="M3 6v4h2.5L9 13V3L5.5 6z"/><path d="M11.5 6.5l3 3m0-3l-3 3"/></svg></span>` : `<button class="pl ${can ? "" : "none"}" data-play="${k}" aria-label="Play the line" data-tip="▶ the line${kt("line")}"><svg class="i" viewBox="0 0 16 16"><path d="M5 3.5v9l7-4.5z" fill="currentColor"/></svg></button>`}<div class="lt">${oc}<div class="tx">${hl(ln[0], w)}</div><div class="src" data-tip="${esc(label)}">${kindIcon(kind)}<span class="sn">${esc(label)}</span></div></div>${flag}</div>`;
 }
 function linesShown(w) { const n = Number(SET.sentences) || 0; return n > 0 ? Math.min(n, w[9].length) : w[9].length; }
 /* The first-meeting line (SPEC § Sentences are the list's; Sonic: its own marked line, shown by default, hideable):
@@ -989,7 +997,7 @@ function linesPart(id, w, list) {
 }
 function wordHtml(id, w, list) {
   const s = seq(S.ep) || [];
-  const head = list ? "" : `<div class="meta">Word ${S.wi + 1} of ${s.length} <span class="ml">${kindIcon(EPS[S.ep][5], gemOf(S.ep))} ${esc(epTitle(S.ep))}</span>${navHtml()}</div>`;
+  const head = list ? "" : `<div class="meta">Word ${S.wi + 1} of ${s.length} <span class="ml" data-tip="${esc(epTitle(S.ep))}">${kindIcon(EPS[S.ep][5], gemOf(S.ep))} ${esc(epTitle(S.ep))}</span>${navHtml()}</div>`;
   return `${head}<div class="wrow"><span class="w jp" lang="${LANG}">${esc(w[1] || w[0])}</span>${marksHtml(w[6])}<span class="ah" data-tip="Its count in this episode and the next two">×${w[7]}</span>${ankiHtml(w[6])}</div>
 ${readingPart(w)}${actsPart(w)}
 ${linesPart(id, w, list)}`;
@@ -1132,11 +1140,11 @@ function endHtml(i) {
   let known = 0, ign = 0;
   for (const id of s) { const w = wordNow(id); const m = w && MARK.get(w[0]); if (m === "known") known++; else if (m === "ignore") ign++; }
   const n = nextEp(i, 1, false), filt = S.filter && !s.length;
-  const up = n >= 0 ? `<div class="upn"><span class="k2">Up next</span>${kindIcon(EPS[n][5], gemOf(n))} <span class="jp">${esc(epTitle(n))}</span> ${stoneSvgWrap(n)} ${growthHtml(n)} <span class="pc ${pcClass(EPS[n][6])}">${fmtPct(EPS[n][6])}</span> · <b>${EPS[n][7]}</b> new</div>` : "";
+  const up = n >= 0 ? `<div class="upn"><span class="k2">Up next</span>${kindIcon(EPS[n][5], gemOf(n))} <span class="jp" data-tip="${esc(epTitle(n))}">${esc(epTitle(n))}</span> ${stoneSvgWrap(n)} ${growthHtml(n)} <span class="pc ${pcClass(EPS[n][6])}">${fmtPct(EPS[n][6])}</span> <span>· <b>${EPS[n][7]}</b> new</span></div>` : "";
   return `<div class="end"><div class="k">End of the ${EPS[i][5] && KIND_VERB[EPS[i][5]] === "read" ? "chapter" : "episode"}</div><h2>${kindIcon(EPS[i][5], gemOf(i))}<span>${esc(epTitle(i))}</span></h2>${preChip(i)}
 ${filt ? `<p class="counts">None of its words in ${esc(FILTERS[S.filter][0])}: they show with the filter off (${esc(keyOf("filter"))}).</p>` : growthHtml(i, true)}
 <div class="counts">✓ ${known} known · ⊘ ${ign} ignored · ${s.length - known - ign} still to learn</div>
-${n >= 0 ? `<div class="next"><button class="btn go" data-act="next" data-tip="Next episode (↓)">Next: ${esc(epTitle(n))} ↓</button></div>` : `<p class="counts">That was the last episode with new words.</p>`}${endNav(i, s.length > 0)}${up}</div>`;
+${n >= 0 ? `<div class="next"><button class="btn go" data-act="next" data-tip="${esc(epTitle(n))}\nNext episode (↓)">Next: <span class="nt">${esc(epTitle(n))}</span> ↓</button></div>` : `<p class="counts">That was the last episode with new words.</p>`}${endNav(i, s.length > 0)}${up}</div>`;
 }
 const stoneSvgWrap = (i) => `<span class="st">${stoneSvg(EPS[i][9], gemOf(i), preOf(i).on)}</span>`;
 function nothingHtml(i) {
@@ -1155,7 +1163,7 @@ function drawList() {
   if (!epReady(i)) { setHtml(st, `<div class="sk">Opening ${esc(epTitle(i))}…</div>`); loadEp(i).then(() => { resetSeqEp(i); drawList(); }); return; }
   const s = seq(i) || [];
   RC.drawList = (RC.drawList || 0) + 1;
-  let h = `<div class="lv"><div class="meta"><span class="ml">${kindIcon(EPS[i][5], gemOf(i))} ${esc(epTitle(i))}</span> · ${s.length} words</div>`;
+  let h = `<div class="lv"><div class="meta"><span class="ml" data-tip="${esc(epTitle(i))}">${kindIcon(EPS[i][5], gemOf(i))} ${esc(epTitle(i))}</span> · ${s.length} words</div>`;
   s.forEach((id, k) => { h += `<div class="lc ${k === S.wi ? "cur" : ""}" data-k="${k}">${wordHtml(id, wordNow(id), true)}</div>`; });
   h += `<div class="lend" data-ep="${i}">${EPS[i][7] ? endHtml(i) : nothingHtml(i)}</div></div>`;
   setHtml(st, h);
@@ -1228,6 +1236,16 @@ document.addEventListener("pointerover", (e) => {
   if (e.pointerType !== "mouse") return;               // a tap never opens a tip
   const t = e.target.closest && e.target.closest("[data-tip],[data-kanji],[data-stone]");
   if (t === tipFor) return;
+  showTip(t);
+});
+/* keyboard focus shows the tip too (the Qt guide's rule: a cut name reads whole), never a click's focus; it goes when
+   the focus does */
+document.addEventListener("focusin", (e) => {
+  const t = e.target.closest && e.target.closest("[data-tip],[data-kanji],[data-stone]");
+  if (t && t !== tipFor && e.target.matches(":focus-visible")) showTip(t);
+});
+document.addEventListener("focusout", (e) => { if (tipFor && tipFor.contains(e.target) && !tipFor.matches(":hover")) { tipFor = null; tipEl.classList.add("hide"); } });
+function showTip(t) {
   tipFor = t;
   if (!t) { tipEl.classList.add("hide"); return; }
   const text = tipText(t);
@@ -1237,7 +1255,7 @@ document.addEventListener("pointerover", (e) => {
   const r = t.getBoundingClientRect(), w = tipEl.offsetWidth, h = tipEl.offsetHeight;
   tipEl.style.left = Math.max(6, Math.min(innerWidth - w - 6, r.left + r.width / 2 - w / 2)) + "px";
   tipEl.style.top = (r.bottom + h + 10 > innerHeight ? r.top - h - 8 : r.bottom + 8) + "px";
-});
+}
 let toastTimer = 0;
 function toast(text, undo) {
   const el = $("toast");
@@ -1254,7 +1272,7 @@ function sheet(id, html) {
   $("layer").innerHTML = `<div class="scrim" data-close="1"><div class="sheet" id="${id}" role="dialog" aria-modal="true">${html}</div></div>`;
 }
 const HELP = {
-  lines: [["Sentences", ["The first is the one on your card, or the one Surasura would put on it.", "The rest follow in your list's ranking.", "▶ plays the line where your file can be played here."]], ["Under each line", ["Its kind (anime, book, YouTube…), the show and the episode.", "⚑ flags a line for Send report: you see it before anything is sent."]]],
+  lines: [["Sentences", ["The first is the one on your card, or the one Surasura would put on it.", "The rest follow in your list's ranking.", "▶ plays the line where your file can be played here.", "With Always include one with audio on, a line with no audio shows a muted speaker: its card takes one you can hear."]], ["Under each line", ["Its kind (anime, book, YouTube…), the show and the episode.", "⚑ flags a line for Send report: you see it before anything is sent."]]],
   more: [["More", ["Forms you'll meet: the forms of the word in your content.", "Kanji: hover one for its meaning and readings."]]],
   tones: [["Tones", ["1 high · 2 rising · 3 dipping · 4 falling.", "A dot a syllable, in its tone's colour."]]],
   rail: [["The rail", ["‹ › the episode before and after (PgUp / PgDn).", "The title opens the picker: every show, one row each.", "The stone is the episode's state in Surasura; click it to mark it pre-studied."]], ["Marks", ["✦ high leverage · ⚖ lots soon, rare later · 文 a reading word.", "✓ known · ⊘ ignored, greyed in the list."]], ["Stones", ["Rock: no cards yet · raw gem: cards in Anki · cut gem: watched or read.", "The sheen and sparkle: pre-studied."]]],
@@ -1558,7 +1576,11 @@ function restoreView() {
   try { v = JSON.parse(localStorage.getItem(VIEW_KEY) || "null"); } catch (e) {}
   let i = -1;
   if (v) { if (v.id != null && ID_IX.has(v.id)) i = ID_IX.get(v.id); else if (v.name) i = EPS.findIndex((e) => e[1] === v.name); }
-  if (location.hash.startsWith("#file=")) { const name = decodeURIComponent(location.hash.slice(6).split("&")[0]); const j = EPS.findIndex((e) => e[1] === name); if (j >= 0) { i = j; v = null; } }
+  if (location.hash.startsWith("#file=")) {                // the window's ↗: an episode's item (two shows' 第01集 are two), else its name
+    const [file, ...more] = location.hash.slice(6).split("&"), name = decodeURIComponent(file), id = Number((more.find((p) => p.startsWith("id=")) || "").slice(3) || NaN);
+    const j = ID_IX.size && !Number.isNaN(id) ? (ID_IX.has(id) ? ID_IX.get(id) : -1) : EPS.findIndex((e) => e[1] === name);   // (an item it lacks: never its namesake)
+    if (j >= 0) { i = j; v = null; }
+  }
   if (i < 0) { i = startEp(); v = null; }
   S.ep = i;
   if (v) { S.wi = v.wi || 0; S.filter = v.filter || 0; S.order = v.order === "freq" ? "freq" : "meet"; S.open = v.open || {}; S.list = !!v.list; S.focus = !!v.focus; }

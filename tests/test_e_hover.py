@@ -36,7 +36,10 @@ def run(request, tmp_path_factory):
     cases.build(root, case)
     with open(os.path.join(root, "settings.json"), "w", encoding="utf-8") as f:
         json.dump({"logic": {"context": {"max_chars": NEVER_LONGER}}}, f)
-    cases.generate(root, case, extra_env={"SURASURA_SENTENCE_TABLE": "2"})
+    # A level-1 Generate: the same table a level-2 one writes (the walk offers it the same lines), beside today's
+    # plan (format 4) with its own first sentences — today's answer these tests compare with. (A level-2 Generate's
+    # plan, format 5, keeps none: E-REDRAW part 2.)
+    cases.generate(root, case, extra_env={"SURASURA_SENTENCE_TABLE": "1"})
     results = os.path.join(root, "results")
     return types.SimpleNamespace(language=language, root=root, results=results,
                                  plan_path=os.path.join(results, analyzer.PLAN_FILE),
@@ -275,9 +278,9 @@ def test_a_damaged_block_gives_nothing_and_never_an_error(run, tmp_path, monkeyp
     firsts = TW.first_sentences(_plan_copy(run, str(tmp_path / "results")), run.data_dir)
     f = next(i for i in range(len(plan.files)) if firsts.of(i, every))
     for error in (TypeError("a head with a null size"), KeyError("chars"), ValueError("a block of the wrong size")):
-        def broken(self, k, error=error):
+        def broken(self, f, k, error=error):
             raise error
-        monkeypatch.setattr(sentence_table.Table, "block", broken)
+        monkeypatch.setattr(sentence_table.Table, "_read", broken)     # (a row's block read: `blocks`, DSA-WALK)
         assert firsts.of_files({f: every, f + 1: every}) == {f: {}, f + 1: {}}
 
 
@@ -316,8 +319,8 @@ def test_a_titles_words_read_each_words_block_once(run, tmp_path, monkeypatch):
     one_by_one = {f: firsts.of(f, every) for f in files}
     asked = {f: sorted(one_by_one[f]) + [k for k in every if k not in one_by_one[f]][:3] for f in files}
     reads = []
-    block = sentence_table.Table.block
-    monkeypatch.setattr(sentence_table.Table, "block", lambda self, k: reads.append(k) or block(self, k))
+    blocks = sentence_table.Table.blocks    # (the words' rows asked at once, read in the file's order: DSA-WALK)
+    monkeypatch.setattr(sentence_table.Table, "blocks", lambda self, rows: reads.extend(rows) or blocks(self, rows))
     assert firsts.of_files(asked) == one_by_one
     assert sorted(reads) == sorted({k for rows in asked.values() for k in rows})
 

@@ -41,7 +41,7 @@ from tests.test_services_replan_host import fired, gate  # noqa: F401 (fixtures)
     (["journey_meanings"], 1),                        # the one row the v3 render reads (Meanings)
     (["line_player", "anki_backlog_on_generate"], 1), # two at once: one re-render
     (["theme"], 0),                                   # a look the v3 page applies itself (J-CUT: the Redraw rule)
-    (["source_display", "zen_limit"], 0),             # the old page's (and a saved Zen look's): nothing on v3 reads it
+    (["source_display", "show_words_per_day"], 0),    # the old page's (the preview's now): nothing on v3 reads it
     (["open_app_mode"], 0),                           # how it opens, read at the open: nothing to draw
     (["exclude_single"], 0),                          # an analysis key: the Generate button's mark says so
 ])
@@ -60,13 +60,12 @@ def test_a_report_setting_written_tells_the_journey_keeper_once_and_nothing_else
 
 # --- the scenario: real Generates ------------------------------------------------------------------------------------ #
 def _themed_argv(settings, language=None, **_k):
-    """The test's Generates' argv (`_argv`: six short episodes), with the theme `run_args` passes when one is set and
-    an analysis setting the test can move (`min_freq`, as `--min-freq` stands for the level)."""
+    """The test's Generates' argv (`_argv`: six short episodes), with an analysis setting the test can move
+    (`min_freq`, as `--min-freq` stands for the level). No theme: `run_args` passes none since J-RETIRE."""
     settings = settings or {}
     argv = _argv(language)
     argv[argv.index("--min-freq") + 1] = str(settings.get("min_freq", 1))
-    theme = settings.get("theme")
-    return argv + ([f"--theme={run_args.THEME_ARGS[theme]}"] if theme else [])
+    return argv
 
 
 def _run(root, run):
@@ -122,37 +121,21 @@ def _halves(settings, language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_look_change_draws_nothing_and_a_saved_zen_look_in_or_out_re_renders_only(language, themed, gate, fired):
+def test_a_look_change_draws_nothing_and_a_saved_zen_look_is_one_more_look(language, themed, gate, fired):
     # J-CUT (the Redraw rule): the v3 page applies its look itself, so moving between two looks moves no signature and
-    # writes no page; Zen (a saved look: Settings no longer offers it) is its own page, so Zen in or out re-renders —
-    # and re-analyses nothing. (The window's hook tells the keeper nothing for `theme`, placed neither: the press
-    # re-renders, the next test; here the keeper is told directly.)
+    # writes no page; J-RETIRE: Zen (a saved look Settings no longer offers) is no page of its own any more — Night,
+    # the page's default — so Zen in or out draws nothing either. (The window's hook tells the keeper nothing for
+    # `theme`, placed neither; here the keeper is told directly, and finds nothing to draw.)
     store, _ids, _names, root, _first = _kept_on(language)
     w = themed(language)
     settings = w.replan._settings
     assert _halves(settings.get(), language) == (True, True)
-    _saved(settings, theme="Modern Light")
-    assert _halves(settings.get(), language) == (True, True), "a look the page applies itself: nothing to draw"
-    _saved(settings, theme="Zen Mode")
-    assert _halves(settings.get(), language) == (True, False), "Zen in: the analysis current, the report not"
+    for look in ("Modern Light", "Zen Mode", "Dark Flow"):
+        _saved(settings, theme=look)
+        assert _halves(settings.get(), language) == (True, True), f"{look}: a look the page applies itself"
     w.replan.report_changed()
     assert fired.done(w.keeper)
-    assert w.keeper.asked == 1 and h.until(lambda: w.launches.count() == 1, seconds=5), "one quiet run asked"
-    said, html = _run(root, w.launches.runs[0])
-    assert REUSED in said and RE_RENDER in said, "a re-render only"
-    assert _page_theme(html) is None and "zen" in html.lower(), "Zen's own page"
-    assert _halves(settings.get(), language) == (True, True)
-    _saved(settings, theme="Modern Light")
-    assert _halves(settings.get(), language) == (True, False), "Zen out: the v3 page again"
-    w.replan.report_changed()
-    assert fired.done(w.keeper)
-    assert h.until(lambda: w.launches.count() == 2, seconds=5)
-    said, html = _run(root, w.launches.runs[1])
-    assert REUSED in said and RE_RENDER in said and _page_theme(html) == "light", "the v3 page, in settings.json's look"
-    assert _halves(settings.get(), language) == (True, True)
-    w.replan.report_changed()                         # the same setting again: nothing left to draw
-    assert fired.done(w.keeper)
-    assert w.launches.count() == 2
+    assert w.launches.count() == 0, "nothing to draw: no run asked"
     store.close()
 
 
@@ -298,7 +281,7 @@ def test_opened_with_its_old_look_while_a_generate_is_due_the_answer_says_so(mon
     from app import static_html_generator as generator
     opened = []
     monkeypatch.setattr(generator, "open_report", lambda **k: opened.append(k) or True)
-    monkeypatch.setattr(generator, "report_holds", lambda name: name == "第01話.srt")
+    monkeypatch.setattr(generator, "report_holds", lambda name, item=None: name == "第01話.srt")
     services = SimpleNamespace(closing=threading.Event(), settings=SimpleNamespace(get=lambda: {}),
                                draw_journey=lambda: True)
     assert shell.Services.open_journey(services) == shell.JOURNEY_OLD_LOOK

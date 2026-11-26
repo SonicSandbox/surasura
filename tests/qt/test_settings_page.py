@@ -27,7 +27,7 @@ from PyQt6.QtGui import QPalette
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QAbstractButton, QApplication, QWidget
 
-from app import settings_manager, theme
+from app import plan_rules, settings_manager, theme
 from app.qt import bridge, freeze, motion, style, windows
 from app.qt import settings_catalog as catalog
 from app.qt import settings_controls as sc
@@ -145,6 +145,56 @@ def make_page(data=None, language="ja", found=EVERYTHING, size=(1100, 700), wait
     return page, store
 
 
+def test_each_build_slice_tells_the_windows_idle_and_a_built_or_gone_page_tells_it_nothing_more(qapp, monkeypatch):
+    """OPEN-GAP (2026-11-25): only a stretch that runs a page's slices hands Python's lock over as at rest past
+    `window_idle.LONG_S` (Settings during the start: 21 s at 0.25 ms) — the start's own long stretch keeps the fine one
+    (at 1 ms the 20,000-file open's input waited 0.7 s). So every slice of the build says so, and a page built, or gone
+    mid-build, says nothing more: nothing is left on for later stretches, however the build stops."""
+    from PyQt6 import sip
+    from app.services import window_idle
+    told = []
+    monkeypatch.setattr(window_idle, "slice_ran", lambda: told.append(1))
+    page, _store = make_page()
+    assert len(told) == len(page.slice_ms) > 1
+    n = len(told)
+    assert not wait_until(lambda: len(told) > n, 0.05)   # (built: no slice after it)
+    gone, _store = make_page(wait=False)
+    assert wait_until(lambda: len(told) > n, 5) and not gone.built
+    sip.delete(gone)                                  # (its window closed mid-build)
+    m = len(told)
+    assert not wait_until(lambda: len(told) > m, 0.05)
+    page.close()
+
+
+def test_mounting_settings_tells_the_windows_idle_before_its_imports_and_page_and_a_mounted_one_tells_it_nothing(
+        monkeypatch):
+    """OPEN-GAP 2 (2026-11-25): Settings' mount (its six imports, the page's frame, the rows other packages attach) is
+    the sliced build's first stretch. Told only from the first slice on, that stretch kept the fine hand-over beside the
+    start's busy workers: Settings clicked 1.5 s after the 20,000-file open's first frame built 0.3-2 s later than on
+    3.0-dev, every pair of two bookings. So the mount says so before anything else, and a page already mounted (a later
+    click of the tab) says nothing."""
+    from app.qt import shell
+    from app.services import window_idle
+    told = []
+    monkeypatch.setattr(window_idle, "slice_ran", lambda: told.append("idle"))
+
+    class Built(Exception):
+        pass
+
+    def page(*_a, **_k):
+        told.append("page")
+        raise Built                                   # (the page itself is not this test's: stop at its making)
+    monkeypatch.setattr(sp, "SettingsPage", page)
+    win = SimpleNamespace(settings_page=None, page_widgets={"settings": None}, language="ja",
+                          services=SimpleNamespace(settings=SimpleNamespace(get=lambda: {"target_language": "ja"})))
+    with pytest.raises(Built):
+        shell.ShellWindow.mount_settings(win)
+    assert told == ["idle", "page"]
+    told.clear()
+    win.settings_page = mounted = object()
+    assert shell.ShellWindow.mount_settings(win) is mounted and told == []
+
+
 def open_all_folds(page):
     for section_id, slab in page.slabs.items():
         if not slab.more_row.isHidden() and section_id not in page.folds():
@@ -235,7 +285,10 @@ def test_every_visible_control_writes_exactly_its_keys_and_a_per_language_one_ke
                 assert given_update is None
                 # Kantan-B3's marker rides beside *Count as known in Anki*'s pick (a pick, never an old default)
                 # (and FS-2's beside *Swap gives*': the default's later flip reaches only who never picked)
-                beside = {"known_from_anki": {catalog.CHOSEN}, "swap_in_place": {catalog.SWAP_CHOSEN}}.get(row.id, set())
+                # (and E-LENGTH's beside *Length* while the sentence table is on: a pick, never read as the old default)
+                beside = {"known_from_anki": {catalog.CHOSEN}, "swap_in_place": {catalog.SWAP_CHOSEN},
+                          "sentence_length": ({settings_manager.SENTENCE_LENGTH_CHOSEN}
+                                              if plan_rules.SENTENCE_TABLE >= 1 else set())}.get(row.id, set())
                 assert set(changes) == set(expected) and set(changes) <= set(row.keys) | beside, (row.id, changes)
                 assert changes == expected
             store.land()
@@ -1039,21 +1092,10 @@ def test_a_rows_description_waits_behind_its_question_mark_and_shows_on_hover_fo
     assert store.calls == []
 
 
-@pytest.fixture
-def settings_pre_cut():
-    """The Settings before the journey v3 cut-over (`use_v3(False)`), for a row only they hold — Speech's (D15: speaking
-    left the journey; the YouTube preview's old page still reads its key); back to the switch's own after (J-CUT)."""
-    catalog.use_v3(False)
-    yield
-    catalog.use_v3(catalog._journey_v3())
-
-
 @pytest.mark.parametrize("row_id", ["known_import", "update_check_enabled", "telemetry_enabled", "covers_download",
-                                    "remove_downloaded_covers", "practice_ai", "enable_koe"])
+                                    "remove_downloaded_covers", "practice_ai"])
 def test_a_line_the_learner_must_read_before_pressing_stays_in_sight_without_a_question_mark(qapp, row_id, request):
     """What leaves this computer, what replaces or deletes for good: read before the press, never hidden."""
-    if row_id == "enable_koe":
-        request.getfixturevalue("settings_pre_cut")      # Speech's row: the Settings before the cut-over only
     data = dict(ALL_ON, known_road="import")
     page, _store = make_page(data, "ja")
     if row_id == "known_import":

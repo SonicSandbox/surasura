@@ -157,9 +157,9 @@ def record(sentences, view, file_path=None, source_type=None, names=None):
     (`Gates.check`) add it to the library by, each as the token store counts a file: "counts" {(lemma, reading): its
     tokens with target-language characters}, "bound" (Japanese: {(lemma, reading): uses as pieces of something else},
     `analyzer.bound_uses`), "tally" (`phrases.tally`'s), "names" (its name record, handed in: `View.names_record`);
-    "plan" and "keys" (the plan it was read against, which `plan_engine.Engine.add` checks) and "name" (its file's
-    name, the progressive list's Source File). `file_path` and `source_type` name the file; no part of its line
-    depends on them."""
+    "plan" and "keys" (the plan it was read against, which `plan_engine.Engine.add` checks), "name" (its file's
+    name, the progressive list's Source File) and "path" (its Source Path, E-NAMES). `file_path` and `source_type`
+    name the file; no part of its line depends on them."""
     language = view.language
     has_target = analyzer.has_target_language
     bound_uses = analyzer.bound_uses
@@ -343,7 +343,19 @@ def record(sentences, view, file_path=None, source_type=None, names=None):
     return {"main": main, "ph": ph, "sp": sp, "prog": prog, "spc": spc, "uses": uses, "phrases": dict(phrase_uses),
             "tokens": tokens, "counts": counts, "bound": bound_all, "tally": (tally, taken_names), "names": names,
             "plan": view.plan.header["run_signature"], "keys": len(view.keys),
-            "name": os.path.basename(file_path) if file_path else None}
+            "name": os.path.basename(file_path) if file_path else None, "path": _path_of(file_path, language)}
+
+
+def _path_of(file_path, language):
+    """An arrival's Source Path (E-NAMES): its path from the data folder, as the Generate's rows name it; None with no
+    file or one off the data folder's drive (the engine then names it by its item id)."""
+    if not file_path:
+        return None
+    from app.path_utils import get_data_path, library_path
+    try:
+        return library_path(os.path.abspath(file_path), os.path.abspath(get_data_path(language)))
+    except ValueError:
+        return None
 
 
 # --------------------------------------------------------------------------------------------------------------- #

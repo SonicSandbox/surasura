@@ -55,6 +55,30 @@ def test_a_file_is_its_path_never_a_name_two_shows_share(generated, tmp_path):
                    {(m["word"], m["reading"]) for m in mine["words"]})
 
 
+def test_two_library_files_of_one_name_each_answer_their_own_rows_and_new_words():
+    # why (E-NAMES): the journey's rows named a file by its name, so with two shows' phrases_sample.srt both in the
+    # library, `--file` answered both files' rows for either one, and `new` was null for both (can't tell). The rows
+    # carry each file's path from the data folder now: each file answers its own.
+    folder = h.seed_library("ja")
+    other = os.path.join(folder, "別の番組", "phrases_sample.srt")
+    os.makedirs(os.path.dirname(other))
+    shutil.copy2(OTHER_SHOW, other)
+    h.write_settings()
+    code, lines = h.run_cli("generate")
+    assert code == 0, lines
+    mine_path = os.path.join(folder, "phrases_sample.srt")
+    rows = {path: h.answer(h.run_cli("list", "--file", path)[1])["words"] for path in (mine_path, other)}
+    words = {path: {(w["word"], w["reading"]) for w in found} for path, found in rows.items()}
+    assert words[mine_path] and words[other], "each file has words of its own on the journey"
+    assert not words[mine_path] & words[other], "a word is first met in one file only: never both files' rows"
+    said = {path: h.answer(h.run_cli("list", "--file", path, "--order", "encounter")[1])["words"]
+            for path in (mine_path, other)}
+    for path in (mine_path, other):
+        assert all(w["new"] is not None for w in said[path]), "both are the library's files: `new` is told"
+        assert {(w["word"], w["reading"]) for w in said[path] if w["new"]} == words[path], \
+            "new here = the journey's rows of THIS file"
+
+
 def test_a_text_file_keeps_the_journeys_rows(generated):
     # .txt: no lines to time; --file still means P1.2's rows for that file name
     code, lines = h.run_cli("list", "--file", "context_test.txt", "--order", "encounter")

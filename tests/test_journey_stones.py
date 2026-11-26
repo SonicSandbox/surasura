@@ -1,14 +1,15 @@
 """The journey's stones, the data half (Sonic 2026-10-23, "Yes include"; drill A2: "the journey shows A-Ep01 as
-watched", and its step 6 end to end).
+watched", and its step 6 end to end) — on the v3 page, the journey's one page since J-RETIRE (2026-11-23).
 
-The report's per-file data (`globalData.progressive`, the journey's file list in order) names each episode's watched
-mark, read from the library store in one read (`library_store.read_watched_marks`, `static_html_generator._journey_stones`):
+The page's episodes (`journey_render.build`'s head `eps`, in the library's order: `store_facts`) name each episode's
+watched mark (its flags' bit 1), read from the library store:
 
-  - a counted file that is watched (*Keep studying watched episodes* on): its entry as before plus `"watched": true`;
-  - a watched file set aside (the option off): an entry IN ITS PLACE in the library's order, no counts —
-    `{"filename", "watched": true, "aside": true, "words": [], "total_words": 0, "is_goal_content", "unlisted": []}` —
-    its name at the same place in `file_order` (the inline Target Met order), never in `completed_files`;
-  - no `watched` key: not watched. No stone, or no library store: the report is byte for byte what it was.
+  - a counted file that is watched (*Keep studying watched episodes* on): its episode as before, its words counted, and
+    the mark;
+  - a watched file set aside (the option off): an episode IN ITS PLACE in the library's order (`_with_aside`), no
+    counts — no words, no *% known*;
+  - no mark: not watched. No stone, or no library store: no episode carries one, and the render signature has no
+    stones part (a library with none keeps the signature it had).
   - Finished stays out of the journey (its own view), stones or not.
 
 A stone with the option on changes no run input, so the render signature carries the marks (`_stones_fingerprint`):
@@ -18,6 +19,8 @@ What a wrong answer would cost a learner: an episode he has watched vanishing fr
 done), a stone that doesn't show until something else re-renders the report, or a stone left on an episode he put back.
 Japanese and Chinese alike, under the per-test SURASURA_TEST_ROOT, with real text from the bundled samples.
 """
+import base64
+import gzip
 import json
 import os
 import re
@@ -29,7 +32,7 @@ import pandas as pd
 import pytest
 
 from app import library_store as ls
-from app.static_html_generator import shown_name
+from tests.journey_page_edge import find_edge
 from tests.plan_file_cases import _split_lines, _split_srt, child_env
 from tests.test_generate_watched import SHOWS, _read
 from tests.test_library_store_support import LANGUAGES, entry, migrated, roots, write_manifest
@@ -38,10 +41,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REUSED = "Nothing affecting the analysis changed"
 # Real words from the bundled samples, for the hand-made lists of the fast tests
 WORDS = {"ja": ("冒険", "図書館", "文化祭"), "zh": ("冒险", "夜市", "挑战")}
-
-
-# The old renderer's tests (J-CUT): run before the cut-over, while Zen and the YouTube preview keep the old page
-pytestmark = pytest.mark.usefixtures("journey_pre_cut")
+HEAD = re.compile(r'<script type="application/json" id="j-head">(.*?)</script>', re.S)
+CHUNK = re.compile(r'<script type="application/gzip-base64" id="j-c\d+">(.*?)</script>', re.S)
 
 
 def _settings(language, **logic):
@@ -54,10 +55,27 @@ def _settings(language, **logic):
 
 
 def _payload(html):
-    """The old page's data (`globalData`); None for the v3 page (J-CUT), which a test borrowing these helpers with the
-    cut on writes — a test that reads the old page's stones runs before the cut (`journey_pre_cut`)."""
-    found = re.search(r"let globalData = (\{.*?\});\n", html, re.S)
-    return json.loads(found.group(1)) if found else None
+    """The v3 page's episodes as a value two runs compare: {"progressive": [each episode in the page's order —
+    {"filename", "tier", "pct" (*% known*), "words" (the words first met in it, the chunks' own), "watched": True only
+    on a stone, "aside": True only on a stone set aside (no *% known*, no words)}]}; None for a page with no head."""
+    found = HEAD.search(html)
+    if found is None:
+        return None
+    head = json.loads(found.group(1))
+    words = {}
+    for blob in CHUNK.findall(html):
+        chunk = json.loads(gzip.decompress(base64.b64decode(blob)).decode("utf-8"))
+        for w in chunk.get("w", ()):
+            words.setdefault(w[5], []).append(w[0])            # a word record's 6th cell: the episode it is met in
+    progressive = []
+    for n, ep in enumerate(head["eps"]):        # [item id, name, shown, show, tier, kind, % known, new, …, flags, …]
+        one = {"filename": ep[1], "tier": ep[4], "pct": ep[6], "words": words.get(n, [])}
+        if ep[10] & 1:
+            one["watched"] = True
+            if ep[6] is None and not one["words"]:
+                one["aside"] = True
+        progressive.append(one)
+    return {"progressive": progressive}
 
 
 def _report(root):
@@ -67,9 +85,9 @@ def _report(root):
 
 # --- the fast half: the generator on hand-made results over a real store ------------------------------------------ #
 
-def _render(tmp_path, language, counted, theme="default", today=False):
-    """Render a report whose progressive list holds one real word per file of `counted` (basenames, in order) and whose
-    statistics name every one — `today`: with the stones step taken out, the report as it was before them. -> html."""
+def _render(tmp_path, language, counted):
+    """Draw the page over the store from a results folder whose progressive list holds one real word in each of
+    `counted`'s files but the last (basenames, in order; the last: every word known) -> its data (`_payload`)."""
     results = tmp_path / "results"
     results.mkdir(exist_ok=True)
     word = WORDS[language]
@@ -80,7 +98,7 @@ def _render(tmp_path, language, counted, theme="default", today=False):
     pd.DataFrame([{"Sequence": i, "Source File": name, "Word": word[i % 3], "Reading": "", "Tier": "Outside",
                    "Score": 10, "Occurrences (Global)": 2, "Occurrences (File)": 2, "Count (High)": 0,
                    "Count (Low)": 0, "Count (Goal)": 2, "Context 1": f"{word[i % 3]}。"}
-                  for i, name in enumerate(counted[:-1], 1)]       # the last file: every word known (Target Met)
+                  for i, name in enumerate(counted[:-1], 1)]
                  ).to_csv(results / "progressive_learning_list.csv", index=False, encoding="utf-8-sig")
     with open(results / "file_statistics.json", "w", encoding="utf-8") as f:
         json.dump([{"File": name, "Total Words": 10, "Known Count": 9, "Coverage (%)": 90.0} for name in counted],
@@ -91,75 +109,75 @@ def _render(tmp_path, language, counted, theme="default", today=False):
             patch.object(gen, "PRIORITY_CSV", str(results / "priority_learning_list.csv")), \
             patch.object(gen, "PROGRESSIVE_CSV", str(results / "progressive_learning_list.csv")), \
             patch.object(gen, "OUTPUT_FILE", str(out)):
-        if today:
-            with patch.object(gen, "_journey_stones", lambda *a, **k: None):
-                gen.generate_static_html(theme=theme, open_browser=False)
-        else:
-            gen.generate_static_html(theme=theme, open_browser=False)
-    return out.read_text(encoding="utf-8")
+        gen.generate_static_html(open_browser=False, language=language)
+    return _payload(out.read_text(encoding="utf-8"))
 
 
 def _now_names(store):
     return [os.path.basename(e["physical_path"]) for e in store.schedule()[ls.TIERS["now"][0]]]
 
 
+def _marked(data):
+    return [e["filename"] for e in data["progressive"] if e.get("watched")]
+
+
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_with_no_stone_or_no_store_the_report_is_byte_for_byte_what_it_was(language, tmp_path):
-    # why: the stones must cost a library that has none nothing — not a byte of its report, and with no library store
-    # (JSON mode) the reader gives nothing to place
+def test_with_no_stone_or_no_store_no_episode_carries_one_and_the_signature_has_no_stones_part(language, tmp_path):
+    # why: the stones must cost a library that has none nothing — no stone drawn, no part of the render signature —
+    # and with no library store (JSON mode) the reader gives nothing to place
+    from app import analyzer
     _settings(language)
     data_dir, user_files_dir = roots(language)
     assert ls.read_watched_marks(language, data_dir) is None, "no store: nothing to read"
+    assert analyzer._stones_fingerprint(language) is None
     store = migrated(language)
     counted = _now_names(store)
     assert ls.read_watched_marks(language, data_dir) == [], "a store with no stone: nothing to place"
-    assert _render(tmp_path, language, counted) == _render(tmp_path, language, counted, today=True)
+    assert analyzer._stones_fingerprint(language) is None, "a library with none keeps the signature it had"
+    assert _marked(_render(tmp_path, language, counted)) == []
     store.finish([store.ids("goal")[0]])
-    store.set_watched([store.ids("graduated")[0]])
+    finished = store.ids("graduated")[0]
+    store.set_watched([finished])
     assert ls.read_watched_marks(language, data_dir) == [], "a stone in Finished stays out of the journey"
-    assert _render(tmp_path, language, counted) == _render(tmp_path, language, counted, today=True)
+    assert analyzer._stones_fingerprint(language) is None
+    data = _render(tmp_path, language, counted)
+    assert _marked(data) == [] and os.path.basename(store.item(finished)["rel_path"]) not in \
+        [e["filename"] for e in data["progressive"]], "Finished: no episode, no stone"
     store.close()
     with patch.object(ls, "STORE_LIVE", False):
         assert ls.read_watched_marks(language, data_dir) is None, "the store switched off: nothing to read"
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_set_aside_stone_sits_in_its_place_with_no_counts_and_in_the_inline_order(language, tmp_path):
+def test_a_set_aside_stone_sits_in_its_place_with_no_counts(language, tmp_path):
     # why: an episode the learner marked must show where it stands in his order — not vanish, and not be counted
-    _settings(language, inline_completed_files=True)
+    _settings(language)
     store = migrated(language)
     names = _now_names(store)
-    second = store.ids("now")[1]
-    store.set_watched([second])
+    store.set_watched([store.ids("now")[1]])
     counted = [n for n in names if n != names[1]]
-    data = _payload(_render(tmp_path, language, counted))
+    data = _render(tmp_path, language, counted)
     shown = [e["filename"] for e in data["progressive"]]
-    assert shown == [counted[0], names[1]] + counted[1:-1], "the stone in its place; the last file is Target Met"
+    assert shown[:len(names)] == names, "the stone in its place, NOW first in the library's order"
     stone = data["progressive"][1]
-    assert stone == {"filename": names[1], "watched": True, "aside": True, "words": [], "total_words": 0,
-                     "is_goal_content": False, "unlisted": [],
-                     "name": shown_name(names[1])}               # Fresh-U 13: what its sidebar row shows
-    assert not any("watched" in e for e in data["progressive"] if e is not stone), "no other file is watched"
-    assert data["file_order"] == [counted[0], names[1]] + counted[1:], "its name in the inline order, in its place"
-    assert names[1] not in [f["filename"] for f in data["completed_files"]], "never Target Met"
-    zen = _payload(_render(tmp_path, language, counted, theme="Zen Mode"))
-    assert names[1] not in [e["filename"] for e in zen["progressive"]], "Zen shows no journey: no stone there"
+    assert stone == {"filename": names[1], "tier": 0, "pct": None, "words": [], "watched": True, "aside": True}
+    assert _marked(data) == [names[1]], "no other file is watched"
     store.close()
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_stone_on_a_6_months_episode_and_one_after_the_last_listed_file(language, tmp_path):
-    # why: the 6+ chip follows the tier, and a stone after every counted file still has a place (the end)
+    # why: the 6+ tier follows the episode, and a stone after every counted file still has a place (the end)
     _settings(language)
     store = migrated(language)
     goal = store.ids("goal")
     store.set_watched([goal[-1]])
     order = [os.path.basename(e["physical_path"]) for tier in ls.ANALYSED for e in store.schedule()[ls.TIERS[tier][0]]]
     assert os.path.basename(store.item(goal[-1])["rel_path"]) not in order, "set aside: off Generate's list"
-    data = _payload(_render(tmp_path, language, order))
+    data = _render(tmp_path, language, order)
     last = data["progressive"][-1]
     assert last["filename"] == os.path.basename(store.item(goal[-1])["rel_path"])
-    assert last["aside"] and last["is_goal_content"], last
+    assert last.get("aside") and last["tier"] == 2, last
     store.close()
 
 
@@ -172,47 +190,73 @@ def test_with_keep_studying_on_a_stone_marks_the_counted_entry_and_moves_only_th
     store = migrated(language)
     store.set_library_options(keep_watched=True)
     names = _now_names(store)
-    args = argparse.Namespace(theme="default", zen_limit=0, language=language)
+    args = argparse.Namespace(language=language)
     found = analyzer.resolve_found_files(language, verbose=False, missing=True)
     run, render = analyzer.compute_run_signature(language, found, analyzer.parse_analysis_args([])), \
         analyzer.compute_render_signature(args)
-    zen = argparse.Namespace(theme="Zen Mode", zen_limit=0, language=language)
-    zen_render = analyzer.compute_render_signature(zen)
-    store.set_watched([store.ids("now")[0], store.ids("now")[-1]])     # the last NOW file: Target Met
+    store.set_watched([store.ids("now")[0], store.ids("now")[-1]])     # the last NOW file: every word known
     found_after = analyzer.resolve_found_files(language, verbose=False, missing=True)
     assert found_after == found, "the option on: a stone counts on"
     assert analyzer.compute_run_signature(language, found_after, analyzer.parse_analysis_args([])) == run
     assert analyzer.compute_render_signature(args) != render, "the report must re-render"
-    assert analyzer.compute_render_signature(zen) == zen_render, "Zen shows no journey: it never re-renders for one"
-    data = _payload(_render(tmp_path, language, names))
-    assert data["progressive"][0]["watched"] is True and data["progressive"][0]["words"], "counted AND watched"
-    assert not any(e.get("aside") for e in data["progressive"])
-    assert [f.get("watched") for f in data["completed_files"]] == [True], "a Target Met file is marked too"
+    data = _render(tmp_path, language, names)
+    first, last = data["progressive"][0], data["progressive"][len(names) - 1]
+    assert first["watched"] is True and first["words"] and not first.get("aside"), "counted AND watched"
+    assert last["filename"] == names[-1] and last["watched"] is True, "a file with nothing new is marked too"
+    assert _marked(data) == [names[0], names[-1]]
     store.close()
 
 
-def test_an_aside_file_whose_name_a_counted_file_has_gets_no_entry_of_its_own(tmp_path):
-    # why: the per-file report knows a file by its basename; a second entry of one name would be two tabs for one
-    # name (the template's maps keep one) — the counted file keeps its entry, never marked watched
-    language = "zh"
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_pages_facts_and_the_marks_it_is_signed_with_are_one_read_a_mark_committed_mid_read_is_in_neither(language):
+    # why (J-FIX 3): the page draws its stones from the store's feed and is signed with `watched_marks`; read apart, a
+    # mark committed between them is drawn and not signed (or signed and not drawn) — the page then stays "up to date"
+    # on the wrong stones. One read transaction: the window's mark, committed while the page reads, is in neither
+    from app import journey_render
     _settings(language)
-    data_dir, user_files_dir = roots(language)
-    doc = {"schedule": {p: [] for p in ls.PHASES}}
-    texts = _split_lines(_read(SHOWS[language][0]), 2)
-    for n, rel in enumerate(("HighPriority/魔王/第01集.txt", "HighPriority/龙神/第01集.txt")):
-        path = os.path.join(data_dir, *rel.split("/"))
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(texts[n])
-        doc["schedule"][ls.TIERS["now"][0]].append(entry(rel))
-    write_manifest(user_files_dir, doc)
-    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
-    store = ls.open_store(language, data_dir, user_files_dir)
-    store.set_watched([store.ids("now")[0]])
-    data = _payload(_render(tmp_path, language, ["第01集.txt", "其他.txt"]))
-    assert [e["filename"] for e in data["progressive"]] == ["第01集.txt"]
-    assert "watched" not in data["progressive"][0]
+    store = migrated(language)
+    target = store.ids("now")[1]
+    real = ls.Store.read_feed
+
+    def feed_then_mark(self, *a, **k):
+        out = real(self, *a, **k)
+        if self is not store:
+            store.set_watched([target])         # the window's own connection commits while the page reads
+        return out
+    with patch.object(ls.Store, "read_feed", feed_then_mark):
+        facts = journey_render.store_facts(language)
+    assert store.item(target)["watched"] == 1, "the mark committed"
+    assert not facts.items[target]["watched"] and facts.marks == [], "drawn and signed alike: without it"
+    again = journey_render.store_facts(language)
+    assert again.items[target]["watched"] and [m[0] for m in again.marks if m[2]] == [store.item(target)["rel_path"]]
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_failed_read_of_the_store_is_never_read_again_by_the_render_so_no_stone_is_drawn_unsigned(language, tmp_path):
+    # why (J-FIX 3, the contract review): when the page's own read of the store fails, the render must not read it a
+    # second time — that read could draw a stone the page is never signed with (the run signs UNREAD or None)
+    from app import journey_render
+    _settings(language)
+    store = migrated(language)
+    counted = _now_names(store)
+    store.set_watched([store.ids("now")[0]])
+    calls = []
+
+    def failed(*a, **k):
+        calls.append(a)
+        return None
+    with patch.object(journey_render, "store_facts", failed):
+        data = _render(tmp_path, language, counted)
+    assert len(calls) == 1, "the page's one read, never a second inside the render"
+    assert _marked(data) == [], "nothing read: no stone drawn"
+    store.close()
+
+
+# J-RETIRE: the old page's "an aside file whose name a counted file has gets no entry of its own" (its sidebar keyed
+# each tab by basename) retires: the v3 page keys each episode by its item id (`journey_render.build`). What it also
+# held — the counted file's words never drawn on a same-named episode set aside — is held on v3 by
+# `test_two_shows_one_file_name_the_set_aside_episode_never_takes_the_counted_ones_words` (J-FIX 3).
 
 
 # --- the Generate half: real runs, as the dashboard starts them ---------------------------------------------------- #
@@ -243,8 +287,8 @@ def _library(language):
 
 
 def _generate(root, language):
-    """A full Generate in its own process, as the dashboard runs it (the store's helper after) -> (report data, what it
-    printed)."""
+    """A full Generate in its own process, as the dashboard runs it (the store's helper after) -> (the page's data,
+    `_payload`; what it printed)."""
     cmd = [sys.executable, os.path.join(REPO, "app", "analyzer.py"), f"--language={language}", "--static",
            "--no-open", "--min-freq", "1"]
     p = subprocess.run(cmd, cwd=REPO, env=child_env(root), capture_output=True, text=True, encoding="utf-8",
@@ -260,14 +304,223 @@ def _files(data):
 
 
 def _stones(data):
-    return {e["filename"]: bool(e.get("aside")) for e in data["progressive"] + data["completed_files"]
-            if e.get("watched")}
+    """{each stone's file: whether it is set aside}."""
+    return {e["filename"]: bool(e.get("aside")) for e in data["progressive"] if e.get("watched")}
 
 
 def _words(data, name):
-    entry_ = next(e for e in data["progressive"] if e["filename"] == name)
-    words = entry_["words"]
-    return words["rows"] if isinstance(words, dict) else words
+    return next(e for e in data["progressive"] if e["filename"] == name)["words"]
+
+
+# Two shows whose episodes share their file names (a library's 第01集 in every show's folder): two real books cut in
+# two, each episode named only by its number
+SAME_NAMED = {"ja": ("samples/ja/HighPriority/蜘蛛の糸（芥川龍之介）.txt", "samples/ja/LowPriority/ごん狐（新美南吉）.txt"),
+              "zh": SHOWS["zh"]}
+EP_NAMES = {"ja": "第{:02d}話.txt", "zh": "第{:02d}集.txt"}
+
+
+def _same_named(language):
+    """Show A Ep01–Ep02 then Show B Ep01–Ep02 in NOW, A's and B's episodes of one number sharing a file name ->
+    (store, {"A1": item id, ...}, [the two file names])."""
+    data_dir, user_files_dir = roots(language)
+    doc = {"schedule": {p: [] for p in ls.PHASES}}
+    rels = {}
+    for show, src in zip("AB", SAME_NAMED[language]):
+        for n, text in enumerate(_split_lines(_read(src), 2), 1):
+            rel = f"HighPriority/Show{show}/{EP_NAMES[language].format(n)}"
+            path = os.path.join(data_dir, *rel.split("/"))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
+            rels[f"{show}{n}"] = rel
+            doc["schedule"][ls.TIERS["now"][0]].append(entry(rel))
+    write_manifest(user_files_dir, doc)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    return store, {k: store.item_id(rel) for k, rel in rels.items()}, [EP_NAMES[language].format(n) for n in (1, 2)]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_shows_one_file_name_the_set_aside_episode_never_takes_the_counted_ones_words(language):
+    # why: the run's lists name a file only by its name, so with Show A's 第01集 watched and set aside, Show B's
+    # counted 第01集 had its words, its *% known* and its count ahead drawn on A's stone — the learner saw a show he
+    # finished holding another show's words, and the episode he is about to study empty
+    root = os.environ["SURASURA_TEST_ROOT"]
+    _settings(language)
+    store, ids, (one, two) = _same_named(language)
+    store.set_watched([ids["A1"]])
+    marked, _said = _generate(root, language)
+    eps = marked["progressive"]
+    assert _files(marked) == [one, two, one, two], "each show's episodes in the library's order, the stone in its place"
+    assert eps[0] == {"filename": one, "tier": 0, "pct": None, "words": [], "watched": True, "aside": True},         "the set-aside 第01集: no words, no % known"
+    assert eps[2]["words"] and eps[2]["pct"] is not None and not eps[2].get("watched"),         "Show B's counted 第01集 holds its own words and its % known"
+    store.close()
+
+
+def _page(root):
+    """The page's head and its chunks, as the report on disk holds them -> (head, [chunk])."""
+    with open(os.path.join(root, "results", "reading_list_static.html"), encoding="utf-8") as f:
+        html = f.read()
+    return (json.loads(HEAD.search(html).group(1)),
+            [json.loads(gzip.decompress(base64.b64decode(blob)).decode("utf-8")) for blob in CHUNK.findall(html)])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_shows_one_file_name_both_counted_each_episode_keeps_its_own_words_known_and_count_ahead(language):
+    # why (E-NAMES): the run's lists named a file only by its name, so with Show A's and Show B's 第01集 both counted,
+    # B's words, its *% known* and its count ahead were drawn on A's episode and B's own stood empty — the learner
+    # about to study Show B saw nothing to learn in it. Each episode is told by its path: the oracle is the run's own
+    # numbering (the progressive list's Sequence, the plan's per-file counts), never the name.
+    from app import plan_engine
+    from app.journey_render import AHEAD, _known_pct
+    root = os.environ["SURASURA_TEST_ROOT"]
+    _settings(language)
+    store, _ids, (one, two) = _same_named(language)
+    _generate(root, language)
+    head, chunks = _page(root)
+    eps = head["eps"]
+    assert [e[1] for e in eps] == [one, two, one, two], "each show's episodes in the library's order"
+
+    results = os.path.join(root, "results")
+    prog = pd.read_csv(os.path.join(results, "progressive_learning_list.csv"), encoding="utf-8-sig",
+                       keep_default_na=False)
+    listed = {n: list(zip(prog[prog["Sequence"] == n + 1]["Word"], prog[prog["Sequence"] == n + 1]["Reading"]))
+              for n in range(4)}
+    want = {n: [word for word, _reading in listed[n]] for n in range(4)}
+    assert want[2], "Show B's 第01集 has words first met in it (the samples are two different books)"
+    got = {n: [] for n in range(4)}
+    page_words = []
+    for chunk in chunks:
+        for w in chunk["w"]:
+            got[w[5]].append(w[0])
+            page_words.append(w)
+    assert got == want, "every episode holds the words first met in IT, Show B's 第01集 its own"
+
+    plan = plan_engine.counts(os.path.join(results, "plan.json.gz"))
+    assert [e[6] for e in eps] == [_known_pct(line["prog"][1], line["prog"][0]) for line in plan.per_file], \
+        "each episode's *% known* is its own file's"
+    key_of = {(k[0], k[1]): i for i, k in enumerate(plan.keys)}
+
+    def uses(f, k):
+        line = plan.per_file[f]
+        return sum(m for table in (line["main"], line["ph"]) for kk, m in zip(table[0::2], table[1::2]) if kk == k)
+
+    for w, (word, reading) in zip(page_words, (key for n in range(4) for key in listed[n])):
+        e, k = w[5], key_of[(word, reading)]
+        assert w[7] == sum(uses(f, k) for f in range(e, min(e + AHEAD, 4))), \
+            f"{w[0]}'s count ahead is its uses in its own episode and the next ones ({e})"
+    shown_on = {row[2] for chunk in chunks for row in chunk["src"]}
+    assert {0, 2} <= shown_on, "a line from Show B's 第01集 names B's episode as its source, A's line A's"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_counted_namesakes_stay_apart_when_the_journey_is_redrawn_from_the_plan_after_a_move(language):
+    # why (E-NAMES): a move is redrawn from the plan (`--from-plan`, F7), whose rows are the plan engine's own — a row
+    # named its file by the name alone there too, so with Show B moved before Show A, B's 第01集 words were read back
+    # onto whichever 第01集 came first. The redraw's rows carry each file's path: each episode keeps its own words.
+    from app import analyzer
+    root = os.environ["SURASURA_TEST_ROOT"]
+    _settings(language)
+    store, ids, (one, two) = _same_named(language)
+    _generate(root, language)
+    assert store.move([ids["B1"], ids["B2"]], "now", before_id=ids["A1"]) is not None
+    p = subprocess.run([sys.executable, os.path.join(REPO, "app", "analyzer.py"), f"--language={language}", "--static",
+                        "--no-open", "--min-freq", "1", "--from-plan"], cwd=REPO, env=child_env(root),
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    assert p.returncode == 0, (p.stdout + p.stderr)[-3000:]
+    results = os.path.join(root, "results")
+    assert analyzer.redrawn_for(results) is not None, "only the order moved: redrawn from the plan, no Generate"
+
+    order = [store.item(ids[k])["rel_path"].replace("\\", "/") for k in ("B1", "B2", "A1", "A2")]
+    prog = pd.read_csv(os.path.join(results, "progressive_learning_list.csv"), encoding="utf-8-sig",
+                       keep_default_na=False)
+    assert {n: set(prog[prog["Sequence"] == n + 1]["Source Path"]) for n in range(4)} == \
+        {n: {path} for n, path in enumerate(order) if (prog["Sequence"] == n + 1).any()}, \
+        "each redrawn row names its own file by its path, in the new order"
+    head, chunks = _page(root)
+    assert [e[0] for e in head["eps"]] == [ids[k] for k in ("B1", "B2", "A1", "A2")]
+    assert [e[1] for e in head["eps"]] == [one, two, one, two]
+    want = {n: list(prog[prog["Sequence"] == n + 1]["Word"]) for n in range(4)}
+    assert want[0] and want[2], "both shows' 第01集 have words first met in them"
+    got = {n: [] for n in range(4)}
+    for chunk in chunks:
+        for w in chunk["w"]:
+            got[w[5]].append(w[0])
+    assert got == want, "every episode holds the words first met in IT after the move, never its namesake's"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_list_from_before_the_path_column_still_draws_a_name_on_its_counted_namesake(language):
+    # why (E-NAMES): a run's lists from before ENGINE 49 have no `Source Path` (nor file statistics' `Path`) — the page
+    # drawn from them must still put a name's words on the episode the run COUNTED of that name (J-FIX 3), never strand
+    # them on an episode of their own at the end. Show A's 第01集 set aside: its name's words are Show B's.
+    from app import journey_render as jr
+    from tests.test_journey_render_shape import _rows
+    store, ids, (one, two) = _same_named(language)
+    store.set_watched([ids["A1"]])
+    data_dir, user_files_dir = roots(language)
+    store.close()
+    facts = jr.store_facts(language, data_dir, user_files_dir)
+    rows = _rows(language, 2)
+    for row in rows:
+        row["Source File"] = (one, two)[row["Sequence"] - 1]
+    assert "Source Path" not in rows[0]
+    stats = [{"File": name, "Total Words": 400, "Known Count": 360, "Coverage (%)": 90.0} for name in (one, two)]
+    out = jr.build(language, rows, stats, facts=facts, pitch=jr.Pitch(language, kanjium={}))
+    eps = out.head["eps"]
+    assert [e[0] for e in eps] == [ids[k] for k in ("A1", "A2", "B1", "B2")], "the store's four, none added for a name"
+    at = {}
+    for blob in out.chunks:
+        for w in json.loads(gzip.decompress(blob).decode("utf-8"))["w"]:
+            at.setdefault(w[5], []).append(w[0])
+    assert set(at) == {1, 2}, "A's set-aside 第01集 holds nothing; its name's words are B's counted one, 第02 A's"
+    assert at[2] == [r["Word"] for r in rows if r["Sequence"] == 1]
+
+
+@pytest.mark.skipif(not find_edge(), reason="Edge isn't installed")
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_windows_arrow_on_show_bs_first_episode_opens_show_bs_never_its_namesake(language):
+    # why (E-NAMES): the window's ↗ handed the page an episode's file name alone (`#file=<name>`) and the page opened
+    # that name's FIRST episode — ↗ on Show B's 第01集 opened Show A's. The window hands the item too (`&id=<item id>`,
+    # the page's own way back to an episode); a link with the name alone (an older one) still opens the name's first.
+    from app import static_html_generator as gen
+    from tests.journey_page_edge import Edge
+    root = os.environ["SURASURA_TEST_ROOT"]
+    _settings(language)
+    store, ids, (one, two) = _same_named(language)
+    _generate(root, language)
+    store.close()
+    report = os.path.join(root, "results", gen.REPORT_NAME)
+    at = {e[0]: n for n, e in enumerate(_page(root)[0]["eps"])}
+    on_name = os.path.join(root, "results", gen.OPEN_ON_NAME)
+    from urllib.parse import quote
+    with Edge() as edge:
+        # the page: the item opens its own episode; the name alone (an older link) the name's first
+        assert edge.open("file:///" + report.replace("\\", "/") + f"?n=1#file={quote(one, safe='')}&id={ids['B1']}")
+        assert edge.evaluate("S.ep") == at[ids["B1"]], "↗ on Show B's 第01集 opens Show B's"
+        edge.evaluate("localStorage.clear()")
+        assert edge.open("file:///" + report.replace("\\", "/") + "?n=2#file=" + quote(one, safe=""))
+        assert edge.evaluate("S.ep") == at[ids["A1"]], "the name alone (an older link): the name's first episode"
+        edge.evaluate("localStorage.clear()")
+        assert edge.open("file:///" + report.replace("\\", "/") + "?n=3")
+        itself = edge.evaluate("S.ep")
+        edge.evaluate("localStorage.clear()")
+        lacks = f"?n=4#file={quote(two, safe='')}&id={max(ids.values()) + 1}"
+        assert edge.open("file:///" + report.replace("\\", "/") + lacks)
+        assert edge.evaluate("S.ep") == itself != at[ids["B2"]], "an item the page lacks: where it opens by itself"
+        # the window's way there: `open_report` hands the item to the page, through the small page beside it
+        opened = []
+        with patch.object(gen, "get_user_file", lambda name: os.path.join(root, name)), \
+                patch.object(gen.webbrowser, "open", opened.append):
+            assert gen.report_holds(one, ids["B1"]) and gen.report_holds(one)
+            assert not gen.report_holds(one, max(ids.values()) + 1), "an episode the page doesn't hold yet: JO-1's"
+            assert gen.open_report(file=one, item=ids["B1"]) is True
+        assert opened == ["file://" + os.path.abspath(on_name)], "the small page that carries the fragment"
+        edge.evaluate("localStorage.clear()")
+        assert edge.open("file:///" + on_name.replace("\\", "/"))
+        assert edge.evaluate("S.ep") == at[ids["B1"]], "through the window's own open: Show B's"
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -284,9 +537,8 @@ def test_a_stone_then_its_undo_then_keep_studying_on_through_real_generates(lang
     assert REUSED not in said, "a stone with the option off is a Generate (its words step back)"
     assert _files(marked) == _files(first), "the watched episode stays in its place in the journey"
     stone = marked["progressive"][1]
-    assert stone["filename"] == names["A2"] and stone["aside"] and stone["words"] == [] and stone["total_words"] == 0
+    assert stone["filename"] == names["A2"] and stone["aside"] and stone["words"] == [] and stone["pct"] is None
     assert _stones(marked) == {names["A2"]: True}
-    assert names["A2"] not in [f["filename"] for f in marked["completed_files"]]
 
     store.undo(change)
     undone, _said = _generate(root, language)
@@ -340,32 +592,43 @@ def test_drill_a2_step_6_every_episode_watched_then_finished_then_put_back_and_o
 
 # --- the review round (S-1 / IK-4, S-3 / IK-3, S-2) ----------------------------------------------------------------- #
 
-# A Generate whose report is drawn after something happened to the store mid-run (the window stays live while a
-# Generate runs): `mark` — the learner marks an episode just before the report is drawn; `locked` — the store can't be
-# read at that moment. The analyzer runs as `python app/analyzer.py` does, its generator's stones step wrapped.
+# A Generate whose page is drawn after something happened to the store mid-run (the window stays live while a
+# Generate runs): `mark` — the learner marks an episode as the run starts writing its journey
+# (`static_html_generator.generate_static_html`); `late` — he marks it at the last moment, just before the page reads
+# the store (`journey_render.store_facts`); `locked` — the store's marks can't be read as the page reads the store.
+# The analyzer runs as `python app/analyzer.py` does, the journey's writer and its read wrapped.
 DRIVER = r'''
 import os, runpy, sqlite3, sys
-from app import library_store as ls, static_html_generator as gen
+from app import journey_render, library_store as ls, static_html_generator as gen
 language, data_dir, user_files_dir, mode, item = sys.argv[1:6]
-drawn = gen._journey_stones
+write, facts_read = gen.generate_static_html, journey_render.store_facts
 
-def hooked(*a, **k):
+def mark():
+    store = ls.open_store(language, data_dir, user_files_dir)
+    try:
+        store.set_watched([int(item)])
+    finally:
+        store.close()
+
+def writing(*a, **k):
     if mode == "mark":
-        store = ls.open_store(language, data_dir, user_files_dir)
-        try:
-            store.set_watched([int(item)])
-        finally:
-            store.close()
-        return drawn(*a, **k)
+        mark()
+    return write(*a, **k)
+
+def facts(*a, **k):
+    if mode == "late":
+        mark()
+    if mode != "locked":
+        return facts_read(*a, **k)
     def locked(self):
         raise sqlite3.OperationalError("database is locked")
     real, ls.Store.watched_marks = ls.Store.watched_marks, locked
     try:
-        return drawn(*a, **k)
+        return facts_read(*a, **k)
     finally:
         ls.Store.watched_marks = real
 
-gen._journey_stones = hooked
+gen.generate_static_html, journey_render.store_facts = writing, facts
 sys.argv = ["analyzer.py", f"--language={language}", "--static", "--no-open", "--min-freq", "1"]
 runpy.run_path(os.path.join(os.path.dirname(ls.__file__), "analyzer.py"), run_name="__main__")
 '''
@@ -407,16 +670,37 @@ def test_a_mark_landing_mid_generate_is_signed_as_drawn_so_its_undo_re_renders(l
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_mark_landing_while_the_page_reads_the_store_is_signed_as_drawn_so_its_undo_re_renders(language, tmp_path):
+    # why (J-RETIRE's find, J-FIX 3): the page was signed with marks read before it read the store itself, so a mark
+    # landing between the two reads was drawn but not signed — its Undo then found the page "already up to date" and
+    # the stone stayed on an episode he un-marked. The page is signed with the marks of the read it was drawn from.
+    root = os.environ["SURASURA_TEST_ROOT"]
+    _settings(language)
+    store, ids, names = _library(language)
+    store.set_library_options(keep_watched=True)
+    during, _said = _generate_during(root, language, "late", ids["A2"], tmp_path)
+    assert _stones(during) == {names["A2"]: False}, "the mark made while the page read the store is drawn"
+
+    store.set_watched([ids["A2"]], False)          # its Undo
+    after, said = _generate(root, language)
+    assert REUSED in said and "Re-rendering report" in said, "its Undo re-renders the report"
+    assert _stones(after) == {}, "no stone left on an episode he un-marked"
+    _again, said = _generate(root, language)
+    assert "Report already up to date" in said, "nothing changed since: the report is reopened, never redrawn"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_failed_marks_read_records_no_render_signature_so_the_next_press_re_renders(language, tmp_path):
-    # why (IK-4): a report drawn while the store couldn't be read has no stones; recorded as current, the next press
-    # reopened it — the learner's watched episode with no stone — until something else changed
+    # why (IK-4): a page drawn while the marks couldn't be read was recorded as current, so the next press reopened it
+    # — whatever stones it showed — until something else changed. (The v3 page reads its episodes' marks from the
+    # store's feed itself: what it drew is not asserted, only that it is never signed current.)
     root = os.environ["SURASURA_TEST_ROOT"]
     _settings(language)
     store, ids, names = _library(language)
     store.set_library_options(keep_watched=True)
     store.set_watched([ids["A2"]])
-    during, said = _generate_during(root, language, "locked", ids["A2"], tmp_path)
-    assert _stones(during) == {}, "the marks couldn't be read: the report is drawn without them"
+    _during, said = _generate_during(root, language, "locked", ids["A2"], tmp_path)
     after, said = _generate(root, language)
     assert REUSED in said and "Re-rendering report" in said, "never recorded as current: the next press re-renders"
     assert _stones(after) == {names["A2"]: False}

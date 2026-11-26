@@ -215,7 +215,8 @@ def open_library(language, check=None, log=None, **reader_kw):
         reader = held[0]() if held else None
         if reader is not None:
             reader.refresh()
-    numbers = Numbers(opener, language, check=check, on_change=refresh, log=log)
+    numbers = Numbers(opener, language, check=check, on_change=refresh, log=log,
+                      freeze_gc=reader_kw.get("freeze_gc", False))    # E-L2W: the window's, as its reader's
     reader = LibraryReader(opener, language, numbers=numbers, **reader_kw)
     held.append(weakref.ref(reader))
     reader.subscribe_moves(lambda _language, _versions: numbers.resync())
@@ -2696,11 +2697,19 @@ class Numbers:
     full staleness verdict — None when current, else the reason (the replan host's `plan_engine.check` with the run
     signature's parts; it stats every file, so it runs here, on the worker); `on_change()`: a new version (the reader's
     `refresh`); `log(line)`: why *N new* stops or starts following the order, each time that changes (the app's log).
+    `freeze_gc` (the window process's, as its reader's; E-L2W): a load runs with Python's collector paused through the
+    reader's one switch (`library_reader.pause_gc`) and freezes what it built after — at 20,000 files the plan read
+    and the engine set off full collections that held the window's thread 50-100 ms.
     """
 
-    def __init__(self, opener, language="ja", plan_file=None, check=None, on_change=None, log=None, marked=None):
+    def __init__(self, opener, language="ja", plan_file=None, check=None, on_change=None, log=None, marked=None,
+                 freeze_gc=False):
         self.opener = opener
         self._marked = marked                       # Kotoba-K: language -> the marked words (word_marks.left_out)
+        self._gc_switch = None                      # E-L2W: the reader's one switch, when a load is paused + frozen
+        if freeze_gc:                               # (`_load`; imported here, never at the load's start: a load
+            from app.services import library_reader  # allocates nothing before its pause)
+            self._gc_switch = library_reader
         self._log = log or _nothing
         self.language = language
         self.plan_file = plan_file
@@ -2724,6 +2733,8 @@ class Numbers:
         self._put_off = False                       # a resync came while one was on its way: run once none is
         self._at = None                             # the store's versions the engine was last found to follow
         self._growth = {}                           # Kura-GS: {item_id: {kind: snapshot}} — the % hover's line
+        self._asked = False                         # OPEN-RACE: a load was asked (`load`) ...
+        self._first = threading.Event()             # ... and has answered (`wait_first`)
         self.worker = Worker(f"window-numbers-{language}")
         self.renumbered = 0                         # full passes (tests)
 
@@ -2817,7 +2828,15 @@ class Numbers:
 
     def load(self):
         """(Any thread.) Read the plan and build the engine on the worker."""
+        self._asked = True
         self.worker.put(self._load)
+
+    def wait_first(self, timeout):
+        """(Any thread.) OPEN-RACE: until the first load asked (`load`) has answered — figures, or why there are none
+        (no plan, stale, standing aside, a failed read) — `timeout` seconds at most. -> True once it has, or when no
+        load was asked (nothing to wait for); False while it is still on its way. The window's reader waits on it before
+        its first look, so the list is built once, with its numbers."""
+        return not self._asked or self._first.wait(timeout)
 
     def resync(self):
         """(Any thread.) The store's order may differ from the engine's (a nudge, Finished, an undo, another program):
@@ -2931,9 +2950,9 @@ class Numbers:
                 at = _nearest_held(eng, seq, anchor, before_id is not None, set(ids), tier)
                 if at is not None:
                     before_id, after_id = at
-            before = list(eng._n_new)
+            was = {}                                # DSA-START: {file: N new before} the engine touched
             try:
-                _words, moved = eng.move(block, tier, before_id=before_id, after_id=after_id)
+                _words, moved = eng.move(block, tier, before_id=before_id, after_id=after_id, n_new_was=was)
             except plan_engine.PlanError as e:      # the engine's own refusal (an anchor gone meanwhile)
                 self.worker.put(self._resync)
                 print(f"Window numbers: the move couldn't be followed: {e}")
@@ -2945,7 +2964,7 @@ class Numbers:
                 self._ahead += 1
             after = eng._n_new
             files = {eng._f_of[i] for i in moved}
-            files.update(f for f, (a, b) in enumerate(zip(before, after)) if a != b)
+            files.update(f for f, n in was.items() if after[f] != n)   # the files whose N new moved, never all
             touched = {}
             table = dict(self._table)
             for f in files:
@@ -2972,6 +2991,18 @@ class Numbers:
         return self.opener.handle() if self.opener.mode == "store" else None
 
     def _load(self):
+        switch = self._gc_switch
+        paused = switch is not None and switch.pause_gc(frozen=True)   # E-L2W: no collection while it builds
+        try:
+            self._load_plan()
+        finally:
+            if paused:
+                switch.resume_gc(frozen=True)       # (what it built out of the collector's sight, then on again)
+            if not self._first.is_set():            # OPEN-RACE: a load that raised before its answer still ends the
+                self._first.set()                   # wait (the reader then builds without the figures, as before)
+                self._call_change()
+
+    def _load_plan(self):
         from app import library_store, plan_engine
         path = self._plan_path()
         try:
@@ -3148,6 +3179,7 @@ class Numbers:
             self._publish(table, changed if self._table is last else None)
         if why != said:
             self._say(why)
+        self._first.set()                           # OPEN-RACE: answered (before the reader is woken: `wait_first`)
         self._call_change()
 
     def _say(self, why):

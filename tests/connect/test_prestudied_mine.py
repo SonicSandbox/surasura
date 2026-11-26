@@ -123,6 +123,18 @@ def test_a_press_is_the_yes_mine_now_on_an_unmarked_episode_mines(tmp_path, ledg
     assert summary["languages"]["ja"]["done"] == [1]
 
 
+def test_mine_anyway_on_an_unmarked_episode_is_a_yes_too(tmp_path, ledger):
+    # *Mine anyway* (a not-timed episode's press: `actions.mine_anyway` sets the pick's `forced`) — your press
+    plan = {"line": {"ja": [1]}, "queue": {"ja": [1]}, "prestudied_only": True, "prestudied": []}
+    steps = FakeSteps(str(tmp_path), plan)
+    steps.consume("ja", ledger)
+    job = ledger.jobs("ja")[0]
+    ledger.set_state(job["id"], "queued", picked={"forced": True})
+    plan.pop("queue")
+    _steps, summary = _run(tmp_path, ledger, plan)
+    assert summary["languages"]["ja"]["done"] == [1]
+
+
 def test_held_by_prestudy_is_the_one_rule_connects_own_picks_only():
     assert runner.held_by_prestudy({"kind": "mine"})                        # the line's
     assert runner.held_by_prestudy({"kind": SHOW})                          # a show's earlier part (Michi-EO)

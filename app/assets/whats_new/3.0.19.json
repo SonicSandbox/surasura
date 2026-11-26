@@ -1,0 +1,101 @@
+{
+  "version": "3.0.19",
+  "date": "2026-11-26",
+  "items": [
+    {
+      "id": "one-sentence-choice",
+      "kind": "new",
+      "for": [
+        "everyone"
+      ],
+      "text": "One sentence choice: cards, Swap, your list and the journey pick from your whole library.",
+      "where": "settings:connect_sentence_dial"
+    },
+    {
+      "id": "length-default",
+      "kind": "tweak",
+      "for": [
+        "everyone"
+      ],
+      "text": "Length now defaults to 14–25 characters; a length you chose yourself is kept.",
+      "where": "settings:sentence_length"
+    },
+    {
+      "id": "faster-generate",
+      "kind": "tweak",
+      "for": [
+        "everyone"
+      ],
+      "text": "Generate a quarter to a third faster, with less memory: 15.0 → 11.5 s on 2,000 files."
+    },
+    {
+      "id": "faster-window",
+      "kind": "tweak",
+      "for": [
+        "everyone"
+      ],
+      "text": "A big library opens to its numbers sooner (5.3 → 3.6 s on 20,000 files), with no long pauses."
+    },
+    {
+      "id": "remake-cards",
+      "kind": "new",
+      "for": [
+        "anki",
+        "miner"
+      ],
+      "text": "Make my new cards again…: cards you never studied are made again, a copy kept, with Put back….",
+      "where": "settings:connect_remake"
+    },
+    {
+      "id": "send-report-easy",
+      "kind": "tweak",
+      "for": [
+        "everyone"
+      ],
+      "text": "Send report is one easy button: a note, flagged sentences, swaps or cards you didn't want."
+    },
+    {
+      "id": "book-card",
+      "kind": "fix",
+      "for": [
+        "books",
+        "miner"
+      ],
+      "text": "A book with no audiobook makes a sentence card, never an audio card with nothing to play."
+    },
+    {
+      "id": "best-zero-cards",
+      "kind": "fix",
+      "for": [
+        "anki",
+        "miner"
+      ],
+      "text": "Best's mine without the speech model no longer ends with 0 cards."
+    },
+    {
+      "id": "sort-while-waiting",
+      "kind": "fix",
+      "for": [
+        "everyone"
+      ],
+      "text": "Sort again and Put back work while Connect is only waiting."
+    },
+    {
+      "id": "journey-long-names",
+      "kind": "fix",
+      "for": [
+        "everyone"
+      ],
+      "text": "A long show name fits the journey's rail, the full name on hover."
+    },
+    {
+      "id": "zen-retired",
+      "kind": "tweak",
+      "for": [
+        "everyone"
+      ],
+      "text": "The old journey page and Zen are retired: a saved Zen look opens the new page in Night.",
+      "where": "control:journey"
+    }
+  ]
+}

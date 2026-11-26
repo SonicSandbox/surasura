@@ -568,16 +568,18 @@ KAISHI = {"anki_sync_decks": {"ja": ["日本語::Kaishi 1.5k"], "zh": ["中文::
 
 
 class Saves:
-    """The settings service's `set(changes, update=None)` over a settings.json as it is when written (`file`): each
-    call's changes, then its `update` run on the file."""
+    """The settings service's `set(changes, update=None, keys=())` over a settings.json as it is when written
+    (`file`): each call's changes, then its `update` run on the file; `keys`, the keys the update names (the ones its
+    listeners hear: the Settings *Decks* row, the backlog's read — #SYQF6C), recorded per update."""
 
     def __init__(self, file=None):
-        self.file, self.calls = json.loads(json.dumps(file or {})), []
+        self.file, self.calls, self.keys = json.loads(json.dumps(file or {})), [], []
 
-    def __call__(self, changes, update=None):
+    def __call__(self, changes, update=None, keys=()):
         self.calls.append(dict(changes))
         self.file.update(changes)
         if update is not None:
+            self.keys.append(tuple(keys))
             update(self.file)
 
 
@@ -629,6 +631,7 @@ def test_choice_86_the_new_deck_taken_is_made_in_anki_and_counts_for_known_words
     assert world["imports"][-1]["values"]["anki_deck_name"] == "Surasura"
     assert saved.file["anki_sync_decks"] == {"ja": ["日本語::Kaishi 1.5k", "Surasura"], "zh": ["中文::句子", "中文::HSK"]}
     assert saved.calls == [{}], "merged onto the file, never the whole key from the press's copy"
+    assert saved.keys == [("anki_sync_decks",)],         "the key its update changes named: the Decks row and the backlog's read hear it (#SYQF6C)"
     assert M.SAID_DECK_MADE.format(deck="Surasura") in said and M.SAID_DECK_KNOWN in said
     assert "New Japanese cards go in “Surasura”." in said
 
@@ -673,11 +676,32 @@ def test_choice_86_a_known_words_list_that_cant_be_saved_is_said_the_deck_still_
     world["anki"] = Anki(["日本語::Kaishi 1.5k"], {"Lapis": LAPIS})
     world["items"] = ["deck"]
 
-    def refused(changes, update=None):
+    def refused(changes, update=None, keys=()):
         raise OSError("settings.json is read-only")
     result, said = M.finish_setup(KAISHI, "ja", chosen={"deck": "Surasura"}, save=refused)
     assert result == M.SET_UP and M.DECK_KNOWN_NOT_SAVED in said and M.SAID_DECK_KNOWN not in said
     assert world["imports"][-1]["values"]["anki_deck_name"] == "Surasura"
+
+
+def test_choice_86_with_no_window_the_deck_joins_through_save_keys_which_names_no_keys(world, anki_writes,
+                                                                                        monkeypatch):
+    """No window's settings service (`save=None`): the join goes through `settings_manager.save_keys`, whose
+    signature has no `keys=` (nothing listens there) — the named keys never reach it, or the join would fail on a
+    TypeError and say the list couldn't be saved."""
+    from app import settings_manager
+    world["anki"] = Anki(["日本語::Kaishi 1.5k"], {"Lapis": LAPIS})
+    world["items"] = ["deck"]
+    file = json.loads(json.dumps(KAISHI))
+
+    def save_keys(changes=None, update=None, strict=False, wait=0.0):     # the real signature, no **kw
+        file.update(changes or {})
+        if update is not None:
+            update(file)
+        return file
+    monkeypatch.setattr(settings_manager, "save_keys", save_keys)
+    result, said = M.finish_setup(KAISHI, "ja", chosen={"deck": "Surasura"})
+    assert result == M.SET_UP and M.SAID_DECK_KNOWN in said and M.DECK_KNOWN_NOT_SAVED not in said
+    assert file["anki_sync_decks"]["ja"] == ["日本語::Kaishi 1.5k", "Surasura"]
 
 
 def test_no_note_type_anki_miner_can_fill_is_said_after_the_rest_never_asked_in_a_loop(world):
@@ -898,7 +922,7 @@ def test_chinese_on_lapis_maps_no_pitch_so_none_is_said_and_lapis_is_never_named
                              {"中文::句子": "Lapis", "日本語::Mining": "Lapis"})
     saves = []
 
-    def save(changes, update=None):
+    def save(changes, update=None, keys=()):
         file = {"junban_backfill_note_languages": {"Kiku": "ja"}}
         if update is not None:
             update(file)
@@ -935,18 +959,21 @@ def test_backfill_names_a_chinese_note_type_chinese_only_when_its_notes_arent_ja
                                                                                         named):
     fields = ["Expression", "Sentence", "Pinyin"] if note == "Anki Miner Note" else ["汉字", "例句", "拼音"]
     world["anki"] = KanaAnki(["中文::句子"], {note: fields}, {"中文::句子": note}, kana=kana, unread=unread)
-    saves = []
+    saves, heard = [], []
 
-    def save(changes, update=None):
+    def save(changes, update=None, keys=()):
         file = {}
         if update is not None:
             update(file)
+            heard.append(tuple(keys))
         saves.append(file)
     chosen = {"note_type": note} if note == "Anki Miner Note" else {"note_type": note, "fields": {"sentence": "例句"}}
     result, _said = M.finish_setup(ZH, "zh", save=save, chosen=chosen)
     assert result == M.SET_UP
     languages = [f.get("junban_backfill_note_languages") for f in saves if f]
     assert (languages == [{note: "zh"}]) is named
+    # the key its update changes named, so a listener hears it (#SYQF6C)
+    assert heard == ([("junban_backfill_note_languages",)] if named else [])
 
 
 def test_a_refusal_names_what_it_refused_in_plain_words_even_several(monkeypatch, tmp_path):

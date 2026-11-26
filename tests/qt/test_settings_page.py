@@ -68,12 +68,12 @@ class Recorder:
             settings_service.put(settings, key, value)
         return settings_service.freeze(settings)
 
-    def set(self, changes, update=None, now=False):
+    def set(self, changes, update=None, now=False, keys=()):
         self.calls.append((dict(changes), update))
         for key, value in changes.items():
             self._pending[key] = copy.deepcopy(value)
         if update is not None:
-            self._updates.append(update)
+            self._updates.append((update, tuple(keys)))
 
     def pending(self):
         return sorted(self._pending)
@@ -86,15 +86,17 @@ class Recorder:
 
     def land(self, updates=True):
         """The writer's turn: the pending changes onto the file, then (with `updates`) the merges; the listeners told
-        the keys the write carried (as the service: an update's keys aren't named)."""
-        keys = sorted(self._pending)
+        the keys the write carried (as the service: an update's keys only when its `set` named them)."""
+        keys = set(self._pending)
         for key, value in self._pending.items():
             settings_service.put(self.file, key, value)
         self._pending = {}
         if updates:
-            for update in self._updates:
+            for update, named in self._updates:
                 update(self.file)
+                keys.update(named)
             self._updates = []
+        keys = sorted(keys)
         for callback in self._subscribers:
             callback(keys)
 

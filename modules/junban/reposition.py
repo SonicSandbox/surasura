@@ -973,27 +973,32 @@ def _known_sets(language, settings, store=None):
     """`(known_tuples, known_lemmas, ignore)` — the analyzer's own sets, read the way Generate reads
     them: the token store's cached known words, else `load_known_words`, plus the ignore, black and
     graduated lists. Imported here, never at import time (spec I4). `store`: the token store, already open — closed
-    here once its cached words are read, before the slow read below; False, none to be had; else opened here."""
+    here once its cached words are read, before the slow read below; False, none to be had; else opened here.
+    KnownWord.json changed since the store's cache (a card Connect wrote moves it): each term read before is taken from
+    the store's per-term cache (G8, `Store.known_terms`), so only the new ones are tokenized — every ~10k terms were,
+    at each move (#ZGBCD9). Writes nothing, as before (the indexer keeps the known words)."""
     from app import analyzer, token_index
     from app.path_utils import get_user_files_path
     script = _script(settings)
     user_files = get_user_files_path(language)
     known_file = os.path.join(user_files, "KnownWord.json")
-    cached = None
+    cached = terms = None
     if store is not False:
         try:
             if store is None:
                 store = token_index.open_store(language)
             try:
                 cached = store.get_cached_known(token_index.known_signature(known_file, script))
+                if cached is None:
+                    terms = store.known_terms(script)       # (the tokenizer's script: "asis" for Japanese)
             finally:
                 store.close()
         except Exception:
-            cached = None
+            cached = terms = None
     if cached is None:
         tok = (analyzer.ChineseTokenizer(script=script) if language == "zh"
                else analyzer.JapaneseTokenizer())
-        cached = analyzer.load_known_words(known_file, tok)
+        cached = analyzer.load_known_words(known_file, tok, terms)
     ignore = set()
     for name in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"):
         ignore |= analyzer.load_simple_list(os.path.join(user_files, name), script, language)

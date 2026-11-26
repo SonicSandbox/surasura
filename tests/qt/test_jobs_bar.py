@@ -112,6 +112,7 @@ class FakeAutomation(_Duty):
     def sync_now(self, then=None): self._record("automation.sync_now", then)
     def session_began(self, force): self._record("automation.session_began", force)
     def before_generate(self): self._record("automation.before_generate")
+    def decks_changed(self): self._record("automation.decks_changed")
     def update_cancelled(self): self._record("automation.update_cancelled")
     def close(self): self._record("automation.close")
 
@@ -1514,6 +1515,29 @@ def test_a_second_close_while_the_sheet_asks_is_quit(world, children):
     world.win.close()                                         # the close button again
     assert wait_until(lambda: not world.win.isVisible())
     assert proc.poll() is None
+    _end(jobs)
+
+
+def test_the_sheet_goes_once_what_it_names_has_ended_and_the_window_closes_by_itself(world, children):
+    """A close in the open's first seconds lands while the store's helper tidies the library (it runs ~1 s at a 20k
+    open): the sheet names it, and the helper ends a moment later. The question no longer stands — the sheet goes and
+    the close goes on as Quit (its default) without the user pressing anything and with nothing stopped, within its
+    bound (the window answers Quit for them: `_detached_answered`, unlike the update's hand-over); never a window that
+    waits on a question about nothing (the quit that never returned). While one job it names still runs, it asks on."""
+    world.start()
+    proc, jobs = _helper_running(world, children)             # the upkeep, a sync (never named), Connect
+    world.win.close()
+    card = _sheet(world)
+    jobs[0].finish()                                          # the upkeep ends; Connect still makes its cards
+    assert wait_until(lambda: [j.kind for j in J.detached_at_quit(world.win._jobs)] == [J.CONNECT_KIND])
+    assert world.win.isVisible() and world.win._detached_card is card and card.isVisible()
+    began = time.monotonic()
+    jobs[-1].finish()                                         # nothing it names goes on any more
+    assert wait_until(lambda: not world.win.isVisible(), 2.0), "the close goes on by itself"
+    assert time.monotonic() - began < 2.0
+    assert world.win._detached_card is None and card.answer is False
+    assert world.win._detached_answered and world.win._quit is None
+    assert proc.poll() is None, "nothing was stopped"
     _end(jobs)
 
 

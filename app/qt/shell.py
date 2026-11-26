@@ -2876,6 +2876,8 @@ class ShellWindow(QMainWindow):
                 refresh("connect")
         if {"connect_enabled", "logic.automation", "connect_anki_miner_path"} & set(keys or ()):
             self._path_repaint()                        # the cards step's press follows its switches (Mado-EZP)
+        if {"anki_sync_decks", "anki_sync_fields"} & set(keys or ()) and self.services.automation is not None:
+            self.services.automation.decks_changed()    # *N waiting* read again for the decks now chosen (#SYQF6C)
         if self.duties is not None:
             self._duty_settings(keys)
             if "logic.automation" in keys:
@@ -4629,6 +4631,11 @@ class ShellWindow(QMainWindow):
             if got is not None and got.total:
                 known.set_work_share(100.0 * (got.done or 0) / got.total)
             self._known_followed()                          # ... until its sync ends
+        card = self._detached_card                          # row 35: all it names ended while it asks (the store's
+        if card is not None and not jobs_module.detached_at_quit(views):   # helper at the open runs ~1 s): the
+            self._detached_card = None                      # question no longer stands — the close goes on as Quit,
+            card.drop()                                     # its default, as E20's wait closes by itself (below)
+            self._detached_answer(False)
         if self._quit == "waiting" and self._replan_waited and getattr(self, "_moves_waited", True) and \
                 not jobs_module.waits_at_quit(views):
             self._close_now()
@@ -4648,7 +4655,8 @@ class ShellWindow(QMainWindow):
         is of a kind it may stop, `jobs.STOPPABLE_AT_QUIT`: Connect alone → Quit is the one button). Asked once a close,
         first in it (before E20's wait); never for the update's hand-over, *Restart now* or the session ending (a
         logoff never waits on a sheet). Any other card open in the window is dropped first: the sheet never stacks on
-        one. While it asks nothing new starts (every answer quits). A close while it is open is Quit. None under way →
+        one. While it asks nothing new starts (every answer quits). A close while it is open is Quit; so is everything
+        it names ending while it asks (`_jobs_changed` drops it: the question no longer stands). None under way →
         nothing asked, the close as before. -> True when the close waits for the answer."""
         card = self._detached_card
         if self._quit is not None or self.restart_asked or _session_ending():

@@ -80,7 +80,7 @@ def test_each_known_words_miss_reads_settings_once_parses_the_tables_once_and_co
     # settings once more for its ignore set's Ignore names switch (`ignored_names`, Japanese only, hit or miss): not
     # the miss's, counted apart.
     resources = ja_resources_dir if language == "ja" else zh_resources_dir
-    analyzer.SANITIZE_JA = language == "ja"
+    monkeypatch.setattr(analyzer, "SANITIZE_JA", language == "ja")
     keys = 1 if language == "ja" else 0
     reads = 2 * keys
     known_file(language, resources)
@@ -98,6 +98,8 @@ def test_each_known_words_miss_reads_settings_once_parses_the_tables_once_and_co
         path = known_file(language, resources, extra=_NEW[language], carded=True)
         grown = sc.known_sets(language, store, {"target_language": language})
         assert count.take() == (reads, keys, 1, 1), "a word added: the signature and the terms in one commit"
+        assert set(_NEW[language]) <= set(store.known_terms("asis")), "the added terms kept in that commit"
+        count.take()                                      # (that check's own key read: not the next step's)
         tok = analyzer.JapaneseTokenizer() if language == "ja" else analyzer.ChineseTokenizer()
         assert grown[:2] == analyzer.load_known_words(path, tok), "the very sets a fresh read of the whole file gives"
 
@@ -112,7 +114,7 @@ def test_generates_own_read_misses_with_one_key_and_one_commit_and_a_readonly_re
         tmp_path, monkeypatch, ja_resources_dir):
     # why: Generate calls `read_known_words` with no check of its own (analyzer.main), and the arrivals view reads with
     # keep=False: one key each, and the read-only one never commits
-    analyzer.SANITIZE_JA = True
+    monkeypatch.setattr(analyzer, "SANITIZE_JA", True)
     path = known_file("ja", ja_resources_dir)
     store = ti.open_store("ja", path=str(tmp_path / "store.db"))
     try:
@@ -134,7 +136,7 @@ def test_generates_own_read_misses_with_one_key_and_one_commit_and_a_readonly_re
 def test_the_keys_written_are_the_keys_a_fresh_lookup_works_out(tmp_path, monkeypatch, ja_resources_dir):
     # why: the key is handed down, never changed — a store written before still hits, and a switch flipped between
     # two misses still misses (the key read fresh at each miss: the dashboard's check sees what its indexer will)
-    analyzer.SANITIZE_JA = True
+    monkeypatch.setattr(analyzer, "SANITIZE_JA", True)
     path = known_file("ja", ja_resources_dir)
     store = ti.open_store("ja", path=str(tmp_path / "store.db"))
     try:

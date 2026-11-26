@@ -193,21 +193,25 @@ class StepList(QWidget):
         super().__init__(parent)
         self.setAccessibleName(S.STEPS_NAME)
         self.current, self.passed = 0, frozenset()
+        self.ids = PAGES                    # the steps shown (ONB-1: + *Your start* while the first cards wait)
         self.paints = 0
 
-    def set_state(self, current, passed):
-        passed = frozenset(passed)
-        if (current, passed) == (self.current, self.passed):
+    def set_state(self, current, passed, ids=None):
+        passed, ids = frozenset(passed), tuple(ids or self.ids)
+        if (current, passed, ids) == (self.current, self.passed, self.ids):
             return
-        self.current, self.passed = current, passed
-        self.setAccessibleDescription(S.STEP_HERE_NAME.format(name=S.STEPS[PAGES[current]]))
+        grew = ids != self.ids
+        self.current, self.passed, self.ids = current, passed, ids
+        self.setAccessibleDescription(S.STEP_HERE_NAME.format(name=S.STEPS[ids[current]]))
+        if grew:
+            self.updateGeometry()
         self.update()
 
     def row_h(self):
         return _px(39)
 
     def sizeHint(self):
-        return QSize(int(round(theme.size("wizard-steps", style.current()[1]))), self.row_h() * len(PAGES) + _px(40))
+        return QSize(int(round(theme.size("wizard-steps", style.current()[1]))), self.row_h() * len(self.ids) + _px(40))
 
     def paintEvent(self, _event):
         self.paints += 1
@@ -216,7 +220,7 @@ class StepList(QWidget):
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         h, top = self.row_h(), _px(36)
         small, name_font, here_font = _font("mini", 400), _font("body", 400), _font("body", 700)
-        for i, pid in enumerate(PAGES):
+        for i, pid in enumerate(self.ids):
             y = top + i * h
             here, done = i == self.current, i in self.passed and i != self.current
             if here:
@@ -2633,6 +2637,7 @@ class LevelPage(_Page):
 
     def entered(self):
         self.wiz.read_numbers(fresh=True)
+        self.wiz.read_start_offered()
 
     def show_numbers(self, numbers, reading=None):
         """`reading` (Kantan-B1): how many files the indexer reads while nothing is counted yet (None: not reading)."""
@@ -2974,6 +2979,10 @@ class SetupWizard(QWidget):
         self.passed = set()
         self.generating = False
         self._saw_busy = False
+        self._start_offered = False         # ONB-1: *Your start* follows *Your list* (D1's first cards wait for a yes)
+        self._starting = None               # … its *Start* pressed: the press, until its worker answers
+        self._start_seq = 0
+        self._start_reading = self._start_again = False     # … its numbers read on a worker (one at a time)
         self._gone = False
         self._stopped = False               # the window's quit began: no question is asked from here on
         self._shown_at, self._painted = 0.0, False      # the page shown: when it came up, whether it was painted
@@ -3014,6 +3023,7 @@ class SetupWizard(QWidget):
         lib = getattr(shell, "library_bridge", None)
         if lib is not None:
             lib.library_changed.connect(self._added)
+            lib.library_changed.connect(self._library_moved)
         bridge.run_in_worker(windows.module_present, "junban", then=self.alive(self._junban_looked),
                              failed=lambda info: applog.log("wizard", f"looking for 順: {info[0]}"))
         closing = getattr(shell, "closing", None)
@@ -3095,7 +3105,7 @@ class SetupWizard(QWidget):
         middle.addWidget(self.steps)
         self.stack = QStackedWidget(self)
         self.pages = [LanguagePage(self), KnownPage(self), ShowsPage(self), OrderPage(self), CardsPage(self),
-                      LevelPage(self)]
+                      LevelPage(self), StartPage(self)]
         for page in self.pages:                           # a page taller than the window scrolls, never squeezed
             self.stack.addWidget(_scrolled(page))
         middle.addWidget(self.stack, 1)
@@ -3172,15 +3182,16 @@ class SetupWizard(QWidget):
         if not hasattr(self, "btn_next"):
             return
         last = self.index == len(PAGES) - 1
-        busy = self.generating or self.reading is not None       # Generate, or page 3's first look (its Stop)
-        _show(self.btn_back, self.index > 0 and self.resort is None)
+        start = self.page.id == StartPage.id              # ONB-1: the list is made behind it; *Start* goes on
+        busy = (self.generating and not start) or self.reading is not None     # Generate, or page 3's first look
+        _show(self.btn_back, self.index > 0 and self.resort is None and not start)
         _show(self.btn_skip, self.index > 0 and self.resort is None)
         offered = self.page.next_offered() or busy
         if offered and self._offered is False:
             self._rearm()                                 # *Next* just came up: its first press waits (R2-1)
         self._offered = offered                           # (Kantan-B1: Anki's answer re-arms too, `_anki_looked`)
         _show(self.btn_next, offered)
-        text, tip = (S.GENERATE, S.GENERATE_TIP) if last else (S.NEXT, S.NEXT_TIP)
+        text, tip = (S.GENERATE, S.GENERATE_TIP) if last else (S.START, S.START_TIP) if start else (S.NEXT, S.NEXT_TIP)
         if self.resort is not None:
             text, tip = S.RESORT_NEXT, S.RESORT_NEXT_TIP
         elif self.page.next_skips():
@@ -3203,7 +3214,7 @@ class SetupWizard(QWidget):
 
     # --- moving between pages ------------------------------------------------------------------------------------- #
     def _go(self, index):
-        self.index = max(0, min(len(PAGES) - 1, index))
+        self.index = max(0, min(len(self.shown()) - 1, index))
         self._shown_at, self._painted = time.monotonic(), False        # a press waits until it was seen (`settled`)
         self._offered = None
         self._fresh.clear()
@@ -3211,13 +3222,23 @@ class SetupWizard(QWidget):
             self.say("")                                  # the samples' line is page 3's (AD-12)
         self._unsay_copied()
         self.stack.setCurrentIndex(self.index)             # instant: no page light-up to borrow (module docstring)
-        self.steps.set_state(self.index, self.passed)
+        self.steps.set_state(self.index, self.passed, self.shown())
         self.page.entered()
         self.paint_footer()
         if self.index == 0:
             self.start_focus()
         elif self.focusWidget() is None or not self.focusWidget().isVisible():
             self.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def shown(self):
+        """The steps this setup shows: the six, then *Your start* while D1's first cards wait for its yes (ONB-1)."""
+        return PAGES + ((StartPage.id,) if self._start_offered else ())
+
+    def held(self):
+        """A press waits: Generate running (but not under *Your start*: the list is made behind it), page 3's first
+        look, a screen over the wizard, or *Start* pressed."""
+        return ((self.generating and self.page.id != StartPage.id) or self.reading is not None
+                or self.covered is not None or self._starting is not None)
 
     def start_focus(self):
         """Where the keyboard starts (page 1: the glyphs, so ← → choose at once)."""
@@ -3226,8 +3247,7 @@ class SetupWizard(QWidget):
     def enter(self):
         """Enter: *Next* (or **Generate**); *Skip* on a page that can't go on (never while Anki is being looked
         for: the answer may yet let it go on)."""
-        if self.generating or self.reading is not None or self.covered is not None or (
-                self._anki_looking and self.page.id in ("known", "order")):
+        if self.held() or (self._anki_looking and self.page.id in ("known", "order")):
             return
         if self.page.next_offered():
             self.next()
@@ -3235,7 +3255,7 @@ class SetupWizard(QWidget):
             self.skip()
 
     def next(self):
-        if self.generating or self._gone or self.reading is not None or self.covered is not None:
+        if self.held() or self._gone:
             return
         page = self.page
         if not page.next_offered():
@@ -3279,6 +3299,9 @@ class SetupWizard(QWidget):
         if page.id == "level":
             self._generate(answers)
             return
+        if page.id == StartPage.id:
+            self._start(answers)
+            return
         if page.id != "shows":                            # (page 3's answers were written above: `_save_shows`)
             self._save(page.id, answers)
         if page.id == "language" and answers.get("language") != self.language:
@@ -3295,8 +3318,12 @@ class SetupWizard(QWidget):
         self._go(self.index + 1)
 
     def skip(self):
-        """Nothing written; on the last page, setup finishes without Generate."""
-        if self.generating or self.reading is not None or self.covered is not None or self.index == 0:
+        """Nothing written; on *Your list*, setup finishes without Generate; on *Your start* (ONB-1) setup closes with
+        the first cards unanswered — *Needs you*'s *Make cards* card asks again."""
+        if self.held() or self.index == 0:
+            return
+        if self.page.id == StartPage.id:
+            self._close("done")
             return
         if self.index == len(PAGES) - 1:
             self._finish()
@@ -3305,8 +3332,8 @@ class SetupWizard(QWidget):
         self._advance()
 
     def back(self):
-        if self.generating or self.reading is not None or self.covered is not None or self.index == 0:
-            return
+        if self.held() or self.index == 0 or self.page.id == StartPage.id:
+            return                                        # (*Your start*: the list is already being made)
         self._go(self.index - 1)                          # the pages keep their choices
 
     def finish_later(self):
@@ -4368,11 +4395,21 @@ class SetupWizard(QWidget):
             b.generate_changed.connect(self._generate_state)
         bridge.run_in_worker(self.api.generate, self.services, then=self.alive(self._accepted),
                              failed=self.alive(lambda info: self._accepted(False, str(info[0]))))
+        if self._start_offered:                           # ONB-1: on to *Your start* at once, the list made behind
+            self.say(S.MAKING_SHORT_NO_PCT)
+            self._advance()
 
     def _accepted(self, ok, why=None):
-        if not ok:
-            windows.say_in_bar(self.shell, why or S.NOT_STARTED)
+        if ok:
+            return
+        windows.say_in_bar(self.shell, why or S.NOT_STARTED)
+        if self.page.id != StartPage.id:
             self._close("done")
+            return
+        self.generating = False                           # *Your start* stays: its *Start* doesn't need the list
+        self.hairline.set_value(None)
+        self.say(why or S.NOT_STARTED)
+        self.paint_footer()
 
     def _generate_state(self, state):
         """The window's Generate, heard as the header hears it (`bridge.generate_changed`)."""
@@ -4384,10 +4421,104 @@ class SetupWizard(QWidget):
             from app.services import generate as generate_module
             pct = generate_module.percent(state)
             self.hairline.set_value(0.0 if pct is None else pct / 100.0)
-            self.say(S.MAKING_PCT.format(pct=pct) if pct is not None else S.MAKING)
+            if self.page.id == StartPage.id:
+                self.say(S.MAKING_SHORT.format(pct=pct) if pct is not None else S.MAKING_SHORT_NO_PCT)
+            else:
+                self.say(S.MAKING_PCT.format(pct=pct) if pct is not None else S.MAKING)
         elif self._saw_busy:
             self.hairline.set_value(1.0)
-            self._close("generated")
+            if self.page.id != StartPage.id:
+                self._close("generated")
+                return
+            self.generating = False                       # ONB-1: the list is made; *Your start* stays for its yes
+            self.hairline.set_value(None)
+            self.say("")
+            self.paint_footer()
+            self.read_start(again=True)                   # (its cards are counted now)
+
+    # --- ONB-1: *Your start* (page 7, while D1's first cards wait for a yes) ----------------------------------------- #
+    def read_start_offered(self):
+        """(*Your list* shown.) Is *Your start* next (`start_offered`, a small file read)? On a worker; the steps follow."""
+        offered = getattr(self.api, "start_offered", None)
+        if offered is None or self.resort is not None:
+            return
+        language = self.language
+        bridge.run_in_worker(offered, thaw(self._settings()), language,
+                             then=self.alive(lambda got: self._start_looked(got, language)),
+                             failed=lambda info: applog.log("wizard", f"your start: {info[0]}"))
+
+    def _start_looked(self, offered, language):
+        offered = bool(offered)
+        if language != self.language or self.page.id != "level" or self.generating or offered == self._start_offered:
+            return                                        # (never changed under Generate or *Your start* itself)
+        self._start_offered = offered
+        self.steps.set_state(self.index, self.passed, self.shown())
+
+    def read_start(self, again=False):
+        """*Your start*'s numbers on a worker: the episodes each start covers (`start_items`, once a page entry; `again`
+        keeps them), then `start_numbers` against the window's view. One read at a time; a change meanwhile reads once
+        more after it (the view can be 20k episodes: never on this thread, never a pile of reads)."""
+        page = self.pages[PAGES.index("level") + 1]
+        if self._start_reading:
+            self._start_again = True
+            return
+        self._start_reading, self._start_again = True, False
+        self._start_seq += 1
+        seq, language, api = self._start_seq, self.language, self.api
+        items = page.items if again and page.items else None
+        reader = getattr(self.services, "library", None)
+        per_day = self._settings().get("words_per_day")
+
+        def read():
+            got = items if items is not None else api.start_items(language)
+            return got, api.start_numbers(got, reader.view() if reader is not None else None, per_day)
+
+        def failed(info):
+            applog.log("wizard", f"your start's numbers: {info[0]}")
+            self._start_read(None, seq, language)
+        bridge.run_in_worker(read, then=self.alive(lambda got: self._start_read(got, seq, language)),
+                             failed=self.alive(failed))
+
+    def _start_read(self, got, seq, language):
+        self._start_reading = False
+        page = self.pages[PAGES.index("level") + 1]
+        if got is not None and seq == self._start_seq and language == self.language:
+            page.items, numbers = got
+            page.show_numbers(numbers)
+        if self._start_again and self.page.id == StartPage.id:
+            self.read_start(again=True)
+
+    def _library_moved(self, _view=None):
+        """(`library_changed`) The window's view moved — the list being made: *Your start*'s numbers again."""
+        if not self._gone and not sip.isdeleted(self) and self.page.id == StartPage.id:
+            self.read_start(again=True)
+
+    def _start(self, answers):
+        """*Start*, the yes: the start written through its owners (`save(START)`: *Keep up to*, PRESTUDIED-MINE's
+        switch), then on a worker the settings flushed and D1's line answered with the start's mine line
+        (`start_cards`: Connect makes that many episodes' cards). Its arc turns on *Start* from the press; done, the
+        wizard closes (the list, if still being made, goes on in the window's header)."""
+        if self._starting is not None or self._gone or not self._save(StartPage.id, answers):
+            return
+        start, language, api, settings = answers.get("start"), self.language, self.api, self.services.settings
+
+        def run():
+            settings.flush(10)                            # (Connect reads the cap from the file)
+            return api.start_cards(language, thaw(settings.get()), start)
+        self._starting = qpress.run(self.btn_next, "wizard:start", run, then=self.alive(self._started),
+                                    failed=self.alive(self._start_failed), win=self)
+
+    def _started(self, _ids):
+        made = strings.NEEDS_FIRST_CARDS_MADE             # (D1's own words: cards made by themselves from now on)
+        if settings_manager.paused(self._settings() or {}, "miner"):
+            made = strings.NEEDS_FIRST_CARDS_MADE_PAUSED  # (nothing starts while Anki Miner is paused)
+        windows.say_in_bar(self.shell, made)
+        self._close("started")
+
+    def _start_failed(self, info):
+        applog.log("wizard", f"your start: {info[0]}")
+        windows.say_in_bar(self.shell, S.START_FAILED)
+        self._close("done")                               # (D1's card stays in *Needs you*: its answer taken back)
 
 
 class _AskFromWorker(QObject):

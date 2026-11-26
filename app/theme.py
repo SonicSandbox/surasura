@@ -129,6 +129,8 @@ MIXES = {
     "status-nomedia-border": ("mock.html :334", ("mix", "warn", 55, "transparent", None)),
     # the top-20 line (W3.1a: a groove, really subtle) and the watched chips (W3.1a: the string's stones)
     "top20-line": ("mock.html :348", ("mix", "accent", 38, "line", None)),
+    # the Soon line in the accent, one crisp hairline (CURRENT-SOON-LOOK A, PROVISIONAL: Sonic picks)
+    "soon-line": ("CURRENT-SOON-LOOK A", ("mix", "accent", 60, "line", None)),
     "watched-chip-fill": ("mock.html :375", ("mix", "accent", 20, "bg", None)),
     "side-pill-fill": ("Kyou-D: side by side's pill (PROVISIONAL)", ("mix", "accent", 14, "transparent", None)),
     "side-pill-border": ("Kyou-D: side by side's pill (PROVISIONAL)", ("mix", "accent", 45, "line", None)),

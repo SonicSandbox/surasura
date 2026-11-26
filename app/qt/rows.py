@@ -2651,12 +2651,16 @@ class RowDelegate(QStyledItemDelegate):
         TEXT.draw(p, box.left() + 6, box.center().y(), text, "row-sub", w, c("ink-dim"), dpr=dpr, elide=False)
 
     def _paint_line(self, p, ln, strip, dpr, hot=False):
-        """A line after its row (W3.1a §1 *Top-20 line*, *Soon line*): a groove — 1 px dark, then 1 px lit lip —
-        across the list in its own strip, no word; Soon's quieter still (the lip only). Under the hand it lights a step
-        (its lip). Whole device pixels, so it stays crisp at every scale."""
+        """A line after its row (W3.1a §1 *Top-20 line*, *Soon line*): the top-20 line a groove — 1 px dark, then 1 px
+        lit lip — across the list in its own strip, no word; the Soon line one hairline in the accent (CURRENT-SOON-LOOK
+        A, PROVISIONAL), so where Soon starts reads at a glance. Under the hand each lights a step. Whole device pixels,
+        so it stays crisp at every scale."""
         k = max(1, round(dpr)) / dpr                 # one line's height: whole device px
         y = round((strip.top() + (strip.height() - 2 * k) / 2) * dpr) / dpr
         x0, w = strip.left() + 4, strip.width() - 8
+        if ln.kind == "soon":
+            p.fillRect(QRectF(x0, y + k, w, k), c("accent" if hot else "soon-line"))
+            return
         if ln.kind == "top":
             p.fillRect(QRectF(x0, y, w, k), c("groove"))
         p.fillRect(QRectF(x0, y + k, w, k), c("line-hi" if hot else "groove-lip"))

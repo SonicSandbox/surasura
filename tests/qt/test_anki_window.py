@@ -296,11 +296,12 @@ def test_a_deck_taken_out_here_is_the_settings_rows_pick_and_the_waiting_count_i
     # why: the window saves its decks as an `update=` alone, which its listeners heard with no key, so the Settings
     # *Decks* row kept the earlier pick (a parent deck there takes every subdeck in Anki's search) and nothing read
     # the backlog again: *260 waiting* stayed after the deck holding them was taken out (#SYQF6C)
-    from app.services import automation as automation_module
     asked = []
-    monkeypatch.setattr(automation_module.AutoSync, "decks_changed", lambda self: asked.append(      # (the read
-        list((self._owner.settings_now().get("anki_sync_decks") or {}).get("ja") or [])), raising=False)  # itself:
-    #                                                                     test_services_automation; Anki is off here)
+
+    class Automation:                                  # the service's ask, recorded (its read: test_services_automation)
+        def decks_changed(self):
+            asked.append(list((main.services.settings.get().get("anki_sync_decks") or {}).get("ja") or []))
+    main.services.automation = Automation()
     _choose(main, **{"anki_sync_decks": {"ja": ["TheBank", "Grammar"], "zh": ["中文"]}})
     page = main.mount_settings()
     assert wait_until(lambda: page.built, 20)

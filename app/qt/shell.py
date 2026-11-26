@@ -2876,6 +2876,8 @@ class ShellWindow(QMainWindow):
                 refresh("connect")
         if {"connect_enabled", "logic.automation", "connect_anki_miner_path"} & set(keys or ()):
             self._path_repaint()                        # the cards step's press follows its switches (Mado-EZP)
+        if {"anki_sync_decks", "anki_sync_fields"} & set(keys or ()) and self.services.automation is not None:
+            self.services.automation.decks_changed()    # *N waiting* read again for the decks now chosen (#SYQF6C)
         if self.duties is not None:
             self._duty_settings(keys)
             if "logic.automation" in keys:
@@ -3674,8 +3676,6 @@ class ShellWindow(QMainWindow):
             self._show_automation(s.automation.state())
         elif "anki_sync_decks" in keys or "target_language" in keys:
             self._known_road()                              # the count's click line follows the road (IK-7)
-        if ("anki_sync_decks" in keys or "anki_sync_fields" in keys) and s.automation is not None:
-            s.automation.decks_changed()                    # *N waiting* read again for the decks now chosen
         try:
             stale = s.settings.stales(keys, language)
         except Exception:

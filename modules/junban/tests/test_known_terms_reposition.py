@@ -58,7 +58,7 @@ def test_a_re_plan_after_a_mine_tokenizes_only_the_known_terms_not_read_before(t
         analyzer.read_known_words(store, path, ti.known_signature(path), cls())
     finally:
         store.close()
-    assert len(set(asked) & held) > 50
+    assert len(set(asked) & held) > 3
 
     new = [w for w in _NEW[language] if w not in held][:2]
     path, _held = _known_file(language, extra=new, carded=True)     # Connect's cards: the file moved

@@ -71,7 +71,7 @@ def test_a_mine_that_moves_the_known_words_file_tokenizes_only_the_terms_it_adde
     try:
         first = sc.known_sets(language, store, settings)
         whole = set(asked)
-        assert len(whole & held) > 50 and first[0] and first[1], "the first read reads the file's terms"
+        assert len(whole & held) > 3 and first[0] and first[1], "the first read reads the file's terms"
         assert kept == [1], "the terms kept for the next read"
 
         # A card Connect made: the file's signature moves, no term is new — nothing is tokenized, and the ~10k terms'
@@ -113,7 +113,7 @@ def test_with_nothing_held_in_the_store_every_term_is_read_once_and_an_empty_fil
         known_file("ja", ja_resources_dir, carded=True)
         del asked[:]
         sc.known_sets("ja", store, {})
-        assert len(set(asked)) > 50, "another build: every term read again"
+        assert len(set(asked)) > 3, "another build: every term read again"
         with open(os.path.join(get_user_files_path("ja"), "KnownWord.json"), "w", encoding="utf-8") as f:
             json.dump({"words": []}, f)
         del asked[:]

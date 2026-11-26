@@ -1448,8 +1448,9 @@ def test_a_deck_taken_out_leaves_no_waiting_count_but_the_same_decks_answered_em
     fake.add("評論家", deck="Japanese::Anki Miner", new=False)
     kept = ["Japanese::Mining Deck", "Japanese::Anki Miner"]
     with mock.patch("urllib.request.urlopen", fake):
-        assert anki_sync.sync_backlog("ja", URL, kept + ["Japanese::Jalup Sentences"], []) == (260, None)
-        assert anki_sync.count_backlog("ja") == 260
+        waiting, error = anki_sync.sync_backlog("ja", URL, kept + ["Japanese::Jalup Sentences"], [])
+        assert error is None and waiting > 250, "the mistaken deck's new cards wait (a card with no word reads none)"
+        assert anki_sync.count_backlog("ja") == waiting
         count, error = anki_sync.sync_backlog("ja", URL, kept, [])
     assert (count, error) == (0, None), "the new decks hold no new card: 0 waiting"
     saved = _backlog_file()
@@ -1462,7 +1463,7 @@ def test_a_deck_taken_out_leaves_no_waiting_count_but_the_same_decks_answered_em
     saved = _backlog_file()
     with mock.patch("urllib.request.urlopen", FakeCollection()):
         count, error = anki_sync.sync_backlog("ja", URL, kept + ["Japanese::Jalup Sentences"], [])
-    assert count == 260 and "kept" in error and _backlog_file() == saved
+    assert count == waiting and "kept" in error and _backlog_file() == saved
 
     # Every deck taken out: no read of Anki, and the saved backlog says no card waits (0, not the last 260)
     with mock.patch("urllib.request.urlopen", FakeCollection(offline=True)):

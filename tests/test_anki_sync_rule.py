@@ -340,6 +340,9 @@ def test_anki_closed_at_the_sync_is_failed_for_the_rule_and_raised_for_the_remak
             anki_sync_rule.sync_now(URL)
         assert closed.value.kind == "offline" and anki_sync_rule.read_state().get("sync") == before
         anki.offline = False
+        anki.slow = True              # open but past the timeout (its own sync, Check Database): busy, never closed
+        assert anki_sync_rule.sync_now(URL).startswith("failed")
+        anki.slow = False
         anki.fail = True                                       # Anki open, AnkiWeb unreachable: still an answer
         assert anki_sync_rule.sync_now(URL).startswith("failed")
 

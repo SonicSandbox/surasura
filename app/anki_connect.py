@@ -414,8 +414,9 @@ def sync(url, timeout=120, errors=False):
     "full-sync" (AnkiWeb wants a full sync: the user's choice, never waited on), "busy" (Anki busy with a collection
     operation — its own sync, Check Database: asked again later, never a failure) or "failed: <why>". Sent only
     while holding the Anki-write lock; raises AnkiError only for that refusal and a URL that isn't loopback — and,
-    with `errors` (a caller that tells Anki gone apart itself, as `reviewing`'s: *Make my new cards again…*), Anki not
-    answering as it came (`offline`), never as AnkiWeb's "failed"."""
+    with `errors` (a caller that tells Anki gone apart itself, as `reviewing`'s: *Make my new cards again…*), Anki
+    closed as it came (`offline`), never as AnkiWeb's "failed" (one past the timeout is Anki open but busy,
+    `timed_out`: still "failed: …")."""
     _loopback_only(url)
     _writer_held("sync")
     try:
@@ -428,7 +429,7 @@ def sync(url, timeout=120, errors=False):
             return "full-sync"
         if e.busy:
             return "busy"
-        if e.kind == "refused" or (errors and e.kind == "offline"):
+        if e.kind == "refused" or (errors and e.kind == "offline" and not getattr(e, "timed_out", False)):
             raise
         return f"failed: {text}"
     return "synced"

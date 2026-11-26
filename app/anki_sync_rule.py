@@ -181,7 +181,8 @@ def sync_now(url):
     (REMAKE, 3.0.19), before it counts and before it deletes, so a card studied on another device reads as studied
     -> what Anki answered ("synced", "not-signed-in", "full-sync", "busy", "failed: …"); a sync that carried every
     write is recorded as S1's and S3's are. Never while the user reviews (the caller asks first). Raises only
-    AnkiError `offline` (Anki closed or not answering: the caller says Anki isn't open, never AnkiWeb's words)."""
+    AnkiError `offline` (Anki closed: the caller says Anki isn't open, never AnkiWeb's words; one past the timeout is
+    Anki busy, a "failed: …" answer as before)."""
     try:
         answer = anki_connect.sync(url, errors=True)
     except anki_connect.AnkiError as e:

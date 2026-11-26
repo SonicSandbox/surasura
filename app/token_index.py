@@ -145,7 +145,10 @@ from operator import itemgetter
 #    texts apart (`texts`): the `tokens` JSON column goes, the small columns come first and reconcile reads them from
 #    their own index (`files_head`) — DSA-WALK, G1 / G2 (a Generate looks a token up by its id, never decodes its JSON).
 #    A v29 store can't be read as this one (`open_reader` gives None): users rebuild once.
-SCHEMA_VERSION = 30
+# v31 an .ass caption's one-character lines join with no space, and a one-kanji word after a lone letter is a piece
+#    (its `bound` counts: analyzer._after_label, ENGINE_REVISION 51): a v30 row holds 願 for お願い, 棟 for A棟's
+#    counter — users rebuild once.
+SCHEMA_VERSION = 31
 
 # The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,
 # Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.

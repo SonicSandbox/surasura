@@ -63,10 +63,26 @@ class _Hato(list):
 
 AUTO = ("update", "--auto")
 ANSWER = ("update", "--check", "--if-due", "--json")
+INSTALL = ("update", "--quiet-install", "--json")
 
 
 def _line(**fields):
     return (json.dumps(dict({"type": "update", "current": "1.4.2"}, **fields), ensure_ascii=False) + "\n").encode()
+
+
+def _ready(version="1.5.0", current="1.4.2"):
+    """hato's `update --check --json` answer for a release this copy can install, in its full shape (hato
+    `commands/update.py`: `Decision.as_dict()` + type + current)."""
+    return _line(kind="ready", version=version, reason=None, notes=["Faster finds"], critical=False,
+                 page="https://github.com/SonicSandbox/hato/releases/latest",
+                 zip_url=f"https://github.com/SonicSandbox/hato/releases/download/v{version}/hato-{version}.zip",
+                 size=70254592, current=current)
+
+
+def _said(kind, version):
+    """hato's `update --quiet-install --json` answer (hato 1.4.3, `commands/update.py` `_quiet_install`): `applying`
+    once its swapper has the release, else `waiting` (the release staged, or None)."""
+    return (json.dumps({"type": kind, "version": version}, ensure_ascii=False) + "\n").encode()
 
 
 @pytest.fixture
@@ -291,18 +307,94 @@ def test_a_torn_state_is_due_and_one_held_open_is_not(hato):
         os.rmdir(H.path())
 
 
+# --- a release hato has for the learner: installed quietly, or waiting for a press ------------------------------------ #
+def test_a_release_waiting_for_a_press_in_hato_is_never_updating(hato):
+    """A default hato (no tray, no daily run) stages its update from `--auto`, and nothing of hato installs it without
+    *Restart now* in its window. An older hato has no quiet install (its usage error, exit 2): the row says the release
+    is ready in hato — never *updating…* for days."""
+    fake = _Hato({ANSWER: (0, b'{"type": "progress"}\n' + _ready()), INSTALL: (2, b"")})
+    assert H.attempt({}, now=NOW, popen=fake) == H.DONE
+    assert fake.commands() == [list(AUTO), list(ANSWER), list(INSTALL)]
+    assert H.status("1.4.2") == (H.READY, "1.5.0")
+    assert H.status("1.5.0") == (H.UP_TO_DATE, None)                   # the learner pressed it in hato
+    assert H.status("1.5.1") == (H.UP_TO_DATE, None)                   # or went past it
+    assert H.attempt({}, now=NOW + H.LOOK_S, popen=fake) == H.NOT_DUE  # asked once a day, not every look
+
+
+@pytest.mark.parametrize("said", [_said("waiting", "1.5.0"), _said("waiting", None), _said("applying", "1.4.9"),
+                                  b"", b"Traceback (most recent call last):\n"],
+                         ids=["waiting", "nothing-staged", "another-release", "silent", "no-json"])
+def test_hato_that_installs_nothing_now_says_ready_in_hato(hato, said):
+    """hato 1.4.3 waits (its window or a run open, *Update automatically* off, a tray that installs it itself, a version
+    turned away, nothing staged), names another release, or gives no answer: ready in hato, never *updating…*."""
+    fake = _Hato({ANSWER: (0, _ready()), INSTALL: (0, said)})
+    assert H.attempt({}, now=NOW, popen=fake) == H.DONE
+    assert H.status("1.4.2") == (H.READY, "1.5.0")
+
+
+def test_a_quiet_install_says_updating_then_reads_hatos_answer_once_more(hato):
+    """hato 1.4.3 installs what it staged (`applying`: its swapper has it, nothing reopens): *updating…* is true now.
+    The next look (LOOK_S on) reads hato's answer again — no `--auto`, no install — and the row follows it; the day's
+    attempt stays spent."""
+    fake = _Hato({ANSWER: (0, _ready()), INSTALL: (0, _said("applying", "1.5.0"))})
+    assert H.attempt({}, now=NOW, popen=fake) == H.INSTALLING
+    assert H.status("1.4.2", now=NOW + 60) == (H.UPDATING, "1.5.0")
+    assert H.status("1.4.2", now=NOW + H.SAID_S) == (H.READY, "1.5.0")    # never *updating…* past SAID_S unread
+    fake.answers[ANSWER] = (0, _line(kind="none", version="1.5.0", current="1.5.0"))
+    assert H.attempt({}, now=NOW + H.LOOK_S, popen=fake) == H.DONE
+    assert fake.commands() == [list(AUTO), list(ANSWER), list(INSTALL), list(ANSWER)]
+    assert "installing" not in _state() and _state()["tried_at"] == "2026-11-21T09:30:00Z"
+    assert H.status("1.5.0") == (H.UP_TO_DATE, None)
+    # hato's entry still naming the hato before it (nothing of hato started since): hato's own answer says which hato
+    # runs, so the release it just installed is never read as one this copy can't install
+    assert H.status("1.4.2") == (H.UP_TO_DATE, None)
+    assert H.attempt({}, now=NOW + 2 * H.LOOK_S, popen=fake) == H.NOT_DUE
+
+
+def test_the_second_read_waits_while_hato_is_open_and_a_failed_one_is_couldnt_check(hato, monkeypatch):
+    fake = _Hato({ANSWER: (0, _ready()), INSTALL: (0, _said("applying", "1.5.0"))})
+    assert H.attempt({}, now=NOW, popen=fake) == H.INSTALLING
+    monkeypatch.setattr(updater, "_processes_running", lambda images: {4242: images[0]})
+    assert H.attempt({}, now=NOW + H.LOOK_S, popen=fake) == H.WAIT and len(fake) == 3
+    monkeypatch.setattr(updater, "_processes_running", lambda images: {})
+    fake.answers[ANSWER] = (1, b"")
+    assert H.attempt({}, now=NOW + 2 * H.LOOK_S, popen=fake) == H.DONE
+    assert H.status("1.4.2") == (H.NO_CHECK, None)                     # never *updating…* left behind
+
+
+def test_check_for_updates_turned_off_after_a_quiet_install_never_leaves_updating(hato):
+    """The second read is an update request too: with *Check for updates* off it isn't made — and the row no longer
+    says *updating…* for an install nobody looks at again."""
+    fake = _Hato({ANSWER: (0, _ready()), INSTALL: (0, _said("applying", "1.5.0"))})
+    assert H.attempt({}, now=NOW, popen=fake) == H.INSTALLING
+    assert H.attempt({"update_check_enabled": False}, now=NOW + H.LOOK_S, popen=fake) == H.NOT_ALLOWED
+    assert len(fake) == 3
+    assert H.status("1.4.2", now=NOW + H.SAID_S) == (H.READY, "1.5.0")
+
+
+def test_keep_looks_again_soon_after_a_quiet_install(monkeypatch):
+    outcomes = iter([H.INSTALLING, H.DONE])
+    waits = []
+
+    class Stop:
+        def is_set(self):
+            return len(waits) >= 2
+
+        def wait(self, seconds):
+            waits.append(seconds)
+    monkeypatch.setattr(H, "attempt", lambda settings, popen=None, stopped=None: next(outcomes))
+    H.keep(lambda: {}, Stop())
+    assert waits == [H.LOOK_S, H.IDLE_S]
+
+
 # --- Settings' words ------------------------------------------------------------------------------------------------- #
-def test_updating_while_hato_gets_a_newer_one_then_up_to_date_once_installed(hato):
-    fake = _Hato({ANSWER: (0, b'{"type": "progress"}\n' + _line(kind="ready", version="1.5.0"))})
-    H.attempt({}, now=NOW, popen=fake)
-    assert H.status("1.4.2") == (H.UPDATING, "1.5.0")
-    assert H.status("1.5.0") == (H.UP_TO_DATE, None)                   # hato installed it itself
-    assert H.status("1.5.1") == (H.UP_TO_DATE, None)                   # or the learner went past it
 
 
 def test_a_newer_hato_this_copy_cant_install_is_out(hato):
-    H.attempt({}, now=NOW, popen=_Hato({ANSWER: (0, _line(kind="tell", version="1.5.0", reason="unsigned"))}))
+    fake = _Hato({ANSWER: (0, _line(kind="tell", version="1.5.0", reason="unsigned"))})
+    H.attempt({}, now=NOW, popen=fake)
     assert H.status("1.4.2") == (H.OUT, "1.5.0")
+    assert fake.commands() == [list(AUTO), list(ANSWER)]               # nothing hato could install: no install asked
 
 
 @pytest.mark.parametrize("state", [

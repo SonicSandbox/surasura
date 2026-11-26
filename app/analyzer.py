@@ -5776,6 +5776,7 @@ def settings_signature(settings, language):
         "setup_passed",                 # the setup pages saved before setup finished (IK2-2): never a run
         "hints_seen",                   # W-1: the window's one-time hints shown, each per library: never a run
         "connect_backlog_cap",          # how many cards Connect keeps waiting (P2.4): never what a run counts
+        "connect_prestudied_only",      # PRESTUDIED-MINE: which episodes Connect mines, never what a run counts
         "known_from_anki",              # P2.4: what it adds lands in KnownWord.json (known_sig), not as a key
         "known_from_anki_chosen",       # Kantan-B3: whether those states are the learner's pick, never a run
         "sentence_length_chosen",       # E-LENGTH: whether *Length* is the learner's pick; the pair is hashed

@@ -35,6 +35,7 @@ window.__names = async function (i) {
     J.go(i, 0); await J.loadEp(i); J.drawWord(); await frame();
     const view = list ? "List" : "word view", stage = $("#stage"), rail = $("#rail");
     // the rail: ‹ [the episode's name] ›, then its own head (the episode, % known, N new, its stone)
+    if (shown(rail) !== innerWidth > 760) miss.push(`${view}: the rail ${shown(rail) ? "shown" : "hidden"} at ${innerWidth} px`);
     if (shown(rail)) {
       const top = $(".rs-top", rail), btn = $(".rs-title", rail), prev = $('[data-rs="prev"]', rail), next = $('[data-rs="next"]', rail);
       rowInside(`${view}, the rail's top row`, top, rail);
@@ -55,7 +56,7 @@ window.__names = async function (i) {
     if (!ml) { miss.push(`${view}: no heading with the episode's name`); continue; }
     rowInside(`${view}, the word pane's heading`, meta, stage);
     const nav = $(".wnav", meta);
-    if (nav) before(`${view}, the word pane's heading`, ml, nav);
+    if (shown(nav)) before(`${view}, the word pane's heading`, ml, nav);
     if (shown(rail)) inside(`${view}, the word pane's heading`, meta, stage);
     cut(`${view}, the word pane's heading`, ml);
     if (ml.dataset.tip !== title) miss.push(`${view}: the word pane's heading has no hover with the full name`);
@@ -69,6 +70,7 @@ window.__names = async function (i) {
     inside("the end card's heading", h2, end);
     for (const el of h2.children) inside("the end card's heading", el, end);
     const nx = $(".next .btn", end);
+    if (!nx || !upn) miss.push("the end card has no Next or no Up next to measure");
     if (nx) {
       rowInside("the end card's Next", nx, end);
       cut("the end card's Next", $(".nt", nx));

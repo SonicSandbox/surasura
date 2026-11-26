@@ -4,10 +4,10 @@
 .rs-top .nav:hover { color:var(--ink); background:var(--raised); } .rs-top .nav:disabled { opacity:.35; cursor:default; }
 .rs-title { flex:1; min-width:0; min-height:32px; display:flex; align-items:center; gap:6px; border:0; background:none; cursor:pointer; padding:4px 6px; border-radius:7px; color:var(--ink); font:700 13px var(--f-ja); overflow:hidden; }
 .rs-title:hover { background:var(--raised); }
-.rs-title .t1 { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:0 1 auto; }
-/* a long name cuts with … in its own box (JOURNEY-NAMES): the show's name gives way first; the episode's part keeps
-   up to 60 % (a file named apart from its show carries the whole name there), then cuts too; *of N* ▾ always shows */
-.rs-title .pt { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:none; max-width:60%; }
+/* a long name cuts with … in its own box (JOURNEY-NAMES): the show's name and the episode's part share the room evenly,
+   a short one whole and the rest to the other (a file named apart from its show carries the whole name in its part);
+   *of N* ▾ always shows */
+.rs-title .t1, .rs-title .pt { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1 1 0; max-width:max-content; }
 .rs-title .of { color:var(--ink-faint); font:500 11.5px var(--f-ui); white-space:nowrap; flex:none; }
 .rs-line { display:flex; align-items:center; gap:6px; padding:8px 6px 4px 6px; }
 .rs-line .ofb { display:inline-flex; align-items:center; gap:6px; height:32px; padding:0 8px; border:1px solid var(--line-hi); border-radius:7px; background:none; color:var(--ink-dim); cursor:pointer; font:600 11.5px var(--f-ui); }

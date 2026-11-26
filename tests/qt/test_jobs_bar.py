@@ -1528,7 +1528,7 @@ def test_the_sheet_goes_once_what_it_names_has_ended_and_the_window_closes_by_it
     world.win.close()
     card = _sheet(world)
     jobs[0].finish()                                          # the upkeep ends; Connect still makes its cards
-    QTest.qWait(300)
+    assert wait_until(lambda: [j.kind for j in J.detached_at_quit(world.win._jobs)] == [J.CONNECT_KIND])
     assert world.win.isVisible() and world.win._detached_card is card and card.isVisible()
     began = time.monotonic()
     jobs[-1].finish()                                         # nothing it names goes on any more

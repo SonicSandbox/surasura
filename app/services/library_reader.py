@@ -97,6 +97,10 @@ NUMBERS_GRACE_S = 0.05
 # a4: the window's own command (`urgent`): for this long its numbers and its write build at once, a burst's hold-back aside
 URGENT_S = 1.0
 # --- end a4
+# OPEN-RACE: the first look waits for the numbers' first answer this long at most (`_first_numbers`: past it the list is
+# built without them, as before); and checks for it, and for a window ask, at least this often meanwhile
+FIRST_NUMBERS_S = 5.0
+FIRST_NUMBERS_LOOK_S = 0.05
 CACHE_VERSION = 6               # 2: keyed (store id, epoch, state version, plan version); 3: an episode's `deleted`;
 #                                  4: a status's words and tips (G2.3: ✓ N, a tip's action on a line of its own);
 #                                  5: `can_play` is ▶'s found file (row 55), and the seed of its answers
@@ -681,6 +685,7 @@ class LibraryReader:
             pass                                    # a cache that can't be read is no cache
         if self.chips is not None and not self._stop.is_set():
             self._seed_chips()                      # Michi-CK2: before the first build
+        self._first_numbers()                       # OPEN-RACE: the first look builds the list once, with its numbers
         while not self._stop.is_set():
             window_idle.wait()                      # Up next 2: a look starts while the window rests (its stretch
             if self._stop.is_set():                 # never takes turns at Python's lock with a view's build)
@@ -732,6 +737,29 @@ class LibraryReader:
         self._cache_due = None
         with self._lock:
             self._answered = (self._answered[0], None)     # (its view let go with the rest)
+
+    def _first_numbers(self):
+        """OPEN-RACE: before the first look, while the numbers' first load is on its way (`moves.Numbers.wait_first`),
+        wait for its answer — `FIRST_NUMBERS_S` at most — so the first list is read and built once, with its numbers,
+        never built without them beside the load and then again (the two took turns at Python's lock: a 20,000-file
+        open's first view with numbers landed at 3.3, 4.2 or 5.7-6.7 s by which ran first). The first screen's cache,
+        if any, is already shown. A window ask (a learner's command, an expectation, a drag, a republish) or a stop ends
+        the wait at once: what the learner does is never held back for the numbers."""
+        wait = getattr(self.numbers, "wait_first", None)
+        if wait is None:
+            return
+        end = time.monotonic() + FIRST_NUMBERS_S
+        while not self._stop.is_set():
+            left = end - time.monotonic()
+            if left <= 0 or wait(0) or self._window_asked():
+                return
+            self._wake.wait(min(left, FIRST_NUMBERS_LOOK_S))   # (the numbers' answer wakes the reader: `refresh`)
+            self._wake.clear()
+
+    def _window_asked(self):
+        with self._lock:
+            asked = self._expected_new is not None or self._asks > self._answered[0]
+        return asked or self._hold.is_set() or time.monotonic() < self._urgent_until
 
     def _handle(self):
         """(mode, reason, handle). The mode is asked of the opener at the start, after a failed read, and every few

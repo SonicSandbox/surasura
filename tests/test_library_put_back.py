@@ -251,10 +251,13 @@ def test_too_little_free_space_refuses_sort_again_and_put_back_naming_how_much(m
             ls.put_back_library(store, backup)
 
 
-def test_connect_is_taken_for_the_whole_put_back_and_one_running_refuses_it():
+def test_connect_mining_is_taken_for_the_whole_put_back_and_a_look_mining_refuses_it(monkeypatch):
+    # SORT-BAR: Connect's "mining now" lock, never its one-instance lock (a Connect only waiting refuses nothing:
+    # tests/test_connect_mining_lock.py)
+    monkeypatch.setattr(ls, "RESET_WAIT", 0.0)
     store, data_dir, user_files_dir, backup, _before = _sorted_again("ja")
     with store:
-        held = locks.take("connect", "making cards")
+        held = locks.take(ls.CONNECT_MINING, "Connect making cards")
         try:
             with pytest.raises(ls.ResetRefused) as e:
                 ls.put_back_library(store, backup)
@@ -262,7 +265,7 @@ def test_connect_is_taken_for_the_whole_put_back_and_one_running_refuses_it():
         finally:
             held.release()
         seen = []
-        ls.put_back_library(store, backup, _step=lambda name: seen.append(locks.held_in_process("connect")))
+        ls.put_back_library(store, backup, _step=lambda name: seen.append(locks.held_in_process(ls.CONNECT_MINING)))
         assert seen and all(seen)
 
 

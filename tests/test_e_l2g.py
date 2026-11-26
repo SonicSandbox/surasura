@@ -212,9 +212,9 @@ if texts is not None:
     token_index.Store.file_texts = counted_texts
 if some is not None:
     token_index.Store.some_texts = counted_some
-if doubt == "1":
-    token_index._decode_texts = lambda blob, lines: None
-    token_index._decode_some = lambda blob, lines, numbers: None
+if doubt == "1":                        # every row's texts unreadable: the list reads each file's tokens in full
+    texts = lambda self, path: None
+    some = lambda self, asked: {p: None for p in asked}
 analyzer._read_shown = lambda results_dir, run_signature, forms=None, silent=None: {}
 got = analyzer.ListSentences(language, 3, clean == "1", results_dir=results)([tuple(k) for k in keys], None)
 print(json.dumps({"n": n, "got": [[list(k), v] for k, v in got.items()]}, ensure_ascii=False))
@@ -320,33 +320,23 @@ _MADE = [
 
 
 def _blob(sentences):
-    return token_index._encode_tokens(sentences), token_index._encode_tokens([1] * len(sentences))
+    return token_index._encode_texts(sentences)
 
 
-def test_made_lines_texts_read_alone_are_the_texts_and_a_line_that_would_cut_wrong_is_read_in_full():
-    # why: the text is cut out of the tokens' JSON — a quote inside a line is escaped, so the cut is a sentence's end;
-    # only a string ending in the cut's own characters cuts once too often, and the count (the row's `lines`)
-    # says so: in doubt, never a wrong text
+def test_made_lines_texts_are_the_texts_and_a_damaged_row_is_read_in_full():
+    # why: the texts are kept apart from the tokens (DSA-WALK, v30: `texts`, each line by its offsets) — every hazard
+    # the JSON layout had to cut around (quotes, backslashes, `]], [` inside a line, CRLF, control characters, a line
+    # no token holds, an empty line) reads back as written; a damaged row reads None (the caller reads in full)
     truth = [s[0] for s in _MADE]
-    assert token_index._decode_texts(*_blob(_MADE)) == truth
+    assert token_index._read_texts(_blob(_MADE)) == truth
     for one in _MADE:
-        assert token_index._decode_texts(*_blob([one])) == [one[0]]
+        assert token_index._read_texts(_blob([one])) == [one[0]]
     text_ends_in_cut = ("配列の終わりは ]], [", [["配列", "ハイレツ", "配列", "配列"]])
-    token_ends_in_cut = ("記号だ", [["]], [", "", "]], [", "]], ["], ["だ", "ダ", "だ", "だ"]])
-    for wrong in (text_ends_in_cut, token_ends_in_cut):
-        assert token_index._decode_texts(*_blob(_MADE[:2] + [wrong] + _MADE[2:])) is None
-        assert token_index._decode_texts(*_blob([wrong])) is None
-    # a cut too many that the count can't see (a `lines` column that agrees with it): each piece after a wrong cut
-    # starts inside a token, no line's start — that alone says so
-    blob = token_index._encode_tokens([token_ends_in_cut])
-    pieces = zlib.decompress(blob).decode("utf-8")[3:].split(token_index._CUT)
-    assert len(pieces) > 1 and token_index._decode_texts(blob, token_index._encode_tokens([1] * len(pieces))) is None
-    blob, lines = _blob(_MADE)
-    assert token_index._decode_texts(blob, token_index._encode_tokens([1] * (len(_MADE) - 1))) is None
-    assert token_index._decode_texts(blob, None) is None, "no `lines` column: read in full"
-    assert token_index._decode_texts(blob[:-3], lines) is None, "a damaged blob: read in full"
-    assert token_index._decode_texts(token_index._encode_tokens([]), None) is None, "no line: the store's [] in full"
-    assert token_index._decode_texts(*_blob([[None, []]])) is None, "a line held badly: read in full"
+    assert token_index._read_texts(_blob(_MADE[:2] + [text_ends_in_cut] + _MADE[2:]))[2] == text_ends_in_cut[0]
+    blob = _blob(_MADE)
+    assert token_index._read_texts(blob[:-3]) is None, "a damaged blob: read in full"
+    assert token_index._read_texts(zlib.compress(zlib.decompress(blob)[:-1])) is None, "a text cut short"
+    assert token_index._read_texts(_blob([])) == [], "no line"
 
 
 # The Generate's *Only i+1* rounds, as its loop asks them of one reader: every row in the list's order, then the rows

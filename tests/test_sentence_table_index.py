@@ -235,9 +235,9 @@ def test_at_level_1_a_store_made_before_the_counts_gets_the_column_and_the_same_
     con = sqlite3.connect(_store("ja"))
     try:                                            # the files table as the build before made it (SCHEMA_VERSION 28)
         con.execute("CREATE TABLE files_before (path TEXT PRIMARY KEY, mtime REAL, size INTEGER, total INTEGER, "
-                    "counts BLOB, tokens BLOB, names BLOB, bound BLOB, counted INTEGER NOT NULL DEFAULT 1, "
+                    "counts BLOB, texts BLOB, ids BLOB, names BLOB, bound BLOB, counted INTEGER NOT NULL DEFAULT 1, "
                     "aside INTEGER NOT NULL DEFAULT 0, lines BLOB)")
-        con.execute("INSERT INTO files_before SELECT path, mtime, size, total, counts, tokens, names, bound, counted, "
+        con.execute("INSERT INTO files_before SELECT path, mtime, size, total, counts, texts, ids, names, bound, counted, "
                     "aside, lines FROM files")
         con.execute("DROP TABLE files")
         con.execute("ALTER TABLE files_before RENAME TO files")
@@ -273,34 +273,18 @@ def test_the_kept_counts_are_compressed_and_smaller_than_the_tokens(monkeypatch)
     _generate_at("ja", 1)
     con = sqlite3.connect(_store("ja"))
     try:
-        rows = con.execute("SELECT tokens, words FROM files").fetchall()
+        rows = con.execute("SELECT texts, ids, words FROM files").fetchall()
     finally:
         con.close()
-    for tokens, words in rows:
+    for texts, ids, words in rows:
         assert st.read_file_words(zlib.decompress(words), "ja") is not None
-        assert len(words) < len(tokens)
-
-
-def _old_shape(path):
-    """The files table as the build before made it (SCHEMA_VERSION 28: no `words` column)."""
-    con = sqlite3.connect(path)
-    try:
-        con.execute("CREATE TABLE files_before (path TEXT PRIMARY KEY, mtime REAL, size INTEGER, total INTEGER, "
-                    "counts BLOB, tokens BLOB, names BLOB, bound BLOB, counted INTEGER NOT NULL DEFAULT 1, "
-                    "aside INTEGER NOT NULL DEFAULT 0, lines BLOB)")
-        con.execute("INSERT INTO files_before SELECT path, mtime, size, total, counts, tokens, names, bound, counted, "
-                    "aside, lines FROM files")
-        con.execute("DROP TABLE files")
-        con.execute("ALTER TABLE files_before RENAME TO files")
-        con.commit()
-    finally:
-        con.close()
+        assert len(words) < len(texts) + len(ids)       # the tokens: their texts and ids (v30)
 
 
 def test_a_store_keeps_the_indexers_counts_and_an_old_one_read_only_reads_as_none(tmp_path):
-    # why: Store.file_words is the walk's one read — the row's counts as written, and for a store a build before
-    # them made, opened to read only (no column added: a reader never writes), the sentences with no counts, asked
-    # once (not a failing query a file)
+    # why: Store.file_words is the walk's one read — the row's counts as written; a store a build before made (another
+    # schema: v29's tokens are JSON), opened to read only, is not read at all (`open_reader` None: the callers' "no
+    # store", never a failing query a file)
     from app import token_index as ti
     lines = [(text, [list(t) for t in tokens]) for text, tokens in _lines("ja")[:30]]
     f = tmp_path / "episode.srt"
@@ -320,15 +304,11 @@ def test_a_store_keeps_the_indexers_counts_and_an_old_one_read_only_reads_as_non
         assert store.file_words(str(tmp_path / "not-indexed.srt")) == ([], None)
     finally:
         store.close()
-    _old_shape(db)
-    reader = ti.open_reader("ja", path=db)
-    try:
-        for _ in range(2):
-            sentences, words = reader.file_words(str(f))
-            assert words is None and sentences == reader.file_tokens(str(f)) and sentences
-        assert reader._no_words
-    finally:
-        reader.close()
+    con = sqlite3.connect(db)
+    con.execute(f"PRAGMA user_version = {ti.SCHEMA_VERSION - 1}")
+    con.commit()
+    con.close()
+    assert ti.open_reader("ja", path=db) is None
 
 
 def test_apply_spans_reports_every_sentence_a_join_changed_and_no_other(monkeypatch):

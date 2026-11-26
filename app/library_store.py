@@ -16116,6 +16116,7 @@ def repair_store(db_path, language, data_dir, user_files_dir, lock):
 RESET_PREFIX = "library-reset-"   # User Files/<lang>/.trash/library-reset-<YYYYmmdd-HHMMSS>/ (that .trash is never purged)
 RESET_RECORD = "reset.json"       # in it: what came from where, enough to put the old library back by hand
 RESET_WAIT = 2.0                  # s: another writer's commit is waited for this long, then the reset is refused
+CONNECT_MINING = "connect-mining"  # `kick.MINING`: held by Connect only while a look mines (never its one-instance lock)
 # Emptied by the reset; `roots` stays (the folders he reads, their ids kept), and so does every exclusion but Remove's
 # — but never Connect's never-again sets (`made_words`, `made_lines`, G1.3-4: a word whose card he deleted is never made
 # again; item ids are never reused, so their stale ids meet no new item: I-R1 / LF-5)
@@ -16126,7 +16127,8 @@ RESET_KEEP_META = ("mine_line", "arrivals_on", "keep_watched", "log_seq")
 # Why a reset is refused (nothing changed), in the window's words
 RESET_UPDATE = "An update is being installed: sort your library again once it has finished."
 RESET_GENERATE = "A Generate is running: sort your library again once it has finished."
-RESET_CONNECT = "Connect is making cards: sort your library again once it has finished."
+# SORT-BAR (PROVISIONAL words): said only while a look of Connect's mines (`CONNECT_MINING`), never while it only waits
+RESET_CONNECT = "Connect is making cards right now: sort your library again once they're made."
 RESET_KNOWN = "Your known words are being updated: try again in a moment."
 RESET_BUSY = "Another Surasura program is saving your library: try again in a moment."
 RESET_DAMAGED = "Your library needs Repair first."
@@ -16376,8 +16378,10 @@ def start_fresh(store, forget_known=False, _step=None):
             held.append(locks.take("results", "Sorting your library again", owner=token))
         except locks.Busy:
             raise ResetRefused(RESET_GENERATE) from None
-        if locks.in_use("connect"):
-            raise ResetRefused(RESET_CONNECT)
+        try:                                            # SORT-BAR: refused only while Connect mines (a look),
+            held.append(locks.take(CONNECT_MINING, "Sorting your library again", wait=RESET_WAIT, owner=token))
+        except locks.Busy:                              # never while it only waits; held, so its next look
+            raise ResetRefused(RESET_CONNECT) from None  # waits for the new order
         if forget_known:
             from app.anki_sync import known_lock_name
             try:
@@ -16901,7 +16905,7 @@ def put_back_library(store, folder, _step=None):
         except locks.Busy:
             raise ResetRefused(RESET_GENERATE) from None
         try:
-            held.append(locks.take("connect", "Putting your library back", owner=token))
+            held.append(locks.take(CONNECT_MINING, "Putting your library back", wait=RESET_WAIT, owner=token))
         except locks.Busy:
             raise ResetRefused(RESET_CONNECT) from None
         lock = MaintenanceLock(store.db_path)
@@ -16969,7 +16973,7 @@ def _put_it_back(store, folder, record, moves):
         except locks.Busy:
             raise ResetRefused(RESET_GENERATE) from None
         try:
-            held.append(locks.take("connect", "Putting your library back", owner=token))
+            held.append(locks.take(CONNECT_MINING, "Putting your library back", wait=RESET_WAIT, owner=token))
         except locks.Busy:
             raise ResetRefused(RESET_CONNECT) from None
         lock = MaintenanceLock(store.db_path)

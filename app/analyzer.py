@@ -3042,10 +3042,19 @@ def read_known_words(store, known_file, known_sig, tokenizer, keep=True):
     if cached is not None:
         print("Reused cached known-words normalization.")
         return cached
-    known = load_known_words(known_file, tokenizer)
+    # Changed (a sync added a word): each term read before is taken from the store's own (G8), the new ones read here.
+    terms = None
+    if store:
+        try:
+            terms = store.known_terms(getattr(tokenizer, "script", "asis"))
+        except Exception:
+            terms = None
+    known = load_known_words(known_file, tokenizer, terms)
     if store and keep:
         try:
             store.set_cached_known(known_sig, *known)
+            if terms is not None:
+                store.set_known_terms(getattr(tokenizer, "script", "asis"), terms)
         except Exception:
             pass
     return known
@@ -3286,7 +3295,11 @@ def get_tier_from_rank(rank):
             
     return str(len(thresholds) + 1)
 
-def load_known_words(json_path, tokenizer):
+def load_known_words(json_path, tokenizer, terms=None):
+    """(known (lemma, reading)s, known lemmas) of KnownWord.json's known and carded entries, each term read by
+    `tokenizer` (G8: what one term gives depends on the term alone — and on what `Store.known_terms` keys it on — so a
+    term met before isn't tokenized again). `terms`, a dict: {term: (its (lemma, reading)s, its lemmas)} read from,
+    then left holding this file's terms alone (the store keeps it); a term repeated in the file is read once."""
     try:
         print(f"Loading known words from {json_path}...")
     except UnicodeEncodeError:
@@ -3299,8 +3312,8 @@ def load_known_words(json_path, tokenizer):
     # BOM") or as UTF-16, json.load refused it and Generate stopped. The tokenizer says the language.
     data = json.loads(read_text(json_path, "ja" if isinstance(tokenizer, JapaneseTokenizer) else "zh"))
         
-    known_tuples = set()
-    known_lemmas = set()
+    all_tuples, all_lemmas = set(), set()
+    met, before = {}, terms or {}
     # A Chinese tokenizer reading in one script (`zh_script`) converts every term it tokenizes; the
     # raw term trusted below must be read in that same script or it can never match. Converted
     # separately from the ORIGINAL term, exactly as the tokenizer converts it, so the two can't drift.
@@ -3337,8 +3350,11 @@ def load_known_words(json_path, tokenizer):
             if SANITIZE_JA:
                 term = _known_term(term)     # a gloss cut off; a sentence kept whole
             
-            if term:
-                # Normalize using the same tokenizer
+            asked = term                    # (the term as the file gives it: the key, whatever it is read as)
+            held = (met.get(asked) or before.get(asked)) if asked else None
+            if term and held is None:
+                # Normalize using the same tokenizer: what this term gives, apart (the cache's)
+                known_tuples, known_lemmas = held = set(), set()
                 try:
                     # A known joined word marks its pieces known too, as it did before words kept their
                     # affixes: 時間 is known only through the user's 時間帯 (Patterns_Quality_Spec §6.2a).
@@ -3381,6 +3397,14 @@ def load_known_words(json_path, tokenizer):
                     # Fallback if tokenization fails
                     pass
                 
+            if held is not None:
+                met[asked] = held
+                all_tuples.update(held[0])
+                all_lemmas.update(held[1])
+    known_tuples, known_lemmas = all_tuples, all_lemmas
+    if terms is not None:
+        terms.clear()
+        terms.update(met)
     print(f"Loaded {len(known_tuples)} known word variations and {len(known_lemmas)} unique lemmas.")
     return known_tuples, known_lemmas
 
@@ -7074,6 +7098,50 @@ def main():
                     _file_words[0], s_no, s_tokens, s_text, language, _people, _counted)
             return _held_words[1]
 
+    # --- The walk on ids (G1, DSA-WALK; token_index.Walk) ---------------------------------------------------------- #
+    # Each token store type's class — what the walk's per-token tests say of it, below — is decided once (`_class_of`),
+    # with the word's key as first met (`_word_state`, which every file's counts and sentences then share), and a file's
+    # totals, known count and multiset are array lookups over its type ids. Only a sentence holding something to do —
+    # an unknown, a one-kanji word that may be a piece of something else, a one-character word the report names, a set
+    # phrase — is walked in Python, its text and tokens built for it alone: most sentences are examples for no word.
+    def _class_of(token):
+        """A type's class for the walk (token_index.W_*). The word's bits (`word_flags`, asked once a word): 1 known
+        (KnownWord.json) or ignored; 2 a lemma with no Target characters (SSA/ASS tags like {\\an8}, timestamps,
+        markup, other ASCII-only tokens) — such a token counts toward the totals, or as an unknown, only when its
+        surface has some. With the one-character rule on (§ One-character words): 4 a one-character word the list never
+        offers (16: one the report names for its file); 8 a one-kanji word it offers where it stands free."""
+        lemma, reading, surface, _orth = token
+        known = _word_state.get((lemma, reading))
+        if known is None:
+            key = (lemma, reading)
+            known = _word_state[key] = (word_flags(key, language, known_words_initial, known_lemmas_initial,
+                                                   ignore_list, skip_singles), key)
+        state, key = known
+        if state & 2 and not has_target_language(surface, language):
+            return _token_index.W_SKIP, key
+        if state & 1:
+            return _token_index.W_KNOWN, key
+        if state & 4:
+            return (_token_index.W_NAMED if state & 16 else _token_index.W_ONE), key
+        return (_token_index.W_BOUND if state & 8 else _token_index.W_UNKNOWN), key
+    _walk = _token_index.Walk(_store, _class_of)
+    _W_NAMED, _W_BOUND = _token_index.W_NAMED, _token_index.W_BOUND
+    file_id_cache = {}          # file path -> its multiset as the walk's arrays (key numbers, uses), for the pass (G5)
+
+    def _walked(file_path):
+        """A file on ids as the walk reads it (`token_index.WalkFile`): the store's (its song lines with no words), else
+        read as tokens (`_sentences_of`). The sentence table's kept counts go to `_file_words`, as `_sentences_of`
+        gives them."""
+        try:
+            walked = _walk.file(file_path, _songs.get(file_path))
+        except Exception:
+            walked = None               # read as tokens: the store's own error, if any, raised there
+        if walked is None:
+            return _walk.read(_sentences_of(file_path, _file_words if _table is not None else None))
+        if _table is not None and _file_words is not None:
+            _file_words[0] = walked.words
+        return walked
+
     # --- AGGREGATION PASS ---
     for seq_idx, (file_path, label, weight, source_type) in enumerate(found_files, 1):
         _progress("Reading your files", seq_idx - 1, len(found_files))
@@ -7083,17 +7151,15 @@ def main():
             print(f"Processing file {seq_idx}...")
         src_idx = _source_idx(file_path, source_type)
 
-        # Cached tokenized sentences from the store (fresh for changed files, reused otherwise).
-        sentences = _sentences_of(file_path, _file_words if _table is not None else None)
+        # Its sentences on ids (`_walked`, above): the totals, the known count and the multiset of every (lemma,
+        # reading) it yields — mirrors tokenizer.tokenize() exactly, in first-appearance order, for the progressive pass
+        # to reuse — by array lookups.
+        walked = _walked(file_path)
         if _table is not None and _cores is not None:
             _cores.file(file_path, _table)
 
-        file_total_words = 0
-        file_known_words = 0
-        # Multiset of every (lemma, reading) this file yields — mirrors tokenizer.tokenize()
-        # exactly (built in first-appearance order) for the progressive pass to reuse.
-        file_counter = Counter()
-        file_count = file_counter.get
+        file_total_words, file_known_words = walked.counted()
+        file_counter = walked.counter()
         file_credits = Counter()                      # the words this file meets inside a rare compound
         file_phrases, file_bound = Counter(), Counter()   # its set phrases, and the uses its bound words give them
         file_pieces = Counter()     # one-kanji list words' uses here that are pieces of something else (三年's 年)
@@ -7109,60 +7175,43 @@ def main():
         library_series.add(file_series)
         if file_is_spoken:
             spoken_file_count += 1
-        # The set phrases of each sentence, as they were found before (above) — else searched for below.
+        # The set phrases of each sentence, as they were found before (above) — else searched for in every sentence.
         found_at = None
         if _phrase_set is not None:
-            sentences = list(sentences)
-            found_at = _phrases_at(file_path, sentences)
+            found_at = _phrases_at(file_path, walked)
+        # The tokens with something to do (from W_NAMED up), by sentence: every other sentence holds no unknown and no
+        # word to name — with no set phrase either, nothing to do at all.
+        hot = walked.where(walked.cls >= _W_NAMED)
+        if found_at is None and _phrase_set is not None:
+            numbers = range(len(walked))
+        elif found_at:
+            numbers = sorted(hot.keys() | found_at.keys())
+        else:
+            numbers = hot
 
-        for s_no, (s_text, s_tokens) in enumerate(sentences):
+        for s_no in numbers:
+            s_text, s_tokens = walked[s_no]
             # 1. Identify unknowns and calculate cost (relative to constant initial knowns)
             sentence_unknowns = []
             unknown_keys = []
             named = None        # [(token number, key, spelling)]: this sentence's words for the file's line (below)
-            for t_no, (lemma, reading, surface, orth) in enumerate(s_tokens):
-                # What the word is, asked once per word (`_word_state`), not per token: this loop runs over every
-                # token of the library. Bit 1: known (KnownWord.json) or ignored; bit 2: a lemma with no Target
-                # characters (e.g. SSA/ASS tags like {\an8}, timestamps, markup, or other ASCII-only tokens) — such a
-                # token counts toward the totals, or as an unknown, only when its surface has some. With the
-                # one-character rule on (§ One-character words): bit 4, a one-character word the list never offers
-                # (bit 16: one the report names for its file); bit 8, a one-kanji word it offers where it stands free.
-                # Kept with the word's key as first met, which every file's counts and sentences then share: each file's
-                # tokens are read anew from the store, and its own copy of each key (and of its text) stayed in memory
-                # with the file's counts until the run ended — some 150 MB on a large library.
-                known = _word_state.get((lemma, reading))
-                if known is None:
-                    key = (lemma, reading)
-                    known = _word_state[key] = (word_flags(key, language, known_words_initial, known_lemmas_initial,
-                                                           ignore_list, skip_singles), key)
-                state, key = known
-                # Cache EVERY token (before the target-language filter below) so the cached
-                # multiset matches what tokenizer.tokenize() yields for the progressive pass.
-                file_counter[key] = file_count(key, 0) + 1
-                if state & 2 and not has_target_language(surface, language):
+            for t_no, cls, key in hot.get(s_no, ()):
+                lemma, reading, surface, orth = s_tokens[t_no]
+                if cls == _W_NAMED:
+                    # A one-character word the list never offers, known to the file's coverage (`counted`), named for
+                    # the file where it stands on its own (never 卍 in a term's run, 条 after 第一) — once this
+                    # sentence's set phrases are known (below).
+                    if not bound_uses(s_text, s_tokens, only=(t_no,)):
+                        if named is None:
+                            named = []
+                        named.append((t_no, key, orth))
                     continue
-
-                file_total_words += 1
-                if state & 1:
+                if cls == _W_BOUND and bound_uses(s_text, s_tokens, only=(t_no,)):     # asked of this word alone
+                    # A one-kanji word standing as a piece of something else: never a use, an example or an unknown
+                    # here — nothing to learn, so known to the file's coverage, as in the progressive pass.
                     file_known_words += 1
+                    file_pieces[key] += 1
                     continue
-                if state & 12:
-                    # A one-character word counts only where the list can offer it: never one it doesn't list, never
-                    # a one-kanji word standing as a piece of something else. Neither is a use, an example or an
-                    # unknown here — nothing to learn, so known to the file's coverage, as in the progressive pass.
-                    if state & 4:
-                        file_known_words += 1
-                        # Named for the file where it stands on its own (never 卍 in a term's run, 条 after 第一) —
-                        # once this sentence's set phrases are known (below).
-                        if state & 16 and not bound_uses(s_text, s_tokens, only=(t_no,)):
-                            if named is None:
-                                named = []
-                            named.append((t_no, key, orth))
-                        continue
-                    if bound_uses(s_text, s_tokens, only=(t_no,)):     # asked of this word alone
-                        file_known_words += 1
-                        file_pieces[key] += 1
-                        continue
 
                 # It's an unknown word!
                 sentence_unknowns.append((lemma, reading, surface, orth))
@@ -7467,6 +7516,7 @@ def main():
 
         
         file_token_cache[file_path] = file_counter
+        file_id_cache[file_path] = walked.first
         if _plan_on:
             plan_files.append(_plan_file(file_uses, word_stats, file_phrase_spelled, phrase_stats)
                               + (file_firsts, file_phrase_firsts))
@@ -7584,6 +7634,19 @@ def main():
     _phrase_row_of = {index: key for key, index in phrase_keys.items() if key in _listed_rows}
     _finished = sorted((a.rank, a.path, a.source_type) for a in aside_files(language, _library["schedule"])
                        if a.rank is not None)
+    _listed_held = [None]
+
+    def _listed_kids():
+        """Each of the walk's key numbers: a list row's word, not a phrase's row (`_listed_rows`, below) — as an array,
+        made for the keys met so far (a finished file meets new ones: added)."""
+        held, keys = _listed_held[0], _walk.keys
+        if held is None or len(held) < len(keys):
+            at = 0 if held is None else len(held)
+            more = _walk.np.fromiter((key in _listed_rows and key not in phrase_keys for key in keys[at:]), bool,
+                                     len(keys) - at)
+            held = _listed_held[0] = more if held is None else _walk.np.concatenate([held, more])
+        return held
+
     if _finished and _listed_rows:
         if _phrase_set is not None and _store is not None:
             try:
@@ -7596,14 +7659,23 @@ def main():
                 src_place.append((plan_rules.NOT_FINISHED, 0))
             src_place[src_idx] = (rank, 0)
             try:
-                sentences = list(_sentences_of(file_path, _file_words if _table is not None else None))
+                walked = _walked(file_path)
                 if _table is not None and _cores is not None:
                     _cores.file(file_path, _table)
             except Exception as e:
                 print(f"Warning: a finished file couldn't be read for example sentences ({e}).")
                 continue
-            found_at = _phrases_at(file_path, sentences) if _phrase_set is not None else None
-            for s_no, (s_text, s_tokens) in enumerate(sentences):
+            found_at = _phrases_at(file_path, walked) if _phrase_set is not None else None
+            # Only a sentence holding a list row's word that may be an unknown there, or a set phrase, can be an example
+            # (below): every other one is passed over on ids (the walk, above).
+            if found_at is None and _phrase_set is not None:
+                numbers = range(len(walked))
+            else:
+                numbers = walked.sentences((walked.cls >= _W_BOUND) & _listed_kids()[walked.kid])
+                if found_at:
+                    numbers = sorted(found_at.keys().union(numbers))
+            for s_no in numbers:
+                s_text, s_tokens = walked[s_no]
                 if len(s_text) > max_chars:
                     continue
                 unknown_keys = []
@@ -7995,6 +8067,18 @@ def main():
     plan_prog = []
     file_growth = []        # Kura-GS: each file's (known before any file, counted, the words not known) — the store's
     
+    _known_held = [None]
+
+    def _known_kids():
+        """Each of the walk's key numbers: known before any file, or a one-character word the list never offers
+        (`_word_state`'s bits 1 and 4) — as an array, made for the keys met so far."""
+        held, keys = _known_held[0], _walk.keys
+        if held is None or len(held) < len(keys):
+            at = 0 if held is None else len(held)
+            more = _walk.np.fromiter((_word_state[key][0] & 5 != 0 for key in keys[at:]), bool, len(keys) - at)
+            held = _known_held[0] = more if held is None else _walk.np.concatenate([held, more])
+        return held
+
     def _progressive_files():
         """Each file as the progressive pass reads it (`plan_rules.progressive_pass`), and the plan file's record of
         it: the words not known before any file, in the file's order (their uses after pieces, and those a phrase
@@ -8006,13 +8090,40 @@ def main():
             # re-tokenizing. Deterministic: same tokenizer + same text => same tokens. The rare
             # cache-miss branch reads the file again as the walk reads it (its songs left out too), so behaviour is
             # never wrong, only slower.
-            file_counter = file_token_cache.get(file_path)
-            if file_counter is None:
-                file_counter = Counter((l, r) for _s_text, s_tokens in _sentences_of(file_path)
-                                       for (l, r, s, o) in s_tokens)
-
             file_total_tokens = 0
             file_baseline_known_count = 0     # Strictly initial known (JSON + Ignore)
+            held = file_id_cache.get(file_path)
+            if held is not None:
+                # On the walk's arrays (G5): the words known before any file — and the one-character words the list
+                # never offers, nothing to learn either (§ One-character words) — summed at once; only the others,
+                # in the file's order, walked below.
+                ids, uses = held
+                known = _known_kids()[ids]
+                file_total_tokens = int(uses.sum())
+                file_baseline_known_count = int(uses[known].sum())
+                fresh = zip([_walk.keys[k] for k in ids[~known].tolist()], uses[~known].tolist())
+            else:
+                file_counter = Counter((l, r) for _s_text, s_tokens in _sentences_of(file_path)
+                                       for (l, r, s, o) in s_tokens)
+                fresh = []
+                for key, count in file_counter.items():
+                    lemma = key[0]
+                    file_total_tokens += count
+                    # Check strictly against initial known list — known then in the session too (it starts from that
+                    # list) — and a one-character word the list never offers: nothing to learn either. The
+                    # aggregation asked both of every word it met (`_word_state`: bits 1 and 4); a file read here
+                    # again asks.
+                    known = word_state(key)
+                    if known is None:
+                        state = ((1 if (lemma in ignore_list or key in known_words_initial
+                                        or lemma in known_lemmas_initial) else 0) + (4 if _never(key) else 0))
+                    else:
+                        state = known[0]
+                    if state & 5:
+                        file_baseline_known_count += count
+                    else:
+                        fresh.append((key, count))
+
             # A word whose every use here went to its phrase (it lives only inside it) is not met here on its own.
             file_bound = file_bound_cache.get(file_path)
             # A one-kanji list word's uses here as a piece of something else (三年's 年) are nothing to learn here.
@@ -8020,23 +8131,8 @@ def main():
             plan_tokens, plan_bound, plan_siblings = [], {}, {}
             keys, counts, bounds = [], [], []
 
-            for key, count in file_counter.items():
+            for key, count in fresh:
                 lemma = key[0]
-                file_total_tokens += count
-
-                # Check strictly against initial known list — known then in the session too (it starts from that
-                # list) — and a one-character word the list never offers: nothing to learn either (§ One-character
-                # words). The aggregation asked both of every word it met (`_word_state`: bits 1 and 4); a file read
-                # here again asks.
-                known = word_state(key)
-                if known is None:
-                    state = ((1 if (lemma in ignore_list or key in known_words_initial or lemma in known_lemmas_initial)
-                              else 0) + (4 if _never(key) else 0))
-                else:
-                    state = known[0]
-                if state & 5:
-                    file_baseline_known_count += count
-                    continue
                 if file_pieces and key in file_pieces:
                     file_baseline_known_count += file_pieces[key]
                     count -= file_pieces[key]
@@ -8078,14 +8174,34 @@ def main():
     _no_stats = {"score": 0, "total_count": 0, "high_count": 0, "low_count": 0, "goal_count": 0,
                  "final_context_1": "", "final_context_2": "", "final_context_3": ""}
 
-    def _listed(key):
-        if valid_lrs is not None and key not in valid_lrs:
-            return False
-        return word_stats.get(key, _no_stats)["total_count"] >= floor_count
-
-    def _rank(key):
+    def _rank_of(key):
         stats = word_stats.get(key, _no_stats)
         return stats["score"], stats["total_count"]
+
+    if floor_count > 0:
+        # The pass's `keep` and `rank` (G5), asked once a word not known in each file: the words listed — on the
+        # list's rows (`valid_lrs`, made anew each round) and met as often as the cut-off asks — one set, and each
+        # one's rank (Score, then Occurrences, highest first) one integer, ties sharing it so the pass's stable sort
+        # keeps the order met: made once a round, never a lookup and a compare a word a file. (A cut-off of 0 lists a
+        # word no file counted too, which no set made of the counted holds: asked word by word, below.)
+        _listing = [object(), None, None]   # (made for no round yet)
+
+        def _listed(key):
+            if _listing[0] is not valid_lrs:
+                listed = frozenset(k for k in (word_stats if valid_lrs is None else valid_lrs)
+                                   if word_stats.get(k, _no_stats)["total_count"] >= floor_count)
+                at = {rank: n for n, rank in enumerate(sorted({_rank_of(k) for k in listed}))}
+                _listing[:] = valid_lrs, listed, {k: at[_rank_of(k)] for k in listed}
+            return key in _listing[1]
+
+        def _rank(key):
+            return _listing[2][key]
+    else:
+        def _listed(key):
+            if valid_lrs is not None and key not in valid_lrs:
+                return False
+            return word_stats.get(key, _no_stats)["total_count"] >= floor_count
+        _rank = _rank_of
 
     def _finish_table():
         """The sentence table this walk packed (`Packer.finish`), on the plan's rows, sources and co-words' rule (one

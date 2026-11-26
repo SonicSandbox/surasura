@@ -20,6 +20,11 @@ import subprocess
 import sys
 
 LOCK = "connect"
+# SORT-BAR (3.0.19): "mining now" beside the one-instance lock — held by each look while it reads the inbox and works
+# its jobs, let go before the pause between looks (on battery, *Generate first*: the look only waits) and at the run's
+# end. *Sort again* and both Put backs take it (`library_store.CONNECT_MINING`), never LOCK: the instance lock is read by
+# a kick (no second Connect), the update's wait list, the profile move and Start over, which need a Connect's whole life
+MINING = "connect-mining"
 WAKE = "wake"
 _STAMPS = itertools.count(1)    # this process's kicks: two in one tick of Windows' clock (~16 ms) still differ
 DETACHED_PROCESS = 0x00000008

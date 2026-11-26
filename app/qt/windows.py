@@ -472,9 +472,15 @@ def open_tools(shell):
 
 
 def say_in_bar(shell, text):
-    """`text` in the main window's bottom bar — nothing when that window is gone (a worker's late answer at quit)."""
+    """`text` in the main window's bottom bar, through `shell.say` (SORT-BAR: it holds the slot for a few seconds, so
+    the next status update never overwrites a press's answer at once) — nothing when that window is gone (a worker's
+    late answer at quit). A window without `say` (a stand-in) gets the line written, as before."""
     try:
-        shell.bar_line.set_full(text)
+        say = getattr(shell, "say", None)
+        if say is None:
+            shell.bar_line.set_full(text)
+        else:
+            say(text)
     except (AttributeError, RuntimeError):
         pass
 

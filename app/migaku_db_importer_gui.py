@@ -244,7 +244,8 @@ class MigakuImporterGUI:
             
             # Run subprocess
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
-                                     text=True, encoding='utf-8', bufsize=1, env=env)
+                                     text=True, encoding='utf-8', bufsize=1, env=env,
+                                     creationflags=0x08000000 if sys.platform == "win32" else 0)   # CREATE_NO_WINDOW
             
             for line in process.stdout:
                 line = line.strip()

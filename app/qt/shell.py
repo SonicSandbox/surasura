@@ -5196,7 +5196,9 @@ def relaunch(argv, move=False):
         args = [sys.executable, "-m", "app.qt.shell"] + list(argv[1:])
     else:
         args = [sys.executable, os.path.abspath(argv[0])] + list(argv[1:])
-    flags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0   # DETACHED_PROCESS | NEW_PROCESS_GROUP
+    # NO_WINDOW | NEW_PROCESS_GROUP, never DETACHED_PROCESS: from source the window is a console Python, and with no
+    # console its worker pools opened a console window each (TERM-POPUPS). Frozen, a windowed program: no console.
+    flags = 0x08000000 | 0x00000200 if sys.platform == "win32" else 0
     try:
         return subprocess.Popen(args, creationflags=flags, close_fds=True, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

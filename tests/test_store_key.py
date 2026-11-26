@@ -76,27 +76,27 @@ def test_each_known_words_miss_reads_settings_once_parses_the_tables_once_and_co
         tmp_path, monkeypatch, language, ja_resources_dir, zh_resources_dir):
     # why: the mine's path (`sentence_corpus.known_sets`, at each card Connect writes) — the first read, a card's move
     # (no new term) and a sync's two new words each cost one key, one lookup and one commit. Chinese reads no
-    # settings for its key (the names switches are Japanese only), so 0 there, before as after. `known_sets` reads
-    # settings once more for its ignore set's Ignore names switch (`ignored_names`, Japanese only, hit or miss): not
-    # the miss's, counted apart.
+    # settings for its key (the names switches are Japanese only), so 0 there, before as after. Its ignore set's
+    # Ignore names switch comes from the settings handed in (STORE-KEY 2): no read of its own.
     resources = ja_resources_dir if language == "ja" else zh_resources_dir
     monkeypatch.setattr(analyzer, "SANITIZE_JA", language == "ja")
     keys = 1 if language == "ja" else 0
-    reads = 2 * keys
+    reads = keys
     known_file(language, resources)
+    settings = settings_manager.load_settings()         # as Connect loads them, before its read
     store = ti.open_store(language, path=str(tmp_path / "store.db"))
     try:
         count = Count(monkeypatch, store)
-        first = sc.known_sets(language, store, {"target_language": language})
+        first = sc.known_sets(language, store, settings)
         assert first[0] and first[1]
         assert count.take() == (reads, keys, 1, 1), "the first read: one key, one lookup, one commit"
 
         known_file(language, resources, carded=True)
-        assert sc.known_sets(language, store, {"target_language": language})[:2] == first[:2]
+        assert sc.known_sets(language, store, settings)[:2] == first[:2]
         assert count.take() == (reads, keys, 1, 1), "a card's move: one key, one lookup, one commit"
 
         path = known_file(language, resources, extra=_NEW[language], carded=True)
-        grown = sc.known_sets(language, store, {"target_language": language})
+        grown = sc.known_sets(language, store, settings)
         assert count.take() == (reads, keys, 1, 1), "a word added: the signature and the terms in one commit"
         assert set(_NEW[language]) <= set(store.known_terms("asis")), "the added terms kept in that commit"
         count.take()                                      # (that check's own key read: not the next step's)
@@ -104,7 +104,7 @@ def test_each_known_words_miss_reads_settings_once_parses_the_tables_once_and_co
         assert grown[:2] == analyzer.load_known_words(path, tok), "the very sets a fresh read of the whole file gives"
 
         # A hit after it: one key, one lookup, nothing written
-        assert sc.known_sets(language, store, {"target_language": language})[:2] == grown[:2]
+        assert sc.known_sets(language, store, settings)[:2] == grown[:2]
         assert count.take() == (reads, keys, 0, 1)
     finally:
         store.close()

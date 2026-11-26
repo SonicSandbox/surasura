@@ -1151,6 +1151,7 @@ class Store:
         self.language = language
         self.path = path            # the store's file
         self._names = None          # the library's name tables, read on the first cached file (Japanese)
+        self._tables_read = None    # (names_tables' stored text, its parse): names_tables
         self._adjust = None         # (meta names_adjust as stored, parsed): `_names_entry`
         self.switches = None        # the name switches (`_library_switches`) a process without the run's settings reads
         self._types = {}            # type id -> (lemma, reading, surface, orth): the vocabulary rows read so far
@@ -1409,9 +1410,16 @@ class Store:
 
     # -- the library's name tables (app/names.py) ---------------------------- #
     def names_tables(self):
-        """The name tables the last index computed, or None (none yet, or not a Japanese store)."""
+        """The name tables the last index computed, or None (none yet, or not a Japanese store). Parsed again only when
+        the stored text changes (`_tables_read`): a Generate asked six times a run — the phrase basis twice, the run's
+        own tables, the known-words key, the cached files (STORE-KEY 2). The same dict each call: read it, never change
+        it."""
         try:
-            return json.loads(self.get_meta("names_tables") or "null")
+            raw = self.get_meta("names_tables") or "null"
+            kept = getattr(self, "_tables_read", None)       # (a reader made with `Store.__new__` has none)
+            if kept is None or kept[0] != raw:
+                kept = self._tables_read = (raw, json.loads(raw))
+            return kept[1]
         except Exception:
             return None
 
@@ -2474,18 +2482,23 @@ def _read_meta(language, key):
         return None
 
 
-def ignored_names(language):
+def ignored_names(language, settings=None):
     """The library's names as ignored words — with Ignore names on (logic.ignore_names, off by default: a learner
     learns names too, unless they choose not to): the lemmas the last index found to be people's names
     (app/names.py `name_words`), read without writing anything. Part of `ignored_entries`, so every ignore set holds
     them — the list, the Rarity slider and automatic rarity, Junban, 例文, the sentence dictionary, the YouTube
     preview. [] with the switch off, for Chinese, and before the first index. The switch is read fresh, as the build
-    signature's are: the dashboard's slider must see a change as the next Generate will."""
+    signature's are: the dashboard's slider must see a change as the next Generate will. `settings`: the ones a caller
+    has just loaded (Connect's known words, `sentence_corpus.known_sets`: STORE-KEY 2), read instead of the file; one
+    with no `logic` reads the file."""
     if language != "ja":
         return []
     try:
-        from app import settings_manager
-        if not settings_manager.load_settings()["logic"].get("ignore_names", False):
+        logic = settings.get("logic") if isinstance(settings, dict) else None
+        if not isinstance(logic, dict):
+            from app import settings_manager
+            logic = settings_manager.load_settings()["logic"]
+        if not logic.get("ignore_names", False):
             return []
     except Exception:
         return []
@@ -2654,7 +2667,7 @@ def preview_ignore_set(user_files_dir, language, script="asis"):
     return ignore
 
 
-def ignored_entries(user_files_dir, language):
+def ignored_entries(user_files_dir, language, settings=None):
     """The dictForms of KnownWord.json's IGNORED entries, as written — Migaku's status for a word the user dismissed
     there — and, with Ignore names on, the library's names (`ignored_names`). They are ignored words, as a line of the
     Ignore list is: off the list, and never an unknown in a sentence. One reader for every ignore set — the analyzer's
@@ -2678,7 +2691,8 @@ def ignored_entries(user_files_dir, language):
         kept = _IGNORED_ENTRIES[path] = (signature, [
             str(e.get("dictForm") or "").strip() for e in entries
             if isinstance(e, dict) and e.get("knownStatus") == "IGNORED" and str(e.get("dictForm") or "").strip()])
-    return list(kept[1]) + ignored_names(language)
+    # (handed on only when given: a stand-in that takes the language alone — the parsing suite's, tests' — still fits)
+    return list(kept[1]) + (ignored_names(language) if settings is None else ignored_names(language, settings))
 
 
 _IGNORED_ENTRIES = {}   # KnownWord.json's path -> (its signature, its IGNORED dictForms), for ignored_entries

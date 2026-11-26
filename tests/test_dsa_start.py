@@ -11,6 +11,7 @@
 What a wrong answer would cost: a row that keeps an old *N new* after a drop (the learner sees a stale count until
 the next start), or a row told it changed when it didn't (a rebuilt row: waste, never a wrong figure).
 """
+import json
 import os
 import subprocess
 import sys
@@ -142,3 +143,104 @@ def test_the_redraw_hashes_the_library_with_the_one_fast_call(run):
     chunked, total = int(line.split()[1]), int(line.split()[3])
     assert total >= 1, line
     assert chunked == 0, line
+
+
+# --- G7: the run signature's stats from one listing per folder -------------------------------------------------- #
+
+def _signing(language, tmp_path, monkeypatch):
+    """RP-2's library of `language` built in a root of its own (no Generate: the signature reads only the files and
+    the settings), plus a nested season folder: (found files, args) as the numbers' check builds them (`plan_inputs`)."""
+    from app import run_args, settings_manager
+    root = str(tmp_path)
+    cases.build(root, f"rp2-{language}")
+    _in_root(monkeypatch, root)
+    data = os.path.join(root, "data", language)
+    with open(os.path.join(cases.RES, language, "context_test.txt"), encoding="utf-8") as f:
+        text = f.read()
+    season = os.path.join(data, "HighPriority", "季節 1")
+    os.makedirs(season)
+    manifest = os.path.join(root, "User Files", language, "master_manifest.json")
+    with open(manifest, encoding="utf-8") as f:
+        doc = json.load(f)
+    for n in (1, 2):
+        with open(os.path.join(season, f"第{n}話.txt"), "w", encoding="utf-8", newline="\r\n") as f:
+            f.write(text)
+        doc["schedule"][cases.PHASE["now"]].append({"physical_path": f"HighPriority/季節 1/第{n}話.txt",
+                                                    "title": f"第{n}話", "origin_source": "Manual Import"})
+    with open(manifest, "w", encoding="utf-8") as f:
+        json.dump(doc, f, ensure_ascii=False, indent=2)
+    found = analyzer.resolve_found_files(language, verbose=False, missing=True)
+    assert sum(os.path.normpath(fp).startswith(season) for fp, *_ in found) == 2
+    args = analyzer.parse_analysis_args(run_args.analyzer_args(settings_manager.load_settings(), language)[1:])
+    return found, args
+
+
+def _stats_of(paths, monkeypatch):
+    """Counts os.stat calls on `paths` (the content files) while a signature is read."""
+    want, calls, real = {os.path.normcase(p) for p in paths}, [], os.stat
+
+    def counted(p, *a, **k):
+        if os.path.normcase(str(p)) in want:
+            calls.append(p)
+        return real(p, *a, **k)
+    monkeypatch.setattr(os, "stat", counted)
+    return calls
+
+
+def _by_os_stat(found, args, language, monkeypatch):
+    """The signature's parts with no listing (every path os.stat'ed): the bytes before G7."""
+    from app import library_store
+    with monkeypatch.context() as m:
+        m.setattr(library_store, "_listed_stats", lambda folder, names: {})
+        return analyzer.run_signature_parts(language, found, args)
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_signature_lists_each_folder_once_and_signs_the_same_bytes_as_a_stat_per_file(language, tmp_path,
+                                                                                          monkeypatch):
+    """Before: one os.stat per content file at every check (20,000 at 20k, ~0.46 s; a start runs three such checks).
+    Now one os.scandir listing per folder hands every file's st_mtime and st_size — the same ones os.stat reads,
+    so the parts and the digest are byte for byte what a stat per file signs, in nested folders and CRLF files too."""
+    from app import plan_rules
+    found, args = _signing(language, tmp_path, monkeypatch)
+    old = _by_os_stat(found, args, language, monkeypatch)
+    calls = _stats_of([fp for fp, *_ in found], monkeypatch)
+    new = analyzer.run_signature_parts(language, found, args)
+    assert calls == [], f"{len(calls)} of {len(found)} content files os.stat'ed one by one"
+    assert new == old
+    assert plan_rules.signature_digest(new) == plan_rules.signature_digest(old)
+    assert all(f[1] is not None for f in new["files"])
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_file_edited_or_removed_between_two_checks_is_seen_by_the_second(language, tmp_path, monkeypatch):
+    """Nothing is kept across checks: a file edited between two signatures (its size and time moved) and a file
+    removed (None: a missing item keeps its place) are in the second, as a stat per file signs them — never the
+    first listing's figures. A listing shared across a start's passes would sign the old ones here."""
+    found, args = _signing(language, tmp_path, monkeypatch)
+    first = analyzer.run_signature_parts(language, found, args)
+    edited, removed = found[0][0], found[-1][0]
+    with open(edited, "a", encoding="utf-8") as f:
+        f.write("\n追記の一行。\n" if language == "ja" else "\n补充的一行。\n")
+    os.utime(edited, (cases.MTIME + 3600, cases.MTIME + 3600))
+    os.remove(removed)
+    second = analyzer.run_signature_parts(language, found, args)
+    sig = {fp: s for fp, s, *_ in second["files"]}
+    st = os.stat(edited)
+    assert sig[edited] == [st.st_mtime, st.st_size] != {fp: s for fp, s, *_ in first["files"]}[edited]
+    assert sig[removed] is None
+    assert second == _by_os_stat(found, args, language, monkeypatch)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="a path spelled in another case names the same file only on Windows")
+def test_a_path_the_listing_spells_otherwise_is_stated_as_before(tmp_path, monkeypatch):
+    """The listing is matched by the exact name: a found path in another case (the same file on Windows) isn't in it,
+    and is os.stat'ed as before — the same bytes, never None."""
+    found, args = _signing("ja", tmp_path, monkeypatch)
+    fp, *rest = found[0]
+    folder, name = os.path.split(fp)
+    found = [(os.path.join(folder, name.upper()), *rest)] + found[1:]
+    calls = _stats_of([found[0][0]], monkeypatch)
+    new = analyzer.run_signature_parts("ja", found, args)
+    assert len(calls) == 1 and new["files"][0][1] is not None
+    assert new == _by_os_stat(found, args, "ja", monkeypatch)

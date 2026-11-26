@@ -139,6 +139,8 @@ def test_your_list_waits_for_every_word_and_its_stop_keeps_what_was_read(make, e
     wiz.next()
     assert wait_until(lambda: wiz.reading is None, 30)
     assert wait_until(lambda: (wiz._load or {}).get("step") == "index", 10), "the covers first, then the words"
+    wiz._go(wiz.pages.index(wiz.by_id["watching"]))
+    assert wiz.waits() is None and not _waiting(wiz), "Watching now waits on the scan alone, never on the words"
     wiz._go(wiz.pages.index(wiz.by_id["level"]))
     assert wiz.waits() == "index" and _waiting(wiz)
     assert wiz.waiting.task.text() == S.LOAD_INDEX_START
@@ -168,9 +170,14 @@ def test_nothing_found_passes_watching_now_by_and_your_list_waits_for_nothing(ma
     wiz.next()
     assert wiz.page.id == "order"
     assert wait_until(lambda: wiz.reading is None and wiz._read_done, 30)
-    _walk(wiz, "level")
+    _walk(wiz, "cards")
+    _walk(wiz, "level")                                                # (one press from Cards made for you)
     assert wiz.pages.index(wiz.by_id["watching"]) in wiz.passed and wiz.waits() is None and not _waiting(wiz)
     assert _items() == []
+    wiz.back()
+    assert wiz.page.id == "cards", "passed by going back too"
+    wiz.next()
+    assert wiz.page.id == "level", "nothing to pick from: Watching now never shows"
 
 
 def test_finish_later_mid_read_stops_the_look_between_files(make, empty_library, tmp_path):
@@ -363,6 +370,34 @@ def test_youtube_alone_goes_on_and_watching_now_waits_for_its_videos(make, monke
     fetch.ended([os.path.join("Processed", "peko peko vlog [eFwn9e8IYsI].txt")], [])
     assert wait_until(lambda: not _waiting(wiz) and wiz._read_done, 5)
     assert wait_until(lambda: wiz.page.channel.value() == rows[0].key, 5)
+
+
+def test_videos_still_coming_dont_hold_watching_now_when_the_folders_brought_shows(make, monkeypatch, placed, rest,
+                                                                                    empty_library, tmp_path):
+    """Why (ONB-2): *Watching now* waits for YouTube's videos only when they are the only shows; with a folder's shows
+    already in, the page shows them while the videos are still fetched behind it."""
+    wiz, shell, api, _s, _m = make(api=HeldApi(), data={"enable_youtube_transcripts": True,
+                                                         "youtube_risk_acknowledged": True})
+    shell.services.chores = Chores(str(tmp_path / "indexer-window.log"), runs=False)
+    _covers(shell, counts=())
+    fetch = FakeFetch()
+    monkeypatch.setattr(W, "_youtube_fetcher", lambda: fetch)
+    monkeypatch.setattr(windows, "youtube_arrivals", lambda _shell, then=None: lambda paths: then(len(paths), 0, 0))
+    _walk(wiz, "shows")
+    _pick(wiz, _folder("anime", SHOWS))
+    page = wiz.page
+    page.entered()
+    assert wait_until(lambda: not page.btn_youtube.isHidden())
+    page.btn_youtube.click()
+    page.links.setPlainText("https://www.youtube.com/watch?v=eFwn9e8IYsI")
+    wiz.next()
+    assert wait_until(lambda: (wiz._load or {}).get("step") == "youtube", 30), "the folder read, the videos to come"
+    assert wiz._read_ids and wiz.fetching is not None
+    _with_shows(wiz, shell, placed)
+    _walk(wiz, "watching")
+    assert wiz.waits() is None and not _waiting(wiz), "the folder's shows are there to pick from"
+    fetch.ended([os.path.join("Processed", "peko peko vlog [eFwn9e8IYsI].txt")], [])
+    assert wait_until(lambda: wiz._read_done, 5)
 
 
 @pytest.mark.parametrize("furthest, opens, passed", [

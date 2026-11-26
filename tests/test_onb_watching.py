@@ -92,6 +92,18 @@ def test_equal_dates_keep_the_trays_order_and_a_missing_store_still_gives_the_sh
     assert [r.key for r in setup_wizard.watching_rows(language, rows)] == [r.key for r in rows]
 
 
+def test_a_long_show_with_a_new_episode_comes_before_a_short_one_finished_earlier(language, monkeypatch):
+    """Why: a show is as new as its newest file — a long-running show whose first episode is the oldest file of all
+    but whose latest came out today is the one he is watching now."""
+    rows = _read(language, _ages(language, NEWEST_LAST[language]))
+    old, other = rows[0], rows[1]
+    times = {i: 50 for i in other.item_ids}
+    times.update({i: 1 for i in old.item_ids})
+    times[old.item_ids[-1]] = 100                                      # its newest episode, the newest file of all
+    monkeypatch.setattr(ls.Store, "file_times", lambda self, tier="arrivals": times)
+    assert [r.key for r in setup_wizard.watching_rows(language, [other, old])] == [old.key, other.key]
+
+
 def test_no_shows_at_all_is_an_empty_page_never_an_error(language):
     assert setup_wizard.watching_rows(language, []) == []
     assert setup_wizard.watching_rows(language, None) == []

@@ -26,8 +26,8 @@ import time
 from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QPainter, QPainterPath, QPen
-from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QSpacerItem,
-                             QToolButton, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QToolButton,
+                             QVBoxLayout, QWidget)
 
 from app import scrub, theme
 from app.qt import motion, shadow, stones, strings, style
@@ -451,7 +451,7 @@ class GuidePanel(motion.Overlay):
                 label("guidegroup", name)
                 for st in sts:
                     row(st)
-        pieces.append(lambda: self._end(col))
+        pieces.append(lambda: col.addStretch(1))
         self._start(body, pieces)
 
     # --- the pieces: the body built one piece per event-loop turn ------------------------------------------------ #
@@ -539,9 +539,10 @@ class GuidePanel(motion.Overlay):
     # at 17 releases' notes 3.1 ms of place()'s 4 and ~0.19 ms more a release, and the open's show 5.5 ms. Now each row's
     # height is measured once, in its own piece's turn, at both widths place() can ask (the body's, and the body's beside
     # the scroll bar), and summed as it lands: place() reads the sums. The rows past the window's first screen wait
-    # hidden, always one block at the body's end, their room held by one spacer after them (the rows above never move).
-    # They are shown REVEAL_ROWS a turn once the panel is open, top down; a close hides those below the screen again,
-    # bottom up. The learner sees the same body: the same heights, the same scroll bar.
+    # hidden, always one block at the body's end: the body keeps its whole height (place() sizes it by the sums) and the
+    # column's closing stretch takes their room, so the rows above never move. They are shown REVEAL_ROWS a turn once
+    # the panel is open, top down; a close hides those below the screen again, bottom up. The learner sees the same
+    # body: the same heights, the same scroll bar.
     def _fresh(self, p=None):
         """A new body's sums, at the two widths its rows are measured at (none without a window)."""
         self._turn += 1                     # (an older body's turns stop)
@@ -559,8 +560,6 @@ class GuidePanel(motion.Overlay):
         self._fixed = 0                     # the fixed spaces' px
         self._later = []                    # the rows made past the first screen, in order
         self._shown_to = 0                  # ... how many of them are shown: the rest wait hidden
-        self._held_px = [0] * len(self._ws)     # the waiting rows' room at each width (their heights + spacing)
-        self._spacer = None                 # that room, after them
 
     def _row(self, col, widget, align=None, counted=True):
         """`widget` into a body's column, polished and its height measured at both widths place() can ask, in this
@@ -578,7 +577,6 @@ class GuidePanel(motion.Overlay):
             if self._ws and self._sums[0] + self._fixed > self._cut:
                 widget.setVisible(False)
                 self._later.append(widget)
-                self._wait(widget, 1)
             self._count(widget, 1)
         return widget
 
@@ -587,33 +585,13 @@ class GuidePanel(motion.Overlay):
             self._sums[n] += sign * h
         self._n += sign
 
-    def _wait(self, widget, sign):
-        gap = self.body.layout().spacing()
-        for n, h in enumerate(widget._heights):
-            self._held_px[n] += sign * (h + gap)
-
     def _space(self, col, px):
         col.addSpacing(px)
         self._fixed += px
 
-    def _end(self, col):
-        self._spacer = QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        col.addItem(self._spacer)
-        col.addStretch(1)
-
     def _held_rows(self):
         """The rows waiting hidden now, in order."""
         return self._later[self._shown_to:]
-
-    def _hold(self, width):
-        """The spacer's room: the waiting rows' at the body's column `width` (none at a width they weren't measured
-        at: `_content_height` showed them all)."""
-        if self._spacer is None or self.body is None:
-            return
-        px = self._held_px[self._ws.index(width)] if width in self._ws and self._shown_to < len(self._later) else 0
-        if self._spacer.sizeHint().height() != px:
-            self._spacer.changeSize(0, px, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-            self.body.layout().invalidate()
 
     def _reveal(self, token):
         """REVEAL_ROWS more of the waiting rows shown, top down, a batch a turn while the panel is open (a newer body,
@@ -624,9 +602,7 @@ class GuidePanel(motion.Overlay):
         end = min(len(self._later), self._shown_to + REVEAL_ROWS)
         for w in self._later[self._shown_to:end]:
             w.setVisible(True)
-            self._wait(w, -1)
         self._shown_to = end
-        self._hold(self._column_width())
         self.slices.append((time.perf_counter() - t0) * 1000)
         del self.slices[:-SLICES_KEPT]
         if end < len(self._later):
@@ -645,9 +621,7 @@ class GuidePanel(motion.Overlay):
         self._turn += 1
         for w in self._later[self._shown_to:]:
             w.setVisible(True)
-            self._wait(w, -1)
         self._shown_to = len(self._later)
-        self._hold(self._column_width())
 
     def _hide_below(self, token, stop):
         """After a close, a batch a turn: the shown rows from `_later[stop]` on hidden again, bottom up (the waiting
@@ -660,9 +634,7 @@ class GuidePanel(motion.Overlay):
         start = max(stop, self._shown_to - REVEAL_ROWS)
         for w in reversed(self._later[start:self._shown_to]):
             w.setVisible(False)
-            self._wait(w, 1)
         self._shown_to = start
-        self._hold(self._column_width())
         if start > stop:
             QTimer.singleShot(0, lambda: self._hide_below(token, stop))
 
@@ -700,8 +672,6 @@ class GuidePanel(motion.Overlay):
             if head + want > room:                         # it scrolls: the bar takes its width from the lines
                 body_w = max(1, inner - self.scroll.verticalScrollBar().sizeHint().width())
                 want = self._content_height(body_w)
-            cm = self.body.layout().contentsMargins()
-            self._hold(max(1, body_w - cm.left() - cm.right()))     # (the waiting rows' room at this width)
             self.body.resize(body_w, want)
         height = min(head + want, room)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded if head + want > room

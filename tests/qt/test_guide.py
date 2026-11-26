@@ -461,13 +461,12 @@ def _rows(panel):
 
 
 def _same_as_all_shown(panel):
-    """The body as if every row were shown at once: its kept heights at both widths are the walk's, no room held, and
-    each shown row where it would be."""
+    """The body as if every row were shown at once: its kept heights at both widths are the walk's, and each shown
+    row where it would be."""
     m = panel.body.layout().contentsMargins()
     for cw in panel._ws:
         width = cw + m.left() + m.right()
         assert panel._content_height(width) == panel._walk_height(width), cw
-    assert panel._spacer.sizeHint().height() == 0
     QApplication.processEvents()
     _in_place(panel)
     assert panel.body.height() == panel._walk_height(panel.body.width())
@@ -475,7 +474,7 @@ def _same_as_all_shown(panel):
 
 def _in_place(panel):
     """Each shown row at its kept height, right under the one before (the column's spacing between shown rows, a fixed
-    space its own px): a wrong room held for the waiting rows squeezes or stretches the rows above it."""
+    space its own px): the body too short for its rows squeezes them."""
     col = panel.body.layout()
     m = col.contentsMargins()
     at = panel._ws.index(panel._column_width())
@@ -525,7 +524,8 @@ def test_rows_past_the_first_screen_wait_then_come_in_place_and_a_fold_opens_amo
     panel.open()
     QApplication.processEvents()
     _in_place(panel)                                                          # the first frame: the screen's rows
-    assert panel._spacer.sizeHint().height() > 0 and panel._held_rows() == held
+    assert max(w.geometry().bottom() for w in _rows(panel) if not w.isHidden()) >= panel._cut   # (down past it)
+    assert panel._held_rows() == held
     paused[0] = False
     panel._reveal(panel._turn)
     assert wait_until(lambda: not panel._held_rows())                         # a batch a turn, open

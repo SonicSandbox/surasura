@@ -93,6 +93,24 @@ def test_a_load_that_raises_before_its_answer_still_ends_the_wait(language, wind
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_the_first_answer_tells_its_listeners_once(language, window_library, gate):
+    """The answer marks itself answered before it tells the window (`_set`), so the load's own end adds no second
+    change: one first answer, one change for the window and the reader to act on — a second one would ask the window
+    for another round of work at every open."""
+    numbers, reader = window_library()
+    told = []
+    real = numbers._on_change
+    numbers._on_change = lambda: (told.append(numbers.wait_first(0)), real())
+    numbers.load()
+    done = threading.Event()
+    numbers.worker.put(done.set)                            # (after the load: the worker runs its jobs in turn)
+    gate.set()
+    assert done.wait(30), numbers.why()
+    assert numbers.why() is None
+    assert told == [True], "one change, told once the answer is in"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_with_no_load_asked_nothing_waits(language, window_library, gate):
     numbers, reader = window_library()                      # (a provider nobody asked: a test's, the command line's)
     assert numbers.wait_first(0) is True

@@ -533,11 +533,10 @@ def test_rows_past_the_first_screen_wait_then_come_in_place_and_a_fold_press_bri
     bar = panel.scroll.verticalScrollBar()
     bar.setValue(bar.maximum() // 2)                                          # closed halfway down: only the rows
     panel.hide()                                                              # below what it showed wait
-    assert wait_until(lambda: panel._held_rows() and all(w.isHidden() for w in panel._held_rows()) and
-                      len(panel._held_rows()) < len(held))
-    QApplication.processEvents()
-    assert all(not w.isHidden() and w.y() <= bar.value() + panel._cut for w in panel._later[:panel._shown_to])
-    assert all(w.y() > bar.value() + panel._cut for w in panel._held_rows())
+    assert wait_until(lambda: all(w.y() <= bar.value() + panel._cut for w in panel._later[:panel._shown_to]))
+    assert 0 < len(panel._held_rows()) < len(held)                            # (the bottom up, a batch a turn: done)
+    assert all(w.isHidden() and w.y() > bar.value() + panel._cut for w in panel._held_rows())
+    assert not any(w.isHidden() for w in panel._later[:panel._shown_to])
     panel.open()
     assert bar.value() == bar.maximum() // 2                                  # where it was left
     assert wait_until(lambda: not panel._held_rows())

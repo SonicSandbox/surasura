@@ -226,11 +226,12 @@ def _words_of(url, card_ids, fields, language):
     return out
 
 
-def read(language, url, decks, fields, settings):
+def read(language, url, decks, fields, settings, known=None):
     """One read, beside the known-words sync -> {"marked": [words newly known], "offered": n, "skipped": why or
     None, "news": whether the window has something to show}. The first read, and the first after the signal changed,
     only records an offer. `news` is the record's, not this read's: a Connect run that read first, in a process with
-    no window, leaves the window its news (adversary B #3)."""
+    no window, leaves the window its news (adversary B #3). `known`: the sync's `anki_sync.KnownFile` (one parse a
+    sync), else the file is read here."""
     terms = signal(settings)
     q = query(terms, decks, settings)
     if q is None:
@@ -269,7 +270,7 @@ def read(language, url, decks, fields, settings):
                 state["offer"] = dict(state["offer"], query=q)
             out["offered"] = len(found)
         elif found:
-            out["marked"] = _mark(language, found, state, now, "signal", terms)
+            out["marked"] = _mark(language, found, state, now, "signal", terms, known=known)
         seen_now = sorted(set(ids)) if ids or not seen else sorted(seen)    # an empty answer never empties `seen`
                                                                             # (adversary B #1c: a bad reply reads as [])
         if (found or not state.get("read") or state.get("terms") != terms or state.get("seen") != seen_now
@@ -296,14 +297,16 @@ def news(state):
     return bool(_unshown_count(state)) or _offer_pending(state)
 
 
-def _mark(language, found, state, now, why, terms=None):
+def _mark(language, found, state, now, why, terms=None, known=None):
     """Append the words not yet known to KnownWord.json (append-only, the sync's lock) and record each -> words. A
     word already there by this signal's own entry (a record save that failed after it) is recorded as added, so undo
-    still takes it out (review B #18)."""
+    still takes it out (review B #18). Only appends: the sync's recorded view of the file follows the write
+    (`anki_sync.follow_known_write`), so the next sync stays a delta (DSA-SYNC)."""
     from app import anki_sync
     with _held(language, "Count as known in Anki"):
-        data, words = anki_sync._read_known_file(language)
-        known = anki_sync._known_keys(words or [])
+        file = known if known is not None else anki_sync.KnownFile(language)
+        data, words = file.read()
+        known = set(file.keys())
         ours = {anki_sync._norm(w.get("dictForm", "")) for w in words or ()
                 if isinstance(w, dict) and w.get("knownBy") == KNOWN_BY}
         added, entries = [], []
@@ -329,7 +332,9 @@ def _mark(language, found, state, now, why, terms=None):
             else:
                 data = dict(data)
                 data["words"] = list(words) + entries
-            anki_sync._atomic_write_json(anki_sync._known_path(language), data)
+            before_sig = anki_sync.known_signature(file.path)
+            file.write(data)
+            anki_sync.follow_known_write(language, before_sig)
         return added
 
 
@@ -396,16 +401,29 @@ def undo(language, word, url, cards_too=True):
     under Anki's writer, never while you review: adversary B #7, #10), then out of KnownWord.json only if this signal
     added it (a dated backup first) -> {"removed": bool, "unsuspended": [card ids]}. Anki closed or busy, or you're
     reviewing: raises with nothing changed; tried again after a later failure, the cards are back already (review B
-    #13, #25). `cards_too=False` (the review loop's Undo, `review_loop.undo`): the word only — the card stays as you
-    left it, and Anki is never asked."""
+    #13, #25). `cards_too=False`: the word only — the card stays as you left it, and Anki is never asked."""
+    answer = undo_words(language, [word], url, cards_too=cards_too)
+    return {"removed": bool(answer["removed"]), "unsuspended": answer["unsuspended"]}
+
+
+def undo_words(language, words, url=None, cards_too=True, known=None):
+    """`undo` for several words at once (the review loop's Undo of a sync, `review_loop.undo`, with
+    `cards_too=False`): one read of the record and of KnownWord.json, one dated backup and one write for them all
+    (DSA-SYNC: before, one of each per word) -> {"removed": [the words taken out], "unsuspended": [card ids]}.
+    `known`: the caller's `anki_sync.KnownFile` (its one parse), else the file is read here. Raises as `undo`, with
+    nothing changed."""
     from app import anki_connect, anki_sync
     from app.path_utils import backup_to_trash
     with _held(language, "Count as known in Anki (undo)"):
         state = load(language)
-        mine = [m for m in state.get("marked") or () if m.get("word") == word and not m.get("undone")]
+        wanted = set(words)
+        mine = {}
+        for m in state.get("marked") or ():             # one pass over the record, whatever the words
+            if m.get("word") in wanted and not m.get("undone"):
+                mine.setdefault(m["word"], []).append(m)
         if not mine:
-            return {"removed": False, "unsuspended": []}
-        cards = [m["card"] for m in mine if cards_too and m.get("card") is not None
+            return {"removed": [], "unsuspended": []}
+        cards = [m["card"] for ms in mine.values() for m in ms if cards_too and m.get("card") is not None
                  and "suspended" in (m["terms"] if m.get("terms") is not None else state.get("terms") or ())]
         back = []
         if cards:
@@ -416,26 +434,29 @@ def undo(language, word, url, cards_too=True):
                 back = [c.get("cardId") for c in info if c.get("queue") == -1]      # still suspended
                 if back:
                     anki_connect.invoke("unsuspend", url, cards=back)
-        removed = False
-        if any(m.get("added") for m in mine):
-            data, words = anki_sync._read_known_file(language)
-            key = anki_sync._norm(word)
+        removed = []
+        keys = {anki_sync._norm(w) for w, ms in mine.items() if any(m.get("added") for m in ms)}
+        if keys:
+            known = known if known is not None else anki_sync.KnownFile(language)
+            data, entries = known.read()
 
             def ours(w):
                 return isinstance(w, dict) and w.get("knownBy") == KNOWN_BY and anki_sync._norm(
-                    w.get("dictForm", "")) == key
-            keep = [w for w in (words or []) if not ours(w)]
-            if words is not None and len(keep) != len(words):
-                backup_to_trash(anki_sync._known_path(language))
+                    w.get("dictForm", "")) in keys
+            gone = {anki_sync._norm(w.get("dictForm", "")) for w in entries or () if ours(w)}
+            if entries is not None and gone:
+                keep = [w for w in entries if not ours(w)]
+                backup_to_trash(known.path)
                 if isinstance(data, list):
                     data = keep
                 else:
                     data = dict(data)
                     data["words"] = keep
-                anki_sync._atomic_write_json(anki_sync._known_path(language), data)
-                removed = True
+                known.write(data)
+                removed = [w for w in mine if anki_sync._norm(w) in gone]
         now = _now()
-        for m in mine:
-            m["undone"] = now
+        for ms in mine.values():
+            for m in ms:
+                m["undone"] = now
         _save(language, state)
         return {"removed": removed, "unsuspended": back}

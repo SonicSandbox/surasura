@@ -116,7 +116,7 @@ class _Anki:
         self.signals = []
         monkeypatch.setattr(anki_sync, "read_known_signal", lambda *a, **k: self.signals.append(a[0]))
 
-    def _sync(self, language, url, decks, fields, include_suspended=False, full=False, settings=None):
+    def _sync(self, language, url, decks, fields, include_suspended=False, full=False, settings=None, known=None):
         with self.lock:
             self.syncs.append((language, tuple(decks)))
         if self.gate is not None:

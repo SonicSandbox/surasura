@@ -600,6 +600,48 @@ def test_the_yes_refuses_in_words_when_anki_didnt_sync(home_ledger):
     assert tidy.SYNC_FAILED in str(e.value) and anki.deleted == []
 
 
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_while_connect_mines_both_presses_refuse_in_words_and_read_nothing(home_ledger, lang, monkeypatch):
+    # why: SORT-BAR — the lock means "mining now": while a look of Connect's makes cards, nothing is counted or deleted
+    from app import locks
+    from app.cli.contract import CliError
+    from app.connect import kick
+    monkeypatch.setattr(tidy, "MINING_WAIT", 0.0)
+    item, tag, done_at = _mined(home_ledger, lang)
+    anki = _anki(lang, tag, done_at)
+    look = locks.take(kick.MINING, "Connect making cards", owner=object())       # a look mining (runner._take_mining)
+    try:
+        for press in (lambda: tidy.act_remake_plan(ON, lang, anki=anki),
+                      lambda: tidy.act_remake(ON, lang, steps=Steps(), anki=anki)):
+            with pytest.raises(CliError) as e:
+                press()
+            assert e.value.code == "busy" and tidy.REMAKE_MINING in str(e.value)
+    finally:
+        look.release()
+    assert anki.log == [] and len(anki.notes_) == 6, "a refusal reads and deletes nothing"
+
+
+def test_connect_only_waiting_never_refuses_and_the_remake_holds_the_lock_to_the_requeue(home_ledger, monkeypatch):
+    # why: Connect parked on battery holds nothing (SORT-BAR); the remake holds the mining lock through the delete
+    # and the requeue, so Connect's next look waits and then sees the queued words
+    from app import locks
+    from app.connect import kick
+    item, tag, done_at = _mined(home_ledger, "ja")
+    anki = _anki("ja", tag, done_at)
+    seen = []
+    real = tidy.requeue
+
+    def requeue(*a, **k):
+        seen.append(locks.in_use(kick.MINING, looks=1, gap=0.0))
+        return real(*a, **k)
+    monkeypatch.setattr(tidy, "requeue", requeue)
+    monkeypatch.setattr(sentences, "choose", lambda language, keys, **kw: {k: [] for k in keys})
+    with locks.take(kick.LOCK, "Connect"):                  # Connect's run open, only waiting
+        assert tidy.act_remake_plan(ON, "ja", anki=anki)["made"]
+        assert tidy.act_remake(ON, "ja", steps=Steps(), anki=anki)["cards"] == 6
+    assert seen == [True] and not locks.in_use(kick.MINING, looks=1, gap=0.0), "held to the requeue, then let go"
+
+
 def test_with_connect_off_neither_press_reads_anki(home_ledger):
     anki = RemakeAnki()
     assert tidy.act_remake_plan({}, "ja", anki=anki) == {"cards": 0, "say": undo.PREVIEW_OFF}

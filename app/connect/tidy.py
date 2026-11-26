@@ -38,6 +38,7 @@ Every write holds Anki's write lock (`anki-writer`, one writer: `anki_connect.wr
 (K88). Anki through the adapter it is handed (`AnkiConnectTidy`; tests hand a fake).
 """
 import base64
+import contextlib
 import datetime
 import hashlib
 import json
@@ -1103,6 +1104,9 @@ SYNC_BUSY = "Anki is busy just now (syncing or checking its collection). Try aga
 SYNC_FAILED = ("Anki couldn't sync with AnkiWeb just now, so a card you studied on your phone might not be in yet. "
                "Nothing was deleted: try again once Anki syncs.")
 NOTHING_NEW = "No card in Surasura's deck is waiting unstudied: there's nothing to make again."
+# SORT-BAR's lock (`kick.MINING`: held only while a look of Connect's mines); PROVISIONAL words
+REMAKE_MINING = "Connect is making cards right now: make your cards again once they're made."
+MINING_WAIT = 2.0                           # s: as *Sort again* (`library_store.RESET_WAIT`): a look's short hold ends
 REMAKE_ALL_KEPT = "Every unstudied card there is yours to keep (moved, flagged or marked by you): nothing was deleted."
 
 
@@ -1323,7 +1327,8 @@ def act_remake_plan(settings, language, anki=None):
                 raise Reviewing()
             synced(anki)
             return remake_plan(anki, ledger, language, settings, lambda: library.open_store(language))
-    return _guarded(settings, plan, Ledger)
+    with _not_mining("Counting your new cards"):
+        return _guarded(settings, plan, Ledger)
 
 
 def act_remake(settings, language, before=False, steps=None, anki=None):
@@ -1347,7 +1352,8 @@ def act_remake(settings, language, before=False, steps=None, anki=None):
         late = [int(n) for n, w in done.get("meanwhile") or () if w == undo.STUDIED]
         return {"cards": len(done["deleted"]), "id": done["id"], "kept": len(done["kept"]), **again,
                 "studied": _named(tidy_row(ledger, done["id"]), late, card_word_of(settings, language))}
-    out = _guarded(settings, go, Ledger)
+    with _not_mining("Making your new cards again"):    # held to the requeue's end: Connect's next look sees it
+        out = _guarded(settings, go, Ledger)
     try:
         from app.connect import kick
         kick.kick(settings)
@@ -1373,6 +1379,24 @@ def _named(row, note_ids, word_of):
             if word:
                 words.add(word)
     return sorted(words)
+
+
+@contextlib.contextmanager
+def _not_mining(verb):
+    """SORT-BAR's `kick.MINING` held for the press (waited for `MINING_WAIT`): refused in words while a look of
+    Connect's mines (CliError `busy`, nothing read or deleted); held, Connect's next look waits for its end. Connect
+    only waiting (on battery, between looks) never refuses."""
+    from app import locks
+    from app.cli import contract
+    from app.connect import kick
+    try:
+        held = locks.take(kick.MINING, verb, wait=MINING_WAIT, owner=object())
+    except locks.Busy as e:
+        raise contract.busy_error(kick.MINING, e.holder, REMAKE_MINING) from None
+    try:
+        yield
+    finally:
+        held.release()
 
 
 def _remake_off(settings):

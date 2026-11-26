@@ -408,12 +408,14 @@ SYNC_NOT_SIGNED_IN = "auth not configured"
 SYNC_NEEDS_FULL = "Sync status"
 
 
-def sync(url, timeout=120):
+def sync(url, timeout=120, errors=False):
     """Ask Anki to sync the open profile with AnkiWeb (the module docstring's one exception; the caller is the
     sync rule, `app/anki_sync_rule.py`) -> "synced", "not-signed-in" (the profile has no AnkiWeb login),
     "full-sync" (AnkiWeb wants a full sync: the user's choice, never waited on), "busy" (Anki busy with a collection
     operation — its own sync, Check Database: asked again later, never a failure) or "failed: <why>". Sent only
-    while holding the Anki-write lock; raises AnkiError only for that refusal and a URL that isn't loopback."""
+    while holding the Anki-write lock; raises AnkiError only for that refusal and a URL that isn't loopback — and,
+    with `errors` (a caller that tells Anki gone apart itself, as `reviewing`'s: *Make my new cards again…*), Anki not
+    answering as it came (`offline`), never as AnkiWeb's "failed"."""
     _loopback_only(url)
     _writer_held("sync")
     try:
@@ -426,7 +428,7 @@ def sync(url, timeout=120):
             return "full-sync"
         if e.busy:
             return "busy"
-        if e.kind == "refused":
+        if e.kind == "refused" or (errors and e.kind == "offline"):
             raise
         return f"failed: {text}"
     return "synced"

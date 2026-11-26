@@ -3,7 +3,9 @@ each of the six pages starts with, what it writes on *Next*, and the reads and j
 (`app/qt/wizard.py`) only paint the answers.
 
 - **The pages** (`PAGES`): your language · what you know · your shows (and covers) · card order (and the "may Surasura
-  keep them in order" consent, HY-9) · cards made for you · your list (the level, then Generate).
+  keep them in order" consent, HY-9) · cards made for you · your list (the level, then Generate). Then, while D1's
+  first-cards line waits for a yes (`start_offered`), ONB-1's *Your start* (`START`): *Try it small · Full start ·
+  Pre-studied only*, its *Start* the yes (`save(START)` on the window's thread, then `start_cards` on a worker).
 - **What a page writes** (`writes`, pure): exactly its keys, on *Next*, one `set` call (`save`) — nothing earlier;
   *Skip* calls nothing, so it writes nothing. `finish` writes `onboarding_completed` (Generate, or *Skip* on the last
   page; never *Finish later*). Never `logic.automation` (D29's one switch also covers the automatic sync and Generate;
@@ -266,6 +268,8 @@ def writes(page, answers, settings, language):
                 _new(settings) or bool(open_anki) != (settings.get("connect_open_anki") is True)):
             out["connect_open_anki"] = bool(open_anki)
         return out
+    if page == START:
+        return _start_writes(answers, settings, language)
     if page == "level":
         if answers.get("automatic"):
             return {"logic.selection.auto": True}
@@ -307,6 +311,10 @@ def save(settings_service, page, answers, language):
         settings_service.set(dict({k: v for k, v in changes.items() if k != "anki_sync_decks"}, **mark),
                              update=_decks_update(language, changes["anki_sync_decks"][language]),
                              keys=("anki_sync_decks",))     # heard: the Decks row, the backlog's read (#SYQF6C)
+    elif page == START and "connect_backlog_cap" in changes:       # ONB-1: this language's cap, merged at write time
+        cap = START_SIZES[answers["start"]][1]
+        settings_service.set({k: v for k, v in changes.items() if k != "connect_backlog_cap"},
+                             update=_cap_update(_language(language), cap), keys=("connect_backlog_cap",))
     elif changes:
         settings_service.set(dict(changes, **mark))
     return changes
@@ -680,14 +688,16 @@ def sorted_offer(language, ids):
     return _offer_cards(language) if in_line else False
 
 
-def first_cards(language, settings, data_dir=None):
+def first_cards(language, settings, data_dir=None, mine_line=None):
     """(A worker; D1's *Make cards*, once Connect is on.) The mine line's episodes — the first 20 of Current, there since
     setup's first scan, which logs nothing — logged as entering it by the user's own choice (`Store.enter_mine_line`,
     explicit, by "user"): Connect's inbox makes their jobs; then Connect kicked (`kick.kick`: nothing while it's off)
     -> the ids logged ([]: no library). Kantan-B2: the line's answer is kept before the log is written — while it is
     unanswered Connect holds every entry (`inbox.first_run_waits`), so a Connect already looking never passes these
     by; the log failing takes the answer back (the line asks again). Kantan-B2b: the jobs its *Not now* set aside are
-    queued again first (`actions.first_run_back`: mined in their old order, before the top 20's new ones)."""
+    queued again first (`actions.first_run_back`: mined in their old order, before the top 20's new ones).
+    `mine_line` (ONB-1, *Your start*'s *Start*): the line set first by the store's own command
+    (`Store.set_library_options`, in the same handle), so the log takes that many — 3 for *Try it small*."""
     from app import library_store
     from app.connect import actions, kick, library
     from app.path_utils import get_data_path, get_user_files_path
@@ -701,6 +711,8 @@ def first_cards(language, settings, data_dir=None):
     try:
         actions.first_run_back(language)             # (its failure takes the answer back too, as the log's)
         with store:
+            if mine_line is not None:                    # ONB-1: the start's line, before the log reads it
+                store.set_library_options(mine_line=int(mine_line))
             library.ensure_reader(store)                 # Connect's watermark first: what is logged next is read
             ids = store.enter_mine_line(by="user")
     except BaseException:
@@ -715,6 +727,119 @@ def first_cards(language, settings, data_dir=None):
     except Exception as e:                               # its next start reads the log anyway
         print(f"Setup: Connect wasn't started now ({e})")
     return ids
+
+
+# --- ONB-1: *How would you like to start?* (Sonic § 102 / § 105, 2026-11-26; the words and the sizes PROVISIONAL) ---- #
+# The page after *Your list*, shown while D1's *Make cards for your first 20 episodes?* line waits for a yes and Connect
+# is on: its *Start* is that yes. A start is two existing knobs set together through their owners — Connect's
+# *Keep up to N cards waiting* (`connect_backlog_cap`, this language's) and the store's *Mine automatically: the top N*
+# (`mine_line`, the store's option) — plus PRESTUDIED-MINE's switch for the third. Nothing is decided here.
+START = "start"                 # its page id (after PAGES: not one of the six every profile is shown)
+STARTS = ("small", "full", "prestudied")
+START_DEFAULT = "full"          # today's start, pre-picked (§ 102 4)
+START_SIZES = {"small": (3, 50), "full": (20, 300), "prestudied": (20, 300)}     # (mine line, Keep up to) — § 102 3
+PRESTUDIED_KEY = "connect_prestudied_only"      # PRESTUDIED-MINE's switch (*Mine only episodes I've pre-studied*)
+
+
+def prestudied_here():
+    """Is PRESTUDIED-MINE in this Surasura (its key in the settings' defaults)? *Pre-studied only* shows only then."""
+    from app import settings_manager
+    return PRESTUDIED_KEY in settings_manager.DEFAULT_SETTINGS
+
+
+def starts():
+    """The starts this Surasura offers, in the page's order."""
+    return tuple(s for s in STARTS if s != "prestudied" or prestudied_here())
+
+
+def start_offered(settings, language):
+    """(A worker: a small file read.) Does setup show *Your start*? Connect is on (`settings_manager.connect_on`, the
+    one rule) and D1's first-cards line is offered and not answered — the question its *Start* answers. *Set up again*
+    after a yes, or Connect off, -> False (*Generate* closes setup, as before)."""
+    from app import settings_manager
+    from app.services import needs
+    if not settings_manager.connect_on(settings or {}):
+        return False
+    language = _language(language)
+    try:
+        return needs.FIRST_CARDS in needs.read_offers(language) and \
+            needs.FIRST_CARDS not in needs.read_answered(language)
+    except Exception as e:
+        print(f"Setup: the first-cards line couldn't be read ({e})")
+        return False
+
+
+def _start_writes(answers, settings, language):
+    """`writes`' START branch: this language's *Keep up to* and PRESTUDIED-MINE's switch, each only when it moves."""
+    from app.connect.settings_values import cap_of, cap_value
+    start = (answers or {}).get("start")
+    if start not in starts():
+        raise ValueError(f"not a start: {start!r}")
+    _line, cap = START_SIZES[start]
+    out = {}
+    current = settings.get("connect_backlog_cap", 300)
+    if cap_of(current, language) != cap:
+        out["connect_backlog_cap"] = cap_value(current, language, cap)
+    if prestudied_here() and (settings.get(PRESTUDIED_KEY) is True) != (start == "prestudied"):
+        out[PRESTUDIED_KEY] = start == "prestudied"
+    return out
+
+
+def _cap_update(language, cap):
+    """The settings service's `update` for *Keep up to*: this language's cap re-applied onto the file as it is when
+    written (another language's kept) — Settings' own merge (`settings_catalog._per_language`)."""
+    def update(settings):
+        from app.connect.settings_values import cap_value
+        settings["connect_backlog_cap"] = cap_value(settings.get("connect_backlog_cap", 300), language, cap)
+    return update
+
+
+def start_items(language, sizes=None):
+    """(A worker: one read-only look at the store.) The episodes each start would cover, by Connect's own rule
+    (`connect.library.mine_line(store, n)`: Current's top N available) -> {start: [item ids]}; {} with no library."""
+    from app.connect import library
+    sizes = sizes or {s: START_SIZES[s][0] for s in starts()}
+    store = _window_store(_language(language), role="reader")
+    if store is None:
+        return {}
+    with store:
+        return {s: list(library.mine_line(store, n)) for s, n in sizes.items()}
+
+
+def start_numbers(items, view, per_day):
+    """Pure. *Your start*'s numbers from `start_items`' ids and the window's view (`view_rows.View`: its rows'
+    episodes carry the plan's *N new*) -> {"top": the first episode's title (None: nothing to show), "top_labels": its
+    episodes' labels among the small start's, "per_day", and per start {"episodes", "titles", "cards" (the summed
+    *N new*; None while any is unknown: the list still being made), "days" (cards ÷ per day, rounded up; None as
+    cards)}}. One walk of the view's episodes into a dict by id; each start's ≤ 20 ids looked up once."""
+    import math
+    by_id = {}
+    for row in getattr(view, "rows", None) or ():
+        for ep in row.episodes:
+            by_id[ep.id] = (row, ep)
+    per_day = per_day if isinstance(per_day, int) and per_day > 0 else None
+    out = {"top": None, "top_labels": (), "per_day": per_day}
+    for start, ids in (items or {}).items():
+        hits = [by_id[i] for i in ids if i in by_id]
+        news = [ep.n_new for _row, ep in hits]
+        cards = sum(news) if hits and all(isinstance(n, int) for n in news) else None
+        out[start] = {"episodes": len(ids), "titles": len({row.work_id for row, _ep in hits}), "cards": cards,
+                      "days": math.ceil(cards / per_day) if cards is not None and per_day else None}
+    first = [by_id[i] for i in (items or {}).get("small", ()) if i in by_id]
+    if first:
+        top = first[0][0]
+        out["top"] = top.title
+        out["top_labels"] = tuple(ep.label for row, ep in first if row.work_id == top.work_id)
+    return out
+
+
+def start_cards(language, settings, start, data_dir=None):
+    """(A worker.) *Start*: the yes D1's line waits for, with the start's mine line (`first_cards(mine_line=)`) — Connect
+    then makes the cards of that many episodes, kept up to the start's cap (written on the window's thread first,
+    `save(START)`). -> the ids logged."""
+    if start not in STARTS:
+        raise ValueError(f"not a start: {start!r}")
+    return first_cards(language, settings, data_dir, mine_line=START_SIZES[start][0])
 
 
 NOTHING_TO_COUNT = {"empty": "library"}     # `level_numbers`' answers when nothing can be counted (Disc-T1): no

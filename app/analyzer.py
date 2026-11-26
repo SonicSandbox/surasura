@@ -5721,25 +5721,32 @@ def run_signature_parts(language, found_files, args, aside=()):
         # closed file's listed st_mtime and st_size are os.stat's (one still being written may lag until it closes, as
         # in the sync). Fewer files a folder (a listing costs more than a stat or two), or a path the listing doesn't
         # hold (gone, spelled otherwise, a folder that can't be listed): os.stat, as before. Listed afresh at every
-        # call, never kept across checks: an edit between two checks is seen by the second.
-        _places = [os.path.split(p) for p in [fp for (fp, _l, _w, _st) in found_files]
-                   + [ignore_list_file, black_list_file, graduated_list_file]
-                   + list(available_freq_lists.values()) + [a.path for a in aside]]
+        # call, never kept across checks: an edit between two checks is seen by the second. Kept per path is only the
+        # [st_mtime, st_size] the signature holds anyway (handed out once); a folder's listing is let go once it's
+        # read, so a big window process gains no objects for its collector to walk.
         _by_folder = {}
-        for _folder, _name in _places:
-            _by_folder.setdefault(_folder, []).append(_name)
+        for p in ([fp for (fp, _l, _w, _st) in found_files] + [ignore_list_file, black_list_file, graduated_list_file]
+                  + list(available_freq_lists.values()) + [a.path for a in aside]):
+            _by_folder.setdefault(os.path.dirname(p), []).append(p)
         _listed = {}
         try:
             from app.library_store import LISTED_STATS, _listed_stats
-            for _folder, _names in _by_folder.items():
-                if len(_names) >= LISTED_STATS:
-                    _listed.update(((_folder, _k), _v) for _k, _v in _listed_stats(_folder, _names).items())
+            for _folder, _paths in _by_folder.items():
+                if len(_paths) >= LISTED_STATS:
+                    _stats = _listed_stats(_folder, [os.path.basename(p) for p in _paths])
+                    for p in _paths:
+                        _st = _stats.get(os.path.basename(p))
+                        if _st is not None:
+                            _listed[p] = [_st.st_mtime, _st.st_size]
         except Exception:                         # no store module: every path stat'ed, as before
             _listed = {}
 
         def _fsig(p):
+            _sig = _listed.pop(p, None)           # once: a path signed twice is stat'ed the second time
+            if _sig is not None:
+                return _sig
             try:
-                _st = _listed.get(os.path.split(p)) or os.stat(p)
+                _st = os.stat(p)
                 return [_st.st_mtime, _st.st_size]
             except OSError:
                 return None

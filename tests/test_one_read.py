@@ -92,6 +92,8 @@ if what in ("generate", "redraw"):
             raise
 else:
     settings = sm.load_settings()            # the caller's own read, at its start (Connect's `choose`, Junban's job)
+    if os.environ.get("ONE_READ_NAMES_OFF"):
+        settings["logic"]["ignore_names"] = False    # in the caller's copy only: settings.json still says on
     n["settings"].clear()
     from app import analyzer
     analyzer.SANITIZE_JA = language == "ja"   # (as Connect and Junban set it before they read)
@@ -132,8 +134,10 @@ def _env(root):
     return env
 
 
-def _counted(root, language, what):
-    p = subprocess.run([sys.executable, "-c", _CHILD, what, language], cwd=cases.REPO, env=_env(root),
+def _counted(root, language, what, **extra):
+    env = _env(root)
+    env.update(extra)
+    p = subprocess.run([sys.executable, "-c", _CHILD, what, language], cwd=cases.REPO, env=env,
                        capture_output=True, text=True, encoding="utf-8", errors="replace")
     line = [ln for ln in p.stdout.splitlines() if ln.startswith("COUNT ")]
     assert p.returncode == 0 and line, p.stdout[-2000:] + p.stderr[-2000:]
@@ -227,6 +231,11 @@ def test_connect_and_junban_read_the_known_words_with_the_settings_they_hold_and
     assert junban["ignored"] == connect["ignored"], "the same ignore set, names included"
     if ja:
         assert connect["ignored"], "the library's names are in it (Ignore names on)"
+        # the switch is the held copy's, not the file's nor the import's: off in the copy, the names leave the set
+        # (no read proves only that nothing was read — ONE-READ 2's review)
+        for what in ("connect", "junban"):
+            off = _counted(root, language, what, ONE_READ_NAMES_OFF="1")
+            assert off["settings"] == [] and off["ignored"] < connect["ignored"], (what, len(off["ignored"]))
 
 
 def test_the_window_previews_known_words_entries_without_reading_the_names(root):

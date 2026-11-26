@@ -1745,8 +1745,9 @@ class ShellWindow(QMainWindow):
             self.needs_you.changed.connect(self._connect_fault)
             self.needs_you.changed.connect(self._first_cards_circle)
             needs_page.controller = self.needs_you
-            self.needs_you.backlog = getattr(services.status.snapshot(), "backlog", None)   # ONB-4, before a gather
-            self.needs_you.failures_in(services.status.snapshot().needs_you)
+            snap = services.status.snapshot()
+            self.needs_you.backlog = getattr(snap, "backlog", None)         # ONB-4, before a gather
+            self.needs_you.failures_in(snap.needs_you)
             if needs_page.view_model is not None:
                 self.needs_you.view_in(needs_page.view_model)
         # --- end W3.2 Q5

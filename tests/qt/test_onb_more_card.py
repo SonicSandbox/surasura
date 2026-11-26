@@ -173,3 +173,19 @@ def test_a_language_switch_forgets_the_left_languages_count(world, monkeypatch):
     ny.backlog_in(4)                                     # the bar's next tick, this language's
     assert wait_until(lambda: ny.gathers > n and not ny._running, 10)
     assert card_of(ny) is not None
+
+
+def test_a_learner_never_offered_the_card_is_never_gathered_again_by_the_bars_count(world, monkeypatch):
+    # why: a full start (or an answered card) can't show it — its crossings at every Anki sync would be pure waste
+    seed, win, _writer, ny = world("ja")
+    ny.read_settings = lambda: {"connect_enabled": True}
+    ny.read_connect = lambda _lang: {"needs": [], "jobs": [], "gaps": []}
+    ny.find_offline = lambda _lang, _rels, _data: []
+    ny.backlog = 40
+    gather(ny, view("ja"))
+    assert not ny.more_open
+    n = ny.gathers
+    ny.backlog_in(3)
+    ny.backlog_in(None)
+    ny.backlog_in(30)
+    assert ny.gathers == n and not ny._running

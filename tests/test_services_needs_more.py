@@ -179,3 +179,12 @@ def test_next_20_while_the_store_cant_be_written_writes_nothing(language):
     s = Settings({"connect_backlog_cap": 50}, log)
     assert SW.more_cards(s, Writer(log, reason="read-only"), language) is None
     assert log == [] and s.values["connect_backlog_cap"] == 50
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_next_20_with_no_writer_writes_nothing(language):
+    # why: a window with no store writer (a library being opened) can't move the line — nothing half written
+    log = []
+    s = Settings({"connect_backlog_cap": 50}, log)
+    assert SW.more_cards(s, None, language) is None
+    assert log == [] and s.values["connect_backlog_cap"] == 50

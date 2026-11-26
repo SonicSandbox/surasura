@@ -535,9 +535,10 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
         if big[0].key not in hidden:
             out.append(big[0])                      # K1 leads the page
         big = big[1:]
-    if FIRST_CARDS in frozenset(offers or ()) and FIRST_CARDS not in answered and miner_found:
+    offers = frozenset(offers or ())
+    if FIRST_CARDS in offers and FIRST_CARDS not in answered and miner_found:
         out.append(_first_cards_entry(rows, seen, mine_line, cards_on, later=FIRST_CARDS_NOT_NOW in answered))
-    more = _more_entry(view, waiting, seen) if cards_on and MORE_CARDS in frozenset(offers or ()) and \
+    more = _more_entry(view, waiting, seen) if cards_on and MORE_CARDS in offers and \
         MORE_CARDS not in answered else None
     if more is not None:
         out.append(more)
@@ -1192,11 +1193,13 @@ def _more_entry(view, waiting, seen):
     `waiting` (the bar's count; None: no backlog saved, nothing known) is MORE_AT or fewer, and a file of the line
     carries cards (the start's cards were made: before that, nothing waits because nothing was made). The line's walk
     ends at its last file (≤ 3 files, a row's first) -> Entry or None."""
+    line = getattr(view, "mine_line", None)
+    if not isinstance(waiting, int) or waiting > MORE_AT or not isinstance(line, int) or line <= 0 or \
+            getattr(view, "mode", None) != "store":
+        return None
     from app.services.setup_wizard import START_SIZES
     small, to, cap = START_SIZES["small"][0], *START_SIZES["full"]
-    line = getattr(view, "mine_line", None)
-    if not isinstance(waiting, int) or waiting > MORE_AT or not isinstance(line, int) or not 0 < line <= small or \
-            getattr(view, "mode", None) != "store" or not _line_has_cards(view.rows, line):
+    if line > small or not _line_has_cards(view.rows, line):
         return None
     title = STRINGS["more_title_one"] if line == 1 else STRINGS["more_title"].format(n=line)
     return Entry(key=MORE_CARDS, kind=MORE_CARDS, title=title, lines=(), actions=("more_cards", "keep_small"),

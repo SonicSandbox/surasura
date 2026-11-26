@@ -888,6 +888,7 @@ class NeedsYou(QObject):
         self.data_dir = None                     # None: the language's data folder (looked up on the worker)
         self.connect_line = None
         self.backlog = None                      # ONB-4: the bar's *Anki · N waiting* (the status service's count)
+        self.more_open = False                   # ... and whether its card may show (offered, unanswered: the gather's)
         self._miner = None                       # Michi-U: the Anki Miner the last gather knew of (the feed's `miner`)
         self.gathers = 0                         # entries worked out (tests: N9)
         self.gone_folders = None                 # T6: the looks' gone rows (None: no look has said yet)
@@ -1030,10 +1031,10 @@ class NeedsYou(QObject):
 
     def backlog_in(self, n):
         """ONB-4: the bar's *Anki · N waiting* (the status service's count, kept by its file's stamp: nothing read
-        here) — gathered again only when it crosses *Ready for more?*'s MORE_AT, or comes or goes, never at every
-        count."""
+        here) — gathered again only when it crosses *Ready for more?*'s MORE_AT, or comes or goes, and only while
+        that card may show (`more_open`: offered and unanswered, as the last gather read them), never at every count."""
         was, self.backlog = self.backlog, n if isinstance(n, int) else None
-        if _low(was) != _low(self.backlog):
+        if self.more_open and _low(was) != _low(self.backlog):
             self.refresh()
 
     def _miner_now(self):
@@ -1155,8 +1156,10 @@ class NeedsYou(QObject):
                               asks=asks or None, gone_folders=gone_judged)       # read: a failed read looks the same)
             except Exception as e:                  # (a file that can't be read is left as it is: the gather goes on)
                 print(f"Needs you: the seen file wasn't pruned: {e!r}")
+            answered, offers = service.read_answered(lang), service.read_offers(lang)
+            self.more_open = service.MORE_CARDS in offers and service.MORE_CARDS not in answered   # ONB-4 (a bool)
             out = service.entries(view, failures, connect, service.read_seen(lang), roots, asks,
-                                  service.read_answered(lang), offers=service.read_offers(lang),
+                                  answered, offers=offers,
                                   cards_on=settings_manager.connect_on(settings),    # B2-8: the one rule
                                   miner_found=bool(find_miner(settings)),     # row 13: D1's line waits for it
                                   gone_folders=gone_folders or (),

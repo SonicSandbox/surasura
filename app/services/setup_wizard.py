@@ -865,7 +865,7 @@ def more_cards(settings_service, writer, language):
     writer's command number, or None when the store can't be written now (`Writer.reason`: nothing written)."""
     from app.connect.settings_values import cap_of
     from app.services.settings import thaw
-    if writer.reason() is not None:
+    if writer is None or writer.reason() is not None:
         return None
     language = _language(language)
     line, cap = START_SIZES["full"]

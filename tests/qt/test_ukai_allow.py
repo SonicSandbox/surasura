@@ -128,3 +128,27 @@ def test_while_off_the_window_starts_its_door_with_no_pairing_and_no_card(main, 
     shell.start_door(main).join(10)
     QApplication.processEvents()
     assert started == [None] and not hasattr(main, "ukai_pairing") and _card(main) is None
+
+
+def test_a_newer_ask_drops_the_card_whose_pairing_was_let_go(main):
+    """Review S-2: a card left open past its pairing's wait, then Ukai asks again: one card on screen, the newer one;
+    the old one answers nothing."""
+    from app.qt import ukai_allow
+    from app.services import ukai_pairing
+
+    class Pairing:
+        answers = []
+
+        def answer(self, pair_id, yes):
+            self.answers.append((pair_id, yes))
+
+    pairing = Pairing()
+    old = ukai_pairing.Request("a" * 22, "1234", ORIGIN, ORIGIN.split("//")[1], None, "1.0.0", False)
+    new = ukai_pairing.Request("b" * 22, "5678", ORIGIN, ORIGIN.split("//")[1], None, "1.0.0", False)
+    ukai_allow.ask(main, pairing, old)
+    assert wait_until(lambda: _card(main) is not None, 5)
+    ukai_allow.ask(main, pairing, new)
+    assert wait_until(lambda: len([c for c in main.findChildren(confirm.Confirm) if c.isVisible()]) == 1, 5)
+    assert "5678" in _texts(_card(main)) and pairing.answers == []
+    _press(_card(main), strings.UKAI_ALLOW_YES)
+    assert pairing.answers == [("b" * 22, True)]

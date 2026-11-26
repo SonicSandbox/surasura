@@ -10,7 +10,8 @@ is the switch. Two routes on the door's extension class (`app/door.py` `Extensio
   thread). One card at a time: the same extension asking again while it is open gets the same id and code; another
   extension waits (409 `busy`).
 - `GET /v1/pair/<id>` -> `{"state": "waiting"}` while the card is open; `{"state": "denied"}` once after *Not now*;
-  `{"state": "allowed", "token"}` **once** after *Allow* — the token is made then, written, and handed over. A
+  `{"state": "allowed", "token"}` **once** after *Allow* — the token is made then, written, and handed over (the
+  same extension asking again meanwhile gets the same id: its Allow is kept). A
   replayed id, an unknown or expired one: 404 `gone`. An Origin on it other than the asking one: 403 (Chrome's GET
   carries none, as measured: the 128-bit id, handed only in the POST's answer, is then its gate).
 
@@ -37,6 +38,7 @@ CLAIM_S = 60.0                  # an answered card waits this long for Ukai's GE
 PAIR_ID = r"[A-Za-z0-9_-]{22}"  # `secrets.token_urlsafe(16)`: 128 bits
 EXT_ID = re.compile(r"chrome-extension://([a-p]{32})\Z")    # Chrome's and Edge's extension ids: 32 letters a-p
 VERSION = re.compile(r"[0-9A-Za-z.+-]{1,32}\Z")
+TOKEN = re.compile(r"[A-Za-z0-9_-]{32}\Z")    # `secrets.token_urlsafe(24)`: 192 bits
 MAX_BODY = 4096
 STORE_IDS = {}                  # Ukai's store ids -> the store's name, for the card (filled when Ukai is listed)
 WAITING, ALLOWED, DENIED = "waiting", "allowed", "denied"
@@ -82,7 +84,7 @@ class Pairing:
     """Ukai's one pairing. `ask(Request)` opens the window's card (any thread; it must not wait for the answer, which
     comes back through `answer`); `where` the file (default `path()`); `clock` monotonic seconds."""
 
-    def __init__(self, ask=None, where=None, clock=time.monotonic):
+    def __init__(self, ask, where=None, clock=time.monotonic):
         self._ask, self._where, self._clock = ask, where, clock
         self._lock = threading.Lock()
         self._kept = _UNREAD
@@ -102,12 +104,6 @@ class Pairing:
             kept = self._load()
         return (kept["origin"], kept["token"]) if kept else None
 
-    def paired(self):
-        """{"origin", "version", "at"} of the paired Ukai (never its token), or None: the Settings row's (U-S2)."""
-        with self._lock:
-            kept = self._load()
-        return {k: kept.get(k) for k in ("origin", "version", "at")} if kept else None
-
     def ask(self, call):
         """`POST /v1/pair`: a pairing asked for -> its id and code; the window's card opens."""
         origin = call.headers.get("Origin") or ""
@@ -118,14 +114,12 @@ class Pairing:
         version = body.get("version", "")
         if not isinstance(version, str) or (version and not VERSION.match(version)):
             raise _error("version must be Ukai's version, as its manifest says it", "body", 400)
-        if self._ask is None:
-            raise _error("Surasura's window isn't open.", "closed", 503)
         with self._lock:
             now = self._clock()
             self._expire(now)
             p = self._pending
-            if p is not None and p.state == WAITING and p.origin == origin:
-                return self._asked(p)                       # its card is open already: the same id and code
+            if p is not None and p.state != DENIED and p.origin == origin:
+                return self._asked(p)                       # its card is open, or allowed: the same id and code
             if p is not None and p.origin != origin:
                 raise _error("Surasura is asking about another extension now: try again in a minute.", "busy", 409)
             p = self._pending = _Pending(secrets.token_urlsafe(16), "%04d" % secrets.randbelow(10000), origin,
@@ -158,7 +152,10 @@ class Pairing:
                 return {"state": DENIED}
             kept = {"origin": p.origin, "token": secrets.token_urlsafe(24), "version": p.version,
                     "at": int(time.time())}
-            self._write(kept)                               # (a disk's error: the door's 503; the next GET tries again)
+            try:
+                self._write(kept)
+            except OSError:                                 # (said as busy, never a crash: its log line names the id)
+                raise _error("Surasura couldn't save the pairing: try again.", "busy", 503) from None
             self._kept, self._pending = kept, None
             return {"state": ALLOWED, "token": kept["token"]}
 
@@ -179,10 +176,11 @@ class Pairing:
         file stays on disk (the caller says so); this session is unpaired all the same."""
         with self._lock:
             self._kept, self._pending = None, None
-            try:
-                os.remove(self._file())
-            except FileNotFoundError:
-                pass
+            for name in (self._file() + ".part", self._file()):
+                try:
+                    os.remove(name)
+                except FileNotFoundError:
+                    pass
 
     # --- inside ------------------------------------------------------------------------------------------------- #
     def _asked(self, p):
@@ -198,26 +196,41 @@ class Pairing:
 
     def _load(self):
         if self._kept is _UNREAD:
-            self._kept = _read(self._file())
+            try:
+                self._kept = _read(self._file())
+            except OSError:                                 # (held for a moment: unpaired now, read again next call)
+                return None
         return self._kept
 
     def _write(self, kept):
         where = self._file()
         os.makedirs(os.path.dirname(where), exist_ok=True)
         part = where + ".part"
-        with open(part, "w", encoding="utf-8") as f:
-            json.dump(kept, f)
-        os.replace(part, where)                             # whole or not at all: a crash keeps the pairing before
+        try:
+            with open(part, "w", encoding="utf-8") as f:
+                json.dump(kept, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(part, where)                         # whole or not at all: a crash keeps the pairing before
+        except BaseException:
+            try:
+                os.remove(part)                             # (it holds the token)
+            except OSError:
+                pass
+            raise
 
 
 def _read(where):
-    """The pairing file's {"origin", "token", "version", "at"}, or None (none, unreadable, or not a pairing)."""
+    """The pairing file's {"origin", "token", "version", "at"}, or None (none, or not a pairing). OSError: there, but
+    unreadable now."""
     try:
         with open(where, encoding="utf-8") as f:
             kept = json.load(f)
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return None
+    except (ValueError, UnicodeDecodeError, IsADirectoryError):
         return None
     if not isinstance(kept, dict) or not isinstance(kept.get("origin"), str) or not EXT_ID.match(kept["origin"]):
         return None
     token = kept.get("token")
-    return kept if isinstance(token, str) and len(token) >= 16 else None
+    return kept if isinstance(token, str) and TOKEN.match(token) else None

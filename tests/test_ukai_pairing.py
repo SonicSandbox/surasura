@@ -48,16 +48,18 @@ def ukai(tmp_path, monkeypatch):
     monkeypatch.setattr(door, "EXTENSION_ON", True)
     monkeypatch.setattr(door, "EXT_PORT", _free_port())
     asked, clock = [], Clock()
-    pairing = up.Pairing(ask=asked.append, where=str(tmp_path / "roaming" / up.FILE), clock=clock)
-    echoed = []
+    pairing = up.Pairing(asked.append, where=str(tmp_path / "roaming" / up.FILE), clock=clock)
+    echoed, errors = [], []
 
     def echo(call):
         body = call.json()
         echoed.append(body)
         return {"echo": body}
 
-    d = door.Door({}, str(tmp_path / "results"), extension=pairing.extension({"POST /v1/echo": echo})).start()
-    d.pairing, d.asked, d.clock, d.echoed, d.file = pairing, asked, clock, echoed, tmp_path / "roaming" / up.FILE
+    d = door.Door({}, str(tmp_path / "results"), on_error=lambda path, e: errors.append((path, e)),
+                  extension=pairing.extension({"POST /v1/echo": echo})).start()
+    d.pairing, d.asked, d.clock, d.echoed, d.errors = pairing, asked, clock, echoed, errors
+    d.file = tmp_path / "roaming" / up.FILE
     yield d
     d.stop()
 
@@ -221,6 +223,30 @@ def test_a_card_left_unanswered_lets_go_and_a_late_allow_pairs_nothing(ukai):
     assert ukai.pairing.pairing() is None
 
 
+def test_ukai_asking_again_after_the_allow_keeps_the_allow(ukai):
+    """Review S-1: a retried POST between the learner's Allow and Ukai's GET is the same pairing, never a second
+    card that throws the Allow away."""
+    asked = _pair_asked(ukai)
+    ukai.pairing.answer(asked["pair"], True)
+    assert _pair_asked(ukai) == asked and len(ukai.asked) == 1
+    assert _claim(ukai, asked["pair"])[1]["state"] == "allowed"
+
+
+def test_ukai_asking_again_after_not_now_opens_a_new_card(ukai):
+    """The learner pressed *Pair* in Ukai's menu again: a fresh card, a fresh code."""
+    first = _pair_asked(ukai)
+    ukai.pairing.answer(first["pair"], False)
+    second = _pair_asked(ukai)
+    assert second["pair"] != first["pair"] and len(ukai.asked) == 2
+
+
+def test_an_answer_given_twice_counts_once(ukai):
+    asked = _pair_asked(ukai)
+    assert ukai.pairing.answer(asked["pair"], False) is True
+    assert ukai.pairing.answer(asked["pair"], True) is False, "a Not now isn't turned into an Allow"
+    assert _claim(ukai, asked["pair"])[1]["state"] == "denied"
+
+
 def test_an_allow_nobody_claims_in_time_writes_no_token(ukai):
     asked = _pair_asked(ukai)
     ukai.clock.now += up.WAIT_S - 1                      # (a card open nearly the whole wait is still answered)
@@ -233,17 +259,11 @@ def test_a_card_the_window_couldnt_open_leaves_no_pairing_waiting(tmp_path):
     def broken(_request):
         raise RuntimeError("the window is gone")
 
-    pairing = up.Pairing(ask=broken, where=str(tmp_path / up.FILE))
+    pairing = up.Pairing(broken, where=str(tmp_path / up.FILE))
     call = _Call({"Origin": ORIGIN}, {"version": "1.0.0"})
     with pytest.raises(RuntimeError):
         pairing.ask(call)
     assert pairing._pending is None, "the next ask opens a card again"
-
-
-def test_without_a_window_there_is_no_card_and_ukai_hears_why(tmp_path):
-    with pytest.raises(door.RouteError) as e:
-        up.Pairing(where=str(tmp_path / up.FILE)).ask(_Call({"Origin": ORIGIN}, {}))
-    assert e.value.status == 503 and e.value.kind == "closed"
 
 
 class _Call:
@@ -265,9 +285,8 @@ def test_the_pairing_file_holds_the_token_origin_and_version_and_outlives_the_wi
     token = _paired(ukai)
     kept = json.loads(ukai.file.read_text(encoding="utf-8"))
     assert kept["token"] == token and kept["origin"] == ORIGIN and kept["version"] == "1.0.0" and kept["at"] > 0
-    again = up.Pairing(where=str(ukai.file))
+    again = up.Pairing(None, where=str(ukai.file))
     assert again.pairing() == (ORIGIN, token), "the next start is still paired"
-    assert again.paired() == {"origin": ORIGIN, "version": "1.0.0", "at": kept["at"]}, "never the token"
     assert not [n for n in os.listdir(ukai.file.parent) if n.endswith(".part")]
 
 
@@ -281,11 +300,34 @@ def test_the_pairing_file_is_a_part_that_stays_and_a_secret_send_report_leaves_o
 
 @pytest.mark.parametrize("text", ["", "{", "[]", json.dumps({"origin": "https://www.netflix.com", "token": "t" * 32}),
                                   json.dumps({"origin": ORIGIN, "token": "short"}),
-                                  json.dumps({"origin": ORIGIN}), json.dumps({"token": "x" * 32})])
+                                  json.dumps({"origin": ORIGIN}), json.dumps({"token": "x" * 32}),
+                                  # a token no answer could carry: a lone surrogate (the door's compare would raise
+                                  # on it: review F-2), one of another shape
+                                  '{"origin": "%s", "token": "%s"}' % (ORIGIN, "\\ud800" * 32),
+                                  json.dumps({"origin": ORIGIN, "token": "ことば" * 11}),
+                                  json.dumps({"origin": ORIGIN, "token": "x" * 33})])
 def test_a_pairing_file_that_isnt_one_is_no_pairing(tmp_path, text):
     where = tmp_path / up.FILE
     where.write_text(text, encoding="utf-8")
-    assert up.Pairing(where=str(where)).pairing() is None
+    assert up.Pairing(None, where=str(where)).pairing() is None
+
+
+def test_a_pairing_file_held_for_a_moment_is_read_again_at_the_next_call(tmp_path, monkeypatch):
+    """Review S-5: a read that fails while another program holds the file (an antivirus scan) is no 'unpaired' for
+    the whole session."""
+    where = tmp_path / up.FILE
+    where.write_text(json.dumps({"origin": ORIGIN, "token": "k" * 32, "version": "1.0.0", "at": 1}), encoding="utf-8")
+    real, held = up._read, [True]
+
+    def read(path):
+        if held and held.pop():
+            raise PermissionError(13, "held by another program")
+        return real(path)
+
+    monkeypatch.setattr(up, "_read", read)
+    pairing = up.Pairing(None, where=str(where))
+    assert pairing.pairing() is None
+    assert pairing.pairing() == (ORIGIN, "k" * 32)
 
 
 def test_the_token_is_never_written_into_settings_or_a_log(ukai, tmp_path):
@@ -306,15 +348,44 @@ def test_the_token_is_never_written_into_settings_or_a_log(ukai, tmp_path):
                         assert token.encode("ascii") not in f.read(), name
 
 
-def test_a_disk_that_wont_take_the_file_hands_no_token_and_the_next_claim_tries_again(ukai, monkeypatch):
+def test_a_disk_that_wont_take_the_file_hands_no_token_leaves_no_copy_and_the_next_claim_tries_again(ukai):
+    """The file's place taken by a folder: the real write fails at its replace. No token goes out, the part file
+    holding it goes, the door logs nothing (its log line would name the pairing's id: review Sec-3), and once the
+    place is free the same claim pairs."""
     asked = _pair_asked(ukai)
     ukai.pairing.answer(asked["pair"], True)
-    real = up.Pairing._write
-    monkeypatch.setattr(up.Pairing, "_write", lambda self, kept: (_ for _ in ()).throw(OSError("disk full")))
+    ukai.file.mkdir(parents=True)
     status, got = _claim(ukai, asked["pair"])
-    assert status == 503 and "token" not in got and ukai.pairing.pairing() is None
-    monkeypatch.setattr(up.Pairing, "_write", real)
+    assert (status, got["kind"]) == (503, "busy") and "token" not in got and ukai.pairing.pairing() is None
+    assert os.listdir(ukai.file.parent) == [up.FILE] and ukai.errors == []
+    ukai.file.rmdir()
     assert _claim(ukai, asked["pair"])[1]["state"] == "allowed"
+    assert not [n for n in os.listdir(ukai.file.parent) if n.endswith(".part")]
+
+
+def test_forget_that_cant_remove_the_file_still_unpairs_this_session_and_says_so(ukai, monkeypatch):
+    token = _paired(ukai)
+    real = os.remove
+
+    def held(path):
+        if path.endswith(up.FILE):
+            raise PermissionError(13, "held by another program")
+        return real(path)
+
+    monkeypatch.setattr(up.os, "remove", held)
+    with pytest.raises(PermissionError):
+        ukai.pairing.forget()
+    assert _ask(ukai, "POST", "/v1/echo", {"n": 1}, token=token)[0] == 401
+
+
+def test_forget_takes_a_part_file_left_by_a_crash_too(ukai):
+    """A crash between the part's write and its replace leaves the token in `<file>.part`."""
+    _paired(ukai)
+    part = str(ukai.file) + ".part"
+    with open(part, "w", encoding="utf-8") as f:
+        f.write("{}")
+    ukai.pairing.forget()
+    assert os.listdir(ukai.file.parent) == []
 
 
 # --- Forget, and a new pairing --------------------------------------------------------------------------------------- #
@@ -323,7 +394,7 @@ def test_forget_refuses_the_very_next_call_and_the_file_goes(ukai):
     assert _ask(ukai, "POST", "/v1/echo", {"n": 1}, token=token)[0] == 200
     ukai.pairing.forget()
     assert _ask(ukai, "POST", "/v1/echo", {"n": 2}, token=token)[0] == 401
-    assert not ukai.file.exists() and ukai.pairing.paired() is None
+    assert not ukai.file.exists() and ukai.pairing.pairing() is None
     assert ukai.echoed == [{"n": 1}]
     ukai.pairing.forget()                                # (twice: nothing to do, no error)
 

@@ -22,8 +22,17 @@ def words(request):
 
 def ask(window, pairing, request):
     """(The GUI thread.) The card in `window`, brought to the front (Ukai's press asked for it); its answer to
-    `pairing.answer` -> the card."""
+    `pairing.answer` -> the card. An earlier Ukai card still open is dropped first: its pairing was let go (one
+    pairing waits at a time), so its answer would pair nothing."""
+    before = getattr(window, "_ukai_card", None)
+    if before is not None:
+        try:
+            before.drop()
+        except RuntimeError:                              # (deleted already: answered and gone)
+            pass
     window.bring_to_front()
-    return confirm.ask(window, strings.UKAI_ALLOW_TITLE, words(request), strings.UKAI_ALLOW_YES,
-                       strings.UKAI_ALLOW_YES_TIP, no=strings.UKAI_ALLOW_NO, no_tip=strings.UKAI_ALLOW_NO_TIP,
-                       on_answer=lambda yes: pairing.answer(request.id, yes))
+    window._ukai_card = confirm.ask(window, strings.UKAI_ALLOW_TITLE, words(request), strings.UKAI_ALLOW_YES,
+                                    strings.UKAI_ALLOW_YES_TIP, no=strings.UKAI_ALLOW_NO,
+                                    no_tip=strings.UKAI_ALLOW_NO_TIP,
+                                    on_answer=lambda yes: pairing.answer(request.id, yes))
+    return window._ukai_card

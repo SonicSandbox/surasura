@@ -282,13 +282,14 @@ def test_a_store_written_at_the_old_compression_reads_the_same_tokens(tmp_path):
     assert ti._decode_tokens(old_tokens) == ti._decode_tokens(new_tokens) != []
     assert ti._decode_counts(old_counts) == ti._decode_counts(new_counts) == counts
 
-    # A store row holding the old blob reads through file_tokens just as a new one does.
+    # A store row holding the old counts blob reads just as a new one does (the tokens are ids since v30).
     store = ti.open_store("ja", path=_db(tmp_path))
     store.reconcile([sample], ti.make_tokenizer("ja"))
-    fresh = store.file_tokens(sample)
-    store.conn.execute("UPDATE files SET tokens = ? WHERE path = ?", (old_tokens, ti._norm(sample)))
+    key = next(iter(counts)).split("|")
+    fresh = store.holding([sample], keys=[key])
+    store.conn.execute("UPDATE files SET counts = ? WHERE path = ?", (old_counts, ti._norm(sample)))
     store.conn.commit()
-    assert store.file_tokens(sample) == fresh
+    assert store.holding([sample], keys=[key]) == fresh == [sample]
     store.close()
 
 

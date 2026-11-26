@@ -497,10 +497,12 @@ def test_every_process_of_a_level_1_generate_loads_numpy_with_one_blas_thread_an
 
 
 def test_at_level_0_the_generates_numpy_import_is_todays(tmp_path, monkeypatch):
-    # why: at level 0 nothing needs numpy: the Generate loaded it only through pandas, for the two lists, and their
-    # one writer is pandas-free now (E-WRITE, DSA-SMALL) — so no numpy at all, and no BLAS thread setting made
+    # why: at level 0 the Generate loaded numpy only through pandas, for the two lists, and their one writer is
+    # pandas-free now (E-WRITE, DSA-SMALL); the walk on ids (DSA-WALK, G1: a file's counts by array lookups, at every
+    # level) is now its one user — so numpy comes in once, through the one door, its BLAS threads held as at level 2
+    # and put back; still no worker of the table's
     log, seen = _spied_generate("ja", 0, tmp_path / "spy", monkeypatch)
     main = next(s for s in seen if s["kind"] == "main")
-    assert not main["numpy"], "level 0: no pandas, so no numpy in the Generate"
-    assert all(v is None for v in (main.get("at_import") or {}).values())
+    assert main["numpy"] and main["at_import"] == {n: "1" for n in _BLAS}, "level 0: numpy for the walk, held"
+    assert main["after"] == {n: None for n in _BLAS}
     assert not [s for s in seen if s["kind"] == "walk"]

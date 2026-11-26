@@ -340,9 +340,9 @@ def test_unreadable_token_blob_is_retokenized_not_dropped(env):
 
     assert "冒険" in _run(env, ["--min-freq", "1"])          # cold: seeds the store + writes the CSV
 
-    # Corrupt the cached token sequence blob (garbage that won't zlib-decompress -> file_tokens []).
+    # Corrupt the cached token ids (garbage that won't zlib-decompress -> no tokens from the store).
     con = sqlite3.connect(ti.store_path_for("ja"))
-    con.execute("UPDATE files SET tokens = ?", (b"\x00 not a valid zlib blob",))
+    con.execute("UPDATE files SET ids = ?", (b"\x00 not a valid zlib blob",))
     con.commit(); con.close()
 
     csv.unlink()                                             # drop outputs -> forces re-aggregation
@@ -621,8 +621,10 @@ def test_every_files_counts_share_each_words_one_key(samples_env, monkeypatch):
     """A Generate reads each file's tokens anew from the token store, so each file's counts (kept for the progressive
     pass) held a copy of its own of every word's key — and of the word's text — until the run ended: some 150 MB on a
     large library. Every file's counts now hold the one key each word was first met with. The same lists: only where
-    the key lives changes."""
+    the key lives changes. (Since the walk on ids, a file's counts are made by the token store's walk: one key a word
+    for the run, `Walk.keys`.)"""
     from collections import Counter
+    from app import token_index
 
     made = []
 
@@ -632,6 +634,7 @@ def test_every_files_counts_share_each_words_one_key(samples_env, monkeypatch):
             made.append(self)
 
     monkeypatch.setattr(analyzer, "Counter", Recorded)
+    monkeypatch.setattr(token_index, "Counter", Recorded)
     _run_samples(samples_env)
     # Each file's counts: every token of the file, so the particle の too (never an unknown, so in no other count).
     files = [counts for counts in made if ("の", "ノ") in counts]

@@ -103,6 +103,23 @@ def test_a_one_kanji_word_after_a_lone_letter_is_a_piece_of_the_label(tokenizer)
                                  if i not in analyzer.unoffered(sentence, tokens)}
 
 
+def test_tou_right_after_a_word_is_a_piece_of_that_word(tokenizer):
+    """研究棟 'the research building', 特別棟, ホテル棟: 棟 after a kanji or a katakana word is the suffix とう 'building',
+    a piece of the word before it — never the noun むね 'ridge' the tagger reads (ENGINE_REVISION 52). Standing on its
+    own, after kana or at a line's start (同じ棟, 屋根の棟, 棟を見上げた), it is the noun, offered as before; and 市 in
+    仙台市 is the word 市 itself, a use as before."""
+    assert _bound(tokenizer, "研究棟に行く。") == ["棟"]
+    assert _bound(tokenizer, "特別棟の裏で待ってる。") == ["棟"]
+    assert _bound(tokenizer, "ホテル棟のロビーで待ってる。") == ["棟"]
+    assert _bound(tokenizer, "同じ棟に住んでいる。") == []
+    assert _bound(tokenizer, "屋根の棟から雪が落ちた。") == []
+    assert _bound(tokenizer, "棟を見上げた。") == []
+    assert _bound(tokenizer, "仙台市に住んでいる。") == []
+    sentence, tokens = _sentence(tokenizer, "研究棟に行く。")
+    offered = {tokens[i][:2] for i in range(len(tokens)) if i not in analyzer.unoffered(sentence, tokens)}
+    assert ("棟", "ムネ") not in offered and ("研究", "ケンキュウ") in offered
+
+
 def test_what_the_list_cant_offer_is_named_per_sentence_and_nothing_with_the_rule_off(tokenizer):
     """スバル (read as 昴) and the particles are never offered; 餌 is. Off, nothing is left out. Empty: nothing."""
     sentence, tokens = _sentence(tokenizer, "スバルは餌を撒いた。")

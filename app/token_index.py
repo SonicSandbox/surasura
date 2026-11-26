@@ -148,7 +148,10 @@ from operator import itemgetter
 # v31 an .ass caption's one-character lines join with no space, and a one-kanji word after a lone letter is a piece
 #    (its `bound` counts: analyzer._after_label, ENGINE_REVISION 51): a v30 row holds 願 for お願い, 棟 for A棟's
 #    counter — users rebuild once.
-SCHEMA_VERSION = 31
+# v32 a verb's stem + つかれ in kana is 疲れる (analyzer._tsukare), and 棟 right after a kanji or a katakana word is a
+#    piece (its `bound` counts: analyzer._after_a_word; ENGINE_REVISION 52): a v31 row holds 突く for 歩きつかれた, 棟
+#    むね for 研究棟 — users rebuild once.
+SCHEMA_VERSION = 32
 
 # The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,
 # Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.

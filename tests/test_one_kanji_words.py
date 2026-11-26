@@ -114,6 +114,8 @@ def test_tou_right_after_a_word_is_a_piece_of_that_word(tokenizer):
     assert _bound(tokenizer, "同じ棟に住んでいる。") == []
     assert _bound(tokenizer, "屋根の棟から雪が落ちた。") == []
     assert _bound(tokenizer, "棟を見上げた。") == []
+    # at the line's start nothing stands before it (never the line's end), though the line's other 棟 is a piece
+    assert _bound(tokenizer, "棟を見上げると、隣は研究棟") == ["棟"]
     assert _bound(tokenizer, "仙台市に住んでいる。") == []
     sentence, tokens = _sentence(tokenizer, "研究棟に行く。")
     offered = {tokens[i][:2] for i in range(len(tokens)) if i not in analyzer.unoffered(sentence, tokens)}

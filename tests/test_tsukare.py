@@ -64,6 +64,8 @@ def test_aruki_tsukareta_counts_tsukareru_never_tsuku(tokenizer):
     ("いいアイデアを考えつかれましたね。", ("考えつか", "考え付く")),
     ("不意をつかれて、言葉が出なかった。", ("つか", "突く")),  # no stem before it: 突く's passive after を
     ("嘘をつかれた。", ("つか", "突く")),
+    ("王が位につかれた。", ("つか", "突く")),                # after に: 就く's honorific, no stem before it
+    ("誰が誰だか見分けつかないほど遠い。", ("つか", "付く")),  # つか + ない: 疲れる is つかれない, never つかない
 ])
 def test_where_the_letters_also_say_a_tsuku_verb_the_taggers_reading_stands(tokenizer, text, word):
     words = _words(tokenizer, text)
@@ -75,3 +77,16 @@ def test_a_line_without_tsuka_is_the_same_list(tokenizer):
     nodes = analyzer.join_affixes(tokenizer.tagger("今日はとても疲れた。"), analyzer.affix_joins(), library=False)
     assert analyzer._tsukare(nodes) is nodes
     assert analyzer._tsukare([]) == []
+
+
+def test_a_word_is_never_joined_across_the_lines_space(tokenizer):
+    # Why: a space the line holds between the stem and つか sets them apart; one word 歩きつかれ would drop it.
+    words = _words(tokenizer, "一日中歩き つかれた。")
+    assert ("歩きつかれ", "歩き疲れる") not in words
+
+
+def test_a_tsuka_at_the_end_of_the_words_is_left_alone(tokenizer):
+    # Why: a line cut right after つか (歩き + つか, nothing after it) has no ending to read: the list comes back as it is.
+    nodes = tokenizer.tagger("一日中歩きつかれた。")
+    at = [w.surface for w in nodes].index("つか")
+    assert analyzer._tsukare(nodes[:at + 1]) == nodes[:at + 1]

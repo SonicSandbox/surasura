@@ -662,7 +662,7 @@ def test_a_path_body_is_built_one_piece_a_turn_under_4_ms(world, monkeypatch):
     def build():
         panel.path = None                                                   # (the same steps rebuild nothing)
         assert panel.set_path(_path(every))
-    pieces, placed = _quiet_costs(panel, own_ms, build, monkeypatch)
+    pieces, placed = _quiet_costs(panel, own_ms, build, monkeypatch, budget)
     assert len(pieces) >= len(panel.rows) >= 2, (len(pieces), len(panel.rows))      # one piece a turn
     assert max(pieces) < budget, (max(pieces), budget)
     assert placed < budget, (placed, budget)

@@ -349,9 +349,10 @@ def _speed(own_ms):
 QUIET_BUILDS = 3
 
 
-def _quiet_costs(panel, own_ms, build, monkeypatch, builds=QUIET_BUILDS):
-    """(each piece's least cost, the first place()'s least cost) over `builds` builds, ms of the window's thread's own
-    time. `build()` asks the panel for the same body again; every build makes the same pieces, one a turn."""
+def _quiet_costs(panel, own_ms, build, monkeypatch, budget, builds=QUIET_BUILDS):
+    """(each piece's least cost, the first place()'s least cost) over up to `builds` builds, ms of the window's thread's
+    own time. `build()` asks the panel for the same body again; every build makes the same pieces, one a turn. It stops
+    once every least is under `budget` (the least is never above the first: the same verdict, fewer builds)."""
     real_step = panel._step
     runs = []
 
@@ -369,8 +370,11 @@ def _quiet_costs(panel, own_ms, build, monkeypatch, builds=QUIET_BUILDS):
         t0 = own_ms()
         panel.place()
         places.append(own_ms() - t0)
-    assert len({len(r) for r in runs}) == 1, [len(r) for r in runs]         # the same pieces at every build
-    return [min(costs) for costs in zip(*runs)], min(places)
+        assert len({len(r) for r in runs}) == 1, [len(r) for r in runs]     # the same pieces at every build
+        least = [min(costs) for costs in zip(*runs)]
+        if max(least) < budget and min(places) < budget:
+            break
+    return least, min(places)
 
 
 def test_no_slice_of_a_new_answer_passes_4_ms_and_a_newer_answer_cancels_the_rest(world, notes, monkeypatch):
@@ -397,7 +401,7 @@ def test_no_slice_of_a_new_answer_passes_4_ms_and_a_newer_answer_cancels_the_res
     def again():
         panel.look = None                                                   # (the same releases rebuild nothing)
         assert panel.set_look(look)
-    pieces, placed = _quiet_costs(panel, own_ms, again, monkeypatch)
+    pieces, placed = _quiet_costs(panel, own_ms, again, monkeypatch, budget)
     assert max(pieces) < budget, (max(pieces), budget)
     assert placed < budget, (placed, budget)
     built = panel.builds

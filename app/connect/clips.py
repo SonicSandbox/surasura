@@ -247,8 +247,7 @@ def _cut_ahead(language, ids, settings, steps, miner):
             can[key] = (video, subtitle, cue)
     folder = root()                             # (before the claims: nothing between them and their release raises)
     with _lock:                                 # claimed: a press of one of these lines waits for it, never cuts it
-        mine = {key: _cutting.setdefault(key, [threading.Event(), None]) for key in can
-                if key not in _cutting and not _kept(key)}     # (a press cut it since the look above)
+        mine = {key: _cutting.setdefault(key, [threading.Event(), None]) for key in can if key not in _cutting}
     if not mine:
         return
     run_dir = os.path.join(folder, f".run-ahead-{time.time_ns()}")
@@ -258,6 +257,9 @@ def _cut_ahead(language, ids, settings, steps, miner):
         for key in list(mine):                  # one line at a time (~0.15 s each), a press heard between lines
             if _ahead["stop"].is_set():
                 return
+            if _kept(key):                      # a press cut it between the look above and the claim: let go,
+                _release(mine.pop(key), key)    # never cut twice (TEST-FLAKES)
+                continue
             video, subtitle, cue = can[key]
             clip = _direct(language, video, cue, miner, os.path.join(run_dir, key), below=True,
                            stop=_ahead["stop"]) if direct else None

@@ -57,18 +57,28 @@ def loads(s, *a, **k):
     return real_loads(s, *a, **k)
 sqlite3.connect, sm.load_settings, ti.Store.names_tables = connect, load, tables
 ti.json = type(sys)("json_counted"); ti.json.__dict__.update(json.__dict__); ti.json.loads = loads
-sys.argv = ["analyzer.py", f"--language={sys.argv[1]}", "--static", "--no-open"]
-try:
-    runpy.run_path(os.path.join("app", "analyzer.py"), run_name="__main__")
-except SystemExit as e:
-    if e.code not in (0, None):
-        raise
+what, language = sys.argv[1], sys.argv[2]
+if what == "generate":
+    sys.argv = ["analyzer.py", f"--language={language}", "--static", "--no-open"]
+    try:
+        runpy.run_path(os.path.join("app", "analyzer.py"), run_name="__main__")
+    except SystemExit as e:
+        if e.code not in (0, None):
+            raise
+else:                                       # the arrivals view, on the store its caller holds
+    from app import analyzer, arrivals, plan_engine
+    plan = plan_engine.load(os.path.join(analyzer.RESULTS_DIR, analyzer.PLAN_FILE))
+    store = ti.open_store(language)
+    try:
+        arrivals.View.build(language, plan, store)
+    finally:
+        store.close()
 print("COUNT " + json.dumps(n), flush=True)
 """
 
 
-def _counted(root, language):
-    p = subprocess.run([sys.executable, "-c", _CHILD, language], cwd=cases.REPO, env=cases.child_env(root),
+def _counted(root, language, what="generate"):
+    p = subprocess.run([sys.executable, "-c", _CHILD, what, language], cwd=cases.REPO, env=cases.child_env(root),
                        capture_output=True, text=True, encoding="utf-8", errors="replace")
     line = [ln for ln in p.stdout.splitlines() if ln.startswith("COUNT ")]
     assert p.returncode == 0 and line, p.stdout[-2000:] + p.stderr[-2000:]
@@ -112,6 +122,9 @@ def test_a_generate_reads_no_store_settings_or_names_twice_for_the_journey_and_i
     assert got["names_opens"] == 0, "the ignore set: the run's open store, no fresh connection"
     assert got["names_settings"] == 0, "the ignore set: the run's settings, not settings.json again"
     assert got["names_parses"] == (1 if language == "ja" else 0), "the names list: parsed once"
+    # the arrivals view reads its ignore set's names through the store it is handed, too
+    got = _counted(root, language, "arrivals")
+    assert (got["names_opens"], got["names_parses"]) == (0, 1 if language == "ja" else 0), "arrivals: its store"
 
 
 def _store_with_names(tmp_path, words):

@@ -274,6 +274,83 @@ def test_a_profile_with_no_ankiweb_login_goes_on(ledger):
     assert len(_remake(anki, ledger, "zh")["deleted"]) == 6
 
 
+class PhoneAnki(RemakeAnki):
+    """Anki whose second sync brings a review made on the phone while the copy was written (`phone`: note ids whose
+    card the phone studied); every deck a card is in at each sync is logged."""
+
+    def __init__(self, phone=(), second="synced"):
+        super().__init__()
+        self.phone, self.second, self.syncs = list(phone), second, 0
+
+    def sync(self):
+        self.syncs += 1
+        self.log.append(("sync", tuple(sorted({card["deckName"] for card in self.cards_.values()}))))
+        if self.syncs == 2:
+            for n in self.phone:
+                _studied(self, n)
+            return self.second
+        return self.sync_answer
+
+
+def _phone_anki(lang, tag, done_at, phone=(), second="synced"):
+    anki = PhoneAnki(phone, second)
+    for i, w in enumerate(WORDS[lang]):
+        anki.add(101 + i, tag, w, done_at - 60, sound=f"sl-{i:016x}.mp3")
+    return anki
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_card_studied_on_the_phone_while_the_copy_was_made_is_kept_and_named(ledger, lang):
+    # why: the lead's ruling on session 1's question — check again right before the delete, never rely on a warning:
+    # after the copy, the cards go home, Anki syncs again, each one's reviews are read again, and only those still
+    # never reviewed go; one reviewed meanwhile is dropped from the delete, named, its backup entry marked kept
+    item, tag, done_at = _mined(ledger, lang)
+    anki = _phone_anki(lang, tag, done_at, phone=[103])
+    done = _remake(anki, ledger, lang)
+    assert anki.syncs == 2, "once before the count, once after the copy"
+    assert sorted(done["deleted"]) == [101, 102, 104, 105, 106] and 103 in anki.notes_
+    assert done["meanwhile"] == [[103, undo.STUDIED]], "named in the result"
+    assert [103, undo.STUDIED] in done["kept"]
+    row = tidy.tidy_row(ledger, done["id"])
+    assert json.loads(row["notes"])["103"]["kept"] == undo.STUDIED, "its backup entry stays, marked kept"
+    assert "kept" not in json.loads(row["notes"])["104"]
+    assert anki.cards_[1030]["deckName"] == DECK, "home, never left in the temporary deck"
+    assert WORDS[lang][2] not in set(done["freed"]), "its word stays made"
+
+
+def test_the_cards_are_home_before_the_second_sync_so_nothing_temporary_is_uploaded(ledger):
+    item, tag, done_at = _mined(ledger, "ja")
+    anki = _phone_anki("ja", tag, done_at)
+    _remake(anki, ledger, "ja")
+    temp = tidy.TEMP_DECK.format(id=1)
+    syncs = [e for e in anki.log if e[0] == "sync"]
+    assert len(syncs) == 2 and temp not in syncs[1][1], "no card in the temporary deck while Anki uploads"
+    names = [e[0] for e in anki.log]
+    second = [i for i, n in enumerate(names) if n == "sync"][1]
+    assert names.index("export") < second, "the copy first"
+    assert any(n == "notes" for n in names[second:]), "the cards read again after the second sync"
+
+
+@pytest.mark.parametrize("answer, said", [("failed: AnkiWeb unreachable", tidy.SYNC_FAILED),
+                                          ("full-sync", tidy.SYNC_FULL), ("busy", tidy.SYNC_BUSY)])
+def test_a_second_sync_that_didnt_run_deletes_nothing_and_every_card_is_home(ledger, answer, said):
+    item, tag, done_at = _mined(ledger, "zh")
+    anki = _phone_anki("zh", tag, done_at, second=answer)
+    with pytest.raises(tidy.Refused) as e:
+        _remake(anki, ledger, "zh")
+    assert e.value.say == said and anki.deleted == [] and len(anki.notes_) == 6
+    assert {card["deckName"] for card in anki.cards_.values()} == {DECK}
+    assert tidy.tidy_row(ledger, 1)["state"] == tidy.FAILED, "said in Needs you; no Undo offered for nothing"
+
+
+def test_ordinary_tidy_syncs_never_and_deletes_from_its_own_deck_as_before(ledger):
+    # why: the re-check is the remake's (it syncs); Tidy by itself keeps its one read in its own deck
+    item, tag, done_at = _mined(ledger, "ja")
+    anki = _phone_anki("ja", tag, done_at)
+    tidy.run(anki, ledger, "ja", [106, 105], open_store=_opener("ja"), limit=2)
+    assert anki.syncs == 0 and sorted(anki.deleted) == [105, 106]
+
+
 # --------------------------------------------------------------------------- #
 # The record: only the removed cards' words freed, each queued again at its best line
 # --------------------------------------------------------------------------- #
@@ -497,6 +574,20 @@ def test_the_yes_removes_queues_the_words_and_says_how_many(home_ledger, lang, m
     done = tidy.act_remake(ON, lang, before=False, steps=Steps(), anki=anki)
     assert done["cards"] == 5 and done["queued"] == 5 and done["ahead"] == 0 and 201 in anki.notes_
     assert _best_jobs(home_ledger, lang) == {item: sorted((w, "") for w in WORDS[lang][1:])}
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_the_yes_names_a_card_studied_while_the_copy_was_made(home_ledger, lang, monkeypatch):
+    # why: the lead's ruling — a card reviewed in the meantime is dropped from the delete and named in the result
+    item, tag, done_at = _mined(home_ledger, lang)
+    anki = _phone_anki(lang, tag, done_at, phone=[104])
+    _legacy(anki, lang, 201)
+    anki.phone.append(201)
+    monkeypatch.setattr(sentences, "choose", lambda language, keys, **kw: {k: [] for k in keys})
+    done = tidy.act_remake(ON, lang, before=True, steps=Steps(), anki=anki)
+    assert done["cards"] == 5 and {104, 201} <= set(anki.notes_)
+    assert done["studied"] == sorted({WORDS[lang][3], LEGACY[lang][0]})
+    assert WORDS[lang][3] not in {w for ks in _best_jobs(home_ledger, lang).values() for w, _r in ks}
 
 
 def test_the_yes_refuses_in_words_when_anki_didnt_sync(home_ledger):

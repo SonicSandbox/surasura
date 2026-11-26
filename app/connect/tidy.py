@@ -527,7 +527,18 @@ def run(anki, ledger, language, note_ids, why=AUTO, open_store=None, limit=None,
         # read once more just before the delete: a card you answered or changed while Anki exported stays (its card
         # back home); the package may hold it too, and Undo leaves a note Anki still has as it is — in Tidy's own deck
         # now (`_backup` moved it there): one you moved out of it meanwhile is yours
-        still, late, now_infos, _c = check(anki, ledger, go, made_ids, asked, ours, {TEMP_DECK.format(id=tidy_id)},
+        tidying = {TEMP_DECK.format(id=tidy_id)}
+        if sync:
+            # REMAKE (the lead's ruling, 2026-11-25): the cards home again first, so Anki never uploads the temporary
+            # deck, then a second sync: a card studied on the phone while the copy was made reads as studied below
+            try:
+                _cards_home(anki, tidy_id, notes)
+                synced(anki)
+            except Exception:
+                _fail(anki, ledger, tidy_id, notes)
+                raise
+            tidying = frozenset()
+        still, late, now_infos, _c = check(anki, ledger, go, made_ids, asked, ours, tidying,
                                            mode=mode, before=before, known=known, read=_shelf_read(ledger))
         grew = [n for n in still if {str(c) for c in now_infos[n].get("cards") or ()} != set(notes[str(n)]["cards"])]
         if grew:                        # a card Anki made for the note since the backup isn't in the copy: kept
@@ -538,9 +549,12 @@ def run(anki, ledger, language, note_ids, why=AUTO, open_store=None, limit=None,
             late_ids = {int(n) for n, _w in late}
             _cards_home(anki, tidy_id, {k: v for k, v in notes.items() if int(k) in late_ids})
             kept += late
+            for n, w in late:               # its backup entry stays, marked kept (Undo never touches a note Anki has)
+                notes[str(n)]["kept"] = w
             with ledger.transaction():
-                ledger.conn.execute("UPDATE tidies SET kept = ? WHERE id = ?",
-                                    (json.dumps(kept, ensure_ascii=False), tidy_id))
+                ledger.conn.execute("UPDATE tidies SET kept = ?, notes = ? WHERE id = ?",
+                                    (json.dumps(kept, ensure_ascii=False), json.dumps(notes, ensure_ascii=False),
+                                     tidy_id))
         if anki.reviewing():
             _fail(anki, ledger, tidy_id, notes)
             raise Reviewing()
@@ -554,7 +568,7 @@ def run(anki, ledger, language, note_ids, why=AUTO, open_store=None, limit=None,
             if not anki.users(name):
                 anki.delete_media(name)
         row = tidy_row(ledger, tidy_id)
-        return dict(finish(anki, ledger, row, open_store, home=False), id=tidy_id)
+        return dict(finish(anki, ledger, row, open_store, home=False), id=tidy_id, meanwhile=late)
 
 
 def _made_notes(open_store, note_ids):
@@ -1314,7 +1328,8 @@ def act_remake_plan(settings, language, anki=None):
 
 def act_remake(settings, language, before=False, steps=None, anki=None):
     """*Make my new cards again…*'s yes (on a worker): `remake`, then its freed words queued again (`requeue`) and
-    Connect woken -> {"cards", "id", "kept", "queued", "ahead"}, or {"cards": 0, "say": why nothing}. Raises CliError
+    Connect woken -> {"cards", "id", "kept", "queued", "ahead", "studied" (the words of the cards studied while the
+    copy was made: dropped from the delete at the last read, `run`'s `meanwhile`)}, or {"cards": 0, "say": why nothing}. Raises CliError
     in plain words (reviewing, another writer, Anki closed, the sync's words, nothing to make again)."""
     from app.connect import library, runner
     from app.connect.ledger import Ledger
@@ -1329,7 +1344,9 @@ def act_remake(settings, language, before=False, steps=None, anki=None):
     def go(ledger):
         done = remake(anki, ledger, language, settings, lambda: library.open_store(language), before=before)
         again = requeue(steps, ledger, language, done, settings, lambda: library.open_store(language))
-        return {"cards": len(done["deleted"]), "id": done["id"], "kept": len(done["kept"]), **again}
+        late = [int(n) for n, w in done.get("meanwhile") or () if w == undo.STUDIED]
+        return {"cards": len(done["deleted"]), "id": done["id"], "kept": len(done["kept"]), **again,
+                "studied": _named(tidy_row(ledger, done["id"]), late, card_word_of(settings, language))}
     out = _guarded(settings, go, Ledger)
     try:
         from app.connect import kick
@@ -1337,6 +1354,25 @@ def act_remake(settings, language, before=False, steps=None, anki=None):
     except Exception:
         log.info("Connect's remake: Connect not woken now (its next look mines them)", exc_info=True)
     return out
+
+
+def _named(row, note_ids, word_of):
+    """The words of `note_ids` (a tidy's notes): the made-words record's, else the card's word field as the backup
+    keeps it (`word_of`, a card from before) -> sorted, one each."""
+    wanted, words = {int(n) for n in note_ids}, set()
+    if not wanted:
+        return []
+    found = set()
+    for _item, word, ids, _at, _batch in (json.loads(row["made"] or "{}").get("words") or ()):
+        if wanted & {int(n) for n in ids}:
+            words.add(word)
+            found |= wanted & {int(n) for n in ids}
+    for info in _backed_up(row) if wanted - found else ():
+        if int(info.get("noteId") or 0) in wanted - found:
+            word = word_of(info)
+            if word:
+                words.add(word)
+    return sorted(words)
 
 
 def _remake_off(settings):

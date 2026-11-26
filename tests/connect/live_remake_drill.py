@@ -1,7 +1,9 @@
 """REMAKE's proof on DevTest, part 1 (session 1): *Make my new cards again…* against a real Anki — the selection (Anki's
 own `is:new` and its subdeck search), the sync asked under the write lock, the backup read back, the delete, and Undo
 field for field (never run by the suites; by hand, under `with-lock.sh anki`, Anki open — the drill loads DevTest and
-puts the profile back at the end). Connect mining the words again is part 2 (the gates session).
+puts the profile back at the end). Session 2 adds the re-check before the delete (`phone`: a card answered as the second
+sync is asked, as a phone review arriving then would be: kept, named, marked kept in the backup). Connect mining the
+words again is part 2, `live_remake_mine_drill.py`.
 
     python tests/connect/live_remake_drill.py --profile DevTest --lang ja
 
@@ -11,7 +13,8 @@ puts the profile back at the end). Connect mining the words again is part 2 (the
   job made the notes (outcomes `made`, the made words, the home deck).
 - The cases (real words of the language): made and plain · suspended · buried · edited (these go); reviewed ·
   reviewed then suspended (not new: never read) · answered then reset to new (read, kept: studied) · Suspend + red
-  flag (Ignore) · Suspend + Mark (Known) · moved into the subdeck (never read); from before: new (goes with the tick)
+  flag (Ignore) · Suspend + Mark (Known) · moved into the subdeck (never read) · studied on the phone during the copy
+  (planned, then kept at the last read); from before: new (goes with the tick)
   · reviewed (stays) · another note type (kept: Surasura didn't make it).
 - `tidy.remake_plan`, then `tidy.remake(before=True)`; the backup read back; then `tidy.restore` and each removed note
   compared with how it was (fields, tags, note type, each card's deck, queue and flags).
@@ -28,10 +31,10 @@ import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 WORDS = {"ja": ["上層部", "一生懸命", "走り出す", "気配", "溜め息", "約束", "雰囲気", "手作り", "眼差し", "仰ぐ",
-                "撒く", "泥塗れ", "見込み"],
-         "zh": ["遗憾", "漂亮", "哎呀", "约定", "叹气", "气氛", "学习", "眼神", "约翰", "仰望", "撒谎", "泥土", "希望"]}
+                "撒く", "泥塗れ", "見込み", "眩しい"],
+         "zh": ["遗憾", "漂亮", "哎呀", "约定", "叹气", "气氛", "学习", "眼神", "约翰", "仰望", "撒谎", "泥土", "希望", "耀眼"]}
 MADE = ["plain", "suspended", "buried", "edited", "reviewed", "reviewed_suspended", "reset", "ignore", "known",
-        "subdeck"]
+        "subdeck", "phone"]
 BEFORE = ["before_new", "before_reviewed", "before_other_model"]
 GO = {"plain", "suspended", "buried", "edited", "before_new"}
 
@@ -149,17 +152,40 @@ def main():
                       for n in ids}
             with anki_connect.writer("REMAKE drill: the sync's answer", wait=60):
                 out["sync_answer"] = anki.sync()
+            # session 2 (the lead's ruling): a review made on the phone while the copy was written arrives with the
+            # second sync — played here by answering the `phone` card as that sync is asked (the remake holds the
+            # writer: asked directly). Without the second sync and the read after it, the card would be deleted.
+            syncs, plain_sync = [], anki.sync
+
+            def phone_sync():
+                syncs.append(ask("findCards", query='"deck:Surasura Tidy *"'))
+                if len(syncs) == 2:
+                    ask("answerCards", answers=[{"cardId": card["phone"], "ease": 3}])
+                return plain_sync()
+            anki.sync = phone_sync
             done = tidy.remake(anki, ledger, lang, {}, open_store, before=True)
+            anki.sync = plain_sync
+            out["syncs_in_the_remake"] = len(syncs)
+            out["temp_deck_cards_at_the_second_sync"] = len(syncs[1]) if len(syncs) > 1 else None
+            out["meanwhile"] = {by_note[n]: why for n, why in done.get("meanwhile") or ()}
+            out["phone_card_kept"] = note["phone"] in ask("findNotes", query=f"tag:{drill_tag}")
             row = tidy.tidy_row(ledger, done["id"])
             out["deleted"] = sorted(by_note[n] for n in done["deleted"])
             out["kept"] = {by_note[n]: why for n, why in done["kept"]}
             out["deleted_is_the_never_reviewed_set"] = set(out["deleted"]) == GO
-            out["read_back"] = tidy._read_back(row["folder"], done["deleted"],
+            out["phone_marked_kept"] = json.loads(row["notes"]).get(str(note["phone"]), {}).get("kept")
+            out["read_back"] = tidy._read_back(row["folder"], [int(n) for n in json.loads(row["notes"])],   # every
+                                               # note the copy was made of: the deleted and the one kept at the last read
                                                json.load(open(os.path.join(row["folder"], "notes.json"),
                                                               encoding="utf-8"))["media"])
             out["still_in_anki"] = sorted(by_note[n] for n in ask("findNotes", query=f"tag:{drill_tag}"))
             back_ = tidy.restore(anki, ledger, done["id"], open_store, word_of=tidy.card_word_of({}, lang))
             out["restore"] = {"back": back_["back"], "skipped": back_["skipped"], "missing": back_["missing"]}
+            # the copy holds the phone card as it was before its review: Undo's import must leave the card Anki has
+            phone_now = ask("cardsInfo", cards=[card["phone"]])[0]
+            out["phone_after_undo"] = {"reps": phone_now.get("reps"), "type": phone_now.get("type"),
+                                       "reviews": len((write("getReviewsOfCards", cards=[card["phone"]]) or {})
+                                                      .get(str(card["phone"])) or [])}
             same = {}
             for n in done["deleted"]:
                 was_note, was_card = before[n]

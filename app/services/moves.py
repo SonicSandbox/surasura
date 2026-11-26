@@ -2950,9 +2950,9 @@ class Numbers:
                 at = _nearest_held(eng, seq, anchor, before_id is not None, set(ids), tier)
                 if at is not None:
                     before_id, after_id = at
-            before = list(eng._n_new)
+            was = {}                                # DSA-START: {file: N new before} the engine touched
             try:
-                _words, moved = eng.move(block, tier, before_id=before_id, after_id=after_id)
+                _words, moved = eng.move(block, tier, before_id=before_id, after_id=after_id, n_new_was=was)
             except plan_engine.PlanError as e:      # the engine's own refusal (an anchor gone meanwhile)
                 self.worker.put(self._resync)
                 print(f"Window numbers: the move couldn't be followed: {e}")
@@ -2964,7 +2964,7 @@ class Numbers:
                 self._ahead += 1
             after = eng._n_new
             files = {eng._f_of[i] for i in moved}
-            files.update(f for f, (a, b) in enumerate(zip(before, after)) if a != b)
+            files.update(f for f, n in was.items() if after[f] != n)   # the files whose N new moved, never all
             touched = {}
             table = dict(self._table)
             for f in files:

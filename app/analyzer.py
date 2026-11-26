@@ -4605,7 +4605,7 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
         print(f"The journey can't be redrawn from the plan ({e}): generating.")
         return None
     verdict = plan_engine.check(plan, language, engine_id(), read_run_stamp(RESULTS_DIR), sig_parts,
-                                (library or {}).get("epoch"))
+                                (library or {}).get("epoch"), chunked=False)   # G3: no thread waits beside a redraw
     if verdict is not None or plan.header.get("format") != plan_engine.FORMAT:
         print(f"The journey can't be redrawn from the plan ({verdict}): generating.")
         return None

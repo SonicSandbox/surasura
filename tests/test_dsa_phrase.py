@@ -327,3 +327,40 @@ def test_the_start_check_and_the_reconcile_stat_no_file_one_by_one(tmp_path, lan
         assert set(asked) == {files[4], new}, "os.stat only for a name no listing gave"
     finally:
         store.close()
+
+
+def _exists_counted(monkeypatch, paths):
+    """Each os.path.exists asked of one of `paths` (a scheduled file)."""
+    asked = []
+    wanted = {os.path.normcase(os.path.abspath(p)) for p in paths}
+    real = os.path.exists
+    monkeypatch.setattr(os.path, "exists", lambda path: (
+        os.path.normcase(os.path.abspath(path)) in wanted and asked.append(path)) or real(path))
+    return asked
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_starts_index_check_reads_listings_never_a_file_at_a_time(language, monkeypatch):
+    # why: Chores' index_needed at every start asked each scheduled file twice — os.path.exists in
+    # resolve_found_files (via indexer._content_files) and os.stat in needs_reconcile (20k: 40,019 calls, ~1.5 s);
+    # both read one listing a folder now. Real files in show folders of a library store; the list and the answer are
+    # what they were: a file gone from the disk leaves the run's list (kept with missing=True), and is a change
+    from app.services import chores
+    from tests.test_token_store_kept import _library, _run_indexer
+    store, data_dir, ids = _library(language)
+    store.close()
+    files = list(ids)
+    _run_indexer(language)
+    whole = [p for p, _l, _w, _t in analyzer.resolve_found_files(language, verbose=False)]
+    assert sorted(map(ti._norm, whole)) == sorted(map(ti._norm, files))
+    exists, stats = _exists_counted(monkeypatch, files), _stats_counted(monkeypatch)
+    assert chores.index_needed(language, None) is False
+    assert exists == [] and stats == [], "no scheduled file asked one by one"
+    assert [p for p, _l, _w, _t in analyzer.resolve_found_files(language, verbose=False)] == whole
+    os.remove(files[1])
+    left = [p for p, _l, _w, _t in analyzer.resolve_found_files(language, verbose=False)]
+    assert [ti._norm(p) for p in left] == [ti._norm(p) for p in whole if ti._norm(p) != ti._norm(files[1])]
+    kept = [p for p, _l, _w, _t in analyzer.resolve_found_files(language, verbose=False, missing=True)]
+    assert kept == whole, "a missing item keeps its place with missing=True"
+    assert chores.index_needed(language, None) is True, "a file gone: the indexer keeps its text"
+    assert {ti._norm(p) for p in exists} <= {ti._norm(files[1])}, "os.path.exists only for a name no listing gave"

@@ -1238,14 +1238,9 @@ class RowDelegate(QStyledItemDelegate):
 
     # sizes ------------------------------------------------------------------------------------------------------ #
     @staticmethod
-    def line_h(ln):
-        """One line's strip after its row: a groove's own few px in the gap (W3.1a: really subtle)."""
-        return rl("line")
-
-    @staticmethod
     def _lines_h(lines):
-        """The strips after a row its lines take, each its `line_h`."""
-        return sum(RowDelegate.line_h(ln) for ln in lines) if lines else 0
+        """The strips after a row its lines take: each a groove's own few px in the gap (W3.1a: really subtle)."""
+        return len(lines) * rl("line")
 
     def _entry(self, index):
         """The entry at `index`, read from the model's list (no trip through a QVariant: `index.data(ROW_ROLE)` costs
@@ -1307,15 +1302,14 @@ class RowDelegate(QStyledItemDelegate):
     def _shape(entry, is_open, unfolded=frozenset()):
         """What an entry's height is made of (`_size_hint` reads nothing else): its kind, its lines, open or not, and,
         open or a Needs-you item, how many episodes it lists (a8: opened, its lines — a fold one, its parts after it
-        while shown whole: `unfolded`, the view's). Closed rows with the same lines under them are as tall (the lines'
-        kinds, not their count: each kind its own strip, `line_h`)."""
+        while shown whole: `unfolded`, the view's). Closed rows with as many lines under them are as tall."""
         kind, payload, lines = entry
         if is_open and kind in (HERO, ROW):
             n = len(shown_lines(payload, row_folds(payload, lines), unfolded))
         else:
             n = len(payload.episodes) if kind == NEED else 0
         shows = len(show_starts(payload)) if is_open and kind in (HERO, ROW) else 0     # LM11b: its show lines
-        return kind, tuple(ln.kind for ln in lines), is_open and kind in (HERO, ROW), n, shows
+        return kind, len(lines), is_open and kind in (HERO, ROW), n, shows
 
     def _size_hint(self, entry, is_open):
         kind, payload, lines = entry
@@ -1759,11 +1753,11 @@ class RowDelegate(QStyledItemDelegate):
         y = rect.bottom() + 1 - self._lines_h(lines)
         hit = rl("line-hit")
         for ln in lines:
-            mid = y + self.line_h(ln) // 2
+            mid = y + rl("line") // 2
             where = strings.ROWS_TOP_LINE_WHERE if ln.kind == "top" else strings.ROWS_SOON_LINE_WHERE
             out.append((ln.kind + "-line", QRect(rect.left(), mid - hit // 2, rect.width(), hit), where.format(tip=ln.tip),
                         None))
-            y += self.line_h(ln)
+            y += rl("line")
         return out
 
     def _status_rects(self, row, stat):
@@ -2159,9 +2153,9 @@ class RowDelegate(QStyledItemDelegate):
         y = rect.bottom() + 1 - self._lines_h(lines)
         hot = self.view.line_hover
         for ln in lines:
-            self._paint_line(p, ln, QRect(rect.left(), y, rect.width(), self.line_h(ln)), dpr,
+            self._paint_line(p, ln, QRect(rect.left(), y, rect.width(), rl("line")), dpr,
                              hot=hot == (index.row(), ln.kind))
-            y += self.line_h(ln)
+            y += rl("line")
         p.restore()
 
     def _paint_current_entry(self, p, i, row, rect, lines, focused, dpr, is_open):
@@ -2684,17 +2678,16 @@ class RowDelegate(QStyledItemDelegate):
         (full under the hand), whole over the first part, then fading to nothing at the right end — the colours laid
         across the whole width and the fade over them, as the journey picker's CSS mask lays it."""
         look = rl("soon-look")
+        accent = style.colours()["accent"]
         stops = (theme.IRIS.get(style.current()[0], theme.IRIS[theme.DEFAULT_THEME]) if look == "iris"
-                 else ((0.0, style.colours()["accent"]), (1.0, style.colours()["accent"])))
+                 else ((0.0, accent), (1.0, accent)))
         stops = [(pos, style.qcolor(colour)) for pos, colour in stops]
         strength = 1.0 if hot else rl("soon-alpha")
         run = 1.0 - rl("soon-fade")                  # whole up to here, then fading out to the end
-        for (a, ca), (b, cb) in zip(stops, stops[1:]):
-            if a < run < b:                          # the fade's start, its colour between two of the stops
-                t = (run - a) / (b - a)
-                stops.append((run, QColor.fromRgbF(*(u + (v - u) * t for u, v in zip(ca.getRgbF(), cb.getRgbF())))))
+        fade_at = [(run, QColor.fromRgbF(*(u + (v - u) * (run - a) / (b - a) for u, v in zip(ca.getRgbF(), cb.getRgbF()))))
+                   for (a, ca), (b, cb) in zip(stops, stops[1:]) if a < run < b]   # the fade's start, between two stops
         grad = QLinearGradient(QPointF(x0, 0), QPointF(x0 + w, 0))
-        for pos, q in sorted(stops, key=lambda s: s[0]):
+        for pos, q in sorted(stops + fade_at, key=lambda s: s[0]):
             q = QColor(q)
             q.setAlphaF(strength * (1.0 if pos <= run else (1.0 - pos) / (1.0 - run)))
             grad.setColorAt(pos, q)

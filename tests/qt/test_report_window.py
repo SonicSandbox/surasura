@@ -1568,7 +1568,7 @@ def test_fresh_u_with_nothing_typed_or_saved_the_grey_buttons_reason_is_in_plain
     # Every button of the row grey, and the window's own line (never only a hover) says what lights them
     w = _press(main)
     assert wait_until(lambda: w.status.text() == strings.REPORT_EMPTY) and w.status.isVisibleTo(w)
-    assert "write what happened" in strings.REPORT_EMPTY
+    assert "write what we can improve" in strings.REPORT_EMPTY
     assert not any(b.isEnabled() for b in (w.save_button, w.show_button, w.zip_button, w.send_button))
     w.what.setPlainText("   ")                                         # blanks are not words
     assert not w.show_button.isEnabled() and not w.zip_button.isEnabled()
@@ -1662,7 +1662,7 @@ def test_flagged_sentences_alone_are_said_on_the_form_and_send_report_takes_them
     flags, a, b = _flag_two(windows.language_of(main))
     w = _press(main)
     assert wait_until(lambda: w.flag_count == 2)
-    assert not w.flags_line.isHidden() and w.flags_line.text() == strings.REPORT_FLAGS_N.format(n=2)
+    assert not w.flags_line.isHidden() and w.flags_line.text() == report_ui.waiting_words(2, 0, 0)
     assert w.send_button.isEnabled() and w.zip_button.isEnabled()            # nothing typed, no report: still ready
     _look(w)
     assert w.flags_line.isHidden()                                           # (What goes says them instead)
@@ -1695,7 +1695,7 @@ def test_an_unticked_sentence_is_left_out_of_what_goes_and_stays_flagged(main, r
         import json
         assert [x["word"] for x in json.loads(z.read(core.FLAGGED))["lines"]] == [FLAG_LINES[language][1][1]]
     assert [x["id"] for x in flags.read(language)] == [a["id"]]              # the unticked one: still flagged
-    assert wait_until(lambda: w.flag_count == 1 and w.flags_line.text() == strings.REPORT_FLAGS_ONE)
+    assert wait_until(lambda: w.flag_count == 1 and w.flags_line.text() == report_ui.waiting_words(1, 0, 0))
 
 
 def test_open_the_zip_after_an_untick_shows_the_zip_that_would_go(main, receiver, sent):

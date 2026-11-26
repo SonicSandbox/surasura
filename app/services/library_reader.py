@@ -1557,8 +1557,9 @@ class LibraryReader:
                     "faded": bool(getattr(numbers, "kept", False)), "app": APP_VERSION}
             tmp = self.cache_file + ".tmp"
             os.makedirs(os.path.dirname(self.cache_file) or ".", exist_ok=True)
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
+            text = json.dumps(data, ensure_ascii=False)     # one pass of the C encoder (`json.dump` to a file never
+            with open(tmp, "w", encoding="utf-8") as f:     # uses it: a Python call per chunk; KEYMOVE-L2), the same
+                f.write(text)                               # text
             os.replace(tmp, self.cache_file)
         except OSError:
             pass                                    # a cache that can't be written is only slower next time

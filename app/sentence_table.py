@@ -935,14 +935,14 @@ def _cores_answer(batch):
     return out
 
 
-def cores_wanted(n_files):
+def cores_wanted(n_files, settings=None):
     """How many workers a walk of `n_files` files takes: 1 (this process alone) under CORES_MIN_FILES files, else
     `token_index.pool_workers`' rule (*Use every core*), at most CORES_MAX; settings' `index_pool_workers` N asks for
-    N at any size, as it does of the indexer."""
+    N at any size, as it does of the indexer. `settings`: the run's one read (ONE-READ); None reads them now."""
     from app import token_index
     try:
         from app import settings_manager
-        setting = settings_manager.load_settings().get("index_pool_workers")
+        setting = settings_manager.loaded(settings).get("index_pool_workers")
         asked = int(setting) if setting is not None else None
     except Exception:
         setting = asked = None
@@ -967,11 +967,11 @@ class Cores:
         self._read = self._language = self._people = None
 
     @classmethod
-    def start(cls, n_files, store, language, people):
+    def start(cls, n_files, store, language, people, settings=None):
         """The workers for a walk of `n_files` files over `store` — or None: one process (one core, a small library, a
-        store with no file to read again, a pool that won't start)."""
+        store with no file to read again, a pool that won't start). `settings`: the run's (`cores_wanted`)."""
         try:
-            size = cores_wanted(n_files)
+            size = cores_wanted(n_files, settings)
             if size < 2 or store is None or not getattr(store, "path", None):
                 return None
             import multiprocessing

@@ -7,8 +7,9 @@ the run holds those very lemmas in-process. (2) With *Ignore names* on, every ig
 again (5,447 names), even for a caller holding the store open: Generate, the arrivals view, Connect's known words at
 each card, the Rarity slider's refresh. After it: the run hands its known lemmas to the page, and a caller's open
 store is read (its parse kept while the stored text is the same). (3), `analyzer.load_ignore_set` reading settings.json
-for the switch inside Generate, stays: the analyzer's LOGIC is the import's, stale for a run made in-process after a
-settings change (tests/test_ignore_names.py), and main holds no fresher copy.
+for the switch inside Generate, stayed here: the analyzer's LOGIC is the import's, stale for a run made in-process after
+a settings change (tests/test_ignore_names.py). ONE-READ (tests/test_one_read.py) then gave main one fresh read a run,
+handed to the ignore set too.
 
 Real data: RP-2's real libraries (ja + zh, `plan_file_cases`) Generated in a child process as the dashboard runs it,
 counted in its own process; the known-words slice of tests/Test Resources for the readers.
@@ -121,7 +122,7 @@ def test_a_generate_reads_no_store_settings_or_names_twice_for_the_journey_and_i
     assert got["journey_opens"] == 0, "the journey page: the run's known lemmas, no store of its own"
     assert got["journey_settings"] == 0 and got["journey_parses"] == 0, "the journey page: no key worked out again"
     assert got["names_opens"] == 0, "the ignore set: the run's open store, no fresh connection"
-    assert got["names_settings"] == (1 if language == "ja" else 0), "the ignore set: the switch read fresh, once"
+    assert got["names_settings"] == 0, "the ignore set: the run's one settings read (ONE-READ), none of its own"
     assert got["names_parses"] == (1 if language == "ja" else 0), "the names list: parsed once"
     # the arrivals view reads its ignore set's names through the store it is handed, too
     got = _counted(root, language, "arrivals")

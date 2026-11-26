@@ -376,7 +376,7 @@ def test_only_i_plus_ones_rounds_share_one_tagger(tmp_path, monkeypatch):
     with open(analyzer.__file__, encoding="utf-8") as f:                    # (the Generate hands its own over)
         source = f.read()
     call = source[source.index("_chooser = ListSentences("):]
-    assert 'tagger=tokenizer.tagger if language == "ja" else None)' in call[:call.index("\n    ") + 200]
+    assert 'tagger=tokenizer.tagger if language == "ja" else None,' in call[:call.index("\n    ") + 200]
 
 
 def _relpath_series(file_path, data_dir):

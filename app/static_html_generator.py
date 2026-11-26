@@ -1066,7 +1066,7 @@ def journey_template():
 
 
 def _write_journey(language, app_mode=False, open_browser=True, tagger=None, plan=None, rows=None, priority=None,
-                   known=None):
+                   known=None, settings=None, store=None):
     """Write the v3 journey: `journey_render.render` over this language's last Generate (the CSVs in results, the
     library store, the ▶'s memos), with the run's own fugashi `tagger` (speed row 1: the pitch makes no second one), in
     `journey_template()`, to `OUTPUT_FILE` (a temp file replaced: a page open in a browser is never half written).
@@ -1075,11 +1075,12 @@ def _write_journey(language, app_mode=False, open_browser=True, tagger=None, pla
     render signature: None with no library store, `library_store.UNREAD` when a store is there and its read failed.
     `rows` / `priority`: the progressive and priority lists as the run just wrote them (`analyzer.write_rows`' `keep`),
     or None: read from results (`journey_render._records`). `known`: the run's known lemmas, or None: the page reads
-    the ones the last Generate kept (`journey_render._known_terms`)."""
+    the ones the last Generate kept (`journey_render._known_terms`) — through `store`, the run's open token store, when
+    handed. `settings`: the run's one read of settings.json (ONE-READ), or None: read."""
     from app import journey_render
     if language is None:
         try:
-            language = settings_manager.load_settings().get("target_language", "ja")
+            language = settings_manager.loaded(settings).get("target_language", "ja")
         except Exception:
             language = "ja"
     facts = journey_render.store_facts(language)
@@ -1089,7 +1090,8 @@ def _write_journey(language, app_mode=False, open_browser=True, tagger=None, pla
         from app import analyzer, library_store   # (here only: a run's analyzer is __main__, not loaded twice)
         marks = None if analyzer.journey_marks(language) is None else library_store.UNREAD
     out = journey_render.render(language, rows=rows, priority=priority, facts=facts or False,
-                                tagger=tagger if language == "ja" else None, plan=plan, known=known)
+                                tagger=tagger if language == "ja" else None, plan=plan, known=known,
+                                settings=settings, store=store)
     path = OUTPUT_FILE                          # the old page's file and name (as `open_report` and the window find it)
     journey_render.write_page(out, journey_template(), path)
     print(f"Journey written at: {path} ({out.head['counts']['eps']} episodes, {out.head['counts']['words']} words)")
@@ -1102,17 +1104,18 @@ def _write_journey(language, app_mode=False, open_browser=True, tagger=None, pla
 
 
 def generate_static_html(app_mode=False, open_browser=True, language=None, tagger=None, plan=None, rows=None,
-                         priority=None, known=None):
+                         priority=None, known=None, settings=None, store=None):
     """Write the journey: v3's page (`_write_journey`) for every look — the look is applied in the page (J-SET), and
     a look saved before it (Zen's too) reads as its new meaning (`journey_settings.page_value`). `language`: the run's
     (the analyzer's `--language`; None: settings.json's); `tagger`: the run's fugashi tagger, `plan`: the plan file,
     both for the render; `rows` / `priority`: the two lists the run just wrote, as the page reads them (None: read
-    from results); `known`: the run's known lemmas (None: the ones its last Generate kept). Returns the marks the
+    from results); `known`: the run's known lemmas (None: the ones its last Generate kept); `settings` / `store`: the
+    run's one settings read and its open token store (ONE-READ; None: read, opened for the known words). Returns the marks the
     journey was drawn from (the page's own read of the store) — None without a library store,
     `library_store.UNREAD` when they couldn't be read — for the run's render signature (`analyzer.signed_render`)."""
     print("Writing the journey (v3)...")
     return _write_journey(language, app_mode=app_mode, open_browser=open_browser, tagger=tagger, plan=plan,
-                          rows=rows, priority=priority, known=known)
+                          rows=rows, priority=priority, known=known, settings=settings, store=store)
 
 
 def main():

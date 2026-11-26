@@ -112,7 +112,8 @@ def _names_on(on):
 def test_connects_known_read_takes_ignore_names_from_the_settings_it_is_handed(
         tmp_path, monkeypatch, language, ja_resources_dir, zh_resources_dir):
     # why: Connect hands `known_sets` the settings it has just loaded; the ignore set's Ignore names switch is read
-    # from them — one settings read a call (the key's own, read fresh: STORE-KEY), not two. Chinese reads none.
+    # from them — and the key's switches too (ONE-READ: Connect read them fresh at its start): no settings read a
+    # call, where there were two. Chinese reads none.
     resources = ja_resources_dir if language == "ja" else zh_resources_dir
     monkeypatch.setattr(analyzer, "SANITIZE_JA", language == "ja")
     known_file(language, resources)
@@ -121,10 +122,9 @@ def test_connects_known_read_takes_ignore_names_from_the_settings_it_is_handed(
     try:
         count = Count(monkeypatch, store)
         first = sc.known_sets(language, store, settings)
-        reads = 1 if language == "ja" else 0
-        assert count.take()[0] == reads, "a miss: the key's read only"
+        assert count.take()[0] == 0, "a miss: the handed settings only"
         assert sc.known_sets(language, store, settings)[:2] == first[:2]
-        assert count.take()[0] == reads, "a hit: the key's read only"
+        assert count.take()[0] == 0, "a hit: the handed settings only"
     finally:
         store.close()
 

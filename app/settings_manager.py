@@ -540,6 +540,14 @@ def load_settings(strict: bool = False) -> Dict[str, Any]:
 
     return settings
 
+
+def loaded(settings=None) -> Dict[str, Any]:
+    """`settings` when it is settings as `load_settings` returns them (a dict whose `logic` is a dict: a run's one read,
+    handed down so the run reads settings.json once — ONE-READ), else settings.json read now."""
+    if isinstance(settings, dict) and isinstance(settings.get("logic"), dict):
+        return settings
+    return load_settings()
+
 # settings.json is written under the `settings` lock (`app/locks.py`, P0.3 04 §2), atomically: a temp file, then
 # `os.replace`, retried briefly while another program holds the file open (02 §8). A writer waits this long for the lock;
 # another program holds it only for one write.

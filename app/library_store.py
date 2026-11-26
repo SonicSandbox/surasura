@@ -5230,6 +5230,15 @@ class Store:
             out.append(ids)
         return out
 
+    def file_times(self, tier="arrivals"):
+        """ONB-3 (setup's *What are you watching right now?*): {item id: its file's `mtime_ns`} for the items of `tier`
+        — one read of the tier (a first scan stamps every `added_at` alike, so the file's own date says which show is
+        the newest)."""
+        if tier not in TIERS:
+            return {}
+        with self._reading():
+            return {i: m or 0 for i, m in self.conn.execute("SELECT id, mtime_ns FROM items WHERE tier = ?", (tier,))}
+
     def search(self, query, tiers=("now", "soon", "goal", "arrivals", "graduated")):
         """The window's search (05 §5.3), on its reader worker: (work ids, item ids) whose folded key holds the folded
         query, the works first — over Current, 6+ Months, New arrivals and Finished. Romaji finds a title only through a

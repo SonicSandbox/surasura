@@ -263,7 +263,7 @@ def make(qapp, monkeypatch):
 
 def go_to(wiz, page_id):
     """Next through the pages before `page_id` (each with its preselects)."""
-    while W.PAGES[wiz.index] != page_id:
+    while wiz.page.id != page_id:
         before = wiz.index
         wiz.page.entered()
         wait_until(lambda: not wiz._anki_looking, 2.0)
@@ -273,7 +273,7 @@ def go_to(wiz, page_id):
             wiz.next()
         else:
             wiz.skip()
-        assert wiz.index == before + 1
+        assert wiz.index > before                          # (ONB-3: *Watching now* passed by with nothing to pick)
 
 
 def settle(wiz):
@@ -317,7 +317,7 @@ def test_skip_writes_nothing_on_any_page(make):
     saves = len([c for c in api.calls if c[0] == "save"])
     for _page in W.PAGES[1:-1]:
         wiz.skip()
-    assert W.PAGES[wiz.index] == "level"
+    assert wiz.page.id == "level"
     assert settings.calls == [] and len([c for c in api.calls if c[0] == "save"]) == saves
     assert wiz.steps.passed == frozenset(range(5))                 # skipped steps are passed too (✓)
 
@@ -357,7 +357,7 @@ def test_esc_and_the_back_button_do_nothing_on_the_wizard(make):
                        Qt.MouseButton.BackButton, Qt.KeyboardModifier.NoModifier)
     QApplication.sendEvent(wiz, back)
     QApplication.processEvents()
-    assert seen == [] and wiz.isVisible() and shell.isVisible() and W.PAGES[wiz.index] == "shows"
+    assert seen == [] and wiz.isVisible() and shell.isVisible() and wiz.page.id == "shows"
 
 
 def test_every_control_is_wired_tipped_and_named(make):
@@ -399,7 +399,7 @@ def test_from_anki_is_recommended_with_its_decks_ticked_and_next_saves_them_and_
     assert settings.calls == [{"anki_sync_decks": {"ja": ["日本語::Mining", "Core 2k", "Kanji Practice"]}}]
     assert wait_until(lambda: api.synced)
     assert api.synced == [("ja", ["日本語::Mining", "Core 2k", "Kanji Practice"], True)]
-    assert W.PAGES[wiz.index] == "shows"                           # the sync never holds the page
+    assert wiz.page.id == "shows"                           # the sync never holds the page
 
 
 def test_with_every_deck_unticked_from_anki_cant_go_on(make):
@@ -574,7 +574,7 @@ def test_next_brings_the_texts_in_at_once_and_each_book_through_extract_then_goe
     wiz.next()
     assert adder.added == [[os.path.normpath(picked[0])]] and books == [os.path.normpath(picked[1])]
     assert wiz.say_line.text() == S.FILES_ADDED.format(what="1 file")
-    assert W.PAGES[wiz.index] == "order" and page.files == []
+    assert wiz.page.id == "order" and page.files == []
 
 
 class FakeRest:
@@ -629,7 +629,7 @@ def test_youtube_opens_its_links_at_once_and_next_asks_for_the_risk_tick_first(m
     page.links.setPlainText("https://www.youtube.com/watch?v=eFwn9e8IYsI\n\n  "
                             "https://www.youtube.com/watch?v=7nlUSMQKRKQ&list=PLjfPBTv1Zr1J8RTG9iCANlm2vzBhl7QZn  \n")
     wiz.next()
-    assert fetch.calls == [] and page.refused_line.text() == S.YOUTUBE_NEEDS_RISK.format(risk=page.yt_risk.name.text()) and W.PAGES[wiz.index] == "shows"
+    assert fetch.calls == [] and page.refused_line.text() == S.YOUTUBE_NEEDS_RISK.format(risk=page.yt_risk.name.text()) and wiz.page.id == "shows"
     page.yt_risk.switch.click()
     assert settings.calls[-1] == {"youtube_risk_acknowledged": True}
     wiz.next()
@@ -659,7 +659,7 @@ def test_a_youtube_fetch_that_brings_nothing_says_why_on_the_page_and_setup_goes
     line = S.YOUTUBE_FAILED.format(why="could not read https://www.youtube.com/watch?v=eFwn9e8IYsI: YouTube couldn't "
                                        "be reached: check your internet connection")
     assert wiz.covered is None and wiz.fetching is None and wiz.say_line.text() == line
-    assert W.PAGES[wiz.index] == "shows" and page.links.toPlainText() == ""
+    assert wiz.page.id == "shows" and page.links.toPlainText() == ""
 
 
 def test_youtube_videos_that_came_go_to_new_arrivals_then_the_sort_screen(make, monkeypatch, rest):
@@ -867,7 +867,7 @@ def test_card_order_with_anki_closed_shows_check_again_and_enter_is_skip(make):
     assert page.controls.isHidden() and not wiz.btn_skip.isHidden()
     settings.calls.clear()
     wiz.enter()
-    assert W.PAGES[wiz.index] == "cards" and settings.calls == []
+    assert wiz.page.id == "cards" and settings.calls == []
 
 
 def test_card_order_with_anki_closed_keeps_next_which_goes_on_as_skip_and_writes_nothing(make):
@@ -885,7 +885,7 @@ def test_card_order_with_anki_closed_keeps_next_which_goes_on_as_skip_and_writes
     settings.calls.clear()
     saves = len([c for c in api.calls if c[0] == "save"])
     wiz.next()
-    assert W.PAGES[wiz.index] == "cards"
+    assert wiz.page.id == "cards"
     assert settings.calls == [] and len([c for c in api.calls if c[0] == "save"]) == saves
     assert wiz.btn_next.toolTip() == S.NEXT_TIP                  # the next page's *Next* is its own again
     api.anki = {"open": True, "say": None, "decks": list(DECKS), "preselected": [DECKS[0][0]]}
@@ -893,7 +893,7 @@ def test_card_order_with_anki_closed_keeps_next_which_goes_on_as_skip_and_writes
     assert wait_until(lambda: not wiz._anki_looking and page.closed_part.isHidden())
     assert page.when_open.isHidden() and wiz.btn_next.toolTip() == S.NEXT_TIP
     wiz.next()
-    assert W.PAGES[wiz.index] == "cards" and settings.calls                 # open: Next saves the page as before
+    assert wiz.page.id == "cards" and settings.calls                 # open: Next saves the page as before
 
 
 @pytest.mark.parametrize("running, words, how, card", [
@@ -1037,7 +1037,7 @@ def test_anki_miner_missing_offers_install_and_the_star_and_no_switch(make):
     assert wait_until(lambda: wiz.launched == [FakeMiner.STAR_URL])            # on a worker (round 8 row 45)
     settings.calls.clear()
     wiz.next()
-    assert settings.calls == [] and W.PAGES[wiz.index] == "level"  # nothing to switch on: Next writes nothing
+    assert settings.calls == [] and wiz.page.id == "level"  # nothing to switch on: Next writes nothing
     assert ("save", "cards", {"make_cards": None, "open_anki": None}, "ja") in api.calls     # None, never False
 
 
@@ -1365,7 +1365,7 @@ def test_choice_86_back_and_next_on_what_you_know_keeps_the_new_deck_among_its_d
     QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
     assert wait_until(lambda: len(pressed) == 1 and not wiz.setting_up)
     assert wiz.pages[1].chosen_decks() == known + ["Surasura"]
-    while W.PAGES[wiz.index] != "known":
+    while wiz.page.id != "known":
         wiz.back()
     settings.calls.clear()
     wiz.next()
@@ -1497,7 +1497,7 @@ def test_generate_finishes_setup_runs_generate_and_closes_onto_current_when_it_e
     assert "first time" in wiz.say_line.text()          # a7 (DIAGNOSIS 1): the wait is said where it is watched
     wiz.back()
     wiz.skip()
-    assert W.PAGES[wiz.index] == "level" and seen == []           # nothing moves while the list is made
+    assert wiz.page.id == "level" and seen == []           # nothing moves while the list is made
     shell.bridge.generate_changed.emit(GenState("current"))
     assert seen == ["generated"]
 
@@ -1597,11 +1597,11 @@ def test_enter_on_skip_back_or_finish_later_saves_nothing_and_moves_nothing(make
         b.setFocus(Qt.FocusReason.TabFocusReason)
         QTest.keyClick(b, Qt.Key.Key_Return)
         QTest.keyClick(b, Qt.Key.Key_Enter)
-    assert W.PAGES[wiz.index] == "shows" and settings.calls == [] and seen == []
+    assert wiz.page.id == "shows" and settings.calls == [] and seen == []
     assert ("samples", "ja") not in api.calls                     # Enter isn't a click on another button either
     wiz.btn_next.setFocus(Qt.FocusReason.TabFocusReason)
     QTest.keyClick(wiz.btn_next, Qt.Key.Key_Return)                # on Next itself, Enter is Next
-    assert W.PAGES[wiz.index] == "order" and settings.calls == [{"covers_download": True}]
+    assert wiz.page.id == "order" and settings.calls == [{"covers_download": True}]
 
 
 def test_enter_on_skip_on_your_list_never_generates(make):
@@ -1636,14 +1636,14 @@ def test_a_double_click_on_next_never_saves_the_page_it_brings_up(make):
     settle(wiz)
     settings.calls.clear()
     QTest.mouseClick(wiz.btn_next, Qt.MouseButton.LeftButton)      # the first click: Your shows saved
-    assert W.PAGES[wiz.index] == "order"
+    assert wiz.page.id == "order"
     QTest.mouseClick(wiz.btn_next, Qt.MouseButton.LeftButton)      # the second, at once
     QTest.mouseDClick(wiz.btn_next, Qt.MouseButton.LeftButton)     # and a double click as Qt sends one
     QApplication.processEvents()
-    assert W.PAGES[wiz.index] == "order" and settings.calls == [{"covers_download": True}]   # no consent unseen
+    assert wiz.page.id == "order" and settings.calls == [{"covers_download": True}]   # no consent unseen
     settle(wiz)
     QTest.mouseClick(wiz.btn_next, Qt.MouseButton.LeftButton)      # a fresh press once the page was seen
-    assert W.PAGES[wiz.index] == "cards" and "junban_auto_actions" in settings.calls[-1]
+    assert wiz.page.id == "cards" and "junban_auto_actions" in settings.calls[-1]
 
 
 def test_a_page_not_painted_yet_takes_no_press_however_long_ago_it_changed(make):
@@ -1653,10 +1653,10 @@ def test_a_page_not_painted_yet_takes_no_press_however_long_ago_it_changed(make)
     assert not wiz.settled()
     settings.calls.clear()
     wiz.btn_next.click()
-    assert W.PAGES[wiz.index] == "shows" and settings.calls == []
+    assert wiz.page.id == "shows" and settings.calls == []
     settle(wiz)                                                    # painted: it takes the next press
     wiz.btn_next.click()
-    assert W.PAGES[wiz.index] == "order"
+    assert wiz.page.id == "order"
 
 
 def test_a_double_click_on_skip_never_skips_the_page_after_it(make):
@@ -1666,7 +1666,7 @@ def test_a_double_click_on_skip_never_skips_the_page_after_it(make):
     QTest.mouseClick(wiz.btn_skip, Qt.MouseButton.LeftButton)
     QTest.mouseClick(wiz.btn_skip, Qt.MouseButton.LeftButton)      # on Your list, Skip would finish setup
     QApplication.processEvents()
-    assert W.PAGES[wiz.index] == "level" and ("finish",) not in api.calls
+    assert wiz.page.id == "level" and ("finish",) not in api.calls
 
 
 # --- the install question at quit (AD-4) ----------------------------------------------------------------------------------- #
@@ -2070,7 +2070,7 @@ def test_card_order_without_junban_offers_no_control_and_enter_is_skip(make):
     assert page.off_line.text() == S.ORDER_OFF
     settings.calls.clear()
     wiz.enter()
-    assert W.PAGES[wiz.index] == "cards" and settings.calls == []
+    assert wiz.page.id == "cards" and settings.calls == []
 
 
 def test_card_order_when_junbans_module_is_absent_offers_no_control(make, monkeypatch):
@@ -2186,10 +2186,10 @@ def test_card_order_coming_up_when_anki_answers_takes_no_press_aimed_before_it(m
     assert not wiz.btn_next.isHidden() and wiz.btn_next.toolTip() == S.NEXT_TIP   # (now it saves: it waits again)
     QTest.mouseClick(wiz.btn_next, Qt.MouseButton.LeftButton)
     QTest.keyClick(wiz, Qt.Key.Key_Return)
-    assert W.PAGES[wiz.index] == "order" and settings.calls == [], "nothing saved before the page was seen"
+    assert wiz.page.id == "order" and settings.calls == [], "nothing saved before the page was seen"
     settle(wiz)
     QTest.mouseClick(wiz.btn_next, Qt.MouseButton.LeftButton)
-    assert W.PAGES[wiz.index] == "cards" and "junban_auto_actions" in settings.calls[-1]
+    assert wiz.page.id == "cards" and "junban_auto_actions" in settings.calls[-1]
 
 
 def test_saved_decks_the_open_anki_lacks_are_kept_by_next(make):
@@ -2434,7 +2434,7 @@ def test_files_the_writer_refuses_stay_listed_and_the_page_says_why(make, tmp_pa
     page.btn_file.click()
     wiz.next()
     assert page.files == [os.path.normpath(picked[0])] and page.refused_line.text() == S.FILES_NOT_ADDED
-    assert W.PAGES[wiz.index] == "shows"
+    assert wiz.page.id == "shows"
 
 
 def test_videos_that_landed_during_the_scan_are_sorted_though_the_scan_found_nothing(make, monkeypatch):
@@ -2576,7 +2576,7 @@ def test_next_waits_while_a_videos_subtitle_is_looked_for(make, tmp_path, monkey
     folder = _episode_folder(tmp_path, ["Episode 05.mkv", "Episode 05.ja.srt"])
     _pick_video(wiz, page, folder / "Episode 05.mkv")
     wiz.next()
-    assert W.PAGES[wiz.index] == "shows" and page.refused_line.text() == S.VIDEO_STILL_LOOKING
+    assert wiz.page.id == "shows" and page.refused_line.text() == S.VIDEO_STILL_LOOKING
     gate.set()
     assert wait_until(lambda: page.files == [os.path.normpath(str(folder / "Episode 05.ja.srt"))])
     wiz.next()

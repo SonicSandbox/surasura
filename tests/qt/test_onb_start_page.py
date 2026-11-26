@@ -125,7 +125,7 @@ def test_without_the_first_cards_line_generate_closes_as_before(make):
     wiz.finished.connect(seen.append)
     go_to(wiz, "level")
     assert wait_until(lambda: ("start_offered", "ja") in api.calls)
-    assert wiz.shown() == W.PAGES and wiz.steps.ids == W.PAGES
+    assert wiz.shown() == W.ORDER and wiz.steps.ids == W.ORDER
     wiz.next()
     assert wiz.page.id == "level"
     shell.bridge.generate_changed.emit(GenState("running", "Counting words", 3, 10))
@@ -140,7 +140,7 @@ def test_another_language_drops_the_offer_until_its_own_line_is_read(make):
     go_to(wiz, "level")
     assert wait_until(lambda: wiz.shown()[-1] == "start")
     wiz._language_changed("zh")
-    assert wiz._start_offered is False and wiz.pages[6].items is None
+    assert wiz._start_offered is False and wiz.by_id["start"].items is None
 
 
 def test_arrows_choose_a_start_and_start_pressed_early_keeps_the_choice_and_closes(make):
@@ -205,13 +205,13 @@ def test_a_generate_that_cant_start_leaves_your_start_up(make):
 
 def test_pre_studied_only_is_offered_only_with_its_switch(make, monkeypatch):
     wiz, *_ = make(api=StartApi())
-    assert list(wiz.pages[6].cards) == ["small", "full"]
+    assert list(wiz.by_id["start"].cards) == ["small", "full"]
     monkeypatch.setitem(settings_manager.DEFAULT_SETTINGS, SW.PRESTUDIED_KEY, False)
     wiz, *_ = make(api=StartApi())
-    assert list(wiz.pages[6].cards) == ["small", "full", "prestudied"]
-    assert wiz.pages[6].cards["prestudied"].lines == ("", "")
-    wiz.pages[6].show_numbers({"per_day": 5})
-    assert wiz.pages[6].cards["prestudied"].unit == S.START_PACE_WORD
+    assert list(wiz.by_id["start"].cards) == ["small", "full", "prestudied"]
+    assert wiz.by_id["start"].cards["prestudied"].lines == ("", "")
+    wiz.by_id["start"].show_numbers({"per_day": 5})
+    assert wiz.by_id["start"].cards["prestudied"].unit == S.START_PACE_WORD
 
 
 def test_chinese_setup_starts_on_its_own_language(make):

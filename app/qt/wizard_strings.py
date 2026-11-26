@@ -33,7 +33,8 @@ STEPS_NAME = "Setup steps"
 STEP_DONE_NAME = "{name}, done"
 STEP_HERE_NAME = "{name}, this step"
 STEPS = {"language": "Your language", "known": "What you know", "shows": "Your shows", "order": "Card order",
-         "cards": "Cards made for you", "level": "Your list", "start": "Your start"}
+         "cards": "Cards made for you", "watching": "Watching now", "level": "Your list",
+         "start": "Your start"}
 RECOMMENDED = "RECOMMENDED"
 SWITCH_TIP = "{name}\n{tip}"                # a switch has no words of its own: its tip names it first
 ANKI_CLOSED = "Anki isn't open"
@@ -491,3 +492,21 @@ SORT_OVER_SAYING = "Putting {n:,} titles back to sort…"
 SORT_OVER_SAYING_ONE = "Putting 1 title back to sort…"
 SORT_OVER_SAID_ONE = "1 title back to sort"
 SORT_KEYS_NAME = "Keys"
+
+# --- ONB-3: *What are you watching right now?* (before the sort; every word PROVISIONAL) ---------------------------- #
+WATCH_TITLE = "What are you watching right now?"
+WATCH_ABOUT = "It goes to the top of Current, so its cards come first. You sort the rest next."
+WATCH_ABOUT_NAME = "About what you're watching"
+WATCH_CHOICE_NAME = "Your shows, newest first"
+WATCH_TILE_TIP = "Put {title} at the top of Current"
+WATCH_NONE = "None of these"
+WATCH_NONE_TIP = "Sort every show yourself next"
+WATCH_SEARCH = "Search your shows"
+WATCH_SEARCH_TIP = "Find a show that isn't shown here"
+WATCH_NO_HIT = "No show called that"
+WATCH_EPISODE = "I'm on"
+WATCH_EPISODE_TIP = "The episodes before it count as watched: no cards are made for them"
+WATCH_HINT = "← → to choose · Enter to go on"
+WATCH_READING = "Finding your shows…"
+WATCH_PLACED = "{title} is at the top of Current"
+STEP_WARN_NAME = "{name}: a folder couldn't be read"

@@ -987,3 +987,66 @@ def generate(services):
     except Exception as e:
         print(f"Setup: Generate couldn't be asked for ({e})")
         return False
+
+
+# --- ONB-3: *What are you watching right now?* (Sonic ~13:4x: his shows by date, the newest pre-picked, a search) --- #
+WATCHING_SHOWN = 8                                        # the tiles shown at once; the search finds the rest
+
+
+def watching_rows(language, rows, limit=WATCHING_SHOWN):
+    """(A worker: one read of the store.) The page's tiles: New arrivals' rows still to watch (`rows`, the view's
+    `arrivals`; its *Already watched* group left out) newest first by their newest file's date (`Store.file_times`,
+    one read of the tier), the first `limit` (top k, no sort of every title) -> [row, ...]. Equal dates — and a store
+    that can't be read — keep the tray's own order."""
+    import heapq
+    rows = [r for r in rows or () if getattr(r, "group", "new") != "watched"]
+    if not rows:
+        return []
+    times = {}
+    store = _window_store(_language(language), role="reader")
+    if store is not None:
+        try:
+            with store:
+                times = store.file_times("arrivals")
+        except Exception as e:                            # (the tray's order then: never no page)
+            print(f"Setup: the shows' dates couldn't be read ({e})")
+    order = {id(r): n for n, r in enumerate(rows)}
+    return heapq.nlargest(limit, rows, key=lambda r: (max((times.get(i, 0) for i in r.item_ids), default=0),
+                                                      -order[id(r)]))
+
+
+def watching_search(language, rows, query, limit=WATCHING_SHOWN):
+    """(A worker.) The page's search box: the store's own search (`Store.search`, the window's search's folded keys,
+    romaji titles among them) over New arrivals alone -> the first `limit` of `rows` (the view's `arrivals`, *Already
+    watched* left out) it found, in the tray's order; [] for an empty query, no store or no hit."""
+    if not (query or "").strip():
+        return []
+    store = _window_store(_language(language), role="reader")
+    if store is None:
+        return []
+    with store:
+        work_ids, item_ids = store.search(query, tiers=("arrivals",))
+    works, items = set(work_ids), set(item_ids)
+    out = []
+    for r in rows or ():
+        if getattr(r, "group", "new") != "watched" and (r.work_id in works or any(i in items for i in r.item_ids)):
+            out.append(r)
+            if len(out) >= limit:
+                break
+    return out
+
+
+def watching_place(writer_place, writer_watched, row, episode=0):
+    """The pick, through New arrivals' own calls: `writer_place(ids, "top")` (Current's top: the store's `place`)
+    and, for *I'm on episode N* (`episode`: the index of the one he is on), `writer_watched(the earlier ids)` — the
+    store's Watched record. -> the show's last item id (the sort's first Current pick goes in under it), or None."""
+    ids = list(getattr(row, "item_ids", None) or ())
+    if not ids:
+        return None
+    if writer_place(ids, "top") is None:
+        return None
+    episodes = list(getattr(row, "episodes", None) or ())
+    before = [ep.id for ep in episodes[:max(0, int(episode or 0))]]
+    if before:
+        writer_watched(before)
+    return ids[-1]

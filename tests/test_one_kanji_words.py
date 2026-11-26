@@ -87,6 +87,22 @@ def test_a_one_kanji_word_after_a_numbers_counter_is_a_piece_of_the_count(tokeni
     assert _bound(tokenizer, "毎日目が疲れる。") == []
 
 
+def test_a_one_kanji_word_after_a_lone_letter_is_a_piece_of_the_label(tokenizer):
+    """A letter before a one-kanji word names which one, as a number does: A棟 'building A' (棟 is the counter とう,
+    never the noun むね 'ridge' the tagger reads), Ｂ組 'class B' (full-width), x軸 'the x-axis' — the word is a piece
+    of the label, no use of 棟 / 組 / 軸 (ENGINE_REVISION 51). A word of letters (OK) labels nothing, nor does a unit
+    after a number (10m下: m follows a digit); spaces aren't kept in a sentence's text, so OK 今 reads as OK今."""
+    assert _bound(tokenizer, "はいA棟3階です。") == ["棟", "階"]
+    assert _bound(tokenizer, "Ｂ組の生徒が来た。") == ["組"]
+    assert _bound(tokenizer, "x軸の値を読む。") == ["軸"]
+    assert _bound(tokenizer, "OK 今行く。") == []
+    assert _bound(tokenizer, "地中の10m下にある。") == []
+    assert _bound(tokenizer, "棟を見上げた。") == []
+    sentence, tokens = _sentence(tokenizer, "はいA棟3階です。")
+    assert ("棟", "ムネ") not in {(tokens[i][0], tokens[i][1]) for i in range(len(tokens))
+                                 if i not in analyzer.unoffered(sentence, tokens)}
+
+
 def test_what_the_list_cant_offer_is_named_per_sentence_and_nothing_with_the_rule_off(tokenizer):
     """スバル (read as 昴) and the particles are never offered; 餌 is. Off, nothing is left out. Empty: nothing."""
     sentence, tokens = _sentence(tokenizer, "スバルは餌を撒いた。")

@@ -411,3 +411,136 @@ def test_no_slice_of_a_new_answer_passes_4_ms_and_a_newer_answer_cancels_the_res
     assert wait_until(lambda: not panel.building())
     QApplication.processEvents()
     assert panel.builds == built + 1 and len({c.item.version for c in panel.cards}) == len(look.releases)
+
+
+def _releases(n):
+    """A look with `n` releases' notes: the shipped ones, repeated past the last (a learner who skipped many
+    releases sees every one since the last they saw)."""
+    here = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), guide.FOLDER)
+    shown = tuple(guide.arrange(r, {"everyone", "ja", "miner", "books"}) for r in guide.read_notes(here))
+    return guide.Look("3.0.4", (shown * (n // len(shown) + 1))[:n], True)
+
+
+def test_the_first_place_and_the_open_cost_the_same_at_5_17_and_40_releases(world, notes):
+    # GUIDE-LAYOUT (3.0.20): the first place() after a build walked every row for its height and the open laid out and
+    # showed every row: 1.1 / 3.2 / 7.0 ms of place() and 2.0 / 5.5 / 12.5 ms of show() at 5 / 17 / 40 releases'
+    # notes here, ~0.19 ms more a release; past ~21 releases place() alone passed the guide's 4 ms. A learner who
+    # skipped releases sees them all. Now the heights are kept as each row lands and only the first screen's rows
+    # are shown at the open: both costs stay flat however many releases are shown. Each cost is the least of
+    # QUIET_BUILDS builds of the thread's own time (as `_quiet_costs`), the margin scaled on a slower machine.
+    panel = world.d.guide_panel
+    panel.blockSignals(True)                                # (an open asks no new look here: the same body each time)
+    own_ms = _own_ms()
+    margin = 1.0 * _speed(own_ms)
+    costs = {}
+    for n in (5, 17, 40):
+        look = _releases(n)
+        place = show = None
+        for _ in range(QUIET_BUILDS):
+            panel.look = None
+            assert panel.set_look(look)
+            assert wait_until(lambda: not panel.building())
+            t0 = own_ms()
+            panel.place()
+            t1 = own_ms()
+            panel.show()
+            t2 = own_ms()
+            panel.hide()
+            QApplication.processEvents()
+            place = t1 - t0 if place is None else min(place, t1 - t0)
+            show = t2 - t1 if show is None else min(show, t2 - t1)
+        costs[n] = (round(place, 2), round(show, 2))
+    panel.blockSignals(False)
+    assert costs[40][0] - costs[5][0] < margin, costs          # place(): flat
+    assert costs[40][1] - costs[5][1] < margin, costs          # the open's show(): flat
+
+
+def _rows(panel):
+    col = panel.body.layout()
+    return [w for w in (col.itemAt(n).widget() for n in range(col.count())) if w is not None]
+
+
+def _same_as_all_shown(panel):
+    """The body as if every row were shown at once: its kept heights at both widths are the walk's, no room held, and
+    each shown row sits right under the one before."""
+    m = panel.body.layout().contentsMargins()
+    for cw in panel._ws:
+        width = cw + m.left() + m.right()
+        assert panel._content_height(width) == panel._walk_height(width), cw
+    assert panel._spacer.sizeHint().height() == 0
+    QApplication.processEvents()
+    col = panel.body.layout()
+    y, after = m.top(), False
+    for n in range(col.count()):
+        item = col.itemAt(n)
+        w = item.widget()
+        if w is None:
+            y += item.spacerItem().sizeHint().height() if item.spacerItem() is not None else 0
+            continue
+        if w.isHidden():
+            continue
+        y += col.spacing() if after else 0
+        assert w.y() == y, (n, w.y(), y)                                      # where it would have been
+        y, after = y + w.height(), True
+    assert panel.body.height() == panel._walk_height(panel.body.width())
+
+
+def test_rows_past_the_first_screen_wait_then_come_in_place_and_a_fold_press_brings_them_all(world, notes,
+                                                                                              monkeypatch):
+    # GUIDE-LAYOUT: what a learner sees is the same panel: the rows past the window's first screen wait hidden with
+    # their room held (the scroll bar the same), come a batch a turn once it is open, land where they would have been,
+    # and a close hides those below the screen again for the next open. A fold pressed before they all came brings them
+    # all at once, its fixes counted in the height. Each batch's turn and the close's hiding stay in the 4 ms step.
+    panel = world.d.guide_panel
+    panel.blockSignals(True)
+    own_ms = _own_ms()
+    budget = 4.0 * _speed(own_ms)
+    turns = []
+    for name in ("_reveal", "_hide_below"):
+        def timed(*args, _real=getattr(panel, name)):
+            t0 = own_ms()
+            _real(*args)
+            turns.append(own_ms() - t0)
+        monkeypatch.setattr(panel, name, timed)
+    panel.set_look(_releases(40))
+    assert wait_until(lambda: not panel.building())
+    held = panel._held_rows()
+    assert held and all(w.isHidden() for w in held)                           # past the first screen: waiting
+    assert len([w for w in _rows(panel) if not w.isHidden()]) < len(held)     # (most of the body)
+    panel.place()
+    want = panel.body.height()
+    panel.open()
+    assert wait_until(lambda: not panel._held_rows())                         # a batch a turn, open
+    assert not any(w.isHidden() for w in held)
+    _same_as_all_shown(panel)
+    assert panel.body.height() == want                                        # the room held was theirs exactly
+    panel.hide()
+    assert wait_until(lambda: panel._held_rows() == held)                     # below the screen: waiting again
+    assert all(w.isHidden() for w in held)
+    assert len(turns) >= 6 and max(turns) < budget, (turns, budget)           # (40 releases: many batches each way)
+    panel.open()
+    entry = panel.folds[-1]                                                   # (the last fold: below the screen)
+    entry[0].click()                                                          # pressed before they came
+    assert not panel._held_rows() and not any(w.isHidden() for w in held) and all(not c.isHidden() for c in entry[1])
+    _same_as_all_shown(panel)
+    panel.hide()
+    QApplication.processEvents()
+    assert not panel._held_rows()                                             # (a fold open: they stay)
+    panel.open()
+    entry[0].click()                                                          # ... and closed again
+    assert all(c.isHidden() for c in entry[1])
+    _same_as_all_shown(panel)
+    bar = panel.scroll.verticalScrollBar()
+    bar.setValue(bar.maximum() // 2)                                          # closed halfway down: only the rows
+    panel.hide()                                                              # below what it showed wait
+    assert wait_until(lambda: panel._held_rows() and all(w.isHidden() for w in panel._held_rows()) and
+                      len(panel._held_rows()) < len(held))
+    QApplication.processEvents()
+    assert all(not w.isHidden() and w.y() <= bar.value() + panel._cut for w in panel._later[:panel._shown_to])
+    assert all(w.y() > bar.value() + panel._cut for w in panel._held_rows())
+    panel.open()
+    assert bar.value() == bar.maximum() // 2                                  # where it was left
+    assert wait_until(lambda: not panel._held_rows())
+    _same_as_all_shown(panel)
+    panel.hide()
+    panel.blockSignals(False)

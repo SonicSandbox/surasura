@@ -1755,8 +1755,9 @@ def _pick(steps, ledger, lang, job, record=True):
         skipped = ledger.skipped_words(lang, got["anki_miner"])       # Michi-RM3: *Skip this word*, any part
         declined |= skipped
     words = [w for w in got.get("words") or [] if (w.get("word"), w.get("reading")) not in declined]
-    words, best = _best(steps, ledger, lang, job, words, got.get("file")) if book is None else (words, [])
-    words, sources = _borrow(steps, lang, job, words)
+    seen = _VideosOnce(steps)       # DSA-CONNECT (G6): each other episode's video looked up once in this step
+    words, best = _best(seen, ledger, lang, job, words, got.get("file")) if book is None else (words, [])
+    words, sources = _borrow(seen, lang, job, words)
     picked = {"words": words, "file": got.get("file"), "subtitle": got.get("subtitle"),
               "video": video, "pairing": fit_check.version(pairing), "profile": got.get("profile"),
               "anki_miner": got.get("anki_miner")}
@@ -1800,6 +1801,24 @@ def _pick(steps, ledger, lang, job, record=True):
         return None
     ledger.set_state(jid, "fit-check", picked=picked)
     return picked
+
+
+class _VideosOnce:
+    """DSA-CONNECT (G6): `steps` for one pick step's `_best` and `_borrow`, each item's video looked up once (Best's
+    reach, its loop and `_borrow` asked it of the same few episodes up to 60 times, each a store open and the pairing);
+    everything else is `steps`' own. It lives as long as the step: the mine step looks at the disk again."""
+
+    def __init__(self, steps):
+        self._steps, self._videos = steps, {}
+
+    def video(self, lang, job):
+        key = (lang, job["item_id"])
+        if key not in self._videos:
+            self._videos[key] = self._steps.video(lang, job)
+        return self._videos[key]
+
+    def __getattr__(self, name):
+        return getattr(self._steps, name)
 
 
 def _best(steps, ledger, lang, job, words, here):
@@ -3063,6 +3082,7 @@ class Steps:
         self._served = set()        # the languages whose run plan the engine serves (prepare's, the Generate after
                                     # mining's): a plan read since that it can't serve defers the re-order (#4)
         self._anki_miner_sets = {}  # {lang: the set}: this run's Anki Miner look-ups, read once (LF-mining row 25)
+        self._pick_context = {}     # DSA-CONNECT (G6): the pick step's one context a job (`pick`)
         self._gone_looked = set()   # the languages whose deleted-cards look ran this run (`notes_gone`: once a run)
         self._ahead = _Ahead()      # Michi-T1: the releases heard beside the mining, one at a time
         self._heard_with = {}       # {lang: (Anki Miner, profile)}: the last fit's, for the releases heard ahead
@@ -4402,21 +4422,30 @@ class Steps:
             got = self._plan_now(lang)
         if subtitle is None or not os.path.isfile(subtitle):
             raise Needs("no-subtitle", "An episode's subtitle isn't in Surasura's library any more.")
+        # DSA-CONNECT (G6): one pick context a job (`verbs.pick`'s `context`) — an episode's own pick starts it, the
+        # picks `_borrow` makes for that job (`only`) read it; any other pick, and any failure, starts again
+        if not (job.get("only") and self._pick_context.get("job") == str(job["id"])):
+            self._pick_context = {}
         ns = SimpleNamespace(lang=lang, file=subtitle, video=video, reading=reading, words=None, job=str(job["id"]),
                              wait=WAIT_S, made=made, listed=got.listed if got is not None else None,
                              held=self._anki_miner_held(lang),
                              unsure=self.unsure(job, subtitle) if reading is None else [],   # Tsu-U
                              # Kantan-SD 6 (`_borrow`): another episode's line for these words only, its cleaned
                              # copy in a folder of its own inside the job's
-                             only=job.get("only"), aside=f"from-{job['item_id']}" if job.get("only") else None)
+                             only=job.get("only"), aside=f"from-{job['item_id']}" if job.get("only") else None,
+                             context=self._pick_context)
         try:
             out = verbs.pick(ns)
         except CliError as e:
             ns.held.clear()                 # row 25: read again after any failure
+            self._pick_context = {}
             holds = verbs._results_language() if e.code == "not-set-up" else None
             if WAIT_FOR_OTHER_LIST and holds and holds != lang:     # you Generated another language meanwhile
                 raise Wait(OTHER_LIST.format(LANGUAGE_NAMES.get(holds, holds))) from None
             raise _wait_or_needs(e, None, self.url) from None
+        except Exception:
+            self._pick_context = {}         # (the next pick reads everything again)
+            raise
         miner = out.get("anki_miner") or {}
         return {"words": out.get("words") or [], "file": subtitle, "subtitle": out.get("subtitle"),
                 "profile": miner.get("profile"), "anki_miner": miner.get("app"),

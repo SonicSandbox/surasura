@@ -223,7 +223,8 @@ def _fake_render_writing_html(env):
     """A generate_static_html stand-in that actually creates the report file, so the analyzer's
     'does the HTML exist?' fast-path check behaves realistically without opening a real browser."""
     def _fake(theme="default", app_mode=False, zen_limit=0, open_browser=True, language=None, marks=None,
-              found=None, tagger=None, plan=None):        # (the v3 render's tagger and plan: J-CUT)
+              found=None, tagger=None, plan=None, rows=None, priority=None):   # (the v3 render's tagger and plan:
+        #                                                          J-CUT; the lists the run just wrote: DSA-SMALL)
         (env["results"] / "reading_list_static.html").write_text("<html></html>", encoding="utf-8")
         return marks            # the journey's stones it drew (none here: the run then reads them to sign)
     return _fake

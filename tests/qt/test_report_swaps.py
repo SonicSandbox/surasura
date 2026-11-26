@@ -1,6 +1,7 @@
 """SWAPS-REPORT on What goes (`app/qt/report.py`; Sonic's yes, OPEN-FOR-SONIC § 92): the learner's swaps beside the
 flagged sentences — one painted list, a tick each, all ticked; an unticked swap stays out of the zip that goes and
-comes again in the next report; swaps alone never light *Send* (a swap is a study move, not a report).
+comes again in the next report; swaps alone light *Send report* since SEND-EASY
+(`tests/qt/test_send_easy_window.py`).
 
 What a wrong answer costs: an unticked swap sent; the list a widget per line (a slow page with many swaps); a swap's
 line with no old sentence said as nothing at all. Real lines from tests/Test Resources (ja/library_episode.ass,
@@ -54,14 +55,7 @@ def test_what_goes_shows_each_swap_ticked_and_an_unticked_one_stays_for_the_next
     assert [x[0] for x in swap.for_report(lang, sent=send_report.swaps_sent(lang))] == [f"q:{a['id']}"]   # (next)
 
 
-def test_swaps_alone_never_light_send_report(main):
-    lang = windows.language_of(main)
-    _ask(lang, 9200, old=CASES[lang][1])
-    w = _press(main)
-    assert not w.send_button.isEnabled() and w.send_button.toolTip() == strings.REPORT_SEND_NONE_TIP
-
-
-def test_a_swap_ticked_beside_every_flag_unticked_and_no_report_leaves_nothing_to_send(main, receiver):
+def test_a_swap_ticked_beside_every_flag_unticked_and_no_report_still_sends(main, receiver):
     from app.services import flags
     lang = windows.language_of(main)
     _ask(lang, 9300, old=CASES[lang][1])
@@ -71,6 +65,8 @@ def test_a_swap_ticked_beside_every_flag_unticked_and_no_report_leaves_nothing_t
     _look(w)
     assert len(w.goes_swaps.keep()) == 1
     w.goes_flags.toggle(0)                                                    # the flag off, the swap still ticked
+    assert w.goes_send.isEnabled() and w.goes_send.toolTip() == strings.REPORT_GOES_SEND_TIP   # (SEND-EASY)
+    w.goes_swaps.toggle(0)                                                    # the swap off too: nothing to send
     assert not w.goes_send.isEnabled() and w.goes_send.toolTip() == strings.REPORT_FLAGS_NONE_TIP
     w.back()
 

@@ -357,6 +357,19 @@ def _key_rows(keys):
     return exact, by_lemma
 
 
+_INDEX = []                 # [(the table, its `_key_rows`, its rows that hold lines)]: the last table asked
+
+
+def _table_rows(tab):
+    """`_key_rows` of the table's keys and the rows that hold lines — the table's alone, so worked out once a table
+    (`_table` keeps one a process), never once a caller's memo: Connect's Swap brings a new memo each call (G12)."""
+    hit = _INDEX[0] if _INDEX else None            # (one read: another thread may replace the entry)
+    if hit is None or hit[0] is not tab:
+        hit = (tab, _key_rows(tab.head["keys"]), frozenset(tab.rows().values()))
+        _INDEX[:] = [hit]
+    return hit[1], hit[2]
+
+
 def _row_of(key, exact, by_lemma):
     k = exact.get((key[0], key[1] or ""))
     if k is None and not key[1] and len(by_lemma.get(key[0], ())) == 1:
@@ -529,7 +542,7 @@ def _row_arrays(tab, moment, order, free=None, key_rows=None):
     placed_now = placed.copy()
     known = moment.known or ()
     if known:
-        exact, by_lemma = key_rows if key_rows is not None else _key_rows(keys)
+        exact, by_lemma = key_rows if key_rows is not None else _table_rows(tab)[0]
         for key in known:
             hits = by_lemma.get(key[0], ()) if not key[1] else [exact.get((key[0], key[1]))]
             for k in hits:
@@ -646,16 +659,13 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
         root = get_data_path(language)
     kept = _kept(memo, tab, moment, order, root)
     shared = kept if kept is not None else {}
-    if "rows" not in shared:
-        shared["rows"] = _key_rows(tab.head["keys"])
-    exact, by_lemma = shared["rows"]
+    key_rows, with_lines = _table_rows(tab)
+    shared["rows"] = key_rows                       # (`_rows_kept`' arrays read it from the memo)
+    exact, by_lemma = key_rows
     asked = {key: k for key in keys for k in [_row_of(key, exact, by_lemma)] if k is not None}
     out = {key: [] for key in asked}
     if not asked:
         return out
-    if "with_lines" not in shared:
-        shared["with_lines"] = set(tab.rows().values())
-    with_lines = shared["with_lines"]
     want = sorted(with_lines) if whole else sorted({k for k in asked.values() if k in with_lines})
     inside = None if only is None else {os.path.normcase(os.path.abspath(p)) for p in only}
     # (a pick's later asks — more lines of a word, the mined episode's own — are rows its first ask took and costed at

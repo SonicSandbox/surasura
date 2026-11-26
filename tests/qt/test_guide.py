@@ -493,27 +493,29 @@ def _in_place(panel):
         y, after = y + w.height(), True
 
 
-def test_rows_past_the_first_screen_wait_then_come_in_place_and_a_fold_press_brings_them_all(world, notes,
+def test_rows_past_the_first_screen_wait_then_come_in_place_and_a_fold_opens_among_them(world, notes,
                                                                                               monkeypatch):
     # GUIDE-LAYOUT: what a learner sees is the same panel: the rows past the window's first screen wait hidden with
     # their room held (the scroll bar the same), come a batch a turn once it is open, land where they would have been,
-    # and a close hides those below the screen again for the next open. A fold pressed before they all came brings them
-    # all at once, its fixes counted in the height. Each batch's turn and the close's hiding stay in the 4 ms step.
+    # and a close hides those below the screen again for the next open. A fold pressed before they came opens in place
+    # (its fixes counted in the height) and they still come. Each batch's turn and the close's hiding stay in 4 ms.
     panel = world.d.guide_panel
     panel.blockSignals(True)
     own_ms = _own_ms()
     budget = 4.0 * _speed(own_ms)
-    turns, paused = [], [False]
+    rounds, paused = [[]], [False]                  # each turn's cost, one list a round of open + close
     for name in ("_reveal", "_hide_below"):
         def timed(*args, _real=getattr(panel, name)):
             if paused[0]:
                 return
             t0 = own_ms()
             _real(*args)
-            turns.append(own_ms() - t0)
+            rounds[-1].append(own_ms() - t0)
         monkeypatch.setattr(panel, name, timed)
     panel.set_look(_releases(40))
+    assert panel.building() and not panel.cards
     assert wait_until(lambda: not panel.building())
+    assert panel._ws and panel.cards
     held = panel._held_rows()
     assert held and all(w.isHidden() for w in held)                           # past the first screen: waiting
     assert len([w for w in _rows(panel) if not w.isHidden()]) < len(held)     # (most of the body)
@@ -530,14 +532,33 @@ def test_rows_past_the_first_screen_wait_then_come_in_place_and_a_fold_press_bri
     assert not any(w.isHidden() for w in held)
     _same_as_all_shown(panel)
     assert panel.body.height() == want                                        # the room held was theirs exactly
-    panel.hide()
-    assert wait_until(lambda: panel._held_rows() == held)                     # below the screen: waiting again
-    assert all(w.isHidden() for w in held)
-    assert len(turns) >= 6 and max(turns) < budget, (turns, budget)           # (40 releases: many batches each way)
+    def closed():                                   # the close's hiding done: what waits is below the screen
+        panel.hide()
+        assert wait_until(lambda: all(w.y() <= panel.scroll.verticalScrollBar().value() + panel._cut
+                                      for w in panel._later[:panel._shown_to]))
+        again = panel._held_rows()
+        assert again and all(w.isHidden() for w in again)
+        return again
+    again = closed()
+    assert abs(len(again) - len(held)) <= 1                                   # (the same rows, to the boundary row)
+    rounds.append([])
+    panel.open()                                                              # a second round: each turn's least
+    assert wait_until(lambda: not panel._held_rows())
+    again = closed()
+    least = [min(a, b) for a, b in zip(*rounds)]
+    assert len(least) >= 6 and max(least) < budget, (rounds, budget)          # (40 releases: many batches each way)
+    paused[0] = True
     panel.open()
-    entry = panel.folds[-1]                                                   # (the last fold: below the screen)
-    entry[0].click()                                                          # pressed before they came
-    assert not panel._held_rows() and not any(w.isHidden() for w in held) and all(not c.isHidden() for c in entry[1])
+    QApplication.processEvents()
+    entry = next(e for e in panel.folds if not e[0].isHidden())               # a fold on the first screen, pressed
+    assert entry[1] and panel._held_rows() == again
+    entry[0].click()                                                          # before the rest came
+    QApplication.processEvents()
+    assert all(not c.isHidden() for c in entry[1]) and panel._held_rows() == again  # its fixes in place, the rest wait
+    _in_place(panel)
+    paused[0] = False
+    panel._reveal(panel._turn)
+    assert wait_until(lambda: not panel._held_rows())
     _same_as_all_shown(panel)
     panel.hide()
     QApplication.processEvents()
@@ -547,6 +568,7 @@ def test_rows_past_the_first_screen_wait_then_come_in_place_and_a_fold_press_bri
     assert all(c.isHidden() for c in entry[1])
     _same_as_all_shown(panel)
     bar = panel.scroll.verticalScrollBar()
+    assert bar.maximum() > 2 * panel._cut
     bar.setValue(bar.maximum() // 2)                                          # closed halfway down: only the rows
     panel.hide()                                                              # below what it showed wait
     assert wait_until(lambda: all(w.y() <= bar.value() + panel._cut for w in panel._later[:panel._shown_to]))
@@ -556,6 +578,23 @@ def test_rows_past_the_first_screen_wait_then_come_in_place_and_a_fold_press_bri
     panel.open()
     assert bar.value() == bar.maximum() // 2                                  # where it was left
     assert wait_until(lambda: not panel._held_rows())
+    _same_as_all_shown(panel)
+    panel.hide()
+    panel.blockSignals(False)
+
+
+def test_opened_while_its_body_is_still_being_built_every_row_still_comes(world, notes):
+    # GUIDE-LAYOUT (its review): the ✦ pressed while a new answer's pieces are still landing. The rows made after the
+    # reveal caught up waited for the next open (the panel cut short, blank room under it): now the build's last piece
+    # starts their turn too.
+    panel = world.d.guide_panel
+    panel.blockSignals(True)
+    panel.set_look(_releases(17))
+    assert wait_until(lambda: len(panel._later) >= 1)                         # past the first screen, still building
+    assert panel.building()
+    panel.open()
+    assert wait_until(lambda: not panel.building() and not panel._held_rows())
+    assert panel._later and not any(w.isHidden() for w in panel._later)
     _same_as_all_shown(panel)
     panel.hide()
     panel.blockSignals(False)

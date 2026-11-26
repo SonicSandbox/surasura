@@ -489,6 +489,7 @@ class GuidePanel(motion.Overlay):
             self.builds += 1
             if self.isVisible():
                 self.place()
+                self._reveal_soon()             # (opened mid-build: the rows made since wait for their turn too)
         self.slices.append((time.perf_counter() - t0) * 1000)
         del self.slices[:-SLICES_KEPT]
         if not done:
@@ -511,7 +512,6 @@ class GuidePanel(motion.Overlay):
         fold.setAccessibleName(words)
 
     def _fold(self, entry):
-        self._reveal_all()                      # (a press before the rows past the screen came: all of them now)
         entry[2] = not entry[2]
         for card in entry[1]:
             card.setVisible(entry[2])
@@ -632,8 +632,16 @@ class GuidePanel(motion.Overlay):
         if end < len(self._later):
             QTimer.singleShot(0, lambda: self._reveal(token))
 
+    def _reveal_soon(self):
+        """The waiting rows' reveal from the next turn (an older one stops)."""
+        self._turn += 1
+        if self._shown_to < len(self._later):
+            token = self._turn
+            QTimer.singleShot(0, lambda: self._reveal(token))
+
     def _reveal_all(self):
-        """Every waiting row shown at once (a fold pressed, a width the rows weren't measured at)."""
+        """Every waiting row shown at once (a width the rows weren't measured at). A fold needs none: one a learner can
+        press is shown, and its fixes come right after it, above the waiting rows."""
         self._turn += 1
         for w in self._later[self._shown_to:]:
             w.setVisible(True)
@@ -762,10 +770,7 @@ class GuidePanel(motion.Overlay):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self._turn += 1
-        if self._shown_to < len(self._later):               # the rows past the screen, a batch a turn from the next
-            token = self._turn
-            QTimer.singleShot(0, lambda: self._reveal(token))
+        self._reveal_soon()                                 # the rows past the screen, a batch a turn from the next
         QApplication.instance().installEventFilter(self._away)
         self.opened.emit()
         if self.path is not None:

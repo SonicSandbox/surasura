@@ -375,7 +375,8 @@ def test_the_soon_line_is_one_hairline_in_surasuras_colours_fading_out_and_lit_u
     lst.scrollTo(lst.model().index(at, 0), lst.ScrollHint.PositionAtCenter)
     QApplication.processEvents()
     colours = style.colours()
-    first = theme.IRIS["night"][0][1] if theme.ROW_LINE["soon-look"] == "iris" else colours["accent"]
+    iris = theme.IRIS.get(style.current()[0], theme.IRIS[theme.DEFAULT_THEME])
+    first = iris[0][1] if theme.ROW_LINE["soon-look"] == "iris" else colours["accent"]
     tinted = lambda alpha: over(first + "%02x" % round(alpha * 255), colours["bg"])
     strip = part(lst, at, "soon-line")[0][1]             # its hover area: the line's own strip and a little more
 

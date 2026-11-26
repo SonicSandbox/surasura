@@ -463,12 +463,15 @@ def test_a_word_from_before_with_a_card_made_since_isnt_queued(ledger, monkeypat
     ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('listed:ja', 'sig')")
     anki = _anki("ja", tag, done_at)
     _legacy(anki, "ja", 201)
-    monkeypatch.setattr(sentences, "choose", lambda language, keys, **kw: {k: [] for k in keys})
+    other = s_item("ja")                                        # a best line for it: queued there, but for the gate
+    monkeypatch.setattr(sentences, "choose", lambda language, keys, **kw: {
+        k: [types.SimpleNamespace(item_id=other)] for k in keys})
     done = _remake(anki, ledger, "ja", before=True)
     with c.store("ja") as s:                                    # made since in another episode, its card kept
         library.record_batch(s, s_item("ja"), {LEGACY["ja"][0]: [999]}, "2026-11-25T10:00:00Z", batch="t-2")
-    tidy.requeue(Steps(), ledger, "ja", done, {}, _opener("ja"))
+    again = tidy.requeue(Steps(), ledger, "ja", done, {}, _opener("ja"))
     assert LEGACY["ja"][0] not in {w for ks in _best_jobs(ledger, "ja").values() for w, _r in ks}
+    assert again["queued"] == 6, "the six made words still come back"
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
@@ -497,6 +500,17 @@ def test_a_library_busy_at_the_end_has_its_words_queued_by_connects_next_look(le
     assert queued == [{"queued": 6, "ahead": 0}]
     assert _best_jobs(ledger, lang) == {item: sorted((w, "") for w in WORDS[lang])}
     assert tidy.finish_pending(anki, ledger, lang, _opener(lang), then=then) == 0 and len(queued) == 1, "once"
+
+
+def test_the_yes_says_when_the_words_come_back_later(home_ledger, monkeypatch):
+    # why: a library busy at the end — the answer says so (`pending`), never "0 to make again" as if none would
+    import sqlite3
+    item, tag, done_at = _mined(home_ledger, "zh")
+    anki = _anki("zh", tag, done_at)
+    monkeypatch.setattr(sentences, "choose", lambda language, keys, **kw: {k: [] for k in keys})
+    monkeypatch.setattr(library, "unmake", lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("locked")))
+    done = tidy.act_remake(ON, "zh", steps=Steps(), anki=anki)
+    assert done["cards"] == 6 and done["pending"] is True and done["queued"] == 0
 
 
 def test_a_plain_tidy_finished_by_the_next_look_is_never_queued(ledger, monkeypatch):

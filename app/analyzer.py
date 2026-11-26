@@ -5716,10 +5716,12 @@ def run_signature_parts(language, found_files, args, aside=()):
         known_sig = _token_index.known_signature(known_file, script)       # stat only
         available_freq_lists = discover_yomitan_frequency_lists(user_files_dir, language)  # paths only
 
-        # G7: the stats from one os.scandir listing per folder (`library_store._listed_stats`, as the store's Add reads
-        # them), not one os.stat per file: the listing's st_mtime and st_size are the ones os.stat reads. A path it
-        # doesn't hold (gone, spelled otherwise, a folder that can't be listed) is stat'ed as before. Listed afresh at
-        # every call, never kept across checks: an edit between two checks is seen by the second.
+        # G7: a folder holding LISTED_STATS files or more gives their stats from one os.scandir listing
+        # (`library_store._listed_stats`, as the store's Add and the disk sync read them), not one os.stat each; a
+        # closed file's listed st_mtime and st_size are os.stat's (one still being written may lag until it closes, as
+        # in the sync). Fewer files a folder (a listing costs more than a stat or two), or a path the listing doesn't
+        # hold (gone, spelled otherwise, a folder that can't be listed): os.stat, as before. Listed afresh at every
+        # call, never kept across checks: an edit between two checks is seen by the second.
         _places = [os.path.split(p) for p in [fp for (fp, _l, _w, _st) in found_files]
                    + [ignore_list_file, black_list_file, graduated_list_file]
                    + list(available_freq_lists.values()) + [a.path for a in aside]]
@@ -5728,9 +5730,10 @@ def run_signature_parts(language, found_files, args, aside=()):
             _by_folder.setdefault(_folder, []).append(_name)
         _listed = {}
         try:
-            from app.library_store import _listed_stats
+            from app.library_store import LISTED_STATS, _listed_stats
             for _folder, _names in _by_folder.items():
-                _listed.update(((_folder, _k), _v) for _k, _v in _listed_stats(_folder, _names).items())
+                if len(_names) >= LISTED_STATS:
+                    _listed.update(((_folder, _k), _v) for _k, _v in _listed_stats(_folder, _names).items())
         except Exception:                         # no store module: every path stat'ed, as before
             _listed = {}
 

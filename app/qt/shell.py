@@ -3605,6 +3605,19 @@ class ShellWindow(QMainWindow):
             services=services, language=lambda: self.language, closing=services.closing.is_set,
             log=lambda where, e: applog.log("door", f"{where}: {e!r}")))
 
+    def ukai_extension(self):
+        """(The door's starting thread, only while `door.EXTENSION_ON`.) 鵜飼 Ukai's caller class (UKAI-S1): its
+        pairing (`app/services/ukai_pairing.py`, kept as `ukai_pairing` for Settings' *Forget Ukai*), whose Allow card
+        opens in this window through the bridge (`_ukai_allow`). No widget is touched here."""
+        from app.services import ukai_pairing
+        self.bridge.ukai_asked.connect(self._ukai_allow, Qt.ConnectionType.QueuedConnection)
+        self.ukai_pairing = ukai_pairing.Pairing(ask=self.bridge.ask_ukai)
+        return self.ukai_pairing.extension()
+
+    def _ukai_allow(self, request):
+        from app.qt import ukai_allow
+        ukai_allow.ask(self, self.ukai_pairing, request)
+
     # --- Kotoba-K: Known / Ignore on the word card ----------------------------------------------------------------- #
     def _card_mark(self, marks):
         """(A worker: the word card's ✓ / ⊘ and *I know all of these*, `PeekHost`.) Written in the window's language
@@ -5115,7 +5128,14 @@ def start_door(window):
         try:
             from app import door
             from app.path_utils import get_user_file
-            door.start(routes, get_user_file("results"), on_error=lambda path, e: applog.log("door", f"{path}: {e!r}"))
+            extension = None
+            if door.EXTENSION_ON:               # 鵜飼 Ukai's class: off until Ukai 1.0 ships with it
+                try:
+                    extension = window.ukai_extension()
+                except Exception as e:          # (the journey's door opens all the same)
+                    applog.log("shell", f"Ukai's pairing: {e!r}")
+            door.start(routes, get_user_file("results"), on_error=lambda path, e: applog.log("door", f"{path}: {e!r}"),
+                       extension=extension)
             if _door_quit.is_set():             # (the quit came while it started, and waited past its join)
                 door.stop()
         except Exception as e:

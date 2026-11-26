@@ -2645,12 +2645,17 @@ class RowDelegate(QStyledItemDelegate):
         TEXT.draw(p, box.left() + 6, box.center().y(), text, "row-sub", w, c("ink-dim"), dpr=dpr, elide=False)
 
     def _paint_line(self, p, ln, strip, dpr, hot=False):
-        """A line after its row (W3.1a §1 *Top-20 line*, *Soon line*): a groove — 1 px dark, then 1 px lit lip —
-        across the list in its own strip, no word; Soon's quieter still (the lip only). Under the hand it lights a step
-        (its lip). Whole device pixels, so it stays crisp at every scale."""
+        """A line after its row (W3.1a §1 *Top-20 line*, *Soon line*): the top-20 line a groove — 1 px dark, then 1 px
+        lit lip — across the list in its own strip, no word; the Soon line one hairline in Surasura's colours, fading
+        out to the right (CURRENT-SOON 2, `theme.ROW_LINE`'s soon-*; PROVISIONAL), so where Soon starts reads at a
+        glance and its word stays in the hover. Under the hand each lights a step. Whole device pixels, so it stays
+        crisp at every scale."""
         k = max(1, round(dpr)) / dpr                 # one line's height: whole device px
         y = round((strip.top() + (strip.height() - 2 * k) / 2) * dpr) / dpr
         x0, w = strip.left() + 4, strip.width() - 8
+        if ln.kind == "soon":
+            p.fillRect(QRectF(x0, y + k, w, k), self._soon_brush(x0, w, hot))
+            return
         if ln.kind == "top":
             p.fillRect(QRectF(x0, y, w, k), c("groove"))
         p.fillRect(QRectF(x0, y + k, w, k), c("line-hi" if hot else "groove-lip"))
@@ -2666,6 +2671,27 @@ class RowDelegate(QStyledItemDelegate):
         p.fillRect(track, style.qcolor(theme.FIXED["watched-track"]))
         fill = QRectF(track.left(), track.top(), track.width() * row.n_watched / row.n_files, h)
         p.fillRect(fill, self._iris(fill))
+
+    @staticmethod
+    def _soon_brush(x0, w, hot=False):
+        """The Soon line's light across its width: its colours (the iris's run, or the accent alone) at its strength
+        (full under the hand), whole over the first part, then fading to nothing at the right end — the colours laid
+        across the whole width and the fade over them, as the journey picker's CSS mask lays it."""
+        look = rl("soon-look")
+        accent = style.colours()["accent"]
+        stops = (theme.IRIS.get(style.current()[0], theme.IRIS[theme.DEFAULT_THEME]) if look == "iris"
+                 else ((0.0, accent), (1.0, accent)))
+        stops = [(pos, style.qcolor(colour)) for pos, colour in stops]
+        strength = 1.0 if hot else rl("soon-alpha")
+        run = 1.0 - rl("soon-fade")                  # whole up to here, then fading out to the end
+        fade_at = [(run, QColor.fromRgbF(*(u + (v - u) * (run - a) / (b - a) for u, v in zip(ca.getRgbF(), cb.getRgbF()))))
+                   for (a, ca), (b, cb) in zip(stops, stops[1:]) if a < run < b]   # the fade's start, between two stops
+        grad = QLinearGradient(QPointF(x0, 0), QPointF(x0 + w, 0))
+        for pos, q in sorted(stops + fade_at, key=lambda s: s[0]):
+            q = QColor(q)
+            q.setAlphaF(strength * (1.0 if pos <= run else (1.0 - pos) / (1.0 - run)))
+            grad.setColorAt(pos, q)
+        return QBrush(grad)
 
     def _iris(self, r, vertical=False):
         grad = QLinearGradient(QPointF(r.left(), r.top()), QPointF(r.left(), r.bottom()) if vertical else

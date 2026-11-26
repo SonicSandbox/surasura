@@ -268,8 +268,8 @@ def test_a_store_before_the_aside_column_opens_with_no_rebuild(language, tmp_pat
     conn = sqlite3.connect(db)
     conn.executescript(
         "CREATE TABLE files_old (path TEXT PRIMARY KEY, mtime REAL, size INTEGER, total INTEGER, counts BLOB, "
-        "tokens BLOB, names BLOB, bound BLOB, counted INTEGER NOT NULL DEFAULT 1);"
-        "INSERT INTO files_old SELECT path, mtime, size, total, counts, tokens, names, bound, counted FROM files "
+        "texts BLOB, ids BLOB, names BLOB, bound BLOB, counted INTEGER NOT NULL DEFAULT 1);"
+        "INSERT INTO files_old SELECT path, mtime, size, total, counts, texts, ids, names, bound, counted FROM files "
         "ORDER BY rowid; DROP TABLE files; ALTER TABLE files_old RENAME TO files;")
     conn.commit()
     conn.close()
@@ -289,8 +289,8 @@ def _before_the_aside_column(db):
     conn = sqlite3.connect(db)
     conn.executescript(
         "CREATE TABLE files_old (path TEXT PRIMARY KEY, mtime REAL, size INTEGER, total INTEGER, counts BLOB, "
-        "tokens BLOB, names BLOB, bound BLOB, counted INTEGER NOT NULL DEFAULT 1);"
-        "INSERT INTO files_old SELECT path, mtime, size, total, counts, tokens, names, bound, counted FROM files "
+        "texts BLOB, ids BLOB, names BLOB, bound BLOB, counted INTEGER NOT NULL DEFAULT 1);"
+        "INSERT INTO files_old SELECT path, mtime, size, total, counts, texts, ids, names, bound, counted FROM files "
         "ORDER BY rowid; DROP TABLE files; ALTER TABLE files_old RENAME TO files;")
     conn.commit()
     conn.close()

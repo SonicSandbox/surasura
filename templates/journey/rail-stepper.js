@@ -31,7 +31,7 @@ window.JourneyRail = function (page, box) {
     const prev = nextOf(w.ep, -1), next = nextOf(w.ep, 1);
     const showTitle = show ? show[1] : e.title;
     return `<button class="nav" data-rs="prev" aria-label="Episode before" data-tip="${esc(navTip(prev, -1))}" ${prev < 0 ? "disabled" : ""}>‹</button>` +
-      `<button class="rs-title" data-rs="picker" aria-label="Episodes and chapters" data-tip="${esc(e.title)}\nAll your shows: click to open the picker">${page.kindIcon(e.kind, e.gem)}` +
+      `<button class="rs-title" data-rs="picker" aria-label="${esc(e.title)}: episodes and chapters" data-tip="${esc(e.title)}\nAll your shows: click to open the picker">${page.kindIcon(e.kind, e.gem)}` +
       `${list.length > 1 ? `<span class="t1">${esc(showTitle)}</span><span class="pt">· ${esc(e.part)}</span><span class="of">of ${list.length}</span>` : `<span class="t1">${esc(e.title)}</span>`}<span class="of">▾</span></button>` +
       `<button class="nav" data-rs="next" aria-label="Next episode" data-tip="${esc(navTip(next, 1))}" ${next < 0 ? "disabled" : ""}>›</button>`;
   }

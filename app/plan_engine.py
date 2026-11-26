@@ -1201,12 +1201,14 @@ class Engine:
     # Incremental (02 §3)
     # ----------------------------------------------------------------------------------------------------------- #
 
-    def move(self, item_ids, tier, before_id=None, after_id=None):
+    def move(self, item_ids, tier, before_id=None, after_id=None, n_new_was=None):
         """Place a block of items as `Store.move` does: in their current relative order, contiguous before or after
         the anchor (neither: the top of `tier`). `item_ids`: one id, or any collection of ids. Returns (the words
         whose Score, tier counts or first item changed, as (Word, Reading); the items moved). Only the block
         re-weights and only its words can change first place; the others keep theirs (a move pushes no other item
-        across a line, RP-2)."""
+        across a line, RP-2). `n_new_was` (a dict, DSA-START): filled with {file: its *N new* before} for every file
+        whose *N new* this move touched — the only ones it can change (the window's numbers walk these, never every
+        file)."""
         if isinstance(item_ids, (str, bytes, int)) or not hasattr(item_ids, "__iter__"):
             items = [item_ids]
         else:
@@ -1285,6 +1287,9 @@ class Engine:
             was = before[2]
             new = firsts[k] if was in block_set else min([was] + holders[k], key=pos.__getitem__)
             if new != was:
+                if n_new_was is not None:
+                    n_new_was.setdefault(was, self._n_new[was])
+                    n_new_was.setdefault(new, self._n_new[new])
                 self._n_new[was] -= 1
                 self._n_new[new] += 1
                 self._first[k] = new

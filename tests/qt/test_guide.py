@@ -341,6 +341,42 @@ def _speed(own_ms):
     return max(1.0, best / REF_DESKTOP_MS)
 
 
+# A piece's or a place's cost is the least of QUIET_BUILDS builds of the same body (TEST-FLAKES, FLAKES.md): a single
+# reading carries whatever slowed the thread's own clock meanwhile, and the reds read 4.02-4.61 ms of a 4 ms budget on
+# GitHub's runners (a VM's stolen time counts as the thread's own cycles) and beside other runs here (all cores busy:
+# a lower clock, so the same work counts more cycles). A piece or a place that really grew costs that much in every
+# build, so the least is its cost: the estimator `_speed`'s reference and `_own_ms`'s clock rate already use.
+QUIET_BUILDS = 3
+
+
+def _quiet_costs(panel, own_ms, build, monkeypatch, budget, builds=QUIET_BUILDS):
+    """(each piece's least cost, the first place()'s least cost) over up to `builds` builds, ms of the window's thread's
+    own time. `build()` asks the panel for the same body again; every build makes the same pieces, one a turn. It stops
+    once every least is under `budget` (the least is never above the first: the same verdict, fewer builds)."""
+    real_step = panel._step
+    runs = []
+
+    def step(token):
+        t0 = own_ms()
+        real_step(token)
+        runs[-1].append(own_ms() - t0)
+    monkeypatch.setattr(panel, "_step", step)
+    places = []
+    for _ in range(builds):
+        runs.append([])
+        build()
+        assert panel.building()                                             # nothing built in the asking turn
+        assert wait_until(lambda: not panel.building())
+        t0 = own_ms()
+        panel.place()
+        places.append(own_ms() - t0)
+        assert len({len(r) for r in runs}) == 1, [len(r) for r in runs]     # the same pieces at every build
+        least = [min(costs) for costs in zip(*runs)]
+        if max(least) < budget and min(places) < budget:
+            break
+    return least, min(places)
+
+
 def test_no_slice_of_a_new_answer_passes_4_ms_and_a_newer_answer_cancels_the_rest(world, notes, monkeypatch):
     # The lead, 2026-11-12: the 4 ms rule strict. Two releases, the shipped notes (wrapping lines): the body is built one
     # piece a turn — each piece, and the place after the last, under 4 ms on the window's thread.
@@ -348,29 +384,25 @@ def test_no_slice_of_a_new_answer_passes_4_ms_and_a_newer_answer_cancels_the_res
     # laptop's ÷ 2.5): what a piece costs the window's thread. So each piece is timed by that thread's own CPU time
     # (`_own_ms`), not the wall clock: on GitHub's runner a piece of ~0.4 ms here (the largest ~1 ms) once read 5.47 ms
     # of wall time, the thread taken away mid-piece. A piece that grew (a release in one turn) costs the thread itself,
-    # on any machine.
+    # on any machine; each cost is the least of three builds (`_quiet_costs`, TEST-FLAKES). Here at 17 releases' notes
+    # (2026-11-26): the pieces ~1.1 ms, the first place() 3.1-3.4 ms: it lays out every row, ~0.19 ms a release shown.
     here = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), guide.FOLDER)
     releases = guide.read_notes(here)
     look = guide.Look("3.0.4", tuple(guide.arrange(r, {"everyone", "ja", "miner", "books"}) for r in releases), True)
     panel = world.d.guide_panel
     own_ms = _own_ms()
     budget = 4.0 * _speed(own_ms)                                           # 4 ms here; scaled on a slower machine
-    own = []
-    real_step = panel._step
-
-    def step(token):
-        t0 = own_ms()
-        real_step(token)
-        own.append(own_ms() - t0)
-    monkeypatch.setattr(panel, "_step", step)
     panel.slices.clear()
     panel.set_look(look)
     assert panel.building() and not panel.cards                             # nothing built in the asking turn
     assert wait_until(lambda: not panel.building())
-    assert len(panel.slices) >= len(panel.cards) and max(own) < budget, (max(own), max(panel.slices), budget)
-    t0 = own_ms()
-    panel.place()
-    placed = own_ms() - t0
+    assert len(panel.slices) >= len(panel.cards)                            # one piece a turn
+
+    def again():
+        panel.look = None                                                   # (the same releases rebuild nothing)
+        assert panel.set_look(look)
+    pieces, placed = _quiet_costs(panel, own_ms, again, monkeypatch, budget)
+    assert max(pieces) < budget, (max(pieces), budget)
     assert placed < budget, (placed, budget)
     built = panel.builds
     panel.set_look(look._replace(releases=look.releases[:1]))               # a newer answer mid-way …

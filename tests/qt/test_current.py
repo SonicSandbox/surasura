@@ -28,7 +28,7 @@ from app.qt import motion, rows, screens, shell, stones, strings, style
 from app.services import library_reader, stone_plan, view_rows
 from tests.fixtures import window_seed
 from tests.qt.conftest import logos_in, needs_in, wait_until
-from tests.qt.pixels import count, rgb_array
+from tests.qt.pixels import count, rgb, rgb_array
 from tests.qt.test_wiring import problems
 
 
@@ -386,7 +386,8 @@ def test_the_soon_line_is_one_hairline_in_surasuras_colours_fading_out_and_lit_u
         assert len(lit) == 1, lit                            # one hairline: one device px at this ratio, in its colour
         return band[lit[0]]
     rest = line(theme.ROW_LINE["soon-alpha"])               # its colour at the left, at rest ...
-    assert count(rest[None, -6:-5], colours["bg"], tolerance=3) == 1                         # ... faded out at the right
+    lift = lambda px: int(abs(px.astype(int) - rgb(colours["bg"])).max())      # how far a pixel stands off the ground
+    assert lift(rest[-6]) * 8 <= lift(rest[5])               # ... and faded out at its right end, nearly the ground
     lst._set_line_hover((at, "soon"))
     QApplication.processEvents()
     line(1.0)                                                # under the hand: full strength

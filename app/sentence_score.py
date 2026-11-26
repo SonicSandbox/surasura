@@ -622,7 +622,7 @@ def _ranked(total, number, tie, src, a, b, within=None, first=_RANK_FIRST):
 
 
 def choose(language, keys, *, n=1, moment, length, never=None, order=None, only=None, heard_first=False,
-           clean_only=False, shown=None, whole=False, table=None, memo=None):
+           clean_only=False, shown=None, whole=False, table=None, memo=None, store=None):
     """The best `n` sentences of each list row asked, at `moment` -> {(lemma, reading): [Line, …]}, best first ([] for
     a row with no line it can use; a key that is no row of the list is left out: the caller's library search); None
     when there is no table for `language`, or one it cannot read — the caller takes today's path. "New when studied" is weighed by `order`
@@ -635,7 +635,9 @@ def choose(language, keys, *, n=1, moment, length, never=None, order=None, only=
     new word (*Only i+1*) · `shown` {(rel, number): text} the kept text of lines already shown, read before the token
     store · `whole` every row of the table scored in one pass (the redraw) · `table` a table in memory (tests; inside
     Generate) · `memo` a dict one caller keeps across the asks of one pick (Connect's): the rows' index, the moment's
-    arrays, each file's place, check and text built once for its table and moment (`_kept`), the choices the same."""
+    arrays, each file's place, check and text built once for its table and moment (`_kept`), the choices the same.
+    `store`: the caller's open token store, read for the lines' text (a Generate's own: ONE-READ) and left open;
+    None: a reader of its own, opened when a text is first needed and closed at the end."""
     try:
         tab = table if table is not None else _table(language)
     except Exception:
@@ -644,13 +646,13 @@ def choose(language, keys, *, n=1, moment, length, never=None, order=None, only=
         return None
     try:
         return _choose(tab, language, keys, n, moment, length, never, order, only, heard_first, clean_only, shown,
-                       whole, memo)
+                       whole, memo, store)
     except Exception:
         return None             # a table damaged inside its blocks, a moment it can't read: the caller's own path
 
 
 def _choose(tab, language, keys, n, moment, length, never, order, only, heard_first, clean_only, shown, whole,
-            memo=None):
+            memo=None, held=None):
     import numpy as np
     keys = list(dict.fromkeys(tuple(k) for k in keys or ()))
     root = moment.root
@@ -696,7 +698,7 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
     young_of = _young(moment)
     r = rates()
 
-    tokens = [None]
+    tokens = [held]             # (the caller's store, left open; else one of its own, opened at the first text, closed)
     # (a file's text, its check and its stamp: the same for every ask of one pick)
     read, there, stamps, part = (shared.setdefault(name, {}) for name in ("read", "there", "stamps", "part"))
 
@@ -930,7 +932,7 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
                     out[key] = [line._replace(text=peek(*line.text)) if type(line.text) is _Later else line
                                 for line in out[key]]
     finally:
-        if tokens[0]:
+        if tokens[0] and tokens[0] is not held:
             try:
                 tokens[0].close()
             except Exception:

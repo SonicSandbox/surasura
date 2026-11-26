@@ -1358,35 +1358,38 @@ def _records(path, columns=ROW_COLUMNS, contexts=True):
         return out
 
 
-def _known_terms(language, script="asis"):
+def _known_terms(language, script="asis", store=None, settings=None):
     """The learner's known words as the list counts them — the known lemmas of its one known-word test
     (`analyzer.read_known_words`: KnownWord.json's known and carded entries, a sentence read into its words), the very
     sets the last Generate kept in the token store (`get_cached_known`), read only, never a second rule over the file.
     Sorted (the hover's last tie-break); [] with no store, or a file changed since that Generate (the next one reads it
-    again: no hover word meanwhile, never a guess)."""
+    again: no hover word meanwhile, never a guess). `store`: the run's open token store (the redraw's: ONE-READ), read
+    and left open; None: a reader of its own. `settings`: the run's one read, for the known-words key."""
     try:
         from app import token_index
         from app.path_utils import get_user_files_path
-        store = token_index.open_reader(language)
+        held = store
+        store = held or token_index.open_reader(language)
         if store is None:
             return []
         try:
             known_file = os.path.join(get_user_files_path(language), "KnownWord.json")
-            cached = store.get_cached_known(token_index.known_signature(known_file, script))
+            cached = store.get_cached_known(token_index.known_signature(known_file, script), store.known_suffix(settings))
         finally:
-            store.close()
+            if store is not held:
+                store.close()
         return sorted(cached[1]) if cached else []
     except Exception:
         return []
 
 
 def render(language, rows=None, priority=None, stats=None, *, settings=None, facts=None, plan=None, tagger=None,
-           stamp=None, known=None):
+           stamp=None, known=None, store=None):
     """The page's data for this language's last Generate: the analyzer's rows in-process when it has them (G11), the
     results' CSVs otherwise; the store, the Anki backlog, the known words and the ▶'s memos read here, read-only.
     `known`: the run's known lemmas when the Generate hands them (the sets its list was decided by: no store opened
     for them, STORE-KEY 3 — so also when the store couldn't keep them, where the lookup found none), else read
-    (`_known_terms`)."""
+    (`_known_terms`: through `store`, the run's open token store, when handed — the redraw's, ONE-READ)."""
     from app import settings_manager
     from app import static_html_generator as gen
     if settings is None:
@@ -1441,7 +1444,7 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
     memo = WordMemo(os.path.join(gen.RESULTS_DIR, WORD_MEMO), *memo_keys(language), names_key())
     sources = Sources(language, source_map, None, media, timer)
     out = build(language, rows, stats, priority, facts, settings, backlog=backlog,
-                known=sorted(known) if known is not None else _known_terms(language, script),
+                known=sorted(known) if known is not None else _known_terms(language, script, store, settings),
                 ranks=ranks, pitch=Pitch(language, tagger), sources=sources,
                 plan=plan, own=own, stamp=stamp, memo=memo, nothing=nothing_new(language),
                 silent=silent_lines(gen.RESULTS_DIR, settings))

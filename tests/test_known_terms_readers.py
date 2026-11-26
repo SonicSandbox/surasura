@@ -66,8 +66,8 @@ def test_a_mine_that_moves_the_known_words_file_tokenizes_only_the_terms_it_adde
     path, held = known_file(language, resources)
     store = ti.open_store(language, path=str(tmp_path / "store.db"))
     kept = []
-    real_keep = ti.Store.set_known_terms
-    monkeypatch.setattr(ti.Store, "set_known_terms", lambda self, *a: (kept.append(1), real_keep(self, *a))[1])
+    real_keep = ti.Store._known_terms_value         # the terms' blob, made only when it is written (STORE-KEY)
+    monkeypatch.setattr(ti.Store, "_known_terms_value", lambda self, *a: (kept.append(1), real_keep(self, *a))[1])
     try:
         first = sc.known_sets(language, store, settings)
         whole = set(asked)

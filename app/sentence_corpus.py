@@ -704,11 +704,12 @@ def known_sets(language, store, settings):
     user_files = get_user_files_path(language)
     known_file = os.path.join(user_files, "KnownWord.json")
     signature = token_index.known_signature(known_file, script)
-    cached = store.get_cached_known(signature)
+    suffix = store.known_suffix()        # the key's settings and tables, worked out once for the miss (STORE-KEY)
+    cached = store.get_cached_known(signature, suffix)
     if cached is None:
         tok = (analyzer.ChineseTokenizer(reinforce_segmentation=reinforce, script=script)
                if language == "zh" else analyzer.JapaneseTokenizer())
-        cached = analyzer.read_known_words(store, known_file, signature, tok)      # (kept in the store, as before)
+        cached = analyzer.read_known_words(store, known_file, signature, tok, missed=suffix)    # (kept, as before)
     ignore = set()
     for name in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"):
         ignore |= analyzer.load_simple_list(os.path.join(user_files, name), script, language)

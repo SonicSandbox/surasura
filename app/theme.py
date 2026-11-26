@@ -129,8 +129,6 @@ MIXES = {
     "status-nomedia-border": ("mock.html :334", ("mix", "warn", 55, "transparent", None)),
     # the top-20 line (W3.1a: a groove, really subtle) and the watched chips (W3.1a: the string's stones)
     "top20-line": ("mock.html :348", ("mix", "accent", 38, "line", None)),
-    # the Soon line in the accent, one crisp hairline (CURRENT-SOON-LOOK A, PROVISIONAL: Sonic picks)
-    "soon-line": ("CURRENT-SOON-LOOK A", ("mix", "accent", 60, "line", None)),
     "watched-chip-fill": ("mock.html :375", ("mix", "accent", 20, "bg", None)),
     "side-pill-fill": ("Kyou-D: side by side's pill (PROVISIONAL)", ("mix", "accent", 14, "transparent", None)),
     "side-pill-border": ("Kyou-D: side by side's pill (PROVISIONAL)", ("mix", "accent", 45, "line", None)),
@@ -535,6 +533,9 @@ ROW_LINE = MappingProxyType({
     "height": 60,                   # * a Current row (69 at Medium)
     "gap": 4,                       # between two rows: half above the slab, half below (a lift moves inside it)
     "line": 4,                      # a groove's own strip (the top-20 and Soon lines): its 2 px in the middle
+    "soon-look": "iris",            # the Soon line's 1 px colours: "iris" (cyan → blue → purple) or "accent" alone
+    "soon-alpha": 0.85,             # ... its strength at rest (1 under the hand)
+    "soon-fade": 0.45,              # ... whole over the first 55 %, then fading out over the last 45 %
     "line-hit": 12,                 # ... and its hover area, at least (S10)
     "pos": 26,                      # * the number's column
     "art-min": 92, "art-max": 150,  # * the wide art: 10 % of the list's width, between these

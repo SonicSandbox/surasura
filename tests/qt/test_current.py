@@ -364,6 +364,34 @@ def test_the_soon_line_sits_where_soon_starts_with_its_word(seeded):
     assert tip.startswith("Soon:")
 
 
+def test_the_soon_line_is_one_hairline_in_surasuras_colours_fading_out_and_lit_under_the_hand(seeded):
+    """CURRENT-SOON 2 (PROVISIONAL: Sonic picks the take): the Soon line is one 1 px hairline in Surasura's colours —
+    `theme.ROW_LINE`'s soon-look (the iris's run, or the accent alone) at soon-alpha — whole at its left, faded to the
+    list's ground at its right end, and no word (its word is the hover's); under the hand it lights to full strength.
+    Read from the tokens, so a swapped take keeps this test."""
+    seed, win = seeded()
+    lst = current(win)
+    at = next(i for i, e in enumerate(lst.model().entries) if e[0] == rows.ROW and e[1].tier == "soon") - 1
+    lst.scrollTo(lst.model().index(at, 0), lst.ScrollHint.PositionAtCenter)
+    QApplication.processEvents()
+    colours = style.colours()
+    first = theme.IRIS["night"][0][1] if theme.ROW_LINE["soon-look"] == "iris" else colours["accent"]
+    tinted = lambda alpha: over(first + "%02x" % round(alpha * 255), colours["bg"])
+    strip = part(lst, at, "soon-line")[0][1]             # its hover area: the line's own strip and a little more
+
+    def line(alpha):
+        rect, arr = grab(lst, at)
+        band = arr[strip.top() - rect.top():strip.bottom() - rect.top() + 1]
+        lit = [y for y in range(len(band)) if count(band[y:y + 1, 5:6], tinted(alpha), tolerance=3)]
+        assert len(lit) == 1, lit                            # one hairline: one device px at this ratio, in its colour
+        return band[lit[0]]
+    rest = line(theme.ROW_LINE["soon-alpha"])               # its colour at the left, at rest ...
+    assert count(rest[None, -6:-5], colours["bg"], tolerance=3) == 1                         # ... faded out at the right
+    lst._set_line_hover((at, "soon"))
+    QApplication.processEvents()
+    line(1.0)                                                # under the hand: full strength
+
+
 def _drawn_titles(lst, row, slab, opened, monkeypatch):
     """What `_paint_current` draws as a row's title, through the painting code itself: [(text shown, its x, its
     width)] — the strings `TEXT.draw` was handed, elided as it elides them."""

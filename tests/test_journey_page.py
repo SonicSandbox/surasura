@@ -206,6 +206,65 @@ def test_page_at_a_phone_and_a_half_screen_width(tmp_path, lang, width):
     assert any(name.startswith(f"{width} px") for name, _, _ in res["out"])
 
 
+# JOURNEY-NAMES: the screens the card names, as CSS px at each Windows scale (width / scale, height / scale), and a phone
+SIZES = [(round(w / s), round(h / s), s) for w, h in ((1366, 768), (1920, 1080), (2560, 1440)) for s in (1.0, 1.25, 1.5)]
+SIZES.append((390, 844, 3.0))
+# the episodes measured: the first show's (its part the whole long name) and the second's (a long show, a short part)
+NAMED_EPS = """(() => { const p = window.__J.page, out = [];
+  for (const show of [0, 1]) for (let i = 0; i < p.count(); i++) { const e = p.ep(i); if (e.show === show && !e.watched && e.new > 0) { out.push(i); break; } }
+  return out; })()"""
+
+
+def _press_tab(e):
+    for kind in ("keyDown", "keyUp"):
+        e.call("Input.dispatchKeyEvent", type=kind, key="Tab", code="Tab", windowsVirtualKeyCode=9, nativeVirtualKeyCode=9)
+
+
+@needs_edge
+@pytest.mark.parametrize("lang,names", [("ja", "ja"), ("zh", "zh"), ("ja", "en")])
+def test_a_long_name_cuts_in_its_own_box_at_every_width_and_scale(tmp_path, lang, names):
+    # A long show or episode name ran on under the rail's › button and into the word pane (a tester's screenshot,
+    # 3.0.18). Each header row that shows a name is measured at 1366, 1920 and 2560 at 100-150 % and a phone: the
+    # name cuts with … inside its own box, nothing of the row is outside the row or its pane, the title ends before the
+    # next button, and the full name is on hover and on keyboard focus (journey_page_names.js says what it measures)
+    from journey_page_edge import Edge
+    path = os.path.join(str(tmp_path), f"names-{lang}-{names}.html")
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(fx.assemble(fx.build(lang, 40, long_names=names), extra_js=_read(os.path.join(HERE, "journey_page_names.js"))))
+    misses = []
+    with Edge() as e:
+        assert e.open("file:///" + path.replace("\\", "/"), seconds=30), e.errors()
+        eps = e.evaluate(NAMED_EPS)
+        assert len(eps) == 2, eps
+        titles = [e.evaluate(f"window.__J.page.ep({i}).title") for i in eps]
+        assert all(len(t) > 30 for t in titles), titles    # the fixture's long names reached the page
+        for width, height, scale in SIZES:
+            e.call("Emulation.setDeviceMetricsOverride", width=width, height=height, deviceScaleFactor=scale, mobile=False)
+            for i in eps:
+                misses += [f"{width}x{height} @{int(scale * 100)} %, episode {i}: {m}" for m in e.evaluate(f"window.__names({i})")]
+        # keyboard focus: Tab (a real key, through DevTools) onto the rail's title shows the tip with the full name, and
+        # the next Tab takes it away with the focus
+        e.call("Emulation.setDeviceMetricsOverride", width=1280, height=800, deviceScaleFactor=1, mobile=False)
+        for i, title in zip(eps, titles):
+            e.evaluate(f"(async () => {{ const J = window.__J; J.go({i}, 0); await J.loadEp({i}); J.drawWord(); document.getElementById('b-set').focus(); return 1; }})()")
+            on = False
+            for _ in range(4):
+                _press_tab(e)
+                if e.evaluate("document.activeElement.classList.contains('rs-title')"):
+                    on = True
+                    break
+            assert on, e.evaluate("document.activeElement.outerHTML.slice(0, 120)")
+            tip = e.evaluate("window.__tipNow()")
+            if title not in tip:
+                misses.append(f"episode {i}: Tab onto the rail's title shows no tip with the full name ({tip!r})")
+            _press_tab(e)
+            if e.evaluate("window.__tipNow()") == tip:
+                misses.append(f"episode {i}: the title's tip stays after the focus leaves it")
+        errs = e.errors()
+    assert not errs, errs
+    assert not misses, "\n".join(misses[:40]) + f"\n({len(misses)} in all)"
+
+
 def test_a_hand_edited_first_meeting_switch_reaches_the_page_as_shown():
     # settings.json edited by hand ("false", 0): J-SET's reader takes it as no switch, the default (Shown); the page
     # reads the head's value only when it is a switch (the Edge case below with a "false" head)

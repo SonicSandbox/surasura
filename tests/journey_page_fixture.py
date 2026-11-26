@@ -131,6 +131,22 @@ _KANJI = {
     "罪": ["guilt; sin; crime", "ザイ", "つみ", "罪"], "人": ["person", "ジン、ニン", "ひと", "人"],
 }
 
+# Long titles (JOURNEY-NAMES: a long name cuts with … in its own box, never under a button or into the word pane).
+# (the first show's name, the name its files carry, the second show's name): the first show's files are named apart
+# from its show (as a release's file names often are), so each episode's own part is the whole long name; the second's
+# part is short and its show's name long.
+LONG_NAMES = {
+    "ja": ("夜明けの旅団 〜はるかなる海の約束〜 第二期 黄昏の港町と七つの灯台編",
+           "【劇場先行版】夜明けの旅団〜はるかなる海の約束〜 第二期 黄昏の港町と七つの灯台編",
+           "星屑ステーション ～僕らが最後に見上げた夏の夜空と、まだ名前のない星座の話～"),
+    "zh": ("台北美食日记：从夜市小吃到米其林餐厅的一百个故事与老板们的人生",
+           "【完整版】台北美食日记 从夜市小吃到米其林餐厅的一百个故事与老板们的人生",
+           "夜市人生之城南旧事：捷运沿线每一站的老店、新店和那些不会再回来的味道"),
+    "en": ("The Lighthouse Keeper and the Very Long Journey Across the Northern Sea",
+           "The.Lighthouse.Keeper.and.the.Very.Long.Journey.Across.the.Northern.Sea.S01.1080p",
+           "Notes From a Small Station at the End of the Line, Where Nobody Gets Off Anymore"),
+}
+
 _SHOWS = {
     "ja": [("夜明けの旅団 〜はるかなる海の約束〜", "anime", "sapphire", "第{}話"), ("星屑ステーション", "anime", "sapphire", "第{}話"),
            ("蜘蛛の糸", "book", "emerald", "第{}章"), ("図書館の一日", "youtube", "ruby", "#{}"),
@@ -143,11 +159,18 @@ _SHOWS = {
 
 
 def build(lang="ja", n_eps=40, seed=7, words_per_ep=None, sentences=3, meanings="en", stamp="1763700000000",
-          library="lib-fixture", first_meeting=None):
-    """SHAPE v1's parts for a library of `n_eps` episodes: {"head", "chunks", "meanings", "kanji", "yours", "stones"}."""
+          library="lib-fixture", first_meeting=None, long_names=None):
+    """SHAPE v1's parts for a library of `n_eps` episodes: {"head", "chunks", "meanings", "kanji", "yours", "stones"}.
+    `long_names` ("ja" / "zh" / "en"): the first two shows get LONG_NAMES' titles (JOURNEY-NAMES)."""
     rng = random.Random(seed)
     vocab = _ja_vocab() if lang == "ja" else _zh_vocab()
-    shows_src = _SHOWS[lang]
+    shows_src = list(_SHOWS[lang])
+    files = {}                                        # a show's title in its file names, where it differs from its own
+    if long_names:
+        first, named, second = LONG_NAMES[long_names]
+        shows_src[0] = (first,) + shows_src[0][1:]
+        shows_src[1] = (second,) + shows_src[1][1:]
+        files[first] = named
     shows, eps, plan = [], [], []                     # plan: (ep index, n words)
     sizes = [12, 52, 6, 24, 1, 30, 200, 8] if n_eps > 60 else [6, 12, 6, 8, 1, 7]
     i = 0
@@ -162,7 +185,8 @@ def build(lang="ja", n_eps=40, seed=7, words_per_ep=None, sentences=3, meanings=
             tier = 0 if i < n_eps * 0.3 else (1 if i < n_eps * 0.7 else 2)
             watched = tier == 0 and k < size // 3
             name = f"{title}/{k + 1:03d}.srt"
-            label = f"{title} · {fmt.format(k + 1)}" if fmt else title
+            shown = files.get(title, title)
+            label = f"{shown} · {fmt.format(k + 1)}" if fmt else shown
             eps.append([1000 + i, name, label, s, tier, kind, None, 0, 0, "rock", 0, None, None, watched])
             i += 1
         s += 1

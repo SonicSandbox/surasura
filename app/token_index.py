@@ -1426,7 +1426,7 @@ class Store:
 
     def names_words(self):
         """The library's names the last index found (`names.name_words`, stored beside the tables: Ignore names), as a
-        tuple — () before the first index. Parsed again only when the stored text changes (`_words_read`): with Ignore
+        tuple — () before the first index, None when the store can't be read (closed, damaged). Parsed again only when the stored text changes (`_words_read`): with Ignore
         names on, every ignore set a caller holding this store reads asks (STORE-KEY 3: Connect at each card, the
         Rarity slider at each refresh), and the list is the library's every name."""
         try:
@@ -1438,7 +1438,7 @@ class Store:
                                            if isinstance(words, list) else ())
             return kept[1]
         except Exception:
-            return ()
+            return None
 
     def _update_names_tables(self, cur, build_signature=None):
         """Compute the library's name tables from every file's recorded candidates (and the last tables, for the
@@ -2508,7 +2508,8 @@ def ignored_names(language, settings=None, store=None):
     signature's are: the dashboard's slider must see a change as the next Generate will. `settings`: the ones a caller
     has just loaded (Connect's known words, `sentence_corpus.known_sets`: STORE-KEY 2; Generate's), read instead of the
     file; one with no `logic` reads the file. `store`: the caller's open token store for this language, read for the
-    names (its parse kept: `Store.names_words`) — none: a read-only connection of its own, opened fresh (STORE-KEY 3)."""
+    names (its parse kept: `Store.names_words`) — none, or one that can't be read: a read-only connection of its own,
+    opened fresh (STORE-KEY 3)."""
     if language != "ja":
         return []
     try:
@@ -2520,8 +2521,9 @@ def ignored_names(language, settings=None, store=None):
             return []
     except Exception:
         return []
-    if store is not None:
-        return list(store.names_words())
+    held = store.names_words() if store is not None else None
+    if held is not None:
+        return list(held)
     words = _read_meta(language, "names_words")
     return [str(word) for word in words if word] if isinstance(words, list) else []
 

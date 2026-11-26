@@ -175,6 +175,12 @@ def test_a_held_store_is_read_for_the_names_parsed_once_while_its_text_is_the_sa
         assert ti.ignored_names("ja", {"logic": {"ignore_names": False}}, store) == [], "the switch off: none"
         assert ti.ignored_names("zh", ON, store) == [], "Chinese: none"
 
+        monkeypatch.setattr(ti, "_read_meta", lambda language, key: ["ヒナ", "フレッシュ"] if key == "names_words" else None)
+        broken = ti.Store.__new__(ti.Store)             # a store that can't be read (closed): the fresh read, as before
+        broken.conn, broken.language = sqlite3.connect(":memory:"), "ja"
+        broken.conn.close()
+        assert ti.ignored_names("ja", ON, broken) == ["ヒナ", "フレッシュ"], "an unreadable store: read fresh"
+
         reader = ti.Store.__new__(ti.Store)             # a reader made on a connection alone (surasura-cli's)
         reader.conn, reader.language = store.conn, "ja"
         assert ti.ignored_names("ja", ON, reader) == ["ヒナ"]
@@ -235,11 +241,15 @@ def test_connects_known_read_and_the_rarity_preview_read_the_names_through_their
     store = ti.open_store(language, path=str(tmp_path / "store.db"))
     store.set_meta("names_words", json.dumps(["スドウ"], ensure_ascii=False))
     try:
-        monkeypatch.setattr(ti, "store_path_for", lambda lang: str(tmp_path / "elsewhere.db"))   # a fresh read finds none
+        # a fresh read would find other names, in a store file of their own: it would show, opened and read
+        elsewhere = ti.open_store(language, path=str(tmp_path / "elsewhere.db"))
+        elsewhere.set_meta("names_words", json.dumps(["フレッシュ"], ensure_ascii=False))
+        elsewhere.close()
+        monkeypatch.setattr(ti, "store_path_for", lambda lang: str(tmp_path / "elsewhere.db"))
         count = _Opens(monkeypatch)
         names = {"スドウ"} if language == "ja" else set()
-        assert sc.known_sets(language, store, settings)[2] & {"スドウ"} == names
-        assert ti.preview_lists(store, language, os.path.dirname(path))["ignore_set"] & {"スドウ"} == names
+        assert sc.known_sets(language, store, settings)[2] & {"スドウ", "フレッシュ"} == names
+        assert ti.preview_lists(store, language, os.path.dirname(path))["ignore_set"] & {"スドウ", "フレッシュ"} == names
         assert count.opens == 0, "the names through the held store"
     finally:
         store.close()

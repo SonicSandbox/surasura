@@ -1384,8 +1384,9 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
            stamp=None, known=None):
     """The page's data for this language's last Generate: the analyzer's rows in-process when it has them (G11), the
     results' CSVs otherwise; the store, the Anki backlog, the known words and the ▶'s memos read here, read-only.
-    `known`: the run's known lemmas when the Generate hands them (the very sets it keeps: no store opened for them,
-    STORE-KEY 3), else read (`_known_terms`)."""
+    `known`: the run's known lemmas when the Generate hands them (the sets its list was decided by: no store opened
+    for them, STORE-KEY 3 — so also when the store couldn't keep them, where the lookup found none), else read
+    (`_known_terms`)."""
     from app import settings_manager
     from app import static_html_generator as gen
     if settings is None:

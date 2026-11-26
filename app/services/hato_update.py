@@ -4,10 +4,18 @@ quiet update once a day while hato isn't open; Settings shows hato's version and
 hato owns its update (3.0 ROLES.md, *hato*: Surasura only starts it). Surasura downloads, reads and replaces none of
 hato's files: it starts **hato's own** `hato-cli update --auto` — the call hato's tray and its 03:00 run make (hato's
 RUNBOOK LAYER 11g) — and hato decides the rest: its own once-a-day check, its *Update automatically* switch, a copy
-another program holds or a source checkout (silent), a version turned away, and installing only at a quiet moment it
-finds itself. Then `hato-cli update --check --if-due --json` gives hato's answer for Settings' row (`status`): the one
-`--auto` just remembered, so no second ask — except when hato couldn't tell (offline, GitHub's limit), which hato never
-remembers: then it asks once more (offline that ask fails at once). network.md, *Tool-driven*, has the call in full.
+another program holds or a source checkout (silent), a version turned away. Then `hato-cli update --check --if-due
+--json` gives hato's answer for Settings' row (`status`): the one `--auto` just remembered, so no second ask — except when
+hato couldn't tell (offline, GitHub's limit), which hato never remembers: then it asks once more (offline that ask fails
+at once). network.md, *Tool-driven*, has the call in full.
+
+- **Installing it** (HATO-UPDATING, 3.0.20): `--auto` only downloads and checks a release (*stages* it). hato puts it in
+  place by itself only from its tray (off by default) or its daily run (opted into); otherwise it waits for *Restart now*
+  in hato's window — and the row said *updating…* for days. So an answer `ready` is followed by `hato-cli update
+  --quiet-install --json` (hato 1.4.3 and later: the daily run's own quiet install, under its rules — *Update
+  automatically* on, nothing of hato open, no tray — nothing reopens). `applying`: the row says *updating…* and the next
+  look (LOOK_S on) reads hato's answer once more (`_confirm`). Anything else — an older hato's usage error (exit 2),
+  `waiting`, no answer — the row says the release is **ready in hato** (`READY`): open hato to install it.
 
 - **When** (`attempt`): at most once a day — the attempt claimed in `hato_update.json` (local data) before hato is
   started, so a window closed mid-way or a second window finds none due — after the window booted, on the scheduler's
@@ -43,8 +51,12 @@ USAGE = 2                       # hato's usage error: a hato that has no `update
 PROGRAMS = ("hato", "hato-cli", "hato-watch", "hato-update")     # hato's programs (its update's REQUIRED_ENTRIES)
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
-UP_TO_DATE, UPDATING, NO_CHECK, OUT = "up-to-date", "updating", "couldnt-check", "out"
+INSTALL = ("update", "--quiet-install", "--json")   # hato 1.4.3: what `--auto` staged goes in now, quietly
+SAID_S = 3600.0                 # *updating…* after hato's `applying` for at most this, unless its answer is read again
+
+UP_TO_DATE, UPDATING, NO_CHECK, OUT, READY = "up-to-date", "updating", "couldnt-check", "out", "ready"
 NOT_ALLOWED, NO_HATO, NOT_DUE, WAIT, DONE = "not-allowed", "no-hato", "not-due", "wait", "done"
+INSTALLING = "installing"       # hato took its release in just now: its answer is read again on the next look
 
 
 def _log(line):
@@ -209,8 +221,34 @@ def _answer(out):
     return None
 
 
+def _installing(out, latest):
+    """hato's `--quiet-install --json` answer -> True when its last `applying` / `waiting` line says it is installing
+    `latest` (the release its answer named) now."""
+    for line in reversed((out or b"").decode("utf-8", "replace").splitlines()):
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") in ("applying", "waiting"):
+            return obj.get("type") == "applying" and obj.get("version") == latest and _parts(latest) is not None
+    return False
+
+
+def _install(cli, latest, popen):
+    """hato's own quiet install of the release `--auto` staged (`INSTALL`) -> True when hato says it is installing
+    `latest` now. An older hato has no such command (its usage error): the release waits for a press in hato."""
+    code, out = _call([cli, *INSTALL], ANSWER_WAIT_S, popen)
+    if code == 0 and _installing(out, latest):
+        _log(f"hato is installing {latest} by itself")
+        return True
+    _log(f"hato {latest} waits for Restart now in hato's window" if code is not None else
+         f"hato {latest} waits: hato's quiet install gave no answer")
+    return False
+
+
 def run(cli, now, popen=None):
-    """The day's attempt (claimed): hato's `update --auto`, then its answer -> the state as kept. Never raises."""
+    """The day's attempt (claimed): hato's `update --auto`, then its answer, then — a release it can install — its quiet
+    install -> the state as kept (`installing`: hato said it is installing that release). Never raises."""
     state = {"tried_at": _iso(now)}
     code, _out = _call([cli, "update", "--auto"], UPDATE_WAIT_S, popen, read=False)
     if code == USAGE:
@@ -218,6 +256,9 @@ def run(cli, now, popen=None):
     elif code is not None:
         code, out = _call([cli, "update", "--check", "--if-due", "--json"], ANSWER_WAIT_S, popen)
         state["answer"] = _answer(out) if code == 0 else None
+        answer = state["answer"] or {}
+        if answer.get("kind") == "ready" and _install(cli, answer.get("version"), popen):
+            state["installing"] = answer.get("version")
     else:
         state["answer"] = None
     if "answer" in state and state["answer"] is None:
@@ -226,9 +267,21 @@ def run(cli, now, popen=None):
     return state
 
 
+def _confirm(cli, state, popen=None):
+    """After hato's quiet install: its answer read once more (`--check --if-due`: the day's answer judged against the
+    hato installed now — no ask of GitHub when the day's was remembered), `installing` dropped -> the state as kept. The
+    day's attempt stays spent. Never raises."""
+    code, out = _call([cli, "update", "--check", "--if-due", "--json"], ANSWER_WAIT_S, popen)
+    kept = {key: value for key, value in state.items() if key != "installing"}
+    kept["answer"] = _answer(out) if code == 0 else None
+    _write(kept)
+    return kept
+
+
 def attempt(settings, now=None, popen=None, stopped=lambda: False):
     """One look (the window's thread, `keep`) -> NOT_ALLOWED, NO_HATO, NOT_DUE, WAIT (hato open, Surasura's own hato
-    run, the scheduler's turn: look again in LOOK_S; or the quit began: `stopped()`) or DONE. Never raises."""
+    run, the scheduler's turn: look again in LOOK_S; or the quit began: `stopped()`), INSTALLING (hato is installing its
+    release: its answer is read again on the next look, LOOK_S on) or DONE. Never raises."""
     now = time.time() if now is None else now
     try:
         if not allowed(settings):
@@ -237,15 +290,18 @@ def attempt(settings, now=None, popen=None, stopped=lambda: False):
         if cli is None:
             return NO_HATO
         state = _load()
-        if state is None or not due(state, now):
+        if state is None or not (due(state, now) or state.get("installing")):
             return NOT_DUE
         if _turn() or _finding() or hato_open(cli) or stopped():
             return WAIT
-        claimed = dict(state, tried_at=_iso(now))
+        if state.get("installing") and not due(state, now):
+            _confirm(cli, state, popen)
+            return DONE
+        claimed = {key: value for key, value in state.items() if key != "installing"}
+        claimed["tried_at"] = _iso(now)
         if not _write(claimed):                 # an attempt that can't be kept asks nothing (it would ask every look)
             return NOT_DUE
-        run(cli, now, popen)
-        return DONE
+        return INSTALLING if run(cli, now, popen).get("installing") else DONE
     except Exception as e:
         _log(f"the look failed ({e!r})")
         return NOT_DUE
@@ -259,7 +315,7 @@ def keep(settings, stop, popen=None):
             outcome = attempt(settings(), popen=popen, stopped=stop.is_set)
         except Exception:
             outcome = NOT_DUE
-        stop.wait(LOOK_S if outcome == WAIT else IDLE_S)
+        stop.wait(LOOK_S if outcome in (WAIT, INSTALLING) else IDLE_S)
 
 
 def start(settings, stop):
@@ -281,12 +337,15 @@ def _newer(candidate, current):
     return a is not None and b is not None and a > b
 
 
-def status(installed, state=None):
+def status(installed, state=None, now=None):
     """hato's update as Settings says it, for the hato `installed` (its entry's version) -> (word, latest) — word one of
-    UP_TO_DATE, UPDATING (hato is getting a newer one: it installs it itself), OUT (a newer one hato can't install in
-    this copy), NO_CHECK (the last attempt got no answer, or hato couldn't tell) — or (None, None): nothing to say
-    (never tried, a hato with no `update` command, a copy another program holds). Never raises."""
+    UP_TO_DATE, UPDATING (hato said it is installing that one now: SAID_S at most, unless its answer is read again),
+    READY (a newer one hato can install, waiting for Restart now in hato's window), OUT (a newer one hato can't install
+    in this copy), NO_CHECK (the last attempt got no answer, or hato couldn't tell) — or (None, None): nothing to say
+    (never tried, a hato with no `update` command, a copy another program holds). Compared with the newer of the entry's
+    version and the one hato's answer says runs (an entry hato hasn't rewritten since its quiet install). Never raises."""
     try:
+        now = time.time() if now is None else now
         state = read_state() if state is None else state
         if state.get("unsupported") or "answer" not in state:
             return None, None
@@ -298,8 +357,15 @@ def status(installed, state=None):
             return (None, None) if answer.get("reason") == "held" else (NO_CHECK, None)
         if kind != "none" and _parts(latest) is None:
             return NO_CHECK, None               # a newer one named in no X.Y.Z: never read as "up to date"
-        if _newer(latest, installed):
-            return (UPDATING if kind == "ready" else OUT), latest
-        return UP_TO_DATE, None
+        current = answer.get("current")
+        if _newer(current, installed):
+            installed = current
+        if not _newer(latest, installed):
+            return UP_TO_DATE, None
+        if kind != "ready":
+            return OUT, latest
+        at = _seconds(state.get("tried_at"))
+        said = state.get("installing") == latest and at is not None and 0 <= now - at < SAID_S
+        return (UPDATING if said else READY), latest
     except Exception:
         return None, None

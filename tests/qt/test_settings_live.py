@@ -502,6 +502,7 @@ class Hato:
 @pytest.mark.parametrize("word, latest, words", [
     ("up-to-date", None, "1.4.2 · up to date"),
     ("updating", "1.5.0", "1.4.2 · updating…"),
+    ("ready", "1.5.0", "1.4.2 · 1.5.0 ready in hato"),             # HATO-UPDATING: waiting for a press in hato
     ("couldnt-check", None, "1.4.2 · couldn't check"),
     ("out", "1.5.0", "1.4.2 · 1.5.0 is out"),
 ])

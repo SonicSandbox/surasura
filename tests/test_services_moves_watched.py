@@ -466,9 +466,9 @@ def test_a_drop_before_an_unheld_watched_anchor_lands_on_the_before_side_of_the_
             calls = []
             real_move = eng.move
 
-            def spy(item_ids, tier, before_id=None, after_id=None):
+            def spy(item_ids, tier, before_id=None, after_id=None, n_new_was=None):
                 calls.append((before_id, after_id))
-                return real_move(item_ids, tier, before_id=before_id, after_id=after_id)
+                return real_move(item_ids, tier, before_id=before_id, after_id=after_id, n_new_was=n_new_was)
 
             monkeypatch.setattr(eng, "move", spy)        # put back by the fixture, even on a failure
             mover = goal[-1]["id"]

@@ -467,7 +467,7 @@ def test_the_walk_decides_each_type_once_and_joins_the_names_as_file_tokens_does
 # A Generate's sentences built in Python (each sentence whose tokens became lists), counted in the child, and what the
 # progressive pass's rank gives (loaded first: a sitecustomize on its path).
 _COUNT_BUILT = r"""
-import atexit, json, os
+import atexit, json, os, sys
 from app import token_index as ti
 seen = {"built": 0, "tokens": 0}
 _stored = ti.Store._stored
@@ -504,7 +504,8 @@ def _counted_pass(files, known, lemmas, lemma_of, keep, rank, *args, **kwargs):
         return got
     return _pass(files, known, lemmas, lemma_of, keep, _rank, *args, **kwargs)
 plan_rules.progressive_pass = _counted_pass
-atexit.register(lambda: json.dump(seen, open(os.environ["DSA_WALK_COUNT"], "w")))
+if os.path.basename(sys.orig_argv[1]) == "analyzer.py":  # (the analyzer's main only: the store's helper it starts, a
+    atexit.register(lambda: json.dump(seen, open(os.environ["DSA_WALK_COUNT"], "w")))   # child, would write 0 last)
 """
 
 _STORE_SIZE = r"""
@@ -561,6 +562,8 @@ def test_a_generate_builds_the_tokens_of_only_the_sentences_with_something_to_do
                         "--static", "--no-open"], cwd=cases.REPO, env=env, capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
     assert p.returncode == 0, p.stdout[-2000:] + p.stderr[-2000:]
+    from tests.test_e_l2g import _the_helper_last
+    _the_helper_last(env, language)             # (the hook counts in the analyzer's main only: never the helper's 0)
     built = json.loads(counted.read_text(encoding="utf-8"))
     assert size["sentences"] > 300 and len(size["common"]) > 20
     # Before: every sentence (and token) of every counted file, at least. On ids: well under half of them.

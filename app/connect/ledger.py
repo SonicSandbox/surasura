@@ -187,6 +187,9 @@ _RUNNER_SQL = (
       note_id INTEGER,
       attempt INTEGER NOT NULL,
       PRIMARY KEY (job_id, word, reading))""",
+    # REMAKE (3.0.19): a made note's outcome found by its note (Tidy's `_done_ats`, every note of a tidy in one query a
+    # chunk; a scan per note before). No schema change: an older Surasura keeps the index as it is.
+    "CREATE INDEX IF NOT EXISTS outcomes_note ON outcomes (note_id)",
     # What Connect needs you for (03 §4; P2.5's columns are added by `_needs_v4`): one open entry per kind + item
     """CREATE TABLE IF NOT EXISTS needs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

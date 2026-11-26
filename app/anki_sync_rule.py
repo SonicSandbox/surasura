@@ -176,6 +176,23 @@ def _session_sync(url, profile):
     return answer
 
 
+def sync_now(url):
+    """One sync asked now by a caller holding the Anki-write lock, whatever the session — *Make my new cards again…*
+    (REMAKE, 3.0.19), before it counts and before it deletes, so a card studied on another device reads as studied
+    -> what Anki answered ("synced", "not-signed-in", "full-sync", "busy", "failed: …"); a sync that carried every
+    write is recorded as S1's and S3's are. Never while the user reviews (the caller asks first). Never raises."""
+    try:
+        answer = anki_connect.sync(url)
+    except Exception as e:                          # the lock not held, a URL that isn't loopback: never sent
+        return f"failed: {e}"
+    if answer == "synced":
+        now = time.time()
+        _update(synced_at=now, settled_at=now, front_pending=False, sync=answer, sync_error="")
+    elif answer.startswith("failed"):
+        _update(sync="failed", sync_error=answer)
+    return answer
+
+
 def drop_pending():
     """The preview switched off: a pending S3 sync is let go (nothing will run it; Anki's own sync on close carries
     the order). Never raises."""

@@ -532,7 +532,10 @@ SHADOWS.update({
 ROW_LINE = MappingProxyType({
     "height": 60,                   # * a Current row (69 at Medium)
     "gap": 4,                       # between two rows: half above the slab, half below (a lift moves inside it)
-    "line": 4,                      # a groove's own strip (the top-20 and Soon lines): its 2 px in the middle
+    "line": 4,                      # a groove's own strip (the top-20 line): its 2 px in the middle
+    "soon-line": 8,                 # the Soon line's strip: the iris rule, 2 px, in its middle (CURRENT-SOON-LOOK C)
+    "soon-line-alpha": 0.8,         # ... its strength at rest (1 under the hand)
+    "soon-line-fade": 0.35,         # ... the iris's run in its first 65 %, its purple fading out over the last 35 %
     "line-hit": 12,                 # ... and its hover area, at least (S10)
     "pos": 26,                      # * the number's column
     "art-min": 92, "art-max": 150,  # * the wide art: 10 % of the list's width, between these

@@ -1239,8 +1239,9 @@ class RowDelegate(QStyledItemDelegate):
     # sizes ------------------------------------------------------------------------------------------------------ #
     @staticmethod
     def line_h(ln):
-        """One line's strip after its row: a groove's own few px in the gap (W3.1a: really subtle)."""
-        return rl("line")
+        """One line's strip after its row: the top-20 line a groove's own few px in the gap (W3.1a: really subtle); the
+        Soon line a little more, for its iris rule (CURRENT-SOON-LOOK C)."""
+        return rl("soon-line") if ln.kind == "soon" else rl("line")
 
     @staticmethod
     def _lines_h(lines):
@@ -2651,12 +2652,26 @@ class RowDelegate(QStyledItemDelegate):
         TEXT.draw(p, box.left() + 6, box.center().y(), text, "row-sub", w, c("ink-dim"), dpr=dpr, elide=False)
 
     def _paint_line(self, p, ln, strip, dpr, hot=False):
-        """A line after its row (W3.1a §1 *Top-20 line*, *Soon line*): a groove — 1 px dark, then 1 px lit lip —
-        across the list in its own strip, no word; Soon's quieter still (the lip only). Under the hand it lights a step
-        (its lip). Whole device pixels, so it stays crisp at every scale."""
+        """A line after its row (W3.1a §1 *Top-20 line*, *Soon line*): the top-20 line a groove — 1 px dark, then 1 px
+        lit lip — across the list in its own strip, no word; the Soon line a 2 px rule in Surasura's iris (the wordmark's
+        run, `theme.IRIS`), fading out over its last 35 %, no word (CURRENT-SOON-LOOK C, PROVISIONAL). Under the hand
+        each lights a step. Whole device pixels, so it stays crisp at every scale."""
         k = max(1, round(dpr)) / dpr                 # one line's height: whole device px
         y = round((strip.top() + (strip.height() - 2 * k) / 2) * dpr) / dpr
         x0, w = strip.left() + 4, strip.width() - 8
+        if ln.kind == "soon":
+            grad = QLinearGradient(QPointF(x0, 0), QPointF(x0 + w, 0))
+            strength = 1.0 if hot else rl("soon-line-alpha")
+            run = 1.0 - rl("soon-line-fade")          # the whole iris in the rule's first part, then its last colour fades
+            for pos, colour in theme.IRIS.get(style.current()[0], theme.IRIS[theme.DEFAULT_THEME]):
+                q = style.qcolor(colour)
+                q.setAlphaF(strength)
+                grad.setColorAt(pos * run, q)
+            q = QColor(q)
+            q.setAlphaF(0.0)
+            grad.setColorAt(1.0, q)
+            p.fillRect(QRectF(x0, y, w, 2 * k), QBrush(grad))
+            return
         if ln.kind == "top":
             p.fillRect(QRectF(x0, y, w, k), c("groove"))
         p.fillRect(QRectF(x0, y + k, w, k), c("line-hi" if hot else "groove-lip"))

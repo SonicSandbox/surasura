@@ -145,7 +145,7 @@ def test_known_from_anki_reads_nothing_unless_both_on(monkeypatch, name, setting
     assert known_signal.signal(loaded) == (["suspended"] if on else [])
     read = []
     # the sync's entry point is the review loop's reader (Kyou-LR), which runs the Known reading first
-    monkeypatch.setattr(review_loop, "read", lambda *a: read.append(a) or {"marked": 0})
+    monkeypatch.setattr(review_loop, "read", lambda *a, **k: read.append(a) or {"marked": 0})
     out = anki_sync.read_known_signal("ja", URL, ["日本語"], ["Word"], loaded)
     assert (out, len(read)) == (({"marked": 0}, 1) if on else (None, 0))
 

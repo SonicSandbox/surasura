@@ -193,21 +193,25 @@ class StepList(QWidget):
         super().__init__(parent)
         self.setAccessibleName(S.STEPS_NAME)
         self.current, self.passed = 0, frozenset()
+        self.ids = PAGES                    # the steps shown (ONB-1: + *Your start* while the first cards wait)
         self.paints = 0
 
-    def set_state(self, current, passed):
-        passed = frozenset(passed)
-        if (current, passed) == (self.current, self.passed):
+    def set_state(self, current, passed, ids=None):
+        passed, ids = frozenset(passed), tuple(ids or self.ids)
+        if (current, passed, ids) == (self.current, self.passed, self.ids):
             return
-        self.current, self.passed = current, passed
-        self.setAccessibleDescription(S.STEP_HERE_NAME.format(name=S.STEPS[PAGES[current]]))
+        grew = ids != self.ids
+        self.current, self.passed, self.ids = current, passed, ids
+        self.setAccessibleDescription(S.STEP_HERE_NAME.format(name=S.STEPS[ids[current]]))
+        if grew:
+            self.updateGeometry()
         self.update()
 
     def row_h(self):
         return _px(39)
 
     def sizeHint(self):
-        return QSize(int(round(theme.size("wizard-steps", style.current()[1]))), self.row_h() * len(PAGES) + _px(40))
+        return QSize(int(round(theme.size("wizard-steps", style.current()[1]))), self.row_h() * len(self.ids) + _px(40))
 
     def paintEvent(self, _event):
         self.paints += 1
@@ -216,7 +220,7 @@ class StepList(QWidget):
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         h, top = self.row_h(), _px(36)
         small, name_font, here_font = _font("mini", 400), _font("body", 400), _font("body", 700)
-        for i, pid in enumerate(PAGES):
+        for i, pid in enumerate(self.ids):
             y = top + i * h
             here, done = i == self.current, i in self.passed and i != self.current
             if here:
@@ -2633,6 +2637,7 @@ class LevelPage(_Page):
 
     def entered(self):
         self.wiz.read_numbers(fresh=True)
+        self.wiz.read_start_offered()
 
     def show_numbers(self, numbers, reading=None):
         """`reading` (Kantan-B1): how many files the indexer reads while nothing is counted yet (None: not reading)."""
@@ -2711,6 +2716,212 @@ class LevelPage(_Page):
         self._paint()
 
 
+@lru_cache(maxsize=None)
+def _stone(state, seed, sparkle=False):
+    """A stone's display list (the window's own stones, `app/stone_shapes.py`) and its box -> (ops, (x0, y0, x1, y1));
+    `sparkle`: pre-studied's add over it (the journey's mark)."""
+    from app import stone_shapes
+    ops = list(stone_shapes.stone_ops(state, "sapphire", seed))
+    if sparkle:
+        ops += stone_shapes.pre_ops(state, seed)
+    pts = [pt for op in ops if op[0] == "fill" for pt in op[1]]
+    xs, ys = [pt[0] for pt in pts], [pt[1] for pt in pts]
+    return tuple(ops), (min(xs), min(ys), max(xs), max(ys))
+
+
+class StartChoice(Choice):
+    """One start of *Your start* (ONB-1): its stones (the episodes it covers, in Anki's blue; the rest as rock), the
+    days it lasts at the daily pace (*counting* while the list is made), its name and its two lines."""
+
+    STONES = {"small": (8, 3, False), "full": (20, 20, False), "prestudied": (8, 2, True)}   # (shown, lit, sparkle)
+
+    def __init__(self, key, parent=None):
+        super().__init__(key, S.START_NAMES[key], S.START_TIPS[key], parent, recommended=key == "full")
+        self.big = self.unit = ""
+        self.lines = ("", "")
+
+    def sizeHint(self):
+        return QSize(_px(300), _px(300))
+
+    def needed_width(self):
+        title = QFontMetricsF(_font("body", 600)).horizontalAdvance(self.title)
+        if self.recommended:
+            rec = _font("eyebrow")
+            rec.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 110)
+            title += _px(12) + QFontMetricsF(rec).horizontalAdvance(S.RECOMMENDED)
+        sub = QFontMetricsF(_font("row-sub"))
+        return math.ceil(2 * _px(26) + max([title] + [sub.horizontalAdvance(x) for x in self.lines])) + 1
+
+    def set_numbers(self, big, unit, lines):
+        """The big figure (days, or empty while counting), its unit and the two lines — repainted only on a change."""
+        new = (big, unit, tuple(lines))
+        if new != (self.big, self.unit, self.lines):
+            self.big, self.unit, self.lines = new
+            self.updateGeometry()
+            if self.channel is not None:
+                self.channel.updateGeometry()
+                self.channel.fit()
+            self.update()
+
+    def paintEvent(self, _event):
+        from app.qt import stones
+        self.paints += 1
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        self._paint_ground(p)
+        pad = _px(26)
+        shown, lit, sparkle = self.STONES[self.key]
+        step = min(_px(34), (self.width() - 2 * pad) / max(1, shown))
+        for i in range(shown):                            # the stones: one an episode, Anki's blue where cards come
+            ops, (x0, y0, x1, y1) = _stone("raw" if i < lit else "rock", 1 + i % 8, sparkle and i < lit)
+            k = min(step * 0.8 / max(1e-6, x1 - x0), _px(26) / max(1e-6, y1 - y0))
+            p.save()
+            p.translate(pad + i * step - x0 * k, _px(70) - (y0 + y1) / 2 * k)
+            p.scale(k, k)
+            stones.paint_ops(p, ops)
+            p.restore()
+        base = self.height() - _px(118)
+        if self.key == "prestudied":                      # no count: it goes at the learner's own pace
+            star = _font("first-run-heading", 400, 0.6)
+            p.setFont(star)
+            p.setPen(_c("accent"))
+            p.drawText(QPointF(pad, base), "✦")
+            x = pad + QFontMetricsF(star).horizontalAdvance("✦") + _px(12)
+        else:
+            big = _font("first-run-heading", 600, 0.9)
+            p.setFont(big)
+            p.setPen(_c("ink") if self.big else _c("ink-faint"))
+            text = self.big or "· · ·"
+            p.drawText(QPointF(pad, base), text)
+            x = pad + QFontMetricsF(big).horizontalAdvance(text) + _px(10)
+        p.setFont(_font("row-sub"))
+        p.setPen(_c("ink-dim"))
+        p.drawText(QPointF(x, base), self.unit)
+        title_font = _font("body", 600)
+        y = base + _px(40)
+        p.setFont(title_font)
+        p.setPen(_c("ink"))
+        p.drawText(QPointF(pad, y), self.title)
+        if self.recommended:
+            rec = _font("eyebrow")
+            rec.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 110)
+            p.setFont(rec)
+            p.setPen(_c("accent"))
+            p.drawText(QPointF(pad + QFontMetricsF(title_font).horizontalAdvance(self.title) + _px(12), y - _px(1)),
+                       S.RECOMMENDED)
+        p.setFont(_font("row-sub", 400, 1.0, theme.font_families(getattr(self.channel, "language", None) or "ja")))
+        p.setPen(_c("ink-dim"))
+        for n, line in enumerate(self.lines):
+            if line:
+                p.drawText(QPointF(pad, y + _px(30) * (n + 1)), scrub.shown(line))     # (a title: scrubbed in shots)
+        if self.isChecked():
+            self._paint_vein(p, self.height() - _px(14), pad - _px(4), self.width() - pad)
+        if self.hasFocus() and self._keyed:
+            _ring(p, self.rect())
+        p.end()
+
+
+def start_words(key, numbers, cap):
+    """Pure: one start's (big figure, unit, (line 1, line 2)) from `setup_wizard.start_numbers`' answer."""
+    n = (numbers or {}).get(key) or {}
+    if key == "prestudied":
+        return "", S.START_PACE_WORD, (S.START_PRE_LINE, S.START_PRE_LINE_2)
+    days, cards = n.get("days"), n.get("cards")
+    big = str(days) if isinstance(days, int) else ""
+    unit = (S.START_DAY if days == 1 else S.START_DAYS) if big else S.START_COUNTING
+    wait = S.START_CARDS.format(n=cards, cap=cap) if isinstance(cards, int) else S.START_WAIT.format(cap=cap)
+    if key == "small":
+        labels = (numbers or {}).get("top_labels") or ()
+        show = (numbers or {}).get("top") or ""
+        if show and labels:
+            first = S.START_SHOW_EPS.format(show=show, first=labels[0], last=labels[-1]) if len(labels) > 1 else \
+                S.START_SHOW_EP.format(show=show, first=labels[0])
+        else:
+            first = S.START_NEXT_N.format(n=n.get("episodes") or 3)
+        return big, unit, (first, wait)
+    titles = n.get("titles") or 0
+    first = S.START_NEXT_N.format(n=n.get("episodes") or 20)
+    if titles:
+        first = S.START_NEXT_EPS.format(eps=first, titles=S.START_TITLES.get(titles) or S.START_TITLES_N.format(n=titles))
+    return big, unit, (first, wait)
+
+
+class StartPage(_Page):
+    """ONB-1's *How would you like to start?* — after *Your list*, on the learner's own content (his top show, its
+    episodes at once; the card numbers fill in as the list is made). Its *Start* is the yes: the wizard writes the
+    start (`setup_wizard.save(START)`) and logs it (`start_cards`) — this page decides nothing."""
+    id = "start"
+
+    def __init__(self, wiz):
+        super().__init__(wiz, "")
+        from app.qt.tooltip import AboutMark, FitTitle
+        self.title.hide()                                 # the title with its ? after it (no subtitle: Qt guide §3)
+        words = QHBoxLayout()
+        words.setSpacing(_px(10))
+        self.heading = FitTitle(S.START_TITLE, self)
+        self.heading.setObjectName("wiztitle")
+        self.heading.setWordWrap(True)
+        words.addWidget(self.heading, 1000, Qt.AlignmentFlag.AlignVCenter)
+        self.about = AboutMark(strings.HELP_MARK, self)
+        self.about.set_about(S.START_ABOUT_NAME, S.START_ABOUT)
+        words.addWidget(self.about, 0, Qt.AlignmentFlag.AlignVCenter)
+        words.addStretch(1)
+        self.box.insertLayout(0, words)
+        self.top = _label("wizsub", "", self, wrap=True)  # a state: his show at the top, the daily pace
+        self.box.addWidget(self.top)
+        self.channel = Channel(S.START_CHOICE_NAME, self, gap=_px(8))
+        self.channel.language = wiz.language
+        self.cards = {}
+        from app.services import setup_wizard
+        for key in setup_wizard.starts():
+            self.cards[key] = self.channel.add(StartChoice(key, self.channel))
+        self.box.addSpacing(_px(8))
+        self.box.addWidget(self.channel)
+        self.box.addWidget(_label("wizhint", S.START_HINT, self))
+        self.box.addStretch(1)
+        self.items = None                                 # `start_items`' ids (read once a page entry; None: not yet)
+        self.numbers = None
+        self.cap = {k: setup_wizard.START_SIZES[k][1] for k in self.cards}
+        self._shown = None
+        self.number_paints = 0
+
+    def answers(self):
+        return {"start": self.channel.value() or "full"}
+
+    def load(self, answers):
+        from app.services import setup_wizard
+        key = (answers or {}).get("start")
+        self.channel.choose(key if key in self.cards else setup_wizard.START_DEFAULT)
+
+    def entered(self):
+        self.wiz.read_start()
+
+    def focus_first(self):
+        self.channel.focus()
+
+    def language_changed(self, language):
+        self.channel.language = language
+        self.items, self.numbers, self._shown = None, None, None
+
+    def show_numbers(self, numbers):
+        """`setup_wizard.start_numbers`' answer (None: nothing read yet) — repainted only when it moved (S19)."""
+        if numbers == self._shown:
+            return
+        self._shown = self.numbers = numbers
+        self.number_paints += 1
+        n = numbers or {}
+        top = []
+        if n.get("top"):
+            top.append(S.START_TOP.format(title=n["top"]))
+        if n.get("per_day"):
+            top.append(S.START_PACE.format(n=n["per_day"]))
+        _set_text(self.top, " · ".join(top))
+        _show(self.top, bool(top))
+        for key, card in self.cards.items():
+            card.set_numbers(*start_words(key, n, self.cap[key]))
+
+
 def _index_reading(chores, numbers):
     """(A worker.) Kantan-B1 (A2: page 6 said *Counting your shows…* over an empty graph while the samples were read):
     while the numbers aren't in and the window's indexer reads, how many files it reads (its log's newest count,
@@ -2768,6 +2979,10 @@ class SetupWizard(QWidget):
         self.passed = set()
         self.generating = False
         self._saw_busy = False
+        self._start_offered = False         # ONB-1: *Your start* follows *Your list* (D1's first cards wait for a yes)
+        self._starting = None               # … its *Start* pressed: the press, until its worker answers
+        self._start_seq = 0
+        self._start_reading = self._start_again = False     # … its numbers read on a worker (one at a time)
         self._gone = False
         self._stopped = False               # the window's quit began: no question is asked from here on
         self._shown_at, self._painted = 0.0, False      # the page shown: when it came up, whether it was painted
@@ -2808,6 +3023,7 @@ class SetupWizard(QWidget):
         lib = getattr(shell, "library_bridge", None)
         if lib is not None:
             lib.library_changed.connect(self._added)
+            lib.library_changed.connect(self._library_moved)
         bridge.run_in_worker(windows.module_present, "junban", then=self.alive(self._junban_looked),
                              failed=lambda info: applog.log("wizard", f"looking for 順: {info[0]}"))
         closing = getattr(shell, "closing", None)
@@ -2889,7 +3105,7 @@ class SetupWizard(QWidget):
         middle.addWidget(self.steps)
         self.stack = QStackedWidget(self)
         self.pages = [LanguagePage(self), KnownPage(self), ShowsPage(self), OrderPage(self), CardsPage(self),
-                      LevelPage(self)]
+                      LevelPage(self), StartPage(self)]
         for page in self.pages:                           # a page taller than the window scrolls, never squeezed
             self.stack.addWidget(_scrolled(page))
         middle.addWidget(self.stack, 1)
@@ -2966,15 +3182,16 @@ class SetupWizard(QWidget):
         if not hasattr(self, "btn_next"):
             return
         last = self.index == len(PAGES) - 1
-        busy = self.generating or self.reading is not None       # Generate, or page 3's first look (its Stop)
-        _show(self.btn_back, self.index > 0 and self.resort is None)
+        start = self.page.id == StartPage.id              # ONB-1: the list is made behind it; *Start* goes on
+        busy = (self.generating and not start) or self.reading is not None     # Generate, or page 3's first look
+        _show(self.btn_back, self.index > 0 and self.resort is None and not start)
         _show(self.btn_skip, self.index > 0 and self.resort is None)
         offered = self.page.next_offered() or busy
         if offered and self._offered is False:
             self._rearm()                                 # *Next* just came up: its first press waits (R2-1)
         self._offered = offered                           # (Kantan-B1: Anki's answer re-arms too, `_anki_looked`)
         _show(self.btn_next, offered)
-        text, tip = (S.GENERATE, S.GENERATE_TIP) if last else (S.NEXT, S.NEXT_TIP)
+        text, tip = (S.GENERATE, S.GENERATE_TIP) if last else (S.START, S.START_TIP) if start else (S.NEXT, S.NEXT_TIP)
         if self.resort is not None:
             text, tip = S.RESORT_NEXT, S.RESORT_NEXT_TIP
         elif self.page.next_skips():
@@ -2997,7 +3214,7 @@ class SetupWizard(QWidget):
 
     # --- moving between pages ------------------------------------------------------------------------------------- #
     def _go(self, index):
-        self.index = max(0, min(len(PAGES) - 1, index))
+        self.index = max(0, min(len(self.shown()) - 1, index))
         self._shown_at, self._painted = time.monotonic(), False        # a press waits until it was seen (`settled`)
         self._offered = None
         self._fresh.clear()
@@ -3005,13 +3222,23 @@ class SetupWizard(QWidget):
             self.say("")                                  # the samples' line is page 3's (AD-12)
         self._unsay_copied()
         self.stack.setCurrentIndex(self.index)             # instant: no page light-up to borrow (module docstring)
-        self.steps.set_state(self.index, self.passed)
+        self.steps.set_state(self.index, self.passed, self.shown())
         self.page.entered()
         self.paint_footer()
         if self.index == 0:
             self.start_focus()
         elif self.focusWidget() is None or not self.focusWidget().isVisible():
             self.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def shown(self):
+        """The steps this setup shows: the six, then *Your start* while D1's first cards wait for its yes (ONB-1)."""
+        return PAGES + ((StartPage.id,) if self._start_offered else ())
+
+    def held(self):
+        """A press waits: Generate running (but not under *Your start*: the list is made behind it), page 3's first
+        look, a screen over the wizard, or *Start* pressed."""
+        return ((self.generating and self.page.id != StartPage.id) or self.reading is not None
+                or self.covered is not None or self._starting is not None)
 
     def start_focus(self):
         """Where the keyboard starts (page 1: the glyphs, so ← → choose at once)."""
@@ -3020,8 +3247,7 @@ class SetupWizard(QWidget):
     def enter(self):
         """Enter: *Next* (or **Generate**); *Skip* on a page that can't go on (never while Anki is being looked
         for: the answer may yet let it go on)."""
-        if self.generating or self.reading is not None or self.covered is not None or (
-                self._anki_looking and self.page.id in ("known", "order")):
+        if self.held() or (self._anki_looking and self.page.id in ("known", "order")):
             return
         if self.page.next_offered():
             self.next()
@@ -3029,7 +3255,7 @@ class SetupWizard(QWidget):
             self.skip()
 
     def next(self):
-        if self.generating or self._gone or self.reading is not None or self.covered is not None:
+        if self.held() or self._gone:
             return
         page = self.page
         if not page.next_offered():
@@ -3073,6 +3299,9 @@ class SetupWizard(QWidget):
         if page.id == "level":
             self._generate(answers)
             return
+        if page.id == StartPage.id:
+            self._start(answers)
+            return
         if page.id != "shows":                            # (page 3's answers were written above: `_save_shows`)
             self._save(page.id, answers)
         if page.id == "language" and answers.get("language") != self.language:
@@ -3089,8 +3318,12 @@ class SetupWizard(QWidget):
         self._go(self.index + 1)
 
     def skip(self):
-        """Nothing written; on the last page, setup finishes without Generate."""
-        if self.generating or self.reading is not None or self.covered is not None or self.index == 0:
+        """Nothing written; on *Your list*, setup finishes without Generate; on *Your start* (ONB-1) setup closes with
+        the first cards unanswered — *Needs you*'s *Make cards* card asks again."""
+        if self.held() or self.index == 0:
+            return
+        if self.page.id == StartPage.id:
+            self._close("done")
             return
         if self.index == len(PAGES) - 1:
             self._finish()
@@ -3099,8 +3332,8 @@ class SetupWizard(QWidget):
         self._advance()
 
     def back(self):
-        if self.generating or self.reading is not None or self.covered is not None or self.index == 0:
-            return
+        if self.held() or self.index == 0 or self.page.id == StartPage.id:
+            return                                        # (*Your start*: the list is already being made)
         self._go(self.index - 1)                          # the pages keep their choices
 
     def finish_later(self):
@@ -3230,6 +3463,7 @@ class SetupWizard(QWidget):
         what was chosen and saved (AD-9) and only read again what they show for it."""
         self.language = language
         self.anki = None
+        self._start_offered = False                       # (ONB-1: read again for this language on *Your list*)
         self._anki_seq += 1
         self._anki_looking = False
         self._unpress("_anki_press")
@@ -4162,11 +4396,21 @@ class SetupWizard(QWidget):
             b.generate_changed.connect(self._generate_state)
         bridge.run_in_worker(self.api.generate, self.services, then=self.alive(self._accepted),
                              failed=self.alive(lambda info: self._accepted(False, str(info[0]))))
+        if self._start_offered:                           # ONB-1: on to *Your start* at once, the list made behind
+            self.say(S.MAKING_SHORT_NO_PCT)
+            self._advance()
 
     def _accepted(self, ok, why=None):
-        if not ok:
-            windows.say_in_bar(self.shell, why or S.NOT_STARTED)
+        if ok:
+            return
+        windows.say_in_bar(self.shell, why or S.NOT_STARTED)
+        if self.page.id != StartPage.id:
             self._close("done")
+            return
+        self.generating = False                           # *Your start* stays: its *Start* doesn't need the list
+        self.hairline.set_value(None)
+        self.say(why or S.NOT_STARTED)
+        self.paint_footer()
 
     def _generate_state(self, state):
         """The window's Generate, heard as the header hears it (`bridge.generate_changed`)."""
@@ -4178,10 +4422,106 @@ class SetupWizard(QWidget):
             from app.services import generate as generate_module
             pct = generate_module.percent(state)
             self.hairline.set_value(0.0 if pct is None else pct / 100.0)
-            self.say(S.MAKING_PCT.format(pct=pct) if pct is not None else S.MAKING)
+            if self.page.id == StartPage.id:
+                self.say(S.MAKING_SHORT.format(pct=pct) if pct is not None else S.MAKING_SHORT_NO_PCT)
+            else:
+                self.say(S.MAKING_PCT.format(pct=pct) if pct is not None else S.MAKING)
         elif self._saw_busy:
             self.hairline.set_value(1.0)
-            self._close("generated")
+            if self.page.id != StartPage.id:
+                self._close("generated")
+                return
+            self.generating = False                       # ONB-1: the list is made; *Your start* stays for its yes
+            self.hairline.set_value(None)
+            self.say("")
+            self.paint_footer()
+            self.read_start(again=True)                   # (its cards are counted now)
+
+    # --- ONB-1: *Your start* (page 7, while D1's first cards wait for a yes) ----------------------------------------- #
+    def read_start_offered(self):
+        """(*Your list* shown.) Is *Your start* next (`start_offered`, a small file read)? On a worker; the steps follow."""
+        offered = getattr(self.api, "start_offered", None)
+        if offered is None or self.resort is not None:
+            return
+        language = self.language
+        bridge.run_in_worker(offered, thaw(self._settings()), language,
+                             then=self.alive(lambda got: self._start_looked(got, language)),
+                             failed=lambda info: applog.log("wizard", f"your start: {info[0]}"))
+
+    def _start_looked(self, offered, language):
+        offered = bool(offered)
+        if language != self.language or self.page.id != "level" or self.generating or offered == self._start_offered:
+            return                                        # (never changed under Generate or *Your start* itself)
+        self._start_offered = offered
+        self.steps.set_state(self.index, self.passed, self.shown())
+
+    def read_start(self, again=False):
+        """*Your start*'s numbers on a worker: the episodes each start covers (`start_items`, once a page entry; `again`
+        keeps them), then `start_numbers` against the window's view. One read at a time; a change meanwhile reads once
+        more after it (the view can be 20k episodes: never on this thread, never a pile of reads)."""
+        page = self.pages[PAGES.index("level") + 1]
+        if self._start_reading:
+            self._start_again = True
+            return
+        self._start_reading, self._start_again = True, False
+        self._start_seq += 1
+        seq, language, api = self._start_seq, self.language, self.api
+        items = page.items if again and page.items is not None else None
+        reader = getattr(self.services, "library", None)
+        per_day = self._settings().get("words_per_day")
+
+        def read():
+            got = items if items is not None else api.start_items(language)
+            return got, api.start_numbers(got, reader.view() if reader is not None else None, per_day)
+
+        def failed(info):
+            applog.log("wizard", f"your start's numbers: {info[0]}")
+            self._start_read(None, seq, language)
+        bridge.run_in_worker(read, then=self.alive(lambda got: self._start_read(got, seq, language)),
+                             failed=self.alive(failed))
+
+    def _start_read(self, got, seq, language):
+        self._start_reading = False
+        page = self.pages[PAGES.index("level") + 1]
+        if got is not None and seq == self._start_seq and language == self.language:
+            page.items, numbers = got
+            page.show_numbers(numbers)
+        if self._start_again and self.page.id == StartPage.id:
+            self.read_start(again=True)
+
+    def _library_moved(self, _view=None):
+        """(`library_changed`) The window's view moved — the list being made: *Your start*'s numbers again."""
+        if not self._gone and not sip.isdeleted(self) and self.page.id == StartPage.id:
+            self.read_start(again=True)
+
+    def _start(self, answers):
+        """*Start*, the yes: the start written through its owners (`save(START)`: *Keep up to*, PRESTUDIED-MINE's
+        switch), then on a worker the settings flushed and D1's line answered with the start's mine line
+        (`start_cards`: Connect makes that many episodes' cards). Its arc turns on *Start* from the press; done, the
+        wizard closes (the list, if still being made, goes on in the window's header)."""
+        if self._starting is not None or self._gone or not self._save(StartPage.id, answers):
+            return
+        start, language, api, settings = answers.get("start"), self.language, self.api, self.services.settings
+
+        def run():
+            settings.flush(10)                            # (Connect reads the cap from the file)
+            return api.start_cards(language, thaw(settings.get()), start)
+        self._starting = qpress.run(self.btn_next, "wizard:start", run, then=self.alive(self._started),
+                                    failed=self.alive(self._start_failed), win=self)
+
+    def _started(self, _ids):
+        try:
+            made = strings.NEEDS_FIRST_CARDS_MADE         # (D1's own words: cards made by themselves from now on)
+            if settings_manager.paused(self._settings() or {}, "miner"):
+                made = strings.NEEDS_FIRST_CARDS_MADE_PAUSED      # (nothing starts while Anki Miner is paused)
+            windows.say_in_bar(self.shell, made)
+        finally:
+            self._close("started")                        # (never a wizard held by its own *Start*)
+
+    def _start_failed(self, info):
+        applog.log("wizard", f"your start: {info[0]}")
+        windows.say_in_bar(self.shell, S.START_FAILED)
+        self._close("done")                               # (D1's card stays in *Needs you*: its answer taken back)
 
 
 class _AskFromWorker(QObject):

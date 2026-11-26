@@ -67,6 +67,7 @@ CALL_SITES = {
     "app/services/moves.py": 1,
     "app/services/needs.py": 1,
     "app/services/settings_io.py": 1,
+    "app/services/ukai_pairing.py": 1,  # UKAI-S1: 鵜飼 Ukai's pairing file (PARTS: roaming, stays)
     "app/telemetry.py": 3,
     "app/youtube_hold.py": 1,         # Yt-B: YouTube's hold, the persistent folder
     "app/token_index.py": 1,
@@ -116,7 +117,7 @@ def _writers():
     from app.cli import contract, events
     from app.connect import anki_miner, kick, known_signal, ledger, lineup
     from app.services import airing, first_run, library_reader, moves, needs, settings_io
-    from app.services import anki_miner_setup, guide
+    from app.services import anki_miner_setup, guide, ukai_pairing
     out = [
         ("the window's reader cache", library_reader.cache_path("ja"), False),
         ("the window's pending moves", moves.journal_path("ja"), False),
@@ -154,6 +155,7 @@ def _writers():
         ("the telemetry id", os.path.join(path_utils.get_persistent_user_data_path(), "telemetry_id.json"), False),
         ("the telemetry URL", os.path.join(path_utils.persistent_root(), telemetry.URL_CACHE), False),
         ("YouTube's hold", youtube_hold._path(), False),       # Yt-B: the computer's, not the profile's
+        ("Ukai's pairing", ukai_pairing.path(), False),         # UKAI-S1: its token stays with the browser's Ukai
         ("the start gate's note", first_run.note_path(), False),
         ("the import's note", os.path.join(path_utils.local_data_root(), "import.json"), False),
         ("the library move's note", os.path.join(path_utils.local_data_root(), "library_move.json"), False),
@@ -188,7 +190,7 @@ def _writers():
 STAYS = {"the one-window lock", "the update's state", "the update's folder", "the CLI's log", "the CLI's events",
          "a lock", "the telemetry id", "the telemetry URL", "the start gate's note", "the import's note", "the library move's note",
          "the installs note", "the library note", "the update marker", "the update lock", "the journal", "yt-dlp",
-         "YouTube's hold"}
+         "YouTube's hold", "Ukai's pairing"}
 
 
 def test_every_place_the_code_names_a_data_root_is_counted_here():

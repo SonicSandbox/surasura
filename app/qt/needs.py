@@ -255,7 +255,8 @@ ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway",
            "dw_all_word_wrong", "dw_all_only_line",
            "undo_swap", "leave_swap", "leave_swap_wait",                                 # Kantan-SL
            "undo_swap_same", "leave_swap_same",                                          # FS-2
-           "undo_swap_deleted")                                                          # FS-2 2
+           "undo_swap_deleted",                                                          # FS-2 2
+           "more_cards", "keep_small")                                                   # ONB-4
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "generate_again",
                      "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
@@ -265,7 +266,7 @@ PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "sa
                      "dw_known", "dw_ignore", "dw_bad", "dw_forget",    # Kyou-DW: a line's own answer (Parsing
                      "dw_word_wrong", "dw_only_line")                  # mistake only asks its follow-up: Kyou-DW 3)
 # Kyou-DW: the cards whose line stands behind a ? beside the title (the Qt guide: no visible line under a title)
-ABOUT_KINDS = frozenset((service.DELETED, service.OLD_DELETES))
+ABOUT_KINDS = frozenset((service.DELETED, service.OLD_DELETES, service.MORE_CARDS))     # (ONB-4's too)
 
 
 class NeedsCards(QWidget):
@@ -886,6 +887,7 @@ class NeedsYou(QObject):
         self.view = None
         self.data_dir = None                     # None: the language's data folder (looked up on the worker)
         self.connect_line = None
+        self.backlog = None                      # ONB-4: the bar's *Anki · N waiting* (the status service's count)
         self._miner = None                       # Michi-U: the Anki Miner the last gather knew of (the feed's `miner`)
         self.gathers = 0                         # entries worked out (tests: N9)
         self.gone_folders = None                 # T6: the looks' gone rows (None: no look has said yet)
@@ -992,7 +994,8 @@ class NeedsYou(QObject):
         if view is None:
             return
         miner, self._miner = self._miner, self._miner_now()
-        if old is not None and old.mode == view.mode and old.loading == view.loading and miner == self._miner:
+        if old is not None and old.mode == view.mode and old.loading == view.loading and miner == self._miner and \
+                getattr(old, "mine_line", None) == getattr(view, "mine_line", None):    # (ONB-4: a line moved)
             if _same(old.rows, view.rows):
                 return                               # another tab's change: these entries can't have moved
             if not self._running and _reads_same(old.rows, view.rows) and self._in_order(view.rows):
@@ -1023,6 +1026,14 @@ class NeedsYou(QObject):
             return
         self.connect_line = key
         self.refresh()
+
+    def backlog_in(self, n):
+        """ONB-4: the bar's *Anki · N waiting* (the status service's count, kept by its file's stamp: nothing read
+        here) — gathered again only when it crosses *Ready for more?*'s MORE_AT, or comes or goes, never at every
+        count."""
+        was, self.backlog = self.backlog, n if isinstance(n, int) else None
+        if _low(was) != _low(self.backlog):
+            self.refresh()
 
     def _miner_now(self):
         """Michi-U: the Anki Miner Connect's feed last saw (`feed.Feed.miner`: the setup record's stat, the installer's
@@ -1122,6 +1133,7 @@ class NeedsYou(QObject):
         emptied = self._emptied()
         gone_judged = gone_folders if self._gone_judged else None     # never pruned by a summary that judged none
         asking = frozenset(self._dw_asking)
+        waiting = self.backlog
         log_path = getattr(getattr(self.win.services, "controller", None), "log_path", None)
         generate_log = log_path() if callable(log_path) else None      # Kantan-B1: a failed Generate's hover
 
@@ -1156,7 +1168,8 @@ class NeedsYou(QObject):
                                   no_subs=service.no_subs_offer(view, settings),   # Michi-NS: videos, no subtitle
                                   strays=service.deck_strays(lang, settings),      # Michi-DK: outside its deck
                                   generate_log=generate_log,                  # Kantan-B1: its path, in the hover
-                                  asking=asking)                              # Kyou-DW 3: Parsing mistake's ask
+                                  asking=asking,                              # Kyou-DW 3: Parsing mistake's ask
+                                  waiting=waiting)                            # ONB-4: Ready for more?
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
 
@@ -2479,6 +2492,36 @@ class NeedsYou(QObject):
     def _do_not_now_on(self, entry, line):
         self._do_not_now(entry, line)
 
+    # ONB-4 (PROVISIONAL): a small start's one-time *Ready for more?*
+    def _do_more_cards(self, entry, _line):
+        """*Next 20 episodes*: the full start's *Keep up to* and line through their owners (`setup_wizard.more_cards`),
+        then the answer kept — on a worker, its arc turning until then. The store not writable now: said, the card
+        stays (pressed again, it asks again)."""
+        from app.services import setup_wizard
+        lang, settings_service, writer = self.language, self.win.services.settings, self.win.services.writer
+
+        def run():
+            if setup_wizard.more_cards(settings_service, writer, lang) is None:
+                return False
+            service.answer(lang, [service.MORE_CARDS])
+            return True
+
+        def done(ok):
+            if not ok:
+                self._stays("more_cards", entry)
+            paused = settings_manager.paused(settings_service.get() or {}, "miner")
+            self._say(strings.NEEDS_MORE_NOT_NOW if not ok else
+                      strings.NEEDS_MORE_MADE_PAUSED if paused else strings.NEEDS_MORE_MADE)
+            self.refresh()
+        self._press("more_cards", entry, run, then=done)
+
+    def _do_keep_small(self, entry, _line):
+        """*Keep it small*: answered for good (the line and *Keep up to* stay as they are)."""
+        def done(_n):
+            self._say(strings.NEEDS_KEPT_SMALL)
+            self.refresh()
+        self._press("keep_small", entry, service.answer, self.language, service.answer_keys(entry), then=done)
+
     # Known from Anki's question (#43)
     def _do_mark_known(self, entry, _line):
         lang, settings = self.language, self.win.services.settings.get() or {}
@@ -2837,6 +2880,12 @@ def _first_cards(language, settings, data_dir=None):
 
 def _same(a, b):
     return a is b or (len(a) == len(b) and all(x is y for x, y in zip(a, b)))
+
+
+def _low(n):
+    """ONB-4: the bar's count as *Ready for more?* reads it — None (no backlog saved), or whether it is nearly
+    studied."""
+    return None if n is None else n <= service.MORE_AT
 
 
 def _reads_same(a, b):

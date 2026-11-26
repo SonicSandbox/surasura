@@ -1611,6 +1611,11 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                                      "• What comes into your top 20 later gets its cards already: Settings › Anki & mining"),
     "not_now_on": ("Not now", "No cards are made until you say yes.\n"
                               "• This question stays on Needs you"),
+    # ONB-4 (PROVISIONAL words): a small start's one-time *Ready for more?*
+    "more_cards": ("Next 20 episodes", "Cards for your next 20 episodes are made by themselves, up to 300 waiting.\n"
+                                       "• Change it any time: Settings › Anki & mining"),
+    "keep_small": ("Keep it small", "Cards stay a few episodes at a time, and this isn't asked again.\n"
+                                    "• Change it any time: Settings › Anki & mining"),
     "mark_known": ("Mark them known", "Their words count as known from now on: your list and journey follow at the "
                                       "next Generate"),
     "leave_known": ("Leave them", "Their words stay as they are, and these cards stop asking. Cards you suspend or "
@@ -1772,6 +1777,11 @@ NEEDS_FIRST_CARDS_MADE_ON = "Cards are being made for them"
 NEEDS_FIRST_CARDS_MADE_PAUSED = "Their cards are made once you resume Anki Miner"   # (Anki Miner paused at the bar)
 NEEDS_FIRST_CARDS_LATER_ON = NEEDS_FIRST_CARDS_LATER
 NEEDS_FIRST_CARDS_NOT_ON = "No cards were made: {why}"
+# ONB-4 (PROVISIONAL words): a small start's *Ready for more?*
+NEEDS_MORE_MADE = "Cards for your next 20 episodes are on their way · change it in Settings › Anki & mining"
+NEEDS_MORE_MADE_PAUSED = "Cards for your next 20 episodes are made once you resume Anki Miner"
+NEEDS_MORE_NOT_NOW = "Your library can't be changed right now: try again in a moment"
+NEEDS_KEPT_SMALL = "Kept small · change it any time in Settings › Anki & mining"
 NEEDS_KNOWN_MARKED = "{n} words are known now · your list follows at the next Generate"
 NEEDS_KNOWN_MARKED_NONE = "Their words were known already"
 NEEDS_KNOWN_LEFT = "Left as they are · cards you suspend or mark from now on still count"

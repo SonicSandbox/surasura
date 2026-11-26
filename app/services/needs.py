@@ -152,12 +152,14 @@ DELETED = "deleted"                   # Kyou-DW (PROVISIONAL): cards you deleted
 OLD_DELETES = "old-deletes"           # Kyou-DW (PROVISIONAL): the deletes from before it asked — forget them, once
 SWAPPED = "swapped"                   # Kantan-SL (PROVISIONAL): Swap made a card from another line — said, Undo
 SWAP_WAITS = "swap-waits"             # Kantan-SL (PROVISIONAL): a swap's word has no other line yet — said once
+MORE_CARDS = "more-cards"             # ONB-4 (PROVISIONAL): a small start's cards nearly studied — *Ready for more?*, once
+MORE_AT = 10                    # new cards waiting in Anki (the bar's *Anki · N waiting*) at most: "nearly studied"
 FOLDER_MIN = 10                 # gone files (of two shows or more) before a folder is one card
 LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
          FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND, AUDIOBOOK_TRANSCRIPT, SETTINGS_FOLDER,
          BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS, DECK_STRAYS, SHELVED, TIDIED, DELETED, OLD_DELETES,
-         SWAPPED, SWAP_WAITS)
+         SWAPPED, SWAP_WAITS, MORE_CARDS)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
 WIRED_LATER = frozenset(("make_cards", "try_again", "change_video"))   # (K1's *Start fresh*: `SourceLooks.fresh`)
@@ -290,6 +292,12 @@ STRINGS = {
     "first_title": "Make cards for your first {n} episodes?", "first_title_one": "Make cards for your first episode?",
     "first_say": "Your shows came in from your folders without cards: Surasura asks before it makes any.",
     "first_say_later": "No cards are made until you press Make cards. Mine now makes one episode's.",
+    # ONB-4 (PROVISIONAL): a small start's one-time *Ready for more?*
+    "more_title": "Your first {n} episodes' cards are nearly studied. Ready for more?",
+    "more_title_one": "Your first episode's cards are nearly studied. Ready for more?",
+    "more_say": "Next {to} episodes makes cards for your next {to} episodes by themselves, up to {cap} waiting. Keep "
+                "it small keeps {n} at a time. Either way this isn't asked again: Settings › Anki & mining changes "
+                "it any time.",
     "known_title": "You'd already {states} {n} cards in Anki: mark their words known?",
     "known_title_one": "You'd already {states} a card in Anki: mark its word known?",
     "known_say": "Count as known in Anki (Settings › Known words) found them there when it first looked, so it asks "
@@ -390,7 +398,7 @@ REASONS = {ASK: "reason_ask", FOLDER_GONE: "reason_folder", OFFLINE: "reason_off
 REASON_AT = 3                       # cards of one reason that bring its line (the bulk answer's own: two shows)
 # the cards whose own two answers both end them: no ⋯ (its *Not now* would say the same as their own)
 NO_LATER = frozenset((FIRST_CARDS, KNOWN_OFFER, BACKLOG_SHOWS, MINER_UPDATE,   # (Michi-U: the rows' tip points here)
-                      DECK_STRAYS))
+                      DECK_STRAYS, MORE_CARDS))
 
 
 # --- small pieces ---------------------------------------------------------------------------------------------------- #
@@ -454,7 +462,7 @@ def item_key(item_id):
 def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(), asks=(), answered=frozenset(),
             mine_line=20, offers=frozenset(), cards_on=False, miner_found=True, gone_folders=(), settled=False,
             hidden=frozenset(), emptied=None, settings_folders=(), backlog=None, miner_update=None, no_subs=None,
-            generate_log=None, strays=None, asking=frozenset()):
+            generate_log=None, strays=None, asking=frozenset(), waiting=None):
     """The page's entries in order (see the module's doc). `view`: the reader's `View` (None: no library); `failures`:
     `status` Entries (text, at, seen); `connect`: one language's Connect record (`read_connect`; None: Connect off);
     `seen` / `answered`: `read_seen` / `read_answered`; `offline_roots`: `find_offline`'s Roots; `asks`: `asks_of`'s
@@ -475,7 +483,9 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     `generate_log` (Kantan-B1): the window's Generate log, a Generate failure's hover (never its line); `strays`
     (Michi-DK): `deck_strays`' answer — ONE card while Connect's cards are outside the deck Surasura shows;
     `asking` (Kyou-DW 3): the deleted cards whose *Parsing mistake* was pressed (note ids; the card's own key for
-    *All parsing mistakes*), each asked its follow-up (`_deleted_entries`)."""
+    *All parsing mistakes*), each asked its follow-up (`_deleted_entries`); `waiting` (ONB-4): the new cards waiting in
+    Anki, the bar's *Anki · N waiting* (`status.anki_backlog`; None: no backlog saved) — a small start's one-time
+    *Ready for more?* (`_more_entry`) once they are nearly studied."""
     seen, answered, hidden = frozenset(seen or ()), frozenset(answered or ()), frozenset(hidden or ())
     rows = tuple(view.rows) if view is not None and view.mode == "store" else ()
     by_id = {e.id: (r, e) for r in rows for e in r.episodes}
@@ -527,6 +537,10 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
         big = big[1:]
     if FIRST_CARDS in frozenset(offers or ()) and FIRST_CARDS not in answered and miner_found:
         out.append(_first_cards_entry(rows, seen, mine_line, cards_on, later=FIRST_CARDS_NOT_NOW in answered))
+    more = _more_entry(view, waiting, seen) if cards_on and MORE_CARDS in frozenset(offers or ()) and \
+        MORE_CARDS not in answered else None
+    if more is not None:
+        out.append(more)
     offer = (connect or {}).get("known_offer")
     if offer:
         out.append(_known_entry(offer, seen))
@@ -1168,6 +1182,41 @@ def _first_cards_entry(rows, seen, mine_line, cards_on=False, later=False):
     return Entry(key=FIRST_CARDS, kind=FIRST_CARDS, title=title, lines=(), actions=actions[:1] if later else actions,
                  unseen=FIRST_CARDS not in seen, say=STRINGS["first_say_later" if later else "first_say"],
                  data={"n": n})
+
+
+def _more_entry(view, waiting, seen):
+    """ONB-4's one line (PROVISIONAL; offered by a small start, `setup_wizard.start_cards`, and not answered — the
+    caller's check): *Your first 3 episodes' cards are nearly studied. Ready for more?* · *Next 20 episodes* (the full
+    start's line and *Keep up to*, `setup_wizard.more_cards`) · *Keep it small* (answered for good). Only while the
+    store's line is still a small start's (1 to its 3: a line the learner moved in Settings is their answer already),
+    `waiting` (the bar's count; None: no backlog saved, nothing known) is MORE_AT or fewer, and a file of the line
+    carries cards (the start's cards were made: before that, nothing waits because nothing was made). The line's walk
+    ends at its last file (≤ 3 files, a row's first) -> Entry or None."""
+    from app.services.setup_wizard import START_SIZES
+    small, to, cap = START_SIZES["small"][0], *START_SIZES["full"]
+    line = getattr(view, "mine_line", None)
+    if not isinstance(waiting, int) or waiting > MORE_AT or not isinstance(line, int) or not 0 < line <= small or \
+            getattr(view, "mode", None) != "store" or not _line_has_cards(view.rows, line):
+        return None
+    title = STRINGS["more_title_one"] if line == 1 else STRINGS["more_title"].format(n=line)
+    return Entry(key=MORE_CARDS, kind=MORE_CARDS, title=title, lines=(), actions=("more_cards", "keep_small"),
+                 unseen=MORE_CARDS not in seen, say=STRINGS["more_say"].format(to=to, cap=cap, n=line),
+                 data={"n": line, "to": to, "cap": cap})
+
+
+def _line_has_cards(rows, line):
+    """Whether a file in the mine line (`Episode.in_top`) has cards in Anki, walking Current only down to the line's
+    `line`-th file."""
+    top = 0
+    for row in rows:
+        for e in row.episodes:
+            if e.in_top:
+                if e.cards:
+                    return True
+                top += 1
+                if top >= line:
+                    return False
+    return False
 
 
 FLAG_WORDS = ("red", "orange", "green", "blue", "pink", "turquoise", "purple")

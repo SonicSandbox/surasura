@@ -1239,8 +1239,9 @@ class RowDelegate(QStyledItemDelegate):
     # sizes ------------------------------------------------------------------------------------------------------ #
     @staticmethod
     def line_h(ln):
-        """One line's strip after its row: a groove's own few px in the gap (W3.1a: really subtle)."""
-        return rl("line")
+        """One line's strip after its row: the top-20 line a groove's own few px in the gap (W3.1a: really subtle); the
+        Soon line room for its name (CURRENT-SOON-LOOK B), × the text size."""
+        return round(rl("soon-line") * fz()) if ln.kind == "soon" else rl("line")
 
     @staticmethod
     def _lines_h(lines):
@@ -2651,12 +2652,20 @@ class RowDelegate(QStyledItemDelegate):
         TEXT.draw(p, box.left() + 6, box.center().y(), text, "row-sub", w, c("ink-dim"), dpr=dpr, elide=False)
 
     def _paint_line(self, p, ln, strip, dpr, hot=False):
-        """A line after its row (W3.1a §1 *Top-20 line*, *Soon line*): a groove — 1 px dark, then 1 px lit lip —
-        across the list in its own strip, no word; Soon's quieter still (the lip only). Under the hand it lights a step
-        (its lip). Whole device pixels, so it stays crisp at every scale."""
+        """A line after its row (W3.1a §1 *Top-20 line*, *Soon line*): the top-20 line a groove — 1 px dark, then 1 px
+        lit lip — across the list in its own strip, no word; the Soon line its name, SOON in the month labels' small
+        caps in the accent, then a hairline in the accent to the list's end (CURRENT-SOON-LOOK B, PROVISIONAL). Under
+        the hand each lights a step. Whole device pixels, so it stays crisp at every scale."""
         k = max(1, round(dpr)) / dpr                 # one line's height: whole device px
         y = round((strip.top() + (strip.height() - 2 * k) / 2) * dpr) / dpr
         x0, w = strip.left() + 4, strip.width() - 8
+        if ln.kind == "soon":
+            mid = strip.top() + strip.height() / 2
+            tw, _cut = TEXT.draw(p, x0 + 6, mid, strings.ROWS_SOON_LINE_LABEL.upper(), "month", w, c("accent"), dpr=dpr)
+            gap = round(10 * fz())
+            ry = round(mid * dpr) / dpr
+            p.fillRect(QRectF(x0 + 6 + tw + gap, ry, max(0.0, w - 6 - tw - gap), k), c("accent" if hot else "soon-line"))
+            return
         if ln.kind == "top":
             p.fillRect(QRectF(x0, y, w, k), c("groove"))
         p.fillRect(QRectF(x0, y + k, w, k), c("line-hi" if hot else "groove-lip"))

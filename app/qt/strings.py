@@ -670,6 +670,7 @@ WORDS_ALL_UNDO_TIP = "Put back the words I know all of these marked"
 WORDS_MARK_FAILED = "Nothing was marked: {why}"
 ROWS_TOP_LINE_WHERE = "{tip}\n• Click to change it: Settings → Anki & mining"     # P4.1 L2 (row 4.1.14)
 ROWS_SOON_LINE_WHERE = "{tip}\nWhere Soon starts is a setting: Settings → Content"
+ROWS_SOON_LINE_LABEL = "Soon"                        # CURRENT-SOON-LOOK B: the Soon line's name, in its strip
 ROWS_ACCESSIBLE_STRING = "{line} · {string}"
 
 # --- W3.1a footer (W31A-2): the cards waiting in Anki beside the emerald. (The re-order's and Connect's lines left

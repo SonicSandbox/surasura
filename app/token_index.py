@@ -1151,6 +1151,7 @@ class Store:
         self.language = language
         self.path = path            # the store's file
         self._names = None          # the library's name tables, read on the first cached file (Japanese)
+        self._tables_read = None    # (names_tables' stored text, its parse): names_tables
         self._adjust = None         # (meta names_adjust as stored, parsed): `_names_entry`
         self.switches = None        # the name switches (`_library_switches`) a process without the run's settings reads
         self._types = {}            # type id -> (lemma, reading, surface, orth): the vocabulary rows read so far
@@ -1409,9 +1410,16 @@ class Store:
 
     # -- the library's name tables (app/names.py) ---------------------------- #
     def names_tables(self):
-        """The name tables the last index computed, or None (none yet, or not a Japanese store)."""
+        """The name tables the last index computed, or None (none yet, or not a Japanese store). Parsed again only when
+        the stored text changes (`_tables_read`): a Generate asked six times a run — the phrase basis twice, the run's
+        own tables, the known-words key, the cached files (STORE-KEY 2). The same dict each call: read it, never change
+        it."""
         try:
-            return json.loads(self.get_meta("names_tables") or "null")
+            raw = self.get_meta("names_tables") or "null"
+            kept = getattr(self, "_tables_read", None)       # (a reader made with `Store.__new__` has none)
+            if kept is None or kept[0] != raw:
+                kept = self._tables_read = (raw, json.loads(raw))
+            return kept[1]
         except Exception:
             return None
 
@@ -1591,44 +1599,54 @@ class Store:
         self.conn.commit()
 
     # -- known-words cache (skip re-tokenizing known terms every run) -------- #
-    def _known_key(self, signature):
-        """`signature` with what else decides how a Japanese known word reads: the names switches and the library's
-        name tables (a known name is one word only with them), and the phrases and pronouns switches (a known 予想通り
-        or 何様 is one word or two) — so any change reads the known words again. The switches are read fresh, as the
-        build signature's are: the dashboard's check must see a change as the indexer it launches will."""
-        if not signature or self.language != "ja":
-            return signature
+    def known_suffix(self):
+        """What else decides how a Japanese known word reads, as the text `_known_key` adds to a signature: the names
+        switches and the library's name tables (a known name is one word only with them), and the phrases and pronouns
+        switches (a known 予想通り or 何様 is one word or two) — so any change reads the known words again. The switches
+        are read fresh, as the build signature's are: the dashboard's check must see a change as the indexer it
+        launches will. Each call reads settings.json and parses the name tables' blob, so a miss works it out once and
+        hands it to every step (`suffix=`: the lookup, the per-term cache, the write — STORE-KEY). "" for Chinese."""
+        if self.language != "ja":
+            return ""
         try:
             from app import settings_manager
             logic = settings_manager.load_settings()["logic"]
         except Exception:
-            return signature
+            return ""
+        suffix = ""
         switches = [bool(logic.get(k, True))
                     for k in ("names_katakana", "names_recurring", "names_kanji", "names_work_terms")]
         stamp = (self.names_tables() or {}).get("stamp") if any(switches[1:]) else None
         if switches != [True] * 4 or stamp is not None:
-            signature = f"{signature}|names={''.join('1' if s else '0' for s in switches)}:{stamp}"
+            suffix = f"|names={''.join('1' if s else '0' for s in switches)}:{stamp}"
         for key in ("phrases_and_titles", "pronoun_bases"):
             if not logic.get(key, True):
-                signature = f"{signature}|{key}=off"
+                suffix = f"{suffix}|{key}=off"
         # Idioms and set phrases on the list: a known phrase is also known as its lemmas joined, and a known sentence's
         # phrases are known — the phrases' own, found by their finder, so the phrase data's revision and the finder's
         # version too (analyzer.load_known_words).
         if not logic.get("phrase_rows", True):
-            return signature
+            return suffix
         try:
             from app import phrase_data, phrases
-            return f"{signature}|phrase_rows={phrase_data.REVISION}/{phrases.MATCHER_VERSION}"
+            return f"{suffix}|phrase_rows={phrase_data.REVISION}/{phrases.MATCHER_VERSION}"
         except Exception:
-            return f"{signature}|phrase_rows=on"
+            return f"{suffix}|phrase_rows=on"
 
-    def get_cached_known(self, signature):
+    def _known_key(self, signature, suffix=None):
+        """`signature` with `known_suffix` (worked out here when the caller hasn't)."""
+        if not signature:
+            return signature
+        return signature + (self.known_suffix() if suffix is None else suffix)
+
+    def get_cached_known(self, signature, suffix=None):
         """Return (known_tuples, known_lemmas) if the cache matches `signature`, else None.
-        `signature` encodes KnownWord.json's (exists, mtime, size) — so any edit/delete/add misses.
+        `signature` encodes KnownWord.json's (exists, mtime, size) — so any edit/delete/add misses. `suffix`: the
+        caller's `known_suffix`, worked out once for its whole miss.
 
         Parsed again only when the cached values change (`_KNOWN_READ`): every Rarity slider refresh, and the
         dashboard's check before launching the indexer, asked — each caller gets sets of its own."""
-        signature = self._known_key(signature)
+        signature = self._known_key(signature, suffix)
         if not signature or self.get_meta("known_sig") != signature:
             return None
         try:
@@ -1640,12 +1658,12 @@ class Store:
         except Exception:
             return None
 
-    def _terms_key(self, script):
+    def _terms_key(self, script, suffix=None):
         """What decides how one known term reads, but the term (G8): the language, the script, the tokenizer's identity
         (`build_sig`) and the known words' own switches and tables (`_known_key`) — any change reads every term again."""
-        return self._known_key(json.dumps(["terms", self.language, script, self.get_meta("build_sig")]))
+        return self._known_key(json.dumps(["terms", self.language, script, self.get_meta("build_sig")]), suffix)
 
-    def known_terms(self, script="asis"):
+    def known_terms(self, script="asis", suffix=None):
         """{term: (its (lemma, reading)s, its lemmas)}: each known term as the last normalization read it, while what
         decides how a term reads is unchanged (`_terms_key`) — else {} (`analyzer.load_known_words` reads them all)."""
         raw = self.get_meta("known_terms")
@@ -1655,32 +1673,38 @@ class Store:
             key, terms = json.loads(zlib.decompress(raw if isinstance(raw, bytes) else bytes.fromhex(raw)))
         except Exception:
             return {}
-        if key != self._terms_key(script):
+        if key != self._terms_key(script, suffix):
             return {}
         return {term: ({tuple(t) for t in tuples}, set(lemmas)) for term, tuples, lemmas in terms}
 
-    def set_known_terms(self, script, terms):
-        value = zlib.compress(json.dumps([self._terms_key(script), [[term, [list(t) for t in tuples], list(lemmas)]
-                                                                       for term, (tuples, lemmas) in terms.items()]],
-                                         ensure_ascii=False).encode("utf-8"), _BLOB_LEVEL).hex()
-        cur = self.conn.cursor()
-        cur.execute("BEGIN IMMEDIATE")
-        try:
-            cur.execute("INSERT INTO meta(key, value) VALUES('known_terms', ?) ON CONFLICT(key) DO UPDATE SET value=?",
-                        (value, value))
-            self.conn.commit()
-        except Exception:
-            self.conn.rollback()
-            raise
+    def _known_terms_value(self, script, terms, suffix=None):
+        """The per-term cache as `meta.known_terms` holds it: its key and the terms, JSON, zlib, hex text."""
+        return zlib.compress(json.dumps([self._terms_key(script, suffix),
+                                         [[term, [list(t) for t in tuples], list(lemmas)]
+                                          for term, (tuples, lemmas) in terms.items()]],
+                                        ensure_ascii=False).encode("utf-8"), _BLOB_LEVEL).hex()
 
-    def set_cached_known(self, signature, known_tuples, known_lemmas):
-        signature = self._known_key(signature)
+    def set_known_terms(self, script, terms, suffix=None):
+        self._put_meta((("known_terms", self._known_terms_value(script, terms, suffix)),))
+
+    def set_cached_known(self, signature, known_tuples, known_lemmas, suffix=None, terms=None, script="asis"):
+        """Keep a normalization for `signature` — and, given `terms`, the per-term cache with it, in the same
+        transaction (one commit a miss; `suffix`: the miss's own `known_suffix`)."""
+        if suffix is None:
+            suffix = self.known_suffix()
+        rows = [("known_sig", self._known_key(signature, suffix)),
+                ("known_tuples", json.dumps([list(t) for t in known_tuples], ensure_ascii=False)),
+                ("known_lemmas", json.dumps(list(known_lemmas), ensure_ascii=False))]
+        if terms is not None:
+            rows.append(("known_terms", self._known_terms_value(script, terms, suffix)))
+        self._put_meta(rows)
+
+    def _put_meta(self, rows):
+        """`rows` ((key, value)s) into meta in one transaction."""
         cur = self.conn.cursor()
         cur.execute("BEGIN IMMEDIATE")
         try:
-            for k, v in (("known_sig", signature),
-                         ("known_tuples", json.dumps([list(t) for t in known_tuples], ensure_ascii=False)),
-                         ("known_lemmas", json.dumps(list(known_lemmas), ensure_ascii=False))):
+            for k, v in rows:
                 cur.execute("INSERT INTO meta(key, value) VALUES(?,?) "
                             "ON CONFLICT(key) DO UPDATE SET value=?", (k, v, v))
             self.conn.commit()
@@ -2458,18 +2482,23 @@ def _read_meta(language, key):
         return None
 
 
-def ignored_names(language):
+def ignored_names(language, settings=None):
     """The library's names as ignored words — with Ignore names on (logic.ignore_names, off by default: a learner
     learns names too, unless they choose not to): the lemmas the last index found to be people's names
     (app/names.py `name_words`), read without writing anything. Part of `ignored_entries`, so every ignore set holds
     them — the list, the Rarity slider and automatic rarity, Junban, 例文, the sentence dictionary, the YouTube
     preview. [] with the switch off, for Chinese, and before the first index. The switch is read fresh, as the build
-    signature's are: the dashboard's slider must see a change as the next Generate will."""
+    signature's are: the dashboard's slider must see a change as the next Generate will. `settings`: the ones a caller
+    has just loaded (Connect's known words, `sentence_corpus.known_sets`: STORE-KEY 2), read instead of the file; one
+    with no `logic` reads the file."""
     if language != "ja":
         return []
     try:
-        from app import settings_manager
-        if not settings_manager.load_settings()["logic"].get("ignore_names", False):
+        logic = settings.get("logic") if isinstance(settings, dict) else None
+        if not isinstance(logic, dict):
+            from app import settings_manager
+            logic = settings_manager.load_settings()["logic"]
+        if not logic.get("ignore_names", False):
             return []
     except Exception:
         return []
@@ -2638,7 +2667,7 @@ def preview_ignore_set(user_files_dir, language, script="asis"):
     return ignore
 
 
-def ignored_entries(user_files_dir, language):
+def ignored_entries(user_files_dir, language, settings=None):
     """The dictForms of KnownWord.json's IGNORED entries, as written — Migaku's status for a word the user dismissed
     there — and, with Ignore names on, the library's names (`ignored_names`). They are ignored words, as a line of the
     Ignore list is: off the list, and never an unknown in a sentence. One reader for every ignore set — the analyzer's
@@ -2662,7 +2691,8 @@ def ignored_entries(user_files_dir, language):
         kept = _IGNORED_ENTRIES[path] = (signature, [
             str(e.get("dictForm") or "").strip() for e in entries
             if isinstance(e, dict) and e.get("knownStatus") == "IGNORED" and str(e.get("dictForm") or "").strip()])
-    return list(kept[1]) + ignored_names(language)
+    # (handed on only when given: a stand-in that takes the language alone — the parsing suite's, tests' — still fits)
+    return list(kept[1]) + (ignored_names(language) if settings is None else ignored_names(language, settings))
 
 
 _IGNORED_ENTRIES = {}   # KnownWord.json's path -> (its signature, its IGNORED dictForms), for ignored_entries

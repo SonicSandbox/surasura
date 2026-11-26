@@ -19,6 +19,7 @@
 - **Built when the look changes, never on an open** (R5): `set_look` rebuilds only for a new answer; an open with the
   same answer makes no widget. Nothing here reads a file: the shell asks the service on a worker.
 """
+import bisect
 import collections
 import time
 
@@ -39,6 +40,7 @@ RELOOK_MS = 2000                    # the path's look, this long after the view'
 FOCUS_RELOOK_S = 30                 # ... and on the window's activation, at most this often
 STAGE_BAND = 30                     # px the panel's stage stones take (the now stone's ring whole)
 SLICES_KEPT = 256                   # the last pieces' times kept (tests: the largest slice ≤ 4 ms; 64 fell under 3.0.12's 69 cards)
+REVEAL_ROWS = 8                     # rows past the first screen shown (or hidden again) a turn (GUIDE-LAYOUT: ~1 ms)
 
 
 def release_name(release):
@@ -311,6 +313,8 @@ class GuidePanel(motion.Overlay):
         self.builds = 0                     # bodies made (tests: once per new answer, never per open)
         self._job = [0, collections.deque()]   # [token, pieces]
         self.slices = []                    # each piece's time on the GUI thread, ms (the last SLICES_KEPT)
+        self._turn = 0                      # the waiting rows' turns (`_reveal`, `_hide_below`): a newer one stops them
+        self._fresh()
         self.shadow = shadow.Follower(self, self.shadow_name)
         self._away = _Away(self)
         parent.installEventFilter(self)
@@ -368,6 +372,7 @@ class GuidePanel(motion.Overlay):
         col.setContentsMargins(0, 0, round(2 * f), 0)
         col.setSpacing(round(6 * f))
         self.cards, self.folds, self.rows = [], [], []
+        self._fresh(self.parentWidget())
         releases = self.look.releases if self.look else ()
         p = self.path
         if p is not None:
@@ -390,7 +395,7 @@ class GuidePanel(motion.Overlay):
                     c.setVisible(False)
                     into[1].append(c)
                 self.cards.append(c)
-                self._row(col, c)
+                self._row(col, c, counted=not folded)
             pieces.append(make)
 
         def fold(entry):
@@ -433,7 +438,7 @@ class GuidePanel(motion.Overlay):
                 label("guidegroup", strings.GUIDE_FOR_YOU)
             for n, item in enumerate(shown.for_you + shown.others):
                 if n == len(shown.for_you) and shown.for_you:
-                    pieces.append(lambda: col.addSpacing(round(6 * f)))
+                    pieces.append(lambda: self._space(col, round(6 * f)))
                 card(item)
             if shown.fixes:
                 entry = [None, [], False]
@@ -484,6 +489,7 @@ class GuidePanel(motion.Overlay):
             self.builds += 1
             if self.isVisible():
                 self.place()
+                self._reveal_soon()             # (opened mid-build: the rows made since wait for their turn too)
         self.slices.append((time.perf_counter() - t0) * 1000)
         del self.slices[:-SLICES_KEPT]
         if not done:
@@ -509,6 +515,7 @@ class GuidePanel(motion.Overlay):
         entry[2] = not entry[2]
         for card in entry[1]:
             card.setVisible(entry[2])
+            self._count(card, 1 if entry[2] else -1)
         self._fold_words(entry)
         self.place()
 
@@ -527,20 +534,122 @@ class GuidePanel(motion.Overlay):
         m = self.layout().contentsMargins()
         return width, max(1, width - m.left() - m.right())
 
-    def _row(self, col, widget, align=None):
-        """`widget` into a body's column, polished and its lines wrapped once at the width `place()` will ask, in this
-        piece's own turn: the first `place()` after a build then wraps nothing for the first time (every row's first wrap
-        there took 4.0 ms of its 4 at nine releases' notes, 3.0.11's cut)."""
+    # --- the rows' heights, kept (GUIDE-LAYOUT, 3.0.20) ------------------------------------------------------------ #
+    # The first place() after a build walked every row for its height, and the open then laid out and showed every row:
+    # at 17 releases' notes 3.1 ms of place()'s 4 and ~0.19 ms more a release, and the open's show 5.5 ms. Now each row's
+    # height is measured once, in its own piece's turn, at both widths place() can ask (the body's, and the body's beside
+    # the scroll bar), and summed as it lands: place() reads the sums. The rows past the window's first screen wait
+    # hidden, always one block at the body's end: the body keeps its whole height (place() sizes it by the sums) and the
+    # column's closing stretch takes their room, so the rows above never move. They are shown REVEAL_ROWS a turn once
+    # the panel is open, top down; a close hides those below the screen again, bottom up. The learner sees the same
+    # body: the same heights, the same scroll bar.
+    def _fresh(self, p=None):
+        """A new body's sums, at the two widths its rows are measured at (none without a window)."""
+        self._turn += 1                     # (an older body's turns stop)
+        self._key = style.current()
+        self._ws = ()
+        self._cut = 0                       # px of rows shown before the rest wait (the window's room)
+        if p is not None:
+            inner = self._widths(p)[1]
+            bar = self.scroll.verticalScrollBar().sizeHint().width()
+            right = round(2 * self._f)                                  # (the body column's right margin, `_build`)
+            self._ws = (max(1, inner - right), max(1, inner - bar - right))
+            self._cut = self._top_room(p)[1]
+        self._sums = [0] * len(self._ws)    # the counted rows' heights at each width
+        self._n = 0                         # ... how many (the column's spacing goes between them)
+        self._fixed = 0                     # the fixed spaces' px
+        self._later = []                    # the rows made past the first screen, in order
+        self._shown_to = 0                  # ... how many of them are shown: the rest wait hidden
+
+    def _row(self, col, widget, align=None, counted=True):
+        """`widget` into a body's column, polished and its height measured at both widths place() can ask, in this
+        piece's own turn (every row's first wrap in place() took 4.0 ms of its 4 at nine releases' notes, 3.0.11's
+        cut). `counted`: shown (a folded fix is not, until its fold opens). Past the window's first screen it waits
+        hidden (`_reveal`)."""
         if align is None:
             col.addWidget(widget)
         else:
             col.addWidget(widget, 0, align)
-        p = self.parentWidget()
         widget.ensurePolished()                  # (its style's font first: a later polish would drop the wrap)
-        if p is not None and widget.hasHeightForWidth():
-            m = col.contentsMargins()
-            widget.heightForWidth(max(1, self._widths(p)[1] - m.left() - m.right()))
+        hfw = widget.hasHeightForWidth()
+        widget._heights = tuple(widget.heightForWidth(w) if hfw else widget.sizeHint().height() for w in self._ws)
+        if counted:
+            if self._ws and self._sums[0] + self._fixed > self._cut:
+                widget.setVisible(False)
+                self._later.append(widget)
+            self._count(widget, 1)
         return widget
+
+    def _count(self, widget, sign):
+        for n, h in enumerate(widget._heights):
+            self._sums[n] += sign * h
+        self._n += sign
+
+    def _space(self, col, px):
+        col.addSpacing(px)
+        self._fixed += px
+
+    def _held_rows(self):
+        """The rows waiting hidden now, in order."""
+        return self._later[self._shown_to:]
+
+    def _reveal(self, token):
+        """REVEAL_ROWS more of the waiting rows shown, top down, a batch a turn while the panel is open (a newer body,
+        a close or an open stops it)."""
+        if sip.isdeleted(self) or token != self._turn or not self.isVisible():
+            return
+        t0 = time.perf_counter()
+        end = min(len(self._later), self._shown_to + REVEAL_ROWS)
+        for w in self._later[self._shown_to:end]:
+            w.setVisible(True)
+        self._shown_to = end
+        self.slices.append((time.perf_counter() - t0) * 1000)
+        del self.slices[:-SLICES_KEPT]
+        if end < len(self._later):
+            QTimer.singleShot(0, lambda: self._reveal(token))
+
+    def _reveal_soon(self):
+        """The waiting rows' reveal from the next turn (an older one stops)."""
+        self._turn += 1
+        if self._shown_to < len(self._later):
+            token = self._turn
+            QTimer.singleShot(0, lambda: self._reveal(token))
+
+    def _reveal_all(self):
+        """Every waiting row shown at once (a width the rows weren't measured at). A fold needs none: one a learner can
+        press is shown, and its fixes come right after it, above the waiting rows."""
+        self._turn += 1
+        for w in self._later[self._shown_to:]:
+            w.setVisible(True)
+        self._shown_to = len(self._later)
+
+    def _hide_below(self, token, stop):
+        """After a close, a batch a turn: the shown rows from `_later[stop]` on hidden again, bottom up (the waiting
+        rows stay one block at the body's end), so the next open shows only what it shows. Not while a fold is open
+        (its fixes sit among them), nor at a width the rows weren't measured at."""
+        if sip.isdeleted(self) or token != self._turn or self.isVisible() or self.body is None:
+            return
+        if any(entry[2] for entry in self.folds) or self._column_width() not in self._ws:
+            return
+        start = max(stop, self._shown_to - REVEAL_ROWS)
+        for w in reversed(self._later[start:self._shown_to]):
+            w.setVisible(False)
+        self._shown_to = start
+        if start > stop:
+            QTimer.singleShot(0, lambda: self._hide_below(token, stop))
+
+    def _column_width(self):
+        """The body column's width now (the body's, less its margins)."""
+        if self.body is None:
+            return 0
+        m = self.body.layout().contentsMargins()
+        return max(1, self.body.width() - m.left() - m.right())
+
+    def _top_room(self, p):
+        """(the panel's top under the ✦, the window's room below it), px."""
+        b = self.button
+        top = b.mapTo(p, b.rect().bottomRight()).y() + 6
+        return top, max(1, p.height() - top - EDGE)
 
     def place(self):
         """Under the ✦, its right edge on the ✦'s, kept inside the window; as tall as its content up to the window's
@@ -553,11 +662,10 @@ class GuidePanel(motion.Overlay):
         m = lay.contentsMargins()
         b = self.button
         at = b.mapTo(p, b.rect().bottomRight())
-        top = at.y() + 6
+        top, room = self._top_room(p)
         head = self.heading.sizeHint().height() + lay.spacing() + m.top() + m.bottom()
         if not self.stage_row.isHidden():
             head += self.stage_row.height() + lay.spacing()
-        room = max(1, p.height() - top - EDGE)
         body_w, want = inner, 0
         if self.body is not None:
             want = self._content_height(inner)
@@ -575,8 +683,20 @@ class GuidePanel(motion.Overlay):
             self.setGeometry(geometry)
 
     def _content_height(self, width):
-        """The body's height at `width`: each shown row's own height for that width, its lines wrapped as they will
-        be."""
+        """The body's height at `width`: the rows' kept heights at that width (`_row`), their lines wrapped as they
+        will be. A width they weren't measured at (a window narrower than the tray at the build, a new text size):
+        every row shown and walked (`_walk_height`)."""
+        col = self.body.layout()
+        m = col.contentsMargins()
+        cw = max(1, width - m.left() - m.right())
+        if cw in self._ws and self._key == style.current():
+            n = self._ws.index(cw)
+            return m.top() + m.bottom() + self._sums[n] + self._fixed + col.spacing() * max(0, self._n - 1)
+        self._reveal_all()
+        return self._walk_height(width)
+
+    def _walk_height(self, width):
+        """The body's height at `width`, each shown row's own height for that width (what the kept sums stand for)."""
         col = self.body.layout()
         m = col.contentsMargins()
         width = max(1, width - m.left() - m.right())
@@ -620,6 +740,7 @@ class GuidePanel(motion.Overlay):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._reveal_soon()                                 # the rows past the screen, a batch a turn from the next
         QApplication.instance().installEventFilter(self._away)
         self.opened.emit()
         if self.path is not None:
@@ -631,6 +752,12 @@ class GuidePanel(motion.Overlay):
         QApplication.instance().removeEventFilter(self._away)
         if held and self.button.isVisible():
             self.button.setFocus(Qt.FocusReason.OtherFocusReason)    # (the keyboard back where it opened the panel)
+        self._turn += 1
+        if self._shown_to and self.body is not None:        # the rows below the screen wait again, from the next turn
+            token = self._turn
+            stop = bisect.bisect_right(self._later, self.scroll.verticalScrollBar().value() + self._cut, 0,
+                                       self._shown_to, key=QWidget.y)
+            QTimer.singleShot(0, lambda: self._hide_below(token, stop))
         if self._waiting is not None:
             self.set_look(self._waiting)
         if self._waiting_path is not None:

@@ -929,7 +929,7 @@ def test_a_jobs_token_store_is_closed_before_the_known_words_slow_read(lib, monk
         open_at_the_read.append(sum(1 for store in opened if not store.closed))
         return real_read(*args, **kwargs)
     monkeypatch.setattr(token_index, "open_store", counted_open)
-    monkeypatch.setattr(token_index.Store, "get_cached_known", lambda self, signature: None)     # stale: read again
+    monkeypatch.setattr(token_index.Store, "get_cached_known", lambda self, *a: None)     # stale: read again
     monkeypatch.setattr(analyzer, "load_known_words", slow_read)
     reposition._known_memo(language, settings)
     assert len(opened) == 1 and open_at_the_read == [0], (len(opened), open_at_the_read)

@@ -533,9 +533,9 @@ ROW_LINE = MappingProxyType({
     "height": 60,                   # * a Current row (69 at Medium)
     "gap": 4,                       # between two rows: half above the slab, half below (a lift moves inside it)
     "line": 4,                      # a groove's own strip (the top-20 and Soon lines): its 2 px in the middle
-    "soon-look": "iris",            # the Soon line's 1 px colours: "iris" (cyan → blue → purple) or "accent" alone
-    "soon-alpha": 0.85,             # ... its strength at rest (1 under the hand)
-    "soon-fade": 0.45,              # ... whole over the first 55 %, then fading out over the last 45 %
+    "soon-look": "accent",          # the Soon line's 1 px colours: "iris" (cyan → blue → purple) or "accent" alone
+    "soon-alpha": 0.9,              # ... its strength at rest (1 under the hand)
+    "soon-fade": 1.0,               # ... fading from the left: whole at its start, nothing at its end
     "line-hit": 12,                 # ... and its hover area, at least (S10)
     "pos": 26,                      # * the number's column
     "art-min": 92, "art-max": 150,  # * the wide art: 10 % of the list's width, between these

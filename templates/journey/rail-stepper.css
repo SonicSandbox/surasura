@@ -43,8 +43,8 @@
 .pr { position:absolute; left:0; right:0; height:32px; display:flex; align-items:center; gap:8px; padding:0 10px; border-radius:7px; font:600 13px var(--f-ja); cursor:pointer; }
 .pr:hover { background:var(--overlay-hover); }
 .pr.g { cursor:default; font:700 10.5px var(--f-ui); letter-spacing:.08em; color:var(--accent); text-transform:uppercase; } .pr.g:hover { background:none; }
-/* a tier's heading carries the list's Soon line: one hairline in the iris, whole over its first 55 %, fading out (CURRENT-SOON 2) */
-.pr.g::after { content:""; flex:1; height:1px; margin-left:4px; background:var(--iris); opacity:.85; -webkit-mask-image:linear-gradient(90deg,#000 55%,transparent); mask-image:linear-gradient(90deg,#000 55%,transparent); }
+/* a tier's heading carries the list's Soon line: one hairline in the accent, fading from the left (CURRENT-SOON 2, take 2) */
+.pr.g::after { content:""; flex:1; height:1px; margin-left:4px; background:var(--accent); opacity:.9; -webkit-mask-image:linear-gradient(90deg,#000,transparent); mask-image:linear-gradient(90deg,#000,transparent); }
 .pr.e { padding-left:38px; font-weight:500; color:var(--ink-meta); }
 .pr.e.one { padding-left:10px; }
 .pr.e.cur { background:var(--accent-wash); color:var(--ink); }

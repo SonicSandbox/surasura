@@ -337,9 +337,10 @@ def test_the_walk_counts_each_file_as_walking_its_tokens_one_by_one_does(made):
         assert got.where(got.cls >= ti.W_NAMED) == hot, p
         assert [got[n] for n in range(len(got))] == _as_walked(truth), p
         assert got.sentences(got.cls >= ti.W_NAMED) == sorted(hot)
-        as_read = walk.read(truth)
+        as_read = walk.read(iter(truth))       # (the tokenizer may hand the sentences over once: a generator)
         assert (as_read.counted(), list(as_read.counter().items())) == ((total, known), counts), p
-        assert as_read.where(as_read.cls >= ti.W_NAMED) == hot and as_read[len(truth) - 1] == _as_walked(truth)[-1]
+        assert as_read.where(as_read.cls >= ti.W_NAMED) == hot
+        assert [as_read[n] for n in range(len(as_read))] == _as_walked(truth), p
         blank = {0, 2, len(truth) + 5}          # (a number past the file's last sentence: none)
         songs = walk.file(p, blank)
         left = [(t, [] if n in blank else k) for n, (t, k) in enumerate(truth)]

@@ -985,15 +985,16 @@ class Walk:
         return got
 
     def read(self, sentences):
-        """`WalkFile` of a file read as tokens ([(text, tokens), ...]: the store couldn't give it) — its tokens the
-        run's own ids."""
+        """`WalkFile` of a file read as tokens ([(text, tokens), ...] or any iterable of them, read once: the store
+        couldn't give it) — its tokens the run's own ids."""
         np, intern = self.np, self.intern
-        starts, ids = array(_INT, [0]), array(_INT)
-        for _text, tokens in sentences:
+        starts, ids, texts = array(_INT, [0]), array(_INT), []
+        for text, tokens in sentences:
+            texts.append(text)
             ids.extend(map(intern, tokens))
             starts.append(len(ids))
-        return self._made(np.frombuffer(starts, np.int32), np.frombuffer(ids, np.int32), None,
-                          [text for text, _tokens in sentences], None, set(), None)
+        return self._made(np.frombuffer(starts, np.int32), np.frombuffer(ids, np.int32), None, texts, None, set(),
+                          None)
 
     def _made(self, starts, ids, texts_blob, texts, words, joined, blank):
         np = self.np

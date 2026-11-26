@@ -51,6 +51,21 @@ def _wait(pred, timeout=5.0):
     return pred()
 
 
+def _read_running(cache, timeout=5.0):
+    """The cache read while its reader still runs (FLAKES row 117): Windows refuses the open for the moment the
+    reader's `os.replace` writes it again, so a refused open is tried again, as the reader's own read is
+    (`_first_screen`). A reader that is stopped is read with a plain open."""
+    end = time.monotonic() + timeout
+    while True:
+        try:
+            with open(cache, encoding="utf-8") as f:
+                return json.load(f)
+        except PermissionError:
+            if time.monotonic() > end:
+                raise
+            time.sleep(0.01)
+
+
 def _reader(seed, **kw):
     return library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
                                         mining=seed.mining, poll=0.02, **kw)
@@ -348,8 +363,7 @@ def test_the_cached_figures_go_once_the_load_answers_and_a_cache_written_meanwhi
         faded = [e.new_faded for r in live.rows for e in r.episodes if e.n_new is not None]
         assert faded and all(faded)                             # the cached figures, faded as they were shown
         assert _wait(lambda: os.path.getmtime(cache) > 0)       # written again while they last
-        with open(cache, encoding="utf-8") as f:
-            data = json.load(f)
+        data = _read_running(cache)                             # (its reader runs on: it may write it again)
         assert data["key"][3] == [11, 500] and data["faded"] is True
         assert {r[0]: tuple(r[1:]) for r in data["numbers"]}.items() <= dict(table).items()
         before = len(views)
@@ -561,6 +575,79 @@ def test_a_damaged_cache_is_no_cache(tmp_path):
         assert not views[0][1].cached
     finally:
         reader.stop()
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_first_screen_read_while_another_reader_replaces_the_cache_still_shows_it(tmp_path, monkeypatch, language):
+    """FLAKES (TEST-FLAKES): Windows refuses an open while another reader's `os.replace` swaps the file in — the
+    language switched away and back while the old reader's thread outlives its 2 s stop, or a virus scan holding it.
+    The read was refused once and the start showed no cached first screen (the list waited for its first build). A
+    probe replacing the cache in a loop: 53 of 300 first screens refused. Played here by one refused open."""
+    seed = window_seed.build(language=language)
+    cache = str(tmp_path / f"window_cache_{language}.json")
+    first = _reader(seed, cache_file=cache)
+    first.start()
+    try:
+        assert _wait(lambda: os.path.exists(cache))
+    finally:
+        first.stop()
+    refused = []
+    real_open = open
+
+    def opening(path, *args, **kw):
+        if path == cache and not refused:
+            refused.append(path)                        # the moment the other reader's replace holds the name
+            raise PermissionError(13, "Access is denied", path)
+        return real_open(path, *args, **kw)
+    monkeypatch.setattr(library_reader, "open", opening, raising=False)
+    again = _reader(seed, cache_file=cache)
+    views, _ = _collect(again)
+    again.start()
+    try:
+        assert _wait(lambda: views)
+        assert refused and views[0][1].cached
+    finally:
+        again.stop()
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_cache_write_while_another_program_holds_the_file_a_moment_still_lands(tmp_path, monkeypatch, language):
+    """FLAKES (TEST-FLAKES): the other side of the race above. While anything holds the cache open (a reader, a virus
+    scan), Windows refuses the `os.replace` that writes it; the write was dropped at once — at the window's close, the
+    next start got an older cache. Here a real open handle holds it and lets go at the first refusal: the write lands."""
+    seed = window_seed.build(language=language)
+    cache = str(tmp_path / f"window_cache_{language}.json")
+    reader = _reader(seed, cache_file=cache)
+    views, _ = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: os.path.exists(cache))
+    finally:
+        reader.stop()
+    with open(cache, encoding="utf-8") as f:
+        before = json.load(f)
+    held = [open(cache, "rb")]                          # shares read and write, never delete: a replace is refused
+    refused = []
+    real_replace = os.replace
+
+    def replacing(src, dst):
+        try:
+            return real_replace(src, dst)
+        except PermissionError:
+            if dst == cache and not held[0].closed:
+                refused.append(dst)
+                held[0].close()                         # the other program lets go: the next try lands
+            raise
+    monkeypatch.setattr(os, "replace", replacing)
+    time.sleep(0.002)                                   # (a clock tick: the new `written_at` differs)
+    try:
+        reader._write_cache(views[-1][1], before["key"])
+    finally:
+        held[0].close()
+    with open(cache, encoding="utf-8") as f:
+        after = json.load(f)
+    assert after["written_at"] > before["written_at"]
+    assert bool(refused) == (os.name == "nt")           # Windows refused the held file once; elsewhere it never does
 
 
 def test_getting_ready_and_read_only_give_their_states_with_rows():

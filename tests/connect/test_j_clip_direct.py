@@ -369,6 +369,96 @@ def test_a_press_on_a_line_the_ahead_cut_holds_waits_for_it_never_cuts_it_twice(
     assert (second.start, False) in cuts
 
 
+def _until(pred, timeout=10):
+    end = time.monotonic() + timeout
+    while not pred():
+        if time.monotonic() > end:
+            return False
+        time.sleep(0.005)
+    return True
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_press_whose_look_comes_just_before_the_ahead_cuts_clip_lands_never_cuts_it_again(
+        episode, fake_miner, monkeypatch, language):
+    # FLAKES (TEST-FLAKES; the test above red twice on GitHub, `(1000, False)` beside `(1000, True)`): a press looked for
+    # the kept clip, then for a claim, in two steps; the cut ahead puts its clip in place, then lets its claim go. A look
+    # before the clip landed and a claim after it went cut the line a second time. Played here: the press's look
+    # answers (nothing kept), then the cut ahead lands and lets go before the press goes on.
+    ep = episode(language)
+    first, second = ep["lines"][0], ep["lines"][1]
+    gate, inside, cuts, press = threading.Event(), threading.Event(), [], []
+
+    def direct(language, video, cue, miner, out, below=False, until=None, stop=None):
+        cuts.append((cue.start, below))
+        if below and cue.start == first.start:
+            inside.set()
+            gate.wait(10)                                       # the ahead cut, mid-cut of the first line
+        path = f"{out}.mp3"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(cue.text)
+        return path
+    monkeypatch.setattr(clips, "_direct", direct)
+    real_kept = clips._kept
+
+    def kept(key):
+        got = real_kept(key)
+        if press and threading.get_ident() == press[0] and len(press) == 1:
+            press.append(key)                                   # the press's first look: nothing kept yet ...
+            gate.set()                                          # ... and meanwhile the cut ahead lands and lets go
+            assert _until(lambda: key not in clips._cutting and real_kept(key))
+        return got
+    monkeypatch.setattr(clips, "_kept", kept)
+    clips.ahead(language, [_id(first), _id(second)], settings=ep["settings"], steps=ep["steps"], miner=ep["miner"])
+    assert inside.wait(10)
+    got = {}
+
+    def pressed():
+        press.append(threading.get_ident())
+        got.update(path=_cut(ep, first))
+    t = threading.Thread(target=pressed)
+    t.start()
+    t.join(15)
+    assert _ahead_done()
+    assert len(press) == 2                                      # the look came before the clip, as played
+    assert open(got["path"], encoding="utf-8").read() == first.text
+    assert cuts.count((first.start, True)) == 1 and (first.start, False) not in cuts     # cut once, by ahead
+    assert clips._cutting == {}
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_line_a_press_cuts_while_the_ahead_cut_looks_is_never_cut_again_by_it(
+        episode, fake_miner, monkeypatch, language):
+    # The other side of the race above: the cut ahead looked for a kept clip (none), a press then cut the line and let
+    # its claim go, and the cut ahead claimed it after — the line cut twice, the second time below normal for nothing.
+    ep = episode(language)
+    first = ep["lines"][0]
+    cuts, ahead_look = [], []
+
+    def direct(language, video, cue, miner, out, below=False, until=None, stop=None):
+        cuts.append((cue.start, below))
+        path = f"{out}.mp3"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(cue.text)
+        return path
+    monkeypatch.setattr(clips, "_direct", direct)
+    real_kept = clips._kept
+    pressed = {}
+
+    def kept(key):
+        got = real_kept(key)
+        if threading.current_thread().name == "journey-clips-ahead" and not ahead_look:
+            ahead_look.append(key)                              # the cut ahead's look: nothing kept yet ...
+            pressed.update(path=_cut(ep, first))                # ... and meanwhile a press cuts the line
+        return got
+    monkeypatch.setattr(clips, "_kept", kept)
+    clips.ahead(language, [_id(first)], settings=ep["settings"], steps=ep["steps"], miner=ep["miner"])
+    assert _ahead_done()
+    assert ahead_look and open(pressed["path"], encoding="utf-8").read() == first.text
+    assert cuts == [(first.start, False)]                       # cut once, by the press
+    assert clips._cutting == {}
+
+
 def test_a_press_waiting_on_a_line_the_ahead_cut_lets_go_cuts_it_itself(episode, fake_miner, monkeypatch):
     # the press came on the second line while the ahead cut was on the first: ahead stops between lines and lets the
     # second go uncut — the press waiting on it plays it, never "couldn't cut"

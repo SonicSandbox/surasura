@@ -142,6 +142,9 @@ def cut(language, line_id, settings=None, steps=None, miner=None):
             held = _cutting.get(key)
             mine = held is None
             if mine:
+                kept = _kept(key)       # a cut that put its clip in place, then let its claim go, since the look
+                if kept:                # above: one cut a line (TEST-FLAKES)
+                    return kept
                 held = _cutting[key] = [threading.Event(), None]
         if mine:
             break
@@ -244,7 +247,8 @@ def _cut_ahead(language, ids, settings, steps, miner):
             can[key] = (video, subtitle, cue)
     folder = root()                             # (before the claims: nothing between them and their release raises)
     with _lock:                                 # claimed: a press of one of these lines waits for it, never cuts it
-        mine = {key: _cutting.setdefault(key, [threading.Event(), None]) for key in can if key not in _cutting}
+        mine = {key: _cutting.setdefault(key, [threading.Event(), None]) for key in can
+                if key not in _cutting and not _kept(key)}     # (a press cut it since the look above)
     if not mine:
         return
     run_dir = os.path.join(folder, f".run-ahead-{time.time_ns()}")

@@ -649,29 +649,22 @@ def test_a_path_body_is_built_one_piece_a_turn_under_4_ms(world, monkeypatch):
     # FLAKES (E-TABLE 3's GitHub core 2/8: a piece at 4.61 ms of wall time): the Qt guide's 4 ms is what a piece costs
     # the window's thread, so each piece (and the place after the last) is timed by that thread's own CPU time, the
     # budget scaled by how much slower the machine does a fixed reference — the guide panel's own test's two clocks
-    # (test_guide.py `_own_ms`, `_speed`; FLAKES.md, Flake-F4 / F6). A piece that grew costs the thread itself, anywhere
-    from tests.qt.test_guide import _own_ms, _speed
+    # (test_guide.py `_own_ms`, `_speed`; FLAKES.md, Flake-F4 / F6). A piece that grew costs the thread itself, anywhere;
+    # each cost is the least of three builds (test_guide.py `_quiet_costs`, TEST-FLAKES): here a step row's piece
+    # 1.3-2.1 ms, the place 0.4-0.7 ms (2026-11-26)
+    from tests.qt.test_guide import _own_ms, _quiet_costs, _speed
     panel = world.d.guide_panel
     own_ms = _own_ms()
     budget = 4.0 * _speed(own_ms)                                           # 4 ms here; scaled on a slower machine
-    own = []
-    real_step = panel._step
-
-    def step(token):
-        t0 = own_ms()
-        real_step(token)
-        own.append(own_ms() - t0)
-    monkeypatch.setattr(panel, "_step", step)
-    panel.slices.clear()
     every = facts(junban=True, anki_synced=True, cards_made=True, book_in_current=True, video_waiting=True,
                   episodes_done=3)
-    panel.set_path(_path(every))
-    assert panel.building()
-    assert wait_until(lambda: not panel.building())
-    assert len(own) >= 2 and max(own) < budget, (max(own), max(panel.slices), budget)      # one piece a turn
-    t0 = own_ms()
-    panel.place()
-    placed = own_ms() - t0
+
+    def build():
+        panel.path = None                                                   # (the same steps rebuild nothing)
+        assert panel.set_path(_path(every))
+    pieces, placed = _quiet_costs(panel, own_ms, build, monkeypatch)
+    assert len(pieces) >= len(panel.rows) >= 2, (len(pieces), len(panel.rows))      # one piece a turn
+    assert max(pieces) < budget, (max(pieces), budget)
     assert placed < budget, (placed, budget)
 
 

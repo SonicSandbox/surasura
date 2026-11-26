@@ -7673,7 +7673,7 @@ def main():
             else:
                 numbers = walked.sentences((walked.cls >= _W_BOUND) & _listed_kids()[walked.kid])
                 if found_at:
-                    numbers = sorted(found_at.keys().union(numbers))
+                    numbers = sorted(found_at.keys() | set(numbers))
             for s_no in numbers:
                 s_text, s_tokens = walked[s_no]
                 if len(s_text) > max_chars:

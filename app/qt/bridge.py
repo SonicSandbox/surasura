@@ -86,6 +86,7 @@ class Bridge(QObject):
     indexed = pyqtSignal(object)                 # the indexer ran (its language)
     quit_asked = pyqtSignal(object)              # the update hands over: the window closes
     ukai_asked = pyqtSignal(object)              # 鵜飼 Ukai asks to pair (`ukai_pairing.Request`): the Allow card
+    ukai_paired = pyqtSignal(object)             # 鵜飼 Ukai paired or forgotten: Settings' Ukai row (UKAI-S2)
 
     def __init__(self, settings=None, registry=None, status=None, library=None, parent=None):
         super().__init__(parent)
@@ -119,6 +120,11 @@ class Bridge(QObject):
         """(Any thread: the door's.) Ukai's pairing's `ask` (`app/services/ukai_pairing.py`, only while
         `door.EXTENSION_ON`): the Allow card opens on the window's thread."""
         self._emit("ukai_asked", request)
+
+    def ukai_changed(self):
+        """(Any thread: the door's at a claim, the window's at *Forget Ukai*.) Ukai's pairing's `changed`: Settings' Ukai
+        row paints again on the window's thread (UKAI-S2)."""
+        self._emit("ukai_paired", None)
 
     def stop(self):
         """The window closed: no service's callback reaches a slot from here on. The quit runs on the window's thread

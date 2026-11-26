@@ -3607,12 +3607,20 @@ class ShellWindow(QMainWindow):
 
     def ukai_extension(self):
         """(The door's starting thread, only while `door.EXTENSION_ON`.) 鵜飼 Ukai's caller class (UKAI-S1): its
-        pairing (`app/services/ukai_pairing.py`, kept as `ukai_pairing` for Settings' *Forget Ukai*), whose Allow card
-        opens in this window through the bridge (`_ukai_allow`). No widget is touched here."""
+        pairing (`app/services/ukai_pairing.py`, kept as `ukai_pairing` for Settings' row and *Forget Ukai*), whose
+        Allow card opens in this window through the bridge (`_ukai_allow`), and Ukai's module's routes (UKAI-S2,
+        `modules/ukai`: the subtitles in, through this window's writer as the YouTube downloader's transcripts go) —
+        None without the module (nothing listens for Ukai: Surasura runs as before). No widget is touched here."""
+        try:
+            import modules.ukai as ukai
+        except ImportError:
+            return None
         from app.services import ukai_pairing
+        services = self.services
+        routes = ukai.routes(writer=lambda: getattr(services, "writer", None), settings=services.settings.get)
         self.bridge.ukai_asked.connect(self._ukai_allow, Qt.ConnectionType.QueuedConnection)
-        self.ukai_pairing = ukai_pairing.Pairing(ask=self.bridge.ask_ukai)
-        return self.ukai_pairing.extension()
+        self.ukai_pairing = ukai_pairing.Pairing(ask=self.bridge.ask_ukai, changed=self.bridge.ukai_changed)
+        return self.ukai_pairing.extension(routes)
 
     def _ukai_allow(self, request):
         from app.qt import ukai_allow
@@ -5117,7 +5125,7 @@ def start_door(window):
     global _door_starting
     try:
         from app.services import journey_door
-        if not journey_door.enabled():
+        if not journey_door.enabled():          # (Ukai's class too: one door, one switch to open it — UKAI-S2)
             return None
         routes = window.door_routes()
     except Exception as e:

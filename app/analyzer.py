@@ -3228,7 +3228,7 @@ def file_sentences(store, tokenizer, file_path, language, words=None):
 # logic.count_song_lyrics is off (the default): their sentences keep their place in each file — the plan and the re-pick
 # number them — with no words, as a ♪～ line reads. Spoken files only (subtitles, transcripts), grouped by work
 # (`_series_name`); each file's lines are the token store's (`Store.file_lines`), else read here.
-_SPOKEN = ("subtitle", "youtube", "bilibili")
+_SPOKEN = ("subtitle", "youtube", "bilibili", "netflix", "disneyplus")     # (Netflix, Disney+: 鵜飼 Ukai's, #474)
 
 
 def songs_left_out(files):
@@ -7362,7 +7362,7 @@ def main():
         file_phrase_firsts = {}     # phrase index -> its first sentence here, likewise
         file_basename = os.path.basename(file_path)   # constant per file — hoisted out of the token loop
         # Modality inputs, also constant per file (see app/modality.py).
-        file_is_spoken = source_type in ("subtitle", "youtube", "bilibili")
+        file_is_spoken = source_type in _SPOKEN
         file_series = _series_name(file_path, data_dir)
         library_series.add(file_series)
         if file_is_spoken:

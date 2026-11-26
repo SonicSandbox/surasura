@@ -2494,8 +2494,8 @@ def ignored_names(language, settings=None):
     if language != "ja":
         return []
     try:
-        logic = settings.get("logic") if settings is not None else None
-        if logic is None:
+        logic = settings.get("logic") if isinstance(settings, dict) else None
+        if not isinstance(logic, dict):
             from app import settings_manager
             logic = settings_manager.load_settings()["logic"]
         if not logic.get("ignore_names", False):

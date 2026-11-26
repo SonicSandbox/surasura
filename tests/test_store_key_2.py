@@ -24,16 +24,13 @@ from app import token_index as ti
 from tests import plan_file_cases as cases
 from tests.test_store_key import Count, known_file
 
-# The child: settings.json reads and name-table parses counted for one run (a Generate, the indexer, the arrivals
-# view), printed as its last line.
+# The child: name-table parses counted for one run (a Generate, the indexer, the arrivals view), printed as its last
+# line — only when the run finished (a Generate that exits with an error prints none, so a zh 0 can't pass for it).
 _CHILD = r"""
 import json, os, runpy, sys
-from app import settings_manager as sm, token_index as ti
-n = {"reads": 0, "parses": 0}
-real_load, real_tables, real_read = sm.load_settings, ti.Store.names_tables, ti.read_names_tables
-def load(*a, **k):
-    n["reads"] += 1
-    return real_load(*a, **k)
+from app import token_index as ti
+n = {"parses": 0}
+real_tables, real_read = ti.Store.names_tables, ti.read_names_tables
 def tables(self, *a, **k):
     # a parse: every call before STORE-KEY 2; since, only when the store's kept parse is replaced
     before = getattr(self, "_tables_read", None)
@@ -44,14 +41,15 @@ def tables(self, *a, **k):
 def read(*a, **k):
     n["parses"] += 1
     return real_read(*a, **k)
-sm.load_settings, ti.Store.names_tables, ti.read_names_tables = load, tables, read
+ti.Store.names_tables, ti.read_names_tables = tables, read
 what, language = sys.argv[1], sys.argv[2]
 if what == "generate":
     sys.argv = ["analyzer.py", f"--language={language}", "--static", "--no-open"]
     try:
         runpy.run_path(os.path.join("app", "analyzer.py"), run_name="__main__")
-    except SystemExit:
-        pass
+    except SystemExit as e:
+        if e.code not in (0, None):
+            raise
 elif what == "indexer":
     from app import indexer
     sys.argv = ["indexer.py", f"--language={language}"]

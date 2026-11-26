@@ -30,7 +30,7 @@ CALL_SITES = {
     "app/cli/contract.py": 1,
     "app/cli/events.py": 1,
     "app/cli/verbs.py": 1,
-    "app/connect/anki_miner.py": 2,
+    "app/connect/anki_miner.py": 3,             # DSA-CONNECT 2: the kept look-ups + no (local data "connect", PARTS)
     "app/connect/kick.py": 3,
     "app/connect/known_signal.py": 1,
     "app/connect/ledger.py": 1,

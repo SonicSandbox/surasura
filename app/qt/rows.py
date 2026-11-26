@@ -1238,9 +1238,14 @@ class RowDelegate(QStyledItemDelegate):
 
     # sizes ------------------------------------------------------------------------------------------------------ #
     @staticmethod
+    def line_h(ln):
+        """One line's strip after its row: a groove's own few px in the gap (W3.1a: really subtle)."""
+        return rl("line")
+
+    @staticmethod
     def _lines_h(lines):
-        """The strips after a row its lines take: each a groove's own few px in the gap (W3.1a: really subtle)."""
-        return len(lines) * rl("line")
+        """The strips after a row its lines take, each its `line_h`."""
+        return sum(RowDelegate.line_h(ln) for ln in lines) if lines else 0
 
     def _entry(self, index):
         """The entry at `index`, read from the model's list (no trip through a QVariant: `index.data(ROW_ROLE)` costs
@@ -1753,11 +1758,11 @@ class RowDelegate(QStyledItemDelegate):
         y = rect.bottom() + 1 - self._lines_h(lines)
         hit = rl("line-hit")
         for ln in lines:
-            mid = y + rl("line") // 2
+            mid = y + self.line_h(ln) // 2
             where = strings.ROWS_TOP_LINE_WHERE if ln.kind == "top" else strings.ROWS_SOON_LINE_WHERE
             out.append((ln.kind + "-line", QRect(rect.left(), mid - hit // 2, rect.width(), hit), where.format(tip=ln.tip),
                         None))
-            y += rl("line")
+            y += self.line_h(ln)
         return out
 
     def _status_rects(self, row, stat):
@@ -2153,9 +2158,9 @@ class RowDelegate(QStyledItemDelegate):
         y = rect.bottom() + 1 - self._lines_h(lines)
         hot = self.view.line_hover
         for ln in lines:
-            self._paint_line(p, ln, QRect(rect.left(), y, rect.width(), rl("line")), dpr,
+            self._paint_line(p, ln, QRect(rect.left(), y, rect.width(), self.line_h(ln)), dpr,
                              hot=hot == (index.row(), ln.kind))
-            y += rl("line")
+            y += self.line_h(ln)
         p.restore()
 
     def _paint_current_entry(self, p, i, row, rect, lines, focused, dpr, is_open):

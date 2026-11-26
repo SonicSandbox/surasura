@@ -180,10 +180,16 @@ def sync_now(url):
     """One sync asked now by a caller holding the Anki-write lock, whatever the session — *Make my new cards again…*
     (REMAKE, 3.0.19), before it counts and before it deletes, so a card studied on another device reads as studied
     -> what Anki answered ("synced", "not-signed-in", "full-sync", "busy", "failed: …"); a sync that carried every
-    write is recorded as S1's and S3's are. Never while the user reviews (the caller asks first). Never raises."""
+    write is recorded as S1's and S3's are. Never while the user reviews (the caller asks first). Raises only
+    AnkiError `offline` (Anki closed: the caller says Anki isn't open, never AnkiWeb's words; one past the timeout is
+    Anki busy, a "failed: …" answer as before)."""
     try:
-        answer = anki_connect.sync(url)
-    except Exception as e:                          # the lock not held, a URL that isn't loopback: never sent
+        answer = anki_connect.sync(url, errors=True)
+    except anki_connect.AnkiError as e:
+        if e.kind == "offline":
+            raise
+        return f"failed: {e}"                       # the lock not held, a URL that isn't loopback: never sent
+    except Exception as e:
         return f"failed: {e}"
     if answer == "synced":
         now = time.time()

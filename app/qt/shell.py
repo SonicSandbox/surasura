@@ -2876,6 +2876,8 @@ class ShellWindow(QMainWindow):
                 refresh("connect")
         if {"connect_enabled", "logic.automation", "connect_anki_miner_path"} & set(keys or ()):
             self._path_repaint()                        # the cards step's press follows its switches (Mado-EZP)
+        if {"anki_sync_decks", "anki_sync_fields"} & set(keys or ()) and self.services.automation is not None:
+            self.services.automation.decks_changed()    # *N waiting* read again for the decks now chosen (#SYQF6C)
         if self.duties is not None:
             self._duty_settings(keys)
             if "logic.automation" in keys:

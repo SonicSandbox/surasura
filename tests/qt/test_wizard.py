@@ -47,7 +47,7 @@ class FakeSettings:
     def get(self):
         return dict(self.data)
 
-    def set(self, changes, update=None, now=False):
+    def set(self, changes, update=None, now=False, keys=()):
         if not changes:
             return
         self.calls.append(dict(changes))

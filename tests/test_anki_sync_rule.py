@@ -325,6 +325,28 @@ def test_sync_stays_refused_everywhere_but_the_rules_call(anki):
     assert anki.syncs == 1
 
 
+def test_anki_closed_at_the_sync_is_failed_for_the_rule_and_raised_for_the_remake(anki):
+    """Anki stops answering (closed) just as the sync is asked. S1 / S3 (`sync`'s default) keep it as a failed sync,
+    as before; the remake's `sync_now` (`errors`) raises AnkiConnect's `offline`, so it says Anki isn't open, never
+    AnkiWeb's failure — and records no AnkiWeb failure in the rule's state (SYQF-FIX, the 3.0.19 cut's check)."""
+    anki.offline = True
+    with anki_connect.writer("a test"):
+        assert anki_connect.sync(URL).startswith("failed: Could not reach Anki")
+        with pytest.raises(anki_connect.AnkiError) as closed:
+            anki_connect.sync(URL, errors=True)
+        assert closed.value.kind == "offline"
+        before = anki_sync_rule.read_state().get("sync")
+        with pytest.raises(anki_connect.AnkiError) as closed:
+            anki_sync_rule.sync_now(URL)
+        assert closed.value.kind == "offline" and anki_sync_rule.read_state().get("sync") == before
+        anki.offline = False
+        anki.slow = True              # open but past the timeout (its own sync, Check Database): busy, never closed
+        assert anki_sync_rule.sync_now(URL).startswith("failed")
+        anki.slow = False
+        anki.fail = True                                       # Anki open, AnkiWeb unreachable: still an answer
+        assert anki_sync_rule.sync_now(URL).startswith("failed")
+
+
 def test_a_failed_session_sync_is_tried_again_but_never_holds_every_write_up(anki, clock):
     """Review #15: a sync that failed (AnkiWeb unreachable) starts no session — the next write tries again — but at
     most every S1_RETRY_S, so a write is never held up by a sync that keeps failing."""

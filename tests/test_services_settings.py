@@ -184,6 +184,27 @@ def test_subscribers_hear_each_landed_write_with_its_keys_and_a_failing_one_is_h
     assert h.until(lambda: len(heard) == 2) and heard[1] == ["zen_limit"]
 
 
+@pytest.mark.parametrize("now", [False, True])
+def test_an_update_that_names_its_keys_is_heard_with_them_and_one_that_names_none_with_none(now):
+    """The Anki window and *Set up again* save the decks as an `update=` alone (merged onto the file as it is): its
+    listeners heard no key, so the Settings *Decks* row kept an earlier pick and no backlog read followed. Named
+    (`keys=`), they are heard with the change's own keys; an update that names none is heard as before."""
+    from app import anki_window
+    h.write_settings({"target_language": "ja", "anki_sync_decks": {"zh": ["中文"]}})
+    service = SettingsService(delay=0.0)
+    heard = []
+    service.subscribe(heard.append)
+    service.set({"theme": "Zen Mode"}, update=anki_window.merge("ja", ["Japanese::Mining Deck"], ["Expression"]),
+                keys=("anki_sync_decks", "anki_sync_fields"), now=now)
+    assert service.flush(10)
+    assert h.until(lambda: heard) == [["anki_sync_decks", "anki_sync_fields", "theme"]]
+    after = h.read_settings()
+    assert after["anki_sync_decks"] == {"zh": ["中文"], "ja": ["Japanese::Mining Deck"]}, "the other language kept"
+    service.set({}, update=lambda s: s.update(zen_limit=9), now=now)
+    assert service.flush(10)
+    assert h.until(lambda: len(heard) == 2) and heard[1] == []
+
+
 def test_an_update_runs_on_the_file_as_it_is():
     """The Anki address: a hand-edited 2.x `junban_url` becomes the one address every Anki caller reads."""
     h.write_settings({"target_language": "ja", "junban_url": "http://127.0.0.1:8766"})

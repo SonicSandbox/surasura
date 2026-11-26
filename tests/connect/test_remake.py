@@ -673,6 +673,29 @@ def test_the_yes_refuses_in_words_when_anki_didnt_sync(home_ledger):
     assert tidy.SYNC_FAILED in str(e.value) and anki.deleted == []
 
 
+def _closed_anki():
+    """The real Anki door (`AnkiConnectTidy`) on a loopback port nothing listens on: Anki closed."""
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    return tidy.AnkiConnectTidy(f"http://127.0.0.1:{port}", wait=1.0)
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_with_anki_closed_both_presses_say_anki_isnt_open_never_ankiweb(home_ledger, lang):
+    # why: the 3.0.19 cut's built-app check — with Anki closed, the count's first step (the sync) answered "failed",
+    # so the sheet said AnkiWeb couldn't sync; Anki unreachable is said as itself, and nothing is deleted
+    from app.cli.contract import CliError
+    _mined(home_ledger, lang)
+    for press in (lambda anki: tidy.act_remake_plan(ON, lang, anki=anki),
+                  lambda anki: tidy.act_remake(ON, lang, steps=Steps(), anki=anki)):
+        with pytest.raises(CliError) as e:
+            press(_closed_anki())
+        assert e.value.code == "anki-closed" and e.value.message == tidy.REMAKE_ANKI_CLOSED
+        assert "AnkiWeb" not in e.value.message
+
+
 @pytest.mark.parametrize("lang", ["ja", "zh"])
 def test_while_connect_mines_both_presses_refuse_in_words_and_read_nothing(home_ledger, lang, monkeypatch):
     # why: SORT-BAR — the lock means "mining now": while a look of Connect's makes cards, nothing is counted or deleted

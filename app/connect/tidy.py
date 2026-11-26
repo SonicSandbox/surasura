@@ -1117,6 +1117,7 @@ REMAKE_OFF = "Cards made for you is off: turn it on to make your cards again."
 REMAKE_MINING = "Surasura is making cards right now: make your cards again once they're made."
 MINING_WAIT = 2.0                           # s: as *Sort again* (`library_store.RESET_WAIT`): a look's short hold ends
 REMAKE_ALL_KEPT = "Every unstudied card there is yours to keep (moved, flagged or marked by you): nothing was deleted."
+REMAKE_ANKI_CLOSED = "Anki isn't open (or isn't answering): open it, then try again. Nothing was deleted."
 
 
 def package_timeout(notes):
@@ -1127,7 +1128,8 @@ def package_timeout(notes):
 
 def synced(anki):
     """Anki's own sync with AnkiWeb, asked now under the write lock (`anki.sync`), so a card studied on another
-    device reads as studied -> its answer; raises Refused in plain words when it didn't sync."""
+    device reads as studied -> its answer; raises Refused in plain words when it didn't sync, and AnkiConnect's
+    AnkiError when Anki isn't answering (`sync_now`: never said as AnkiWeb's failure)."""
     answer = str(anki.sync() or "failed")
     if answer in SYNC_OK:
         return answer
@@ -1338,7 +1340,7 @@ def act_remake_plan(settings, language, anki=None):
             synced(anki)
             return remake_plan(anki, ledger, language, settings, lambda: library.open_store(language))
     with _not_mining("Counting your new cards"):
-        return _guarded(settings, plan, Ledger)
+        return _remake_guarded(settings, plan, Ledger)
 
 
 def act_remake(settings, language, before=False, steps=None, anki=None):
@@ -1366,7 +1368,7 @@ def act_remake(settings, language, before=False, steps=None, anki=None):
         return {"cards": len(done["deleted"]), "id": done["id"], "kept": len(done["kept"]), **again,
                 "studied": _named(tidy_row(ledger, done["id"]), late, card_word_of(settings, language))}
     with _not_mining("Making your new cards again"):    # held to the requeue's end: Connect's next look sees it
-        out = _guarded(settings, go, Ledger)
+        out = _remake_guarded(settings, go, Ledger)
     try:
         from app.connect import kick
         kick.kick(settings)
@@ -1423,6 +1425,17 @@ def _remake_off(settings):
     if not os.path.exists(path()):              # no card made yet, so none from before can be told apart either
         return {"cards": 0, "say": NOTHING_NEW}
     return None
+
+
+def _remake_guarded(settings, fn, Ledger):
+    """`_guarded`, Anki closed said in the remake's own words (`REMAKE_ANKI_CLOSED`), never AnkiConnect's."""
+    from app.cli.contract import CliError
+    try:
+        return _guarded(settings, fn, Ledger)
+    except CliError as e:
+        if e.code == "anki-closed":
+            raise CliError("anki-closed", REMAKE_ANKI_CLOSED) from None
+        raise
 
 
 def _guarded(settings, fn, Ledger):

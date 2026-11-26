@@ -879,10 +879,13 @@ class Walk:
         self.store, self.classify = store, classify
         self.types = [None]             # store type id -> token; read whole once (every file of a run is walked)
         if store is not None:
+            one = {}.setdefault         # each string held once (a lemma is mostly its surface and orth: 20k 62 -> 25 MB)
             for row in store.conn.execute("SELECT id, lemma, reading, surface, orth FROM types ORDER BY id"):
                 if row[0] >= len(self.types):
                     self.types.extend([None] * (row[0] - len(self.types)))
-                    self.types.append(row[1:])
+                    _id, lemma, reading, surface, orth = row
+                    self.types.append((one(lemma, lemma), one(reading, reading), one(surface, surface),
+                                       one(orth, orth)))
         self.own, self.own_ids = [], {}     # the run's own: id - _RUN -> token, token -> id
         self.cls = np.zeros(len(self.types), np.uint8)      # 0: not decided yet
         self.kid = np.zeros(len(self.types), np.int32)
@@ -1073,9 +1076,11 @@ class WalkFile:
         out = Counter()
         kids, first, counts = np.unique(self.kid, return_index=True, return_counts=True)
         order = np.argsort(first, kind="stable")
-        self.first = kids, counts = kids[order], counts[order]
+        kids, counts = kids[order], counts[order]
         keys = self.walk.keys
         dict.update(out, zip([keys[k] for k in kids.tolist()], counts.tolist()))
+        # (kept for the whole run, every file's: the counts in the smallest type that holds them — 20k 13 M entries)
+        self.first = kids, counts.astype(np.uint16 if not len(counts) or counts.max() < 1 << 16 else np.int32)
         return out
 
     def sentences(self, mask):

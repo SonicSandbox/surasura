@@ -354,6 +354,27 @@ def test_the_walk_counts_each_file_as_walking_its_tokens_one_by_one_does(made):
     assert walk.file(os.path.join(os.path.dirname(paths[0]), "no such file.srt")) is None
 
 
+def test_the_walks_vocabulary_and_pass_arrays_are_held_compactly(made):
+    # why: a Generate's peak memory may grow 2 % at most (SPEC § 6): the walk held every type's four strings as
+    # strings of their own (20k: 138,672 types, 62 MB, though a lemma is mostly its surface and its orth) and every
+    # file's pass arrays (G5) with 8-byte counts (20k: 13 M entries, ~150 MB, no count past 65,535) — each string
+    # once now, and the counts in the smallest type that holds them
+    language, store, paths = made
+    walk = ti.Walk(store, _classes([tuple(t) for p in paths for _s, tokens in store.file_tokens(p) for t in tokens]))
+    one = {}
+    strings = [x for t in walk.types if t is not None for x in t]
+    assert len(strings) > 500
+    assert all(one.setdefault(x, x) is x for x in strings), "each string of the vocabulary held once"
+    for p in paths:
+        got = walk.file(p)
+        if got is None:
+            continue
+        counts = got.counter()
+        kids, uses = got.first
+        assert kids.dtype == walk.np.int32 and uses.dtype == walk.np.uint16, (kids.dtype, uses.dtype)
+        assert dict(zip([walk.keys[k] for k in kids.tolist()], uses.tolist())) == counts, p
+
+
 def test_the_walk_decides_each_type_once_and_joins_the_names_as_file_tokens_does(tmp_path):
     # why: the name tables join a library's names at read (メロンベンチ one word in every file): on ids a join is the
     # run's own id (past any the store gives, whatever another process adds meanwhile); the walk's sentences must be

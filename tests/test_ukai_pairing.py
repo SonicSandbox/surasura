@@ -451,3 +451,87 @@ def test_a_store_id_is_named_and_any_other_id_gets_a_warning(ukai, monkeypatch):
     _pair_asked(ukai, origin=OTHER)
     unlisted = ukai_allow.words(ukai.asked[-1])
     assert "⚠" in unlisted and OTHER.split("//")[1] in unlisted and strings.UKAI_ALLOW_REPLACES not in unlisted
+
+
+# --- UKAI-S2: what Settings' row reads, and the module's routes on the window's class ---------------------------- #
+def test_changed_is_told_after_a_claim_and_after_a_forget_even_one_that_cant_remove_the_file(tmp_path, monkeypatch):
+    """Settings' Ukai row paints again from `changed` (the bridge's `ukai_changed`): at the claim that pairs, and at
+    every forget — one whose file is held too (this session is unpaired all the same)."""
+    told = []
+    pairing = up.Pairing(lambda request: None, where=str(tmp_path / up.FILE), changed=lambda: told.append(1))
+    monkeypatch.setattr(door, "EXTENSION_ON", True)
+    monkeypatch.setattr(door, "EXT_PORT", _free_port())
+    d = door.Door({}, str(tmp_path / "results"), extension=pairing.extension()).start()
+    try:
+        d.pairing = pairing
+        asked = _pair_asked(d)
+        assert told == [], "asking is not pairing"
+        pairing.answer(asked["pair"], True)
+        assert told == [], "an Allow nobody claimed yet is not paired"
+        assert _claim(d, asked["pair"])[0] == 200 and told == [1]
+    finally:
+        d.stop()
+    pairing.forget()
+    assert told == [1, 1]
+    real = os.remove
+    monkeypatch.setattr(up.os, "remove", lambda p: (_ for _ in ()).throw(PermissionError(13, "held"))
+                        if p.endswith(up.FILE) else real(p))
+    (tmp_path / up.FILE).write_text(json.dumps({"origin": ORIGIN, "token": "T" * 32}), encoding="utf-8")
+    with pytest.raises(PermissionError):
+        pairing.forget()
+    assert told == [1, 1, 1]
+
+
+def test_a_changed_that_raises_never_fails_the_pairing(ukai):
+    ukai.pairing._changed = lambda: 1 / 0
+    token = _paired(ukai)
+    assert _ask(ukai, "POST", "/v1/echo", {"n": 1}, token=token)[0] == 200
+    ukai.pairing.forget()
+    assert ukai.pairing.pairing() is None
+
+
+def test_paired_says_who_and_which_version_never_the_token(ukai):
+    assert ukai.pairing.paired() is None
+    token = _paired(ukai)
+    got = ukai.pairing.paired()
+    assert got == {"origin": ORIGIN, "version": "1.0.0"} and token not in json.dumps(got)
+
+
+class _Bridge:
+    def __init__(self):
+        self.connected = []
+        self.ukai_asked = type("S", (), {"connect": lambda _s, slot, *a: self.connected.append(slot)})()
+
+    def ask_ukai(self, request):
+        pass
+
+    def ukai_changed(self):
+        pass
+
+
+def _window():
+    from types import SimpleNamespace
+    services = SimpleNamespace(writer=None, settings=SimpleNamespace(get=lambda: {"covers_download": False}))
+    return SimpleNamespace(services=services, bridge=_Bridge(), _ukai_allow=lambda request: None)
+
+
+def test_without_ukais_module_the_window_builds_no_class_and_nothing_listens(monkeypatch):
+    """CLAUDE.md §2's module rule: `modules/ukai` gone, the window hands the door no Ukai class (None) and builds
+    no pairing — Surasura runs as before."""
+    import sys
+    from app.qt.shell import ShellWindow
+    monkeypatch.setitem(sys.modules, "modules.ukai", None)          # (an import of it raises ImportError)
+    window = _window()
+    assert ShellWindow.ukai_extension(window) is None
+    assert not hasattr(window, "ukai_pairing") and window.bridge.connected == []
+
+
+def test_with_ukais_module_the_class_carries_its_subtitle_route_behind_the_pairing(monkeypatch):
+    from app.qt.shell import ShellWindow
+    window = _window()
+    ext = ShellWindow.ukai_extension(window)
+    assert isinstance(ext, door.Extension) and isinstance(window.ukai_pairing, up.Pairing)
+    fn, _groups, unpaired = ext.route("POST", "/v1/online-subtitle")
+    assert unpaired is False, "the subtitle route is a paired one"
+    hello, _g, open_ = ext.route("GET", "/v1/hello")
+    assert open_ is True and "languages" in hello(None)

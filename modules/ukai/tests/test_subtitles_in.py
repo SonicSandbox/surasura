@@ -220,3 +220,108 @@ def test_the_names_type_is_the_site_and_never_a_bare_bracket():
     assert path_utils.infer_source_type("Processed/夜市 [disneyplus-5f2c1e7a-6b9d].txt") == "disneyplus"
     assert path_utils.infer_source_type("Processed/星の旅 [81234567].txt") == "text"
     assert subtitles.content_key({"site": "netflix", "video_id": "81234567"}) == "netflix:81234567"
+
+
+def _title(store, item_id):
+    return store.conn.execute("SELECT w.title FROM items i JOIN works w ON w.id = i.work_id WHERE i.id = ?",
+                              (item_id,)).fetchone()[0]
+
+
+def test_a_film_is_its_own_title_and_a_disney_episode_its_own_site(run):
+    """(#474's, through the door.) A film (no `show`) is titled by itself, its pairing a movie; a Disney+ episode is
+    Disney+'s item, its id a UUID."""
+    d, store, _writer, language, _p, _s = run
+    status, got = _post(d, _body(language, video="80100172", film=True))
+    assert status == 200 and _title(store, got["item"]) == names(language)[2]
+    pairing = json.loads(store.conn.execute("SELECT pairing FROM pairings WHERE item_id = ?",
+                                            (got["item"],)).fetchone()[0])
+    assert pairing["media_type"] == "movie"
+    disney = _body(language, video="5f2c1e7a-6b9d-4c1e-9a0b-3d2f1e0c9b8a", site="disneyplus")
+    disney["url"] = "https://www.disneyplus.com/video/5f2c1e7a-6b9d-4c1e-9a0b-3d2f1e0c9b8a"
+    status, got = _post(d, disney)
+    assert status == 200 and store.item(got["item"])["source_type"] == "disneyplus"
+    assert store.item(got["item"])["rel_path"].endswith("[disneyplus-5f2c1e7a-6b9d-4c1e-9a0b-3d2f1e0c9b8a].txt")
+
+
+# --- the cover (v1's optional `cover`; #474's, by mattias) ---------------------------------------------------------- #
+def _png(pad=0):
+    """A real 1×1 PNG (`pad` bytes of a text chunk make it as big as wanted)."""
+    import struct
+    import zlib
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+            + (chunk(b"tEXt", b"Comment\x00" + b"x" * pad) if pad else b"")
+            + chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00")) + chunk(b"IEND", b""))
+
+
+def _cover_of(store, item_id):
+    return store.conn.execute("SELECT w.cover_source, w.cover_ref, w.cover_path, w.cover_locked FROM items i JOIN "
+                              "works w ON w.id = i.work_id WHERE i.id = ?", (item_id,)).fetchone()
+
+
+class _CoverWriter(_Writer):
+    def set_cover(self, work_id, source, ref=None, path=None, locked=False, label=None, auto=False):
+        assert auto, "nobody's choice: never on the Undo stack"
+        got = self.opener.handle().set_cover(work_id, source, ref=ref, path=path, locked=locked)
+        self.opener.close()
+        return 1 if got is not None else None
+
+
+def _with_cover(language, data, **kw):
+    import base64
+    body = _body(language, **kw)
+    body["cover"] = base64.b64encode(data).decode("ascii") if isinstance(data, bytes) else data
+    return subtitles.subtitle(body)
+
+
+@pytest.fixture(params=LANGUAGES)
+def covered(request):
+    language = request.param
+    store = migrated(language)
+    yield store, _CoverWriter(language), language
+    store.close()
+
+
+def test_the_pages_artwork_becomes_the_cover_of_a_title_with_none(covered):
+    store, writer, language = covered
+    _added, item = subtitles.take_in(writer, _with_cover(language, _png()), cover=subtitles.keep_cover)
+    source, ref, path, locked = _cover_of(store, item)
+    assert (source, ref, locked) == ("user", "browser:netflix", 0)
+    assert path.startswith("user:") and path.endswith(".png")
+    assert os.path.isfile(os.path.join(path_utils.get_user_files_path(language), "covers", path[len("user:"):]))
+
+
+def test_a_title_with_a_cover_of_its_own_keeps_it(covered):
+    store, writer, language = covered
+    _added, item = subtitles.take_in(writer, _with_cover(language, _png()), cover=subtitles.keep_cover)
+    work = store.item(item)["work_id"]
+    assert store.set_cover(work, "file", ref="Processed/folder.jpg") is not None      # its own art, say
+    _added, again = subtitles.take_in(writer, _with_cover(language, _png(pad=40), video="81234599"),
+                                      cover=subtitles.keep_cover)
+    assert store.item(again)["work_id"] == work
+    assert _cover_of(store, again)[:3] == ("file", "Processed/folder.jpg", None)
+
+
+@pytest.mark.parametrize("bad", ["not base64 at all!", b"GIF89a this is no PNG at all, only text", "big"])
+def test_a_broken_or_too_big_cover_is_left_out_and_the_subtitle_still_arrives(covered, bad):
+    store, writer, language = covered
+    data = _png(pad=subtitles.MAX_COVER) if bad == "big" else bad
+    added, item = subtitles.take_in(writer, _with_cover(language, data), cover=subtitles.keep_cover)
+    assert added is True and _cover_of(store, item)[0] in (None, "generated")
+
+
+def test_with_covers_off_the_route_keeps_no_cover_and_with_them_on_it_does(run, monkeypatch):
+    """U7: the show's artwork is kept only while *Download covers* is on (hello says so, so Ukai fetches it only
+    then); off, a cover sent anyway is dropped before anything reads it."""
+    import base64
+    d, store, _writer, language, _p, settings = run
+    kept, real = [], subtitles.take_in
+    monkeypatch.setattr(subtitles, "take_in", lambda writer, sub, rules=None: real(
+        writer, sub, rules, cover=lambda _w, s, _i: kept.append(s.get("cover"))))
+    body = _body(language)
+    body["cover"] = base64.b64encode(_png()).decode("ascii")
+    assert _post(d, body)[0] == 200 and kept == [None]
+    settings["covers_download"] = True
+    assert _post(d, body)[0] == 200 and kept == [None, body["cover"]]

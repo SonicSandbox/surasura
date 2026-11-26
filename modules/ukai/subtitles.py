@@ -36,7 +36,7 @@ SITES = {"netflix": "Netflix", "disneyplus": "Disney+"}     # `source_type` -> t
 PRODUCER = "browser"                    # the pairing record's producer (`placing_rules`' `browser`)
 MAX_CUES = 20000
 MAX_COVER = 400 * 1024                  # the show's artwork as the page shows it (the contract's limit)
-_ID = re.compile(r"[A-Za-z0-9-]{1,64}")         # Netflix's digits, Disney+'s UUID-like ids         # Netflix's digits, Disney+'s UUID-like ids
+_ID = re.compile(r"[A-Za-z0-9-]{1,64}")         # Netflix's digits, Disney+'s UUID-like ids
 _RESERVED = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
@@ -303,10 +303,9 @@ def keep_cover(writer, sub, item_id):
     """The show's artwork the extension sent (`cover`: base64 JPEG or PNG, at most MAX_COVER) as its title's cover —
     only while the title has none of its own (none, or the generated one: never its own art, an AniList or TMDB cover,
     nor your pick). Kept as *Choose an image…* keeps one (`covers.keep_user_bytes`' folder, name and checks) and
-    recorded
-    through the window's writer as nobody's choice (`auto`: never on the Undo stack), unlocked: *Change cover…* still
-    replaces it, and an online fetch never does (`Store.set_cover`'s rule). -> its record's path, or None; never
-    raises (a cover is never a reason for the subtitle to fail: the why is logged)."""
+    recorded through the window's writer as nobody's choice (`auto`: never on the Undo stack), unlocked: *Change
+    cover…* still replaces it, and an online fetch never does (`Store.set_cover`'s rule). -> its record's path, or
+    None; never raises (a cover is never a reason for the subtitle to fail: the why is logged)."""
     raw = sub.get("cover")
     if not raw:
         return None

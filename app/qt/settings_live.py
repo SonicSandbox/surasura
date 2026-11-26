@@ -1112,7 +1112,8 @@ class Live(QObject):
         if part is None:
             return
         version = (paired or {}).get("version")
-        words = (S.UKAI_PAIRED.format(version=version) if version else S.UKAI_PAIRED_PLAIN) if paired else             S.UKAI_NOT_PAIRED
+        words = ((S.UKAI_PAIRED.format(version=version) if version else S.UKAI_PAIRED_PLAIN) if paired
+                 else S.UKAI_NOT_PAIRED)
         if part["mark"].value() != bool(paired) or part["mark"].words() != words:
             part["mark"].set_value(bool(paired), words)
         if part["forget"].isHidden() == bool(paired):

@@ -121,14 +121,6 @@ jobs:
           TEMP: ${{ runner.temp }}
         shell: bash
         run: python -m pytest modules/junban/tests -v -ra -p no:cacheprovider
-      - name: YouTube transcripts
-        if: ${{ !cancelled() }}      # runs after a red Junban too: both results show
-        env:
-          PYTHONIOENCODING: utf-8
-          TMP: ${{ runner.temp }}
-          TEMP: ${{ runner.temp }}
-        shell: bash
-        run: python -m pytest modules/youtube_downloader/tests -v -ra -p no:cacheprovider
       - name: Ukai
         if: ${{ !cancelled() }}
         env:
@@ -137,6 +129,14 @@ jobs:
           TEMP: ${{ runner.temp }}
         shell: bash
         run: python -m pytest modules/ukai/tests -v -ra -p no:cacheprovider
+      - name: YouTube transcripts
+        if: ${{ !cancelled() }}      # runs after a red Junban too: both results show
+        env:
+          PYTHONIOENCODING: utf-8
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        shell: bash
+        run: python -m pytest modules/youtube_downloader/tests -v -ra -p no:cacheprovider
 
   tests:
     # The one result: passed only if every shard and the module suites passed (a docs-only pull request skips them).

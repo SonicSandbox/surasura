@@ -3121,12 +3121,13 @@ def _list_words(lines, script="asis"):
     return (entries | _kana_lines_read(entries)) if SANITIZE_JA else entries
 
 
-def load_ignored_entries(user_files_dir, script="asis", language=None):
+def load_ignored_entries(user_files_dir, script="asis", language=None, settings=None):
     """KnownWord.json's IGNORED entries (Migaku's status: a word the user dismissed there) and, with Ignore names on,
     the library's names, as ignored words — each read as a line of the Ignore list is (`_list_words`). The one reader
-    (`token_index.ignored_entries`) is the Rarity preview's too, so the slider counts what the list counts."""
+    (`token_index.ignored_entries`) is the Rarity preview's too, so the slider counts what the list counts. `settings`:
+    the caller's, already loaded, for the Ignore names switch (`token_index.ignored_names`)."""
     from app import token_index
-    return _list_words(token_index.ignored_entries(user_files_dir, language), script)
+    return _list_words(token_index.ignored_entries(user_files_dir, language, settings), script)
 
 
 def load_ignore_set(user_files_dir, script="asis", language=None):

@@ -50,12 +50,14 @@ def switch_on(store, name=READER):
         store.advance_reader(name, log_seq(store))
 
 
-def mine_line(store):
-    """The top N of Current's available items (`meta.mine_line`, default 20), in order."""
+def mine_line(store, n=None):
+    """The top N of Current's available items (`meta.mine_line`, default 20), in order. `n` (ONB-1, setup's *Your
+    start*): the top `n` by the same rule, whatever the line is now — what a start would cover."""
     from app import library_store
     with store._reading():
-        n = store.meta().get("mine_line", library_store.MINE_LINE_DEFAULT)
-        return store._mine_ids(n)
+        if n is None:
+            n = store.meta().get("mine_line", library_store.MINE_LINE_DEFAULT)
+        return store._mine_ids(int(n))
 
 
 def text_only(item):

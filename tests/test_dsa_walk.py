@@ -373,6 +373,11 @@ def test_the_walks_vocabulary_and_pass_arrays_are_held_compactly(made):
         kids, uses = got.first
         assert kids.dtype == walk.np.int32 and uses.dtype == walk.np.uint16, (kids.dtype, uses.dtype)
         assert dict(zip([walk.keys[k] for k in kids.tolist()], uses.tolist())) == counts, p
+        # a file whose every line is a song line (its words left out) has no count at all: the smallest type of none
+        songs = walk.file(p, set(range(len(got))))
+        assert songs.counter() == Counter() and songs.counted() == (0, 0), p
+        kids, uses = songs.first
+        assert len(kids) == len(uses) == 0 and uses.dtype == walk.np.uint16, p
 
 
 _DENSE = {"ja": ("runaway_transcript.txt", "の"), "zh": ("chinese_text_1.txt", "的")}

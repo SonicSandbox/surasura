@@ -36,6 +36,8 @@ SITES = {"netflix": "Netflix", "disneyplus": "Disney+"}     # `source_type` -> t
 PRODUCER = "browser"                    # the pairing record's producer (`placing_rules`' `browser`)
 MAX_CUES = 20000
 MAX_COVER = 400 * 1024                  # the show's artwork as the page shows it (the contract's limit)
+MAX_SECONDS = 24 * 3600                 # a cue's time: no episode or film is a day long (an endless one is a 400)
+MAX_URL = 2048
 _ID = re.compile(r"[A-Za-z0-9-]{1,64}")         # Netflix's digits, Disney+'s UUID-like ids
 _RESERVED = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
@@ -49,8 +51,8 @@ class Busy(Exception):
 
 
 def _seconds(value):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or value < 0:
-        raise Bad("a cue's times must be seconds")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= MAX_SECONDS:
+        raise Bad("a cue's times must be seconds")         # (NaN and an endless time fail the range too)
     return round(float(value), 3)
 
 
@@ -72,8 +74,9 @@ def subtitle(got):
     if not _ID.fullmatch(video):
         raise Bad("video_id is missing or not an id")
     url = got.get("url")
-    if not isinstance(url, str) or not url.startswith("https://"):
-        raise Bad("url must be the video's https page")
+    if (not isinstance(url, str) or not url.startswith("https://") or len(url) > MAX_URL
+            or any(c.isspace() or not c.isprintable() for c in url)):
+        raise Bad("url must be the video's https page")     # (one line: it heads the transcript, ▶ opens it)
     language = got.get("language")
     if language not in LANGUAGES:
         raise Bad(f"language must be one of {', '.join(LANGUAGES)}")
@@ -127,7 +130,8 @@ def tidy_cues(cues, language):
     [[start s, end s, text]] in time order -> the same, tidied."""
     from app import analyzer
     if language == "ja":
-        cues = [[s, e, unruby(t)] for s, e, t in cues]
+        flat = {}                           # a line split into copies is unruby'd once, not once a copy
+        cues = [[s, e, flat[t] if t in flat else flat.setdefault(t, unruby(t))] for s, e, t in cues]
     cues = sorted(cues, key=lambda c: (c[0], c[1]))
     again = analyzer.shown_again([(int(round(s * 1000)), int(round(e * 1000)), t) for s, e, t in cues])
     out, kept = [], {}
@@ -375,7 +379,13 @@ def take_in(writer, sub, rules=None, timeout=30.0, cover=_cover_later):
     if item is not None:
         cover(writer, sub, item)                # (sent again: a title still without one takes it now)
         return False, item
-    path = write(os.path.join(writer.opener.data_dir, "Processed"), sub)
+    folder = os.path.join(writer.opener.data_dir, "Processed")
+    path = os.path.join(folder, file_name(sub))
+    if not os.path.exists(path):            # one already there (by hand, or a try whose answer was lost): kept as is
+        try:
+            write(folder, sub)
+        except OSError as e:
+            raise Busy(f"Surasura couldn't write it now: {e.strerror or e}") from None
     landed = threading.Event()
     seq = writer.register([path], record(sub, writer.language), rules=rules,
                           done=lambda *_counts: landed.set())

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from PyQt6.QtCore import QCoreApplication, QEvent
 from PyQt6.QtWidgets import QApplication
 
 from app import door
@@ -170,3 +171,21 @@ def test_an_allow_while_settings_is_open_turns_the_row_to_paired(qapp, fakes, tm
     assert wait_until(lambda: _mark(page).words() == S.UKAI_PAIRED.format(version="1.2.0"))
     assert wait_until(lambda: not _forget(page).isHidden())
     page.close()
+
+
+def test_a_closed_page_leaves_nothing_listening_on_the_bridge(qapp, fakes, tmp_path):
+    """(Review.) Each page's row listens on the window's one bridge; a page gone must not keep its `Live` (and its
+    widgets) alive, nor be painted at the next pairing."""
+    from PyQt6 import sip
+    pairing = up.Pairing(None, where=str(tmp_path / "roaming" / up.FILE))
+    page, shell = _make(fakes, tmp_path, pairing)
+    signal = shell.bridge.ukai_paired
+    assert wait_until(lambda: _mark(page).words() == S.UKAI_NOT_PAIRED)
+    assert shell.bridge.receivers(signal) == 1
+    page.close()
+    sip.delete(page)
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)      # (PyQt's slot proxy goes later)
+    QApplication.processEvents()
+    assert shell.bridge.receivers(signal) == 0
+    shell.bridge.ukai_changed()                                     # (nothing painted, nothing raised)
+    QApplication.processEvents()

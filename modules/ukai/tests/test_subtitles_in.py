@@ -206,6 +206,12 @@ def test_hello_says_the_libraries_languages_and_covers_to_any_extension(run):
     (lambda b: b.update(video_id="../../etc"), "video_id"), (lambda b: b.update(url="javascript:alert(1)"), "url"),
     (lambda b: b.update(language="ko"), "language"), (lambda b: b.update(cues=[]), "cues"),
     (lambda b: b.update(cues=[[3.0, 1.0, "逆"]]), "ends before"), (lambda b: b.update(show={"season": 1}), "show"),
+    # (review: an endless or huge time was a crash, 503 again at every resend; a line break in the url a forged
+    # header line in the transcript)
+    (lambda b: b.update(cues=[[0.0, float("inf"), "無限"]]), "seconds"),
+    (lambda b: b.update(cues=[[0.0, 1e306, "大"]]), "seconds"),
+    (lambda b: b.update(url=b["url"] + "\nCaptions: zh"), "url"),
+    (lambda b: b.update(url="https://" + "a" * 3000), "url"),
 ])
 def test_a_bad_body_is_told_why_and_adds_nothing(run, change, why):
     d, _store, writer, language, _p, _s = run
@@ -325,3 +331,32 @@ def test_with_covers_off_the_route_keeps_no_cover_and_with_them_on_it_does(run, 
     assert _post(d, body)[0] == 200 and kept == [None]
     settings["covers_download"] = True
     assert _post(d, body)[0] == 200 and kept == [None, body["cover"]]
+
+
+def test_a_disk_that_wont_take_the_file_is_busy_never_a_crash(run, monkeypatch):
+    """(Review.) Processed unwritable or the file held: 503 *busy* (Ukai sends it again), nothing registered."""
+    d, _store, writer, language, _p, _s = run
+
+    def held(*_a, **_k):
+        raise PermissionError(13, "held by another program")
+
+    monkeypatch.setattr(subtitles.os, "replace", held)
+    status, got = _post(d, _body(language))
+    assert (status, got["kind"]) == (503, "busy") and writer.registered == []
+
+
+def test_a_file_already_there_by_that_name_is_never_written_over(run):
+    """(Review; CLAUDE.md §4.) A transcript of that video already in Processed with no pairing (named by hand, or
+    from a try whose answer was lost): kept byte for byte, and it becomes the video's one item."""
+    d, store, writer, language, _p, _s = run
+    folder = os.path.join(writer.opener.data_dir, "Processed")
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, subtitles.file_name(subtitles.subtitle(_body(language))))
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("自分で書いた書き起こし")
+    status, got = _post(d, _body(language))
+    assert status == 200 and got["added"] is True
+    with open(path, encoding="utf-8") as f:
+        assert f.read() == "自分で書いた書き起こし"
+    assert store.item(got["item"])["rel_path"].endswith(os.path.basename(path))
+    assert _post(d, _body(language))[1]["item"] == got["item"]

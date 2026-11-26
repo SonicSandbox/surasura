@@ -535,3 +535,21 @@ def test_with_ukais_module_the_class_carries_its_subtitle_route_behind_the_pairi
     assert unpaired is False, "the subtitle route is a paired one"
     hello, _g, open_ = ext.route("GET", "/v1/hello")
     assert open_ is True and "languages" in hello(None)
+
+
+def test_forget_whose_part_file_is_held_still_removes_the_pairing_file(ukai, monkeypatch):
+    """(Review.) A crash's `.part` held by another program must not keep the pairing file: the next start would be
+    paired again without the learner knowing. The held one is said after both were tried."""
+    _paired(ukai)
+    (ukai.file.parent / (up.FILE + ".part")).write_text("{}", encoding="utf-8")
+    real = os.remove
+
+    def held(path):
+        if path.endswith(".part"):
+            raise PermissionError(13, "held by another program")
+        return real(path)
+
+    monkeypatch.setattr(up.os, "remove", held)
+    with pytest.raises(PermissionError):
+        ukai.pairing.forget()
+    assert not ukai.file.exists() and up.Pairing(None, where=str(ukai.file)).pairing() is None

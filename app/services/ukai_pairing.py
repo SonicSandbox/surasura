@@ -177,14 +177,19 @@ class Pairing:
     def forget(self):
         """*Forget Ukai*: the next call is refused at once (the kept copy first), then the file goes. OSError: the
         file stays on disk (the caller says so); this session is unpaired all the same."""
+        held = None
         try:
             with self._lock:
                 self._kept, self._pending = None, None
-                for name in (self._file() + ".part", self._file()):
+                for name in (self._file(), self._file() + ".part"):     # the pairing first: a held .part never keeps it
                     try:
                         os.remove(name)
                     except FileNotFoundError:
                         pass
+                    except OSError as e:
+                        held = held or e
+            if held is not None:
+                raise held
         finally:
             self._said()
 

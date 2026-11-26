@@ -544,6 +544,13 @@ class CreditsCard(_Card):
 
 
 # --- the live rows ------------------------------------------------------------------------------------------------- #
+def _let_go(signal, slot):
+    try:
+        signal.disconnect(slot)
+    except (TypeError, RuntimeError):                   # (already gone)
+        pass
+
+
 class Live(QObject):
     """The page's live rows. Made by `SettingsPage`; fills each slot as its row is built (`page.row_built`)."""
 
@@ -706,7 +713,9 @@ class Live(QObject):
             slot.addWidget(forget)
             self.parts[row_id] = {"mark": mark, "forget": forget}
             if getattr(self.shell, "bridge", None) is not None:     # paired or forgotten while Settings is open
-                self.shell.bridge.ukai_paired.connect(lambda _x=None: self._read_ukai())
+                signal, slot = self.shell.bridge.ukai_paired, self._ukai_changed
+                signal.connect(slot)
+                self.destroyed.connect(lambda _o=None: _let_go(signal, slot))  # (the window's bridge outlives a page)
             self._read_ukai()
         elif row_id in COMING:
             hint = QLabel(COMING[row_id])
@@ -1095,6 +1104,10 @@ class Live(QObject):
             return
         self.facts["hato_update"] = tuple(answer) if answer else (None, None)
         self._hato(version)
+
+    def _ukai_changed(self, _none=None):
+        if self._alive():
+            self._read_ukai()
 
     def _read_ukai(self):
         """Ukai's pairing as the window keeps it (`ShellWindow.ukai_pairing`, built only while the door's Ukai class is

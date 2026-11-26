@@ -1239,8 +1239,9 @@ class RowDelegate(QStyledItemDelegate):
     # sizes ------------------------------------------------------------------------------------------------------ #
     @staticmethod
     def line_h(ln):
-        """One line's strip after its row: a groove's own few px in the gap (W3.1a: really subtle)."""
-        return rl("line")
+        """One line's strip after its row: the top-20 line a groove's own few px in the gap (W3.1a: really subtle); the
+        Soon line room for its band (CURRENT-SOON-LOOK D), × the text size."""
+        return round(rl("soon-line") * fz()) if ln.kind == "soon" else rl("line")
 
     @staticmethod
     def _lines_h(lines):
@@ -2651,12 +2652,28 @@ class RowDelegate(QStyledItemDelegate):
         TEXT.draw(p, box.left() + 6, box.center().y(), text, "row-sub", w, c("ink-dim"), dpr=dpr, elide=False)
 
     def _paint_line(self, p, ln, strip, dpr, hot=False):
-        """A line after its row (W3.1a §1 *Top-20 line*, *Soon line*): a groove — 1 px dark, then 1 px lit lip —
-        across the list in its own strip, no word; Soon's quieter still (the lip only). Under the hand it lights a step
-        (its lip). Whole device pixels, so it stays crisp at every scale."""
+        """A line after its row (W3.1a §1 *Top-20 line*, *Soon line*): the top-20 line a groove — 1 px dark, then 1 px
+        lit lip — across the list in its own strip, no word; the Soon line a band across the list in the accent's wash,
+        a short accent bar at its left and *Soon* in the accent (CURRENT-SOON-LOOK D, PROVISIONAL). Under the hand each
+        lights a step. Whole device pixels, so it stays crisp at every scale."""
         k = max(1, round(dpr)) / dpr                 # one line's height: whole device px
         y = round((strip.top() + (strip.height() - 2 * k) / 2) * dpr) / dpr
         x0, w = strip.left() + 4, strip.width() - 8
+        if ln.kind == "soon":
+            f = fz()
+            band = QRectF(x0, strip.top() + 4, w, strip.height() - 8)
+            radius = theme.RADII["r-sm"]
+            p.save()
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(faded("accent-wash", 1.0 if hot else rl("soon-band-alpha")))
+            p.drawRoundedRect(band, radius, radius)
+            bar = QRectF(band.left() + round(8 * f), band.top() + round(6 * f), 2, band.height() - 2 * round(6 * f))
+            p.setBrush(c("accent"))
+            p.drawRoundedRect(bar, 1, 1)
+            p.restore()
+            TEXT.draw(p, bar.right() + round(8 * f), band.center().y(), strings.ROWS_SOON_LINE_LABEL, "goal-label",
+                      band.width() / 2, c("accent"), dpr=dpr)
+            return
         if ln.kind == "top":
             p.fillRect(QRectF(x0, y, w, k), c("groove"))
         p.fillRect(QRectF(x0, y + k, w, k), c("line-hi" if hot else "groove-lip"))

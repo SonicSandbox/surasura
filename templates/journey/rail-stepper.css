@@ -42,7 +42,9 @@
 .rs-space { position:relative; width:100%; }
 .pr { position:absolute; left:0; right:0; height:32px; display:flex; align-items:center; gap:8px; padding:0 10px; border-radius:7px; font:600 13px var(--f-ja); cursor:pointer; }
 .pr:hover { background:var(--overlay-hover); }
-.pr.g { cursor:default; font:700 10.5px var(--f-ui); letter-spacing:.08em; color:var(--ink-faint); text-transform:uppercase; } .pr.g:hover { background:none; }
+.pr.g { cursor:default; font:700 10.5px var(--f-ui); letter-spacing:.08em; color:var(--accent); text-transform:uppercase; padding-left:20px;
+  background:linear-gradient(color-mix(in srgb, var(--accent-wash) 70%, transparent), color-mix(in srgb, var(--accent-wash) 70%, transparent)) 0 50% / 100% 24px no-repeat; }
+.pr.g::before { content:""; position:absolute; left:10px; top:11px; bottom:11px; width:2px; border-radius:1px; background:var(--accent); } .pr.g:hover { background:none; }
 .pr.e { padding-left:38px; font-weight:500; color:var(--ink-meta); }
 .pr.e.one { padding-left:10px; }
 .pr.e.cur { background:var(--accent-wash); color:var(--ink); }

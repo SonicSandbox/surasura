@@ -364,7 +364,7 @@ class SpySettings:
     def reload(self):
         self.calls.append("reload")
 
-    def set(self, changes, update=None, now=False):
+    def set(self, changes, update=None, now=False, keys=()):
         self.calls.append(("set", dict(changes)))
 
 

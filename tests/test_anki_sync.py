@@ -1433,6 +1433,38 @@ def test_a_failed_or_empty_backlog_read_keeps_the_last_one_and_known_words_are_n
     assert anki_sync.sync_backlog("ja", URL, [], [])[1], "no decks, no read"
 
 
+def test_a_deck_taken_out_leaves_no_waiting_count_but_the_same_decks_answered_empty_keep_it(ja_resources_dir):
+    """A deck of 260 new cards picked by mistake, then taken out: the decks left hold no new card, so Anki's empty
+    answer is the truth and the backlog is 0 — the bar said *260 waiting* until Connect's next cards. The guard that
+    keeps the last backlog on an empty answer is for the same decks only (an Anki that answers empty by mistake)."""
+    with open(os.path.join(ja_resources_dir, "KnownWord.json"), encoding="utf-8") as f:
+        words = [w["dictForm"] for w in json.load(f)["words"] if w.get("dictForm")]
+    words = list(dict.fromkeys(words))[:260]
+    assert len(words) == 260, "260 real words for the mistaken deck's new cards"
+    fake = FakeCollection()
+    for word in words:
+        fake.add(word, deck="Japanese::Jalup Sentences", fields=_mined_fields(word), new=True)
+    fake.add("冒険", deck="Japanese::Mining Deck", new=False)          # the decks kept: studied cards only
+    fake.add("評論家", deck="Japanese::Anki Miner", new=False)
+    kept = ["Japanese::Mining Deck", "Japanese::Anki Miner"]
+    with mock.patch("urllib.request.urlopen", fake):
+        assert anki_sync.sync_backlog("ja", URL, kept + ["Japanese::Jalup Sentences"], []) == (260, None)
+        assert anki_sync.count_backlog("ja") == 260
+        count, error = anki_sync.sync_backlog("ja", URL, kept, [])
+    assert (count, error) == (0, None), "the new decks hold no new card: 0 waiting"
+    saved = _backlog_file()
+    assert saved["notes"] == {} and saved["decks"] == sorted(kept), "the file says so (the bar reads it)"
+    assert anki_sync.count_backlog("ja") == 0
+
+    # The same decks, answered empty where there was a backlog: kept, as before
+    with mock.patch("urllib.request.urlopen", fake):
+        anki_sync.sync_backlog("ja", URL, kept + ["Japanese::Jalup Sentences"], [])
+    saved = _backlog_file()
+    with mock.patch("urllib.request.urlopen", FakeCollection()):
+        count, error = anki_sync.sync_backlog("ja", URL, kept + ["Japanese::Jalup Sentences"], [])
+    assert count == 260 and "kept" in error and _backlog_file() == saved
+
+
 def _backlog_path(language="ja"):
     return os.path.join(get_user_files_path(language), "anki_backlog.json")
 

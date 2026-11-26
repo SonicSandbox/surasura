@@ -124,7 +124,8 @@ class AnkiWindow(windows.SecondaryWindow):
         if now == self._saved_choices:
             return                                        # unchanged: nothing written (IK-47, S19)
         self._saved_choices = now
-        self.services.settings.set({}, update=AW.merge(self.language, self.decks, self.chosen()))
+        # its keys named: the Settings *Decks* row and the backlog's read hear them (#SYQF6C)
+        self.services.settings.set({}, update=AW.merge(self.language, self.decks, self.chosen()), keys=AW.KEYS)
 
     def _first_action(self):
         """The user acted: the first open's pick, shown until now, is saved (S16, IK-13)."""

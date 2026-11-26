@@ -766,6 +766,12 @@ class Automation:
         """A Generate is about to run (the user's too): Anki's backlog read beside it, never waited for."""
         self.worker.put(self.sync.backlog)
 
+    def decks_changed(self):
+        """The known-words decks (or fields) changed: Anki's backlog read again for them, never waited for — *N
+        waiting* follows the decks read, not the next sync or Generate (#SYQF6C). Any thread; returns at once."""
+        if not self.closed:
+            self.worker.put(self.sync.backlog)
+
     def close(self):
         """No timer, no trigger acting from here on, the worker stopped (a running sync or 順 finishes)."""
         with self.lock:

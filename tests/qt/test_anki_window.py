@@ -291,6 +291,29 @@ def test_adding_and_removing_a_deck_saves_this_languages_choice_alone(main, anki
     assert _saved(main)["anki_sync_decks"] == {"ja": [], "zh": ["中文"]}
 
 
+def test_a_deck_taken_out_here_is_the_settings_rows_pick_and_the_waiting_count_is_read_again(main, anki,
+                                                                                             monkeypatch):
+    # why: the window saves its decks as an `update=` alone, which its listeners heard with no key, so the Settings
+    # *Decks* row kept the earlier pick (a parent deck there takes every subdeck in Anki's search) and nothing read
+    # the backlog again: *260 waiting* stayed after the deck holding them was taken out (#SYQF6C)
+    from app.services import automation as automation_module
+    asked = []
+    monkeypatch.setattr(automation_module.AutoSync, "backlog", lambda self: asked.append(
+        list((self._owner.settings_now().get("anki_sync_decks") or {}).get("ja") or [])))
+    _choose(main, **{"anki_sync_decks": {"ja": ["TheBank", "Grammar"], "zh": ["中文"]}})
+    page = main.mount_settings()
+    assert wait_until(lambda: page.built, 20)
+    view = page.rows["anki_decks"]
+    assert wait_until(lambda: getattr(view, "decks", None) is not None and view.decks.text() == "TheBank · Grammar")
+    w = _open(main)
+    w.deck_list.setCurrentRow(1)
+    QTest.keyClick(w.deck_list, Qt.Key.Key_Delete)
+    assert w.decks == ["TheBank"]
+    assert _saved(main)["anki_sync_decks"] == {"ja": ["TheBank"], "zh": ["中文"]}
+    assert wait_until(lambda: view.decks.text() == "TheBank", 5), "the row shows the pick the window saved"
+    assert wait_until(lambda: ["TheBank"] in asked, 5), "the backlog is read again for the decks now chosen"
+
+
 # --- Sync now: append-only, one job (inv §4) --------------------------------------------------------------------- #
 def test_sync_is_an_anki_sync_job_and_a_second_press_while_it_runs_starts_nothing(main, anki, monkeypatch,
                                                                                   ja_resources_dir):

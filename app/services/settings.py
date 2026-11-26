@@ -98,10 +98,11 @@ class SettingsService:
         self._lock = threading.Lock()
         self._landed_cond = threading.Condition(self._lock)
         self._pending = {}              # key -> (value, seq): the changes not yet written
-        self._updates = []              # (seq, update(settings)) not yet written
+        self._updates = []              # (seq, update(settings), the keys it names) not yet written
         self._seq = 0
         self._landed_upto = 0           # every change up to this seq is written and read back
-        self._carried = {}              # id(the dict a build returned) -> ({key: seq}, upto): what that write carries
+        self._carried = {}              # id(the dict a build returned) -> ({key: seq}, upto, the updates' keys): what
+        #                                 that write carries
         self._base = None               # load_settings() as of the last load or landed write
         self._frozen = None             # get()'s answer, rebuilt after a change
         self._subscribers = []
@@ -165,15 +166,19 @@ class SettingsService:
         return any(self.kind(k, language) != "neither" for k in keys)
 
     # --- changing ----------------------------------------------------------------------------------------------- #
-    def set(self, changes, update=None, now=False):
+    def set(self, changes, update=None, now=False, keys=()):
         """Queue `changes` ({key: value}) for settings.json and return at once. `update(settings)`, when given, changes
         the file's dict in place after them, inside the lock — kept for the dashboard's migrations of 2.x keys (the Anki
-        address; the update's old failure mark). Safe on a window's thread. `now`: write them (and every change still
+        address; the update's old failure mark) and the per-language merges (the Anki window's decks). `keys`: the keys
+        `update` changes, told to the listeners with `changes`' own when the write lands (unnamed, they hear none of
+        them: the Settings *Decks* row and the backlog read never followed the Anki window's save, #SYQF6C). Safe on a
+        window's thread. `now`: write them (and every change still
         pending) on this thread instead, holding the `settings` lock for the read and the write — a caller with no
         window (a test harness, a headless tool), never a window's thread."""
         if not changes and update is None:
             return
-        for key in changes:
+        keys = tuple(keys) if update is not None else ()
+        for key in list(changes) + list(keys):
             if not isinstance(key, str) or not key or (("." in key) and not key.startswith("logic.")):
                 raise ValueError(f"not a settings key: {key!r}")
         with self._lock:
@@ -181,7 +186,7 @@ class SettingsService:
             for key, value in changes.items():
                 self._pending[key] = (_copy(value), self._seq)
             if update is not None:
-                self._updates.append((self._seq, update))
+                self._updates.append((self._seq, update, keys))
             self._frozen = None
         if now:
             held = settings_manager._settings_lock(settings_manager.LOCK_WAIT)
@@ -229,21 +234,22 @@ class SettingsService:
         settings = file_as_is()
         for key, (value, _seq) in entries.items():
             put(settings, key, value)
-        for _seq, update in updates:
+        for _seq, update, _keys in updates:
             update(settings)
         with self._lock:
-            self._carried[id(settings)] = ({key: seq for key, (_v, seq) in entries.items()}, upto)
+            self._carried[id(settings)] = ({key: seq for key, (_v, seq) in entries.items()}, upto,
+                                           {key for _s, _u, named in updates for key in named})
         return settings
 
     def _landed(self, written):
         base = settings_manager.load_settings()                   # the file as written, the defaults filled in
         with self._lock:
-            carried, upto = self._carried.pop(id(written), ({}, None))
+            carried, upto, named = self._carried.pop(id(written), ({}, None, ()))
             for key, seq in carried.items():
                 if key in self._pending and self._pending[key][1] == seq:
                     del self._pending[key]
             if upto is not None:
-                self._updates = [(seq, u) for seq, u in self._updates if seq > upto]
+                self._updates = [entry for entry in self._updates if entry[0] > upto]
                 self._landed_upto = max(self._landed_upto, upto)
                 # Builds never written (a write retried builds again) carry nothing newer: let them go.
                 self._carried = {k: v for k, v in self._carried.items() if v[1] > self._landed_upto}
@@ -251,7 +257,7 @@ class SettingsService:
             self._frozen = None
             self._landed_cond.notify_all()
             subscribers = list(self._subscribers)
-        keys = sorted(carried)
+        keys = sorted(set(carried) | set(named))
         for callback in subscribers:
             try:
                 callback(keys)

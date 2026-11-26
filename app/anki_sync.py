@@ -1059,8 +1059,9 @@ def sync_backlog(language, url, decks, fields):
     edited since the backlog was written, when it is read again, so a corrected card's word is the new
     one; the decks, the fields or `BACKLOG_VERSION` changing reads everything again). Never raises:
     returns `(count, error)`.
-    A failed read, or an empty answer where there was a backlog, keeps the previous file (the
-    "refuse to write when the input can't be trusted" rule). The file is written only when what it
+    A failed read, or an empty answer for the same scope where there was a backlog, keeps the previous file (the
+    "refuse to write when the input can't be trusted" rule); for a new scope (other decks, fields or version) the
+    empty answer is the truth: a deck taken out takes its cards' count with it. The file is written only when what it
     holds changed — its notes, decks, fields or version: its (mtime, size) is in the report's render
     signature, and a rewrite for a new `synced_at` alone (which nothing reads) made the next Generate
     re-render the report instead of opening it.
@@ -1089,7 +1090,7 @@ def sync_backlog(language, url, decks, fields):
             entry = _backlog_entry(note, fields, language)
             if entry is not None and note.get("noteId") is not None:
                 entries[str(note["noteId"])] = entry
-        if not entries and count_backlog(language):
+        if not entries and same_scope and count_backlog(language):
             return count_backlog(language), ("Anki answered with an empty backlog, so the last one "
                                              "was kept.")
         if same_scope and old.get("notes") == entries:

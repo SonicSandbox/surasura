@@ -3674,6 +3674,8 @@ class ShellWindow(QMainWindow):
             self._show_automation(s.automation.state())
         elif "anki_sync_decks" in keys or "target_language" in keys:
             self._known_road()                              # the count's click line follows the road (IK-7)
+        if ("anki_sync_decks" in keys or "anki_sync_fields" in keys) and s.automation is not None:
+            s.automation.decks_changed()                    # *N waiting* read again for the decks now chosen
         try:
             stale = s.settings.stales(keys, language)
         except Exception:

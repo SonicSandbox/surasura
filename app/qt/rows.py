@@ -1307,14 +1307,15 @@ class RowDelegate(QStyledItemDelegate):
     def _shape(entry, is_open, unfolded=frozenset()):
         """What an entry's height is made of (`_size_hint` reads nothing else): its kind, its lines, open or not, and,
         open or a Needs-you item, how many episodes it lists (a8: opened, its lines — a fold one, its parts after it
-        while shown whole: `unfolded`, the view's). Closed rows with as many lines under them are as tall."""
+        while shown whole: `unfolded`, the view's). Closed rows with the same lines under them are as tall (the lines'
+        kinds, not their count: each kind its own strip, `line_h`)."""
         kind, payload, lines = entry
         if is_open and kind in (HERO, ROW):
             n = len(shown_lines(payload, row_folds(payload, lines), unfolded))
         else:
             n = len(payload.episodes) if kind == NEED else 0
         shows = len(show_starts(payload)) if is_open and kind in (HERO, ROW) else 0     # LM11b: its show lines
-        return kind, len(lines), is_open and kind in (HERO, ROW), n, shows
+        return kind, tuple(ln.kind for ln in lines), is_open and kind in (HERO, ROW), n, shows
 
     def _size_hint(self, entry, is_open):
         kind, payload, lines = entry

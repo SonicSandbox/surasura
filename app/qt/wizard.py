@@ -2711,6 +2711,212 @@ class LevelPage(_Page):
         self._paint()
 
 
+@lru_cache(maxsize=None)
+def _stone(state, seed, sparkle=False):
+    """A stone's display list (the window's own stones, `app/stone_shapes.py`) and its box -> (ops, (x0, y0, x1, y1));
+    `sparkle`: pre-studied's add over it (the journey's mark)."""
+    from app import stone_shapes
+    ops = list(stone_shapes.stone_ops(state, "sapphire", seed))
+    if sparkle:
+        ops += stone_shapes.pre_ops(state, seed)
+    pts = [pt for op in ops if op[0] == "fill" for pt in op[1]]
+    xs, ys = [pt[0] for pt in pts], [pt[1] for pt in pts]
+    return tuple(ops), (min(xs), min(ys), max(xs), max(ys))
+
+
+class StartChoice(Choice):
+    """One start of *Your start* (ONB-1): its stones (the episodes it covers, in Anki's blue; the rest as rock), the
+    days it lasts at the daily pace (*counting* while the list is made), its name and its two lines."""
+
+    STONES = {"small": (8, 3, False), "full": (20, 20, False), "prestudied": (8, 2, True)}   # (shown, lit, sparkle)
+
+    def __init__(self, key, parent=None):
+        super().__init__(key, S.START_NAMES[key], S.START_TIPS[key], parent, recommended=key == "full")
+        self.big = self.unit = ""
+        self.lines = ("", "")
+
+    def sizeHint(self):
+        return QSize(_px(300), _px(300))
+
+    def needed_width(self):
+        title = QFontMetricsF(_font("body", 600)).horizontalAdvance(self.title)
+        if self.recommended:
+            rec = _font("eyebrow")
+            rec.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 110)
+            title += _px(12) + QFontMetricsF(rec).horizontalAdvance(S.RECOMMENDED)
+        sub = QFontMetricsF(_font("row-sub"))
+        return math.ceil(2 * _px(26) + max([title] + [sub.horizontalAdvance(x) for x in self.lines])) + 1
+
+    def set_numbers(self, big, unit, lines):
+        """The big figure (days, or empty while counting), its unit and the two lines — repainted only on a change."""
+        new = (big, unit, tuple(lines))
+        if new != (self.big, self.unit, self.lines):
+            self.big, self.unit, self.lines = new
+            self.updateGeometry()
+            if self.channel is not None:
+                self.channel.updateGeometry()
+                self.channel.fit()
+            self.update()
+
+    def paintEvent(self, _event):
+        from app.qt import stones
+        self.paints += 1
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        self._paint_ground(p)
+        pad = _px(26)
+        shown, lit, sparkle = self.STONES[self.key]
+        step = min(_px(34), (self.width() - 2 * pad) / max(1, shown))
+        for i in range(shown):                            # the stones: one an episode, Anki's blue where cards come
+            ops, (x0, y0, x1, y1) = _stone("raw" if i < lit else "rock", 1 + i % 8, sparkle and i < lit)
+            k = min(step * 0.8 / max(1e-6, x1 - x0), _px(26) / max(1e-6, y1 - y0))
+            p.save()
+            p.translate(pad + i * step - x0 * k, _px(70) - (y0 + y1) / 2 * k)
+            p.scale(k, k)
+            stones.paint_ops(p, ops)
+            p.restore()
+        base = self.height() - _px(118)
+        if self.key == "prestudied":                      # no count: it goes at the learner's own pace
+            star = _font("first-run-heading", 400, 0.6)
+            p.setFont(star)
+            p.setPen(_c("accent"))
+            p.drawText(QPointF(pad, base), "✦")
+            x = pad + QFontMetricsF(star).horizontalAdvance("✦") + _px(12)
+        else:
+            big = _font("first-run-heading", 600, 0.9)
+            p.setFont(big)
+            p.setPen(_c("ink") if self.big else _c("ink-faint"))
+            text = self.big or "· · ·"
+            p.drawText(QPointF(pad, base), text)
+            x = pad + QFontMetricsF(big).horizontalAdvance(text) + _px(10)
+        p.setFont(_font("row-sub"))
+        p.setPen(_c("ink-dim"))
+        p.drawText(QPointF(x, base), self.unit)
+        title_font = _font("body", 600)
+        y = base + _px(40)
+        p.setFont(title_font)
+        p.setPen(_c("ink"))
+        p.drawText(QPointF(pad, y), self.title)
+        if self.recommended:
+            rec = _font("eyebrow")
+            rec.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 110)
+            p.setFont(rec)
+            p.setPen(_c("accent"))
+            p.drawText(QPointF(pad + QFontMetricsF(title_font).horizontalAdvance(self.title) + _px(12), y - _px(1)),
+                       S.RECOMMENDED)
+        p.setFont(_font("row-sub", 400, 1.0, theme.font_families(getattr(self.channel, "language", None) or "ja")))
+        p.setPen(_c("ink-dim"))
+        for n, line in enumerate(self.lines):
+            if line:
+                p.drawText(QPointF(pad, y + _px(30) * (n + 1)), scrub.shown(line))     # (a title: scrubbed in shots)
+        if self.isChecked():
+            self._paint_vein(p, self.height() - _px(14), pad - _px(4), self.width() - pad)
+        if self.hasFocus() and self._keyed:
+            _ring(p, self.rect())
+        p.end()
+
+
+def start_words(key, numbers, cap):
+    """Pure: one start's (big figure, unit, (line 1, line 2)) from `setup_wizard.start_numbers`' answer."""
+    n = (numbers or {}).get(key) or {}
+    if key == "prestudied":
+        return "", S.START_PACE_WORD, (S.START_PRE_LINE, S.START_PRE_LINE_2)
+    days, cards = n.get("days"), n.get("cards")
+    big = str(days) if isinstance(days, int) else ""
+    unit = (S.START_DAY if days == 1 else S.START_DAYS) if big else S.START_COUNTING
+    wait = S.START_CARDS.format(n=cards, cap=cap) if isinstance(cards, int) else S.START_WAIT.format(cap=cap)
+    if key == "small":
+        labels = (numbers or {}).get("top_labels") or ()
+        show = (numbers or {}).get("top") or ""
+        if show and labels:
+            first = S.START_SHOW_EPS.format(show=show, first=labels[0], last=labels[-1]) if len(labels) > 1 else \
+                S.START_SHOW_EP.format(show=show, first=labels[0])
+        else:
+            first = S.START_NEXT_N.format(n=n.get("episodes") or 3)
+        return big, unit, (first, wait)
+    titles = n.get("titles") or 0
+    first = S.START_NEXT_N.format(n=n.get("episodes") or 20)
+    if titles:
+        first = S.START_NEXT_EPS.format(eps=first, titles=S.START_TITLES.get(titles) or S.START_TITLES_N.format(n=titles))
+    return big, unit, (first, wait)
+
+
+class StartPage(_Page):
+    """ONB-1's *How would you like to start?* — after *Your list*, on the learner's own content (his top show, its
+    episodes at once; the card numbers fill in as the list is made). Its *Start* is the yes: the wizard writes the
+    start (`setup_wizard.save(START)`) and logs it (`start_cards`) — this page decides nothing."""
+    id = "start"
+
+    def __init__(self, wiz):
+        super().__init__(wiz, "")
+        from app.qt.tooltip import AboutMark, FitTitle
+        self.title.hide()                                 # the title with its ? after it (no subtitle: Qt guide §3)
+        words = QHBoxLayout()
+        words.setSpacing(_px(10))
+        self.heading = FitTitle(S.START_TITLE, self)
+        self.heading.setObjectName("wiztitle")
+        self.heading.setWordWrap(True)
+        words.addWidget(self.heading, 1000, Qt.AlignmentFlag.AlignVCenter)
+        self.about = AboutMark(strings.HELP_MARK, self)
+        self.about.set_about(S.START_ABOUT_NAME, S.START_ABOUT)
+        words.addWidget(self.about, 0, Qt.AlignmentFlag.AlignVCenter)
+        words.addStretch(1)
+        self.box.insertLayout(0, words)
+        self.top = _label("wizsub", "", self, wrap=True)  # a state: his show at the top, the daily pace
+        self.box.addWidget(self.top)
+        self.channel = Channel(S.START_CHOICE_NAME, self, gap=_px(8))
+        self.channel.language = wiz.language
+        self.cards = {}
+        from app.services import setup_wizard
+        for key in setup_wizard.starts():
+            self.cards[key] = self.channel.add(StartChoice(key, self.channel))
+        self.box.addSpacing(_px(8))
+        self.box.addWidget(self.channel)
+        self.box.addWidget(_label("wizhint", S.START_HINT, self))
+        self.box.addStretch(1)
+        self.items = {}                                   # `start_items`' ids (read once a page entry)
+        self.numbers = None
+        self.cap = {k: setup_wizard.START_SIZES[k][1] for k in self.cards}
+        self._shown = None
+        self.number_paints = 0
+
+    def answers(self):
+        return {"start": self.channel.value() or "full"}
+
+    def load(self, answers):
+        from app.services import setup_wizard
+        key = (answers or {}).get("start")
+        self.channel.choose(key if key in self.cards else setup_wizard.START_DEFAULT)
+
+    def entered(self):
+        self.wiz.read_start()
+
+    def focus_first(self):
+        self.channel.focus()
+
+    def language_changed(self, language):
+        self.channel.language = language
+        self.items, self.numbers, self._shown = {}, None, None
+
+    def show_numbers(self, numbers):
+        """`setup_wizard.start_numbers`' answer (None: nothing read yet) — repainted only when it moved (S19)."""
+        if numbers == self._shown:
+            return
+        self._shown = self.numbers = numbers
+        self.number_paints += 1
+        n = numbers or {}
+        top = []
+        if n.get("top"):
+            top.append(S.START_TOP.format(title=n["top"]))
+        if n.get("per_day"):
+            top.append(S.START_PACE.format(n=n["per_day"]))
+        _set_text(self.top, " · ".join(top))
+        _show(self.top, bool(top))
+        for key, card in self.cards.items():
+            card.set_numbers(*start_words(key, n, self.cap[key]))
+
+
 def _index_reading(chores, numbers):
     """(A worker.) Kantan-B1 (A2: page 6 said *Counting your shows…* over an empty graph while the samples were read):
     while the numbers aren't in and the window's indexer reads, how many files it reads (its log's newest count,

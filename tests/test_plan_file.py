@@ -627,7 +627,7 @@ def test_a_run_without_a_signature_writes_no_plan(monkeypatch, capsys):
     its outputs, but no plan — a plan whose run_signature is null would match the missing stamp."""
     root = os.environ["SURASURA_TEST_ROOT"]
     cases.build(root, "samples-zh")
-    monkeypatch.setattr(analyzer, "run_signature_parts", lambda *_a: None)
+    monkeypatch.setattr(analyzer, "run_signature_parts", lambda *_a, **_k: None)
     _run_in_process(root, "samples-zh")
     results = os.path.join(root, "results")
     assert os.path.exists(os.path.join(results, "priority_learning_list.csv"))

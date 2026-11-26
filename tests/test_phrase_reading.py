@@ -17,6 +17,7 @@ import pandas as pd
 import pytest
 
 from app import analyzer, plan_engine, plan_rules
+from app import static_html_generator as gen
 
 RES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Test Resources", "ja")
 TEMPLATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates", "web_app.html")
@@ -89,7 +90,14 @@ def run(tmp_path, monkeypatch):
     monkeypatch.setitem(analyzer.LOGIC, "phrase_rows", True)
     results = root / "results"
     results.mkdir(exist_ok=True)
-    with patch("app.analyzer.RESULTS_DIR", str(results)), \
+    # The report's paths too: static_html_generator binds them once, at its import (testing.md § 5.2), so a test file
+    # collected before this one leaves them on the repo's own results/ — the journey read that folder's
+    # file_statistics.json and journey_words.json, and wrote its page there
+    with patch.object(gen, "RESULTS_DIR", str(results)), \
+            patch.object(gen, "PRIORITY_CSV", str(results / "priority_learning_list.csv")), \
+            patch.object(gen, "PROGRESSIVE_CSV", str(results / "progressive_learning_list.csv")), \
+            patch.object(gen, "OUTPUT_FILE", str(results / gen.REPORT_NAME)), \
+            patch("app.analyzer.RESULTS_DIR", str(results)), \
             patch("app.analyzer.OUTPUT_CSV", str(results / "priority_learning_list.csv")), \
             patch("app.analyzer.OUTPUT_STATS", str(results / "file_statistics.txt")), \
             patch("app.analyzer.OUTPUT_PROGRESSIVE", str(results / "progressive_learning_list.csv")), \

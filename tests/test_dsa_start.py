@@ -147,12 +147,6 @@ def test_the_redraw_hashes_the_library_with_the_one_fast_call(run):
 
 # --- G7: the run signature's stats from one listing per folder -------------------------------------------------- #
 
-# G7 is out of 3.0.19 (the lead, 2026-11-25 21:3x): with it the window's first numbers load landed in its slow mode
-# more often (the first view with numbers 4.5 -> ~6.2 s median at 20k). These tests are the behaviour expected when
-# OPEN-RACE puts it back on top (commits 4a9e5eb7, 6a0f396a, 4e211d36): OPEN-RACE drops this mark.
-_G7_OUT = pytest.mark.skip(reason="G7 (the signature's one listing a folder) held for OPEN-RACE: the expected "
-                                  "behaviour once it is back on top (4a9e5eb7, 6a0f396a, 4e211d36)")
-
 def _signing(language, tmp_path, monkeypatch):
     """RP-2's library of `language` built in a root of its own (no Generate: the signature reads only the files and
     the settings), plus a nested season folder of four CRLF episodes: (found files, args, the season's paths) as the
@@ -203,7 +197,6 @@ def _by_os_stat(found, args, language, monkeypatch):
         return analyzer.run_signature_parts(language, found, args)
 
 
-@_G7_OUT
 @pytest.mark.parametrize("language", ["ja", "zh"])
 def test_the_signature_lists_each_folder_once_and_signs_the_same_bytes_as_a_stat_per_file(language, tmp_path,
                                                                                           monkeypatch):
@@ -240,7 +233,6 @@ def test_the_signature_lists_each_folder_once_and_signs_the_same_bytes_as_a_stat
     assert analyzer.run_signature_parts(language, found, args) == old
 
 
-@_G7_OUT
 @pytest.mark.parametrize("language", ["ja", "zh"])
 def test_a_file_edited_or_removed_between_two_checks_is_seen_by_the_second(language, tmp_path, monkeypatch):
     """Nothing is kept across checks: a file edited between two signatures (its size and time moved) and a file
@@ -261,7 +253,6 @@ def test_a_file_edited_or_removed_between_two_checks_is_seen_by_the_second(langu
     assert second == _by_os_stat(found, args, language, monkeypatch)
 
 
-@_G7_OUT
 @pytest.mark.skipif(os.name != "nt", reason="a path spelled in another case names the same file only on Windows")
 def test_a_path_the_listing_spells_otherwise_is_stated_as_before(tmp_path, monkeypatch):
     """The listing is matched by the exact name: a found path in another case (the same file on Windows) isn't in it,

@@ -185,35 +185,16 @@ def _child_counts(base):
     return total
 
 
-@pytest.mark.parametrize("language", ["ja", "zh"])
-def test_generate_searches_no_finished_sentence_for_set_phrases_and_walks_its_mask(tmp_path, language):
-    # why: with phrase rows on (ja's default) every finished file's sentences were all built and searched at every
-    # Generate. Real text: the token store's six files counted, a finished show of tests/Test Resources (its set phrases
-    # among them), indexed once; then Generate: no sentence searched, each finished file walked on its mask, and the
-    # lists byte for byte those of a Generate that searches the finished files as before. (zh has no set phrases: its
-    # finished walk was already on its mask — a guard.)
+def _generate_twice(tmp_path, root, language):
+    """Generate (min-freq 1) as it ships, then as before (a finished file's kept matches hidden: searched sentence by
+    sentence) — ([the two runs' lists], [their counts]). The first Generate indexes the child's own token store, its
+    finished files' phrases found then: neither listed nor counted."""
     from tests.plan_file_cases import REPO, child_env
-    from tests.test_finished_reference import FINISHED, _finished_show
     from tests.test_generate_missing_item import COMPARED
-    from tests.test_token_store_kept import _library, _run_indexer
-    root = os.environ["SURASURA_TEST_ROOT"]
-    with open(os.path.join(root, "settings.json"), "w", encoding="utf-8") as f:
-        json.dump({"logic": {"phrase_rows": True}}, f)
-    store, _data_dir, ids = _library(language)
-    sources = (["tests/Test Resources/ja/phrases_sample.srt"] + FINISHED["ja"]) if language == "ja" else None
-    show = _finished_show(language, sources=sources)
-    store.import_finished(show)
-    store.close()
-    _run_indexer(language)
-    if language == "ja":
-        with ti.open_store(language) as tokens:
-            held = tokens.phrase_matches(show)
-            assert set(held) == set(show) and held[show[0]][1], "the index found the finished show's phrases"
     hook = tmp_path / "hook"
     hook.mkdir()
     (hook / "sitecustomize.py").write_text(_COUNT_HOOK, encoding="utf-8")
     lists, counts = [], []
-    # (the first Generate indexes the child's own token store, its finished files' phrases found then: not counted)
     for search in (None, False, True):
         env = child_env(root)
         env.update(SURASURA_FORCE_RUN="1", DSA_PHRASE_COUNT=str(tmp_path / "count"),
@@ -233,6 +214,32 @@ def test_generate_searches_no_finished_sentence_for_set_phrases_and_walks_its_ma
             continue
         lists.append(made)
         counts.append(_child_counts(tmp_path / "count"))
+    return lists, counts
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_generate_searches_no_finished_sentence_for_set_phrases_and_walks_its_mask(tmp_path, language):
+    # why: with phrase rows on (ja's default) every finished file's sentences were all built and searched at every
+    # Generate. Real text: the token store's six files counted, a finished show of tests/Test Resources (its set phrases
+    # among them), indexed once; then Generate: no sentence searched, each finished file walked on its mask, and the
+    # lists byte for byte those of a Generate that searches the finished files as before. (zh has no set phrases: its
+    # finished walk was already on its mask — a guard.)
+    from tests.test_finished_reference import FINISHED, _finished_show
+    from tests.test_token_store_kept import _library, _run_indexer
+    root = os.environ["SURASURA_TEST_ROOT"]
+    with open(os.path.join(root, "settings.json"), "w", encoding="utf-8") as f:
+        json.dump({"logic": {"phrase_rows": True}}, f)
+    store, _data_dir, ids = _library(language)
+    sources = (["tests/Test Resources/ja/phrases_sample.srt"] + FINISHED["ja"]) if language == "ja" else None
+    show = _finished_show(language, sources=sources)
+    store.import_finished(show)
+    store.close()
+    _run_indexer(language)
+    if language == "ja":
+        with ti.open_store(language) as tokens:
+            held = tokens.phrase_matches(show)
+            assert set(held) == set(show) and held[show[0]][1], "the index found the finished show's phrases"
+    lists, counts = _generate_twice(tmp_path, root, language)
     assert len(lists[0]["priority_learning_list.csv"].splitlines()) > 5, "some words listed"
     assert lists[0] == lists[1], "the kept matches list what a search lists"
     shipped, searched = counts
@@ -240,6 +247,36 @@ def test_generate_searches_no_finished_sentence_for_set_phrases_and_walks_its_ma
     assert shipped["masked"] >= len(show), f"each finished file walked on its mask: {shipped}"
     if language == "ja":
         assert searched["find"] > 0 and searched["masked"] < shipped["masked"], ("the search as before", searched)
+
+
+def test_a_finished_sentence_whose_only_unknown_is_a_listed_set_phrase_is_still_its_example(tmp_path):
+    # why: the finished walk takes a sentence from its mask (a list row's word that may be unknown there) OR from the
+    # phrases the index kept for it. A finished line whose every word is known but which holds a listed set phrase is
+    # outside the mask: only the kept matches bring it in. Real text: the six counted files (phrases_sample.srt's set
+    # phrases among them: 腑に落ちる, 気がつく, もしかしたら are rows) and a finished placed_episode.srt whose every
+    # word is known — its 「先生の説明、やっと腑に落ちた。」 must be an example as a search would make it, never dropped.
+    from tests.test_finished_reference import _finished_show
+    from tests.test_token_store_kept import _library, _run_indexer
+    root = os.environ["SURASURA_TEST_ROOT"]
+    with open(os.path.join(root, "settings.json"), "w", encoding="utf-8") as f:
+        json.dump({"logic": {"phrase_rows": True}}, f)
+    store, _data_dir, _ids = _library("ja")
+    show = _finished_show("ja", sources=["tests/Test Resources/ja/placed_episode.srt"])
+    store.import_finished(show)
+    store.close()
+    _run_indexer("ja")
+    with ti.open_store("ja") as tokens:
+        words = {lemma for _text, toks in tokens.file_tokens(show[0]) for lemma, *_rest in toks}
+        held = tokens.phrase_matches(show)
+    assert held[show[0]][1], "the index kept the finished file's set phrases"
+    with open(os.path.join(root, "User Files", "ja", "KnownWord.json"), "w", encoding="utf-8") as f:
+        json.dump({"words": [{"dictForm": w, "knownStatus": "KNOWN"} for w in sorted(words)]}, f, ensure_ascii=False)
+    lists, counts = _generate_twice(tmp_path, root, "ja")
+    shipped, searched = lists
+    assert shipped == searched, "the kept matches list what a search lists"
+    assert "先生の説明、やっと腑に落ちた。" in shipped["priority_learning_list.csv"].decode("utf-8"), (
+        "the finished line, all its words known, is its set phrase's example")
+    assert counts[0]["find"] == 0, counts
 
 
 # ---------------------------------------------------------------------------------------------------- #
@@ -364,3 +401,4 @@ def test_the_starts_index_check_reads_listings_never_a_file_at_a_time(language, 
     assert kept == whole, "a missing item keeps its place with missing=True"
     assert chores.index_needed(language, None) is True, "a file gone: the indexer keeps its text"
     assert {ti._norm(p) for p in exists} <= {ti._norm(files[1])}, "os.path.exists only for a name no listing gave"
+

@@ -24,7 +24,7 @@ from app.services import prestudied
 from tests import cli_helpers as h
 from tests import connect_helpers as c
 from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (autouse)
-from tests.connect.fake_steps import WORDS, FakeSteps
+from tests.connect.fake_steps import WORDS, FakeSteps, Killed
 
 KEY = "connect_prestudied_only"
 
@@ -113,6 +113,39 @@ def test_un_marked_before_its_mining_it_waits_again_and_the_switch_off_lets_it_g
     plan["prestudied_only"] = False
     steps, summary = _run(tmp_path, ledger, plan)
     assert summary["languages"]["ja"]["done"] == [2]
+
+
+def test_un_marked_mid_mine_the_episode_under_way_finishes_never_held_half_made(tmp_path, ledger):
+    # marked, its batch already with Anki Miner when Connect stopped (killed mid-batch); un-marked since: its cards
+    # are finished at the next run (the gate holds only a job no batch has reached, as the cap's)
+    plan = {"line": {"ja": [1]}, "queue": {"ja": [1]}, "prestudied_only": True, "prestudied": [1],
+            "kill": "mid-batch:1"}
+    with pytest.raises(Killed):
+        _run(tmp_path, ledger, plan)
+    assert ledger.batches(ledger.jobs("ja")[0]["id"]), "precondition: a batch reached Anki Miner"
+    plan = {"line": {"ja": [1]}, "queue": {"ja": [1]}, "prestudied_only": True, "prestudied": []}
+    _steps, summary = _run(tmp_path, ledger, plan)
+    assert summary["languages"]["ja"]["done"] == [1] and _jobs(ledger)[1][0] == "done"
+
+
+def test_a_busy_store_at_the_mark_read_is_a_plain_wait_never_a_mine_nor_an_error(tmp_path, monkeypatch):
+    import sqlite3
+
+    from app.connect import library
+
+    class _Busy:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def prestudied_marks(self, ids):
+            raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(library, "open_store", lambda lang: _Busy())
+    with pytest.raises(runner.Wait) as caught:
+        runner.Steps({KEY: True}, live=False).prestudied("ja", 1)
+    assert caught.value.reason == runner.LIBRARY_BUSY
 
 
 def test_a_press_is_the_yes_mine_now_on_an_unmarked_episode_mines(tmp_path, ledger):

@@ -356,7 +356,8 @@ def speech_folders():
             return ()
         out = []
         for e in entries:
-            st = e.stat(follow_symlinks=False)
+            st = os.stat(e.path, follow_symlinks=False)  # (never DirEntry.stat: on Windows it is the folder index's
+            #   copy, updated late — a file just written in a folder inside reads its old time and size there)
             inner = listing(e.path, depth - 1) if depth > 1 and e.is_dir(follow_symlinks=False) else None
             out.append((e.name, st.st_mtime_ns, st.st_size, inner))
         return tuple(out)
@@ -1064,7 +1065,8 @@ def settings_import(path, language, values, folder, name=None, profile=None, kee
         args = ["settings-import", file, "--language", language] + (["--name", name] if name else
                                                                     ["--profile", profile])
         keeps = bool(keeps and profile and isinstance(values, dict) and set(values) == {"asr_model"})
-        result = _result(api(path, args, bind=False, keeps=keeps))
+        # (`keeps` passed only when it keeps: a stand-in of `api` written before it still takes every other call)
+        result = _result(api(path, args, bind=False, **({"keeps": True} if keeps else {})))
     finally:
         try:
             os.remove(file)

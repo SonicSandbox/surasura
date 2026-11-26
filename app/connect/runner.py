@@ -209,6 +209,10 @@ STOPPED_BY_YOU = STOPPED_REASON
 TURN = "Waiting its turn: Surasura is making another episode's cards now."
 # Laptop round 8 #49 (LF4-1 ⭐ A, PROVISIONAL): a level raise's job for an episode you've watched, or whose video is gone
 WATCHED = "you've watched it: its new words go to the episodes ahead of you"
+# PRESTUDIED-MINE (3.0.20, Sonic § 101 2; PROVISIONAL words): *Mine only episodes I've pre-studied* on — an episode
+# Connect would mine on its own waits for the journey's pre-studied mark (`held_by_prestudy`, `_prestudied_switch`):
+# parked for the run, never dropped; a mark kicks Connect (`services.prestudied`) and any kick lets it go (`_woken`)
+NOT_PRESTUDIED = "Waiting until you pre-study it in the journey (Mine only episodes I’ve pre-studied is on)."
 # Kantan-MO (the mining model, F1): a level raise mines no episode again — a level job queued before the update and not
 # started yet is dropped (one under way finishes, by its own words)
 LEVEL_DROPPED = "a level raise mines no episode again: its new words join your study order"
@@ -769,6 +773,8 @@ def _woken(steps, ledger, parked):
     # again this run — never a job still waiting as it was parked
     for job_id in [j for j in parked if (ledger.job_by_id(j) or {}).get("state") == "queued"]:
         del parked[job_id]
+    for job_id in [j for j in parked if (ledger.job_by_id(j) or {}).get("reason") == NOT_PRESTUDIED]:
+        del parked[job_id]                  # PRESTUDIED-MINE: any kick (a mark, the switch) — the next look asks again
     if not _paused_now(steps):              # Mado-PZ: resumed (the resume's kick) — a job a pause cut goes on this run
         for job_id in [j for j in parked if (ledger.job_by_id(j) or {}).get("reason") == PAUSED]:
             del parked[job_id]
@@ -849,6 +855,7 @@ def _language(steps, ledger, lang, prepared, parked, out):
     if wait is not None:
         return _waiting_all(ledger, lang, parked, out, wait.reason, wait.look)
     _swap_look(steps, ledger, lang, store_now)     # Kantan-SL: the swap queue's asks become jobs before the rest
+    only_marked = _prestudied_switch(steps, lang)   # PRESTUDIED-MINE: read once a pass (its change kicks a new look)
     outside = False
     tried = set()
     look = False                # the inbox and the level looked at again before the next job (after a job, or F11)
@@ -888,7 +895,7 @@ def _language(steps, ledger, lang, prepared, parked, out):
         look = True
         _working(ledger, lang, True)        # alpha 3 A2: the ones behind wait their turn, between two episodes too
         try:
-            _job(steps, ledger, lang, job, store_now, set(line), out)
+            _job(steps, ledger, lang, job, store_now, set(line), out, only_marked)
             ended = ledger.job_by_id(job["id"]) or {}
             if ended.get("kind") == SWAP:
                 _swap_look(steps, ledger, lang, store_now)     # Kantan-SL: its card made -> the swap's record, at once
@@ -1247,8 +1254,9 @@ def _working(ledger, lang, on):
                       lang)
 
 
-def _job(steps, ledger, lang, job, store_now, line, out):
-    """One job from where it stands to `done` (or a finished state). Raises Wait / Needs."""
+def _job(steps, ledger, lang, job, store_now, line, out, only_marked=False):
+    """One job from where it stands to `done` (or a finished state). Raises Wait / Needs. `only_marked`: *Mine only
+    episodes I've pre-studied* on for this pass (`_prestudied_switch`)."""
     jid, item_id = job["id"], job["item_id"]
     step = _resume_of(job)
     droppable = step in BEFORE_MINING and not _started(ledger, jid)
@@ -1289,6 +1297,10 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         # alpha 4 M1: a job queued since this look read its inbox (a press's), set aside as the inbox's are
         out["skipped"].append(item_id)
         return
+    if (droppable and only_marked and held_by_prestudy(job)
+            and not (ledger.picked(jid) or {}).get("forced")           # your *Mine anyway* on it is a yes too
+            and not steps.prestudied(lang, item_id)):
+        raise Wait(NOT_PRESTUDIED, look=False)      # PRESTUDIED-MINE: waits for its mark, parked for this run
     record = not foreign
     _stop_here(steps, ledger, lang, job, step, record)
     if droppable:
@@ -2893,6 +2905,24 @@ def _fail_mining(steps, ledger, lang, job, record=True):
     raise _Finished("failed")
 
 
+def held_by_prestudy(job):
+    """PRESTUDIED-MINE: does *Mine only episodes I've pre-studied* hold this job until its episode is marked? Only
+    Connect's own picks — the line's, a show's earlier part, a gap's *Make their cards*, a level job for new files —
+    never one carrying an ask (*Mine now*, *Mine it too*: your press is the yes, as for the cap), a swap's one word (⇄,
+    *Add now*, the loop's), nor a Best sentence's job (`level.BEST`: Best's book line for a word of an episode already
+    let through, REMAKE's re-mine of a card you had). *Mine anyway* is the runner's (`_job`: the pick's record)."""
+    return not (job.get("asked_at") or job.get("kind") in (ASKED, SWAP) or job.get("source") == level.BEST)
+
+
+def _prestudied_switch(steps, lang):
+    """PRESTUDIED-MINE: *Mine only episodes I've pre-studied* on (`Steps.prestudied_only`) — read once a pass, never a
+    job (S19: off, one settings read a pass is all it costs); steps that can't say (a stand-in without it): off. Each
+    held job then asks the store for its own mark (`Steps.prestudied`: fresh up to its pick — an un-mark meanwhile
+    holds it; a store that can't answer now is a Wait, never an unmarked episode mined on a read that failed)."""
+    only = getattr(steps, "prestudied_only", None)
+    return bool(only is not None and only(lang))
+
+
 def held_by_cap(asked):
     """Does the cap hold this job? Never one carrying an ask (*Mine now*, *Mine this*, *Mine it too*): your press is the
     yes for that episode's cards, past the cap as past the battery (Sonic's M-3 A, laptop round 7 #42). The one rule
@@ -3372,6 +3402,22 @@ class Steps:
             item = store.item(job["item_id"]) or {}
         from app.connect import level
         return level.watched_out(item)
+
+    def prestudied_only(self, lang):
+        """PRESTUDIED-MINE: *Mine only episodes I've pre-studied* on (`settings_manager.prestudied_only`) — the run's
+        steps read settings.json as it is now (`live`, as the cap: a switch turned off reaches a waiting Connect)."""
+        from app import settings_manager
+        return settings_manager.prestudied_only(self._settings(lang) if self.live else self.loaded)
+
+    def prestudied(self, lang, item_id):
+        """PRESTUDIED-MINE: is the episode marked pre-studied (the journey's end card or a press: `Store.prestudied_marks`,
+        one id through the index on the marked rows)? A busy store raises its Wait (`_open`, or the read's own)."""
+        from app import library_store
+        with self._open(lang) as store:
+            try:
+                return item_id in store.prestudied_marks([item_id])
+            except (library_store.StoreBusy, sqlite3.OperationalError):
+                raise Wait(LIBRARY_BUSY) from None
 
     def in_current(self, lang, item_id):
         """Michi-EO: is a show's earlier part still in Current (`inbox.in_current`)? A busy store -> None (kept: the

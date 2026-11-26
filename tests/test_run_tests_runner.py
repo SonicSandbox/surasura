@@ -130,11 +130,12 @@ def test_a_shard_and_what_it_starts_have_no_console_window(tmp_path):
         "if sys.argv[1] == 'shard':\n"
         "    subprocess.run([sys.executable, __file__, 'child'])\n", encoding="utf-8")
     parent = ("import subprocess, sys, run_tests\n"
-              "run_tests._has_console = lambda: False\n"
               f"run_tests._popen([sys.executable, {str(probe)!r}, 'shard']).wait()\n")
     root = os.path.dirname(os.path.abspath(run_tests.__file__))
+    # DETACHED_PROCESS: the parent has no console at all, as under an AI app's shell (TERM-POPUPS: started with
+    # CREATE_NO_WINDOW it had a console, its children shared it, and the test passed without `_quiet`)
     out = subprocess.run([sys.executable, "-c", parent], cwd=root, capture_output=True, text=True, timeout=60,
-                         creationflags=subprocess.CREATE_NO_WINDOW)
+                         creationflags=0x00000008)
     assert out.stdout.split() == ["shard", "0", "child", "0"], out.stdout + out.stderr
 
 

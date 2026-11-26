@@ -3121,35 +3121,40 @@ def _list_words(lines, script="asis"):
     return (entries | _kana_lines_read(entries)) if SANITIZE_JA else entries
 
 
-def load_ignored_entries(user_files_dir, script="asis", language=None, settings=None):
+def load_ignored_entries(user_files_dir, script="asis", language=None, settings=None, store=None):
     """KnownWord.json's IGNORED entries (Migaku's status: a word the user dismissed there) and, with Ignore names on,
     the library's names, as ignored words — each read as a line of the Ignore list is (`_list_words`). The one reader
     (`token_index.ignored_entries`) is the Rarity preview's too, so the slider counts what the list counts. `settings`:
-    the caller's, already loaded, for the Ignore names switch (`token_index.ignored_names`)."""
+    the caller's, already loaded, for the Ignore names switch (`token_index.ignored_names`); `store`: its open token
+    store, read for the names."""
     from app import token_index
-    return _list_words(token_index.ignored_entries(user_files_dir, language, settings), script)
+    return _list_words(token_index.ignored_entries(user_files_dir, language, settings, store), script)
 
 
-def load_ignore_set(user_files_dir, script="asis", language=None):
+def load_ignore_set(user_files_dir, script="asis", language=None, store=None, settings=None):
     """Every word a run ignores, as `main()` reads them: the Ignore list, the Blacklist and the Graduated list, and
     KnownWord.json's IGNORED entries (with Ignore names on, the library's names too). One reader: a Generate and the
-    arrival record (`app/arrivals.py`) ignore the same words."""
+    arrival record (`app/arrivals.py`) ignore the same words. `store`: the caller's open token store, read for the
+    names (`load_ignored_entries`): a Generate opens no store for them (STORE-KEY 3). `settings`: the run's one read,
+    for the Ignore names switch (ONE-READ); None reads it now — never the module's LOGIC, the import's, stale for a
+    run made in-process after a settings change."""
     ignore = load_simple_list(os.path.join(user_files_dir, "IgnoreList.txt"), script, language)
     ignore.update(load_simple_list(os.path.join(user_files_dir, "Blacklist.txt"), script, language))
     ignore.update(load_simple_list(os.path.join(user_files_dir, "GraduatedList.txt"), script, language))
-    ignore.update(load_ignored_entries(user_files_dir, script, language))
+    ignore.update(load_ignored_entries(user_files_dir, script, language, settings, store))
     return ignore
 
 
-def read_known_words(store, known_file, known_sig, tokenizer, keep=True, missed=None):
+def read_known_words(store, known_file, known_sig, tokenizer, keep=True, missed=None, settings=None):
     """(known (lemma, reading)s, known lemmas) as a run starts with them: the token store's cached normalization while
     KnownWord.json is unchanged (`known_sig`), else read and normalized here — and kept in the store for the next run
     when `keep` (a reader that writes nothing passes False). Japanese: read after the library's name tables are set.
     `missed`: the `Store.known_suffix` a caller's own `get_cached_known` just missed with — the store isn't asked again,
-    and the miss's every step takes that one key (STORE-KEY: each working-out reads settings.json and the name tables)."""
+    and the miss's every step takes that one key (STORE-KEY: each working-out reads settings.json and the name tables).
+    `settings`: the run's one read, for the key's switches (ONE-READ); None reads them now."""
     suffix = missed
     if store and suffix is None:
-        suffix = store.known_suffix()
+        suffix = store.known_suffix(settings)
         cached = store.get_cached_known(known_sig, suffix)
         if cached is not None:
             print("Reused cached known-words normalization.")
@@ -4708,7 +4713,7 @@ def _plan_is_this_runs(run_signature, results_dir=None):
     return header is not None and header.get("run_signature") == run_signature
 
 
-def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, library, store, args):
+def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, library, store, args, settings=None):
     """F7: the journey for this order from the last Generate's plan, when it is that Generate's library in all but the
     order (`plan_engine.check` None: the same files, known words, lists, settings and set-aside files, the run stamp
     its own) — the plan engine re-planned to the order and its re-pick (`Engine.result(pick=True)`: the Generate's
@@ -4719,7 +4724,7 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
     the order itself (`spaced.Job.places`); a word under the list's cut-off keeps its Score until the next Generate
     (the engine's D1).
     -> main()'s exit value once drawn (0, or 1: the report failed); None when the plan can't serve this library, before
-    anything is written: then a Generate runs."""
+    anything is written: then a Generate runs. `settings`: the run's one read (ONE-READ), handed on with `store`."""
     from app import plan_engine
     plan_path = os.path.join(RESULTS_DIR, PLAN_FILE)
     try:
@@ -4739,7 +4744,7 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
     chooser = None
     if plan.header.get("format", 0) >= plan_engine.PICKS_IN_TABLE:      # release 2: the one reader (SPEC § 5.2)
         chooser = ListSentences(language, plan.header.get("max_contexts") or 0,
-                                bool(plan.header.get("only_i_plus_one")))
+                                bool(plan.header.get("only_i_plus_one")), settings=settings, store=store)
     try:
         result = eng.replan(order, pick=True, texts=plan_texts(language, data_dir, store), chooser=chooser)
     except plan_engine.PlanError as e:
@@ -4868,10 +4873,11 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
                 app_mode=args.app_mode, open_browser=not args.no_open, language=language,
                 rows=page_rows, priority=page_priority,                 # the lists just written, as read
                 plan=plan_engine.read_counts(os.path.join(RESULTS_DIR, plan_engine.COUNTS_FILE),   # the Generate's
-                                             plan.header.get("run_signature")) or plan)   # figures (its counts table)
+                                             plan.header.get("run_signature")) or plan,   # figures (its counts table)
+                settings=settings, store=store)
             report_failed = not _report_written(_html, rendering)
             try:
-                store.set_meta("last_render_sig", signed_render(args, drawn, not report_failed, made))
+                store.set_meta("last_render_sig", signed_render(args, drawn, not report_failed, made, settings))
             except Exception:
                 pass
         except Exception as e:
@@ -4921,8 +4927,10 @@ class ListSentences:
     the journey marks them while *Ensure an audio example* is on (`journey_render.silent_lines`)."""
 
     def __init__(self, language, max_contexts, clean_only=False, results_dir=None, table=None, young=None,
-                 tagger=None):
+                 tagger=None, settings=None, store=None):
         self.language, self.n, self.clean_only = language, plan_rules.context_limit(max_contexts), clean_only
+        # The run's one settings read and its open token store (ONE-READ): None — read here, a reader of its own
+        self.settings, self.store = settings, store
         self.results_dir, self.table, self.young = results_dir or RESULTS_DIR, table, young
         self.run, self.kept, self.read, self.forms, self.forms_read = None, {}, {}, {}, {}
         self.moment, self.length, self.memo, self.young_at, self.read_of = None, None, {}, None, None
@@ -4936,7 +4944,7 @@ class ListSentences:
         from app.connect import sentences as connect_sentences
         from app.path_utils import get_data_path
         if self.moment is None:             # (one run's settings, dates and young words: the same for each of its calls)
-            settings = settings_manager.load_settings()
+            settings = settings_manager.loaded(self.settings)
             seen = connect_sentences.files_seen(self.language, connect_sentences.ai_voice(settings, self.language))
             _lo, _hi, low, high = sentence_corpus.length_range(settings)
             young = connect_sentences.young_weights(self.language) if self.young is None else dict(self.young)
@@ -4958,7 +4966,7 @@ class ListSentences:
             self.read_of = (self.run,)
         got = sentence_score.choose(self.language, keys, n=self.n, length=self.length, order=order, whole=True,
                                     moment=self.moment, clean_only=self.clean_only, shown=self.read, table=tab,
-                                    memo=self.memo)
+                                    memo=self.memo, store=self.store)
         if got is None:
             return None
         base = os.path.join(root, "")
@@ -5836,9 +5844,9 @@ def settings_signature(settings, language):
     return json.dumps(_without_comments(_sj), sort_keys=True, ensure_ascii=False)
 
 
-def run_signature_parts(language, found_files, args, aside=()):
+def run_signature_parts(language, found_files, args, aside=(), settings=None):
     """What the run signature hashes (`compute_run_signature`), a dict; None when it can't be
-    read. `aside`: the set-aside files (`aside_files`) — "reference", each file's own digest (`plan_rules.file_digest`,
+    read. `settings`: the run's one read (`settings_manager.loaded`; None: read here, once). `aside`: the set-aside files (`aside_files`) — "reference", each file's own digest (`plan_rules.file_digest`,
     as "files" are told apart), sorted: a watched mark, its Undo, *Keep studying watched episodes* flipped or a
     set-aside file edited moves it, so Generate runs (never skips) (W-1); the fast re-plan re-plans at once a counted
     file set aside — a watched mark, a finish (Haya-W, Haya-FN: `plan_engine._only_joined`) — and asks for a Generate
@@ -5891,13 +5899,14 @@ def run_signature_parts(language, found_files, args, aside=()):
             except OSError:
                 return None
 
-        _settings_for_sig = ""
+        _settings_for_sig, _settings = "", {}
         try:
             # The settings as the run reads them (load_settings: the defaults filled in, a saved value
             # always winning). A key written at its default and one left out are then the same
             # settings, as they are to the run: an update's first start, which writes the new defaults
             # into the file, and a window that saves every default re-analyze nothing.
-            _settings_for_sig = settings_signature(settings_manager.load_settings(), language)
+            _settings = settings_manager.loaded(settings)
+            _settings_for_sig = settings_signature(_settings, language)
         except Exception:
             pass
 
@@ -5930,7 +5939,7 @@ def run_signature_parts(language, found_files, args, aside=()):
         # Q4-3: with Automatic rarity on, the band the library's store remembers helps pick the list (the second
         # threshold): a part of its own, present only then, so no other library's signature moves.
         try:
-            _auto_on = ((settings_manager.load_settings().get("logic") or {}).get("selection") or {}).get("auto") is True
+            _auto_on = ((_settings.get("logic") or {}).get("selection") or {}).get("auto") is True
         except Exception:
             _auto_on = False
         if _auto_on:
@@ -5955,7 +5964,7 @@ def _without_comments(value):
 _READ_NOW = object()     # compute_render_signature's `made` left out: Connect's record read now
 
 
-def compute_render_signature(args, marks=None, made=_READ_NOW):
+def compute_render_signature(args, marks=None, made=_READ_NOW, settings=None):
     """Fingerprint of everything that changes the RENDERED report but NOT the analysis, so those
     changes re-render instead of re-analyzing. SHARED with the dashboard's fast path so the two can
     never disagree about whether the existing report is still correct.
@@ -5970,9 +5979,10 @@ def compute_render_signature(args, marks=None, made=_READ_NOW):
     `marks`: the journey's stones as the report was drawn from them (`generate_static_html`'s return, through
     `signed_render`); None reads them now (`journey_marks`: the check before a run, the fast paths). `made`: Connect's
     record as it was read before the report was drawn (`_made_fingerprint`, F-6 — signed with that, never read again:
-    a card recorded mid-draw is the next press's re-render); left out, read now."""
+    a card recorded mid-draw is the next press's re-render); left out, read now. `settings`: a run's one read of
+    settings.json (ONE-READ); None reads it now."""
     try:
-        _s = settings_manager.load_settings()
+        _s = settings_manager.loaded(settings)      # a run's one read (ONE-READ), else read now
     except Exception:
         _s = {}
     _logic = _s.get("logic") if isinstance(_s.get("logic"), dict) else {}
@@ -6037,14 +6047,14 @@ def journey_marks(language):
         return ls.UNREAD
 
 
-def signed_render(args, drawn, written, made=_READ_NOW):
+def signed_render(args, drawn, written, made=_READ_NOW, settings=None):
     """The render signature a run records after drawing its report (`last_render_sig`): signed with the marks the
     report was drawn from (`drawn`, `generate_static_html`'s return), never read again — a mark landing mid-Generate is
     then the next press's re-render, never a report recorded as current that shows the wrong stones (S-1). "" (it
     matches no signature: the next press re-renders) when the report wasn't written or its marks couldn't be read."""
     if not written or isinstance(drawn, str):            # library_store.UNREAD
         return ""
-    return compute_render_signature(args, marks=drawn, made=made)
+    return compute_render_signature(args, marks=drawn, made=made, settings=settings)
 
 
 def _stones_fingerprint(language, marks=None):
@@ -6618,6 +6628,14 @@ def main():
 
     print(f"\nLoading resources...")
     
+    # The run's settings, read once here at its start and handed to every step that reads them (ONE-READ): fresh, so a
+    # change between two runs made in one process is seen — never LOGIC, the import's copy. None (unreadable): each
+    # step reads them itself, as before.
+    try:
+        _settings = settings_manager.load_settings()
+    except Exception:
+        _settings = None
+
     # Resolve Paths based on Language
     data_dir = get_data_path(language)
     user_files_dir = get_user_files_path(language)
@@ -6701,7 +6719,8 @@ def main():
     # Computed by the shared compute_run_signature() (the dashboard calls the same function in-process
     # to decide whether Generate can just reopen the existing report without spawning this analyzer).
     # Its parts are kept: the plan file (below) carries the same signature without the order, from this very read.
-    _sig_parts = run_signature_parts(language, found_files, args, aside_files(language, _library["schedule"]))
+    _sig_parts = run_signature_parts(language, found_files, args, aside_files(language, _library["schedule"]),
+                                     settings=_settings)
     _run_sig = signature_digest(_sig_parts, chunked=False)
     _auto_pick = {}                      # Q4-3: the band Automatic picks below, remembered before the stamp
 
@@ -6732,7 +6751,7 @@ def main():
                 # check reads the journey's stones here; a re-render is signed with the ones it drew (J-FIX 3).
                 _marks = journey_marks(language)
                 _made = _made_fingerprint(language)      # F-6: read once, before the report is drawn
-                _render_sig = compute_render_signature(args, marks=_marks, made=_made)
+                _render_sig = compute_render_signature(args, marks=_marks, made=_made, settings=_settings)
                 # Fast "same setting" path: if the presentation is ALSO unchanged, the existing
                 # report is already correct — just open it (no re-render, and pandas is never
                 # imported). Otherwise re-render (still no re-analysis).
@@ -6745,10 +6764,12 @@ def main():
                     _rendering = time.time()
                     _drawn = static_html_generator.generate_static_html(
                         app_mode=args.app_mode, open_browser=not args.no_open, language=language,
-                        plan=_journey_plan(args, read_run_stamp(RESULTS_DIR)))     # the plan checked just above
+                        plan=_journey_plan(args, read_run_stamp(RESULTS_DIR)),     # the plan checked just above
+                        settings=_settings, store=_store)
                     _report_failed = not _report_written(_html, _rendering)
                     try:
-                        _store.set_meta("last_render_sig", signed_render(args, _drawn, not _report_failed, _made))
+                        _store.set_meta("last_render_sig", signed_render(args, _drawn, not _report_failed, _made,
+                                                                         _settings))
                     except Exception:
                         pass
             except Exception as e:
@@ -6766,14 +6787,15 @@ def main():
         # The library's dates the list's sentences weigh (Connect's moment, `ListSentences`), read on a thread of their
         # own from here — while numpy and the plan load — for the redraw and the Generate alike (E-FAST 6)
         from app.connect import sentences as connect_sentences
-        connect_sentences.dates_ahead(language, connect_sentences.ai_voice(settings_manager.load_settings(), language))
+        connect_sentences.dates_ahead(language, connect_sentences.ai_voice(settings_manager.loaded(_settings), language))
 
     # F7: only the order moved since the last Generate, and the journey keeper asks for the journey: redrawn from that
     # Generate's plan — its re-pick is the Generate's pick — with no file read (else a Generate, below).
     if ((getattr(args, "from_plan", False) or _drawn_another_day(RESULTS_DIR, _run_sig))
             and _store is not None and _run_sig and _analysis_outputs_present):
         try:
-            _redrawn = _redraw_from_plan(language, data_dir, found_files, _sig_parts, _run_sig, _library, _store, args)
+            _redrawn = _redraw_from_plan(language, data_dir, found_files, _sig_parts, _run_sig, _library, _store, args,
+                                         _settings)
         except Exception as e:
             print(f"Warning: the journey couldn't be redrawn from the plan ({e}); generating instead.")
             _redrawn = None
@@ -6810,8 +6832,9 @@ def main():
             _store.reconcile(_counted,
                              _cancellable(_token_index.make_tokenizer(language, reinforce=args.reinforce,
                                                                       script=script)),
-                             build_signature=_token_index.build_signature(language, args.reinforce, script),
-                             data_dir=data_dir, **_more)
+                             build_signature=_token_index.build_signature(language, args.reinforce, script,
+                                                                          settings=_settings),
+                             data_dir=data_dir, settings=_settings, **_more)
         except Exception as e:
             print(f"Warning: token store reconcile failed; using direct tokenization: {e}")
             try:
@@ -6846,10 +6869,11 @@ def main():
     # Known-words normalization tokenizes ~10k terms — expensive. Reuse the cached result when
     # KnownWord.json is unchanged; any edit / delete / newly-added file flips _known_sig (computed
     # above) and forces a fresh normalization, so a change to your known words is always reflected.
-    known_words_initial, known_lemmas_initial = read_known_words(_store, known_file, _known_sig, tokenizer)
+    known_words_initial, known_lemmas_initial = read_known_words(_store, known_file, _known_sig, tokenizer,
+                                                                 settings=_settings)
 
     # The Ignore list, the Blacklist, the Graduated list and KnownWord.json's IGNORED entries, as one set.
-    ignore_list = load_ignore_set(user_files_dir, script, language)
+    ignore_list = load_ignore_set(user_files_dir, script, language, _store, _settings)   # (the run's store, settings)
 
     # A word + a noun-making suffix whose word the learner knows — 利用者 when 利用 is known — is still a
     # word to learn (its card, its reading), but it sits lower on the list and is no unknown when choosing
@@ -7245,7 +7269,7 @@ def main():
         _counted = [0, 0]           # lines read from those counts · lines counted here
         # The lines' two numbers on other cores (E-CORES: sentence_table.Cores; one process on one core, a small
         # library or no store): the walk offers the same lines in the same order, the numbers written in at the end.
-        _cores = sentence_table.Cores.start(len(found_files), _store, language, _people)
+        _cores = sentence_table.Cores.start(len(found_files), _store, language, _people, settings=_settings)
         if _cores is not None:
             _file_words = None      # the workers read the kept counts themselves
 
@@ -8434,7 +8458,8 @@ def main():
         try:
             _finished = _finish_table()
             _chooser = ListSentences(language, args.max_contexts, bool(ONLY_I_PLUS_ONE), table=_finished,
-                                     tagger=tokenizer.tagger if language == "ja" else None)
+                                     tagger=tokenizer.tagger if language == "ja" else None, settings=_settings,
+                                     store=_store)
         except Exception as e:
             print(f"Warning: could not make the sentence table ({e}); the list shows no sentences this time.")
         _left_off, _got, _files_read = set(), {}, None
@@ -8934,7 +8959,9 @@ def main():
                 app_mode=args.app_mode, open_browser=not args.no_open, language=language,
                 tagger=tokenizer.tagger if language == "ja" else None,     # J-CUT: the journey's pitch, no 2nd tagger
                 rows=_page_rows, priority=_page_priority,                   # the lists just written, as read
-                plan=_journey_plan(args, _run_sig))      # the plan written just above, if it was
+                plan=_journey_plan(args, _run_sig),      # the plan written just above, if it was
+                known=known_lemmas_initial,              # the run's known words: the page opens no store for them
+                settings=_settings, store=_store)        # the run's one settings read and its store (ONE-READ)
             _report_failed = not _report_written(os.path.join(RESULTS_DIR, "reading_list_static.html"), _rendering)
         except Exception as e:
             print(f"Error: Could not generate static HTML: {e}")
@@ -8958,7 +8985,7 @@ def main():
             if _run_sig:
                 _store.set_meta("last_run_signature", _run_sig)
             if args.static:
-                _store.set_meta("last_render_sig", signed_render(args, _drawn, not _report_failed, _made))
+                _store.set_meta("last_render_sig", signed_render(args, _drawn, not _report_failed, _made, _settings))
         except Exception:
             pass
         _store.close()

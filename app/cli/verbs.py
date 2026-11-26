@@ -1314,7 +1314,13 @@ def _anki_miner_setup(loaded, lang, run_dir, held=None):
     Michi's technical rule). The set is kept only while Anki Miner's files are as they were (`anki_miner.stamp`: its
     program, gui_config.json — the active profile and the mapping — and its profiles): a profile switched, a mapping
     edited or Anki Miner updated mid-run reads it all again, and the pick-to-mine guard sees the new profile
-    (P1.3-AM37 #5; IK-r2-3, R2-7). The command line's own `pick` holds none: read every call, as before."""
+    (P1.3-AM37 #5; IK-r2-3, R2-7). The command line's own `pick` holds none: read every call, as before.
+
+    DSA-CONNECT 2: the set's `version` and `profiles` are also kept for the next run (`anki_miner.kept_look_ups`:
+    the same program, home, installed version and stamp), so a run's first look starts Anki Miner once, for the export
+    (which may hold a key: never kept on disk), where it started it three times. An export naming another version than
+    the kept one reads them again; a failure drops both (`drop_anki_miner_held`), as Surasura's own writes to Anki Miner
+    do (*Finish its setup*: `anki_miner.DROPS`)."""
     from app.connect import anki_miner, fields
     miner = anki_miner.find(loaded)
     if miner is None:
@@ -1324,6 +1330,9 @@ def _anki_miner_setup(loaded, lang, run_dir, held=None):
     now = anki_miner.stamp(miner) if held is not None else None    # taken before the reads: a save meanwhile shows
     kept = (held.get("set") if held and time.monotonic() - read_at < SETUP_FOR_S and now is not None
             and held.get("stamp") == now else None)
+    # DSA-CONNECT 2: a run's first look (its set never filled; a failure's drop took the kept answers too) may take
+    # Anki Miner's `version` and `profiles` from the run before (`anki_miner.kept_look_ups`): one start, the export
+    looked = anki_miner.kept_look_ups(miner, now) if held is not None and not held else None
     if held is not None:
         held.clear()                    # filled again only once every look-up and the note type's check answered
     if kept is not None:
@@ -1338,23 +1347,51 @@ def _anki_miner_setup(loaded, lang, run_dir, held=None):
     else:
         name = loaded.get("connect_anki_miner_profile") or "Surasura"
         try:
-            info = anki_miner.version(miner)
-            profile = anki_miner.choose_profile(info, anki_miner.profiles(miner), name)    # 3.7: else your active one
-            os.makedirs(run_dir, exist_ok=True)
-            export = anki_miner.settings_export(miner, lang, export_path, profile)
+            while True:
+                info, listed = looked or (anki_miner.version(miner), anki_miner.profiles(miner))
+                try:
+                    profile = anki_miner.choose_profile(info, listed, name)    # 3.7: else your active one
+                    os.makedirs(run_dir, exist_ok=True)
+                    export = anki_miner.settings_export(miner, lang, export_path, profile)
+                except anki_miner.AnkiMinerError:
+                    if looked is None:
+                        raise
+                    looked = None       # never a kept answer's failure: read again, and say only that one's
+                    continue
+                said = export.get("app_version") if isinstance(export, dict) else None
+                if looked is None or said in (None, info.get("app")):
+                    break
+                looked = None           # the kept answers are another version's (an update they missed): read again
             mapping = fields.from_export(export, lang, fields.pointer(info))     # A5F3: a pointer it can act on
         except anki_miner.AnkiMinerError as e:
+            drop_anki_miner_held(held)
             raise _miner_error(e) from None
         except fields.NeedsYou as e:
+            drop_anki_miner_held(held)
             raise CliError("needs-you", e.message, ask=e.message, need="anki-miner-setup") from None
-    checked = _check_note_type(loaded, mapping, info)   # (the set keeps the export's: the note type is asked each call)
+    try:
+        checked = _check_note_type(loaded, mapping, info)   # (the set keeps the export's: asked each call)
+    except CliError:
+        drop_anki_miner_held(held)
+        raise
     if held is not None:
         held.update(set=(info, profile, mapping, export), stamp=now,
                     at=read_at if kept is not None else time.monotonic())
+        if kept is None and looked is None:
+            anki_miner.keep_look_ups(miner, now, info, listed)
     if kept is None:                    # Michi-DK: Anki Miner's own deck, for Settings' line (never a reason to stop)
         from app.connect import setup
         setup.note_miner_deck(lang, mapping.deck)
     return info, profile, _run_mapping(loaded, lang, checked)
+
+
+def drop_anki_miner_held(held):
+    """Row 25's "read again after any failure", for the run's set (`held`, None: the command line's) and the answers
+    kept for the next run (DSA-CONNECT 2) alike."""
+    from app.connect import anki_miner
+    if held is not None:
+        held.clear()
+    anki_miner.drop_look_ups()
 
 
 def _run_mapping(loaded, lang, mapping):

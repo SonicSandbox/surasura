@@ -145,7 +145,10 @@ from operator import itemgetter
 #    texts apart (`texts`): the `tokens` JSON column goes, the small columns come first and reconcile reads them from
 #    their own index (`files_head`) — DSA-WALK, G1 / G2 (a Generate looks a token up by its id, never decodes its JSON).
 #    A v29 store can't be read as this one (`open_reader` gives None): users rebuild once.
-SCHEMA_VERSION = 30
+# v31 an .ass caption's one-character lines join with no space, and a one-kanji word after a lone letter is a piece
+#    (its `bound` counts: analyzer._after_label, ENGINE_REVISION 51): a v30 row holds 願 for お願い, 棟 for A棟's
+#    counter — users rebuild once.
+SCHEMA_VERSION = 31
 
 # The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,
 # Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.
@@ -175,6 +178,32 @@ def file_signature(path):
     """(mtime, size) — the cheap fingerprint we reconcile against. Raises OSError if missing."""
     st = os.stat(path)
     return st.st_mtime, st.st_size
+
+
+def _signatures(paths):
+    """{path: `file_signature(path)`, or None when it raises (gone)} for `paths` — read from one `os.scandir` listing
+    of each folder (the library store's `_listed_stats`, R6: no handle opened per file; a 20k start's 20,000 os.stat
+    0.46 s, the listings ~0.09 s — DSA-START), the same numbers as os.stat's; os.stat for a path the listing doesn't
+    give (spelled otherwise, the rest of a big folder)."""
+    from app.library_store import _listed_stats
+    folders = {}
+    for path in paths:
+        folder, name = os.path.split(path)
+        folders.setdefault(folder, {}).setdefault(name, []).append(path)
+    out = {}
+    for folder, names in folders.items():
+        listed = _listed_stats(folder, names) if folder else {}
+        for name, spelled in names.items():
+            st = listed.get(name)
+            for path in spelled:
+                if st is not None:
+                    out[path] = (st.st_mtime, st.st_size)
+                    continue
+                try:
+                    out[path] = file_signature(path)
+                except OSError:
+                    out[path] = None
+    return out
 
 
 def _noted_moves(moved, leaving, existing, signatures, listed):
@@ -1699,12 +1728,12 @@ class Store:
             return True
         others = {_norm(p): where for p, where in (elsewhere or {}).items()}
         missing = []                        # rows whose file is gone, unchanged otherwise: is their text kept?
+        signatures = _signatures([*counted.values(), *put.values(), *held.values()])
         for listed, flag in ((counted, COUNTED), (put, ASIDE), (held, KEPT)):
             for key, realpath in listed.items():
                 row = rows.get(key)
-                try:
-                    signature = file_signature(realpath)
-                except OSError:
+                signature = signatures[realpath]
+                if signature is None:
                     if (row is None and key in others and os.path.exists(others[key])) or (
                             row is not None and row[2] != flag):
                         return True
@@ -1790,8 +1819,8 @@ class Store:
         texts = self._kept_text(data_dir)
         cur = self.conn.cursor()
         cur.execute("BEGIN IMMEDIATE")
-        changed = False         # what the counted (or set-aside) files hold changed: the name tables are read again
-        phrased = False         # what the counted files hold changed: the phrases too (they read counted files alone)
+        # what the counted (or set-aside) files hold changed: the name tables and the set phrases are read again
+        changed = False
         try:
             # "counted": the file's class (KEPT / COUNTED / ASIDE, `_STATE`)
             # Read from `files_head` alone (G2): a file's counts and bound only when it changed, leaves or moves class
@@ -1811,12 +1840,9 @@ class Store:
             listed.update(put)
             listed.update(held)
             others = {_norm(p): where for p, where in (elsewhere or {}).items()}
-            signatures = {}
-            for key, realpath in listed.items():
-                try:
-                    signatures[key] = file_signature(realpath)
-                except OSError:
-                    signatures[key] = None      # gone (or vanished between listing and stat): its row stays as it is
+            # (None: gone, or vanished between listing and stat — its row stays as it is)
+            found = _signatures(listed.values())
+            signatures = {key: found[realpath] for key, realpath in listed.items()}
             wipe, stored = False, None
             if build_signature is not None:
                 stored = cur.execute("SELECT value FROM meta WHERE key='build_sig'").fetchone()
@@ -1846,7 +1872,6 @@ class Store:
                     existing[key] = existing.pop(old)
                     if existing[key]["counted"]:
                         changed = True              # the phrase table and matches follow the new path
-                        phrased = phrased or existing[key]["counted"] == COUNTED
                     leaving.pop(old, None)
                     if old in held:
                         del held[old], listed[old], signatures[old]
@@ -1886,7 +1911,7 @@ class Store:
                 cur.execute("DELETE FROM files")
                 cur.execute("DELETE FROM aggregate")
                 cur.execute("DELETE FROM bound")
-                existing, leaving, changed, phrased = {}, {}, True, True
+                existing, leaving, changed = {}, {}, True
             # What the files change in the aggregate, summed over the whole pass and written once at the end: a full
             # rebuild wrote a million rows (every word of every file) where the library has some 50,000 words.
             # Keys stay in the order they are first met, so new words are added in the same order as file by file.
@@ -1901,7 +1926,6 @@ class Store:
                     counts, bound = blobs(key)
                     delta.subtract(counts)
                     pieces.subtract(bound)
-                    phrased = True
                 if row["counted"] != KEPT:
                     changed = True
                 cur.execute("DELETE FROM files WHERE path=?", (key,))
@@ -1909,7 +1933,7 @@ class Store:
             interner = None
 
             def write(key, mtime, size, result, row, flag):
-                nonlocal changed, phrased, interner
+                nonlocal changed, interner
                 if interner is None:
                     interner = _Interner(cur, len(todo) + len(by_hand))
                 counts = {k: n for k, n in result["counts"].items() if n > 0}
@@ -1924,8 +1948,6 @@ class Store:
                     pieces.update(bound)
                 if flag != KEPT or (row is not None and row["counted"] != KEPT):
                     changed = True
-                if flag == COUNTED or (row is not None and row["counted"] == COUNTED):
-                    phrased = True
                 names = result.get("names")
                 lines = result.get("lines")
                 words = result.get("words")
@@ -1948,7 +1970,6 @@ class Store:
                 if row is not None and (signature is None or (row["mtime"], row["size"]) == signature):
                     if row["counted"] != flag:          # unchanged, in another list: its counts move, no tokenizing
                         if COUNTED in (flag, row["counted"]):   # kept <-> aside: no count moves, the evidence does
-                            phrased = True
                             counts, bound = blobs(key)
                             if flag == COUNTED:
                                 delta.update(counts)
@@ -2024,7 +2045,7 @@ class Store:
             # The sentences the user forgot leave the kept text too — only once the store's own change is committed.
             texts.drop([key for key in texts.held() if key in gone])
         texts.close()
-        self._update_phrases(phrased)
+        self._update_phrases(changed)
         return self
 
     def _text_of(self, cur, key, row, source, read, result=None):
@@ -2062,10 +2083,11 @@ class Store:
         while the file reads the same: its (mtime, size), and what the name tables make of its name candidates
         (`_names_read_in`, looked at again only when what the tables join changed — not as their evidence grows) — so
         a change re-reads only the files it touched; all of them again when the phrase data, the tokenizer's identity
-        or the switches change. Each file's matches are kept too, for Generate (`phrase_matches`). Counted files only,
-        the table and the matches alike (a kept file is never Generate's to read). After the reconcile's own
-        transaction: it reads what that wrote. Japanese with the switch on only; a failure leaves the
-        last table (never fatal)."""
+        or the switches change. Each file's matches are kept too, for Generate (`phrase_matches`): a counted file's and a
+        set-aside one's (Finished: the finished walk's example sentences, found once here, never searched for at every
+        Generate — DSA-PHRASE), each with what the name tables made of its words (its fifth number). The table counts
+        counted files only (a kept file is never Generate's to read). After the reconcile's own transaction: it reads
+        what that wrote. Japanese with the switch on only; a failure leaves the last table (never fatal)."""
         if self.language != "ja" or not phrase_rows_on(self.language):
             return
         try:
@@ -2074,8 +2096,11 @@ class Store:
             if found is None:
                 return
             base, reads, names = self._phrases_basis(phrase_data.REVISION)
-            state = json.dumps([base, names])
-            if not changed and self.get_meta("phrases_state") == state:
+            # ("aside": the set-aside files' matches are kept too — a store whose last table kept counted files' alone
+            # reads them in once, its counted files' kept as they are)
+            state = json.dumps([base, names, "aside"])
+            last_state = self.get_meta("phrases_state")
+            if not changed and last_state == state:
                 return                                  # nothing read differently since the last table
             held, held_matches, names_moved = {}, {}, True
             try:
@@ -2088,22 +2113,31 @@ class Store:
                 pass
             switches = _library_switches(self.language)
             files, matches = {}, {}
-            for path, mtime, size, blob in self.conn.execute(
-                    "SELECT path, mtime, size, names FROM files WHERE counted = 1").fetchall():
+            for path, mtime, size, blob, flag in self.conn.execute(
+                    f"SELECT path, mtime, size, names, {_STATE} FROM files WHERE {_EVIDENCE}").fetchall():
                 entry, met = held.get(path), held_matches.get(path)
-                same = (entry is not None and met is not None and entry[:2] == [mtime, size]
-                        and met[:2] == [mtime, size])
+                # (a file moved to Finished keeps its matches: only a counted file needs its tally)
+                same = (met is not None and met[:2] == [mtime, size]
+                        and (flag != COUNTED or (entry is not None and entry[:2] == [mtime, size])))
                 if same and names_moved:
-                    same = entry[2] == _names_read_in(blob, reads, switches)
+                    same = met[4:5] == [_names_read_in(blob, reads, switches)]
                 if not same:
-                    sentences, flat = self.file_tokens(path), []
-                    entry = [mtime, size, _names_read_in(blob, reads, switches), *phrases.tally(sentences, found, flat)]
-                    met = [mtime, size, len(sentences), flat]
-                files[path], matches[path] = entry, met
-            summed = phrases.table(((entry[3], entry[4]) for entry in files.values()), found)
-            for key, value in (("phrase_files", {"state": base, "names": names, "files": files}),
-                               ("phrase_matches", {"state": base, "names": names, "files": matches}),
-                               ("phrases", summed), ("phrases_state", state)):
+                    sentences, flat, read_now = self.file_tokens(path), [], _names_read_in(blob, reads, switches)
+                    entry = [mtime, size, read_now, *phrases.tally(sentences, found, flat)]
+                    met = [mtime, size, len(sentences), flat, read_now]
+                if flag == COUNTED:
+                    files[path] = entry
+                matches[path] = met
+            # Only what moved is written (S19): a Finished <-> watched flip moves a file's matches, never the table
+            writes = []
+            if names_moved or files != held:
+                writes += [("phrase_files", {"state": base, "names": names, "files": files}),
+                           ("phrases", phrases.table(((entry[3], entry[4]) for entry in files.values()), found))]
+            if names_moved or matches != held_matches:
+                writes.append(("phrase_matches", {"state": base, "names": names, "files": matches}))
+            if last_state != state:
+                writes.append(("phrases_state", state))
+            for key, value in writes:
                 self.set_meta(key, value if isinstance(value, str) else
                               json.dumps(value, ensure_ascii=False, separators=(",", ":")))
         except Exception as e:
@@ -2111,9 +2145,10 @@ class Store:
 
     def phrase_matches(self, paths):
         """{path: (its sentences, [sentence, start, end, index, ...])} — the set phrases the last index found in each
-        of `paths`' cached tokens, read as `file_tokens` reads them (`_update_phrases`), for the counted files whose
-        count is current — none when the phrase data, the name tables' words or a switch changed since. Generate reads these
-        instead of searching every sentence again (analyzer.main checks them against its tokens too)."""
+        of `paths`' cached tokens, read as `file_tokens` reads them (`_update_phrases`), for the counted and set-aside
+        files whose matches are current — none when the phrase data, the name tables' words or a switch changed since.
+        Generate reads these instead of searching every sentence again, its finished walk too (analyzer.main checks them
+        against its tokens too)."""
         if self.language != "ja":
             return {}
         try:
@@ -2123,7 +2158,7 @@ class Store:
             if kept.get("state") != base or kept.get("names") != names:
                 return {}
             rows = {path: [mtime, size] for path, mtime, size in self.conn.execute(
-                "SELECT path, mtime, size FROM files WHERE counted = 1")}
+                f"SELECT path, mtime, size FROM files WHERE {_EVIDENCE}")}
             files, out = kept.get("files", {}), {}
             for path in paths:
                 met = files.get(_norm(path))

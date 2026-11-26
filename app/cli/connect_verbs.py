@@ -449,20 +449,26 @@ def connect(args):
             break                                               # another Connect took over: it reads the rest
         rounds += 1
         with held:
-            for lang in languages:
-                store = library.open_store(lang)
-                if store is None:
-                    continue                                    # no store (JSON mode, read-only): nothing written
-                with store:
-                    got = _store_write(lambda: inbox.consume(store, lang), 10.0)
-                    if rounds == 1:
-                        out[lang]["level"] = _level(store, lang, loaded)     # P2.2: once a run, after the inbox
-                mine = out[lang]
-                mine["queued"] += got["queued"]
-                mine["dropped"] += got["dropped"]
-                mine["reconciled"] = mine["reconciled"] or got["reconciled"]
-                mine["read"] += got["read"]
-                mine["missed"] += got["missed"]
+            try:                            # SORT-BAR: and "mining now" while it writes the inbox's jobs
+                mining = locks.take(kick.MINING, "Connect reading its inbox", wait=1.0)
+            except locks.Busy:
+                break                       # a Sort again or Put back runs: the inbox stays in the log for the
+                                            # next Connect's look (the window kicks one at its next placement)
+            with mining:
+                for lang in languages:
+                    store = library.open_store(lang)
+                    if store is None:
+                        continue                                    # no store (JSON mode, read-only): nothing written
+                    with store:
+                        got = _store_write(lambda: inbox.consume(store, lang), 10.0)
+                        if rounds == 1:
+                            out[lang]["level"] = _level(store, lang, loaded)     # P2.2: once a run, after the inbox
+                    mine = out[lang]
+                    mine["queued"] += got["queued"]
+                    mine["dropped"] += got["dropped"]
+                    mine["reconciled"] = mine["reconciled"] or got["reconciled"]
+                    mine["read"] += got["read"]
+                    mine["missed"] += got["missed"]
         if not any(_pending(lang) for lang in languages):
             break
     # A sync a writer verb left pending (S3) is sent before Connect exits, never once Anki has closed (P2.3; E1.1 04

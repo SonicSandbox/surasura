@@ -268,7 +268,9 @@ def test_a_reset_is_refused_with_a_reason_while_another_program_writes_and_nothi
     elif held == "helper":
         undo = _hold_elsewhere(store.db_path + ".lock")
     elif held in ("generate", "connect", "known"):
-        name = {"generate": "results", "connect": "connect", "known": "known-words-ja"}[held]
+        # (Connect: its look's "mining now" hold, SORT-BAR — its one-instance lock alone refuses nothing)
+        name = {"generate": "results", "connect": ls.CONNECT_MINING, "known": "known-words-ja"}[held]
+        monkeypatch.setattr(ls, "RESET_WAIT", 0.0)
         took = []
         ready, done = threading.Event(), threading.Event()
 

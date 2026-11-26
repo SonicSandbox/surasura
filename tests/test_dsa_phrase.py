@@ -105,6 +105,12 @@ def test_a_file_moving_between_counted_finished_and_kept_is_searched_only_when_i
         store.reconcile([counted], tok, build_signature=sig, aside=[aside])
         assert read == [], "counted -> Finished: no file searched"
         assert store.phrase_matches([aside]) == {aside: before}
+        time.sleep(0.05)
+        with open(counted, "a", encoding="utf-8") as f:
+            f.write("\n")
+        store.reconcile([counted], tok, build_signature=sig, aside=[aside])
+        assert len(read) == 1, "another file changed: it alone is searched, never the unchanged Finished one"
+        del read[:]
         store.reconcile([counted], tok, build_signature=sig, kept=[aside], aside=[])
         assert read == [] and store.phrase_matches([aside]) == {}, "kept: no matches, nothing searched"
         assert aside not in json.loads(store.get_meta("phrase_matches"))["files"]
@@ -261,6 +267,17 @@ def test_one_listing_gives_every_files_signature_as_os_stat_does():
     assert found[gone] is None and found[nowhere] is None
     assert found[twice] == ti.file_signature(PHRASES_SAMPLE)
     assert ti._signatures([]) == {}
+
+
+def test_a_big_folders_file_past_the_listings_stop_is_stat_ed(tmp_path):
+    # why: the listing stops early in a folder of many other files (`_listed_stats`: 2 x the names + 16 entries — a
+    # season folder holding its videos beside the one subtitle the library lists); a name it never reached is stat'ed,
+    # never taken for gone (a gone file keeps its row as it is, so a changed one would never be read again)
+    for n in range(60):
+        (tmp_path / f"{n:03d}.mkv").write_bytes(b"")
+    wanted = tmp_path / "zz_last.srt"
+    shutil.copy(PHRASES_SAMPLE, wanted)
+    assert ti._signatures([str(wanted)]) == {str(wanted): ti.file_signature(str(wanted))}
 
 
 def _stats_counted(monkeypatch):

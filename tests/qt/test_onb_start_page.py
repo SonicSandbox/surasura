@@ -204,14 +204,16 @@ def test_a_generate_that_cant_start_leaves_your_start_up(make):
 
 
 def test_pre_studied_only_is_offered_only_with_its_switch(make, monkeypatch):
-    wiz, *_ = make(api=StartApi())
-    assert list(wiz.pages[6].cards) == ["small", "full"]
-    monkeypatch.setitem(settings_manager.DEFAULT_SETTINGS, SW.PRESTUDIED_KEY, False)
+    # why: PRESTUDIED-MINE is in this Surasura (train 93), so the third start shows with the real defaults; a
+    # Surasura without its switch offers only the two
     wiz, *_ = make(api=StartApi())
     assert list(wiz.pages[6].cards) == ["small", "full", "prestudied"]
     assert wiz.pages[6].cards["prestudied"].lines == ("", "")
     wiz.pages[6].show_numbers({"per_day": 5})
     assert wiz.pages[6].cards["prestudied"].unit == S.START_PACE_WORD
+    monkeypatch.delitem(settings_manager.DEFAULT_SETTINGS, SW.PRESTUDIED_KEY)
+    wiz, *_ = make(api=StartApi())
+    assert list(wiz.pages[6].cards) == ["small", "full"]
 
 
 def test_chinese_setup_starts_on_its_own_language(make):

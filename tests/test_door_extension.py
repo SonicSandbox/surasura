@@ -128,13 +128,7 @@ def test_ukais_class_is_off_so_nothing_listens_for_the_extension(tmp_path, monke
         d.stop()
 
 
-def test_the_window_gives_the_door_no_extension_class_yet():
-    """Belt and braces for the gate: the window's start hands no `extension` (U-S2 wires Ukai's routes), so even a
-    flipped constant alone opens nothing."""
-    import inspect
-    from app.qt import shell
-    source = inspect.getsource(shell.start_door)
-    assert "door.start(" in source and "extension" not in source
+# (the window's side of the gate, off and on: tests/test_ukai_pairing.py, `test_while_off_…` / `test_once_on_…`)
 
 
 # --- who may call --------------------------------------------------------------------------------------------------- #

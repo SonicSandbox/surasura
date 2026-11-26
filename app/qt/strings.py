@@ -2545,3 +2545,18 @@ ROWS_STONE_PRE_JOIN = " · "
 ROWS_STONE_PRE_MORE = " …"                                 # past ROWS_STONE_PRE_SHOWN names
 ROWS_STONE_PRE_SHOWN = 6
 # --- end J-STONES
+
+# --- 鵜飼 Ukai's pairing: the Allow card (UKAI-S1, Ukai SPEC §0 U4; shown only while `door.EXTENSION_ON`; words
+#     PROVISIONAL)
+UKAI_ALLOW_TITLE = "Allow 鵜飼 Ukai to send to Surasura?"
+UKAI_ALLOW_CODE = "Ukai's menu shows {code}. If it shows the same code, press Allow."
+UKAI_ALLOW_STORE = "Ukai from the {store}."
+UKAI_ALLOW_UNLISTED = ("⚠ This Ukai isn't one a store gave (its id: {ext_id}). Allow it only if you put it in "
+                       "your browser yourself.")
+UKAI_ALLOW_REPLACES = "It takes the place of the Ukai paired now."
+UKAI_ALLOW_YES = "Allow"
+UKAI_ALLOW_YES_TIP = ("Ukai sends the subtitles you watch to your library, on this computer only\n"
+                      "• Forget Ukai in Settings undoes it")
+UKAI_ALLOW_NO = "Not now"
+UKAI_ALLOW_NO_TIP = "Nothing is paired: ask again from Ukai's menu (Esc)"
+# --- end Ukai's pairing

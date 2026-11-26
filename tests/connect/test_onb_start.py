@@ -186,6 +186,15 @@ def test_pre_studied_only_is_offered_and_written_only_once_its_switch_is_here(mo
     assert SW.writes(SW.START, {"start": "full"}, {SW.PRESTUDIED_KEY: True}, "ja") == {SW.PRESTUDIED_KEY: False}
 
 
+def test_pre_studied_only_is_offered_and_written_with_the_real_defaults():
+    # why: PRESTUDIED-MINE is in this Surasura now (train 93), so its start shows and *Start* writes its switch with
+    # the settings' own defaults, nothing patched in
+    assert SW.prestudied_here() and settings_manager.DEFAULT_SETTINGS[SW.PRESTUDIED_KEY] is False
+    assert SW.starts() == ("small", "full", "prestudied")
+    assert SW.writes(SW.START, {"start": "prestudied"}, {}, "ja") == {SW.PRESTUDIED_KEY: True}
+    assert SW.PRESTUDIED_KEY not in SW.writes(SW.START, {"start": "full"}, {}, "ja")
+
+
 def test_an_unknown_start_is_refused():
     with pytest.raises(ValueError):
         SW.writes(SW.START, {"start": "huge"}, {}, "ja")

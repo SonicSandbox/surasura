@@ -378,10 +378,10 @@ ANKI_WRITERS = {
         "the one sentence-field writer (Add audio, the AI audio, Piyo's translations)",
         "Backfill: fills fields of existing cards; Piyo: writes cards only when asked",
         "the tag naming which path filled an empty field, put on (or off, its Undo) with that field's write"),
-    ("app/connect/known_signal.py", "undo"): (
+    ("app/connect/known_signal.py", "undo_words"): (
         "the review loop (Known from Anki)", "The review loop: reads the learner's moves — never edits cards",
-        "Undo of one word marked known: its cards un-suspended when the signal included `suspended` (Sonic's ruling "
-        "P2.4-6, 2026-10-08) — a card edit ROLES.md's row doesn't name: listed for the lead"),
+        "Undo of the words marked known (one word, or a sync's: `undo` calls it): their cards un-suspended when the "
+        "signal included `suspended` (Sonic's ruling P2.4-6, 2026-10-08) — a card edit ROLES.md's row doesn't name: listed for the lead"),
     # --- Junban
     ("modules/junban/first_touch.py", "_put_back"): ("Junban", _JUNBAN, "the first-run put back: its own positions "
                                                      "and tags undone"),

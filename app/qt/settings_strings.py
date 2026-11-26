@@ -59,7 +59,7 @@ HATO_UPDATE_WORDS = {
 HATO_UPDATE_TIPS = {
     "up-to-date": "Surasura has hato check for its updates once a day.",
     "updating": "hato is installing {latest} by itself, quietly.",
-    "ready": "Open hato and press its Restart button to install {latest}.",
+    "ready": "Open hato to install {latest}: it waits for your press there.",
     "couldnt-check": "hato couldn't reach its updates. Surasura tries again tomorrow.",
     "out": "hato can't update this copy itself: download {latest} from hato's page.",
 }

@@ -339,15 +339,10 @@ def test_the_goal_dock_spans_its_page_edge_to_edge(seeded):
 
 
 # --- G13 --------------------------------------------------------------------------------------------------------------
-def _over(top, ground):
-    r, g, b, a = theme.parse(top)
-    gr, gg, gb, _ga = theme.parse(ground)
-    return "#%02x%02x%02x" % tuple(round(t * a + u * (1 - a)) for t, u in ((r, gr), (g, gg), (b, gb)))
-
-
-def test_the_soon_line_is_a_quiet_lit_lip_with_no_word(seeded):
-    """G2.3 L1, as W3.1a builds it: the Soon line is the top-20 groove made quieter — its lit lip alone (1 px), no dark
-    line and no word — in its own strip, the row's last; so it reads quieter than the top-20 line (groove and lip)."""
+def test_the_soon_line_is_one_hairline_with_no_word(seeded):
+    """G2.3 L1, as CURRENT-SOON 2 paints it: the Soon line is one 1 px hairline — no dark groove line and no word — in
+    its own strip, the row's last; its colours and fade are `test_current`'s
+    `test_the_soon_line_is_one_hairline_in_surasuras_colours_fading_out_and_lit_under_the_hand`."""
     seed, win = seeded()
     lst = current(win)
     i = next(i for i, e in enumerate(lst.model().entries) if any(ln.kind == "soon" for ln in e[2]))
@@ -358,10 +353,8 @@ def test_the_soon_line_is_a_quiet_lit_lip_with_no_word(seeded):
     col = style.colours()
     rect, arr = grab(lst, i)
     strip = arr[rect.height() - theme.ROW_LINE["line"]:]                  # the strip the Soon line is painted in
-    width = strip.shape[1]
-    lip = _over(col["groove-lip"], col["bg"])
-    best = max(count(strip[r:r + 1], lip, tolerance=2) for r in range(strip.shape[0]))
-    assert best >= 0.9 * width                       # one pixel row of the strip is the lip, across the row
+    lit = [r for r in range(strip.shape[0]) if not count(strip[r:r + 1, 5:6], col["bg"], tolerance=2)]
+    assert len(lit) == 1                             # one pixel row of the strip is the line: a hairline
     assert count(strip, col["groove"], tolerance=1) == 0       # no dark groove line: quieter than the top-20 line
     assert count(strip, col["ink-faint"], tolerance=10) == 0   # no word in the faint ink ...
     assert count(strip, col["ink-dim"], tolerance=10) == 0     # ... nor in the dim ink

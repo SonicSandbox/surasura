@@ -158,3 +158,16 @@ def test_a_look_holds_the_mining_lock_while_it_works_and_never_in_its_pause(tmp_
     _as_connects_loop("ja", steps, ledger)
     assert during and all(during), "the look holds it while it works"
     assert [s["mining"] for s in seen] == [False, False], "every pause lets it go"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_sort_again_holds_the_mining_lock_at_every_step_so_no_look_starts_half_way(language):
+    # a check alone (`in_use`) would let a look begin while the old order is being set aside
+    store, _data, _uf, _src, _root = _world(language)
+    seen = []
+    try:
+        ls.start_fresh(store, _step=lambda name: seen.append((name, locks.held_in_process(ls.CONNECT_MINING))))
+    finally:
+        store.close()
+    assert seen and all(held for _name, held in seen), seen
+    assert not locks.in_use(ls.CONNECT_MINING, looks=1, gap=0.0), "let go at its end"

@@ -1134,8 +1134,9 @@ ADDED_DATES = "items_watched_at"
 # watching or reading it. Two added columns, as the watched date's (no row rewritten, no schema version: an older
 # Surasura never reads them, and a row it writes keeps them): `prestudied_at`, when it was marked (NULL: it isn't), and
 # `prestudied_by`, how — NULL never touched, 'end' the journey's end card, 'press' a press, 'off' un-marked by a press
-# (an end card never marks it again: `set_prestudied`). Nothing else reads them: the order, the tiers, watched, Connect,
-# Junban and the cards stay as they are (a status write: state_version only). Carried by the copy (ITEM_FIELDS), a
+# (an end card never marks it again: `set_prestudied`). The order, the tiers, watched, Junban and the cards stay as they
+# are (a status write: state_version only); Connect reads the mark only while *Mine only episodes I've pre-studied* is
+# on (PRESTUDIED-MINE, 3.0.20: `runner.Steps.prestudied` — an unmarked episode's cards wait). Carried by the copy (ITEM_FIELDS), a
 # Remove's trash row and Put back, Repair; a switch in place keeps the row. Made at a writer's first open
 # (`_added_prestudied`); the index, on the marked rows only, keeps the reader's look to them (`prestudied_marks`).
 # Dropped as easily: DROP INDEX items_prestudied_at, then the two columns.
@@ -6224,8 +6225,9 @@ class Store:
 
     def prestudied_marks(self, ids=None, by=False):
         """J-STORE: {item id: the date it was marked pre-studied} of every item marked (of `ids` only, when given) —
-        with `by`, {item id: (date, how)}, how 'end' or 'press'. An un-marked item is not in it. Read by the stones and
-        the journey only (the render, the door's `state`); never in the render signature (S19: a press never redraws
+        with `by`, {item id: (date, how)}, how 'end' or 'press'. An un-marked item is not in it. Read by the stones, the
+        journey (the render, the door's `state`) and Connect while *Mine only episodes I've pre-studied* is on
+        (PRESTUDIED-MINE: one id a job, `runner.Steps.prestudied`); never in the render signature (S19: a press never redraws
         the journey). One read transaction, through the index on the marked rows; {} on a store without the columns."""
         with self._reading():
             if not self._prestudied_column():

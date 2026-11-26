@@ -56,16 +56,19 @@ HATO_NOT_CONNECTED = {                       # `tools_found.open_hato` / `hato_s
 HATO_FIND_FAILED = "Surasura couldn't connect hato: the log says why"
 # Hato-UP (3.0.18; Sonic 2026-11-21): hato's own daily update, started by Surasura (`services.hato_update.status`) —
 # the row's words, its version first, and each one's line behind the mark (its hover; ≤ 12 words). PROVISIONAL: the
-# words, and OUT (a newer hato this copy can't install itself)
+# words, and OUT (a newer hato this copy can't install itself). HATO-UPDATING (3.0.20): *updating…* only while hato
+# says it is installing; READY (a release waiting for a press in hato's window) — its words and line PROVISIONAL
 HATO_UPDATE_WORDS = {
     "up-to-date": "{version} · up to date",
     "updating": "{version} · updating…",
+    "ready": "{version} · {latest} ready in hato",
     "couldnt-check": "{version} · couldn't check",
     "out": "{version} · {latest} is out",
 }
 HATO_UPDATE_TIPS = {
     "up-to-date": "Surasura has hato check for its updates once a day.",
-    "updating": "hato is getting {latest}. It installs itself while hato is closed.",
+    "updating": "hato is installing {latest} by itself, quietly.",
+    "ready": "Open hato to install {latest}: it waits for your press there.",
     "couldnt-check": "hato couldn't reach its updates. Surasura tries again tomorrow.",
     "out": "hato can't update this copy itself: download {latest} from hato's page.",
 }
@@ -325,6 +328,12 @@ ROWS = {
     "connect_backlog_cap": ("Keep up to", "new cards waiting in Anki, for this language. 0: no limit",
                             "Stop making cards when this many new cards on your list wait. 0: no limit.",   # Kyou-SH (PROVISIONAL)
                             "cap backlog waiting keep up to limit"),
+    # PRESTUDIED-MINE (3.0.20, PROVISIONAL): Connect waits for an episode's pre-studied mark in the journey
+    "connect_prestudied_only": ("Mine only episodes I’ve pre-studied",
+                                "Surasura makes an episode’s cards only once you’ve gone through it in the journey "
+                                "and marked it pre-studied. Mine now still makes them.",
+                                "Waits to make an episode’s cards until you pre-study it in the journey.",
+                                "pre-studied prestudied journey ready first only marked study before mine wait"),
     # Kyou-SH2 (PROVISIONAL): Tidy — by itself past 1.5 × the limit; this press past the limit
     "connect_tidy": ("Tidy waiting cards", "Past 1.5 × your limit, Surasura deletes the cards it made that you never "
                                            "studied, down to your limit, lowest first. A copy is kept: Undo in Needs "

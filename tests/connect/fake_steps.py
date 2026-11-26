@@ -76,7 +76,8 @@ class FakeSteps:
     you) · `pick_error` (an item whose pick raises an unexpected error) · `staged_after_pick` (an update staged once a
     pick has run) · `staged_after` (an update staged once that step ran: "generate") · `generate_after` (P3.3: the
     plan marks a Generate after mining) · `generate_after_error` · `level_after` (level jobs the Generate's new run
-    queues) · `moved` (MV-2: {item: the folder its video left})."""
+    queues) · `moved` (MV-2: {item: the folder its video left}) · `prestudied_only` / `prestudied` [item ids]
+    (PRESTUDIED-MINE: the switch, the journey's marks)."""
 
     def __init__(self, folder, plan=None, child=False):
         self.folder = folder
@@ -149,6 +150,14 @@ class FakeSteps:
 
     def watched(self, lang, job):
         return job["item_id"] in (self.plan.get("watched") or ())
+
+    def prestudied_only(self, lang):
+        """PRESTUDIED-MINE: `prestudied_only` — *Mine only episodes I've pre-studied* on."""
+        return self.plan.get("prestudied_only") is True
+
+    def prestudied(self, lang, item_id):
+        """PRESTUDIED-MINE: `prestudied` [item ids] — the episodes the journey marked pre-studied."""
+        return item_id in (self.plan.get("prestudied") or ())
 
     def pairing(self, lang, job):
         return (self.plan.get("pairings") or {}).get(str(job["item_id"]))

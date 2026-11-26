@@ -31,7 +31,7 @@ from tests import plan_file_cases as cases
 _CHILD = r"""
 import builtins, io, json, os, runpy, sqlite3, sys, traceback
 from app import path_utils as pu, settings_manager as sm, token_index as ti
-n = {"settings": [], "import_settings": 0, "opens": [], "tables": 0, "names": 0, "process_tables": 0}
+n = {"settings": [], "import_settings": 0, "opens": [], "tables": 0, "names": 0, "process_tables": 0, "page_known": None}
 SP = os.path.normcase(os.path.abspath(pu.get_settings_path()))
 SKIP = ("path_utils.py", "settings_manager.py")
 def caller(skip=SKIP):
@@ -73,6 +73,13 @@ def meta(language, key):
     n["names"] += key == "names_words"
     return real_meta(language, key)
 sqlite3.connect, ti.Store.names_tables, ti.Store.names_words, ti._read_meta = connect, tables, words, meta
+from app import journey_render as jr
+real_terms = jr._known_terms
+def terms(*a, **k):                          # the page's own known-words lookup (a redraw's: none handed)
+    got = real_terms(*a, **k)
+    n["page_known"] = len(got)
+    return got
+jr._known_terms = terms
 what, language = sys.argv[1], sys.argv[2]
 out = None
 if what in ("generate", "redraw"):
@@ -197,6 +204,9 @@ def test_a_redraw_after_a_move_reads_settings_once_and_opens_the_store_once(root
     assert len(got["settings"]) == 1, f"settings.json once a redraw: {got['settings']}"
     assert len(got["opens"]) == 1, f"the token store opened once: {got['opens']}"
     assert got["tables"] <= 1 and got["names"] == 0
+    # the run's store still open when the page reads it: the sentence choice reads through it and leaves it open (a
+    # store it closed found no known word: the page's kanji lost their known examples, ONE-READ 2)
+    assert got["page_known"], f"the page found the known words in the run's store: {got['page_known']}"
 
 
 def test_connect_and_junban_read_the_known_words_with_the_settings_they_hold_and_one_store(root):

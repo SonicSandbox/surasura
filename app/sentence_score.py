@@ -652,7 +652,7 @@ def choose(language, keys, *, n=1, moment, length, never=None, order=None, only=
 
 
 def _choose(tab, language, keys, n, moment, length, never, order, only, heard_first, clean_only, shown, whole,
-            memo=None, held=None):
+            memo=None, lent=None):
     import numpy as np
     keys = list(dict.fromkeys(tuple(k) for k in keys or ()))
     root = moment.root
@@ -698,7 +698,7 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
     young_of = _young(moment)
     r = rates()
 
-    tokens = [held]             # (the caller's store, left open; else one of its own, opened at the first text, closed)
+    tokens = [lent]             # (the caller's store, left open; else one of its own, opened at the first text, closed)
     # (a file's text, its check and its stamp: the same for every ask of one pick)
     read, there, stamps, part = (shared.setdefault(name, {}) for name in ("read", "there", "stamps", "part"))
 
@@ -932,7 +932,7 @@ def _choose(tab, language, keys, n, moment, length, never, order, only, heard_fi
                     out[key] = [line._replace(text=peek(*line.text)) if type(line.text) is _Later else line
                                 for line in out[key]]
     finally:
-        if tokens[0] and tokens[0] is not held:
+        if tokens[0] and tokens[0] is not lent:      # (`held` below is the text reader)
             try:
                 tokens[0].close()
             except Exception:

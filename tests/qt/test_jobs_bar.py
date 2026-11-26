@@ -1520,7 +1520,8 @@ def test_a_second_close_while_the_sheet_asks_is_quit(world, children):
 def test_the_sheet_goes_once_what_it_names_has_ended_and_the_window_closes_by_itself(world, children):
     """A close in the open's first seconds lands while the store's helper tidies the library (it runs ~1 s at a 20k
     open): the sheet names it, and the helper ends a moment later. The question no longer stands — the sheet goes and
-    the close goes on as Quit (its default), with no answer and nothing stopped, within its bound; never a window that
+    the close goes on as Quit (its default) without the user pressing anything and with nothing stopped, within its
+    bound (the window answers Quit for them: `_detached_answered`, unlike the update's hand-over); never a window that
     waits on a question about nothing (the quit that never returned). While one job it names still runs, it asks on."""
     world.start()
     proc, jobs = _helper_running(world, children)             # the upkeep, a sync (never named), Connect

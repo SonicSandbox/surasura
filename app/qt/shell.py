@@ -4653,7 +4653,8 @@ class ShellWindow(QMainWindow):
         is of a kind it may stop, `jobs.STOPPABLE_AT_QUIT`: Connect alone → Quit is the one button). Asked once a close,
         first in it (before E20's wait); never for the update's hand-over, *Restart now* or the session ending (a
         logoff never waits on a sheet). Any other card open in the window is dropped first: the sheet never stacks on
-        one. While it asks nothing new starts (every answer quits). A close while it is open is Quit. None under way →
+        one. While it asks nothing new starts (every answer quits). A close while it is open is Quit; so is everything
+        it names ending while it asks (`_jobs_changed` drops it: the question no longer stands). None under way →
         nothing asked, the close as before. -> True when the close waits for the answer."""
         card = self._detached_card
         if self._quit is not None or self.restart_asked or _session_ending():

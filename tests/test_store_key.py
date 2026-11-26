@@ -77,11 +77,12 @@ def test_each_known_words_miss_reads_settings_once_parses_the_tables_once_and_co
     # why: the mine's path (`sentence_corpus.known_sets`, at each card Connect writes) — the first read, a card's move
     # (no new term) and a sync's two new words each cost one key, one lookup and one commit. Chinese reads no
     # settings for its key (the names switches are Japanese only), so 0 there, before as after. Its ignore set's
-    # Ignore names switch comes from the settings handed in (STORE-KEY 2): no read of its own.
+    # Ignore names switch comes from the settings handed in (STORE-KEY 2), and so do the key's switches (ONE-READ): no
+    # read of its own.
     resources = ja_resources_dir if language == "ja" else zh_resources_dir
     monkeypatch.setattr(analyzer, "SANITIZE_JA", language == "ja")
     keys = 1 if language == "ja" else 0
-    reads = keys
+    reads = 0
     known_file(language, resources)
     settings = settings_manager.load_settings()         # as Connect loads them, before its read
     store = ti.open_store(language, path=str(tmp_path / "store.db"))

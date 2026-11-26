@@ -239,7 +239,7 @@ def test_the_redraw_marker_names_the_young_words_it_drew_with(monkeypatch, tmp_p
     assert analyzer.redrawn_for(str(tmp_path)) == {"plan": "plan", "run": "run"}
 
 
-def test_the_chooser_reads_the_young_words_once_and_keeps_their_stamp(monkeypatch):
+def test_the_chooser_reads_the_young_words_once_and_keeps_their_stamp(monkeypatch, tmp_path):
     # why: the list reads the card's own young words (`young_weights`: one source) once a call, and the stamp the
     # marker takes is of exactly those; handed in (`young=`), the file is not read
     from app.connect import sentences as S
@@ -256,11 +256,11 @@ def test_the_chooser_reads_the_young_words_once_and_keeps_their_stamp(monkeypatc
         return {}
     monkeypatch.setattr(sentence_score, "choose", choose)
     table = types.SimpleNamespace(head={"run_signature": "run"})
-    chooser = analyzer.ListSentences("ja", 3, table=table)
+    chooser = analyzer.ListSentences("ja", 3, table=table, results_dir=str(tmp_path))   # (never the real results/)
     assert chooser([("食事", "しょくじ")], None) == {}
     assert reads == ["ja"] and asked["young"] == {"食べる": 1.0}
     assert chooser.young_at == analyzer.young_stamp({"食べる": 1.0})
-    given = analyzer.ListSentences("ja", 3, table=table, young={})
+    given = analyzer.ListSentences("ja", 3, table=table, young={}, results_dir=str(tmp_path))
     given([("食事", "しょくじ")], None)
     assert reads == ["ja"] and asked["young"] == {} and given.young_at is None
 

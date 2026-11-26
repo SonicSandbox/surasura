@@ -890,3 +890,35 @@ def test_the_checkout_user_files_state_sees_a_list_made_changed_or_a_language_fo
     assert none != empty != one and one == harness_guards._user_files_state(str(folder))
     (folder / "ja" / "IgnoreList.txt").write_text("須藤\n冒険\n", encoding="utf-8")
     assert harness_guards._user_files_state(str(folder)) != one
+
+
+# --- No child opens a console window (TERM-POPUPS, 3.0.21) ------------------------------------------------------------
+WINDOW_PROBE = "SURASURA_WINDOW_PROBE"      # set only for the nested run below: "<probe.py>|<the file it writes>"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a console window is Windows'")
+def test_a_plain_pytest_with_no_console_starts_its_children_with_no_window(tmp_path):
+    """`python -m pytest` started by a program with no console (an AI app's shell, a scheduled task): each child a test
+    started opened a console window, and so did each worker of a pool that child started. The nested run is started
+    so (DETACHED_PROCESS: no console at all); its helper starts a child with no flags of its own, as a test does. The
+    probe (tests/test_no_console_windows.py) writes: has it a console, has that a window, has its pool's worker one."""
+    from tests.test_no_console_windows import PROBE as SOURCE
+    probe, said = tmp_path / "probe.py", tmp_path / "said.txt"
+    probe.write_text(SOURCE, encoding="utf-8")
+    env = dict(os.environ, PYTHONPATH=PROJECT, PYTHONIOENCODING="utf-8")
+    env[WINDOW_PROBE] = f"{probe}|{said}"
+    env.pop("PYTEST_CURRENT_TEST", None)                        # the nested run starts as any run does
+    env.pop("PYTEST_ADDOPTS", None)                             # why: a `-p <plugin>` there is not on this PYTHONPATH
+    out = subprocess.run([sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q",
+                          "tests/test_harness_guards.py::test_helper_starts_a_child_with_no_flags"],
+                         cwd=PROJECT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300,
+                         creationflags=0x00000008)              # DETACHED_PROCESS
+    text = out.stdout.decode("utf-8", "replace")
+    assert out.returncode == 0 and "1 passed" in text, text
+    assert said.read_text(encoding="utf-8").split() == ["True", "0", "0"], "a console window opened"
+
+
+@pytest.mark.skipif(not os.environ.get(WINDOW_PROBE), reason="a helper of the nested run above")
+def test_helper_starts_a_child_with_no_flags():
+    probe, said = os.environ[WINDOW_PROBE].split("|")
+    subprocess.run([sys.executable, probe, said], timeout=120, check=True)

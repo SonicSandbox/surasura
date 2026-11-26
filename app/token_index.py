@@ -1152,6 +1152,7 @@ class Store:
         self.path = path            # the store's file
         self._names = None          # the library's name tables, read on the first cached file (Japanese)
         self._tables_read = None    # (names_tables' stored text, its parse): names_tables
+        self._words_read = None     # (names_words' stored text, the names in it): names_words
         self._adjust = None         # (meta names_adjust as stored, parsed): `_names_entry`
         self.switches = None        # the name switches (`_library_switches`) a process without the run's settings reads
         self._types = {}            # type id -> (lemma, reading, surface, orth): the vocabulary rows read so far
@@ -1423,6 +1424,22 @@ class Store:
         except Exception:
             return None
 
+    def names_words(self):
+        """The library's names the last index found (`names.name_words`, stored beside the tables: Ignore names), as a
+        tuple — () before the first index, None when the store can't be read (closed, damaged). Parsed again only when the stored text changes (`_words_read`): with Ignore
+        names on, every ignore set a caller holding this store reads asks (STORE-KEY 3: Connect at each card, the
+        Rarity slider at each refresh), and the list is the library's every name."""
+        try:
+            raw = self.get_meta("names_words") or "null"
+            kept = getattr(self, "_words_read", None)        # (a reader made with `Store.__new__` has none)
+            if kept is None or kept[0] != raw:
+                words = json.loads(raw)
+                kept = self._words_read = (raw, tuple(str(word) for word in words if word)
+                                           if isinstance(words, list) else ())
+            return kept[1]
+        except Exception:
+            return None
+
     def _update_names_tables(self, cur, build_signature=None):
         """Compute the library's name tables from every file's recorded candidates (and the last tables, for the
         flip guard) and store them, with the library's names (`names.name_words`, for Ignore names) — after a
@@ -1599,18 +1616,20 @@ class Store:
         self.conn.commit()
 
     # -- known-words cache (skip re-tokenizing known terms every run) -------- #
-    def known_suffix(self):
+    def known_suffix(self, settings=None):
         """What else decides how a Japanese known word reads, as the text `_known_key` adds to a signature: the names
         switches and the library's name tables (a known name is one word only with them), and the phrases and pronouns
         switches (a known 予想通り or 何様 is one word or two) — so any change reads the known words again. The switches
         are read fresh, as the build signature's are: the dashboard's check must see a change as the indexer it
         launches will. Each call reads settings.json and parses the name tables' blob, so a miss works it out once and
-        hands it to every step (`suffix=`: the lookup, the per-term cache, the write — STORE-KEY). "" for Chinese."""
+        hands it to every step (`suffix=`: the lookup, the per-term cache, the write — STORE-KEY). "" for Chinese.
+        `settings`: the caller's fresh read (a run's one, Connect's and Junban's at their start: ONE-READ), read
+        instead of the file."""
         if self.language != "ja":
             return ""
         try:
             from app import settings_manager
-            logic = settings_manager.load_settings()["logic"]
+            logic = settings_manager.loaded(settings)["logic"]
         except Exception:
             return ""
         suffix = ""
@@ -1793,7 +1812,7 @@ class Store:
         return _KeptText(kept_text_path(self.language, data_dir), data_dir)
 
     def reconcile(self, files, tokenize_file, build_signature=None, workers=None, kept=None, elsewhere=None,
-                  data_dir=None, forgotten=None, aside=None, moved=None, progress=None):
+                  data_dir=None, forgotten=None, aside=None, moved=None, progress=None, settings=None):
         """Bring the store in sync with the on-disk `files`, re-tokenizing ONLY changed/new files.
 
         tokenize_file(path) -> {"sentences": [...], "counts": Counter} (Japanese: and "names", the file's
@@ -2072,7 +2091,7 @@ class Store:
             # The sentences the user forgot leave the kept text too — only once the store's own change is committed.
             texts.drop([key for key in texts.held() if key in gone])
         texts.close()
-        self._update_phrases(changed)
+        self._update_phrases(changed, settings)
         return self
 
     def _text_of(self, cur, key, row, source, read, result=None):
@@ -2103,7 +2122,7 @@ class Store:
                            list(_library_switches(self.language))])
         return base, reads, _digest(reads)
 
-    def _update_phrases(self, changed):
+    def _update_phrases(self, changed, settings=None):
         """Count the set phrases in the cached tokens — as a run reads them, the name tables applied — so the Rarity
         slider and automatic rarity count phrase rows as Generate lists them: each phrase's uses and spellings, and the
         uses its words that live only inside it give it (token_index.unknown_distribution). One tally per file, kept
@@ -2114,8 +2133,9 @@ class Store:
         set-aside one's (Finished: the finished walk's example sentences, found once here, never searched for at every
         Generate — DSA-PHRASE), each with what the name tables made of its words (its fifth number). The table counts
         counted files only (a kept file is never Generate's to read). After the reconcile's own transaction: it reads
-        what that wrote. Japanese with the switch on only; a failure leaves the last table (never fatal)."""
-        if self.language != "ja" or not phrase_rows_on(self.language):
+        what that wrote. Japanese with the switch on only; a failure leaves the last table (never fatal). `settings`: the
+        reconcile's (a run's one read)."""
+        if self.language != "ja" or not phrase_rows_on(self.language, settings):
             return
         try:
             from app import phrase_data, phrases
@@ -2447,14 +2467,15 @@ def phrase_row_uses(name, row, lemmas, known_tuples, known_lemmas, ignore_set):
     return n
 
 
-def phrase_rows_on(language):
+def phrase_rows_on(language, settings=None):
     """Settings -> "Idioms and set phrases on your list" (logic.phrase_rows, on by default), Japanese only — read fresh,
-    as the build signature's switches are: the dashboard's slider must see a change as the next Generate will."""
+    as the build signature's switches are: the dashboard's slider must see a change as the next Generate will
+    (`settings`: a run's one read, `settings_manager.loaded`)."""
     if language != "ja":
         return False
     try:
         from app import settings_manager
-        return bool(settings_manager.load_settings()["logic"].get("phrase_rows", True))
+        return bool(settings_manager.loaded(settings)["logic"].get("phrase_rows", True))
     except Exception:
         return False
 
@@ -2482,15 +2503,17 @@ def _read_meta(language, key):
         return None
 
 
-def ignored_names(language, settings=None):
+def ignored_names(language, settings=None, store=None):
     """The library's names as ignored words — with Ignore names on (logic.ignore_names, off by default: a learner
     learns names too, unless they choose not to): the lemmas the last index found to be people's names
     (app/names.py `name_words`), read without writing anything. Part of `ignored_entries`, so every ignore set holds
     them — the list, the Rarity slider and automatic rarity, Junban, 例文, the sentence dictionary, the YouTube
     preview. [] with the switch off, for Chinese, and before the first index. The switch is read fresh, as the build
     signature's are: the dashboard's slider must see a change as the next Generate will. `settings`: the ones a caller
-    has just loaded (Connect's known words, `sentence_corpus.known_sets`: STORE-KEY 2), read instead of the file; one
-    with no `logic` reads the file."""
+    has just loaded (Connect's known words, `sentence_corpus.known_sets`: STORE-KEY 2; Generate's), read instead of the
+    file; one with no `logic` reads the file. `store`: the caller's open token store for this language, read for the
+    names (its parse kept: `Store.names_words`) — none, or one that can't be read: a read-only connection of its own,
+    opened fresh (STORE-KEY 3)."""
     if language != "ja":
         return []
     try:
@@ -2502,6 +2525,9 @@ def ignored_names(language, settings=None):
             return []
     except Exception:
         return []
+    held = store.names_words() if store is not None else None
+    if held is not None:
+        return list(held)
     words = _read_meta(language, "names_words")
     return [str(word) for word in words if word] if isinstance(words, list) else []
 
@@ -2614,22 +2640,23 @@ def preview_lists(store, language, user_files_dir, script="asis"):
     else:
         known_tuples, known_lemmas = None, preview_known_approx(user_files_dir, language, script)
     return {"known_tuples": known_tuples, "known_lemmas": known_lemmas,
-            "ignore_set": preview_ignore_set(user_files_dir, language, script),
+            "ignore_set": preview_ignore_set(user_files_dir, language, script, store),
             "skip_singles": language == "ja" and singles_rule()}
 
 
 def prepare_preview(language, user_files_dir):
     """Decode, ahead of the Rarity slider's first refresh, what that refresh would otherwise decode before it counts:
     the analyzer's compound table (`unknown_distribution`'s compounds) and one-kanji words, and KnownWord.json's
-    IGNORED entries (`ignored_entries`). Each is decoded once per process, by whichever caller asks first, and kept as
-    decoded — so nothing here changes a number. The dashboard calls it on a background thread as its window opens
-    (MasterDashboardApp._prepare_preview). Never fatal."""
+    IGNORED entries (`ignored_entries`' file part: the names are read at each refresh anyway, so none here — ONE-READ).
+    Each is decoded once per process, by whichever caller asks first, and kept as decoded — so nothing here changes a
+    number. The dashboard calls it on a background thread as its window opens (MasterDashboardApp._prepare_preview).
+    Never fatal."""
     try:
         if language == "ja":
             from app import analyzer
             analyzer.compound_parts()
             analyzer.single_kind(("手", "テ"))      # a one-kanji word: its table is read on the first one asked
-        ignored_entries(user_files_dir, language)
+        _ignored_file_entries(user_files_dir, language)
     except Exception:
         pass
 
@@ -2646,12 +2673,12 @@ def singles_rule():
         return True
 
 
-def preview_ignore_set(user_files_dir, language, script="asis"):
+def preview_ignore_set(user_files_dir, language, script="asis", store=None):
     """The ignore / blacklist / graduated words as preview_frequencies reads them — cheap plain-text
     reads, each file in its own encoding, in the library's Chinese script like the analyzer reads them
     (stdlib only, so the conversion is safe in the GUI process; the tables load only if a script is
     chosen) — and KnownWord.json's IGNORED entries and, with Ignore names on, the library's names (`ignored_entries`),
-    as the analyzer ignores them."""
+    as the analyzer ignores them. `store`: the caller's open token store, read for the names (`ignored_names`)."""
     from app.path_utils import read_text
     from app.zh_script import convert
     ignore = set()
@@ -2663,11 +2690,11 @@ def preview_ignore_set(user_files_dir, language, script="asis"):
                     ignore.add(convert(s, script))
         except Exception:
             pass
-    ignore.update(convert(term, script) for term in ignored_entries(user_files_dir, language))
+    ignore.update(convert(term, script) for term in ignored_entries(user_files_dir, language, store=store))
     return ignore
 
 
-def ignored_entries(user_files_dir, language, settings=None):
+def ignored_entries(user_files_dir, language, settings=None, store=None):
     """The dictForms of KnownWord.json's IGNORED entries, as written — Migaku's status for a word the user dismissed
     there — and, with Ignore names on, the library's names (`ignored_names`). They are ignored words, as a line of the
     Ignore list is: off the list, and never an unknown in a sentence. One reader for every ignore set — the analyzer's
@@ -2678,6 +2705,15 @@ def ignored_entries(user_files_dir, language, settings=None):
     The file's entries are read again only when the file changes (`known_signature`, as the known-words cache is):
     every Rarity slider refresh asked, and parsing a large KnownWord.json was about a quarter of the refresh. The names
     are asked every time — the switch and the library's tables change without the file."""
+    kept = _ignored_file_entries(user_files_dir, language)
+    # (handed on only when given: a stand-in that takes the language alone — the parsing suite's, tests' — still fits)
+    handed = {k: v for k, v in (("settings", settings), ("store", store)) if v is not None}
+    return list(kept) + ignored_names(language, **handed)
+
+
+def _ignored_file_entries(user_files_dir, language):
+    """KnownWord.json's IGNORED dictForms (`ignored_entries`' file part), decoded again only when the file changes:
+    the kept list itself (read only — callers copy it)."""
     from app.path_utils import read_text
     path = os.path.join(user_files_dir, "KnownWord.json")
     signature = (language, known_signature(path))
@@ -2691,8 +2727,7 @@ def ignored_entries(user_files_dir, language, settings=None):
         kept = _IGNORED_ENTRIES[path] = (signature, [
             str(e.get("dictForm") or "").strip() for e in entries
             if isinstance(e, dict) and e.get("knownStatus") == "IGNORED" and str(e.get("dictForm") or "").strip()])
-    # (handed on only when given: a stand-in that takes the language alone — the parsing suite's, tests' — still fits)
-    return list(kept[1]) + (ignored_names(language) if settings is None else ignored_names(language, settings))
+    return kept[1]
 
 
 _IGNORED_ENTRIES = {}   # KnownWord.json's path -> (its signature, its IGNORED dictForms), for ignored_entries
@@ -2722,7 +2757,7 @@ def preview_known_approx(user_files_dir, language, script="asis"):
 # --------------------------------------------------------------------------- #
 # Tokenizer factory (default; injectable for tests)
 # --------------------------------------------------------------------------- #
-def build_signature(language, reinforce=False, script="asis"):
+def build_signature(language, reinforce=False, script="asis", settings=None):
     """Fingerprint of the tokenizer identity that produced the cache, passed to reconcile so a
     config change invalidates stale tokens. What varies at runtime: Chinese `script`
     conversion, the sentence boundaries settings.json sets — they decide
@@ -2735,34 +2770,40 @@ def build_signature(language, reinforce=False, script="asis"):
     already holds. Each suffix appears ONLY when it departs from the default — the script when
     converting, the boundaries when edited, the readings when not hiragana only, the katakana names,
     the phrases or the pronouns when off — so a store built as shipped keeps its exact old signature
-    and upgrading never rebuilds anyone's index (spec I2)."""
+    and upgrading never rebuilds anyone's index (spec I2). `settings`: a run's one read of settings.json (ONE-READ);
+    None reads it here, once for every switch."""
     from app.zh_script import effective
+    try:
+        from app import settings_manager
+        settings = settings_manager.loaded(settings)
+    except Exception:
+        settings = None             # (each switch then reads, and fails, as before: its default)
     sig = f"{language}|reinforce=False"
     eff_script = effective(language, script)
     if eff_script != "asis":
         sig = f"{sig}|script={eff_script}"
-    boundaries = _edited_boundaries(language)
+    boundaries = _edited_boundaries(language, settings)
     if boundaries is not None:
         sig = f"{sig}|boundaries={boundaries}"
-    readings = _chosen_paren_readings(language)
+    readings = _chosen_paren_readings(language, settings)
     if readings is not None:
         sig = f"{sig}|paren_readings={readings}"
     for key in ("names_katakana", "phrases_and_titles", "pronoun_bases"):
-        if _switched_off(language, key):
+        if _switched_off(language, key, settings):
             sig = f"{sig}|{key}=off"
     return sig
 
 
-def _edited_boundaries(language):
+def _edited_boundaries(language, settings=None):
     """The language's sentence boundaries as settings.json sets them (every run and the indexer split
     with these) — a sorted JSON list — or None when they are the default set in any order: load_settings
     adds any default character an old copy lacks, so the user's own 。！？!?\\n｡ counts as the default.
     Read fresh, not from the analyzer's import-time LOGIC: the dashboard's check must see a hand edit
-    as the indexer it launches will."""
+    as the indexer it launches will (`settings`: the caller's fresh read, `settings_manager.loaded`)."""
     try:
         from app import settings_manager
         default = settings_manager.DEFAULT_SETTINGS["logic"]["sentence_boundaries"].get(language)
-        current = settings_manager.load_settings()["logic"]["sentence_boundaries"].get(language)
+        current = settings_manager.loaded(settings)["logic"]["sentence_boundaries"].get(language)
     except Exception:
         return None
     if not isinstance(current, str) or not isinstance(default, str) or set(current) == set(default):
@@ -2770,7 +2811,7 @@ def _edited_boundaries(language):
     return json.dumps(sorted(set(current)), ensure_ascii=False)
 
 
-def _chosen_paren_readings(language):
+def _chosen_paren_readings(language, settings=None):
     """What a Japanese book's kana in parentheses right after kanji become when settings.json chooses
     other than the default (logic.paren_readings: "any" or "off" — analyzer.strip_text_conventions
     reads it), else None: hiragana only, an unknown value, or a Chinese store the rule never reaches.
@@ -2779,14 +2820,14 @@ def _chosen_paren_readings(language):
         return None
     try:
         from app import analyzer, settings_manager
-        option = analyzer.paren_readings(settings_manager.load_settings()["logic"])
+        option = analyzer.paren_readings(settings_manager.loaded(settings)["logic"])
         default = settings_manager.DEFAULT_SETTINGS["logic"]["paren_readings"]
     except Exception:
         return None
     return None if option == default else option
 
 
-def _switched_off(language, key):
+def _switched_off(language, key, settings=None):
     """Whether settings.json switches off a Japanese reading rule applied as a file is tokenized — katakana names
     (logic.names_katakana: app/names.py), phrases and titles as one word (logic.phrases_and_titles) or pronouns with
     a suffix (logic.pronoun_bases) — for a Japanese store. Read fresh, as the boundaries are."""
@@ -2794,7 +2835,7 @@ def _switched_off(language, key):
         return False
     try:
         from app import settings_manager
-        return not settings_manager.load_settings()["logic"].get(key, True)
+        return not settings_manager.loaded(settings)["logic"].get(key, True)
     except Exception:
         return False
 

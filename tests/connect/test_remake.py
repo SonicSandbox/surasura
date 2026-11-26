@@ -566,7 +566,8 @@ def test_undo_leaves_out_a_card_from_before_whose_word_has_a_new_card(ledger):
     done = _remake(anki, ledger, "ja", before=True)
     remade = int(time.time() * 1000) + 60_000                   # Connect made it again since (a later note id)
     with c.store("ja") as s:
-        library.record_batch(s, s_item("ja"), {LEGACY["ja"][0]: [remade]}, "2026-11-26T10:00:00Z", batch="t-3")
+        library.record_batch(s, s_item("ja"), {LEGACY["ja"][0]: [remade]},
+                             time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), batch="t-3")   # made now
     anki.add(remade, tag, LEGACY["ja"][0], done_at)
     back = tidy.restore(anki, ledger, done["id"], _opener("ja"), word_of=tidy.card_word_of({}, "ja"))
     assert back["skipped"] == [201] and 201 not in anki.notes_ and remade in anki.notes_
@@ -595,8 +596,10 @@ def test_the_newest_made_job_gives_the_end(ledger):
     item, tag, done_at = _mined(ledger, "ja")
     job = ledger.queue("ja", s_item("ja"), "user", None, store_id="s1")
     ledger.end_batch(job, 1, "done", [{"word": "別", "reading": "", "outcome": "made", "note_id": 101}], deck=DECK)
-    ledger.conn.execute("UPDATE jobs SET updated_at = '2030-01-01T00:00:00Z' WHERE id = ?", (job,))
-    assert tidy._done_ats(ledger, [101])[101] == undo._epoch("2030-01-01T00:00:00Z")
+    # a day after this run (never a fixed date: the future-date lint), so it is the newest job for note 101
+    later = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 86400))
+    ledger.conn.execute("UPDATE jobs SET updated_at = ? WHERE id = ?", (later, job))
+    assert tidy._done_ats(ledger, [101])[101] == undo._epoch(later) != done_at
 
 
 def test_a_package_of_thousands_waits_longer():

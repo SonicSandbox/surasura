@@ -2733,6 +2733,8 @@ class Numbers:
         self._put_off = False                       # a resync came while one was on its way: run once none is
         self._at = None                             # the store's versions the engine was last found to follow
         self._growth = {}                           # Kura-GS: {item_id: {kind: snapshot}} — the % hover's line
+        self._asked = False                         # OPEN-RACE: a load was asked (`load`) ...
+        self._first = threading.Event()             # ... and has answered (`wait_first`)
         self.worker = Worker(f"window-numbers-{language}")
         self.renumbered = 0                         # full passes (tests)
 
@@ -2826,7 +2828,15 @@ class Numbers:
 
     def load(self):
         """(Any thread.) Read the plan and build the engine on the worker."""
+        self._asked = True
         self.worker.put(self._load)
+
+    def wait_first(self, timeout):
+        """(Any thread.) OPEN-RACE: until the first load asked (`load`) has answered — figures, or why there are none
+        (no plan, stale, standing aside, a failed read) — `timeout` seconds at most. -> True once it has, or when no
+        load was asked (nothing to wait for); False while it is still on its way. The window's reader waits on it before
+        its first look, so the list is built once, with its numbers."""
+        return not self._asked or self._first.wait(timeout)
 
     def resync(self):
         """(Any thread.) The store's order may differ from the engine's (a nudge, Finished, an undo, another program):
@@ -2988,6 +2998,9 @@ class Numbers:
         finally:
             if paused:
                 switch.resume_gc(frozen=True)       # (what it built out of the collector's sight, then on again)
+            if not self._first.is_set():            # OPEN-RACE: a load that raised before its answer still ends the
+                self._first.set()                   # wait (the reader then builds without the figures, as before)
+                self._call_change()
 
     def _load_plan(self):
         from app import library_store, plan_engine
@@ -3166,6 +3179,7 @@ class Numbers:
             self._publish(table, changed if self._table is last else None)
         if why != said:
             self._say(why)
+        self._first.set()                           # OPEN-RACE: answered (before the reader is woken: `wait_first`)
         self._call_change()
 
     def _say(self, why):

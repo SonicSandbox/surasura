@@ -4622,6 +4622,11 @@ class ShellWindow(QMainWindow):
             if got is not None and got.total:
                 known.set_work_share(100.0 * (got.done or 0) / got.total)
             self._known_followed()                          # ... until its sync ends
+        card = self._detached_card                          # row 35: all it names ended while it asks (the store's
+        if card is not None and not jobs_module.detached_at_quit(views):   # helper at the open runs ~1 s): the
+            self._detached_card = None                      # question no longer stands — the close goes on as Quit,
+            card.drop()                                     # its default, as E20's wait closes by itself (below)
+            self._detached_answer(False)
         if self._quit == "waiting" and self._replan_waited and getattr(self, "_moves_waited", True) and \
                 not jobs_module.waits_at_quit(views):
             self._close_now()

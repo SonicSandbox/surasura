@@ -1517,6 +1517,28 @@ def test_a_second_close_while_the_sheet_asks_is_quit(world, children):
     _end(jobs)
 
 
+def test_the_sheet_goes_once_what_it_names_has_ended_and_the_window_closes_by_itself(world, children):
+    """A close in the open's first seconds lands while the store's helper tidies the library (it runs ~1 s at a 20k
+    open): the sheet names it, and the helper ends a moment later. The question no longer stands — the sheet goes and
+    the close goes on as Quit (its default), with no answer and nothing stopped, within its bound; never a window that
+    waits on a question about nothing (the quit that never returned). While one job it names still runs, it asks on."""
+    world.start()
+    proc, jobs = _helper_running(world, children)             # the upkeep, a sync (never named), Connect
+    world.win.close()
+    card = _sheet(world)
+    jobs[0].finish()                                          # the upkeep ends; Connect still makes its cards
+    QTest.qWait(300)
+    assert world.win.isVisible() and world.win._detached_card is card and card.isVisible()
+    began = time.monotonic()
+    jobs[-1].finish()                                         # nothing it names goes on any more
+    assert wait_until(lambda: not world.win.isVisible(), 2.0), "the close goes on by itself"
+    assert time.monotonic() - began < 2.0
+    assert world.win._detached_card is None and card.answer is False
+    assert world.win._detached_answered and world.win._quit is None
+    assert proc.poll() is None, "nothing was stopped"
+    _end(jobs)
+
+
 def test_connect_alone_going_on_is_named_with_quit_the_one_button(world):
     """Nothing the window may stop: no *Stop and quit*; Quit (here Enter) closes as before, Connect goes on."""
     world.start()

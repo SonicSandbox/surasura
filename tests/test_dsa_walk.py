@@ -375,6 +375,60 @@ def test_the_walks_vocabulary_and_pass_arrays_are_held_compactly(made):
         assert dict(zip([walk.keys[k] for k in kids.tolist()], uses.tolist())) == counts, p
 
 
+_DENSE = {"ja": ("runaway_transcript.txt", "の"), "zh": ("chinese_text_1.txt", "的")}
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_files_count_of_one_word_past_65535_is_kept_whole(tmp_path, language, ja_resources_dir, zh_resources_dir):
+    # why: the pass arrays keep a file's counts in 2 bytes where they fit (80fb7fef), and a long book or a big
+    # transcript uses one word more than 65,535 times (の is ~4 % of Japanese tokens): that file's counts must be kept
+    # in 4 bytes — never wrapped (65,552 read as 16) or clipped — and the progressive pass must read the same total.
+    # A real sentence dense in の / 的, one line a sentence, as many times as passes the bound: indexed, then walked
+    # from the store; and, read as tokens, exactly 65,535 uses (still 2 bytes) and 65,536 (4 bytes)
+    name, word = _DENSE[language]
+    resources = ja_resources_dir if language == "ja" else zh_resources_dir
+    tokenizer = ti.make_tokenizer(language)
+    real = tokenizer(os.path.join(resources, name))["sentences"]
+    text, tokens = max((s for s in real if sum(t[0] == word for t in s[1]) >= 3),
+                       key=lambda s: sum(t[0] == word for t in s[1]) / len(s[1]))
+    per = sum(t[0] == word for t in tokens)
+    lines = (1 << 16) // per + 1
+    folder = tmp_path / "lib" / "books" / "long"
+    folder.mkdir(parents=True)
+    path = str(folder / f"long_{language}.txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write((text + "\n") * lines)
+    store = ti.open_store(language, path=str(tmp_path / "store.db"))
+    try:
+        store.reconcile([path], tokenizer)
+        store.switches = (False, False, False)
+        truth = store.file_tokens(path)
+        assert len(truth) == lines, "one sentence a line"
+        classify = _classes([tuple(t) for _s, ts in truth[:1] for t in ts])
+        walk = ti.Walk(store, classify)
+        got = walk.file(path)
+        total, known, counts, _hot = _walked_by_hand(truth, classify)
+        assert max(n for _k, n in counts) == per * lines > 65535
+        assert got.counted() == (total, known)
+        assert list(got.counter().items()) == counts
+        kids, uses = got.first
+        assert uses.dtype == walk.np.int32, uses.dtype
+        assert list(zip([walk.keys[k] for k in kids.tolist()], uses.tolist())) == counts
+        assert int(uses.sum()) == sum(n for _k, n in counts) == len(truth[0][1]) * lines
+
+        one = next(tuple(t) for t in tokens if t[0] == word)
+        sentence = (text, [tuple(t) for t in tokens])
+        for wanted, dtype in ((65535, walk.np.uint16), (65536, walk.np.int32)):
+            many = [sentence] * (wanted // per) + [(one[2], [one])] * (wanted % per)
+            read = walk.read(iter(many))
+            counts = dict(read.counter())
+            kids, uses = read.first
+            assert counts[classify(one)[1]] == wanted
+            assert uses.dtype == dtype and dict(zip([walk.keys[k] for k in kids.tolist()], uses.tolist())) == counts
+    finally:
+        store.close()
+
+
 def test_the_walk_decides_each_type_once_and_joins_the_names_as_file_tokens_does(tmp_path):
     # why: the name tables join a library's names at read (メロンベンチ one word in every file): on ids a join is the
     # run's own id (past any the store gives, whatever another process adds meanwhile); the walk's sentences must be

@@ -64,7 +64,8 @@ def _export(model):
 def _one_run(miner, lang, folder, profile=PROFILE):
     """One Connect run's speech check (a new process: its own `_SPEECH`), handed the export the run read."""
     anki_miner._SPEECH.clear()
-    return anki_miner.speech_ready(miner.path, lang, profile, folder, export=_export(_holds(profile)))
+    return anki_miner.speech_ready(miner.path, lang, profile, folder, export=_export(_holds(profile)),
+                                   read_with=anki_miner.stamp(miner.path))
 
 
 def _install_in_its_window(model, where=("asr_models", "faster-whisper-{model}", "model.bin")):
@@ -115,6 +116,17 @@ def test_the_model_the_profile_already_holds_is_never_imported_again(miner, fold
 def test_with_no_export_every_model_is_set_in_turn_as_before(miner, folder, lang):
     # why: an export read before the files changed (or none) can't say what the profile holds: nothing is skipped
     assert anki_miner.speech_ready(miner.path, lang, PROFILE, folder) is False
+    assert _imports(miner) == len(anki_miner.SPEECH_MODELS)
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_an_export_read_before_anki_miners_files_changed_skips_nothing(miner, folder, lang):
+    # why: the learner set another model in Anki Miner's window after the run read its export: the export no longer
+    # says what the profile holds, so every model is set in turn as before
+    read_at = anki_miner.stamp(miner.path)
+    with open(os.path.join(os.environ["ANKI_MINER_HOME"], "gui_config.json"), "a", encoding="utf-8") as f:
+        f.write(" ")
+    assert anki_miner.speech_ready(miner.path, lang, PROFILE, folder, export=_export("small"), read_with=read_at)         is False
     assert _imports(miner) == len(anki_miner.SPEECH_MODELS)
 
 
@@ -326,20 +338,37 @@ def test_a_failed_import_drops_the_kept_answers(miner, folder, lang, tmp_path, w
     assert anki_miner.kept_look_ups(miner.path, anki_miner.stamp(miner.path)) is None
 
 
+@pytest.mark.parametrize("lang", LANGS)
+def test_an_import_whose_value_anki_miner_refused_drops_the_kept_answers(miner, folder, lang, tmp_path, monkeypatch,
+                                                                         writes_its_profile):
+    # why: Anki Miner answered the write but didn't take the model (`invalid_fields`): a failed write, never re-keyed
+    real = anki_miner._verdict
+
+    def refusing(returncode, stdout):
+        verdict = real(returncode, stdout)
+        if verdict.get("command") == "settings-import":
+            verdict["result"] = dict(verdict.get("result") or {}, invalid_fields=["asr_model"])
+        return verdict
+    monkeypatch.setattr(anki_miner, "_verdict", refusing)
+    _run(miner, lang)
+    with pytest.raises(anki_miner.AnkiMinerError):
+        anki_miner.settings_import(miner.path, lang, {"asr_model": "large-v3"}, str(tmp_path / "import"),
+                                   profile=PROFILE, keeps=True)
+    assert anki_miner.kept_look_ups(miner.path, anki_miner.stamp(miner.path)) is None
+
+
 # --- the runner hands the run's export over ------------------------------------------------------------------- #
 @pytest.mark.parametrize("lang", LANGS)
-def test_the_runner_hands_over_the_export_only_while_its_files_hold(miner, lang, monkeypatch):
+def test_the_runner_hands_over_the_runs_export_with_the_stamp_it_was_read_at(miner, lang, monkeypatch):
     handed = []
-    monkeypatch.setattr(anki_miner, "speech_ready", lambda *a, export=None: handed.append(export) or False)
+    monkeypatch.setattr(anki_miner, "speech_ready",
+                        lambda *a, export=None, read_with=None: handed.append((export, read_with)) or False)
     steps = _run(miner, lang)
     held = steps._anki_miner_held(lang)
     runner._speech_ready(steps, lang, miner.path, held["set"][1])
-    assert handed[-1] == held["set"][3] and handed[-1]["settings"]["asr_model"] == "small"
+    assert handed[-1] == (held["set"][3], held["stamp"]) and handed[-1][0]["settings"]["asr_model"] == "small"
+    assert held["stamp"] == anki_miner.stamp(miner.path)
     runner._speech_ready(steps, lang, miner.path, "another-profile")
-    assert handed[-1] is None, "another profile's export never says what this one holds"
-    with open(os.path.join(os.environ["ANKI_MINER_HOME"], "gui_config.json"), "a", encoding="utf-8") as f:
-        f.write(" ")
-    runner._speech_ready(steps, lang, miner.path, held["set"][1])
-    assert handed[-1] is None, "the files changed since the export was read"
+    assert handed[-1] == (None, None), "another profile's export never says what this one holds"
     runner._speech_ready(object(), lang, miner.path, held["set"][1])
-    assert handed[-1] is None, "a stand-in with no set"
+    assert handed[-1] == (None, None), "a stand-in with no set"

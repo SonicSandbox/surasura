@@ -366,51 +366,47 @@ def speech_folders():
         return None
 
 
-def _kept_no_speech(path, now):
-    """The kept nos' entries ([language, profile, speech_folders()] each, as JSON reads them back) while they hold for
-    the Anki Miner at `path` whose files stamp `now`, else []."""
-    if now is None or not path:
+def _no_speech_key(path, now, folders):
+    return dict(_kept_key(path, now), speech=json.loads(json.dumps(folders)))
+
+
+def _kept_no_speech(path, now, folders):
+    """The kept nos' [language, profile] entries while they hold for the Anki Miner at `path` whose files stamp `now`
+    and whose speech folders read `folders`, else []."""
+    if now is None or folders is None or not path:
         return []
     try:
         with open(_kept_path(NO_SPEECH_KEPT), encoding="utf-8") as f:
             kept = json.load(f)
-        if not isinstance(kept, dict) or kept.get("key") != _kept_key(path, now) or not isinstance(kept.get("no"),
-                                                                                                    list):
+        if not isinstance(kept, dict) or not isinstance(kept.get("no"), list) or                 kept.get("key") != _no_speech_key(path, now, folders):
             return []
         return kept["no"]
     except (OSError, ValueError, TypeError, RuntimeError):
         return []                       # (none kept, unreadable; a test with no root keeps none)
 
 
-def _no_speech_entry(language, profile, folders):
-    return json.loads(json.dumps([language, profile, folders]))
-
-
 def kept_no_speech(path, language, profile):
     """True when `speech_ready` said no for `language` under `profile` in an earlier run and nothing `check` reads for
     it has changed since (the program, its settings files, its speech folders). Never raises."""
     try:
-        folders = speech_folders()
-        return folders is not None and _no_speech_entry(language, profile, folders) in \
-            _kept_no_speech(path, stamp(path))
+        return [language, profile] in _kept_no_speech(path, stamp(path), speech_folders())
     except (OSError, ValueError, TypeError, RuntimeError):
         return False
 
 
-def _keep_no_speech(path, now, entries):
-    if now is None or not path:
+def _keep_no_speech(path, now, folders, entries):
+    if now is None or folders is None or not path:
         return
-    _write_kept(NO_SPEECH_KEPT, lambda: {"key": _kept_key(path, now), "no": entries[-NO_SPEECH_KEEP:]})
+    _write_kept(NO_SPEECH_KEPT, lambda: {"key": _no_speech_key(path, now, folders), "no": entries[-NO_SPEECH_KEEP:]})
 
 
-def keep_no_speech(path, language, profile, now, folders):
+def keep_no_speech(path, language, profile, now, folders, kept=None):
     """Keep `speech_ready`'s no for `language` under `profile`, answered while Anki Miner's files stamped `now` (taken
-    before the last `check`) and its speech folders were `folders` (taken before the first). Never raises."""
-    if folders is None:
-        return
+    before the last `check`) and its speech folders were `folders` (taken before the first); `kept`: the entries
+    already kept for that key, when the caller has read them. Never raises."""
     try:
-        entry = _no_speech_entry(language, profile, folders)
-        _keep_no_speech(path, now, [e for e in _kept_no_speech(path, now) if e[:2] != entry[:2]] + [entry])
+        kept = _kept_no_speech(path, now, folders) if kept is None else kept
+        _keep_no_speech(path, now, folders, [e for e in kept if e != [language, profile]] + [[language, profile]])
     except (OSError, ValueError, TypeError, RuntimeError):
         pass
 
@@ -663,7 +659,8 @@ def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None, bind=True, look_up=None
     `keeps` (DSA-CONNECT 4: `settings_import`'s, for an `asr_model` alone on an existing profile, which changes no
     `version` or `profiles` answer and no kept no — `speech_ready` tries every model whichever the profile holds):
     the kept answers that held just before the write are kept again for the files' stamp after it, inside the write's
-    own hold (nothing else writes meanwhile); a write that fails drops them as any other does."""
+    own hold (nothing else writes meanwhile); a write that fails, or whose value Anki Miner refused, drops them as any
+    other does."""
     flags = CREATE_NO_WINDOW if sys.platform == "win32" else 0
     if look_up is None:
         look_up = bool(args) and args[0] in LOOK_UPS    # row 56: read before the program starts, never after
@@ -672,8 +669,8 @@ def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None, bind=True, look_up=None
         held = None
         if dropping:
             if keeps:
-                now = stamp(path)
-                held = (kept_look_ups(path, now), _kept_no_speech(path, now))
+                now, folders = stamp(path), speech_folders()
+                held = (kept_look_ups(path, now), _kept_no_speech(path, now, folders))
             drop_look_ups()             # DSA-CONNECT 2: Anki Miner's settings rewritten: never answered from before
         try:
             proc = _popen(_command(path) + ["--api", *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -697,12 +694,12 @@ def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None, bind=True, look_up=None
             if dropping:
                 drop_look_ups()         # (again once it ended: a look-up beside it keeps nothing of before)
         verdict = _verdict(proc.returncode, stdout)
-        if held is not None and verdict.get("ok"):
+        if held is not None and verdict.get("ok") and not (verdict.get("result") or {}).get("invalid_fields"):
             now = stamp(path)           # (the stamp the write left: the next run's)
             if held[0] is not None:
                 keep_look_ups(path, now, *held[0])
             if held[1]:
-                _keep_no_speech(path, now, held[1])
+                _keep_no_speech(path, now, folders, held[1])
         return verdict
 
 
@@ -954,7 +951,7 @@ SPEECH_NO_S = 15 * 60   # a no is asked again after this long (review B-11: neve
 SPEECH_BUSY_S = 60      # Michi-T1: a no only because Anki Miner was busy (a mine beside the check) is asked sooner
 
 
-def speech_ready(path, language, profile, folder, export=None):
+def speech_ready(path, language, profile, folder, export=None, read_with=None):
     """Can this Anki Miner listen in `language` under `profile` now — a speech model it already has, for the profile
     Connect mines with (AB-Q2 (a), Sonic 2026-11-02: one it has is used as it is, never a second download, never
     asked)? `check`'s `speech_model` item; not ok, each of SPEECH_MODELS set on that profile in turn
@@ -963,8 +960,8 @@ def speech_ready(path, language, profile, folder, export=None):
     costs nothing once it is there); False is asked again (a model installed since is seen). Raises AnkiMinerError
     from `check` (busy, setup …). A no is kept SPEECH_NO_S (cleared once Anki Miner's setup installed one); a no
     because Anki Miner was busy setting the other model (a mine beside a check, Michi-T1) only SPEECH_BUSY_S.
-    DSA-CONNECT 4: `export` (the settings export this run read for `profile`, while Anki Miner's files are as they
-    were then) names the model the profile holds: the first `check` already asked about it, so it is never imported
+    DSA-CONNECT 4: `export` (the settings export this run read for `profile`, its files' stamp then `read_with`:
+    used only while they still stamp so) names the model the profile holds: the first `check` already asked about it, so it is never imported
     again (each import rewrote the profile, which dropped the kept look-ups); its import, for a model the profile
     doesn't hold, keeps them (`settings_import`'s `keeps`). A no is also kept from run to run (`keep_no_speech`)
     while nothing `check` reads for it has changed: the program, its settings files, its speech folders."""
@@ -972,12 +969,14 @@ def speech_ready(path, language, profile, folder, export=None):
     said = _SPEECH.get(key)
     if said and (said[0] or time.monotonic() - said[1] < SPEECH_NO_S):
         return said[0]
-    if kept_no_speech(path, language, profile):
+    folders, now = speech_folders(), stamp(path)        # before the first `check`: a model installed meanwhile shows
+    kept = _kept_no_speech(path, now, folders)
+    if [language, profile] in kept:
         _SPEECH[key] = (False, time.monotonic(), None)
         return False
-    settings = export.get("settings") if isinstance(export, dict) else None
-    asked = {settings.get("asr_model")} if isinstance(settings, dict) else set()   # (the model the profile holds)
-    folders, now = speech_folders(), stamp(path)        # before the first `check`: a model installed meanwhile shows
+    settings = export.get("settings") if isinstance(export, dict) and read_with == now else None
+    holds = settings.get("asr_model") if isinstance(settings, dict) else None
+    asked = {holds} if isinstance(holds, str) else set()    # (the model the profile holds, as the export said)
     ok, set_to, at = _speech_ok(check(path, language, profile)), None, time.monotonic()
     keep = True
     for model in SPEECH_MODELS if not ok and profile else ():
@@ -990,14 +989,14 @@ def speech_ready(path, language, profile, folder, export=None):
                 at -= SPEECH_NO_S - SPEECH_BUSY_S
             keep = e.kind == "refused"  # (the window's profile: as it is; any other failure: never kept)
             break                       # the window's profile, or a busy Anki Miner: as it is
-        set_to = model
+        set_to, kept = model, None
         now = stamp(path)               # (its own write moved it: the last `check` reads what that left)
         ok = _speech_ok(check(path, language, profile))
         if ok:
             break
     _SPEECH[key] = (ok, at, set_to)
     if not ok and keep:
-        keep_no_speech(path, language, profile, now, folders)
+        keep_no_speech(path, language, profile, now, folders, kept)
     return ok
 
 

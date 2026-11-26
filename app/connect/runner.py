@@ -1158,15 +1158,15 @@ def _drop_held(held):
 
 
 def _speech_ready(steps, lang, miner, profile):
-    """`anki_miner.speech_ready` handed the settings export this run's set holds for `profile` (row 25), while Anki
-    Miner's files are as they were when it was read (DSA-CONNECT 4: the model the profile holds is never imported
-    again); else none, and every model is set in turn as before. A stand-in with no set hands none."""
+    """`anki_miner.speech_ready` handed the settings export this run's set holds for `profile` (row 25) and the stamp
+    of Anki Miner's files it was read at (DSA-CONNECT 4: while they still stamp so, the model the profile holds is never
+    imported again); else none, and every model is set in turn as before. A stand-in with no set hands none."""
     from app.connect import anki_miner, lineup
     held = (getattr(steps, "_anki_miner_sets", None) or {}).get(lang) or {}
     got = held.get("set")
-    export = got[3] if got and got[1] == profile and held.get("stamp") is not None and \
-        held.get("stamp") == anki_miner.stamp(miner) else None
-    return anki_miner.speech_ready(miner, lang, profile, lineup.folder(lineup.SPEECH), export=export)
+    export = got[3] if got and got[1] == profile else None
+    return anki_miner.speech_ready(miner, lang, profile, lineup.folder(lineup.SPEECH), export=export,
+                                   read_with=held.get("stamp") if export is not None else None)
 
 
 def _updating(ledger, lang, on):

@@ -3131,16 +3131,16 @@ def load_ignored_entries(user_files_dir, script="asis", language=None, settings=
     return _list_words(token_index.ignored_entries(user_files_dir, language, settings, store), script)
 
 
-def load_ignore_set(user_files_dir, script="asis", language=None, settings=None, store=None):
+def load_ignore_set(user_files_dir, script="asis", language=None, store=None):
     """Every word a run ignores, as `main()` reads them: the Ignore list, the Blacklist and the Graduated list, and
     KnownWord.json's IGNORED entries (with Ignore names on, the library's names too). One reader: a Generate and the
-    arrival record (`app/arrivals.py`) ignore the same words. `settings` / `store`: the caller's, already loaded and
-    open, for the names (`load_ignored_entries`): a Generate reads no settings.json and opens no store for them
-    (STORE-KEY 3)."""
+    arrival record (`app/arrivals.py`) ignore the same words. `store`: the caller's open token store, read for the
+    names (`load_ignored_entries`): a Generate opens no store for them (STORE-KEY 3). The Ignore names switch is read
+    fresh: the module's LOGIC is the import's, stale for a run made in-process after a settings change."""
     ignore = load_simple_list(os.path.join(user_files_dir, "IgnoreList.txt"), script, language)
     ignore.update(load_simple_list(os.path.join(user_files_dir, "Blacklist.txt"), script, language))
     ignore.update(load_simple_list(os.path.join(user_files_dir, "GraduatedList.txt"), script, language))
-    ignore.update(load_ignored_entries(user_files_dir, script, language, settings, store))
+    ignore.update(load_ignored_entries(user_files_dir, script, language, store=store))
     return ignore
 
 
@@ -6852,7 +6852,7 @@ def main():
     known_words_initial, known_lemmas_initial = read_known_words(_store, known_file, _known_sig, tokenizer)
 
     # The Ignore list, the Blacklist, the Graduated list and KnownWord.json's IGNORED entries, as one set.
-    ignore_list = load_ignore_set(user_files_dir, script, language, {"logic": LOGIC}, _store)   # (the run's own)
+    ignore_list = load_ignore_set(user_files_dir, script, language, _store)     # (the names: the run's store)
 
     # A word + a noun-making suffix whose word the learner knows — 利用者 when 利用 is known — is still a
     # word to learn (its card, its reading), but it sits lower on the list and is no unknown when choosing

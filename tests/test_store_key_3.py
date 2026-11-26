@@ -1,13 +1,14 @@
-"""STORE-KEY 3: the three extra reads STORE-KEY 2 found, gone.
+"""STORE-KEY 3: two of the three extra reads STORE-KEY 2 found, gone.
 
 Why: (1) the journey page, written at the end of a Generate, opened a token store of its own to look up the known
 words (`journey_render._known_terms`: the known-words key's settings.json read and a parse of the name tables), though
 the run holds those very lemmas in-process. (2) With *Ignore names* on, every ignore-set read
 (`token_index.ignored_names`) opened a fresh database connection (~13 ms on lib2k) and parsed the library's names list
 again (5,447 names), even for a caller holding the store open: Generate, the arrivals view, Connect's known words at
-each card, the Rarity slider's refresh. (3) `analyzer.load_ignore_set` read settings.json for the switch inside
-Generate, which has its settings loaded. After it: the run hands its known lemmas to the page, a caller's open store is
-read (its parse kept while the stored text is the same), and Generate hands its settings.
+each card, the Rarity slider's refresh. After it: the run hands its known lemmas to the page, and a caller's open
+store is read (its parse kept while the stored text is the same). (3), `analyzer.load_ignore_set` reading settings.json
+for the switch inside Generate, stays: the analyzer's LOGIC is the import's, stale for a run made in-process after a
+settings change (tests/test_ignore_names.py), and main holds no fresher copy.
 
 Real data: RP-2's real libraries (ja + zh, `plan_file_cases`) Generated in a child process as the dashboard runs it,
 counted in its own process; the known-words slice of tests/Test Resources for the readers.
@@ -120,7 +121,7 @@ def test_a_generate_reads_no_store_settings_or_names_twice_for_the_journey_and_i
     assert got["journey_opens"] == 0, "the journey page: the run's known lemmas, no store of its own"
     assert got["journey_settings"] == 0 and got["journey_parses"] == 0, "the journey page: no key worked out again"
     assert got["names_opens"] == 0, "the ignore set: the run's open store, no fresh connection"
-    assert got["names_settings"] == 0, "the ignore set: the run's settings, not settings.json again"
+    assert got["names_settings"] == (1 if language == "ja" else 0), "the ignore set: the switch read fresh, once"
     assert got["names_parses"] == (1 if language == "ja" else 0), "the names list: parsed once"
     # the arrivals view reads its ignore set's names through the store it is handed, too
     got = _counted(root, language, "arrivals")
@@ -197,15 +198,16 @@ def test_without_a_store_the_names_are_read_from_the_file_as_before(tmp_path, mo
     assert ti.ignored_names("ja", ON) == ["スドウ"]
 
 
-def test_the_ignore_set_takes_the_handed_settings_and_store(tmp_path, monkeypatch, ja_resources_dir):
-    # why: Generate hands load_ignore_set its loaded settings and its open store — the switch read from them (on in
-    # the handed settings: the names ignored, whatever settings.json says) and the names from the store, with no
-    # settings.json read and no connection of its own
+def test_the_ignore_set_takes_the_handed_store_and_reads_the_switch_fresh(tmp_path, monkeypatch, ja_resources_dir):
+    # why: Generate hands load_ignore_set its open store — the names from it, no connection of its own — and the
+    # Ignore names switch is settings.json's as it is now (one read), never the analyzer's import-time copy (a run
+    # made in-process after a settings change)
     monkeypatch.setattr(analyzer, "SANITIZE_JA", True)
     path = known_file("ja", ja_resources_dir)
     settings = settings_manager.load_settings()
-    settings["logic"]["ignore_names"] = False
+    settings["logic"]["ignore_names"] = True
     settings_manager.save_settings(settings)
+    monkeypatch.setitem(analyzer.LOGIC, "ignore_names", False)     # the import's copy, stale
     store = _store_with_names(tmp_path, ["スドウ", "ミロナイ"])
     try:
         reads = [0]
@@ -217,11 +219,9 @@ def test_the_ignore_set_takes_the_handed_settings_and_store(tmp_path, monkeypatc
         monkeypatch.setattr(settings_manager, "load_settings", load)
         count = _Opens(monkeypatch)
         user_files = os.path.dirname(path)
-        got = analyzer.load_ignore_set(user_files, "asis", "ja", ON, store)
-        assert {"スドウ", "ミロナイ"} <= got
-        assert (reads[0], count.opens) == (0, 0), "no settings.json read, no connection of its own"
-        assert not {"スドウ", "ミロナイ"} & analyzer.load_ignore_set(user_files, "asis", "ja"), \
-            "nothing handed: settings.json's switch (off), as before"
+        got = analyzer.load_ignore_set(user_files, "asis", "ja", store)
+        assert {"スドウ", "ミロナイ"} <= got, "the switch as settings.json says now (on)"
+        assert (reads[0], count.opens) == (1, 0), "one settings.json read, no connection of its own"
     finally:
         store.close()
 

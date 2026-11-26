@@ -713,7 +713,7 @@ def known_sets(language, store, settings):
     ignore = set()
     for name in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"):
         ignore |= analyzer.load_simple_list(os.path.join(user_files, name), script, language)
-    ignore |= analyzer.load_ignored_entries(user_files, script, language, settings)    # (the switch: the caller's)
+    ignore |= analyzer.load_ignored_entries(user_files, script, language, settings, store)   # (the caller's switch, store)
     return cached[0], cached[1], ignore
 
 

@@ -566,8 +566,9 @@ def test_a_generate_builds_the_tokens_of_only_the_sentences_with_something_to_do
     _the_helper_last(env, language)             # (the hook counts in the analyzer's main only: never the helper's 0)
     built = json.loads(counted.read_text(encoding="utf-8"))
     assert size["sentences"] > 300 and len(size["common"]) > 20
-    # Before: every sentence (and token) of every counted file, at least. On ids: well under half of them.
-    assert built["built"] < 0.5 * size["sentences"], (built, size)
+    # Before: every sentence (and token) of every counted file, at least. On ids: well under half of them — and some
+    # (the main's own count, never an empty one: the helper's zeros once passed here)
+    assert 0 < built["built"] < 0.5 * size["sentences"], (built, size)
     assert built["tokens"] < 0.5 * size["tokens"], (built, size)
     # G5: the progressive pass's rank of each listed word, one integer made once a round (ties sharing it), never a
     # tuple made a word a file — the order the same (test_plan_file pins the pass's outputs byte for byte). (RP-2's

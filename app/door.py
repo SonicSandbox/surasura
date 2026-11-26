@@ -79,6 +79,7 @@ EXT_MAX_STREAM = 40 * 1024 * 1024   # one recorded line's clip, a few seconds of
 EXT_CHUNK = 64 * 1024           # a streamed body is read and written this much at a time
 EXT_DRAIN = 1024 * 1024         # a refused body this small is read and dropped before the answer
 EXT_TIMEOUT = 15.0              # a socket silent this long ends (a 40 MB clip on loopback takes well under a second)
+NOT_UKAI = "only Surasura's browser extension, on this computer"
 
 
 class RouteError(Exception):
@@ -229,19 +230,26 @@ class Extension:
         return (origin, token) if isinstance(token, str) and token else None
 
 
+def _content_length(headers):
+    """A request's Content-Length, or -1 (none, or not a number)."""
+    try:
+        return int(headers.get("Content-Length") or -1)
+    except ValueError:
+        return -1
+
+
 class Call:
     """One of Ukai's calls as its route sees it: `groups` (the path's), `headers`; its body read once, by `json` or
-    `save` (a route that reads neither takes no body)."""
+    `save` (a route that reads neither takes no body: the door drops a small one)."""
 
     def __init__(self, handler, groups):
         self.groups, self.headers = groups, handler.headers
         self._handler = handler
 
     def _length(self, limit):
-        try:
-            length = int(self.headers.get("Content-Length") or -1)
-        except ValueError:
-            length = -1
+        if self._handler.body_read:                 # (a route's bug: a second read would wait out EXT_TIMEOUT)
+            raise RuntimeError("a call's body is read once")
+        length = _content_length(self.headers)
         if length < 0:
             raise BodyError(411, "Content-Length is needed")
         if length > limit:
@@ -255,7 +263,10 @@ class Call:
     def json(self, limit=None):
         """The body as a JSON object (≤ EXT_MAX_JSON) -> dict; raises BodyError."""
         length = self._length(EXT_MAX_JSON if limit is None else limit)
-        data = self._read(length)
+        try:
+            data = self._read(length)
+        except OSError:                             # (gone silent past EXT_TIMEOUT, or reset)
+            data = b""
         if len(data) != length:                     # cut short (a tab closed mid-upload)
             self._handler.close_connection = True
             raise BodyError(400, "the body ended before its Content-Length")
@@ -268,11 +279,11 @@ class Call:
         return body
 
     def save(self, path, limit=None):
-        """The body streamed to `path` (≤ EXT_MAX_STREAM, EXT_CHUNK at a time) -> its size. Written to `<path>.part`
-        and put in place only once whole: a body cut short or gone silent leaves nothing, and a file already at `path`
+        """The body streamed to `path` (≤ EXT_MAX_STREAM, EXT_CHUNK at a time) -> its size. Written to a `.part` beside
+        it and put in place only once whole: a body cut short or gone silent leaves nothing, and a file already at `path`
         as it was. Raises BodyError (OSError from the disk: the route's to answer)."""
         length = self._length(EXT_MAX_STREAM if limit is None else limit)
-        part, left = path + ".part", length
+        part, left = "%s.%s.part" % (path, secrets.token_hex(4)), length     # (its own: a retry beside it never mixes)
         try:
             with open(part, "wb") as f:
                 while left:
@@ -321,12 +332,9 @@ def _ext_handler(door):
             return
 
         def _send(self, code, payload):
-            if code >= 400 and not getattr(self, "body_read", False):
-                self.body_read = True               # a refusal before the body was read: a small one read and
-                try:                                # dropped first (unread, Windows resets the socket before the
-                    length = int(self.headers.get("Content-Length") or 0)      # answer is read)
-                except ValueError:
-                    length = 0
+            if not self.body_read:                  # an answer before the body was read: a small one read and
+                self.body_read = True               # dropped first (unread, Windows resets the socket before the
+                length = _content_length(self.headers)                          # answer is read)
                 if 0 < length <= EXT_DRAIN:
                     try:
                         self.rfile.read(length)
@@ -342,7 +350,7 @@ def _ext_handler(door):
             self.end_headers()                      # (no Access-Control header, ever: a page reads nothing)
             self.wfile.write(data)
 
-        def _refuse(self, code, why):
+        def _refuse(self, code, why=NOT_UKAI):
             self._send(code, {"ok": False, "why": why, "kind": "refused"})
 
         def _allowed(self):
@@ -356,26 +364,28 @@ def _ext_handler(door):
             return origin.startswith(EXT_ORIGIN) and len(origin) > len(EXT_ORIGIN)
 
         def _serve(self):
+            self.body_read = False
             if not self._allowed():
-                return self._refuse(403, "only Surasura's browser extension, on this computer")
+                return self._refuse(403)
             path = _path(self.path)
             found = ext.route(self.command, path)
             if found is None:
                 return self._refuse(404, "no such route")
             fn, groups, unpaired = found
-            if not unpaired:
+            if not unpaired:                        # the token first: without it nothing says a pairing exists
                 pair = ext.paired()
-                origin = self.headers.get("Origin")
-                if pair is not None and origin is not None and origin != pair[0]:
-                    return self._refuse(403, "another extension is paired with Surasura")
                 if pair is None or not _same(self.headers.get(EXT_TOKEN_HEADER), pair[1]):
                     return self._refuse(401, "not paired, or the wrong token")
+                origin = self.headers.get("Origin")
+                if origin is not None and origin != pair[0]:    # (a GET carries none: the token is its gate)
+                    return self._refuse(403, "another extension is paired with Surasura")
             if not door.enter():
                 return self._send(503, {"ok": False, "why": "Surasura is closing.", "kind": "closed"})
             try:
                 try:
                     answer = fn(Call(self, groups))
-                    data = json.dumps(dict({"ok": True}, **(answer or {})), ensure_ascii=False).encode("utf-8")
+                    data = json.dumps(dict({"ok": True}, **(answer or {})), ensure_ascii=False,
+                                      allow_nan=False).encode("utf-8")      # (NaN: no JSON the extension reads)
                 except BodyError as e:
                     return self._send(e.status, {"ok": False, "why": e.why, "kind": "body"})
                 except RouteError as e:
@@ -395,7 +405,8 @@ def _ext_handler(door):
             self._serve()
 
         def do_OPTIONS(self):                       # (no preflight is ever answered yes)
-            self._refuse(403, "only Surasura's browser extension, on this computer")
+            self.body_read = False
+            self._refuse(403)
 
     return Handler
 

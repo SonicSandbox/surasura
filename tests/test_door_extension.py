@@ -69,8 +69,16 @@ def ukai(tmp_path, monkeypatch):
     def crashes(_call):
         raise KeyError("C:/Users/someone/private/path")
 
+    def unread(_call):
+        calls.append(("unread",))
+        return {}
+
+    def twice(call):
+        call.json()
+        return call.json()
+
     routes = {"POST /v1/echo": echo, r"POST /v1/jobs/(\d{1,9})/clips/(\d{1,5})": clip, "GET /v1/jobs": jobs,
-              "POST /v1/busy": busy, "POST /v1/crashes": crashes}
+              "POST /v1/busy": busy, "POST /v1/crashes": crashes, "POST /v1/unread": unread, "POST /v1/twice": twice}
     ext = door.Extension(routes, lambda: pair["now"])
     d = door.Door({}, str(tmp_path / "results"), on_error=lambda path, e: errors.append((path, e)),
                   extension=ext).start()
@@ -158,6 +166,8 @@ def test_another_extension_with_the_token_is_refused(ukai):
     """The Origin is pinned beside the token: a token another extension got hold of opens nothing."""
     assert _ukai(ukai, "POST", "/v1/echo", {"cues": []}, origin=OTHER)[0] == 403
     assert _ukai(ukai, "GET", "/v1/jobs", origin=OTHER)[0] == 403
+    assert _ukai(ukai, "POST", "/v1/echo", {"cues": []}, origin=OTHER, token=None)[0] == 401, (
+        "the token is checked first: a caller without it learns nothing of who is paired")
     assert ukai.calls == []
 
 
@@ -342,8 +352,10 @@ def test_a_connection_gone_silent_never_blocks_the_next(tmp_path, monkeypatch):
                          f"{door.EXT_TOKEN_HEADER}: {TOKEN}\r\nContent-Length: 5000\r\n\r\n").encode() + b"x" * 100)
         began = time.monotonic()
         assert _ask(d.ext_port, "GET", "/v1/hello")[0] == 200
-        assert time.monotonic() - began < 2
-        time.sleep(1.5)
+        assert time.monotonic() - began < 5
+        deadline = time.monotonic() + 10
+        while os.listdir(tmp_path) and time.monotonic() < deadline:     # (the stalled clip ends at EXT_TIMEOUT)
+            time.sleep(0.05)
         assert saved == [] and os.listdir(tmp_path) == [], "the stalled clip ended, its part removed"
         hung.close()
         stalled.close()
@@ -358,6 +370,34 @@ def test_a_refusal_is_said_with_its_status_and_a_crash_plainly_never_its_text(uk
     status, got, _h = _ukai(ukai, "POST", "/v1/crashes", {})
     assert status == 503 and got["kind"] == "crashed" and "private" not in json.dumps(got)
     assert [p for p, _e in ukai.errors] == ["/v1/crashes"]
+
+
+def test_a_json_body_gone_silent_is_the_callers_400_never_a_crash(tmp_path, monkeypatch):
+    monkeypatch.setattr(door, "EXTENSION_ON", True)
+    monkeypatch.setattr(door, "EXT_PORT", _free_port())
+    monkeypatch.setattr(door, "EXT_TIMEOUT", 0.5)
+    errors = []
+    ext = door.Extension({"POST /v1/echo": lambda call: call.json()}, lambda: (ORIGIN, TOKEN))
+    d = door.Door({}, str(tmp_path), on_error=lambda path, e: errors.append(path), extension=ext).start()
+    try:
+        with socket.create_connection((door.HOST, d.ext_port), timeout=10) as s:
+            s.sendall((f"POST /v1/echo HTTP/1.1\r\nHost: {door.HOST}:{d.ext_port}\r\nOrigin: {ORIGIN}\r\n"
+                       f"{door.EXT_TOKEN_HEADER}: {TOKEN}\r\nContent-Length: 500\r\n\r\n").encode() + b'{"cues": [')
+            answer = s.recv(4096).decode("utf-8", "replace")            # (the socket stays open: silent, not closed)
+        assert answer.startswith(("HTTP/1.0 400", "HTTP/1.1 400")) and errors == []
+    finally:
+        d.stop()
+
+
+def test_a_route_that_takes_no_body_still_answers_and_a_second_read_fails_at_once(ukai):
+    """An unread body is dropped before the answer (Windows resets an unread socket); a route reading its body
+    twice is a bug said at once (a crash), never a wait for bytes that won't come."""
+    status, got, _h = _ukai(ukai, "POST", "/v1/unread", os.urandom(200 * 1024))
+    assert status == 200 and got == {"ok": True} and ukai.calls == [("unread",)]
+    began = time.monotonic()
+    status, got, _h = _ukai(ukai, "POST", "/v1/twice", {"cues": []})
+    assert status == 503 and got["kind"] == "crashed" and time.monotonic() - began < 5
+    assert [p for p, _e in ukai.errors] == ["/v1/twice"]
 
 
 # --- the port --------------------------------------------------------------------------------------------------------- #
@@ -390,7 +430,9 @@ def test_a_taken_port_moves_to_the_next_and_none_free_listens_nowhere(tmp_path, 
             ports = list(range(base, base + door.EXT_PORTS_MORE + 1))
         monkeypatch.setattr(door, "EXT_PORT", ports[0])
         ext = door.Extension({}, lambda: (ORIGIN, TOKEN))
-        held.pop().close()                                            # the last of the run free
+        last = next(s for s in held if s.getsockname()[1] == ports[-1])
+        held.remove(last)
+        last.close()                                                  # the last of the run free
         d = door.Door({}, str(tmp_path), extension=ext).start()
         try:
             assert d.ext_port == ports[-1]

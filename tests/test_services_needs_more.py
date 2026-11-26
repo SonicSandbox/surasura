@@ -188,3 +188,26 @@ def test_next_20_with_no_writer_writes_nothing(language):
     s = Settings({"connect_backlog_cap": 50}, log)
     assert SW.more_cards(s, None, language) is None
     assert log == [] and s.values["connect_backlog_cap"] == 50
+
+
+class Past:
+    """An episode past the line's last file: reading it fails the test (the walk must have ended)."""
+
+    def __getattr__(self, name):
+        raise AssertionError(f"read past the line's last file ({name})")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_line_walk_ends_at_its_last_file_never_reading_the_rest_of_current(language):
+    # why: Current can hold 20k episodes; the card needs only the line's 3 (the standard choice: read what you need)
+    # (`_more_entry`'s own walk: `entries` reads every episode for the other cards anyway)
+    row = view(language, cards=(0, 0, 0)).rows[0]
+    row.episodes = row.episodes[:3] + (Past(),) * 50
+    assert needs._line_has_cards((row,), 3) is False
+    row.episodes = (row.episodes[0]._replace(cards=2) if hasattr(row.episodes[0], "_replace") else
+                    _with(row.episodes[0], cards=2),) + row.episodes[1:]
+    assert needs._line_has_cards((row,), 3) is True
+
+
+def _with(ep, **kw):
+    return SimpleNamespace(**dict(vars(ep), **kw))

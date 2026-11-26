@@ -152,8 +152,13 @@ def test_the_bars_count_gathers_again_only_when_it_crosses_nearly_studied(world,
 def test_a_line_moved_in_settings_gathers_again_and_the_card_goes(world, monkeypatch):
     # why: the rows read alike when only the line moved — the page must still look again (C1 skips a plain reorder)
     win, ny, _said = opened(world, "ja", monkeypatch)
+    n = ny.gathers
+    ny.view_in(view("ja"))                               # the window's own way in (its Anki Miner known from here)
+    assert wait_until(lambda: ny.gathers > n and not ny._running, 10)
     assert card_of(ny) is not None
     n = ny.gathers
+    ny.view_in(view("ja"))                               # alike, the same line: C1 skips it (the control)
+    assert ny.gathers == n and not ny._running
     ny.view_in(view("ja", line=20))
     assert wait_until(lambda: ny.gathers > n and not ny._running, 10)
     for _ in range(5):

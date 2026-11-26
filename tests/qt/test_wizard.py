@@ -319,7 +319,8 @@ def test_skip_writes_nothing_on_any_page(make):
         wiz.skip()
     assert wiz.page.id == "level"
     assert settings.calls == [] and len([c for c in api.calls if c[0] == "save"]) == saves
-    assert wiz.steps.passed == frozenset(range(5))                 # skipped steps are passed too (✓)
+    assert wiz.steps.passed == frozenset(range(6))                 # skipped steps are passed too (✓; ONB-3: *Watching
+    #                                                                now* passed by with nothing to pick)
 
 
 def test_back_keeps_the_choices_and_writes_nothing(make):
@@ -1549,7 +1550,7 @@ def test_set_up_again_preselects_what_the_settings_say(make):
     go_to(wiz, "order")
     assert wait_until(lambda: not order.controls.isHidden())
     assert order.deck_box.currentText() == "中文::Mining"
-    assert wiz.pages[5].answers() == {"automatic": False, "band": "rare"}
+    assert wiz.by_id["level"].answers() == {"automatic": False, "band": "rare"}
 
 
 def test_the_real_rules_take_every_pages_answers_as_the_contract_says(make):
@@ -2130,7 +2131,7 @@ def test_a_2x_profile_sees_every_page_with_its_choices_and_what_came_over_in_one
     assert known.channel.choice("fresh").title == S.KEEP_CAME_OVER, "nothing to start fresh from: the words came over"
     assert wiz.pages[2].line.text() == S.UPGRADE_SHOWS_LINE and not wiz.pages[2].line.isHidden()
     assert wiz.pages[3].answers()["later"] == "aside" and wiz.pages[3].answers()["keep_in_order"] is True
-    assert wiz.pages[5].answers()["automatic"] is False
+    assert wiz.by_id["level"].answers()["automatic"] is False
 
 
 def test_a_new_profile_keeps_the_new_users_words(make):

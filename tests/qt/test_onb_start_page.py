@@ -106,7 +106,7 @@ def to_start(make, api=None, known=False, data=None):
 def test_generate_goes_straight_on_to_your_start_while_the_list_is_made_and_nothing_is_mined(make):
     wiz, shell, api, settings, seen = to_start(make)
     assert wiz.page.id == "start" and wiz.generating and seen == []
-    assert wiz.steps.ids[-1] == "start" and wiz.steps.current == 6
+    assert wiz.steps.ids[-1] == "start" and wiz.steps.current == wiz.pages.index(wiz.by_id["start"])
     assert ("finish",) in api.calls and wait_until(lambda: ("generate",) in api.calls)    # (Generate: on a worker)
     assert wiz.btn_back.isHidden(), "no Back: the list is already being made (PROVISIONAL)"
     wiz.back()                                                     # (a Back press by key or reader: still here —

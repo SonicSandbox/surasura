@@ -182,6 +182,7 @@ def test_finish_later_mid_read_stops_the_look_between_files(make, empty_library,
     wiz.finished.connect(finished.append)
     wiz.finish_later()
     assert finished == ["later"] and stop.is_set(), "the look stops between files; what it took in is kept"
+    assert wiz._run is None and wiz.waiting is None, "the run let go: nothing of it lands on a closed setup"
     api.gate.set()
 
 
@@ -367,7 +368,7 @@ def test_youtube_alone_goes_on_and_watching_now_waits_for_its_videos(make, monke
 @pytest.mark.parametrize("furthest, opens, passed", [
     (None, "language", set()),
     ("shows", "order", {"language", "known", "shows"}),
-    ("cards", "level", {"language", "known", "shows", "order", "cards", "watching"}),   # nothing to pick: passed by
+    ("cards", "watching", {"language", "known", "shows", "order", "cards"}),   # (shown: the view may come later)
     ("level", "level", {"language", "known", "shows", "order", "cards", "watching"}),   # never past *Your list*
 ])
 def test_setup_reopens_at_the_step_it_was_closed_on(make, furthest, opens, passed):
@@ -378,3 +379,67 @@ def test_setup_reopens_at_the_step_it_was_closed_on(make, furthest, opens, passe
     wiz, *_ = make(api=api)
     assert wiz.page.id == opens
     assert {wiz.pages[i].id for i in wiz.passed} == passed
+
+
+# --- the review's fixes (session 2) --------------------------------------------------------------------------- #
+def _three_episodes(wiz, shell, placed):
+    rows = _with_shows(wiz, shell, placed)
+    ids = (10, 11, 12)
+    first = rows[0]._replace(item_ids=ids, episodes=tuple(SimpleNamespace(id=i, label=f"第{k}話")
+                                                          for k, i in enumerate(ids, 1)))
+    rows = [first] + rows[1:]
+    shell._arrivals_view = SimpleNamespace(arrivals=tuple(rows), arrival_groups=shell._arrivals_view.arrival_groups)
+    return rows
+
+
+def test_a_changed_im_on_after_back_marks_the_episodes_before_it_watched(make, placed):
+    """Why (review, state lens): the same show picked again after Back placed nothing, so a later *I'm on* never
+    reached the store and cards were made for episodes he had marked as seen."""
+    wiz, shell, api, _s, _m = make(api=HeldApi())
+    rows = _three_episodes(wiz, shell, placed)
+    _walk(wiz, "watching")
+    page = wiz.page
+    assert wait_until(lambda: page.rows is not None and page.channel.value() == rows[0].key, 5)
+    page.episode.set_value(1)
+    wiz.next()
+    QTest.mouseClick(wiz.covered.btn_done, Qt.MouseButton.LeftButton)
+    wiz.back()
+    assert wiz.page.id == "watching" and page.episode.value() == 1
+    page.episode.set_value(2)
+    wiz.next()
+    assert placed["watched"] == [[10], [10, 11]]
+    assert wiz.covered.after == 12
+    QTest.mouseClick(wiz.covered.btn_done, Qt.MouseButton.LeftButton)
+
+
+def test_a_pick_that_cant_be_written_still_opens_the_sort(make, placed, monkeypatch):
+    """Why (review, state lens): a raise in New arrivals' call left *Next* doing nothing on the page."""
+    wiz, shell, api, _s, _m = make(api=HeldApi())
+    _with_shows(wiz, shell, placed)
+
+    def refused(*_a, **_kw):
+        raise OSError("the library is read-only")
+    monkeypatch.setattr(qarrivals, "give_place", refused)
+    _walk(wiz, "watching")
+    assert wait_until(lambda: wiz.page.rows is not None, 5)
+    wiz.next()
+    assert isinstance(wiz.covered, sort_screen.SortScreen) and wiz.covered.after is None
+    assert placed["watched"] == [] and wiz._watch_placed is None
+    QTest.mouseClick(wiz.covered.btn_done, Qt.MouseButton.LeftButton)
+
+
+def test_none_of_these_after_a_pick_keeps_the_sort_under_the_show_already_placed(make, placed):
+    """Why (review, contract lens): the show placed by an earlier Next stays at Current's top; the sort's Current
+    picks go in under it, never above it."""
+    wiz, shell, api, _s, _m = make(api=HeldApi())
+    rows = _with_shows(wiz, shell, placed)
+    _walk(wiz, "watching")
+    page = wiz.page
+    assert wait_until(lambda: page.rows is not None, 5)
+    wiz.next()
+    QTest.mouseClick(wiz.covered.btn_done, Qt.MouseButton.LeftButton)
+    wiz.back()
+    page.channel.choose(page.NONE, user=True)
+    wiz.next()
+    assert wiz.covered.after == rows[0].item_ids[-1] and len(placed["place"]) == 1
+    QTest.mouseClick(wiz.covered.btn_done, Qt.MouseButton.LeftButton)

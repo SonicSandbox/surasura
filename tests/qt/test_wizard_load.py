@@ -110,9 +110,7 @@ def _to_the_sort(wiz, shell, titles=("小林さんちのメイドラゴン", "�
     groups = _shows(*titles)
     shell._arrivals_view = SimpleNamespace(arrivals=groups[0].rows, arrival_groups=groups)
     go_to(wiz, "watching")
-    wiz.page.entered()
-    assert wait_until(lambda: wiz.page.next_offered(), 5)
-    wiz.next()
+    wiz.skip()                                     # (the stand-in services read no shows: *None of these*, the sort)
     assert isinstance(wiz.covered, sort_screen.SortScreen)
 
 

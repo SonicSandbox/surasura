@@ -124,9 +124,9 @@ def _sorted(wiz):
     window's New arrivals has titles for it, and its *Done* — on to *Your list*."""
     from app.qt import sort_screen
     assert wait_until(lambda: wiz._read_done, 10)
-    go_to(wiz, "watching")
-    assert wait_until(lambda: wiz.page.next_offered(), 5)
-    wiz.next()
+    if wiz.page.id != "level":
+        go_to(wiz, "watching")
+        wiz.skip()                                 # (the stand-in services read no shows: *None of these*, the sort)
     if isinstance(wiz.covered, sort_screen.SortScreen):
         QTest.mouseClick(wiz.covered.btn_done, Qt.MouseButton.LeftButton)
     assert wiz.covered is None and wiz.page.id == "level"

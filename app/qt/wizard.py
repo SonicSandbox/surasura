@@ -207,7 +207,7 @@ class StepList(QWidget):
         self.current, self.passed, self.ids, self.warned = current, passed, ids, warned
         here = S.STEPS[ids[current]]
         self.setAccessibleDescription(S.STEP_HERE_NAME.format(name=here) + "".join(
-            " · " + S.STEP_WARN_NAME.format(name=S.STEPS[pid]) for pid in ids if pid in warned))
+            S.STEP_WARN_NAME.format(name=S.STEPS[pid]) for pid in ids if pid in warned))
         if grew:
             self.updateGeometry()
         self.update()
@@ -2867,7 +2867,7 @@ class ShowTile(Choice):
     its title and its line under it (each cut with … to the tile), the ring and the vein on the chosen one."""
 
     def __init__(self, key, tip, parent=None):
-        super().__init__(key, "", tip, parent)
+        super().__init__(key, S.WATCH_CHOICE_NAME, tip, parent)     # (named while hidden: its show's title later)
         self.cover = None
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
@@ -3254,7 +3254,7 @@ class SetupWizard(QWidget):
         self._read_said = None              # … its line said in the footer (taken off when it ends)
         self._read_ids = []                 # … the items its scan took in (D1's line after the sort)
         self._watch_seq = 0                 # ONB-3: *Watching now*'s newest shows, read on a worker
-        self._watch_placed = None           # … (key, last id) of the show placed at Current's top
+        self._watch_placed = None           # … (key, episode, last id) of the show placed at Current's top
         self._watch_keys = None             # … New arrivals' keys its last read was given (a new view: read again)
         self._sync_running = False          # page 2's first known-words sync under way (the load's last step waits)
         self.fetching = None                # alpha 8: page 3's YouTube fetch under way (the load waits for it last)
@@ -3318,8 +3318,8 @@ class SetupWizard(QWidget):
 
     def _reopen_index(self, settings):
         """ONB-2: the step setup opens on — the one after the furthest saved with *Next* (`reopen_at`; closed mid-setup,
-        it opens where it was), the steps before it passed (✓); *Watching now* passed by with nothing to pick; never
-        past *Your list*. Page 1 when nothing was saved."""
+        it opens where it was), the steps before it passed (✓); never past *Your list*. Page 1 when nothing was
+        saved."""
         try:
             furthest = getattr(self.api, "reopen_at", lambda _s: None)(thaw(settings))
         except Exception as e:
@@ -3328,10 +3328,8 @@ class SetupWizard(QWidget):
         ids = [page.id for page in self.pages]
         if furthest not in ids:
             return 0
-        target = min(ids.index(furthest) + 1, ids.index("level"))
-        if ids[target] == WatchingPage.id and not self._watch_needed():
-            target += 1
-        self.passed.update(range(target))
+        target = min(ids.index(furthest) + 1, ids.index("level"))      # (*Watching now* shown: the window's view
+        self.passed.update(range(target))                               # may not hold its shows yet at the open)
         return target
 
     def _seen(self):
@@ -3719,6 +3717,8 @@ class SetupWizard(QWidget):
         self._gone = True
         self._seen()
         self._stop_workers()
+        if self._run is not None and self._run.behind:    # ONB-2: closed mid-read: the run let go (what it read is
+            self._end_read()                              # kept; the window's indexer goes on)
         heard = getattr(self.shell, "bridge", None)
         for signal, slot in ((getattr(heard, "generate_changed", None), self._generate_state),
                              (getattr(heard, "indexed", None), self._indexed),
@@ -4548,7 +4548,7 @@ class SetupWizard(QWidget):
 
     def _read_told(self, text):
         """A step's line: on the load screen, and in the footer of a page that doesn't wait (the read goes on)."""
-        if self.waits() is None and self.page.id not in ("shows", StartPage.id) and \
+        if text != self._read_said and self.waits() is None and self.page.id not in ("shows", StartPage.id) and \
                 (not self.say_line.accessibleName() or self.say_line.accessibleName() == self._read_said):
             self._read_said = text
             self.say(text)
@@ -4597,7 +4597,10 @@ class SetupWizard(QWidget):
         view = self._arrival_view()
         rows = list(getattr(view, "arrivals", None) or ()) if view is not None else []
         page = self.by_id[WatchingPage.id]
-        self._watch_keys = tuple(r.key for r in rows)
+        keys = tuple(r.key for r in rows)
+        if page.rows is not None and keys == self._watch_keys:
+            return                                        # (Back and Next again, the same view: its tiles stand)
+        self._watch_keys = keys
         total = sum(1 for r in rows if getattr(r, "group", "new") != "watched")     # (the sort's titles, the pick's)
         self._watch_seq += 1
         seq, language = self._watch_seq, self.language
@@ -4605,7 +4608,9 @@ class SetupWizard(QWidget):
                              then=self.alive(lambda got: seq == self._watch_seq and language == self.language
                                              and page.show_newest(got, total)),
                              failed=self.alive(lambda info: (applog.log("wizard", f"watching rows: {info[0]}"),
-                                                             page.show_newest(rows[:len(page.tiles)], total))))
+                                                             page.show_newest([r for r in rows if getattr(
+                                                                 r, "group", "new") != "watched"][:len(page.tiles)],
+                                                                 total))))
 
     def search_watching(self, query):
         if not callable(getattr(self.api, "watching_search", None)):
@@ -4623,21 +4628,24 @@ class SetupWizard(QWidget):
         from app.qt import arrivals, sort_screen
         page = self.by_id[WatchingPage.id]
         page.keep()
-        row, after = answers.get("row"), None
+        row, episode = answers.get("row"), answers.get("episode") or 0
         moves = getattr(self.shell, "moves", None)
-        placed = self._watch_placed
-        if row is not None and moves is not None and (placed is None or placed[0] != row.key):
+        placed = self._watch_placed                       # (key, episode, its last id): placed by an earlier Next
+        after = placed[2] if placed is not None else None     # (None of these after a pick: the sort goes under it)
+        if row is not None and moves is not None and (placed is None or placed[:2] != (row.key, episode)):
             from app.services import setup_wizard
             said = S.WATCH_PLACED.format(title=row.title)
             writer = getattr(getattr(self.shell, "services", None), "writer", None)
-            after = setup_wizard.watching_place(
-                lambda ids, where: arrivals.give_place(moves, said, ids, where, keys=(row.key,), toast=False),
-                lambda ids: writer.set_watched(ids, label=said) if writer is not None else None,
-                row, answers.get("episode") or 0)
-            if after is not None:
-                self._watch_placed = (row.key, after)
-        elif row is not None and placed is not None:
-            after = placed[1]
+            try:                                          # (a pick that can't be written: logged, the sort comes)
+                last = setup_wizard.watching_place(
+                    lambda ids, where: arrivals.give_place(moves, said, ids, where, keys=(row.key,), toast=False),
+                    lambda ids: writer.set_watched(ids, label=said) if writer is not None else None,
+                    row, episode)
+            except Exception as e:
+                applog.log("wizard", f"watching pick: {e}")
+                last = None
+            if last is not None:
+                self._watch_placed, after = (row.key, episode, last), last
         view = self._arrival_view()
         left = [r for r in getattr(view, "arrivals", None) or () if row is None or r.key != row.key]
         if not left:

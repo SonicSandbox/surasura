@@ -17,6 +17,7 @@ read that never ends its wait, a show placed below the ones he sorts after it, o
 The wizard over its stand-in window (test_wizard's `make`), the real store and first look on real Japanese subtitles
 (tests/Test Resources/, made-up show names); the window's chores, covers and writer are recording stand-ins.
 """
+import os
 import threading
 from types import SimpleNamespace
 
@@ -24,14 +25,17 @@ import pytest
 
 pytest.importorskip("PyQt6")
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QResizeEvent
 from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication
 
 from app.qt import arrivals as qarrivals
+from app.qt import windows
 from app.qt import sort_screen
 from app.qt import wizard as W
 from app.qt import wizard_strings as S
 from tests.qt.conftest import wait_until
-from tests.qt.test_wizard import make  # noqa: F401
+from tests.qt.test_wizard import FakeFetch, make, rest  # noqa: F401
 from tests.qt.test_wizard_load import Chores, _covers, _shows
 from tests.qt.test_wizard_sources import (SHOWS, SourcesApi, _fresh_look_state, _folder, _items,  # noqa: F401
                                           _pick, empty_library)
@@ -48,6 +52,10 @@ class HeldApi(SourcesApi):
         self.failed = list(failed)
         self.rows_asked, self.searched = [], []
         self.newest = None
+        self.furthest = None                                           # `reopen_at`'s answer (the page saved last)
+
+    def reopen_at(self, settings):
+        return self.furthest
 
     def read_folders(self, language, paths, progress=None, stop=None, **kw):
         self.gate.wait(20)
@@ -284,3 +292,89 @@ def test_the_step_list_shows_watching_now_between_cards_and_your_list(make):
     wiz, *_ = make()
     assert wiz.steps.ids[:7] == W.ORDER and W.ORDER.index("watching") == W.ORDER.index("level") - 1
     assert S.STEPS["watching"]
+
+
+# --- session 2: the tiles as the design draws them, the view that comes late, YouTube alone, reopening ---------- #
+def test_the_shows_are_poster_tiles_in_one_row_as_many_as_the_width_holds(make, placed):
+    """Why (the approved design, step 6): the shows are covers in a row, each with its title and line under it, the
+    rest said as *N more in the next step* — never a list of words one above another. A narrow window shows fewer
+    tiles (never a second row or a cut one); the search still finds the rest."""
+    wiz, shell, api, _s, _m = make(api=HeldApi())
+    rows = _with_shows(wiz, shell, placed)
+    _walk(wiz, "watching")
+    page = wiz.page
+    assert wait_until(lambda: page.rows is not None, 5)
+    shown = [t for t in page.tiles if t.isVisible()]
+    assert all(isinstance(t, W.ShowTile) for t in page.tiles) and len(shown) == 3
+    assert [t.cover for t in shown] == [r.cover for r in rows] and shown[0].line == rows[0].line
+    assert len({t.y() for t in shown}) == 1, "one row"
+    assert page.more.isVisible() and page.more.text() == S.WATCH_MORE.format(n=2), "the sort's: all but the pick"
+    page.channel.choose(page.NONE, user=True)
+    page._show_more()
+    assert page.more.text() == S.WATCH_MORE.format(n=3)
+    page._fits = lambda: 2                                             # the window made narrow
+    QApplication.sendEvent(page, QResizeEvent(page.size(), page.size()))
+    assert [t.title for t in page.tiles if t.isVisible()] == [rows[0].title, rows[1].title]
+    del page._fits                                                     # wide again: all three
+    QApplication.sendEvent(page, QResizeEvent(page.size(), page.size()))
+    assert len([t for t in page.tiles if t.isVisible()]) == 3
+
+
+def test_shows_that_reach_new_arrivals_after_the_scan_fill_the_page_then(make, placed):
+    """Why (the race found in session 2): the scan ends before the window's view holds its shows — *Watching now* was
+    passed by (nothing to pick yet) or showed no tiles for good. The scan's own count keeps the step, and the view's
+    arrival (`library_changed`) reads the shows again."""
+    wiz, shell, api, _s, _m = make(api=HeldApi())
+    wiz._read_ids = [11, 12]                                           # the scan took files in; the view has none yet
+    _walk(wiz, "watching")
+    page = wiz.page
+    assert wiz.page.id == "watching", "never passed by while the shows are on their way"
+    assert wait_until(lambda: page.rows == [], 5) and not any(t.isVisible() for t in page.tiles)
+    asked = len(api.rows_asked)
+    wiz._library_moved(None)
+    assert len(api.rows_asked) == asked, "the same view: nothing read again"
+    rows = _with_shows(wiz, shell, placed)
+    wiz._library_moved(shell._arrivals_view)
+    assert wait_until(lambda: [t.title for t in page.tiles if t.isVisible()] == [r.title for r in rows], 5)
+    assert page.channel.value() == rows[0].key
+
+
+def test_youtube_alone_goes_on_and_watching_now_waits_for_its_videos(make, monkeypatch, placed, rest):
+    """Why (ONB-2; the lead: YouTube-only setup moves behind if it is the same code): links alone went under the full
+    cover. Now setup goes on as with folders; *Watching now* waits for the videos (they are the shows), Back live."""
+    wiz, shell, api, _s, _m = make(api=HeldApi(), data={"enable_youtube_transcripts": True,
+                                                         "youtube_risk_acknowledged": True})
+    fetch = FakeFetch()
+    monkeypatch.setattr(W, "_youtube_fetcher", lambda: fetch)
+    monkeypatch.setattr(windows, "youtube_arrivals", lambda _shell, then=None: lambda paths: then(len(paths), 0, 0))
+    _walk(wiz, "shows")
+    page = wiz.page
+    page.entered()
+    assert wait_until(lambda: not page.btn_youtube.isHidden())
+    page.btn_youtube.click()
+    page.links.setPlainText("https://www.youtube.com/watch?v=eFwn9e8IYsI")
+    wiz.next()
+    assert wiz.covered is None and wiz.page.id == "order" and fetch.calls
+    _walk(wiz, "watching")
+    assert _waiting(wiz) and wiz.waits() == "youtube" and wiz.waiting.task.text() == S.LOAD_YOUTUBE
+    assert wiz.btn_back.isVisible()
+    rows = _with_shows(wiz, shell, placed, titles=("peko peko vlog",))
+    fetch.ended([os.path.join("Processed", "peko peko vlog [eFwn9e8IYsI].txt")], [])
+    assert wait_until(lambda: not _waiting(wiz) and wiz._read_done, 5)
+    assert wait_until(lambda: wiz.page.channel.value() == rows[0].key, 5)
+
+
+@pytest.mark.parametrize("furthest, opens, passed", [
+    (None, "language", set()),
+    ("shows", "order", {"language", "known", "shows"}),
+    ("cards", "level", {"language", "known", "shows", "order", "cards", "watching"}),   # nothing to pick: passed by
+    ("level", "level", {"language", "known", "shows", "order", "cards", "watching"}),   # never past *Your list*
+])
+def test_setup_reopens_at_the_step_it_was_closed_on(make, furthest, opens, passed):
+    """Why (design §3): closed mid-setup, setup came back on page 1. It opens after the furthest page saved with
+    *Next*, the steps before it ticked."""
+    api = HeldApi()
+    api.furthest = furthest
+    wiz, *_ = make(api=api)
+    assert wiz.page.id == opens
+    assert {wiz.pages[i].id for i in wiz.passed} == passed

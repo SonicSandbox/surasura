@@ -509,4 +509,5 @@ WATCH_EPISODE_TIP = "The episodes before it count as watched: no cards are made 
 WATCH_HINT = "← → to choose · Enter to go on"
 WATCH_READING = "Finding your shows…"
 WATCH_PLACED = "{title} is at the top of Current"
+WATCH_MORE = "· {n} more in the next step"
 STEP_WARN_NAME = "{name}: a folder couldn't be read"

@@ -119,12 +119,17 @@ class SourcesApi(FakeApi):
 
 
 def _sorted(wiz):
-    """The load screen's steps pass by (the stand-in window has no indexer, covers or sync to wait for) and the sort
-    screen covers the wizard; its *Done* goes on."""
+    """The read's steps pass by behind the pages (the stand-in window has no indexer, covers or sync to wait for);
+    then setup is walked on to *What are you watching right now?* (ONB-3) and its *Next*: the sort screen, when the
+    window's New arrivals has titles for it, and its *Done* — on to *Your list*."""
     from app.qt import sort_screen
-    assert wait_until(lambda: isinstance(wiz.covered, sort_screen.SortScreen), 10)
-    QTest.mouseClick(wiz.covered.btn_done, Qt.MouseButton.LeftButton)
-    assert wiz.covered is None
+    assert wait_until(lambda: wiz._read_done, 10)
+    go_to(wiz, "watching")
+    assert wait_until(lambda: wiz.page.next_offered(), 5)
+    wiz.next()
+    if isinstance(wiz.covered, sort_screen.SortScreen):
+        QTest.mouseClick(wiz.covered.btn_done, Qt.MouseButton.LeftButton)
+    assert wiz.covered is None and wiz.page.id == "level"
 
 
 def _pick(wiz, *paths):
@@ -180,9 +185,9 @@ def test_page_three_lists_two_folders_refuses_the_data_folder_and_one_is_removed
 def test_next_reads_the_folders_on_a_worker_under_the_load_screen_and_they_wait_in_new_arrivals(make, empty_library,
                                                                                                  monkeypatch):
     """*Next* adds each folder and gives it setup's first look — on a worker, never the window's thread — with the
-    progress line, under the load screen; the shows land in New arrivals for the sort screen (SRC-1 as Mado-O changed
-    it), the page under it shows them as rows, and no cards line is offered yet (nothing is in the line). The sort
-    screen's *Done* saves page 3 (the covers) and goes on to page 4."""
+    progress line on page 3, while setup goes on (ONB-2: no cover); the shows land in New arrivals for the sort
+    screen (SRC-1 as Mado-O changed it), page 3 shows them as rows, and no cards line is offered yet (nothing is in
+    the line). Page 3 (the covers) is written once, before the read: the sort's *Done* never writes it again."""
     first, second = _folder("anime", SHOWS), _folder("dramas", LOOSE, start=100)
     looks = []
     real_scan = sources.scan
@@ -201,10 +206,9 @@ def test_next_reads_the_folders_on_a_worker_under_the_load_screen_and_they_wait_
     monkeypatch.setattr(page, "show_reading", lambda f, s: (lines.append((f, s)), show_reading(f, s)))
     settings.calls.clear()
     wiz.next()
-    from app.qt import sort_screen
-    assert isinstance(wiz.covered, sort_screen.LoadScreen) and wiz.covered.isVisible()        # the calm cover, at once
+    assert wiz.covered is None and wiz.page.id == "order"                   # ONB-2: setup goes on, the read behind
     assert wiz.reading is not None and not page.btn_stop.isHidden()
-    assert not wiz.btn_next.isEnabled() and not wiz.btn_back.isEnabled() and not wiz.btn_skip.isEnabled()
+    assert wiz.btn_next.isEnabled() and wiz.btn_back.isEnabled()
     assert page.reading_line.text() == S.READING.format(episodes="0 episodes", shows="0 shows")
     assert wait_until(lambda: wiz.reading is None, 30)
     main = threading.main_thread()
@@ -221,12 +225,11 @@ def test_next_reads_the_folders_on_a_worker_under_the_load_screen_and_they_wait_
     assert set(SHOWS) | set(LOOSE) <= names
     assert service.read_offers("ja") == frozenset()               # nothing in the line yet: no cards line
     assert _log() == []                                            # the first look logs nothing (S1)
-    assert wiz.index == 2 and settings.calls == [{"covers_download": True}]   # under the cover: only *Show covers*,
-    # written before the read so the sort pad's covers are asked (Mado-SB); the page's other answers wait
-    wiz.next()
-    assert wiz.index == 2, "Next does nothing while the wizard is covered"
+    covers = lambda: [c for c in settings.calls if "covers_download" in c]   # noqa: E731
+    assert wiz.page.id == "order" and covers() == [{"covers_download": True}]   # *Show covers*, written before the
+    # read so the sort pad's covers are asked (Mado-SB)
     _sorted(wiz)
-    assert wiz.index == 3 and settings.calls == [{"covers_download": True}]      # *Done*: never written twice
+    assert covers() == [{"covers_download": True}]                                # never written twice
     assert wait_until(lambda: any(c[0] == "sorted_offer" for c in api.calls), 10)
     assert sorted(next(c for c in api.calls if c[0] == "sorted_offer")[2]) == [i for i, *_r in items]
     assert service.read_offers("ja") == frozenset()               # nothing sorted into Current: still no line
@@ -313,15 +316,18 @@ def test_going_on_refuses_surasuras_own_folder_and_an_empty_folder_offers_no_lin
 
 
 def test_a_library_not_ready_keeps_the_folders_to_try_again(make, monkeypatch):
-    """No library yet (the store not built): nothing is read, the line says so, the folders stay listed."""
+    """No library yet (the store not built): nothing is read, page 3's line says so, the folders stay listed, and
+    *Your shows* gets the amber dot in the steps (ONB-2: setup went on, so Back is where to try again)."""
     first = _folder("anime", SHOWS)
     monkeypatch.setattr(ls, "open_store", lambda *a, **kw: None)
     wiz, *_ = make(api=SourcesApi())
     go_to(wiz, "shows")
     _pick(wiz, first)
+    page = wiz.page
     wiz.next()
     assert wait_until(lambda: wiz.reading is None, 10)
-    assert wiz.page.reading_line.text() == S.READ_NOT_READY and wiz.page.folders == [os.path.normpath(first)]
+    assert page.reading_line.text() == S.READ_NOT_READY and page.folders == [os.path.normpath(first)]
+    assert "shows" in wiz.steps.warned
 
 
 # --- Needs you's one line (D1) -------------------------------------------------------------------------------------- #

@@ -2858,6 +2858,77 @@ def start_words(key, numbers, cap):
 
 
 WATCH_SEARCH_MS = 200                                     # the search box asks once typing pauses this long
+WATCH_TILE_W, WATCH_COVER_H = 112, 158                    # a show's tile (× the text size): its width, its cover's height
+
+
+class ShowTile(Choice):
+    """ONB-3: one show on *Watching now* — its cover through the window's one door (`covers.pixmap_for`: its own picture
+    once decoded, the generated one meanwhile; the read finds the covers before the words, so they are mostly there),
+    its title and its line under it (each cut with … to the tile), the ring and the vein on the chosen one."""
+
+    def __init__(self, key, tip, parent=None):
+        super().__init__(key, "", tip, parent)
+        self.cover = None
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+    def set_show(self, key, row):
+        """The tile shows `row` (a New arrivals row): repainted only when what it shows changed."""
+        self.key = key
+        title = getattr(row, "cover_title", None) or row.title
+        shown = (title, row.line or row.media_word or "", getattr(row, "cover", None))
+        if shown != (self.title, self.line, self.cover):
+            self.title, self.line, self.cover = shown
+            self.setText(title)
+            self.setAccessibleName(title)
+            self.update()
+
+    def sizeHint(self):
+        return QSize(_px(WATCH_TILE_W), _px(WATCH_COVER_H + 62))
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def needed_width(self):
+        return self.sizeHint().width()
+
+    def paintEvent(self, _event):
+        from app.qt import covers as qcovers
+        self.paints += 1
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        w, high = self.width(), _px(WATCH_COVER_H)
+        pix = qcovers.pixmap_for(self.cover, self.title, w, high, self.devicePixelRatioF() or 1.0, "tile",
+                                 on_ready=self._ready)
+        if pix is not None and not pix.isNull():
+            p.drawPixmap(0, 0, pix)
+        chosen = self.isChecked()
+        if chosen:
+            p.setPen(QPen(_c("accent"), _px(2)))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(QRectF(_px(1), _px(1), w - _px(2), high - _px(2)), _px(6), _px(6))
+        title_font = _font("body", 600)
+        fm = QFontMetricsF(title_font)
+        base = high + _px(10) + fm.ascent()
+        p.setFont(title_font)
+        p.setPen(_c("ink") if chosen else _c("ink-dim"))
+        p.drawText(QPointF(0, base), fm.elidedText(scrub.shown(self.title), Qt.TextElideMode.ElideRight, w))
+        if self.line:
+            sub = _font("row-sub")
+            sfm = QFontMetricsF(sub)
+            p.setFont(sub)
+            p.setPen(_c("ink-dim"))
+            p.drawText(QPointF(0, base + fm.descent() + _px(6) + sfm.ascent()),
+                       sfm.elidedText(scrub.shown(self.line), Qt.TextElideMode.ElideRight, w))
+        if chosen:
+            self._paint_vein(p, self.height() - _px(4), 0, w)
+        if self.hasFocus() and self._keyed:
+            _ring(p, self.rect())
+        p.end()
+
+    def _ready(self):
+        if not sip.isdeleted(self):
+            self.update()
 
 
 class WatchingPage(_Page):
@@ -2889,15 +2960,16 @@ class WatchingPage(_Page):
                                 parent=self)
         self.search.edit.textEdited.connect(self._typed)
         self.box.addWidget(self.search, 0, Qt.AlignmentFlag.AlignLeft)
-        self.channel = Channel(S.WATCH_CHOICE_NAME, self, gap=_px(8))
-        self.channel.row.setDirection(QBoxLayout.Direction.TopToBottom)
-        self.tiles = [self.channel.add(Choice(f"slot{n}", S.WATCH_CHOICE_NAME, S.WATCH_TILE_TIP.format(
-            title=S.WATCH_CHOICE_NAME), self.channel, small=True)) for n in range(WATCHING_SHOWN)]
+        self.channel = Channel(S.WATCH_CHOICE_NAME, self, gap=_px(14))
+        self.channel.row.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.tiles = [self.channel.add(ShowTile(f"slot{n}", S.WATCH_TILE_TIP.format(title=S.WATCH_CHOICE_NAME),
+                                                self.channel)) for n in range(WATCHING_SHOWN)]
         for tile in self.tiles:                           # (named while hidden too: the wiring walk reads them all)
             tile.setAccessibleName(S.WATCH_CHOICE_NAME)
         self.none = self.channel.add(Choice(self.NONE, S.WATCH_NONE, S.WATCH_NONE_TIP, self.channel, small=True))
-        self.channel.fit = lambda: None                   # (one above another always: titles are long)
-        self.channel.changed.connect(lambda _key: self._show_episodes())
+        self.channel.row.removeWidget(self.none)          # (in the channel for ← →, shown under the tiles)
+        self.channel.fit = lambda: None                   # (one row always: as many tiles as the width holds, `_fits`)
+        self.channel.changed.connect(lambda _key: (self._show_episodes(), self._show_more()))
         self.box.addWidget(self.channel)
         self.said = _label("wizsub", "", self, wrap=True)     # a state: no hit, still finding the shows
         self.said.setVisible(False)
@@ -2910,9 +2982,18 @@ class WatchingPage(_Page):
         on.addWidget(self.episode)
         on.addStretch(1)
         self.box.addLayout(on)
+        foot = QHBoxLayout()
+        foot.setSpacing(_px(8))
+        foot.addWidget(self.none)
+        self.more = _label("wizsub", "", self)            # *· 14 more in the next step* (the sort's titles)
+        foot.addWidget(self.more)
+        foot.addStretch(1)
+        self.box.addLayout(foot)
         self.box.addWidget(_label("wizhint", S.WATCH_HINT, self))
         self.box.addStretch(1)
         self.rows = None                                  # the newest shows read (None: not read yet)
+        self.total = 0                                    # … New arrivals' titles to watch (the sort's, but the pick)
+        self.listed = ([], "")                            # … the rows given to show (and what is said), before the cut
         self.shown_rows = []                              # … the tiles' rows (the search's when it found some)
         self.picked = None                                # (key, episode) kept over a search and a page entry
         self._timer = QTimer(self)
@@ -2946,9 +3027,11 @@ class WatchingPage(_Page):
     def _typed(self, _text):
         self._timer.start()
 
-    def show_newest(self, rows):
-        """`watching_rows`' answer: the newest shows, the newest pre-picked (unless a pick is kept)."""
+    def show_newest(self, rows, total=None):
+        """`watching_rows`' answer: the newest shows, the newest pre-picked (unless a pick is kept); `total`: New
+        arrivals' titles to watch in all."""
         self.rows = list(rows or ())
+        self.total = len(self.rows) if total is None else total
         if not self.search.edit.text().strip():
             self._show_rows(self.rows)
 
@@ -2961,21 +3044,28 @@ class WatchingPage(_Page):
             return
         self._show_rows(rows, said="" if rows else S.WATCH_NO_HIT)
 
+    def _fits(self):
+        """How many tiles the page's width holds in one row (at least one, at most the tiles there are)."""
+        step = _px(WATCH_TILE_W) + self.channel.row.spacing()
+        room = self.width() - self.box.contentsMargins().left() - self.box.contentsMargins().right()
+        return max(1, min(len(self.tiles), (room + self.channel.row.spacing()) // step))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if len(self.listed[0]) > len(self.shown_rows) or len(self.shown_rows) > self._fits():
+            self._show_rows(*self.listed)                 # (the width moved: as many tiles as it holds now)
+
     def _show_rows(self, rows, said=""):
         kept = self.answers()["row"] if self.shown_rows else None
-        self.shown_rows = list(rows)[:len(self.tiles)]
+        self.listed = (list(rows), said)
+        self.shown_rows = list(rows)[:self._fits()]
         for tile, row in zip(self.tiles, self.shown_rows + [None] * len(self.tiles)):
             if row is None:
                 tile.key = None
                 _show(tile, False)
                 continue
-            title = getattr(row, "cover_title", None) or row.title
-            tile.key, tile.title = row.key, title
-            tile.setText(title)
-            tile.setAccessibleName(title)
-            tile.setToolTip(S.WATCH_TILE_TIP.format(title=title))
-            tile.set_parts(line=row.line or row.media_word or "")
-            tile.updateGeometry()
+            tile.set_show(row.key, row)
+            tile.setToolTip(S.WATCH_TILE_TIP.format(title=tile.title))
             _show(tile, True)
         _set_text(self.said, said)
         _show(self.said, bool(said))
@@ -2983,6 +3073,13 @@ class WatchingPage(_Page):
         want = self.picked[0] if self.picked else (kept.key if kept is not None else None)
         self.channel.choose(want if want in keys else (keys[0] if keys and not self.picked else self.NONE))
         self._show_episodes()
+        self._show_more()
+
+    def _show_more(self):
+        """*· N more in the next step*: the titles the sort will hold (all of them but the pick)."""
+        n = self.total - (1 if self.channel.value() not in (None, self.NONE) else 0)
+        _set_text(self.more, S.WATCH_MORE.format(n=n) if n > 0 else "")
+        _show(self.more, n > 0)
 
     def _show_episodes(self):
         """*I'm on*: the picked show's episodes (hidden for a show of one, or none picked)."""
@@ -3151,13 +3248,14 @@ class SetupWizard(QWidget):
         self._finished = False              # `finish` written (Generate, or *Skip* on the last page)
         self.reading = None                 # SRC W1a: page 3's first look running (its Stop: a threading.Event)
         self._read_seq = 0
-        self.covered = None                 # Mado-O: the load screen or the sort screen over the wizard, or None
+        self.covered = None                 # Mado-O: the sort screen over the wizard, or None (ONB-2: no load cover)
         self._run = None                    # … the load (`sort_screen.LoadRun`; its state is `_load`)
         self._read_done = False             # ONB-2: the behind read reached its end (or nothing came)
         self._read_said = None              # … its line said in the footer (taken off when it ends)
         self._read_ids = []                 # … the items its scan took in (D1's line after the sort)
         self._watch_seq = 0                 # ONB-3: *Watching now*'s newest shows, read on a worker
         self._watch_placed = None           # … (key, last id) of the show placed at Current's top
+        self._watch_keys = None             # … New arrivals' keys its last read was given (a new view: read again)
         self._sync_running = False          # page 2's first known-words sync under way (the load's last step waits)
         self.fetching = None                # alpha 8: page 3's YouTube fetch under way (the load waits for it last)
         self.looking = 0                    # … videos picked as files whose subtitles are being looked for
@@ -3195,7 +3293,7 @@ class SetupWizard(QWidget):
         if self.resort is None:                         # Fresh library (Q2): a Started-over backup to put back?
             bridge.run_in_worker(_started_over, then=self.alive(self.pages[0].show_backup),
                                  failed=lambda info: applog.log("wizard", f"looking for backups: {info[0]}"))
-        self._go(PAGES.index("shows") if self.resort is not None else 0)
+        self._go(PAGES.index("shows") if self.resort is not None else self._reopen_index(settings))
 
     # --- reading the settings ------------------------------------------------------------------------------------ #
     def _settings(self):
@@ -3217,6 +3315,24 @@ class SetupWizard(QWidget):
         except Exception as e:
             applog.log("wizard", f"upgrading: {e}")
             return False
+
+    def _reopen_index(self, settings):
+        """ONB-2: the step setup opens on — the one after the furthest saved with *Next* (`reopen_at`; closed mid-setup,
+        it opens where it was), the steps before it passed (✓); *Watching now* passed by with nothing to pick; never
+        past *Your list*. Page 1 when nothing was saved."""
+        try:
+            furthest = getattr(self.api, "reopen_at", lambda _s: None)(thaw(settings))
+        except Exception as e:
+            applog.log("wizard", f"reopen at: {e}")
+            furthest = None
+        ids = [page.id for page in self.pages]
+        if furthest not in ids:
+            return 0
+        target = min(ids.index(furthest) + 1, ids.index("level"))
+        if ids[target] == WatchingPage.id and not self._watch_needed():
+            target += 1
+        self.passed.update(range(target))
+        return target
 
     def _seen(self):
         """A 2.x profile's wizard closing unfinished: its pages seen, so it opens once (*Skip* / close keep the rest)."""
@@ -3459,9 +3575,10 @@ class SetupWizard(QWidget):
                 self._read_folders(list(page.folders))     # SRC W1a → ONB-2: the read starts and runs behind the pages
                 self._advance()                            # (Back here shows its live count; page 3's rows follow it)
                 return
-            if self.fetching is not None:                  # YouTube alone: the load screen waits for its videos
-                self._load_begin()
+            if self.fetching is not None:                  # YouTube alone (ONB-2): the read behind waits for its
+                self._load_begin()                         # videos; *Watching now* waits on them as on a scan
                 self._load_youtube()
+                self._advance()
                 return
         answers = page.answers()
         if page.id == "level":
@@ -3648,7 +3765,7 @@ class SetupWizard(QWidget):
         if self._run is not None and self._run.behind:    # ONB-2: Back to page 1 mid-read: the other library's read
             self.stop_reading()                           # stops between files (what it took in is kept)
             self._end_read()
-        self._read_done, self._read_ids, self._watch_placed = False, [], None
+        self._read_done, self._read_ids, self._watch_placed, self._watch_keys = False, [], None, None
         self._warn("shows", False)
         self._anki_seq += 1
         self._anki_looking = False
@@ -4029,13 +4146,13 @@ class SetupWizard(QWidget):
         self.say(line)
         if why:
             self.pages[2].refuse(line)                    # what didn't come, on the page too (it stays said)
+            self._warn("shows", True)                     # (ONB-2: setup went on: the amber dot, Back says why)
         load = self._load
         if load is not None and load["step"] == "youtube":
             if self.youtube_came or load["ids"]:
                 self._load_sort()
-            else:                                         # nothing came in at all: the page again, with why
-                self._load = None
-                self._cover(None)
+            else:                                         # nothing came in at all: the read ends with nothing
+                self._load_empty()
         if self.page.id == "level" and not self.by_id["level"].counted():
             self.read_numbers(fresh=True)                 # Disc-T1: the last page counts what came, at once
 
@@ -4152,7 +4269,7 @@ class SetupWizard(QWidget):
         page.show_reading(0, 0)
         self.paint_footer()
         self._warn("shows", False)
-        self._load_begin(behind=True)                         # ONB-2: the one read, behind the pages (no cover)
+        self._load_begin()                                    # ONB-2: the one read, behind the pages (no cover)
 
         def ended(result):
             if not sip.isdeleted(progress):
@@ -4166,7 +4283,8 @@ class SetupWizard(QWidget):
                 result = dict(result or {}, skips=[s for s in skips
                                                    if any(os.path.normcase(s).startswith(r) for r in read)])
             page.show_read(result)
-            self._warn("shows", bool((result or {}).get("failed")))   # ONB-2: a folder refused: amber, Back says why
+            said = result or {}                       # ONB-2: a folder refused, or kept to try again: amber, Back says why
+            self._warn("shows", bool(said.get("failed") or said.get("busy") or not said.get("ready", True)))
             self.paint_footer()
             self.read_rows()
             self._load_scanned(result)
@@ -4214,10 +4332,11 @@ class SetupWizard(QWidget):
                              failed=lambda info: applog.log("wizard", f"library rows: {info[0]}"))
 
     # --- Mado-O: the load screen, then the sort screen (Sonic 2026-10-30) ------------------------------------------ #
-    # After page 3's *Next* with folders: a calm cover runs the first scan, the indexing, the covers from disk and waits
-    # for page 2's sync, each with its count (`sort_screen.LoadScreen`); then every title in New arrivals is sorted
-    # (`sort_screen.SortScreen`, New arrivals' own placing); then page 4. Each step is the service that owns it; *Stop*
-    # keeps what is done and goes to the sorting; a step with nothing to do is passed by.
+    # After page 3's *Next* with folders (or YouTube's links alone): the read runs behind the pages (ONB-2) — the first
+    # scan, the covers from disk, the indexing, and the waits for page 2's sync and YouTube's videos, each with its
+    # count (`sort_screen.LoadScreen`, shown only inside a page that waits on it); *What are you watching right now?*
+    # then opens the sort of every title in New arrivals (`sort_screen.SortScreen`, over the wizard: `_cover`). Each
+    # step is the service that owns it; *Stop* keeps what is done; a step with nothing to do is passed by.
     def _cover(self, widget):
         """`widget` over the whole wizard (None: nothing), the one before it gone."""
         old, self.covered = self.covered, widget
@@ -4260,8 +4379,9 @@ class SetupWizard(QWidget):
             self.covered.setGeometry(self.rect())
 
     def _load_screen(self):
+        """The read's load screen (ONB-2: kept for the page that waits on it, `waiting`), or None."""
         from app.qt import sort_screen
-        screen = self.covered
+        screen = self.waiting
         return screen if isinstance(screen, sort_screen.LoadScreen) and not sip.isdeleted(screen) else None
 
     @property
@@ -4278,20 +4398,18 @@ class SetupWizard(QWidget):
                 run.ended = True                          # (its cover is the wizard's: whoever set None took it off)
                 run.deleteLater()
 
-    def _load_begin(self, behind=False):
-        """The load's one sequence (`sort_screen.LoadRun`, P12), its setup-only waits wired in: over the wizard, or —
-        ONB-2, `behind` — behind the pages, its screen shown only inside a page that waits on it (`waits`)."""
+    def _load_begin(self):
+        """The load's one sequence (`sort_screen.LoadRun`, P12), its setup-only waits wired in — ONB-2: behind the
+        pages, its screen shown only inside a page that waits on it (`waits`); its end is the read's (`_read_ready`),
+        and the sort opens from *What are you watching right now?* (`_watch`)."""
         from app.qt import sort_screen
         self._end_read()
         self._read_done = False
-        self._run = sort_screen.LoadRun(self.shell, self._behind_cover if behind else self._cover, door="setup",
-                                        stop_scan=self.stop_reading,
+        self._run = sort_screen.LoadRun(self.shell, self._behind_cover, door="setup", stop_scan=self.stop_reading,
                                         language=lambda: self.language, sort=lambda: self._load_sort(),
-                                        after=self.alive(self._load_sorted), empty=self._load_empty,
-                                        sync_running=lambda: self._sync_running,
+                                        empty=self._load_empty, sync_running=lambda: self._sync_running,
                                         fetching=lambda: self.fetching is not None, long_read=self._load_long,
-                                        parent=self, behind=behind,
-                                        told=self.alive(self._read_told) if behind else None)
+                                        parent=self, behind=True, told=self.alive(self._read_told))
         screen = self._run.begin()
         if self.fetching is not None:                     # alpha 8: YouTube's line beside the task, from the start
             screen.set_side(S.YOUTUBE_FETCHING.format(what=_count(S.YOUTUBE_VIDEOS, self.fetching["links"])))
@@ -4349,25 +4467,10 @@ class SetupWizard(QWidget):
             self._run.youtube()
 
     def _load_sort(self):
-        """The sort screen over the wizard: every title in New arrivals (the window hands it each view) — or, behind
-        the pages (ONB-2), the read's end: the sort opens after *What are you watching right now?* (`_watch`)."""
-        if self._run is not None and self._run.behind:
+        """The read's last step ended (ONB-2): the read's end — the sort opens after *What are you watching right
+        now?* (`_watch`), never over the read."""
+        if self._run is not None:
             self._read_ready()
-        elif self._run is not None:
-            self._run.open_sort()
-
-    def _load_sorted(self, _how=None):
-        """*Done*: what is left waits in New arrivals; D1's cards line offered for what reached the mine line; page 3
-        saved and page 4 shown."""
-        load, self._load = self._load, None
-        self._cover(None)
-        if load is None:
-            return
-        self._offer_cards(list(load["ids"]))
-        page = self.page
-        if page.id == "shows" and not page.folders and page.refused_line.isHidden():
-            self._save_shows(page)
-            self._advance()                               # else page 3 stays: what it says, the folders not read yet
 
     def _offer_cards(self, ids):
         """D1's cards line, looked for once the sort's last places are saved (setup's sort, behind or covered)."""
@@ -4420,8 +4523,8 @@ class SetupWizard(QWidget):
         if run is None or not run.behind or run.ended or run.state is None or self._read_done:
             return None
         pid = self.page.id
-        if pid == WatchingPage.id and run.state["step"] == "scan":
-            return "scan"
+        if pid == WatchingPage.id and self.waits_scan():
+            return run.state["step"]
         if pid == "level":
             return run.state["step"]
         return None
@@ -4466,18 +4569,26 @@ class SetupWizard(QWidget):
     def _arrival_view(self):
         return self.shell.__dict__.get("_arrivals_view")
 
+    def _arrival_keys(self):
+        view = self._arrival_view()
+        return tuple(r.key for r in getattr(view, "arrivals", None) or ()) if view is not None else ()
+
     def _watch_needed(self):
-        """*Watching now* has something to offer: the read still finding shows, or New arrivals holding a title."""
-        if self.waits_scan():
+        """*Watching now* has something to offer: the read still finding shows, its scan or YouTube's fetch having
+        taken some in (the window's view may not have them yet), or New arrivals holding a title."""
+        if self.waits_scan() or self._read_ids or self.youtube_came:
             return True
         view = self._arrival_view()
         return bool(view is not None and any(getattr(r, "group", "new") != "watched"
                                              for r in getattr(view, "arrivals", None) or ()))
 
     def waits_scan(self):
+        """The read is still finding the shows: its scan, or YouTube's videos when no folder brought any."""
         run = self._run
-        return bool(run is not None and run.behind and not run.ended and run.state is not None
-                    and run.state["step"] == "scan" and not self._read_done)
+        if run is None or not run.behind or run.ended or run.state is None or self._read_done:
+            return False
+        step = run.state["step"]
+        return step == "scan" or (step == "youtube" and not self._read_ids and self.fetching is not None)
 
     def read_watching(self):
         """The newest shows on a worker (`watching_rows` over the view's New arrivals) — once the scan has ended."""
@@ -4486,13 +4597,15 @@ class SetupWizard(QWidget):
         view = self._arrival_view()
         rows = list(getattr(view, "arrivals", None) or ()) if view is not None else []
         page = self.by_id[WatchingPage.id]
+        self._watch_keys = tuple(r.key for r in rows)
+        total = sum(1 for r in rows if getattr(r, "group", "new") != "watched")     # (the sort's titles, the pick's)
         self._watch_seq += 1
         seq, language = self._watch_seq, self.language
         bridge.run_in_worker(self.api.watching_rows, language, rows,
                              then=self.alive(lambda got: seq == self._watch_seq and language == self.language
-                                             and page.show_newest(got)),
+                                             and page.show_newest(got, total)),
                              failed=self.alive(lambda info: (applog.log("wizard", f"watching rows: {info[0]}"),
-                                                             page.show_newest(rows[:len(page.tiles)]))))
+                                                             page.show_newest(rows[:len(page.tiles)], total))))
 
     def search_watching(self, query):
         if not callable(getattr(self.api, "watching_search", None)):
@@ -4842,9 +4955,15 @@ class SetupWizard(QWidget):
             self.read_start(again=True)
 
     def _library_moved(self, _view=None):
-        """(`library_changed`) The window's view moved — the list being made: *Your start*'s numbers again."""
-        if not self._gone and not sip.isdeleted(self) and self.page.id == StartPage.id:
+        """(`library_changed`) The window's view moved — the list being made: *Your start*'s numbers again; the read's
+        shows reaching New arrivals: *Watching now*'s tiles again (ONB-3: the scan ends before the window's view has
+        them)."""
+        if self._gone or sip.isdeleted(self):
+            return
+        if self.page.id == StartPage.id:
             self.read_start(again=True)
+        elif self.page.id == WatchingPage.id and self.waits() is None and self._watch_keys != self._arrival_keys():
+            self.read_watching()
 
     def _start(self, answers):
         """*Start*, the yes: the start written through its owners (`save(START)`: *Keep up to*, PRESTUDIED-MINE's

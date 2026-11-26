@@ -329,6 +329,15 @@ def _passed(settings, page):
     return {PASSED: [p for p in PAGES if p in had or p == page]}
 
 
+def reopen_at(settings):
+    """ONB-2 (closed mid-setup, setup opens at the step it was on): a profile that never finished setup -> the furthest
+    page it saved with *Next* (`PASSED`) — the wizard opens on the step after it — or None (none yet, or finished)."""
+    if not _new(settings):
+        return None
+    had = (settings or {}).get(PASSED) or []
+    return next((p for p in reversed(PAGES) if p in had), None)
+
+
 def finish(settings_service):
     """Setup done (Generate pressed, or *Skip* on the last page): `onboarding_completed`, and this version's pages seen
     -> the dict written."""

@@ -635,14 +635,14 @@ def test_youtube_opens_its_links_at_once_and_next_asks_for_the_risk_tick_first(m
     wiz.next()
     assert fetch.calls == [(["https://www.youtube.com/watch?v=eFwn9e8IYsI",
                              "https://www.youtube.com/watch?v=7nlUSMQKRKQ&list=PLjfPBTv1Zr1J8RTG9iCANlm2vzBhl7QZn"], "ja")]
-    assert wiz.covered is not None, "YouTube alone: the load screen covers while its videos come"
-    assert wiz.covered.side.text() == S.YOUTUBE_FETCHING.format(what="2 videos")
-    assert wiz.covered.task.text() == S.LOAD_YOUTUBE
+    assert wiz.covered is None and wiz.page.id == "order", "YouTube alone (ONB-2): setup goes on while they come"
+    assert wiz.waiting.side.text() == S.YOUTUBE_FETCHING.format(what="2 videos")
+    assert wiz.waiting.task.text() == S.LOAD_YOUTUBE
 
 
 def test_a_youtube_fetch_that_brings_nothing_says_why_on_the_page_and_setup_goes_on(make, monkeypatch):
-    """The fetch's end with nothing (offline, a private video): its plain words on the page and in the bar, the load
-    screen gone (nothing to sort), *Next* free again."""
+    """The fetch's end with nothing (offline, a private video): its plain words on page 3 and in the bar, the read
+    ended (nothing to sort), and — setup having gone on (ONB-2) — the amber dot on *Your shows*."""
     wiz, shell, *_ = make(data={"enable_youtube_transcripts": True, "youtube_risk_acknowledged": True})
     fetch = FakeFetch()
     monkeypatch.setattr(W, "_youtube_fetcher", lambda: fetch)
@@ -653,13 +653,14 @@ def test_a_youtube_fetch_that_brings_nothing_says_why_on_the_page_and_setup_goes
     page.btn_youtube.click()
     page.links.setPlainText("https://www.youtube.com/watch?v=eFwn9e8IYsI")
     wiz.next()
-    assert wiz.covered is not None and wiz.fetching is not None
+    assert wiz.covered is None and wiz.waiting is not None and wiz.fetching is not None
     fetch.ended([], ["could not read https://www.youtube.com/watch?v=eFwn9e8IYsI: YouTube couldn't be reached: check "
                      "your internet connection"])
     line = S.YOUTUBE_FAILED.format(why="could not read https://www.youtube.com/watch?v=eFwn9e8IYsI: YouTube couldn't "
                                        "be reached: check your internet connection")
-    assert wiz.covered is None and wiz.fetching is None and wiz.say_line.text() == line
-    assert wiz.page.id == "shows" and page.links.toPlainText() == ""
+    assert wiz.waiting is None and wiz._read_done and wiz.fetching is None and wiz.say_line.text() == line
+    assert wiz.page.id == "order" and page.links.toPlainText() == "" and page.refused_line.text() == line
+    assert "shows" in wiz.steps.warned
 
 
 def test_youtube_videos_that_came_go_to_new_arrivals_then_the_sort_screen(make, monkeypatch, rest):
@@ -677,7 +678,7 @@ def test_youtube_videos_that_came_go_to_new_arrivals_then_the_sort_screen(make, 
         return complete
     monkeypatch.setattr(windows, "youtube_arrivals", arrivals)
     sorted_ = []
-    monkeypatch.setattr(wiz, "_load_sort", lambda: sorted_.append(wiz.covered.side.text()))
+    monkeypatch.setattr(wiz, "_load_sort", lambda: sorted_.append(wiz.waiting.side.text()))
     go_to(wiz, "shows")
     page = wiz.page
     page.entered()
@@ -2413,8 +2414,8 @@ def test_links_pasted_while_the_last_ones_still_come_stay_and_are_said(make, mon
     wiz, _shell, page, fetch = _youtube_page(make, monkeypatch)
     page.links.setPlainText("https://www.youtube.com/watch?v=eFwn9e8IYsI")
     wiz.next()
-    wiz._load_stop()                                               # Stop: on to the sorting, the fetch still running
-    wiz._load, wiz.covered = None, None                            # (the sorting done: page 3 again)
+    wiz._load_stop()                                               # Stop: the read ends, the fetch still running
+    wiz._go(wiz.pages.index(page))                                 # (Back to page 3: ONB-2, setup went on)
     page.links.setPlainText("https://www.youtube.com/watch?v=7nlUSMQKRKQ")
     wiz.next()
     assert len(fetch.calls) == 1 and page.refused_line.text() == S.YOUTUBE_BUSY
@@ -2450,15 +2451,15 @@ def test_videos_that_landed_during_the_scan_are_sorted_though_the_scan_found_not
 
 
 def test_a_scan_that_found_nothing_waits_for_the_youtube_videos_still_coming(make, monkeypatch):
-    """Mutant M14: folders read and empty while YouTube's videos are still coming — the load screen stays, at its
-    YouTube step (never the page with the videos about to land unsorted)."""
+    """Mutant M14: folders read and empty while YouTube's videos are still coming — the read stays at its YouTube
+    step (never the page with the videos about to land unsorted)."""
     wiz, *_ = make(data={"enable_youtube_transcripts": True, "youtube_risk_acknowledged": True})
     go_to(wiz, "shows")
     wiz.fetching = {"links": 1}
     wiz._load_begin()
     wiz._load_scanned({"ids": []})
-    assert wiz.covered is not None and wiz._load["step"] == "youtube"
-    assert wiz.covered.task.text() == S.LOAD_YOUTUBE
+    assert wiz.waiting is not None and wiz._load["step"] == "youtube"
+    assert wiz.waiting.task.text() == S.LOAD_YOUTUBE
 
 
 # --- alpha 8 (A8P-L6, Sonic "Yes do that"): *Choose a file…* given a video ------------------------------------- #

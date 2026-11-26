@@ -130,3 +130,18 @@ def test_a_pick_the_writer_refused_marks_nothing_watched(language):
     assert setup_wizard.watching_place(lambda ids, where: None, watched.append, rows[0], episode=1) is None
     assert watched == []
     assert setup_wizard.watching_place(lambda ids, where: 1, watched.append, SimpleNamespace(item_ids=()), 1) is None
+
+
+# --- ONB-2: setup closed mid-way opens at the step it was on (`reopen_at`, from the pages saved with *Next*) ------ #
+@pytest.mark.parametrize("settings, furthest", [
+    ({}, None),                                                                     # a first run: page 1
+    ({"onboarding_completed": False, setup_wizard.PASSED: ["language", "known", "shows"]}, "shows"),
+    ({setup_wizard.PASSED: ["cards", "language"]}, "cards"),                        # (saved out of order: the furthest)
+    ({setup_wizard.PASSED: ["watching", "start"]}, None),                           # (never one of the six pages)
+    ({"onboarding_completed": True, setup_wizard.PASSED: ["language", "known"]}, None),   # *Set up again*: page 1
+])
+def test_setup_closed_mid_way_reopens_after_the_furthest_page_it_saved(settings, furthest):
+    """Why (design §3): *Finish later* (or the window closed) on *Card order* used to bring setup back on *Your
+    language*, every step to walk again. The pages saved with *Next* are already recorded for showing what was saved
+    (IK2-2); the furthest of them says where it was — a finished setup always starts at page 1."""
+    assert setup_wizard.reopen_at(settings) == furthest

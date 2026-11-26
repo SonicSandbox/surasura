@@ -51,12 +51,12 @@
   };
 
   /* ---- the redraw counter ---- */
-  let recs = [], reflows = 0;
+  let recs = [], reflows = 0, lateOn = false;         // lateOn: a timer set before this press is running
   const mo = new MutationObserver((l) => { recs.push(...l); });
   /* It starts with the checks, after the first word: observing the parse itself would put every node of the data on the
      page's first frame, and the counter measures presses only. */
   const observe = () => mo.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
-  const take = () => { const r = mo.takeRecords(); if (r.length) recs.push(...r); return r.length; };
+  const take = () => { const r = mo.takeRecords(); if (!r.length) return 0; if (lateOn) { lateWrites += r.length; return 0; } recs.push(...r); return r.length; };
   const gbr = Element.prototype.getBoundingClientRect;
   Element.prototype.getBoundingClientRect = function () { if (take()) reflows++; return gbr.call(this); };
   const ORIG = {};
@@ -74,11 +74,11 @@
     while (n && n !== document) { if (n.dataset && n.dataset.r) return n.dataset.r; n = n.parentNode; }
     return n === document ? "doc" : "detached";
   }
-  /* A timer set before a press (a toast's own 6 s hide, a stone's end mark) is the page's timed work, not the press it
+  /* A timer set before a press (a toast's own 6 s hide) is the page's timed work, not the press it
      lands in: on a slow runner the hide of a toast shown a few presses back fell inside a setting's press and counted
-     as OUTSIDE: toast. So the counter puts a timer's writes down to when it was set: one set before this press is left
-     out (and counted in `late`); one the press sets and waits for is still its own. A learner sees the toast go 6 s
-     after it shows either way. */
+     as OUTSIDE: toast. So the counter puts a timer's writes down to when it was set: one set before this press and
+     landing in it is left out (counted in `late`; its layout reads are no reflow); one the press sets is still its own.
+     A learner sees the toast go 6 s after it shows either way. */
   let gen = 0, lateWrites = 0;
   const PENDING = new Map();                         // a timer waiting → [its delay, its run]: a check lands one at once
   const setT = window.setTimeout, clearT = window.clearTimeout;
@@ -90,14 +90,20 @@
       PENDING.delete(id);
       if (born === gen) return fn(...args);
       take();                                          // what the press wrote so far stays counted
-      try { return fn(...args); } finally { lateWrites += mo.takeRecords().length; }
+      lateOn = true;
+      try { return fn(...args); } finally { take(); lateOn = false; }
     };
     id = setT.call(window, run, ms);
     PENDING.set(id, [ms, run]);
     return id;
   };
   window.clearTimeout = function (id) { PENDING.delete(id); return clearT.call(window, id); };
-  const landNow = (ms) => { for (const [id, [m, run]] of PENDING) if (m === ms) { clearT.call(window, id); run(); return true; } return false; };
+  const landNow = (ms) => {                          // the newest timer of that delay (the toast's hide is set last)
+    let hit = null;
+    for (const [id, [m, run]] of PENDING) if (m === ms) hit = [id, run];
+    if (!hit) return false;
+    clearT.call(window, hit[0]); hit[1](); return true;
+  };
   const settle = async (n) => { for (let k = 0; k < (n || 4); k++) await new Promise((r) => setTimeout(r, 0)); };
   async function press(fn) {
     const J = window.__J;

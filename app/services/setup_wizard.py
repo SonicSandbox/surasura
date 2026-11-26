@@ -305,7 +305,8 @@ def save(settings_service, page, answers, language):
     if page == "known" and changes:
         language = _language(language)
         settings_service.set(dict({k: v for k, v in changes.items() if k != "anki_sync_decks"}, **mark),
-                             update=_decks_update(language, changes["anki_sync_decks"][language]))
+                             update=_decks_update(language, changes["anki_sync_decks"][language]),
+                             keys=("anki_sync_decks",))     # heard: the Decks row, the backlog's read (#SYQF6C)
     elif changes:
         settings_service.set(dict(changes, **mark))
     return changes

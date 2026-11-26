@@ -1052,6 +1052,23 @@ def read_known_signal(language, url, decks, fields, settings, known=None):
         return None
 
 
+def clear_backlog(language):
+    """No deck chosen for `language` any more: the saved backlog says no card waits (0 waiting, no decks) — a deck list
+    emptied kept the last decks' count, as a deck taken out did (#SYQF6C; PROVISIONAL). Reads Anki for nothing; a
+    backlog that holds no note is left as it is. Never raises: True when it wrote."""
+    with _LOCK:
+        notes = load_backlog(language).get("notes")
+        if not (isinstance(notes, dict) and notes):
+            return False
+        record = {"version": BACKLOG_VERSION, "synced_at": _now_iso(), "decks": [], "fields": [], "notes": {}}
+        try:
+            _atomic_write_json(_backlog_path(language), record, indent=None)
+        except OSError as e:
+            print(f"Could not save your Anki backlog: {e}")
+            return False
+        return True
+
+
 def sync_backlog(language, url, decks, fields):
     """Read the new-card backlog of `decks` into `User Files/<lang>/anki_backlog.json`.
 
@@ -1059,8 +1076,9 @@ def sync_backlog(language, url, decks, fields):
     edited since the backlog was written, when it is read again, so a corrected card's word is the new
     one; the decks, the fields or `BACKLOG_VERSION` changing reads everything again). Never raises:
     returns `(count, error)`.
-    A failed read, or an empty answer where there was a backlog, keeps the previous file (the
-    "refuse to write when the input can't be trusted" rule). The file is written only when what it
+    A failed read, or an empty answer for the same scope where there was a backlog, keeps the previous file (the
+    "refuse to write when the input can't be trusted" rule); for a new scope (other decks, fields or version) the
+    empty answer is the truth: a deck taken out takes its cards' count with it. The file is written only when what it
     holds changed — its notes, decks, fields or version: its (mtime, size) is in the report's render
     signature, and a rewrite for a new `synced_at` alone (which nothing reads) made the next Generate
     re-render the report instead of opening it.
@@ -1089,9 +1107,9 @@ def sync_backlog(language, url, decks, fields):
             entry = _backlog_entry(note, fields, language)
             if entry is not None and note.get("noteId") is not None:
                 entries[str(note["noteId"])] = entry
-        if not entries and count_backlog(language):
-            return count_backlog(language), ("Anki answered with an empty backlog, so the last one "
-                                             "was kept.")
+        if not entries and same_scope and isinstance(old.get("notes"), dict) and old["notes"]:
+            return len(old["notes"]), ("Anki answered with an empty backlog, so the last one "
+                                       "was kept.")
         if same_scope and old.get("notes") == entries:
             return len(entries), None       # nothing it holds changed: the file stays as it is
         record = {"version": BACKLOG_VERSION, "synced_at": _now_iso(), "decks": sorted(decks),

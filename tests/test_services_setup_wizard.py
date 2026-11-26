@@ -604,6 +604,18 @@ def test_from_anki_merges_onto_the_file_as_it_is_never_a_stale_copy():
     assert h.read_settings()["anki_sync_decks"] == {"zh": ["中文::新词"], "ja": ["日本語::Sentences"]}
 
 
+def test_set_up_agains_known_page_is_heard_with_its_decks():
+    # why: the known page's decks go as an `update=`, heard with no key: after *Set up again* the Settings *Decks* row
+    # kept its earlier pick and the waiting count wasn't read again (#SYQF6C); named, its listeners hear them
+    h.write_settings(BEFORE)
+    service = SettingsService()
+    heard = []
+    service.subscribe(heard.append)
+    SW.save(service, "known", {"how": "anki", "decks": ["日本語::Mining"]}, "ja")
+    assert service.flush(10)
+    assert h.until(lambda: heard) and "anki_sync_decks" in heard[-1]
+
+
 def _zh_note(word):
     """A Chinese note as a Chinese learner's deck holds it: no kana in any field."""
     return {"word": word, "deck": "中文::挖掘", "model": "Chinese",

@@ -60,14 +60,17 @@ def fields(first, second=None):
     return [first] + ([second] if second and second != first else [])
 
 
+KEYS = ("anki_sync_decks", "anki_sync_fields")      # what `merge` writes: named to the settings service (`set(keys=)`)
+
+
 def merge(language, decks, chosen):
-    """The settings service's `update` for this window's two per-language keys (the Tk `_save`'s merge): `language`'s
-    decks and fields written onto the file's own dicts — another language's choices, and another program's save
-    meanwhile, kept. Copies: nothing the caller holds is shared with the file's dict."""
+    """The settings service's `update` for this window's two per-language keys (`KEYS`; the Tk `_save`'s merge):
+    `language`'s decks and fields written onto the file's own dicts — another language's choices, and another program's
+    save meanwhile, kept. Copies: nothing the caller holds is shared with the file's dict."""
     decks, chosen = [str(d) for d in decks], [str(f) for f in chosen]
 
     def update(settings):
-        for key, value in (("anki_sync_decks", decks), ("anki_sync_fields", chosen)):
+        for key, value in zip(KEYS, (decks, chosen)):
             per_language = dict(settings.get(key) or {})
             per_language[language] = list(value)
             settings[key] = per_language

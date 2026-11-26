@@ -534,7 +534,7 @@ def _make_deck(settings, language, deck, save):
                 per_language[language] = had + [deck]
                 file["anki_sync_decks"] = per_language
         try:
-            save({}, update=join)
+            save({}, update=join, keys=("anki_sync_decks",))     # heard: the Decks row, the backlog's read (#SYQF6C)
             per_language = dict((settings or {}).get("anki_sync_decks") or {}, **{language: known + [deck]})
             settings = dict(settings or {}, anki_sync_decks=per_language)
             said += SAID_DECK_KNOWN
@@ -567,7 +567,7 @@ def _backfill_language(note, language, save, settings):
             saved[note] = language
             file["junban_backfill_note_languages"] = saved
     try:
-        save({}, update=name)
+        save({}, update=name, keys=("junban_backfill_note_languages",))
         return ""
     except Exception:                   # its cards are still made; Backfill's own window sets it
         return BACKFILL_NOT_SAVED.format(note=note)
@@ -688,8 +688,9 @@ def finish_setup(settings, language, on_progress=None, chosen=None, save=None):
     `language`, when its check says only what Surasura can set is missing (`setup.checks`' `anki_miner_setup` marked
     `setup`): the deck, note type and fields — and the language itself — written into Anki Miner's profile with its
     own `settings-import` (Z-3, `_write_settings`; `chosen`: {"deck", "note_type"} the learner picked in Surasura's
-    window after an "ask"; `save(changes)`: how Surasura's own profile name is saved — the window's settings service,
-    else `settings_manager.save_keys`), then Anki Miner's own `setup` (Z-11, `anki_miner.run_setup`) under the profile
+    window after an "ask"; `save(changes, update=, keys=)`: how Surasura's own profile name and the decks are saved —
+    the window's settings service (`keys`: what an update changes, for its listeners), else
+    `settings_manager.save_keys`), then Anki Miner's own `setup` (Z-11, `anki_miner.run_setup`) under the profile
     Connect mines with. Its downloads are Anki Miner's, from its own catalogue, as its setup wizard's would be — Surasura
     fetches nothing. Blocking (a worker); never stopped part-way (`run_setup`). `on_progress(stage, stages, item)` as
     its progress file moves. -> (result, detail): "set-up" (detail: what it set, or None) · "busy" (Anki Miner running,
@@ -778,8 +779,9 @@ def _finish(settings, language, result, on_progress, chosen, save, said_before="
         on_progress(state.get("stage") or 0, state.get("stages") or 0, state.get("item"))
     if save is None:
         from app import settings_manager
-        save = lambda changes, update=None: settings_manager.save_keys(changes, update=update,  # noqa: E731
-                                                                       strict=True)
+        # no window, so no listener: `keys` (what an update names for the service's listeners) isn't save_keys'
+        save = lambda changes, update=None, keys=(): settings_manager.save_keys(changes, update=update,  # noqa: E731
+                                                                                strict=True)
     wrote = {"said": said_before}       # what this press set so far: said on every way out (review)
     try:
         wrote = _write_settings(found, settings, language, items, folder, chosen, save)

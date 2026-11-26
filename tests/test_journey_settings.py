@@ -329,7 +329,7 @@ class _Service:
     def __init__(self, settings):
         self.sets, self._settings = [], settings
 
-    def set(self, changes, update=None, now=False):
+    def set(self, changes, update=None, now=False, keys=()):
         self.sets.append(dict(changes))
 
     def get(self):

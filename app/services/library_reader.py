@@ -1549,7 +1549,8 @@ class LibraryReader:
         mode, _reason, h = self._handle()
         if mode != "store" or h is None:
             return
-        with open(self.cache_file, encoding="utf-8") as f:
+        from app.services.moves import _patiently     # another reader's replace refuses the open a moment (the
+        with _patiently(open, self.cache_file, "r", -1, "utf-8") as f:   # switch back, a virus scan): again
             data = json.load(f)
         if not isinstance(data, dict) or data.get("version") != CACHE_VERSION:
             return
@@ -1588,6 +1589,7 @@ class LibraryReader:
             text = json.dumps(data, ensure_ascii=False)     # one pass of the C encoder (`json.dump` to a file never
             with open(tmp, "w", encoding="utf-8") as f:     # uses it: a Python call per chunk; KEYMOVE-L2), the same
                 f.write(text)                               # text
-            os.replace(tmp, self.cache_file)
+            from app.services.moves import _patiently
+            _patiently(os.replace, tmp, self.cache_file)   # refused while a reader or a scan holds it a moment
         except OSError:
             pass                                    # a cache that can't be written is only slower next time

@@ -149,7 +149,8 @@ def test_the_redraw_hashes_the_library_with_the_one_fast_call(run):
 
 def _signing(language, tmp_path, monkeypatch):
     """RP-2's library of `language` built in a root of its own (no Generate: the signature reads only the files and
-    the settings), plus a nested season folder: (found files, args) as the numbers' check builds them (`plan_inputs`)."""
+    the settings), plus a nested season folder of four CRLF episodes: (found files, args, the season's paths) as the
+    numbers' check builds them (`plan_inputs`)."""
     from app import run_args, settings_manager
     root = str(tmp_path)
     cases.build(root, f"rp2-{language}")
@@ -162,7 +163,7 @@ def _signing(language, tmp_path, monkeypatch):
     manifest = os.path.join(root, "User Files", language, "master_manifest.json")
     with open(manifest, encoding="utf-8") as f:
         doc = json.load(f)
-    for n in (1, 2):
+    for n in (1, 2, 3, 4):
         with open(os.path.join(season, f"第{n}話.txt"), "w", encoding="utf-8", newline="\r\n") as f:
             f.write(text)
         doc["schedule"][cases.PHASE["now"]].append({"physical_path": f"HighPriority/季節 1/第{n}話.txt",
@@ -170,9 +171,10 @@ def _signing(language, tmp_path, monkeypatch):
     with open(manifest, "w", encoding="utf-8") as f:
         json.dump(doc, f, ensure_ascii=False, indent=2)
     found = analyzer.resolve_found_files(language, verbose=False, missing=True)
-    assert sum(os.path.normpath(fp).startswith(season) for fp, *_ in found) == 2
+    episodes = [fp for fp, *_ in found if os.path.normpath(fp).startswith(season)]
+    assert len(episodes) == 4
     args = analyzer.parse_analysis_args(run_args.analyzer_args(settings_manager.load_settings(), language)[1:])
-    return found, args
+    return found, args, episodes
 
 
 def _stats_of(paths, monkeypatch):
@@ -199,17 +201,36 @@ def _by_os_stat(found, args, language, monkeypatch):
 def test_the_signature_lists_each_folder_once_and_signs_the_same_bytes_as_a_stat_per_file(language, tmp_path,
                                                                                           monkeypatch):
     """Before: one os.stat per content file at every check (20,000 at 20k, ~0.46 s; a start runs three such checks).
-    Now one os.scandir listing per folder hands every file's st_mtime and st_size — the same ones os.stat reads,
-    so the parts and the digest are byte for byte what a stat per file signs, in nested folders and CRLF files too."""
-    from app import plan_rules
-    found, args = _signing(language, tmp_path, monkeypatch)
+    Now a folder of LISTED_STATS files or more is listed once (os.scandir) and hands every file's st_mtime and
+    st_size; a folder with fewer is stat'ed file by file as before (a listing costs more than a stat or two). The
+    parts and the digest are byte for byte what a stat per file signs, in nested folders and CRLF files too; every
+    file's figures equal os.stat's; a listing that raises leaves every path to os.stat, never a lost signature."""
+    from app import library_store, plan_rules
+    found, args, _episodes = _signing(language, tmp_path, monkeypatch)
     old = _by_os_stat(found, args, language, monkeypatch)
+    by_folder = {}
+    for fp, *_ in found:
+        by_folder.setdefault(os.path.split(fp)[0], []).append(fp)
+    big = {d for d, fps in by_folder.items() if len(fps) >= library_store.LISTED_STATS}
+    small = [fp for d, fps in by_folder.items() if d not in big for fp in fps]
+    assert big and small                    # both kinds in each language's library
+    listings, real = [], library_store._listed_stats
+    monkeypatch.setattr(library_store, "_listed_stats",
+                        lambda folder, names: listings.append(folder) or real(folder, names))
     calls = _stats_of([fp for fp, *_ in found], monkeypatch)
     new = analyzer.run_signature_parts(language, found, args)
-    assert calls == [], f"{len(calls)} of {len(found)} content files os.stat'ed one by one"
+    assert sorted(calls) == sorted(small), f"{len(calls)} of {len(found)} content files os.stat'ed one by one"
+    assert sorted(d for d in listings if d in by_folder) == sorted(big)     # each such folder listed once
     assert new == old
     assert plan_rules.signature_digest(new) == plan_rules.signature_digest(old)
-    assert all(f[1] is not None for f in new["files"])
+    for fp, sig, *_ in new["files"]:
+        st = os.lstat(fp)                   # the file's own figures, read apart from either path
+        assert sig == [st.st_mtime, st.st_size], fp
+
+    def raising(folder, names):
+        raise OSError("the listing failed")
+    monkeypatch.setattr(library_store, "_listed_stats", raising)
+    assert analyzer.run_signature_parts(language, found, args) == old
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])
@@ -217,9 +238,9 @@ def test_a_file_edited_or_removed_between_two_checks_is_seen_by_the_second(langu
     """Nothing is kept across checks: a file edited between two signatures (its size and time moved) and a file
     removed (None: a missing item keeps its place) are in the second, as a stat per file signs them — never the
     first listing's figures. A listing shared across a start's passes would sign the old ones here."""
-    found, args = _signing(language, tmp_path, monkeypatch)
+    found, args, episodes = _signing(language, tmp_path, monkeypatch)
     first = analyzer.run_signature_parts(language, found, args)
-    edited, removed = found[0][0], found[-1][0]
+    edited, removed = episodes[0], episodes[-1]         # both in the season's folder: one the listing serves
     with open(edited, "a", encoding="utf-8") as f:
         f.write("\n追記の一行。\n" if language == "ja" else "\n补充的一行。\n")
     os.utime(edited, (cases.MTIME + 3600, cases.MTIME + 3600))
@@ -236,8 +257,8 @@ def test_a_file_edited_or_removed_between_two_checks_is_seen_by_the_second(langu
 def test_a_path_the_listing_spells_otherwise_is_stated_as_before(tmp_path, monkeypatch):
     """The listing is matched by the exact name: a found path in another case (the same file on Windows) isn't in it,
     and is os.stat'ed as before — the same bytes, never None."""
-    found, args = _signing("ja", tmp_path, monkeypatch)
-    fp, *rest = found[0]
+    found, args, _episodes = _signing("ja", tmp_path, monkeypatch)
+    fp, *rest = found[0]                                # HighPriority's: a folder the listing serves
     folder, name = os.path.split(fp)
     found = [(os.path.join(folder, name.upper()), *rest)] + found[1:]
     calls = _stats_of([found[0][0]], monkeypatch)

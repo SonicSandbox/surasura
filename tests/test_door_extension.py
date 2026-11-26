@@ -208,6 +208,23 @@ def test_a_pairing_that_cant_be_read_refuses_and_never_crashes(tmp_path, monkeyp
         d.stop()
 
 
+@pytest.mark.parametrize("origin", ["", "chrome-extension://", "null", "https://evil.example", None])
+def test_a_pairing_that_pins_no_extension_opens_nothing_even_to_its_token(ukai, origin):
+    """A pairing whose Origin isn't an extension's pins nothing: an Origin-less GET (the one the pinned-Origin check
+    lets through on the token) is refused all the same."""
+    ukai.pair["now"] = (origin, TOKEN)
+    assert _ukai(ukai, "GET", "/v1/jobs", origin=None)[0] == 401
+    assert ukai.calls == []
+
+
+def test_an_empty_token_is_never_a_match_on_either_side():
+    """Each check holds on its own: the shared compare takes no empty token, and a pairing with one is no pairing."""
+    assert door._same("", "") is False and door._same(TOKEN, TOKEN) is True and door._same(TOKEN[:-1], TOKEN) is False
+    assert door._same(TOKEN + "x", TOKEN) is False
+    assert door.Extension({}, lambda: (ORIGIN, "")).paired() is None
+    assert door.Extension({}, lambda: (ORIGIN, TOKEN)).paired() == (ORIGIN, TOKEN)
+
+
 @pytest.mark.parametrize("host", ["localhost", "evil.example", "127.0.0.1", "127.0.0.1:1"])
 def test_any_host_but_its_own_address_is_refused(ukai, host):
     """DNS rebinding: a page's name pointed at 127.0.0.1 still carries its own Host."""

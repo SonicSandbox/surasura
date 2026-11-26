@@ -376,8 +376,20 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
     undos_looked = set()        # the languages whose half-done undos this run has finished (once a run)
     parked = {}                 # jobs waiting for the next start: never tried again this run (adversary P2.4-A #11)
                                 # — {job id: its ask when parked}; a newer ask tries it again (#42, review r42 #3)
+    mining = None               # SORT-BAR: `kick.MINING`, held while a look works, never in the pause between looks
     try:
         while True:
+            mining = _take_mining()
+            if mining is None:              # a Sort again or Put back holds it: the look waits for its end
+                stop = _stop(steps)
+                if stop:
+                    summary["stopped"] = stop
+                    return summary
+                if not _pause(LOOK_EVERY_S, sleep, cancel,     # (a window gone is `_stop`'s, at the next try)
+                              lambda: steps.update_staged() or _replaced(steps) or not _mining_in_use()):
+                    summary["stopped"] = "cancelled"
+                    break
+                continue
             summary["looks"] += 1
             _woken(steps, ledger, parked)   # a kick before this look is answered by it: no extra look after (S19)
             _copy_changed(ledger, parked)   # Michi-NT: a not-timed episode's subtitle fixed meanwhile
@@ -414,6 +426,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
                 if stop:
                     summary["stopped"] = stop
                     return summary
+            mining = _let_go(mining)        # the look's work is done: what is left only waits (Sort again may run)
             if summary.get("stopped"):
                 break
             if looks is not None and summary["looks"] >= looks:
@@ -440,6 +453,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
                 break
         return summary
     finally:
+        _let_go(mining)
         log.info("Connect: the run ends after %.1f s (%d looks)", _clock() - began, summary["looks"])
         if own:
             ledger.close()
@@ -451,6 +465,33 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
         _sweep_online(steps)                # Michi-YT: no downloaded video outlives the run
         if hasattr(steps, "_woken"):        # the last wake mark it read: one written since (a link while it settled,
             summary["wake_seen"] = steps._woken     # Michi-VF review r2) starts the next Connect (`connect_verbs._loop`)
+
+
+def _take_mining():
+    """SORT-BAR: the look's `kick.MINING` hold (one try of the OS lock: no wait) -> the hold, or None while a Sort
+    again or a Put back holds it (logged): the look waits for its end, never reads a library half set aside."""
+    from app import locks
+    from app.connect import kick
+    try:
+        return locks.take(kick.MINING, "Connect making cards")
+    except locks.Busy:
+        log.info("Connect: your library is being sorted again or put back: the next look waits for it")
+        return None
+
+
+def _mining_in_use():
+    """Is `kick.MINING` still held (by a Sort again or a Put back)? Two quick looks, asked every UPDATE_LOOK_S of the
+    pause only while one holds it."""
+    from app import locks
+    from app.connect import kick
+    return locks.in_use(kick.MINING, looks=2, gap=0.0)
+
+
+def _let_go(held):
+    """`held` let go (None: nothing held) -> None."""
+    if held is not None:
+        held.release()
+    return None
 
 
 def _say_machine(languages):

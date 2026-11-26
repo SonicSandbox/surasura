@@ -74,11 +74,36 @@
     while (n && n !== document) { if (n.dataset && n.dataset.r) return n.dataset.r; n = n.parentNode; }
     return n === document ? "doc" : "detached";
   }
+  /* A timer set before a press (a toast's own 6 s hide, a stone's end mark) is the page's timed work, not the press it
+     lands in: on a slow runner the hide of a toast shown a few presses back fell inside a setting's press and counted
+     as OUTSIDE: toast. So the counter puts a timer's writes down to when it was set: one set before this press is left
+     out (and counted in `late`); one the press sets and waits for is still its own. A learner sees the toast go 6 s
+     after it shows either way. */
+  let gen = 0, lateWrites = 0;
+  const PENDING = new Map();                         // a timer waiting → [its delay, its run]: a check lands one at once
+  const setT = window.setTimeout, clearT = window.clearTimeout;
+  window.setTimeout = function (fn, ms, ...args) {
+    if (typeof fn !== "function") return setT.call(window, fn, ms, ...args);
+    const born = gen;
+    let id = 0;
+    const run = () => {
+      PENDING.delete(id);
+      if (born === gen) return fn(...args);
+      take();                                          // what the press wrote so far stays counted
+      try { return fn(...args); } finally { lateWrites += mo.takeRecords().length; }
+    };
+    id = setT.call(window, run, ms);
+    PENDING.set(id, [ms, run]);
+    return id;
+  };
+  window.clearTimeout = function (id) { PENDING.delete(id); return clearT.call(window, id); };
+  const landNow = (ms) => { for (const [id, [m, run]] of PENDING) if (m === ms) { clearT.call(window, id); run(); return true; } return false; };
   const settle = async (n) => { for (let k = 0; k < (n || 4); k++) await new Promise((r) => setTimeout(r, 0)); };
   async function press(fn) {
     const J = window.__J;
     await J.loadEp(J.S.ep); await settle();            // the last press's own work (a chunk it opened) is done first
-    take(); recs = []; reflows = 0;
+    take(); recs = []; reflows = 0; gen++;
+    const late0 = lateWrites;
     const rc0 = Object.assign({}, window.__J.RC);
     const t0 = performance.now();
     const ret = fn();
@@ -99,7 +124,7 @@
     }
     const renders = {};
     for (const k in window.__J.RC) if (window.__J.RC[k] !== rc0[k]) renders[k] = window.__J.RC[k] - (rc0[k] || 0);
-    return { dt, regions, nodes, wholesale, reflows, renders };
+    return { dt, regions, nodes, wholesale, reflows, renders, late: lateWrites - late0 };
   }
   const BUDGETS = [];
   /* `whole`: the one list region this press may replace (‹ › and the rail's words, by the redraw rule); every other
@@ -249,6 +274,13 @@
       await goWord(E, 0);
       key(keyName("ignore")); await settle();
       ok("Ignore (W): marked ignore, next word", J.MARK.get(w0) === "ignore" && J.S.wi === 1);
+      {                                                  // the counter: that toast's own 6 s hide, landed inside the next press
+        const up = !$("#toast").classList.contains("hide");
+        let landed = false;
+        r = await press(() => { landed = landNow(6000); });
+        ok("the redraw counter: a toast's own 6 s hide, set before a press and landing in it, isn't that press's write", up && landed && $("#toast").classList.contains("hide") && r.late === 1 && !Object.keys(r.regions).length,
+          `up ${up} landed ${landed} late ${r.late} regions ${JSON.stringify(r.regions)}`);
+      }
       ok("an ordinary press never asks the carry-over's guard (`unless_known`: as before J-FIX 2)", CALLS.filter(([, rt]) => rt === "words/mark").every(([, , b]) => !("unless_known" in b)));
       await goWord(E, 0);
       key(keyName("ignore")); await settle();

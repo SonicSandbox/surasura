@@ -3121,23 +3121,26 @@ def _list_words(lines, script="asis"):
     return (entries | _kana_lines_read(entries)) if SANITIZE_JA else entries
 
 
-def load_ignored_entries(user_files_dir, script="asis", language=None, settings=None):
+def load_ignored_entries(user_files_dir, script="asis", language=None, settings=None, store=None):
     """KnownWord.json's IGNORED entries (Migaku's status: a word the user dismissed there) and, with Ignore names on,
     the library's names, as ignored words — each read as a line of the Ignore list is (`_list_words`). The one reader
     (`token_index.ignored_entries`) is the Rarity preview's too, so the slider counts what the list counts. `settings`:
-    the caller's, already loaded, for the Ignore names switch (`token_index.ignored_names`)."""
+    the caller's, already loaded, for the Ignore names switch (`token_index.ignored_names`); `store`: its open token
+    store, read for the names."""
     from app import token_index
-    return _list_words(token_index.ignored_entries(user_files_dir, language, settings), script)
+    return _list_words(token_index.ignored_entries(user_files_dir, language, settings, store), script)
 
 
-def load_ignore_set(user_files_dir, script="asis", language=None):
+def load_ignore_set(user_files_dir, script="asis", language=None, store=None):
     """Every word a run ignores, as `main()` reads them: the Ignore list, the Blacklist and the Graduated list, and
     KnownWord.json's IGNORED entries (with Ignore names on, the library's names too). One reader: a Generate and the
-    arrival record (`app/arrivals.py`) ignore the same words."""
+    arrival record (`app/arrivals.py`) ignore the same words. `store`: the caller's open token store, read for the
+    names (`load_ignored_entries`): a Generate opens no store for them (STORE-KEY 3). The Ignore names switch is read
+    fresh: the module's LOGIC is the import's, stale for a run made in-process after a settings change."""
     ignore = load_simple_list(os.path.join(user_files_dir, "IgnoreList.txt"), script, language)
     ignore.update(load_simple_list(os.path.join(user_files_dir, "Blacklist.txt"), script, language))
     ignore.update(load_simple_list(os.path.join(user_files_dir, "GraduatedList.txt"), script, language))
-    ignore.update(load_ignored_entries(user_files_dir, script, language))
+    ignore.update(load_ignored_entries(user_files_dir, script, language, store=store))
     return ignore
 
 
@@ -6849,7 +6852,7 @@ def main():
     known_words_initial, known_lemmas_initial = read_known_words(_store, known_file, _known_sig, tokenizer)
 
     # The Ignore list, the Blacklist, the Graduated list and KnownWord.json's IGNORED entries, as one set.
-    ignore_list = load_ignore_set(user_files_dir, script, language)
+    ignore_list = load_ignore_set(user_files_dir, script, language, _store)     # (the names: the run's store)
 
     # A word + a noun-making suffix whose word the learner knows — 利用者 when 利用 is known — is still a
     # word to learn (its card, its reading), but it sits lower on the list and is no unknown when choosing
@@ -8934,7 +8937,8 @@ def main():
                 app_mode=args.app_mode, open_browser=not args.no_open, language=language,
                 tagger=tokenizer.tagger if language == "ja" else None,     # J-CUT: the journey's pitch, no 2nd tagger
                 rows=_page_rows, priority=_page_priority,                   # the lists just written, as read
-                plan=_journey_plan(args, _run_sig))      # the plan written just above, if it was
+                plan=_journey_plan(args, _run_sig),      # the plan written just above, if it was
+                known=known_lemmas_initial)              # the run's known words: the page opens no store for them
             _report_failed = not _report_written(os.path.join(RESULTS_DIR, "reading_list_static.html"), _rendering)
         except Exception as e:
             print(f"Error: Could not generate static HTML: {e}")

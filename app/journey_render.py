@@ -1381,9 +1381,12 @@ def _known_terms(language, script="asis"):
 
 
 def render(language, rows=None, priority=None, stats=None, *, settings=None, facts=None, plan=None, tagger=None,
-           stamp=None):
+           stamp=None, known=None):
     """The page's data for this language's last Generate: the analyzer's rows in-process when it has them (G11), the
-    results' CSVs otherwise; the store, the Anki backlog, the known words and the ▶'s memos read here, read-only."""
+    results' CSVs otherwise; the store, the Anki backlog, the known words and the ▶'s memos read here, read-only.
+    `known`: the run's known lemmas when the Generate hands them (the sets its list was decided by: no store opened
+    for them, STORE-KEY 3 — so also when the store couldn't keep them, where the lookup found none), else read
+    (`_known_terms`)."""
     from app import settings_manager
     from app import static_html_generator as gen
     if settings is None:
@@ -1438,7 +1441,7 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
     memo = WordMemo(os.path.join(gen.RESULTS_DIR, WORD_MEMO), *memo_keys(language), names_key())
     sources = Sources(language, source_map, None, media, timer)
     out = build(language, rows, stats, priority, facts, settings, backlog=backlog,
-                known=_known_terms(language, script),
+                known=sorted(known) if known is not None else _known_terms(language, script),
                 ranks=ranks, pitch=Pitch(language, tagger), sources=sources,
                 plan=plan, own=own, stamp=stamp, memo=memo, nothing=nothing_new(language),
                 silent=silent_lines(gen.RESULTS_DIR, settings))

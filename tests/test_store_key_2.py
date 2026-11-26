@@ -92,9 +92,9 @@ def test_generate_the_indexer_and_arrivals_each_parse_the_name_tables_once_a_run
     parses = 1 if language == "ja" else 0
     cases.generate(root, case)                         # the store indexed, its tables computed
     _moved(root, language)
-    # Generate: once in the run's store, and once in the journey page's own (journey_render's read-only lookup of the
-    # known words the run kept opens a store of its own)
-    assert _counted(root, "generate", language)["parses"] == 2 * parses, "Generate: the tables parsed once a store"
+    # Generate: once, in the run's store (the journey page takes the run's known words: no store of its own since
+    # STORE-KEY 3)
+    assert _counted(root, "generate", language)["parses"] == parses, "Generate: the tables parsed once a run"
     _moved(root, language)
     assert _counted(root, "indexer", language)["parses"] == parses, "the indexer: once"
     _moved(root, language)
@@ -136,9 +136,9 @@ def test_the_handed_settings_decide_ignore_names_and_a_partial_dict_reads_the_fi
     monkeypatch.setattr(analyzer, "SANITIZE_JA", True)
     known_file("ja", ja_resources_dir)
     on = _names_on(True)
-    # the library's names as the last index found them (`ignored_names` reads them from the store's file)
-    monkeypatch.setattr(ti, "_read_meta", lambda language, key: ["スドウ", "ミロナイ"] if key == "names_words" else None)
+    # the library's names as the last index found them (read through the store Connect holds: STORE-KEY 3)
     store = ti.open_store("ja", path=str(tmp_path / "store.db"))
+    store.set_meta("names_words", json.dumps(["スドウ", "ミロナイ"], ensure_ascii=False))
     try:
         assert {"スドウ", "ミロナイ"} <= sc.known_sets("ja", store, on)[2]
         off = dict(on, logic=dict(on["logic"], ignore_names=False))

@@ -44,6 +44,15 @@ def _child(root, script, *args):
     assert p.returncode == 0, p.stdout[-2000:] + p.stderr[-2000:]
     return json.loads(p.stdout.strip().splitlines()[-1])
 
+
+def _the_helper_last(env, language):
+    """The store's helper run once more after the analyzer, in the analyzer's own environment (its hook on the path
+    too): the order a slow runner can give the helper the analyzer starts (`spawn_maintain`), made certain. A hook that
+    wrote its numbers in every process would leave the helper's here, not the analyzer's (DSA-START 3: the memo test
+    went red on GitHub that way) — so each hook below writes only in the analyzer's main."""
+    subprocess.run([sys.executable, os.path.join(cases.REPO, "app", "library_store.py"), "maintain", "--language",
+                    language], cwd=cases.REPO, env=env, capture_output=True)
+
 # Loaded first in the child (a sitecustomize on its path): the first write to word_stats.json (or the file
 # E_L2G_DIE_IN names) — the file itself or a temp beside it — writes half its text and the process dies there, as a
 # crash would.
@@ -146,7 +155,7 @@ def test_a_redraw_killed_while_it_writes_word_stats_leaves_the_last_one_and_the_
 # Loaded first in the redraw's child: every memo the one reader hands the score, and at the child's exit how many
 # entries they still hold.
 _MEMO_LEFT = r"""
-import atexit, json, os
+import atexit, json, os, sys
 from app import sentence_score
 _choose, _memos = sentence_score.choose, []
 
@@ -163,7 +172,8 @@ def _said():
 
 
 sentence_score.choose = _asked
-atexit.register(_said)
+if os.path.basename(sys.orig_argv[1]) == "analyzer.py":  # (the analyzer's main only: the store's helper it starts, a
+    atexit.register(_said)                              # child with its env, loads this too and would write last)
 """
 
 
@@ -184,6 +194,7 @@ def test_a_redraw_lets_its_readers_memo_go_once_its_one_call_is_over(language, t
                         "--static", "--no-open", "--from-plan"], cwd=cases.REPO, env=env, capture_output=True,
                        text=True, encoding="utf-8", errors="replace")
     assert p.returncode == 0 and "Redrew the journey" in p.stdout, (p.stdout + p.stderr)[-1500:]
+    _the_helper_last(env, language)
     with open(env["E_L2G_MEMO"], encoding="utf-8") as f:
         got = json.load(f)
     assert got["asks"] >= 1 and got["left"] == 0, got
@@ -498,7 +509,7 @@ def test_a_reader_asked_again_after_it_kept_its_lines_keeps_the_new_ones(gen, tm
 # Loaded first in the Generate's child: every progressive pass's `files` (each file as the pass reads it) held, and at
 # the child's exit how many passes ran and how many `files` were built for them.
 _PASSES = r"""
-import atexit, json, os
+import atexit, json, os, sys
 from app import plan_rules
 _pass, _files = plan_rules.progressive_pass, []
 
@@ -514,7 +525,8 @@ def _said():
 
 
 plan_rules.progressive_pass = _counted
-atexit.register(_said)
+if os.path.basename(sys.orig_argv[1]) == "analyzer.py":  # (the analyzer's main only: the store's helper it starts, a
+    atexit.register(_said)                              # child with its env, loads this too and would write last)
 """
 
 
@@ -532,6 +544,7 @@ def test_only_i_plus_ones_rounds_read_each_file_for_the_progressive_pass_once(la
     root = str(tmp_path / "lib")
     cases.build(root, f"rp2-{language}")
     cases.generate(root, f"rp2-{language}", extra_env=env, extra_args=["--only-i-plus-one"])
+    _the_helper_last(dict(cases.child_env(root), **env), language)
     with open(counted, encoding="utf-8") as f:
         got = json.load(f)
     assert got["passes"] >= 2, f"no second round on this library: {got}"
@@ -551,7 +564,8 @@ def _said():
         json.dump({"fugashi": "fugashi" in sys.modules}, f)
 
 
-atexit.register(_said)
+if os.path.basename(sys.orig_argv[1]) == "analyzer.py":  # (the analyzer's main only: the store's helper it starts, a
+    atexit.register(_said)                              # child with its env, loads this too and would write last)
 """
 
 
@@ -603,6 +617,7 @@ def test_a_redraw_whose_lines_are_all_kept_loads_no_tagger_and_shows_the_verse_l
                         "--no-open", "--from-plan"], cwd=cases.REPO, env=env, capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
     assert p.returncode == 0 and "Redrew the journey" in p.stdout, (p.stdout + p.stderr)[-1500:]
+    _the_helper_last(env, "ja")
     with open(env["E_L2G_LOADED"], encoding="utf-8") as f:
         assert json.load(f) == {"fugashi": False}, "a redraw of kept lines loads no tagger"
     assert _columns(results) == listed, "every line shown as the Generate showed it"

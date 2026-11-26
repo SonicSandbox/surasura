@@ -322,6 +322,12 @@ ROWS = {
                                            "you.",
                      "Deletes now its never-studied cards past your limit; Undo brings them back.",
                      "tidy clean clear delete cards waiting backlog clutter limit cap overflow put back undo restore"),
+    # REMAKE (3.0.19, PROVISIONAL): *Make my new cards again…* — every never-studied card in Surasura's deck deleted
+    # (a copy kept), then made again by Connect with the best sentence
+    "connect_remake": ("Make my new cards again", "Deletes every card in Surasura's deck you never studied, then "
+                                                  "Surasura makes them again with the best sentence. A copy is kept.",
+                       "Start your new cards clean: the studied ones stay; Put back… brings these back.",
+                       "remake make again new cards clean start fresh delete unstudied backlog legacy old rebuild"),
     # a7 (DIAGNOSIS 5): an extra, under More options — the library's folders are always searched
     "connect_video_folders": ("More video folders",
                               "Library folders are searched already. Add others only if needed.",
@@ -848,6 +854,23 @@ TIDY_PAST_GONE = " · its copy is missing"
 TIDY_PAST_TIP = "Put these cards back in Anki."
 TIDY_PAST_BACK_TIP = "Already put back: a tidy goes back once."
 TIDY_PAST_GONE_TIP = "Its copy isn't on disk any more, so it can't go back."
+# REMAKE (3.0.19; PROVISIONAL words): *Make my new cards again…*'s press, its sheet and its answers
+REMAKE_NOW = "Make my new cards again…"
+REMAKE_ASK = "Delete {n} new cards and make them again?"
+REMAKE_ASK_ONE = "Delete 1 new card and make it again?"
+REMAKE_COUNTS = "Made by Surasura, never studied: {made}"
+REMAKE_KEPT = "Kept: {kept} ({whys})"
+REMAKE_SYNC = "Anki syncs before and after the copy is made, so a card you study on your phone stays."
+REMAKE_EDITS = "Edits you made to these cards go with them; they stay in the copy. Put back… brings them all back."
+REMAKE_BEFORE = "Also the {n} cards from before Surasura"
+REMAKE_BEFORE_ONE = "Also the 1 card from before Surasura"
+REMAKE_BEFORE_TIP = "Cards of the same note type in Surasura's deck that Surasura didn't make. Off: they stay."
+REMAKE_YES = "Delete and make again"
+REMAKE_YES_TIP = "Deletes them now; Surasura makes their words again, a few a day."
+REMAKE_DONE = "{n} cards deleted · {q} to make again · Put back… to undo"
+REMAKE_STUDIED = " · kept, you studied them meanwhile: {words}"
+REMAKE_NONE = "Nothing to make again: {why}"
+REMAKE_CANT = "Not done: {why}"
 EXPORT_NEXT = "Save as…"
 EXPORT_NEXT_TIP = "Choose where the file goes"
 EXPORT_FORMAT_NAME = "Format"

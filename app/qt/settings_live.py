@@ -152,6 +152,12 @@ def read_tidies(language):
         return None
 
 
+def _nothing_new():
+    """REMAKE: Tidy's words when no card waits unstudied (read late: `app.connect` stays off the import path)."""
+    from app.connect import tidy
+    return tidy.NOTHING_NEW
+
+
 PUT_BACK_KEY = "settings:connect_tidy:put-back"       # its own press: *Tidy now* working doesn't silence it
 
 
@@ -788,6 +794,11 @@ class Live(QObject):
             self._slot(row_id).layout().addWidget(back)
             self.parts[row_id] = {"tidy": door, "back": back}
             self._read_tidies()
+        elif row_id == "connect_remake":                           # --- REMAKE: *Make my new cards again…*
+            door = qpress.room(sc.Door(S.REMAKE_NOW, tooltip=row.tip, name=row.label))
+            door.clicked.connect(lambda _c=False: self.remake_count())
+            self._slot(row_id).layout().addWidget(door)
+            self.parts[row_id] = {"remake": door}
         elif row_id == "remove_downloaded_covers":                 # --- W3.2 L3
             door = qpress.room(sc.Door(S.COVERS_REMOVE, tooltip=row.tip, name=row.label))
             door.clicked.connect(lambda _c=False: self.remove_covers())
@@ -1350,6 +1361,77 @@ class Live(QObject):
             self._read_tidies()                     # a new tidy: *Put back…* lists it
         return self._press("connect_tidy", "tidy", tidy_it, then=done,
                            failed=lambda info: done({"why": str(info[1] if len(info) > 1 else info)}))
+
+    # --- REMAKE (3.0.19; PROVISIONAL words): *Make my new cards again…* — the count on a worker (`tidy.act_remake_plan`:
+    # Anki synced, read under its write lock, nothing deleted), then the sheet (the counts, *from before* off, No by
+    # default), then the yes on a worker (`tidy.act_remake`); its copy goes back through *Put back…*
+    def remake_count(self):
+        from app.cli.contract import CliError
+        from app.connect import tidy
+        settings, language = dict(self._settings() or {}), self.page.language
+
+        def count():
+            try:
+                return tidy.act_remake_plan(settings, language)
+            except CliError as e:
+                return {"why": e.message}
+        return self._press("connect_remake", "remake", count, then=lambda got: self._remake_ask(language, got),
+                           failed=lambda info: self._remake_said({"why": str(info[1] if len(info) > 1 else info)}))
+
+    def _remake_ask(self, language, got):
+        got = got or {}
+        if language != self.page.language:
+            return None
+        if "made" not in got:
+            return self._remake_said(got)
+        made, before = len(got.get("made") or ()), len(got.get("before") or ())
+        if not made and not before:
+            return self._remake_said({"say": _nothing_new()})
+        kept = got.get("kept") or {}
+        lines = [S.REMAKE_COUNTS.format(made=made)]
+        if kept:
+            lines.append(S.REMAKE_KEPT.format(kept=sum(kept.values()),
+                                              whys=" · ".join(f"{why} {n}" for why, n in sorted(kept.items()))))
+        lines += [S.REMAKE_SYNC, S.REMAKE_EDITS]
+        n = made or before
+        self.remake_card = confirm.ask(
+            self.page, S.REMAKE_ASK_ONE if n == 1 else S.REMAKE_ASK.format(n=n), "\n\n".join(lines),
+            S.REMAKE_YES, S.REMAKE_YES_TIP, default_no=True, danger=True,
+            check=(S.REMAKE_BEFORE_ONE if before == 1 else S.REMAKE_BEFORE.format(n=before)) if before else None,
+            check_tip=S.REMAKE_BEFORE_TIP,
+            on_answer=lambda yes: yes and self.remake_go(bool(getattr(self.remake_card, "checked", False))))
+        return self.remake_card
+
+    def remake_go(self, before=False):
+        from app.cli.contract import CliError
+        from app.connect import tidy
+        settings, language = dict(self._settings() or {}), self.page.language
+
+        def go():
+            try:
+                return tidy.act_remake(settings, language, before=before)
+            except CliError as e:
+                return {"cards": 0, "why": e.message}
+
+        def done(got):
+            self._remake_said(got)
+            self._read_tidies()                     # a new tidy: *Put back…* lists it
+        return self._press("connect_remake", "remake", go, then=done,
+                           failed=lambda info: done({"why": str(info[1] if len(info) > 1 else info)}))
+
+    def _remake_said(self, got):
+        got = got or {}
+        n = int(got.get("cards") or 0)
+        if n:
+            line = S.REMAKE_DONE.format(n=n, q=int(got.get("queued") or 0))
+            if got.get("studied"):
+                line += S.REMAKE_STUDIED.format(words="、".join(got["studied"]))
+        elif got.get("why"):
+            line = S.REMAKE_CANT.format(why=got["why"])
+        else:
+            line = S.REMAKE_NONE.format(why=got.get("say") or _nothing_new())
+        self.say(line, "connect_remake")
+        return None
 
     # --- Kyou-SH3 part 2: *Put back…* — the last 10 tidies (`tidy.past`), each with the Undo *Needs you* gives the
     # newest (`tidy.act_undo`: its rules hold for every one); one already put back, or whose copy is gone, is shown so

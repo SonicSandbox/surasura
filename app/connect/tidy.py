@@ -1105,7 +1105,7 @@ SYNC_FAILED = ("Anki couldn't sync with AnkiWeb just now, so a card you studied 
                "Nothing was deleted: try again once Anki syncs.")
 NOTHING_NEW = "No card in Surasura's deck is waiting unstudied: there's nothing to make again."
 # SORT-BAR's lock (`kick.MINING`: held only while a look of Connect's mines); PROVISIONAL words
-REMAKE_MINING = "Connect is making cards right now: make your cards again once they're made."
+REMAKE_MINING = "Surasura is making cards right now: make your cards again once they're made."
 MINING_WAIT = 2.0                           # s: as *Sort again* (`library_store.RESET_WAIT`): a look's short hold ends
 REMAKE_ALL_KEPT = "Every unstudied card there is yours to keep (moved, flagged or marked by you): nothing was deleted."
 

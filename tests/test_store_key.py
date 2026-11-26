@@ -149,5 +149,13 @@ def test_the_keys_written_are_the_keys_a_fresh_lookup_works_out(tmp_path, monkey
         settings_manager.save_settings(settings)
         assert store.get_cached_known(sig) is None, "a switch flipped: the next lookup misses"
         assert store.known_terms("asis") == {}
+
+        # A names switch too (the key's names part, with the name tables' stamp)
+        sc.known_sets("ja", store, {})
+        assert store.get_cached_known(sig) is not None
+        settings["logic"]["names_kanji"] = False
+        settings_manager.save_settings(settings)
+        assert store.get_cached_known(sig) is None, "a names switch flipped: the next lookup misses"
+        assert "|names=1101:" in store._known_key(sig)
     finally:
         store.close()

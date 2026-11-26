@@ -455,3 +455,62 @@ def test_the_newest_made_job_gives_the_end(ledger):
 def test_a_package_of_thousands_waits_longer():
     assert tidy.package_timeout(40) == tidy.PACKAGE_S
     assert tidy.package_timeout(3600) == tidy.PACKAGE_S + 3000 * tidy.PACKAGE_NOTE_S
+
+
+# --------------------------------------------------------------------------- #
+# The window's two presses (on a worker): the count, then the yes
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def home_ledger(monkeypatch):
+    """Connect's own ledger (`ledger.path()`, inside the suite's root): the presses open it themselves; Anki not
+    switched off for the run (the suite's guard; the presses are handed the fake)."""
+    from app.connect.ledger import path
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
+    book = Ledger(path())
+    try:
+        yield book
+    finally:
+        book.close()
+
+
+ON = {"connect_enabled": True}
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_the_count_syncs_and_counts_under_the_write_lock_and_deletes_nothing(home_ledger, lang):
+    item, tag, done_at = _mined(home_ledger, lang)
+    anki = _anki(lang, tag, done_at)
+    _legacy(anki, lang, 201)
+    plan = tidy.act_remake_plan(ON, lang, anki=anki)
+    assert len(plan["made"]) == 6 and plan["before"] == [201] and anki.deleted == []
+    names = [e[0] for e in anki.log]
+    assert names[0] == "writer" and names[1] == "sync", "the sync first, under the lock"
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_the_yes_removes_queues_the_words_and_says_how_many(home_ledger, lang, monkeypatch):
+    item, tag, done_at = _mined(home_ledger, lang)
+    anki = _anki(lang, tag, done_at)
+    _studied(anki, 101)
+    _legacy(anki, lang, 201)
+    monkeypatch.setattr(sentences, "choose", lambda language, keys, **kw: {k: [] for k in keys})
+    done = tidy.act_remake(ON, lang, before=False, steps=Steps(), anki=anki)
+    assert done["cards"] == 5 and done["queued"] == 5 and done["ahead"] == 0 and 201 in anki.notes_
+    assert _best_jobs(home_ledger, lang) == {item: sorted((w, "") for w in WORDS[lang][1:])}
+
+
+def test_the_yes_refuses_in_words_when_anki_didnt_sync(home_ledger):
+    from app.cli.contract import CliError
+    item, tag, done_at = _mined(home_ledger, "ja")
+    anki = _anki("ja", tag, done_at)
+    anki.sync_answer = "failed: timed out"
+    with pytest.raises(CliError) as e:
+        tidy.act_remake(ON, "ja", steps=Steps(), anki=anki)
+    assert tidy.SYNC_FAILED in str(e.value) and anki.deleted == []
+
+
+def test_with_connect_off_neither_press_reads_anki(home_ledger):
+    anki = RemakeAnki()
+    assert tidy.act_remake_plan({}, "ja", anki=anki) == {"cards": 0, "say": undo.PREVIEW_OFF}
+    assert tidy.act_remake({}, "ja", steps=Steps(), anki=anki) == {"cards": 0, "say": undo.PREVIEW_OFF}
+    assert anki.log == []

@@ -1148,7 +1148,8 @@ def connect_models(anki, made):
 
 
 def remake_plan(anki, ledger, language, settings, open_store):
-    """What *Make my new cards again…* finds now, read-only -> {"decks", "made": [note ids made by Surasura that go],
+    """What *Make my new cards again…* finds now, read-only (the caller holds the write lock: Anki's review log is
+    read under it) -> {"decks", "made": [note ids made by Surasura that go],
     "before": [note ids from before Surasura, of Connect's note type, that go with the tick], "kept": {why: n},
     "models"}."""
     ensure(ledger)
@@ -1290,8 +1291,9 @@ def card_word_of(settings, language):
 
 
 def act_remake_plan(settings, language, anki=None):
-    """The sheet's count (on a worker): Anki synced (the write lock held for the sync alone), then `remake_plan` ->
-    its answer, or {"say": why nothing} (Connect off, Anki switched off). Raises CliError in plain words."""
+    """The sheet's count (on a worker): under the write lock (Anki's review log is read under it, as Tidy's every
+    read), Anki synced, then `remake_plan` -> its answer, or {"say": why nothing} (Connect off, Anki switched off).
+    Nothing is written but the sync. Raises CliError in plain words."""
     from app.connect import library
     from app.connect.ledger import Ledger
     off = _remake_off(settings)
@@ -1306,7 +1308,7 @@ def act_remake_plan(settings, language, anki=None):
             if anki.reviewing():
                 raise Reviewing()
             synced(anki)
-        return remake_plan(anki, ledger, language, settings, lambda: library.open_store(language))
+            return remake_plan(anki, ledger, language, settings, lambda: library.open_store(language))
     return _guarded(settings, plan, Ledger)
 
 

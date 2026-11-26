@@ -97,9 +97,11 @@ def clean(marks):
     return out
 
 
-def apply(language, marks, undoable=True, unknow=False):
+def apply(language, marks, undoable=True, unknow=False, known=None):
     """Each word marked as asked (see the module docstring) -> a `Marked`. `unknow`: an Ignore turns another source's
-    known entries of the word not known too (the review loop's Ignore move: an ignored word is no known word)."""
+    known entries of the word not known too (the review loop's Ignore move: an ignored word is no known word).
+    `known`: the caller's `anki_sync.KnownFile` (the review loop's one parse a sync: DSA-SYNC), read and written
+    through; None: the file is read here."""
     try:
         wanted = clean(marks)
     except ValueError as e:
@@ -112,7 +114,7 @@ def apply(language, marks, undoable=True, unknow=False):
         result.error, result.busy = refused[0], True
         return result
     try:
-        _apply_held(language, wanted, result, unknow)
+        _apply_held(language, wanted, result, unknow, known)
     finally:
         if held is not None:
             held.release()
@@ -151,9 +153,14 @@ def can_undo(language):
         return bool(_UNDO.get(language))
 
 
-def marks(language):
+def _read_known(language, known=None):
+    """KnownWord.json's (data, words): from the caller's `anki_sync.KnownFile` when given (its one parse), else read."""
+    return known.read() if known is not None else anki_sync._read_known_file(language)
+
+
+def marks(language, known=None):
     """{word: "known" | "ignore"} — this module's known entries (as written) and the Ignore list's words, each as the
-    run reads its line ({} for a file that can't be read). A word on both reads "known"."""
+    run reads its line ({} for a file that can't be read). A word on both reads "known". `known`: as `apply`'s."""
     out = {}
     try:
         for word in word_lists._File(word_lists.list_path("ignore", language), language).words():
@@ -161,7 +168,7 @@ def marks(language):
     except (OSError, word_lists.Unreadable):
         pass
     try:
-        _data, words = anki_sync._read_known_file(language)
+        _data, words = _read_known(language, known)
     except anki_sync._KnownFileError:
         words = None
     for e in words or ():
@@ -172,24 +179,27 @@ def marks(language):
     return out
 
 
-def learning(language):
+def learning(language, known=None):
     """The words Still learning now: every word with an entry turned not known and no known entry (none for a file
-    that can't be read), as its entry spells it."""
+    that can't be read), as its entry spells it. `known`: as `apply`'s."""
+    file = known
     try:
-        _data, words = anki_sync._read_known_file(language)
+        _data, words = _read_known(language, file)
     except anki_sync._KnownFileError:
         return set()
     words = [e for e in words or () if isinstance(e, dict)]
-    known = anki_sync._known_keys(words)
+    known = file.keys() if file is not None else anki_sync._known_keys(words)
     return {str(e.get("dictForm") or "").strip() for e in words
             if _turned(e) and _norm(e.get("dictForm")) not in known and str(e.get("dictForm") or "").strip()}
 
 
-def states(language, words):
-    """{word: "known" | "ignore" | "learning" | None} for `words`, as `apply` reads each before it marks it."""
-    marked = marks(language)
+def states(language, words, known=None):
+    """{word: "known" | "ignore" | "learning" | None} for `words`, as `apply` reads each before it marks it. `known`:
+    as `apply`'s (one parse for both reads)."""
+    known = known if known is not None else anki_sync.KnownFile(language)
+    marked = marks(language, known)
     ours = {_norm(w) for w, m in marked.items() if m == "known"}
-    turned = {_norm(w) for w in learning(language)}
+    turned = {_norm(w) for w in learning(language, known)}
     out = {}
     for word in words:
         if _norm(word) in ours:
@@ -222,9 +232,9 @@ def left_out(language, since_ns=None):
 
 
 # --- the write, the lock held ------------------------------------------------------------------------------------ #
-def _apply_held(language, wanted, result, unknow=False):
+def _apply_held(language, wanted, result, unknow=False, known=None):
     try:
-        data, words = anki_sync._read_known_file(language)
+        data, words = _read_known(language, known)
     except anki_sync._KnownFileError as e:
         result.error = str(e)
         return
@@ -238,7 +248,7 @@ def _apply_held(language, wanted, result, unknow=False):
         result.error = f"Nothing was changed: {word_lists.KINDS['ignore']} could not be read ({e})."
         return
     words = list(words or [])
-    known_any = anki_sync._known_keys(words)
+    known_any = set(known.keys()) if known is not None else anki_sync._known_keys(words)
     ours = {_norm(e.get("dictForm")) for e in words if _ours(e)}
     others = {_norm(e.get("dictForm")) for e in words if anki_sync._is_known(e) and not _ours(e)}
     turned = {_norm(e.get("dictForm")) for e in words if _turned(e)}
@@ -322,7 +332,7 @@ def _apply_held(language, wanted, result, unknow=False):
             result.done = []
             result.error = f"Nothing was changed: your known words could not be read ({e})."
             return
-        if not _write_known(language, data, words, add_known, drop_known, result, flip, unflip):
+        if not _write_known(language, data, words, add_known, drop_known, result, flip, unflip, known):
             return
     if ignore_changed:
         if drop_ignore:
@@ -371,7 +381,7 @@ def _put(entry):
     return out
 
 
-def _write_known(language, data, words, add_known, drop_known, result, flip=(), unflip=()):
+def _write_known(language, data, words, add_known, drop_known, result, flip=(), unflip=(), known=None):
     path = anki_sync._known_path(language)
     before_sig = anki_sync.known_signature(path)
     now = anki_sync._now_iso()
@@ -399,7 +409,10 @@ def _write_known(language, data, words, add_known, drop_known, result, flip=(), 
         data = dict(data)                           # every other top-level key kept untouched
         data["words"] = kept
     try:
-        anki_sync._atomic_write_json(path, data)
+        if known is not None:
+            known.write(data)
+        else:
+            anki_sync._atomic_write_json(path, data)
     except OSError as e:
         result.done = []
         result.error = f"Nothing was changed: your known words could not be written ({e})."

@@ -1157,6 +1157,18 @@ def _drop_held(held):
     verbs.drop_anki_miner_held(held)
 
 
+def _speech_ready(steps, lang, miner, profile):
+    """`anki_miner.speech_ready` handed the settings export this run's set holds for `profile` (row 25), while Anki
+    Miner's files are as they were when it was read (DSA-CONNECT 4: the model the profile holds is never imported
+    again); else none, and every model is set in turn as before. A stand-in with no set hands none."""
+    from app.connect import anki_miner, lineup
+    held = (getattr(steps, "_anki_miner_sets", None) or {}).get(lang) or {}
+    got = held.get("set")
+    export = got[3] if got and got[1] == profile and held.get("stamp") is not None and \
+        held.get("stamp") == anki_miner.stamp(miner) else None
+    return anki_miner.speech_ready(miner, lang, profile, lineup.folder(lineup.SPEECH), export=export)
+
+
 def _updating(ledger, lang, on):
     """F9 (P4.1 row 4.1.7): Connect's own Generate marked (`on`) or cleared in the ledger's meta, each in its own short
     transaction; nothing written when the mark already reads so (S19). A ledger fault is logged, never a reason not to
@@ -3526,7 +3538,7 @@ class Steps:
         Michi-YT5 (Sonic 2026-11-15): in `online.LARGE_ONLY`'s languages, only while that model is a large one
         (`anki_miner.listens_large`, from the profile's settings export this run read); a small one, medium or one
         not known -> `online.NOT_LARGE` (fetched with CAPTIONS, never the no-model note)."""
-        from app.connect import anki_miner, lineup, online
+        from app.connect import anki_miner, online
         source = online.subtitle_source(web)
         if source != online.TRANSCRIBE or str(job_id) in getattr(self, "_not_heard", set()):
             return online.CAPTIONS
@@ -3534,7 +3546,7 @@ class Steps:
         if refused is not None and time.monotonic() - refused < anki_miner.SPEECH_NO_S:
             return online.CAPTIONS
         try:
-            ready = anki_miner.speech_ready(miner, lang, profile, lineup.folder(lineup.SPEECH))
+            ready = _speech_ready(self, lang, miner, profile)
         except anki_miner.AnkiMinerError as e:
             log.info("Connect: Anki Miner's speech model couldn't be asked about (%s): YouTube's captions", e.message)
             ready = False
@@ -4757,7 +4769,7 @@ class Steps:
                                         and anki_miner.setting_up()):
             raise Wait(downloading)
         try:
-            if anki_miner.speech_ready(miner, lang, profile, lineup.folder(lineup.SPEECH)):
+            if _speech_ready(self, lang, miner, profile):
                 return "ready"
         except anki_miner.AnkiMinerError as e:
             raise _miner_wait_or_needs(e, self.url) from None
@@ -4989,7 +5001,7 @@ class Steps:
             return None
         miner, profile = found
         try:
-            if not anki_miner.speech_ready(miner, lang, profile, lineup.folder(lineup.SPEECH)):
+            if not _speech_ready(self, lang, miner, profile):
                 return None
             if self.on_battery() and not job.get("asked_at"):
                 raise Wait(LINING_UP_BATTERY)
@@ -5105,7 +5117,7 @@ class Steps:
         if self.on_battery() and not job.get("asked_at"):
             return None                     # (before Anki Miner is asked anything: nothing started on battery)
         try:
-            if not anki_miner.speech_ready(miner, lang, profile, lineup.folder(lineup.SPEECH)):
+            if not _speech_ready(self, lang, miner, profile):
                 return None
             return lineup.spot_check(miner, lang, profile, video, subtitle, offset=offset)
         except anki_miner.AnkiMinerError as e:

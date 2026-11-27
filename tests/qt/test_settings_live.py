@@ -360,6 +360,7 @@ def test_the_readout_is_read_again_when_a_level_key_or_the_library_changes(qapp,
     page.hide()                                              # out of sight: only marked stale
     page.bridge.indexed.emit("ja")
     page.bridge.words_marked.emit("ja")
+    page.bridge.automation_changed.emit(automation_module.State("synced", "ja", 0, 2470, None, None, 9))  # new known
     settle(lambda: reads() != 4, 1.0)                        # (past the read's wait: still nothing)
     assert reads() == 4 and page.live._level["stale"]
     page.show()                                              # shown again: read once

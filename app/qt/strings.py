@@ -107,9 +107,6 @@ ITEM_MENU = {
     # Kura-TX (PROVISIONAL; the audit's ask 2): any book's row names its audiobook up front
     "audiobook": ("Its audiobook…", "Pick the audiobook that reads this book aloud: its cards get their sentences in "
                                     "the narrator's voice"),
-    "add-audio": ("Add the narrator's voice…", "{n} of its cards made for you can get their sentence in the narrator's "
-                                               "voice: only an empty sentence-audio field is filled, nothing else on "
-                                               "the card changes. Undo takes it back"),
     "folder": ("Open its folder", "Open the folder its files are in"),
     "remove": ("Remove…", "Take it out of your library: its files go to the trash for 30 days (asks first)"),
     # a7 (DIAGNOSIS 11): every file not watched yet, marked at once ({n}: how many)
@@ -1582,12 +1579,9 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "no_audiobook": ("Mine without audio", "Its cards are made without sentence audio. Surasura doesn't ask about "
                                            "this book again"),
     # Iro-AA (PROVISIONAL): the AI voice's beta, on and installed
-    "ai_audio": ("Make AI audio (beta)", "Mined without audio, then an AI voice made on this computer reads each new "
-                                         "card's sentence. Its audiobook, if you have it, sounds better"),
-    # Kura-AB3 A2 (PROVISIONAL): a book lined up with its audiobook after some of its cards were made
-    "add_audio": ("Add the narrator's voice", "Each of those cards gets its sentence in the narrator's voice: only an "
-                                              "empty sentence-audio field is filled, nothing else on the card changes, "
-                                              "your reviews stay as they are. Undo takes it back"),
+    # Kura-AB3 A2, cut down by AUDIO-FILL (PROVISIONAL): a book paired with its audiobook after some cards were made
+    "add_audio": ("Line it up", "Mines its first part again, which lines the book up with its audiobook. Then Add sound "
+                                "gives those cards the narrator's voice"),
     "mine_anyway": ("Mine anyway", "Make its cards without timing them to the video"),
     "ask_hato": ("Ask hato again", "Ask hato for the videos it paired, now"),
     "dismiss": ("Dismiss", "Take this off the list"),
@@ -1616,6 +1610,10 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                                        "• Change it any time: Settings › Anki & mining"),
     "keep_small": ("Keep it small", "Cards stay a few episodes at a time, and this isn't asked again.\n"
                                     "• Change it any time: Settings › Anki & mining"),
+    # VOICE-SETUP (PROVISIONAL words): cards first wait for the AI voice
+    "voice_setup": ("Set it up", "Opens the AI voice's setup: its size first, the voices, your choices and a test here"),
+    "voice_not_now": ("Not now", "Those cards stay without sound, and this isn't asked again.\n"
+                                 "• Settings › Anki & mining › Card sound has it any time"),
     "mark_known": ("Mark them known", "Their words count as known from now on: your list and journey follow at the "
                                       "next Generate"),
     "leave_known": ("Leave them", "Their words stay as they are, and these cards stop asking. Cards you suspend or "
@@ -1625,6 +1623,11 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                               "you'll meet the words. Undo puts them back"),
     "leave_shows": ("Leave them", "They stay in New arrivals and this stops asking. A show that comes in later asks "
                                   "again"),
+    # AUDIO-FILL (PROVISIONAL words): cards with no sentence audio the library can give
+    "add_sound": ("Add sound", "Cut each card's line from your own episodes and books and put it on the card. "
+                               "Your own audio is never touched.\n• Undo: the message's Undo"),
+    "sound_not_now": ("Not now", "They stay as they are, and this asks again only when more cards can get sound.\n"
+                                 "• Settings › Anki & mining › Card sound has it any time"),
     # Michi-DK (PROVISIONAL): Connect's cards outside the deck Surasura shows (the button names the deck)
     "move_cards": ("Move them", "Put these cards in the deck Surasura keeps in order. Their reviews stay as they "
                                 "are.\n• Undo: the message's Undo"),
@@ -1782,6 +1785,7 @@ NEEDS_MORE_MADE = "Cards for your next 20 episodes are on their way · change it
 NEEDS_MORE_MADE_PAUSED = "Cards for your next 20 episodes are made once you resume Anki Miner"
 NEEDS_MORE_NOT_NOW = "Your library can't be changed right now: try again in a moment"
 NEEDS_KEPT_SMALL = "Kept small · change it any time in Settings › Anki & mining"
+NEEDS_VOICE_NOT_NOW = "Not now · the AI voice is in Settings › Anki & mining › Card sound any time"
 NEEDS_KNOWN_MARKED = "{n} words are known now · your list follows at the next Generate"
 NEEDS_KNOWN_MARKED_NONE = "Their words were known already"
 NEEDS_KNOWN_LEFT = "Left as they are · cards you suspend or mark from now on still count"
@@ -1848,15 +1852,15 @@ NEEDS_SPEECH_NO = "Their cards come without sentence audio"
 NEEDS_KEPT_TOGETHER = "Kept together: the book's cards come without sentence audio"
 NEEDS_SEPARATED = "The audiobook is its own title again"
 NEEDS_NO_AUDIOBOOK = "Its cards come without sentence audio"           # Kura-AB2 (PROVISIONAL)
-NEEDS_AI_AUDIO = "Its cards get AI sentence audio (beta) once they're made"    # Iro-AA (PROVISIONAL)
-NEEDS_AUDIO_ADDED = "The narrator's voice is on {n} of 「{title}」's cards"          # Kura-AB3 A2 (PROVISIONAL)
-NEEDS_AUDIO_SOME = ("The narrator's voice is on {n} of 「{title}」's cards · {m} couldn't be cut ({why}): the book's menu "
-                    "tries them again")
-NEEDS_AUDIO_RUNNING = "Surasura is looking at 「{title}」's cards for the narrator's voice…"
-NEEDS_AUDIO_FAILED = "Surasura couldn't add the narrator's voice just now: try again in a moment"
-NEEDS_AUDIO_GONE = "Nothing to add there any more"
-NEEDS_AUDIO_UNDONE = "The narrator's voice is off {n} cards again"
-NEEDS_AUDIO_UNDONE_KEPT = "The narrator's voice is off {n} cards again · {k} kept (changed since, or gone)"
+NEEDS_AUDIO_GONE = "Nothing to add there any more"                                # Kura-AB3 A2 (PROVISIONAL)
+# AUDIO-FILL (PROVISIONAL): *Add sound*'s words
+NEEDS_SOUND_ADDED = "Sound is on {n:,} cards now"
+NEEDS_SOUND_ADDED_ONE = "Sound is on 1 card now"
+NEEDS_SOUND_SOME = "Sound is on {n:,} cards now · {m:,} couldn't be cut: they're tried again next time"
+NEEDS_SOUND_NONE = "No card here can get sound right now"
+NEEDS_SOUND_UNDONE = "The sound is off {n:,} cards again"
+NEEDS_SOUND_UNDONE_KEPT = "The sound is off {n:,} cards again · {k:,} you changed since keep yours"
+NEEDS_SOUND_NOT_NOW = "Not now · Settings › Anki & mining › Card sound has it any time"
 NEEDS_AUDIOBOOK_LINE = "{title} · {n} files"
 NEEDS_AUDIOBOOK_ELSEWHERE = " · now with 「{book}」"        # Kura-AB4 (PROVISIONAL): picked, it leaves that book
 NEEDS_AUDIOBOOK_GONE = "Surasura couldn't find that book in your library just now"

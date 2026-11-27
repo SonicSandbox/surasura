@@ -302,6 +302,31 @@ def keep_look_ups(path, now, info, listed):
     _write_kept(LOOK_UPS_KEPT, lambda: {"key": _kept_key(path, now), "version": info, "profiles": listed})
 
 
+def look_ups(path, now=None, *, keep, wants=None):
+    """AM-START: (the `version` answer, the `profiles` list) of the Anki Miner at `path` for the track and no-subtitle
+    looks (`tracks._miner`, `no_subs.can_make`) — the kept pair while what they answer for is as it was
+    (`kept_look_ups`; `now`: its files' `stamp`, taken before any read), else read and, with `keep`, kept for the next
+    reader (`keeps_look_ups`: never while Connect is off). `wants(info)` False: this Anki Miner can't do what the caller
+    asks, so `profiles` isn't asked (None) and nothing is kept. Raises as `version` and `profiles` do (nothing kept)."""
+    now = stamp(path) if now is None else now
+    kept = kept_look_ups(path, now)
+    if kept is not None:
+        return kept
+    info = version(path)
+    if wants is not None and not wants(info):
+        return info, None
+    listed = profiles(path)
+    if keep:
+        keep_look_ups(path, now, info, listed)
+    return info, listed
+
+
+def keeps_look_ups(settings):
+    """May a reader with no run of its own keep the pair (`look_ups`)? Only while Connect is switched on: with it off
+    nothing of Connect's is written (`setup.checks`' rule, 2.5's); the kept pair is still read."""
+    return bool((settings or {}).get("connect_enabled"))
+
+
 def _write_kept(name, made):
     """`made()` written as the kept file `name`, atomically (temp + replace). Never raises."""
     try:
@@ -1298,7 +1323,7 @@ def tag_names(url, words, outcomes):
 def mine_batch(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, url, attempt=1,
                subtitle_offset=0.0, timeout=MINE_TIMEOUT, wait=0.0, expect_profile=None, on_progress=None,
                known=None, should_stop=None, show=None, reading=None, from_audio=False, names=None,
-               word_audio=True, workers=None, more=None, should_pause=None, voiced=False):
+               word_audio=True, workers=None, more=None, should_pause=None):
     """One batch of one episode, end to end (§ above), holding `anki-writer` (waiting up to `wait` s for another
     writer; still held -> AnkiMinerError `busy`). `words`: pick's; `mapping`: fields.Mapping (from this profile's
     export); `profile_name`: `connect_anki_miner_profile`; `url`: AnkiConnect's address, for the names' tag. Returns
@@ -1331,9 +1356,9 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
     its cards under the same job tag; `outcomes` then holds `words`' and each of `more`'s in turn, `on_progress` is
     told which run works (`run`, of `runs`), a Stop cancels every run, and one whose file can't be read leaves its
     words `not_attempted` with the code in `run_error` while the others are made (the episode's own refused that way
-    with cards made elsewhere: `refused`, the error, instead of raising it). `voiced` (BOOK-CARD): a book's cards
-    the AI voice reads after (the runner's `AI_JOB`): they keep the learner's card type; any other `reading` run
-    makes the sentence card under the audio card (`runfile.config`'s `quiet`)."""
+    with cards made elsewhere: `refused`, the error, instead of raising it). A `reading` run (BOOK-CARD) makes the
+    sentence card under the audio card (`runfile.config`'s `quiet`); Card sound makes it the audio card again once it
+    has sound (AUDIO-FILL)."""
     from app import anki_connect, locks
     try:
         # #BS0A1K: a Stop pressed while another writer holds Anki (Junban's reorder) ends the wait for it at once
@@ -1349,7 +1374,7 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
         try:
             done = _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
                               subtitle_offset, timeout, expect_profile, on_progress, known, should_stop, show,
-                              reading, from_audio, names, word_audio, workers, more, should_pause, voiced)
+                              reading, from_audio, names, word_audio, workers, more, should_pause)
         except runfile.RunFileError as e:
             raise AnkiMinerError("refused", f"The run file for Anki Miner couldn't be written: {e}") from None
         done["tagged"], done["tag_pending"] = [], []
@@ -1399,7 +1424,7 @@ ZH_UPDATE = ("Chinese cards need Anki Miner 3.12 or newer. Update Anki Miner fro
 def _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
                subtitle_offset, timeout, expect_profile=None, on_progress=None, known=None, should_stop=None,
                show=None, reading=None, from_audio=False, names=None, word_audio=True, workers=None, more=None,
-               should_pause=None, voiced=False):
+               should_pause=None):
     info, profile = preflight(path, language, profile_name, known)
     if expect_profile is not None and profile != expect_profile:
         raise AnkiMinerError("profile-changed", "Anki Miner's profile changed since the words were picked.")
@@ -1437,11 +1462,11 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
             tags=" ".join(t for t in (runfile.job_tag(job), runfile.from_tag(extra.get("show"))) if t),
             subtitle_offset=float(extra.get("subtitle_offset") or 0.0), features=named, language=language))
         others.append((other, extra["words"]))
-    # BOOK-CARD: a book's or a text's run cuts no sound — under the audio card it makes the sentence card, unless the
-    # AI voice reads its cards after (`voiced`: the runner's `AI_JOB` mark)
+    # BOOK-CARD: a book's or a text's run cuts no sound — under the audio card it makes the sentence card (Card sound
+    # turns it into the audio card once it has sound: AUDIO-FILL)
     data = runfile.build(run_dir, language, episodes, profile=profile,
                          run_config=runfile.config(mapping, info.get("app"), named, word_audio=word_audio,
-                                                   workers=workers, quiet=reading is not None and not voiced))
+                                                   workers=workers, quiet=reading is not None))
     run_path = runfile.write(os.path.join(run_dir, f"run-{attempt}.json"), data)
     before = result_names(run_dir, run_id)
     others = [(other, theirs, result_names(run_dir, other)) for other, theirs in others]

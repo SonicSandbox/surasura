@@ -620,7 +620,8 @@ def _write_settings(found, settings, language, items, folder, chosen, save):
             values.update(planned)
     if not values and not unused:
         return out
-    listed = anki_miner.profiles(path)
+    kept = anki_miner.kept_look_ups(path, anki_miner.stamp(path))     # AM-START: the pair the press's look just read
+    listed = kept[1] if kept else anki_miner.profiles(path)
     active = next((entry.get("id") for entry in listed if entry.get("active")), None)
     try:
         if profile is not None and profile != active:

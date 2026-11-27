@@ -11,8 +11,8 @@ band, a file changed or gone) still Generates first.
 
 On a real library (tests/plan_file_cases.py's RP-2 Japanese library, generated once, as `tests/test_replan_preview.py`'s
 `lib` builds it; a Chinese twin on RP-2's Chinese one), a real episode copied in (`Test Resources/ja/placed_episode.srt`
-a school-festival scene holding words already on the list, two set phrases — 気が付く on the list, 腑に落ちる listed only
-once this episode counts — and 門 only as a counter, 二門, a bound piece the list never offers) and Connect's own steps
+a school-festival scene holding words already on the list, two set phrases on it — 気が付く, and 腑に落ちる (RP-2 meets
+it twice, once inside 腑に落ちない: ENGINE 54) —, 文化祭 listed only once this episode counts, and 門 only as a counter, 二門, a bound piece the list never offers) and Connect's own steps
 — the inbox and the level look, the pick, the store, Junban's re-order with the Junban suite's fake AnkiConnect — real;
 only where Anki Miner sits a stand-in that makes one note a word. What a wrong answer would cost: every placed episode
 waiting a whole Generate for its cards (or a Generate skipped when a file changed); a pick by a second recipe giving a
@@ -36,8 +36,8 @@ from tests.test_replan_preview import _deck, _settings_file, lib  # noqa: E402,F
 RES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Test Resources")
 EPISODE = "placed_episode.srt"
 BOUND = ("門", "モン")                       # listed (RP-2's café episode); in the episode only in 二門 (a counter: a piece)
-ON_THE_LIST = ("気が付く", "キガツク")         # a set phrase the list holds already
-NEWLY = {("文化祭", "ブンカサイ"), ("腑に落ちる", "フニオチル")}   # listed once the episode is counted
+ON_THE_LIST = ("気が付く", "キガツク")         # a set phrase the list holds already (腑に落ちる too, since ENGINE 54)
+NEWLY = {("文化祭", "ブンカサイ")}               # listed once the episode is counted
 
 
 class PlacedEpisodeSteps(runner.Steps):

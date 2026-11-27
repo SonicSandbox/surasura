@@ -229,3 +229,33 @@ def test_generates_floor_is_cut_on_the_lists_tokens_with_the_store_and_without_i
     assert whole > total, "the show sings"
     assert with_store == total
     assert without == total
+
+
+def test_a_store_made_before_the_songs_table_gains_it_at_open_with_no_file_read_again_or_version_moved(tmp_path):
+    """The songs' table is a share kept beside the counts, not cached tokenization (engine map § Rules: SCHEMA_VERSION
+    moves only when that changes): a store at this version made before it is given the table at its next open, every file's
+    tokens kept as they were and `user_version` unchanged — no re-index on top of the one ENGINE_REVISION's run causes."""
+    import sqlite3
+    store, data_dir, paths = _library(tmp_path, "ja", JA_SHOW)
+    db = str(tmp_path / "store.db")
+    before = {p: store.file_tokens(p) for p in paths}
+    store.close()
+    conn = sqlite3.connect(db)
+    conn.execute("DROP TABLE songs")                    # the store as 3.0-dev before RARITY-SONGS made it
+    conn.execute("INSERT INTO meta(key, value) VALUES('pin', 'the same store')")    # gone if it were built again
+    conn.commit()
+    conn.close()
+    store = ti.open_store("ja", db)
+    try:
+        conn = sqlite3.connect(db)
+        try:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == ti.SCHEMA_VERSION
+            assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='songs'").fetchone()
+        finally:
+            conn.close()
+        assert store.get_meta("pin") == "the same store"
+        assert {p: store.file_tokens(p) for p in paths} == before
+        _kept(store, data_dir, paths, "ja")             # and the table takes a Generate's share
+        assert store.get_meta("songs_counted")
+    finally:
+        store.close()

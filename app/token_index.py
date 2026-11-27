@@ -2785,11 +2785,23 @@ def _ignored_file_entries(user_files_dir, language):
             data = json.loads(read_text(path, language))
         except Exception:
             data = None
-        entries = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-        kept = _IGNORED_ENTRIES[path] = (signature, [
-            str(e.get("dictForm") or "").strip() for e in entries
-            if isinstance(e, dict) and e.get("knownStatus") == "IGNORED" and str(e.get("dictForm") or "").strip()])
+        kept = _IGNORED_ENTRIES[path] = (signature, _ignored_of(data))
     return kept[1]
+
+
+def _ignored_of(data):
+    """The IGNORED dictForms of a parsed KnownWord.json (a dict with "words", or a list; anything else: none)."""
+    entries = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+    return [str(e.get("dictForm") or "").strip() for e in entries
+            if isinstance(e, dict) and e.get("knownStatus") == "IGNORED" and str(e.get("dictForm") or "").strip()]
+
+
+def keep_ignored_entries(path, language, signature, data):
+    """`_ignored_file_entries`' answer kept from a parse a caller already made of the KnownWord.json at `path`
+    (`analyzer.load_known_words`: a Generate whose known words missed their cache parses the file once for both,
+    ONE-READ 3), under `signature` — its `known_signature`, taken before that read (a write in between is read
+    again at the next ask)."""
+    _IGNORED_ENTRIES[path] = ((language, signature), _ignored_of(data))
 
 
 _IGNORED_ENTRIES = {}   # KnownWord.json's path -> (its signature, its IGNORED dictForms), for ignored_entries

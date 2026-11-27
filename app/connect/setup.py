@@ -417,8 +417,13 @@ def _anki_miner(settings, language, answered):
         return [_check("anki_miner", NEEDS_YOU, say, do)] + rest("anki_miner", "Checked once Anki Miner is installed."), {}
     found = {"path": path}
     out = [_check("anki_miner", OK, "Anki Miner is installed.")]
+    # AM-START: `version` and `profiles` answered from the pair kept across looks and runs (`anki_miner.look_ups`)
+    # while Anki Miner's program and its settings files are as they were; `check` (Anki's state too): every look
+    now = anki_miner.stamp(path)        # (before the reads: a save meanwhile shows at the next look)
+    kept = anki_miner.kept_look_ups(path, now)
     try:
-        info = anki_miner.version(path)     # never runs a build its installer says is older than 3.5.0
+        # (`version` never runs a build its installer says is older than 3.5.0)
+        info = kept[0] if kept else anki_miner.version(path)
     except anki_miner.AnkiMinerError as e:
         return out + [_miner_error("anki_miner_version", e)] + rest("anki_miner_version",
                                                                     "Checked once Anki Miner answers."), found
@@ -432,7 +437,9 @@ def _anki_miner(settings, language, answered):
 
     name = (settings or {}).get("connect_anki_miner_profile") or anki_miner.DEFAULT_PROFILE
     try:
-        listed = anki_miner.profiles(path)
+        listed = kept[1] if kept else anki_miner.profiles(path)
+        if not kept and anki_miner.keeps_look_ups(settings):
+            anki_miner.keep_look_ups(path, now, info, listed)
         profile = anki_miner.choose_profile(info, listed, name)
     except anki_miner.AnkiMinerError as e:
         check = _miner_error("anki_miner_profile", e)

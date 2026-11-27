@@ -51,6 +51,7 @@ two above. Every caller reads one address, `address(settings)`.
 """
 
 import json
+import os
 import socket
 import time
 import urllib.error
@@ -74,6 +75,12 @@ FORBIDDEN_ACTIONS = frozenset({"sync", "setDueDate"})
 # `app/anki_deck_options.write_new_per_day`, on the user's click after a confirmation naming the deck — sends
 # `saveDeckConfig` through `save_deck_config`, holding the Anki-write lock. The other three are never sent.
 DECK_OPTION_ACTIONS = frozenset({"saveDeckConfig", "setDeckConfigId", "cloneDeckConfigId", "removeDeckConfigId"})
+
+# The AnkiConnect ports this run treats as closed (comma-separated): a call to one is Anki closed, answered in `_send`
+# before a socket opens. Dev only — set by with-lock.sh for every ticket but the anki lock's, and by the test
+# harness for every child a test starts (a smoke window under a test ticket once reached a running Anki); never
+# in settings.json, never a learner's.
+CLOSED_ENV = "SURASURA_ANKI_CLOSED"
 
 # The only hosts this client will talk to. Anything else is refused before a socket is opened.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -388,6 +395,18 @@ def invoke(action, url, timeout=30, **params):
     return _send(action, url, timeout, params)
 
 
+def _closed_for_run(url):
+    """Whether `url`'s port is one CLOSED_ENV names. Never raises."""
+    ports = os.environ.get(CLOSED_ENV)
+    if not ports:
+        return False
+    try:
+        port = urllib.parse.urlsplit(str(url)).port
+    except ValueError:
+        return False
+    return port is not None and port in {int(p) for p in ports.split(",") if p.strip().isdigit()}
+
+
 def _loopback_only(url):
     if not is_loopback(url):
         raise AnkiError(f"Refusing to contact {url}: AnkiConnect must be on this computer "
@@ -445,8 +464,14 @@ def save_deck_config(url, config, timeout=30):
 
 
 def _send(action, url, timeout, params):
-    """One POST, after the checks (`invoke`'s, or `sync`'s): the envelope, the reply's shape."""
+    """One POST, after the checks (`invoke`'s, or `sync`'s): the envelope, the reply's shape. A port this run treats as
+    closed (CLOSED_ENV) is Anki closed, as a refused connection would be, and nothing is sent."""
     _loopback_only(url)
+    if _closed_for_run(url):
+        error = AnkiError(f"Could not reach Anki at {url} (its port is closed for this run: {CLOSED_ENV}). "
+                          "Is Anki running?", kind="offline")
+        error.timed_out = False
+        raise error
     payload = {"action": action, "version": API_VERSION, "params": params}
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     # Content-Type only. No Origin header, deliberately: its absence is what keeps AnkiConnect from

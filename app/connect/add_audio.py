@@ -21,6 +21,7 @@ PROVISIONAL): the narrator's voice put on the cards Connect made from a book bef
 
 Light: the standard library; Anki through `sentence_audio.AnkiConnectNotes`, Anki Miner through `anki_miner`.
 """
+import bisect
 import html
 import json
 import os
@@ -73,26 +74,74 @@ def _form(sentence_value, word):
     return None
 
 
+class Book:
+    """A book's line-up cues (`lineup.cues`) indexed once for `place` (AUDIO-WASTE: three passes over every cue for
+    each card were most of the plan's wait): each text's cues, the texts joined (a cue's text holds no separator: only
+    letters and digits, `lineup.clean`) with each one's start, and the cues of MIN_CHARS or longer by their first
+    MIN_CHARS characters. Built in one pass over the cues; then a card costs a dict look, one or two `str.find` over
+    the joined text (C speed) and a look a MIN_CHARS window of its sentence — never a Python pass over the cues."""
+
+    def __init__(self, found):
+        from app.connect import lineup
+        self.found, self.n = list(found), lineup.MIN_CHARS
+        self.by_text, self.by_head, self.starts, texts, at = {}, {}, [], [], 0
+        for k, cue in enumerate(self.found):
+            text = cue.text or ""
+            self.by_text.setdefault(text, []).append(k)
+            if len(text) >= self.n:
+                self.by_head.setdefault(text[:self.n], []).append(k)
+            self.starts.append(at)
+            texts.append(text)
+            at += len(text) + 1
+        self.joined = "\n".join(texts)
+
+    def __len__(self):
+        return len(self.found)
+
+    def holders(self, want):
+        """The cues whose text holds `want` (never empty, no separator) — the first's index and whether a second
+        exists: (k, more) or None."""
+        pos = self.joined.find(want)
+        if pos < 0:
+            return None
+        k = bisect.bisect_right(self.starts, pos) - 1
+        nxt = self.starts[k + 1] if k + 1 < len(self.starts) else len(self.joined)
+        return k, self.joined.find(want, nxt) >= 0
+
+    def inside(self, want):
+        """The cues of MIN_CHARS or longer whose text sits inside `want` (each cue of a head `want` holds looked at
+        once) -> {cue index}."""
+        n, seen, out = self.n, set(), set()
+        for head in {want[i:i + n] for i in range(len(want) - n + 1)}:
+            for k in self.by_head.get(head, ()):
+                if k not in seen:
+                    seen.add(k)
+                    if self.found[k].text in want:
+                        out.add(k)
+        return out
+
+
 def place(sentence, form, found):
     """The cue a card's clip is cut from -> a Cue, or None (unheard). Across the WHOLE book (review A1 S1: an earlier
     short line inside the sentence never wins over the sentence's own cue): the one cue that IS the sentence; else the
     one cue holding it whole (MIN_CHARS or longer); else, of the cues inside it (MIN_CHARS or longer each: the sentence
     said over several cues), the one holding `form` (any of them when `form` is None) — two answers at any step is no
-    answer (B-14), never a guess."""
+    answer (B-14), never a guess. `found`: the book's cues, or their `Book` (built once a book: a caller placing many
+    cards passes it)."""
     from app.connect import lineup
     want = lineup.clean(sentence)
     if not want:
         return None
-    exact = [c for c in found if c.text == want]
+    book = found if isinstance(found, Book) else Book(found)
+    exact = book.by_text.get(want)
     if exact:                                   # its words word for word (r3 S1: a longer line holding them elsewhere
-        return exact[0] if len(exact) == 1 else None      # is never this one's rival)
-    holders = [c for c in found if c.text and want in c.text] if len(want) >= lineup.MIN_CHARS else []
-    if holders:
-        return holders[0] if len(holders) == 1 else None
+        return book.found[exact[0]] if len(exact) == 1 else None      # is never this one's rival)
+    held = book.holders(want) if len(want) >= lineup.MIN_CHARS else None
+    if held is not None:
+        return None if held[1] else book.found[held[0]]
     hold = lineup.clean(form) if form else ""
-    hits = [c for c in found if c.text and len(c.text) >= lineup.MIN_CHARS and c.text in want and
-            (not hold or hold in c.text)]
-    return hits[0] if len(hits) == 1 else None
+    hits = [k for k in book.inside(want) if not hold or hold in book.found[k].text]
+    return book.found[hits[0]] if len(hits) == 1 else None
 
 
 def book_items(store, epub, earlier=True):
@@ -179,7 +228,7 @@ def plan(anki, steps, lang, epub, mapping):
     if not lined:
         return out
     out["lined"] = True
-    found = lineup.cues(lined["lineup"])
+    found = Book(lineup.cues(lined["lineup"]))      # (indexed once: `place` for every card)
     info = {int(n["noteId"]): n for n in anki.notes(sorted(notes)) or () if isinstance(n, dict) and n.get("noteId")}
     for note_id in sorted(notes):
         note = info.get(note_id)

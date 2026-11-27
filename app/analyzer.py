@@ -1991,7 +1991,8 @@ def _tsukare(words):
         if i >= n - 1 or i < last:
             continue
         w, ending = words[i], words[i + 1]
-        if w.feature.pos1 != "動詞" or ending.feature.lemma != "れる" or ending.feature.pos1 != "助動詞"                 or getattr(ending, "white_space", ""):
+        if (w.feature.pos1 != "動詞" or ending.feature.lemma != "れる" or ending.feature.pos1 != "助動詞"
+                or getattr(ending, "white_space", "")):
             continue
         stem = words[i - 1] if i > last else None
         if stem is not None and not getattr(w, "white_space", "") and _verb_stem(stem):

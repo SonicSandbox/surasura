@@ -978,6 +978,10 @@ def _wanted(row, settings, language, new):
     if row.kind == "tablets" and len(keys) > 1:
         picked = new if isinstance(new, Mapping) else {key: key in set(new) for key in keys}
         return {key: bool(v) for key, v in picked.items()}
+    if row.kind == "custom" and len(keys) > 1:      # VOICE-SETUP: a row of its own controls (the AI voice's switch,
+        if not isinstance(new, Mapping):            # voice and days): {key: value}, as `value` gives it
+            raise ValueError(f"{row.id} takes {{key: value}}: {new!r}")
+        return {key: v for key, v in new.items() if key in keys}
     key = keys[0]
     if row.id == "known_from_anki":
         return {key: settings_values.known_value(set(new or ()))}

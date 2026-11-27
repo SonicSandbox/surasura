@@ -314,9 +314,11 @@ def test_the_words_are_read_again_once_the_sorts_places_are_saved_before_the_car
     wiz.next()
     _to_the_sort(wiz, shell)
     order.clear()                                                              # (the read's own asks, before the sort)
+    polled = []
+    writer.pending = lambda: (polled.append(writer.n), writer.n)[1]
     QTest.mouseClick(wiz.covered.btn_done, Qt.MouseButton.LeftButton)
-    QTest.qWait(300)
-    assert order == []                                                         # two places still being saved
+    assert wait_until(lambda: len(polled) >= 3, 5)                            # the worker waiting on the writer …
+    assert order == []                                                         # … two places still being saved
     writer.n = 0
     assert wait_until(lambda: len(order) == 2, 5)
     assert order == [("index", True, 0), ("line", 0)]

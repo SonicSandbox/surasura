@@ -192,8 +192,8 @@ def test_a_list_made_before_your_start_was_decided_waits_for_it_then_goes_on_or_
     wiz, shell, api, seen = _held_on_level(make, offered=offered)
     shell.bridge.generate_changed.emit(GenState("running", "Counting words", 3, 10))
     shell.bridge.generate_changed.emit(GenState("current"))
-    QTest.qWait(200)
-    assert seen == [] and wiz.page.id == "level"                   # the close waits for the answer
+    assert wiz._made_unseen and wiz._start_pending()               # the list made, the look still held: …
+    assert seen == [] and wiz.page.id == "level"                   # … the close waits for the answer
     api.gate.set()
     if offered:
         assert wait_until(lambda: wiz.page.id == "start")
@@ -215,7 +215,7 @@ def test_your_start_is_looked_for_only_once_the_sorts_end_is_saved(make):
     wiz._offer_cards([1])                                          # (the sort's Done: its places being saved)
     assert wait_until(lambda: ("sorted_offer", "ja") in api.calls)
     wiz.read_start_offered()                                       # (*Your list* entered again meanwhile)
-    QTest.qWait(200)
+    assert wiz._start_asking == 0                                  # no look sent (it counts itself out first)
     assert ("start_offered", "ja") not in api.calls and wiz.shown() == W.ORDER
     api.saved.set()
     assert wait_until(lambda: wiz.shown()[-1] == "start")

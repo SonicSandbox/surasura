@@ -27,6 +27,8 @@ import app
 from app import analyzer
 
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Test Resources", "ja", "phrases_sample.srt")
+# Three lines each saying 間 'a pause' on its own and inside あっという間に, which holds あっという間 (ENGINE 54).
+PAUSES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Test Resources", "ja", "pauses_sample.srt")
 OUTPUTS = ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json", "library_frequency.json",
            "file_words.json", "analyzed_files.json", "file_statistics.json", "file_statistics.txt",
            "reading_words.csv", "sources.json")
@@ -165,10 +167,9 @@ def test_a_word_inside_two_phrases_gives_its_use_once(library):
     the finished walk's example targets)."""
     high = library / "data" / "ja" / "HighPriority"
     (high / "phrases_sample.srt").unlink()
+    shutil.copy(PAUSES, high / "pauses_sample.srt")
     lines = ["彼の話は間が長いが、あっという間に終わった。", "先生の話は間が長いのに、あっという間に終わった。",
              "その歌は間が長いけど、あっという間に終わった。"]
-    (high / "pauses.srt").write_text("".join(
-        f"{n}\n00:00:0{n},000 --> 00:00:0{n},900\n{line}\n\n" for n, line in enumerate(lines, 1)), encoding="utf-8")
     _switch(library, True)
     rows = _run(library)
     row = rows["間"]

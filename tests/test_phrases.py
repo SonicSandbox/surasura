@@ -125,12 +125,34 @@ def test_inner_phrases_are_found_in_turn_longest_first(tokenizer):
         ("痛い目に遭わせる", 0, 5), ("痛い目に遭う", 0, 4), ("痛い目", 0, 2)]
 
 
+def test_two_phrases_inside_one_may_overlap_and_each_counts_once(tokenizer):
+    """痛い目に遭う 'have a bitter experience' holds 痛い目 'a bitter experience' and 目に遭う 'go through', which share
+    目: both are inside it, so both are met — and inside 痛い目に遭わせる 'make someone pay', 目に遭う is met once, as a
+    use of 痛い目に遭う (found inside an inner phrase already, it is never counted again at the outer's level)."""
+    rows = NESTED + [["目|に|会う", "メ|ニ|アウ", "cgc", "目に遭う", "メニアウ"]]
+    assert _met("痛い目に遭った。", tokenizer, rows) == [("痛い目に遭う", 0, 4), ("痛い目", 0, 2), ("目に遭う", 1, 4)]
+    assert _met("痛い目に遭わせてやる。", tokenizer, rows) == [
+        ("痛い目に遭わせる", 0, 5), ("痛い目に遭う", 0, 4), ("痛い目", 0, 2), ("目に遭う", 1, 4)]
+
+
 def test_a_grammar_expression_gives_no_use_to_one_inside_it(tokenizer):
     """A grammar expression is learned as one unit (every word in it is the expression's): として 'as' is never a use
-    of とする 'to suppose'. Inside a phrase that isn't grammar, 断固として 'firmly', the longest inner phrase is として —
-    and that gives とする nothing in turn."""
+    of とする 'to suppose', nor によると 'according to' of による 'depending on' (said inside it, but grammar). Inside
+    a phrase that isn't grammar, 断固として 'firmly', the longest inner phrase is として — and that gives とする nothing
+    in turn."""
     assert _met("教師として働く。", tokenizer) == [("として", 1, 4)]
     assert _met("断固として拒否する。", tokenizer) == [("断固として", 0, 4), ("として", 1, 4)]
+    rows = NESTED + [["に|因る|と", "ニ|ヨル|ト", "gbg", "によると", "ニヨルト", 0, 1]]
+    assert _met("ニュースによると明日は雨だ。", tokenizer, rows) == [("によると", 1, 4)]
+
+
+def test_an_inner_phrase_must_be_said_inside_the_longer_one(tokenizer):
+    """The dictionary's どやる 'to look smug' is keyed on the words どう + やる (the tagger's reading of it), which
+    どうやって 'how' also holds — but どうやって never says ドヤ: a phrase whose words stand inside a longer one is a use
+    only where its reading, its last kana aside, is said in the longer one's."""
+    rows = NESTED + [["どう|遣る|て", "ドウ|ヤル|テ", "ccg", "どうやって", "ドウヤッテ"],
+                     ["どう|遣る", "ドウ|ヤル", "cc", "どやる", "ドヤル"]]
+    assert _met("どうやって行くの？", tokenizer, rows) == [("どうやって", 0, 3)]
 
 
 def test_an_inner_phrase_must_stand_there_as_the_finder_asks(tokenizer):

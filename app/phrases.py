@@ -224,7 +224,7 @@ class PhraseSet:
         that place is tried. Most sentences hold no phrase's first word and are passed over in C.
 
         A match also gives a use to each shorter phrase standing inside it (`_inside`: 身に余る光栄 is a use of 身に余る
-        too), listed right after it — so matches may overlap, an inner one always within the one before it."""
+        too), listed right after it — so matches may overlap, an inner one always within the match it was found in."""
         trie = self._trie if self._trie is not None else self._search()
         lemmas = [token[0] for token in tokens]
         firsts = self.firsts
@@ -276,24 +276,24 @@ class PhraseSet:
 
     def _inside(self, tokens, lemmas, start, end, index, text, found):
         """Add to `found` the shorter phrases standing inside the match `tokens[start:end]` of phrase `index` — those
-        the dictionary writes inside it (`_nests`), found there as `find` finds phrases in a sentence (longest first at
-        each place, then on after it, the same checks) — and, in turn, those inside each of them: a use of the longer
-        phrase is a use of each (身に余る光栄 of 身に余る, 痛い目に遭わせる of 痛い目に遭う and 痛い目, 場合による of
-        による). A grammar expression gives none (`Phrase.grammar`: every word in it is the expression's there — として
-        is never a use of とする)."""
+        the dictionary writes inside it (`_nests`), the longest at each place (the same checks as `find`'s), but for
+        one inside an inner phrase found already (that one's own, in turn) — and those inside each of them: a use of
+        the longer phrase is a use of each (身に余る光栄 of 身に余る, 痛い目に遭わせる of 痛い目に遭う, 痛い目 and 目に遭う,
+        場合による of による). Two inside one may overlap (どうもありがとうございます: どうもありがとう and
+        ありがとうございます). A grammar expression gives none (`Phrase.grammar`: every word in it is the expression's
+        there — として is never a use of とする)."""
         trie, nests, n = self._trie, self._nests, len(lemmas)
-        among, p = nests[index], start
-        while p < end:
+        among, reach = nests[index], start          # reach: where the inner phrases found so far end
+        for p in range(start, end):
             node = trie.get(lemmas[p])
             hit = None if node is None else self._longest(node, tokens, lemmas, p, end, text, n, among)
-            if hit is None:
-                p += 1
-                continue
+            if hit is None or hit[0] <= reach:
+                continue                # none here, or inside one found already (its own walk)
             inner_end, inner = hit
             found.append((p, inner_end, inner))
             if nests[inner]:
                 self._inside(tokens, lemmas, p, inner_end, inner, text, found)
-            p = inner_end
+            reach = inner_end
 
 
 def waiting(phrase, known, offered=None):

@@ -392,6 +392,51 @@ def homes_of(note_ids, db_path=None):
     return out
 
 
+
+def note_lines(ledger_path, ids, language="ja"):
+    """{note id: (item id, line start s, line end s, sentence)} of the notes Connect made (`outcomes`, this
+    language's jobs: item ids are the language's store's), read only; {} when there's none or it can't be read now.
+    The item is the one whose line the card was cut from: the job's own, or (Kantan-SD 6, *Card sentences: Best*) the
+    other episode its pick names for the word (`from`). The one reader of a card's line: Piyo's translations
+    (`card_translations`) and the card's sound (`sound_source`, AUDIO-FIND) ask it."""
+    if not ledger_path or not os.path.isfile(ledger_path) or not ids:
+        return {}
+    from pathlib import Path
+    conn = sqlite3.connect(Path(ledger_path).as_uri() + "?mode=ro", uri=True, timeout=2.0, isolation_level=None)
+    try:
+        conn.execute("PRAGMA query_only=1")
+        picks = "j.picked" if "picked" in {r[1] for r in conn.execute("PRAGMA table_info(jobs)")} else "NULL"
+        ids, out, cut = sorted({int(n) for n in ids}), {}, {}
+        for at in range(0, len(ids), 500):
+            part = ids[at:at + 500]
+            for note, item, start, end, sentence, word, reading, job, picked in conn.execute(
+                    f"SELECT o.note_id, j.item_id, o.line_start, o.line_end, o.sentence, o.word, o.reading, j.id, "
+                    f"{picks} FROM outcomes o JOIN jobs j ON j.id = o.job_id WHERE o.outcome = 'made' AND "
+                    f"j.language = ? AND o.note_id IN ({','.join('?' * len(part))})", [language] + part):
+                if job not in cut:
+                    cut[job] = cut_from(picked)
+                out[int(note)] = (cut[job].get((word, reading), item), start, end, sentence)
+        return out
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+
+
+def cut_from(picked):
+    """{(word, reading): item id} of a job's words cut from another episode's line (its pick's `from`, the JSON text
+    the ledger keeps); {} for none, or a pick that can't be read."""
+    try:
+        words = (json.loads(picked) or {}).get("words") or () if picked else ()
+    except (TypeError, ValueError, AttributeError):
+        return {}
+    out = {}
+    for w in words:
+        if isinstance(w, dict) and isinstance(w.get("from"), int) and not isinstance(w.get("from"), bool):
+            out[(w.get("word"), w.get("reading"))] = w["from"]
+    return out
+
+
 class Ledger:
     """One connection to the ledger; `with Ledger() as ledger:` closes it."""
 

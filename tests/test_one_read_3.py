@@ -124,9 +124,11 @@ def test_a_generates_journey_opens_the_library_store_once_and_parses_the_known_w
     _moved_known(root, language)
     got = _counted(root, language, "generate")
     assert "Journey written" in got["out"], got["out"][-1500:]
-    assert got["opens"] == 1, f"the library store opened once in the render: {got}"
-    assert got["probes"] <= 1, f"its mode checked once (the open's own): {got}"
-    assert got["closes"] == got["opens"], f"closed once in the render, by its opener (never by a reader): {got}"
+    # (ONE-READ 4: the render reads through the run's one handle, opened before it and closed at the run's end — so
+    # none of its own; test_one_read_4 counts the whole run)
+    assert got["opens"] == 0, f"the library store never opened again in the render: {got}"
+    assert got["probes"] == 0, f"its mode read through the run's handle: {got}"
+    assert got["closes"] == 0, f"never closed in the render (the run's handle, never a reader's): {got}"
     assert got["known_reads"] == 1, f"KnownWord.json read once a run: {got}"
 
 
@@ -141,7 +143,7 @@ def test_a_redraws_journey_opens_the_library_store_once(root):
     assert p.returncode == 0, p.stderr[-2000:]
     got = _counted(root, language, "redraw")
     assert "Redrew the journey" in got["out"], got["out"][-1500:]
-    assert got["opens"] == 1 and got["probes"] <= 1 and got["closes"] == 1, got
+    assert got["opens"] == 0 and got["probes"] == 0 and got["closes"] == 0, got     # the run's handle (ONE-READ 4)
 
 
 # --- the name tables: a look before a read ------------------------------------------------------------------------ #

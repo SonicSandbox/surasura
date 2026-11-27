@@ -688,6 +688,25 @@ def test_pr_yml_runs_every_shard_once_and_one_tests_job_reads_them_all():
     assert "SHARDS: ${{ needs.shards.result }}" in tests and "MODULES: ${{ needs.modules.result }}" in tests
 
 
+def test_pr_yml_caps_a_lanes_shards_so_a_trains_run_beside_two_lanes_never_waits_for_runners():
+    """Trains 92 and 96 (2026-11-26) waited 7-10 min for runners behind two lane pull requests' runs (a Free account
+    runs 20 jobs at once): a train's or a release's run takes every shard at once, anyone else's at most a cap low
+    enough that two lanes' Windows jobs (the cap + the module suites, each) and a train's (all + 1) fit in 20."""
+    root = os.path.dirname(os.path.abspath(run_tests.__file__))
+    with open(os.path.join(root, ".github", "workflows", "pr.yml"), encoding="utf-8") as f:
+        text = f.read()
+    shards = text.split("\n  shards:\n", 1)[1].split("\n  modules:\n", 1)[0]
+    n = len(shards.split("shard: [", 1)[1].split("]", 1)[0].split(","))
+    line = [s.strip() for s in shards.splitlines() if s.strip().startswith("max-parallel:")]
+    assert len(line) == 1, "one max-parallel line in the shards' strategy"
+    expr = line[0].split("${{", 1)[1].rsplit("}}", 1)[0].strip()
+    cond, rest = expr.rsplit("&&", 1)
+    full, cap = (int(x) for x in rest.split("||"))
+    assert "startsWith(github.head_ref, 'train/')" in cond and "github.base_ref == 'main'" in cond
+    assert full == n and 1 <= cap < n
+    assert 2 * (cap + 1) + (n + 1) <= 20
+
+
 def test_pr_yml_runs_every_public_module_suite_with_the_shards_install():
     """GitHub ran no module suite before 2026-11-21 (Junban's 1,941 tests, YouTube's 459). Every module suite this
     repository tracks runs in the `modules` job, each in its own pytest process as --all runs it, the second even after
@@ -1303,6 +1322,15 @@ def test_every_guard_is_a_test_file_of_this_checkout_and_the_set_is_not_empty():
         path = node.split("::", 1)[0]
         assert run_tests._is_test_file(path) and os.path.isfile(os.path.join(root, path)), node
         assert folders and all(isinstance(f, str) and f for f in folders), node
+
+
+def test_the_fixed_time_qt_wait_lint_is_a_guard_so_a_new_qwait_fails_before_the_push():
+    """The lint ran on GitHub only, so a new `QTest.qWait` was first seen red there (three in one lane, 2026-11-26):
+    in GUARDS, `--guards` meets it before the push, and a change under tests/ or modules/ picks it as the area's guard."""
+    node = ("tests/test_flake_lints.py::"
+            "test_no_test_file_adds_a_fixed_time_qt_wait_and_a_converted_one_lowers_its_count")
+    assert node in run_tests.GUARDS
+    assert {"tests/", "modules/"} <= set(run_tests.GUARDS[node])
 
 
 def test_guards_run_each_suite_once_under_the_read_audit_and_name_what_is_missing(tmp_path, monkeypatch, capsys):

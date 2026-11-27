@@ -1067,6 +1067,8 @@ GUARDS = {
     "tests/test_cli_imports.py::test_no_cli_source_names_a_dialog_toolkit": ("app/cli/",),
     ("tests/test_flake_lints.py::"
      "test_this_tree_has_nothing_the_allowlist_doesnt_explain_and_no_entry_left_over"): ("app/", "modules/"),
+    ("tests/test_flake_lints.py::"     # (the fixed-time Qt wait lint, §4: on GitHub only before, 2026-11-27)
+     "test_no_test_file_adds_a_fixed_time_qt_wait_and_a_converted_one_lowers_its_count"): ("tests/", "modules/"),
     "tests/test_guard_lints.py": ("app/", "modules/"),
     "tests/test_import_guard.py::test_no_file_outside_the_windows_folders_imports_qt": ("app/", "modules/"),
     ("tests/test_import_guard.py::"

@@ -257,12 +257,14 @@ ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway",
            "undo_swap_same", "leave_swap_same",                                          # FS-2
            "undo_swap_deleted",                                                          # FS-2 2
            "more_cards", "keep_small",                                                   # ONB-4
-           "voice_not_now")                                                              # VOICE-SETUP
+           "voice_not_now",                                                              # VOICE-SETUP
+           "sound_not_now")                                                              # AUDIO-FILL
 PRESSED = ANSWERS + ("voice_setup", "keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "generate_again",
                      "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
                      "make_from_audio", "find_with_hato", "find_with_hato_zh",     # Michi-NS: each a long ask
                      "add_audio",                                                  # Kura-AB3 A2: Anki written
+                     "add_sound",                                                  # AUDIO-FILL: Anki written
                      "change_video",                                               # Kantan-B5: a picker's start
                      "dw_known", "dw_ignore", "dw_bad", "dw_forget",    # Kyou-DW: a line's own answer (Parsing
                      "dw_word_wrong", "dw_only_line")                  # mistake only asks its follow-up: Kyou-DW 3)
@@ -615,6 +617,32 @@ def _audio_added(win, got, title, say, undo, lang, read_settings, failed=None):
                                                             then=undone, failed=failed))
 
 
+def sound_added(win, got, say, undo, lang, read_settings, failed=None):
+    """AUDIO-FILL: *Add sound*'s answer (`card_sound.press`, from *Needs you* or Settings' *Card sound*) shown — a toast
+    with its *Undo* (`undo`: `card_sound.press_undo`, on a worker) whenever something was written (a press stopped
+    part-way too), else its plain words in the bar (`say`)."""
+    got = got or {}
+    if not got.get("id"):
+        say(got.get("say") or strings.NEEDS_SOUND_NONE)
+        return
+    n, m = int(got.get("real") or 0), int(got.get("not_cut") or 0)
+    text = (got.get("say") or strings.NEEDS_SOUND_NONE) if not got.get("ok") else \
+        strings.NEEDS_SOUND_SOME.format(n=n, m=m) if m else \
+        strings.NEEDS_SOUND_ADDED_ONE if n == 1 else strings.NEEDS_SOUND_ADDED.format(n=n)
+
+    def undone(back):
+        back = back or {}
+        if not back.get("ok"):
+            say(back.get("say") or strings.NEEDS_AUDIO_GONE)
+        elif back.get("kept"):
+            say(strings.NEEDS_SOUND_UNDONE_KEPT.format(n=back["emptied"], k=back["kept"]))
+        else:
+            say(strings.NEEDS_SOUND_UNDONE.format(n=back["emptied"]))
+    rid = got["id"]
+    win.toasts.show(text, undo=lambda: bridge.run_in_worker(lambda: undo(lang, rid, read_settings() or {}),
+                                                            then=undone, failed=failed))
+
+
 def _connect_callable(module, name):
     """Connect's call for an action, or None (Connect not installed: its button hidden)."""
     try:
@@ -633,6 +661,24 @@ def _ai_audio_on(settings, language):
         return bool(irodori.on(settings, language))
     except Exception:
         return False
+
+
+def _read_sound(counted, language):
+    """(A worker.) AUDIO-FILL: Card sound's count, as Connect last kept it (`card_sound.counted`: one ledger row), or
+    None (none kept, Connect absent, a read that failed)."""
+    if counted is None:
+        return None
+    try:
+        return counted(language)
+    except Exception:
+        return None
+
+
+def _ai_waiting(handed, sound, language):
+    """(A worker.) VOICE-SETUP's count: the one handed in (`ai_waiting_in`), else Card sound's own "ai" — only while
+    the voice may be offered (`_voice_offered`)."""
+    n = handed if handed else (sound or {}).get("ai")
+    return n if n and _voice_offered(language) else None
 
 
 def _voice_offered(language):
@@ -960,7 +1006,10 @@ class NeedsYou(QObject):
                               "book_ai_audio": _connect_callable("actions", "book_ai_audio"),       # Iro-AA
                               "skip_words": _connect_callable("actions", "skip_refused"),     # Michi-RM3
                               "add_audio": _connect_callable("actions", "add_audio"),               # Kura-AB3 A2
-                              "add_audio_undo": _connect_callable("actions", "add_audio_undo")}
+                              "add_audio_undo": _connect_callable("actions", "add_audio_undo"),
+                              "add_sound": _connect_callable("card_sound", "press"),               # AUDIO-FILL
+                              "add_sound_undo": _connect_callable("card_sound", "press_undo"),
+                              "sound_count": _connect_callable("card_sound", "counted")}
         self.ai_audio_on = _ai_audio_on          # Iro-AA (a worker; tests replace it)
         self._ai_audio = False                   # ... its last answer, left by the gather for `has`
         self.cards = page.cards
@@ -1161,9 +1210,12 @@ class NeedsYou(QObject):
         log_path = getattr(getattr(self.win.services, "controller", None), "log_path", None)
         generate_log = log_path() if callable(log_path) else None      # Kantan-B1: a failed Generate's hover
 
+        sound_count = self.connect_calls.get("sound_count")
+
         def gather():
             settings = read_settings() or {}
             connect = read_connect(lang) if settings.get("connect_enabled") else None
+            sound = _read_sound(sound_count, lang) if connect is not None else None   # AUDIO-FILL: Connect's count
             # Iro-AA: read here, on the worker; the window's thread reads only the bool it leaves (`has`)
             self._ai_audio = bool(ai_audio_on(settings, lang)) if connect is not None else False
             rels = [e.rel_path for r in view.rows for e in r.episodes if e.rel_path] if view.mode == "store" else []
@@ -1196,7 +1248,8 @@ class NeedsYou(QObject):
                                   generate_log=generate_log,                  # Kantan-B1: its path, in the hover
                                   asking=asking,                              # Kyou-DW 3: Parsing mistake's ask
                                   waiting=waiting,                            # ONB-4: Ready for more?
-                                  ai_waiting=ai_waiting if ai_waiting and _voice_offered(lang) else None)
+                                  ai_waiting=_ai_waiting(ai_waiting, sound, lang),
+                                  sound=sound)
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
 
@@ -2601,6 +2654,26 @@ class NeedsYou(QObject):
             self._say(strings.NEEDS_SHOWS_LEFT)
             self.refresh()
         self._press("leave_shows", entry, service.answer, self.language, service.answer_keys(entry), then=done)
+
+    # AUDIO-FILL (PROVISIONAL): *Add sound* — real sound on every card that can get it now (`card_sound.press`, on a
+    # worker; the AI voice's cards are Connect's, as they come due), then a toast with its Undo (`press_undo`)
+    def _do_add_sound(self, entry, _line):
+        add, undo = self.connect_calls["add_sound"], self.connect_calls["add_sound_undo"]
+        lang, read_settings = self.language, self.read_settings
+
+        def done(got):
+            got = got or {}
+            if not got.get("ok"):
+                self._stays("add_sound", entry)
+            self.refresh()
+            sound_added(self.win, got, self._say, undo, lang, read_settings, self._failed)
+        self._press("add_sound", entry, lambda: add(lang, read_settings() or {}), then=done)
+
+    def _do_sound_not_now(self, entry, _line):
+        def done(_n):
+            self._say(strings.NEEDS_SOUND_NOT_NOW)
+            self.refresh()
+        self._press("sound_not_now", entry, service.answer, self.language, service.answer_keys(entry), then=done)
 
     # Michi-DK: Connect's cards outside the deck Surasura shows — moved on the press (`connect/decks.move`: under the
     # one Anki writer, a snapshot first), then a toast with its Undo (`decks.move_back`, on a worker too)

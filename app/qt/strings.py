@@ -1629,6 +1629,11 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                               "you'll meet the words. Undo puts them back"),
     "leave_shows": ("Leave them", "They stay in New arrivals and this stops asking. A show that comes in later asks "
                                   "again"),
+    # AUDIO-FILL (PROVISIONAL words): cards with no sentence audio the library can give
+    "add_sound": ("Add sound", "Cut each card's line from your own episodes and books and put it on the card. "
+                               "Your own audio is never touched.\n• Undo: the message's Undo"),
+    "sound_not_now": ("Not now", "They stay as they are, and this asks again only when more cards can get sound.\n"
+                                 "• Settings › Anki & mining › Card sound has it any time"),
     # Michi-DK (PROVISIONAL): Connect's cards outside the deck Surasura shows (the button names the deck)
     "move_cards": ("Move them", "Put these cards in the deck Surasura keeps in order. Their reviews stay as they "
                                 "are.\n• Undo: the message's Undo"),
@@ -1860,6 +1865,14 @@ NEEDS_AUDIO_SOME = ("The narrator's voice is on {n} of 「{title}」's cards · 
 NEEDS_AUDIO_RUNNING = "Surasura is looking at 「{title}」's cards for the narrator's voice…"
 NEEDS_AUDIO_FAILED = "Surasura couldn't add the narrator's voice just now: try again in a moment"
 NEEDS_AUDIO_GONE = "Nothing to add there any more"
+# AUDIO-FILL (PROVISIONAL): *Add sound*'s words
+NEEDS_SOUND_ADDED = "Sound is on {n:,} cards now"
+NEEDS_SOUND_ADDED_ONE = "Sound is on 1 card now"
+NEEDS_SOUND_SOME = "Sound is on {n:,} cards now · {m:,} couldn't be cut: they're tried again next time"
+NEEDS_SOUND_NONE = "No card here can get sound right now"
+NEEDS_SOUND_UNDONE = "The sound is off {n:,} cards again"
+NEEDS_SOUND_UNDONE_KEPT = "The sound is off {n:,} cards again · {k:,} you changed since keep yours"
+NEEDS_SOUND_NOT_NOW = "Not now · Settings › Anki & mining › Card sound has it any time"
 NEEDS_AUDIO_UNDONE = "The narrator's voice is off {n} cards again"
 NEEDS_AUDIO_UNDONE_KEPT = "The narrator's voice is off {n} cards again · {k} kept (changed since, or gone)"
 NEEDS_AUDIOBOOK_LINE = "{title} · {n} files"

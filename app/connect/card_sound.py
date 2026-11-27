@@ -313,7 +313,8 @@ def run(anki, ledger, language, mapping, steps, settings=None, deck=None, ai=Non
     card's mark field, the audio card's) for decision 4 (None: no flips); `only` as `look`'s; `due` the window
     already read ({note: day}; None: read here); `ai_hold()` True: the AI voice isn't started this run (the PC busy:
     asked once before it starts, never between its sentences — its own load would stop it). Raises the writer's
-    Reviewing / Busy and AnkiConnect's errors; a write already made keeps its record, and the run's record names it (its Undo works)."""
+    Reviewing / Busy and AnkiConnect's errors; a write already made keeps its record, and the run's record names it
+    (its Undo works)."""
     from app.connect import sound_source
     settings = settings or {}
     seen = look(anki, ledger, language, mapping, steps, deck=deck, ledger_path=ledger_path, only=only)
@@ -636,6 +637,7 @@ def act(settings, language, confirm=False, undo_id=None, remove_ai=False, should
                        should_stop=should_stop, run_dir=run_dir, marks=marks)
             if done["id"]:
                 undoing.owe_sync(settings)
+            _recount_quietly(anki, ledger, language, mapping, steps)
             report = done.pop("ai_report") or {}
             return dict(done, language=language, confirm=True, problems=list(report.get("problems") or ()),
                         not_cut=len(done["not_cut"]))
@@ -715,8 +717,8 @@ def auto(settings, language, ledger, steps=None, should_stop=None, ai_hold=None,
     `ai_hold()` says go (the PC quiet: asked once, after the real sound), the soundless cards due in the window get
     the voice too, soonest
     first — but none whose clip the voice's check refused today (tried again tomorrow, never every pass).
-    `ledger`, `steps`: Connect's own (the pass's). `should_stop` between two lines and two sentences; `ai_stop` the voice's
-    own (its switch read again).
+    `ledger`, `steps`: Connect's own (the pass's). `should_stop` between two lines and two sentences; `ai_stop` the
+    voice's own (its switch read again).
     Costs: the waiting list and the window's ids only (never the whole deck's plan): one search of the deck's
     soundless cards, the window (`due_days`), then `run` over those alone."""
     import shutil
@@ -729,7 +731,7 @@ def auto(settings, language, ledger, steps=None, should_stop=None, ai_hold=None,
     try:
         new = [int(n) for n in _meta_json(ledger, NEW + language, [])]
         ai = _voice_on(settings, language)
-        if not new and not ai:
+        if not new and not ai and _meta_json(ledger, COUNT + language, {}):
             return {"skipped": NOTHING}
         run_dir, mapping = _mapping(settings, language)
         if mapping is None:
@@ -744,6 +746,7 @@ def auto(settings, language, ledger, steps=None, should_stop=None, ai_hold=None,
                        deck=mapping.deck, ai=ai, due=due, only=only, should_stop=should_stop, ai_hold=ai_hold,
                        make_ai=_make_ai(settings, language, ai_stop or should_stop), run_dir=run_dir,
                        marks=fields.marks(mapping), ledger_path=ledger_path)
+        _recount_quietly(anki, ledger, language, mapping, steps or runner.Steps(settings), ledger_path)
         unheard = {int(n) for n in ((done.get("ai_report") or {}).get("unheard") or ())}
         if unheard:
             _put_meta(ledger, TRIED + language, {"day": _today(), "notes": sorted(tried | unheard)})
@@ -759,3 +762,118 @@ def auto(settings, language, ledger, steps=None, should_stop=None, ai_hold=None,
     finally:
         if run_dir:
             shutil.rmtree(run_dir, ignore_errors=True)
+
+
+# --- *Needs you*'s count (Connect keeps it; the window reads it) ------------------------------------------------ #
+COUNT = "card_sound_count:"                     # ledger meta: <lang> -> {"cards", "real", "ai", "silent", "at"}
+SEEN = "card_sound_seen:"                       # ledger meta: <lang> -> {"day", "kinds": {note: REAL / AI / SILENT}}
+REAL, AI, SILENT, OTHER = "real", "ai", "silent", "other"
+
+
+def recount(anki, ledger, language, mapping, steps, ledger_path=None):
+    """*Needs you*'s count -> {"cards", "real", "ai", "silent", "at"} (kept in the ledger, COUNT), or None (no audio
+    field): of the deck's soundless unsuspended cards, how many can get real sound now, how many wait for the AI
+    voice, how many have none. Each card is planned once a day (SEEN: its answer kept; a card that got sound since
+    drops out with the next search): one `findNotes`, then `sound_source.plan` over the cards not planned today
+    only — never the whole deck at every pass. Its answer for a card can lag a day behind a library change (an
+    episode added) — the press itself plans every card again."""
+    from app.connect import sound_source
+    field = (mapping.fields or {}).get("audio") if mapping is not None else None
+    if not field:
+        return None
+    empty = set(candidates(anki, mapping.deck, field))
+    memo = _meta_json(ledger, SEEN + language, {})
+    kinds = {}
+    if memo.get("day") == _today():
+        for n, kind in (memo.get("kinds") or {}).items():
+            try:
+                if int(n) in empty:
+                    kinds[int(n)] = kind
+            except (TypeError, ValueError):
+                continue
+    todo = empty - set(kinds)
+    if todo:
+        planned = look(anki, ledger, language, mapping, steps, deck=mapping.deck, ledger_path=ledger_path,
+                       only=todo)["plan"]
+        for n in todo:
+            src = planned.get(n)
+            kinds[n] = (OTHER if src is None else REAL if src.kind != sound_source.NONE else
+                        AI if src.why == sound_source.AI else SILENT if src.why == sound_source.SILENT else OTHER)
+    counts = {k: sum(1 for v in kinds.values() if v == k) for k in (REAL, AI, SILENT)}
+    counts.update(cards=counts[REAL] + counts[AI] + counts[SILENT], at=time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                                                     time.gmtime()))
+    _put_meta(ledger, SEEN + language, {"day": _today(), "kinds": {str(n): k for n, k in sorted(kinds.items())}})
+    _put_meta(ledger, COUNT + language, counts)
+    return counts
+
+
+def _recount_quietly(anki, ledger, language, mapping, steps, ledger_path=None):
+    try:
+        return recount(anki, ledger, language, mapping, steps, ledger_path=ledger_path)
+    except Exception:
+        log.info("Card sound: the count for Needs you wasn't kept (%s)", language, exc_info=True)
+        return None
+
+
+def counted(language, ledger_path=None):
+    """(The window's worker.) The count Connect last kept (`recount`) -> {"cards", "real", "ai", "silent", "at"} or
+    None (none kept, no ledger, a ledger that can't be read now). Read only, one row."""
+    import sqlite3
+    from pathlib import Path
+    from app.connect import ledger as ledger_mod
+    path = ledger_path or ledger_mod.path()
+    if not os.path.isfile(path):
+        return None
+    try:
+        conn = sqlite3.connect(Path(path).as_uri() + "?mode=ro", uri=True, timeout=2.0, isolation_level=None)
+        try:
+            row = conn.execute("SELECT value FROM meta WHERE key = ?", (COUNT + language,)).fetchone()
+        finally:
+            conn.close()
+        got = json.loads(row[0]) if row else None
+    except (sqlite3.Error, TypeError, ValueError):
+        return None
+    if not isinstance(got, dict):
+        return None
+    try:
+        return {k: max(0, int(got.get(k) or 0)) for k in ("cards", "real", "ai", "silent")} | {"at": got.get("at")}
+    except (TypeError, ValueError):
+        return None
+
+
+# --- the window's press (*Needs you*, Settings › Anki & mining › *Card sound*) ---------------------------------- #
+def press(language, settings):
+    """(A worker.) *Add sound*: real sound on every card that can get it now (`act`, the AI voice left to Connect's
+    pass: it voices the window's cards while the PC is quiet), then Connect kicked -> {"ok", "id" (its Undo), "real",
+    "say"}. A "couldn't" -> {"ok": False, "say": its plain words}."""
+    from app.cli.contract import CliError
+    try:
+        done = act(settings, language, confirm=True, ai=False)
+    except CliError as e:
+        return {"ok": False, "id": getattr(e, "context", {}).get("undo"), "say": e.message, "real": 0}
+    if done.get("skipped"):
+        return {"ok": False, "id": None, "say": None, "real": 0}
+    _kick(settings)
+    return {"ok": True, "id": done.get("id"), "real": done.get("real", 0) + done.get("swapped", 0),
+            "not_cut": done.get("not_cut", 0), "say": None}
+
+
+def press_undo(language, rid, settings):
+    """(A worker.) The toast's *Undo* -> {"ok", "emptied", "kept", "say"}."""
+    from app.cli.contract import CliError
+    try:
+        done = act(settings, language, undo_id=rid)
+    except CliError as e:
+        return {"ok": False, "say": e.message, "emptied": 0, "kept": 0}
+    if done.get("skipped") or done.get("refused"):
+        return {"ok": False, "say": done.get("refused") if done.get("refused") != "nothing to undo" else None,
+                "emptied": 0, "kept": 0}
+    return {"ok": True, "emptied": len(done.get("emptied") or ()), "kept": len(done.get("kept") or {}), "say": None}
+
+
+def _kick(settings):
+    try:
+        from app.connect import kick
+        kick.kick(settings or {})
+    except Exception:
+        log.info("Card sound: Connect wasn't kicked", exc_info=True)

@@ -390,3 +390,47 @@ def test_the_new_cards_list_keeps_each_card_once_and_its_newest_within_the_cap(t
         ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (cs.NEW + "zh", "not json"))
         cs.queue_new(ledger, "zh", [5])                     # a damaged list is started again, never a failure
         assert cs._meta_json(ledger, cs.NEW + "zh", []) == [5]
+
+
+# --- *Needs you*'s count (`recount` in Connect's pass, `counted` in the window) ---------------------------------- #
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_the_count_plans_each_soundless_card_once_a_day_and_the_window_reads_it(lib, lang, tmp_path, monkeypatch):
+    """Two cards with their line, one with none (Japanese: the AI voice's; Chinese: silent), the learner's own audio
+    card (not counted): the count says so; a second count plans only the card added since; a card that got sound
+    drops out; the window's reader returns the same numbers from the ledger alone."""
+    from app.connect import sound_source
+    env = lib(lang)
+    env["anki"] = Anki()
+    said = env["said"]
+    _made(env, EPISODE, [(1600, said[0], None), (1601, said[2], None)])
+    env["anki"].add(1602, UNSAID[lang].text, UNSAID[lang].text[:2])
+    env["anki"].add(1603, said[3].text, said[3].text[:2], audio="[sound:mine.mp3]")
+    real_plan, planned = sound_source.plan, []
+
+    def plan(language, notes, mapping, steps, ledger_path=None):
+        planned.append(sorted(int(n["noteId"]) for n in notes))
+        return real_plan(language, notes, mapping, steps, ledger_path=ledger_path)
+    monkeypatch.setattr(sound_source, "plan", plan)
+    with Ledger(env["ledger"]) as ledger:
+        got = cs.recount(env["anki"], ledger, lang, MAPPING, env["steps"], ledger_path=env["ledger"])
+        ai, silent = (1, 0) if lang == "ja" else (0, 1)
+        assert {k: got[k] for k in ("cards", "real", "ai", "silent")} == {"cards": 3, "real": 2, "ai": ai,
+                                                                          "silent": silent}
+        env["anki"].add(1604, UNSAID[lang].text, UNSAID[lang].text[:2])
+        env["anki"].notes_[1600]["fields"]["SentenceAudio"]["value"] = "[sound:now.mp3]"
+        again = cs.recount(env["anki"], ledger, lang, MAPPING, env["steps"], ledger_path=env["ledger"])
+    assert planned == [[1600, 1601, 1602], [1604]], "each card planned once a day"
+    assert (again["real"], again["cards"]) == (1, 3)
+    assert cs.counted(lang, ledger_path=env["ledger"]) == {k: again[k] for k in ("cards", "real", "ai", "silent",
+                                                                                 "at")}
+    assert cs.counted("zh" if lang == "ja" else "ja", ledger_path=env["ledger"]) is None
+
+
+def test_the_windows_reader_says_none_without_a_ledger_or_with_a_damaged_count(tmp_path):
+    assert cs.counted("ja", ledger_path=str(tmp_path / "none.sqlite")) is None
+    with Ledger(str(tmp_path / "ledger.db")) as ledger:
+        ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (cs.COUNT + "ja", "{broken"))
+        ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (cs.COUNT + "zh",
+                                                                                        '{"real": "many"}'))
+    assert cs.counted("ja", ledger_path=str(tmp_path / "ledger.db")) is None
+    assert cs.counted("zh", ledger_path=str(tmp_path / "ledger.db")) is None

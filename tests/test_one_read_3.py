@@ -231,14 +231,15 @@ def known_file(tmp_path, monkeypatch):
 
 class _Reads:
     def __init__(self, monkeypatch, path):
-        from app import path_utils
+        from app import analyzer, path_utils
         self.n = 0
         real = path_utils.read_text
 
         def read_text(p, *a, **k):
             self.n += os.path.normcase(os.path.abspath(p)) == os.path.normcase(os.path.abspath(path))
             return real(p, *a, **k)
-        monkeypatch.setattr(path_utils, "read_text", read_text)
+        monkeypatch.setattr(path_utils, "read_text", read_text)      # (token_index imports it at each call)
+        monkeypatch.setattr(analyzer, "read_text", read_text)        # (the analyzer holds its own name for it)
 
 
 def _fresh(path, language="ja"):

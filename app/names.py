@@ -1126,13 +1126,14 @@ def library_tables():
 
 def _store_stamp(path):
     """The token store's database and its `-wal` as they stand on disk — (file id, mtime, size) each, None for one
-    that isn't there; None when neither is. Every write moves one of them (a WAL write, a checkpoint, a store made
-    again and put in its place), so the tables read under one stamp are still the store's under the same stamp."""
+    that isn't there (an empty `-wal` too: a reader's open makes one, and it holds no write); None when neither is.
+    Every write moves one of them (a WAL write, a checkpoint, a store made again and put in its place), so the tables
+    read under one stamp are still the store's under the same stamp."""
     out = []
     for name in (path, path + "-wal"):
         try:
             st = os.stat(name)
-            out.append((st.st_ino, st.st_mtime_ns, st.st_size))
+            out.append((st.st_ino, st.st_mtime_ns, st.st_size) if st.st_size or name == path else None)
         except OSError:
             out.append(None)
     return tuple(out) if out[0] is not None or out[1] is not None else None

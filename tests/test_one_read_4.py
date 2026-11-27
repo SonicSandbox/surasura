@@ -54,17 +54,22 @@ def opened(file, *a, **k):
     return real_open(file, *a, **k)
 builtins.open = io.open = opened
 real_init, real_probe, real_close = ls.Store.__init__, ls._probe, ls._close
+handles = set()   # the plain handles' connections (the helper's own look, `_db_state`, is a bare connection)
 def init(self, db_path, language, data_dir, user_files_dir, role="window"):
-    if threading.current_thread() is MAIN:
+    main = threading.current_thread() is MAIN
+    if main:
         n["opens"].append(role)
     else:
         n["elsewhere"] += 1
-    return real_init(self, db_path, language, data_dir, user_files_dir, role)
+    made = real_init(self, db_path, language, data_dir, user_files_dir, role)
+    if main and role != "helper":
+        handles.add(id(self.conn))
+    return made
 def probe(*a, **k):
     n["probes"] += threading.current_thread() is MAIN
     return real_probe(*a, **k)
 def close(conn, db_path, role):
-    n["closes"] += threading.current_thread() is MAIN and role != "helper"
+    n["closes"] += threading.current_thread() is MAIN and id(conn) in handles
     return real_close(conn, db_path, role)
 ls.Store.__init__, ls._probe, ls._close = init, probe, close
 sys.argv = ["analyzer.py", f"--language={language}", "--static", "--no-open"] + (

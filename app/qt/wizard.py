@@ -3282,10 +3282,11 @@ class SetupWizard(QWidget):
         adder = self._adder()               # --- W3.2 Q3: what + Add hands the writer shows in page 3's rows
         if adder is not None:
             adder.given.connect(self._added)
-        lib = getattr(shell, "library_bridge", None)
-        if lib is not None:
-            lib.library_changed.connect(self._added)
-            lib.library_changed.connect(self._library_moved)
+        self._heard = None                  # the window's library bridge heard (a language switch makes another)
+        self._hear()
+        switched = getattr(shell, "library_switched", None)
+        if switched is not None:            # ONB-FIX c: page 1's language shows another library, through its own bridge
+            switched.connect(self._library_switched)
         bridge.run_in_worker(windows.module_present, "junban", then=self.alive(self._junban_looked),
                              failed=lambda info: applog.log("wizard", f"looking for 順: {info[0]}"))
         closing = getattr(shell, "closing", None)
@@ -5019,6 +5020,32 @@ class SetupWizard(QWidget):
             page.show_numbers(numbers)
         if self._start_again and self.page.id == StartPage.id:
             self.read_start(again=True)
+
+    def _hear(self):
+        """Follow the views of the library the window shows now (its bridge: a language switch makes another and stops
+        the old one — `settings_store`'s rule). ONB-FIX c: setup heard only the bridge it opened with, so after page
+        1's zh *Watching now* got its tiles only when New arrivals was full as it opened (train 96's stress red)."""
+        heard = getattr(self.shell, "library_bridge", None)
+        if heard is self._heard:
+            return
+        old, self._heard = self._heard, heard
+        if old is not None and not sip.isdeleted(old):
+            for slot in (self._added, self._library_moved):
+                try:
+                    old.library_changed.disconnect(slot)
+                except (TypeError, RuntimeError):     # never connected, or already gone
+                    pass
+        if heard is not None:
+            heard.library_changed.connect(self._added)
+            heard.library_changed.connect(self._library_moved)
+
+    def _library_switched(self):
+        """(`library_switched`) Another language's library shown: its bridge heard, and the window's view read as it
+        is now (a view shown before this was heard is never waited for)."""
+        if self._gone or sip.isdeleted(self):
+            return
+        self._hear()
+        self._library_moved()
 
     def _library_moved(self, _view=None):
         """(`library_changed`) The window's view moved — the list being made: *Your start*'s numbers again; the read's

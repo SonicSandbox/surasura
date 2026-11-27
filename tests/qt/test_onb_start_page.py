@@ -221,6 +221,23 @@ def test_your_start_is_looked_for_only_once_the_sorts_end_is_saved(make):
     assert api.calls == [("sorted_offer", "ja"), ("start_offered", "ja")]
 
 
+def test_a_cards_line_check_that_raises_still_lets_your_start_be_decided(make, qt_errors):
+    # why: the sort's end failing (the seen file held) must not leave *Your start* undecided for good — Generate
+    # would wait on it forever; the line as it stands is read instead
+    api = HeldStart(offered=True)
+
+    def broken(language, ids):
+        api.calls.append(("sorted_offer", language))
+        raise OSError("the seen file is held by another program")
+    api.sorted_offer = broken
+    wiz, shell, api, settings, _m = make(api=api, data={"connect_enabled": True})
+    go_to(wiz, "level")
+    assert wait_until(lambda: wiz.shown()[-1] == "start")
+    wiz._offer_cards([1])
+    assert wait_until(lambda: not wiz._start_pending())
+    assert api.calls[-2:] == [("sorted_offer", "ja"), ("start_offered", "ja")]
+
+
 def test_another_language_drops_the_offer_until_its_own_line_is_read(make):
     # why: the offer is one language's line — Back to page 1 and another language must not reach *Your start* on it
     api = StartApi(offered=True)

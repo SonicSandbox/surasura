@@ -681,11 +681,13 @@ def test_the_levels_words_are_automatics_own_band_count_from_the_numbers_it_read
 
 @pytest.mark.parametrize("keys, moves", [
     (["logic.selection.band"], True), (["logic.selection.auto_max_words"], True), (["logic.names_kanji"], True),
-    (["zh_script"], True), (["logic"], True), (["logic.ignore_names"], False), (["logic.phrase_rows"], False),
+    (["zh_script"], True), (["logic"], True), (["logic.ignore_names"], True), (["logic.phrase_rows"], True),
+    (["logic.context"], False),
     (["anki_sync_auto", "theme"], False)])
 def test_only_what_the_level_reads_reads_it_again(keys, moves):
     """IK-28 (S19): the level chip is read again (a token store read) only after a write of what `level` reads — the
-    selection, the names layers the Tk refresh sets, the Chinese script — never after any other `logic` key."""
+    selection, the names layers the Tk refresh sets, the Chinese script, and what the band previews read besides (BRIDGE-2:
+    Ignore names' names, the phrase rows) — never after any other `logic` key."""
     assert A.moves_level(keys) is moves
 
 

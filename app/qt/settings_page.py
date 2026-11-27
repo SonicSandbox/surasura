@@ -34,7 +34,10 @@ change writes are `settings_catalog`'s; the page paints it and hands every chang
   steady 1 s) — the only scroll the page makes by itself.
 - **Built in slices** (B4): the frame (nav and search) at once, then the rows in slices of at most 4 ms a turn of the
   event loop (`QTimer.singleShot(0)`), the slab a reveal needs first, then from the top; `ready` when done; each slice's
-  time in `slice_ms`.
+  time in `slice_ms`. A reveal of a slab not built yet (`open_setting`: a click on a Settings link) builds that slab
+  whole in the turn after it, once the tab and its frame have painted, as the nav's click does (SETTINGS-OPEN: its 35
+  rows a slice or two each, the loop's layout and paint between, took ~1 s of the open's 1.5). The rows other packages
+  fill (`attach_later`) are attached just before the first row of their sections is built, not at the mount.
 """
 import bisect
 import math
@@ -856,6 +859,7 @@ class SettingsPage(QWidget):
         self._slice_end = None
         self.built_order = []                 # the sections in the order their first row was built
         self.built = False
+        self._attaches = []                   # [(attach, its sections)] not run yet (`attach_later`), in their order
         self.last_toast = None                # (message, undo) of the last *Saved* / reset toast (EZ2-9)
         self._build_frame()
         order = {section.id: i for i, section in enumerate(catalog.SECTIONS)}      # built in the page's order (the
@@ -1055,6 +1059,29 @@ class SettingsPage(QWidget):
         """The row's widget (`RowView`: its `label`, `help`, `slot`, `controls`, `doors`), or None until built."""
         return self.rows.get(row_id)
 
+    def attach_later(self, attach, rows):
+        """`attach(page)` — a package filling the slots of `rows` (`custom_row`) — run just before the first row of
+        those rows' sections is built, or at once when one is built already (SETTINGS-OPEN: at the mount the six took
+        150–340 ms of the click's stretch, beside the page's first reads; later each of the others took 1–4 ms). A
+        reveal or `shows` that reads a fallback row's slot runs its section's first. One that fails is logged; the
+        rest go on."""
+        sections = frozenset(catalog.ROW[row_id].section for row_id in rows)
+        self._attaches.append((attach, sections))
+        if self.built or any(view.row.section in sections for view in self.rows.values()):
+            self._attach_for(sections)
+
+    def _attach_for(self, sections=None):
+        """The waiting attaches for any of `sections` (None: every one), in the order they were given."""
+        if not self._attaches:
+            return
+        due = [item for item in self._attaches if sections is None or item[1] & sections]
+        self._attaches = [item for item in self._attaches if item not in due]
+        for attach, _sections in due:
+            try:
+                attach(self)
+            except Exception as e:                  # one package's rows never keep the page from opening
+                applog.log("shell", f"settings rows not attached ({attach.__module__}): {e!r}")
+
     def _slice(self):
         if not _alive(self):
             return
@@ -1086,6 +1113,7 @@ class SettingsPage(QWidget):
         if self._queue:
             QTimer.singleShot(0 if _WARMED or not _WARM_ROWS(self._queue[0][1]) else WARM_WAIT_MS, self._slice)
             return
+        self._attach_for()                    # (a package whose sections built no row: attached all the same)
         self.built = True
         self._revealed = None
         if self.built_order != [s.id for s in catalog.SECTIONS if s.id in self.slabs]:
@@ -1190,6 +1218,8 @@ class SettingsPage(QWidget):
     def _build_guarded(self, index, row, settings):
         """`_build_row`, never ending the build: a row that can't be built is logged and left out, the rest go on and
         `ready` still fires (B2). -> True when it was built."""
+        if self._attaches:
+            self._attach_for(frozenset((row.section,)))      # its section's packages first: their slots filled
         try:
             self._build_row(index, row, settings)
             return True
@@ -1925,6 +1955,8 @@ class SettingsPage(QWidget):
         _section_id, row_id = located
         if row_id is None:
             return True
+        if row_id in FALLBACK:
+            self._attach_for(frozenset((catalog.ROW[row_id].section,)))     # (its slot filled before it is read)
         if row_id in FALLBACK and row_id in self.slots and not self.slots[row_id].layout().count():
             return False
         return bool(self._visible(catalog.ROW[row_id], self._settings(), self._ctx()))
@@ -1938,6 +1970,8 @@ class SettingsPage(QWidget):
             return False
         section_id, row_id = located
         settings, ctx = self._settings(), self._ctx()
+        if row_id in FALLBACK:
+            self._attach_for(frozenset((catalog.ROW[row_id].section,)))     # (its slot filled before it is read)
         if row_id is not None and (not self._visible(catalog.ROW[row_id], settings, ctx)
                                    or (row_id in FALLBACK and not self.slots[row_id].layout().count())):
             fallback = FALLBACK.get(row_id, section_id)
@@ -1945,6 +1979,8 @@ class SettingsPage(QWidget):
             if row_id is not None and not self._visible(catalog.ROW[row_id], settings, ctx):
                 row_id = None
         if not self._section_built(section_id):
+            if self._reveal_wanted is None:
+                QTimer.singleShot(0, self._build_wanted)    # the turn after: the tab and its frame painted first
             self._reveal_wanted = row_id or section_id
             self._prioritise(section_id)
             return True
@@ -1966,6 +2002,19 @@ class SettingsPage(QWidget):
         if view is not None:
             self._wash(view)
         return True
+
+    def _build_wanted(self):
+        """(The turn after a reveal of a slab not built yet.) That slab built whole now (`_finish_build_of`), then the
+        reveal made — never left to the slices, which build a row or two a turn with the loop's layout and paint
+        between. A slice that got there first has made it already."""
+        target = self._reveal_wanted
+        if not _alive(self) or target is None:
+            return
+        located = catalog.locate(target)
+        self._finish_build_of(located[0])
+        if self._reveal_wanted == target and self._section_built(located[0]):
+            self._reveal_wanted = None
+            self.reveal(target)
 
     def _first_shown_row(self, section_id):
         for row in catalog.rows(section_id):

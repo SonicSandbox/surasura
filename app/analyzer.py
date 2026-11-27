@@ -5,6 +5,14 @@ import sys
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Run as a script (`python app/analyzer.py`: the window's Generate from source, the benches), the run is the ONE
+# imported module's, as the frozen app's `analyzer` verb runs it. This file's body run as `__main__` was a second copy
+# beside `app.analyzer`, which names.py and the token store import: their JoinedWord was not its own, so a known
+# katakana name's pieces were never marked known (ENTRY-ONCE, 3.0.21). Before the body, so it never runs twice.
+if __name__ == "__main__":
+    from app import analyzer as _one
+    sys.exit(_one.main() or 0)
+
 import json
 import re
 import csv
@@ -9092,6 +9100,3 @@ def main():
         print("Use '--visualize' to run the interactive server.")
         print("Use '--static' to generate a standalone HTML file.")
     return 1 if _report_failed else None
-
-if __name__ == "__main__":
-    sys.exit(main() or 0)

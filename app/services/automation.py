@@ -72,8 +72,10 @@ State = namedtuple("State", "sync language added known message junban seq shows 
 #   shows (Michi-C): the shows behind the backlog's last offer, as a short digest — a new one asks *Needs you* again
 #   payoff (Kyou-LR): the review loop's last sync that moved something — (language, sync id, known, swap, ignored) —
 #   the window's *From your phone* toast, once, with its Undo (`Automation.undo_payoff`)
-# What `level` reads (IK-28): only a write of one of these reads the token store again for the bar's level chip.
-LEVEL_KEYS = ("logic.selection", "logic.names_recurring", "logic.names_kanji", "logic.names_work_terms", "zh_script")
+# What `level` reads (IK-28): only a write of one of these reads the token store again for the bar's level chip — and
+# what the band previews behind Automatic's band read besides (BRIDGE-2): Ignore names' names, the phrase rows.
+LEVEL_KEYS = ("logic.selection", "logic.names_recurring", "logic.names_kanji", "logic.names_work_terms", "zh_script",
+              "logic.ignore_names", "logic.phrase_rows")
 
 
 def start_timer(delay, call):

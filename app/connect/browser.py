@@ -26,7 +26,10 @@ import bisect
 import json
 import os
 import re
+import secrets
 import shutil
+import threading
+import time
 
 FOLDER = "browser"
 PAD_BEFORE, PAD_AFTER = 1.0, 1.0        # seconds Ukai records before and after a line (the contract's pads)
@@ -143,14 +146,17 @@ def lines_for(words, cues, starts=None):
     holds) -> ([{"n", "start", "end", "text"}], {(line_start, before, after): n}); one line for words that share one.
     A word cut from another episode's line (`from`, Kantan-SD 6) has no line here: that episode's video holds it."""
     starts = [c[0] for c in cues] if starts is None else starts
-    out, index = [], {}
+    out, index, of_span = [], {}, {}
     for w in words:
         key = line_key(w)
         if key in index or not cues or w.get("from") is not None:
             continue
         at = _nearest(starts, key[0])
         first, last = max(0, at - key[1]), min(len(cues) - 1, at + key[2])
-        index[key] = len(out)
+        if (first, last) in of_span:            # another word's lines, widened the other way: the same clip
+            index[key] = of_span[first, last]
+            continue
+        index[key] = of_span[first, last] = len(out)
         out.append({"n": len(out), "start": cues[first][0], "end": cues[last][1],
                     "text": " ".join(c[2] for c in cues[first:last + 1])})
     return out, index
@@ -161,11 +167,12 @@ def line_key(word):
 
 
 def hand_off(job_id, web, title, lines, root=None):
-    """`lines.json` for Ukai (written once; the same job asks again with what it has)."""
+    """`lines.json` for Ukai (written once — again only when it can't be read; the same job asks again with what it
+    has)."""
     here = place(job_id, root)
     os.makedirs(here, exist_ok=True)
     path = os.path.join(here, LINES)
-    if not os.path.isfile(path):
+    if _read_json(path) is None:
         _write_json(path, {"job": int(job_id), "rev": 0, "site": web["site"], "video_id": web.get("video_id") or "",
                            "url": web.get("url") or "", "title": title, "pad_before": PAD_BEFORE,
                            "pad_after": PAD_AFTER, "lines": lines})
@@ -221,7 +228,8 @@ def take_over(job_id, earlier, root=None):
     when you reordered the list, or one that failed) copied into this job's folder for the lines it hands off and they
     hold (`covers`): those lines never need recording again. Each earlier folder is then removed: its job is gone
     (`runner._earlier_jobs`: older, no longer open). A line this job has a clip for already is never
-    touched; once every line has one, the job is done -> how many lines were taken over."""
+    touched; once every line has one (taken over or recorded, or the job hands off none), the job is done -> how
+    many lines were taken over."""
     here = place(job_id, root)
     want = handed(job_id, root)
     lines = {span(ln): ln for ln in (_read_json(os.path.join(here, LINES)) or {}).get("lines") or ()}
@@ -241,7 +249,7 @@ def take_over(job_id, earlier, root=None):
             os.replace(os.path.join(here, f"clip-{mine}.webm.part"), os.path.join(here, f"clip-{mine}.webm"))
             taken.add(mine)
         drop(old, root)                         # its job is gone: what a later job needs is copied
-    if taken and len(have | taken) == len(want) and not os.path.exists(os.path.join(here, DONE)):
+    if len(have | taken) == len(want) and not os.path.exists(os.path.join(here, DONE)):
         _write_json(os.path.join(here, DONE), {"failed": []})      # every line held: nothing to record
     return len(taken)
 
@@ -254,23 +262,34 @@ def folders(root=None):
         return []
 
 
-def close(job_id, keep, root=None):
+KEEP_DAYS = 30              # a left job's clips wait this long for a later job of its episode to take them over
+
+
+def close(job_id, keep, root=None, now=None):
     """A job's folder whose job left: `keep` (its job is known, no longer open) closed (`done.json`: never listed for
-    recording again) while it holds a clip to take over, else gone; `keep` None (its job is open) untouched."""
+    recording again) while it holds a clip to take over — for KEEP_DAYS from its closing, then gone —, else gone;
+    `keep` None (its job is open) untouched."""
     here = place(job_id, root)
     if keep is None or not os.path.isdir(here):
         return
     if keep and any(n.startswith("clip-") and n.endswith(".webm") for n in os.listdir(here)):
-        if not os.path.exists(os.path.join(here, DONE)):
-            _write_json(os.path.join(here, DONE), {"failed": []})
-    else:
-        drop(job_id, root)
+        done = os.path.join(here, DONE)
+        if not os.path.exists(done):
+            _write_json(done, {"failed": []})
+            return
+        try:
+            if (now or time.time()) - os.path.getmtime(done) < KEEP_DAYS * 86400:
+                return
+        except OSError:
+            return
+    drop(job_id, root)
 
 
 def state(job_id, root=None):
-    """None (nothing handed off), "waiting" (no `done.json` yet), or the done dict {"failed": [...]}."""
+    """None (nothing handed off, or a `lines.json` that can't be read: handed off again), "waiting" (no `done.json`
+    yet), or the done dict {"failed": [...]}."""
     here = place(job_id, root)
-    if not os.path.isfile(os.path.join(here, LINES)):
+    if _read_json(os.path.join(here, LINES)) is None:
         return None
     done = _read_json(os.path.join(here, DONE))
     return done if done is not None else "waiting"
@@ -325,10 +344,13 @@ def waiting(root=None):
         job = _read_json(os.path.join(here, LINES))
         if not job:
             continue
-        missing = [{"n": ln["n"], "start": ln["start"], "end": ln["end"]} for ln in job.get("lines") or ()
-                   if f"clip-{ln['n']}.webm" not in have]
-        out.append({k: job.get(k) for k in ("job", "site", "video_id", "url", "title", "pad_before", "pad_after")}
-                   | {"rev": int(job.get("rev") or 0), "lines": missing})
+        try:
+            missing = [{"n": ln["n"], "start": ln["start"], "end": ln["end"]} for ln in job.get("lines") or ()
+                       if f"clip-{ln['n']}.webm" not in have]
+            out.append({k: job.get(k) for k in ("job", "site", "video_id", "url", "title", "pad_before", "pad_after")}
+                       | {"rev": int(job.get("rev") or 0), "lines": missing})
+        except (KeyError, TypeError, ValueError, AttributeError):
+            continue                    # (a damaged `lines.json`: Connect's next look hands it off again)
     return out
 
 
@@ -345,20 +367,27 @@ def waiting_lines(root=None):
     return sum(len(job["lines"]) for job in waiting(root))
 
 
+_KEEP = threading.Lock()        # the door answers each call on a thread of its own: one clip put in place at a time
+
+
 def keep_clip(job_id, n, save, start, end, root=None):
-    """A clip for line `n` of a waiting job -> True; False when the job or its line doesn't wait (a 404: nothing read,
-    nothing written). `save(path)` streams the body whole to `path` or raises (the door's `Call.save`: a body cut short
+    """A clip for line `n` of a waiting job -> True; False when the job or its line doesn't wait — a line that holds
+    its clip already no longer waits, as `waiting` lists it (a 404: nothing read, nothing written). `save(path)` streams the body whole to `path` or raises (the door's `Call.save`: a body cut short
     leaves nothing); its times are written beside it, then the clip is put in place — a clip that didn't arrive whole
     leaves neither, and its line still waits."""
     here, job = _open_job(job_id, root)
-    if job is None or not any(ln.get("n") == n for ln in job.get("lines") or ()):
+    video = os.path.join(here or "", f"clip-{n}.webm")
+    if job is None or not any(ln.get("n") == n for ln in job.get("lines") or ()) or os.path.exists(video):
         return False
-    video = os.path.join(here, f"clip-{n}.webm")
-    got = video + ".got"
+    got = f"{video}.{secrets.token_hex(4)}.got"     # (its own: two posts of one line never swap bytes and times)
     try:
         save(got)
-        _write_json(os.path.join(here, f"clip-{n}.json"), {"start": float(start), "end": float(end)})
-        os.replace(got, video)
+        with _KEEP:
+            if os.path.exists(video):           # the other post of the line was put in place first: it holds it
+                os.remove(got)
+                return True
+            _write_json(os.path.join(here, f"clip-{n}.json"), {"start": float(start), "end": float(end)})
+            os.replace(got, video)
     except BaseException:
         try:
             os.remove(got)
@@ -376,7 +405,8 @@ def finish(job_id, failed, root=None, rev=None):
     here, job = _open_job(job_id, root)
     if job is None:
         return False
-    named = {f.get("n") for f in failed if isinstance(f, dict)}
+    failed = [f for f in failed if isinstance(f, dict) and isinstance(f.get("n"), int)]     # (a list `n`: no line)
+    named = {f["n"] for f in failed}
     if rev is None:
         if any(not os.path.isfile(os.path.join(here, f"clip-{ln.get('n')}.webm")) and ln.get("n") not in named
                for ln in job.get("lines") or ()):
@@ -385,6 +415,11 @@ def finish(job_id, failed, root=None, rev=None):
         return True
     known = {ln.get("n") for ln in job.get("lines") or ()}
     kept = [{"n": f["n"], "why": str(f.get("why") or "")[:200]} for f in failed
-            if isinstance(f, dict) and f.get("n") in known]
+            if f["n"] in known]
     _write_json(os.path.join(here, DONE), {"failed": kept})
+    if int((_read_json(os.path.join(here, LINES)) or {}).get("rev") or 0) != int(job.get("rev") or 0):
+        try:                            # Connect added lines meanwhile (`add_lines`, its own process): still waits
+            os.remove(os.path.join(here, DONE))
+        except OSError:
+            pass
     return True

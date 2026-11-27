@@ -105,6 +105,7 @@ def routes(writer, settings, clips=None):
         job, n = (int(g) for g in call.groups)
         start, end = (_seconds(call.headers.get(h)) for h in ("X-Clip-Start", "X-Clip-End"))
         if start is None or end is None or not start < end:
+            call.skip()                 # (read first, as a 404's: the door drains only a small body by itself)
             raise door.RouteError("X-Clip-Start and X-Clip-End must be the clip's seconds", "body", 400)
         try:
             kept = browser.keep_clip(job, n, call.save, start, end, clips)

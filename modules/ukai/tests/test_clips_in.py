@@ -303,3 +303,21 @@ def test_the_windows_class_keeps_ukais_job_routes_behind_the_pairing(tmp_path):
         found = ext.route(method, path)
         assert found is not None and found[2] is False, (method, path)
     assert ext.route("GET", "/v1/hello")[2] is True
+
+
+def test_a_large_clip_with_bad_times_is_read_before_its_400(ukai_door, monkeypatch):
+    """The door drains only a small body by itself (≤ 1 MB): a clip's 400 reads the body first, as its 404 does, so
+    Ukai gets the answer instead of a reset."""
+    d, _p = ukai_door
+    _handed("ja")
+    read, skip = [], door.Call.skip
+    monkeypatch.setattr(door.Call, "skip", lambda self, limit=None: read.append(skip(self, limit)) or read[-1])
+    big = WEBM * 2048
+    status, got = _clip(d, 412, 0, "nan", "3", big)
+    assert status == 400 and read == [len(big)]
+
+
+def test_a_done_naming_a_line_by_a_list_is_answered(ukai_door):
+    d, _p = ukai_door
+    _handed("ja")
+    assert _done(d, 412, failed=[{"n": [0], "why": "x"}])[0] == 200

@@ -234,11 +234,14 @@ WAIT_REASONS = {"books": BOOKS_WAIT, "audio": AUDIO_WAIT}       # `library.waits
 # Netflix and Disney+ (鵜 Ukai SPEC §6 U-S4, by mattias in #474; `app/connect/browser.py`): their video is never fetched
 # (DRM: nothing tries). The job picks its words from the transcript's own cues, hands their lines to Ukai and waits
 # with this line until Ukai has recorded them in the browser (`_browser_clips`); each clip then goes to Anki Miner as a
-# video of its own. A line it couldn't record is said once (BROWSER_LOST) and asked for again by a *Mine*.
+# video of its own. The lines it couldn't record are said once (BROWSER_LOST, the first and how many more: *Needs you*
+# keeps one entry an episode) and asked for again by a *Mine*.
 # (PROVISIONAL words.) Only while Ukai's half is on (`door.ukai_on`, via `online.is_online`).
 BROWSER_WAIT = browser.WAIT
 BROWSER_LINE = "browser-line"           # *Needs you*'s kind for a line Ukai couldn't record
 BROWSER_LOST = "{title}: the line at {at} (「{text}」) wasn't recorded by Ukai ({why}). Mine it to ask again."
+BROWSER_LOST_MORE = ("{title}: {count} lines weren't recorded by Ukai — the first at {at} (「{text}」, {why}). Mine it to "
+                     "ask again.")
 BROWSER_NONE = "None of its lines were recorded by Ukai: Mine it to ask again."
 BROWSER_NO_CUES = "Its transcript keeps no line times, so Ukai can't record its lines: send it again from Ukai."
 # Z-9: a book or a text Anki Miner couldn't open (`SOURCE_UNREADABLE`, with its reason) — *Needs you*, plain: nothing
@@ -2706,7 +2709,8 @@ def _browser_clips(steps, ledger, lang, job, picked, record=True):
     A word is matched to its line by the line's place in the video (`browser.span`), never by its order: the `n` in
     `lines.json` names that line's clip for the job's whole life. A line the words want that wasn't handed (a pick again
     after the hand-off) is added with a new `n` and Ukai asked again. A line with no clip, or a clip that doesn't hold
-    its line (`browser.covers`), is said once in *Needs you* (BROWSER_LOST: which line, why) — its words stay unmade,
+    its line (`browser.covers`), is said once in *Needs you* (BROWSER_LOST: which line, why; BROWSER_LOST_MORE: the
+    first of several) — its words stay unmade,
     so a *Mine* asks for them again; never a clip with the line outside it. No word left: the job ends skipped
     (BROWSER_NONE). Worked out again from the folder at every look while it is there; the folder gone (its cards
     made): `picked` as it is. One look: the subtitle read once and its starts made once (`browser.index`); each word's
@@ -2741,8 +2745,7 @@ def _browser_clips(steps, ledger, lang, job, picked, record=True):
     if not isinstance(got, dict):
         raise Wait(BROWSER_WAIT, resume="mining")
     failed = {f.get("n"): f.get("why") for f in got.get("failed") or () if isinstance(f, dict)}
-    clips, of_line = {}, {}
-    title = steps.title(lang, job) or ""
+    clips, of_line, lost = {}, {}, []
     for line in lines:
         n = numbered[browser.span(line)]
         kept = browser.clip(jid, n)
@@ -2750,14 +2753,17 @@ def _browser_clips(steps, ledger, lang, job, picked, record=True):
         if kept is not None and not browser.covers(kept[1], line):
             kept, why = None, "its clip doesn't hold the line"
         if kept is None:
-            start = int(line["start"])
-            say = BROWSER_LOST.format(title=title, at=f"{start // 60}:{start % 60:02d}", text=line["text"], why=why)
-            ledger.need(lang, BROWSER_LINE, say, item_id=job["item_id"], job_id=jid)
+            lost.append((line, why))
             continue
         video, times = kept
         clips[str(n)] = {"video": video, "shift": float(times["start"]),
                          "subtitle": browser.clip_subtitle(jid, n, cues, times["start"], times["end"], at=at)}
         of_line[line["n"]] = n
+    if lost:                # one entry an episode in *Needs you* (`ledger.need`): the first line, and how many
+        (line, why), start = lost[0], int(lost[0][0]["start"])
+        said = dict(title=steps.title(lang, job) or "", at=f"{start // 60}:{start % 60:02d}", text=line["text"], why=why)
+        say = BROWSER_LOST_MORE.format(count=len(lost), **said) if len(lost) > 1 else BROWSER_LOST.format(**said)
+        ledger.need(lang, BROWSER_LINE, say, item_id=job["item_id"], job_id=jid)
     words = [w if w.get("from") is not None else dict(w, clip=of_line[index[browser.line_key(w)]])
              for w in picked.get("words") or ()
              if w.get("from") is not None or index.get(browser.line_key(w)) in of_line]

@@ -239,7 +239,11 @@ def test_no_clip_at_all_ends_the_job_with_words_to_ask_again():
     with pytest.raises(runner._Finished):
         runner._browser_clips(_Steps(), ledger, "ja", job, picked, record=False)
     assert ledger.states[-1][0] == "skipped" and ledger.states[-1][1]["reason"] == runner.BROWSER_NONE
-    assert len(ledger.needs) == 2 and not os.path.exists(browser.place(412)), "its folder gone"
+    (kind, say), = ledger.needs         # *Needs you* keeps one entry an episode: the first line, and how many
+    assert kind == runner.BROWSER_LINE and say == (
+        "雲の上の郵便屋さん: 2 lines weren't recorded by Ukai — the first at 11:45 (「小さな発見を話そう」, the tab was "
+        "closed). Mine it to ask again.")
+    assert not os.path.exists(browser.place(412)), "its folder gone"
 
 
 def test_a_stopped_recording_leaves_its_lines_waiting_and_its_clips_kept():
@@ -543,3 +547,118 @@ def test_connects_look_closes_the_folder_of_a_job_the_ledger_no_longer_knows(tmp
     with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
         assert runner._consume(FakeSteps(str(tmp_path), {}), ledger, "ja") is False
     assert browser.folders() == [] and browser.waiting() == []
+
+
+# --- the review's fixes (UKAI-S4 c) ---------------------------------------------------------------------------------- #
+def test_a_line_that_holds_its_clip_already_takes_no_second_one():
+    """A line with its clip no longer waits (`GET /v1/jobs` lists it no more): a second post of it (Ukai retrying one
+    that did arrive) is refused unread, so the clip's bytes and its times are always one post's."""
+    lines, _index = browser.lines_for(_words(), CUES)
+    browser.hand_off(412, WEB, "雲の上の郵便屋さん S01E03", lines)
+    assert _keep(412, 0, 704.29, 709.84, data=b"first")
+    assert not _keep(412, 0, 650.0, 760.0, data=b"second")
+    video, times = browser.clip(412, 0)
+    with open(video, "rb") as f:
+        assert f.read() == b"first"
+    assert times == {"start": 704.29, "end": 709.84}
+    assert not [n for n in os.listdir(browser.place(412)) if n.endswith((".got", ".part"))], "nothing left beside it"
+
+
+def test_a_job_with_no_line_to_record_never_waits_for_ukai():
+    """Every word cut from another episode's line (`from`, Kantan-SD 6): nothing to record, so the job goes straight on
+    with them (their own episode's video holds them), never a wait for a `done` Ukai has no reason to send."""
+    words = [dict(w, **{"from": 99}) for w in _words()]
+    got = runner._browser_clips(_Steps(), _Ledger(), "ja", {"id": 412, "item_id": 7}, _picked(_srt(412, CUES), words))
+    assert [w["word"] for w in got["words"]] == ["発見", "話す", "古本屋"] and got["clips"] == {}
+
+
+def test_a_job_whose_every_line_arrived_goes_on_without_ukais_done():
+    """Ukai posted every clip and stopped before its `done` (a closed browser): nothing waits, so the next look makes
+    the cards."""
+    ledger, job, picked = _Ledger(), {"id": 412, "item_id": 7}, _picked(_srt(412, CUES))
+    with pytest.raises(runner.Wait):
+        runner._browser_clips(_Steps(), ledger, "ja", job, picked)
+    assert _keep(412, 0, 704.29, 709.84) and _keep(412, 1, 708.5, 916.0)
+    got = runner._browser_clips(_Steps(), ledger, "ja", job, picked)
+    assert [w["word"] for w in got["words"]] == ["発見", "話す", "古本屋"] and not ledger.needs
+
+
+def test_a_lines_file_that_cant_be_read_is_handed_off_again_and_never_stops_the_others():
+    lines, _index = browser.lines_for(_words(), CUES)
+    browser.hand_off(412, WEB, "雲の上の郵便屋さん S01E03", lines)
+    browser.hand_off(431, WEB, "雲の上の郵便屋さん S01E04", lines)
+    with open(os.path.join(browser.place(412), browser.LINES), "w", encoding="utf-8") as f:
+        f.write('{"job": 412, "lines": [')           # cut off mid-write
+    assert browser.state(412) is None, "nothing handed off: Connect's next look hands it off again"
+    with open(os.path.join(browser.place(431), browser.LINES), "w", encoding="utf-8") as f:
+        f.write('{"job": 431, "lines": [{"start": 1}]}')
+    browser.hand_off(441, WEB, "雲の上の郵便屋さん S01E05", lines)
+    assert [j["job"] for j in browser.waiting()] == [441], "a damaged folder is passed over, the others listed"
+    browser.hand_off(412, WEB, "雲の上の郵便屋さん S01E03", lines)
+    assert [j["job"] for j in browser.waiting()] == [412, 441] and browser.handed(412) == browser.handed(441)
+
+
+def test_two_words_whose_cards_hold_the_same_lines_share_one_clip():
+    """発見 widened to the line after, 朝ごはん widened to the line before: the same two lines, one clip for both."""
+    words = [{"word": "発見", "reading": "はっけん", "line_start": 705.29, "line_expansion": [0, 1]},
+             {"word": "朝ごはん", "reading": "あさごはん", "line_start": 709.0, "line_expansion": [1, 0]}]
+    lines, index = browser.lines_for(words, CUES)
+    assert [(ln["n"], ln["start"], ln["end"]) for ln in lines] == [(0, 705.29, 711.0)]
+    assert set(index.values()) == {0}
+
+
+def test_a_done_that_meets_lines_added_meanwhile_closes_nothing(monkeypatch):
+    """Connect (its own process) adds lines while the door writes Ukai's `done` for the older set: the job still
+    waits with the added line, never closed with it unrecorded."""
+    lines, _index = browser.lines_for(_words()[:2], CUES)
+    browser.hand_off(412, WEB, "雲の上の郵便屋さん S01E03", lines)
+    assert _keep(412, 0, 704.29, 709.84)
+    write, added = browser._write_json, []
+
+    def meanwhile(path, data):
+        if path.endswith(browser.DONE) and not added:
+            added.append(browser.add_lines(412, [{"start": 912.0, "end": 915.5, "text": "古本屋めぐりは楽しい"}]))
+        write(path, data)
+    monkeypatch.setattr(browser, "_write_json", meanwhile)
+    assert browser.finish(412, [], rev=0)
+    assert browser.state(412) == "waiting" and [ln["n"] for ln in browser.waiting()[0]["lines"]] == [1]
+
+
+def test_a_left_jobs_clips_are_kept_for_a_later_job_a_month_at_most():
+    lines, _index = browser.lines_for(_words(), CUES)
+    browser.hand_off(412, WEB, "雲の上の郵便屋さん S01E03", lines)
+    assert _keep(412, 0, 704.29, 709.84)
+    browser.close(412, keep=True)
+    done = os.path.join(browser.place(412), browser.DONE)
+    assert os.path.exists(done), "closed: never listed for recording again, kept for a later job"
+    browser.close(412, keep=True)
+    assert os.path.isdir(browser.place(412)), "looked at again within the month: still kept"
+    old = os.path.getmtime(done) - browser.KEEP_DAYS * 86400 - 60
+    os.utime(done, (old, old))
+    browser.close(412, keep=True)
+    assert not os.path.exists(browser.place(412)), "past a month: gone"
+
+
+def test_a_done_naming_no_line_by_number_is_passed_over():
+    lines, _index = browser.lines_for(_words(), CUES)
+    browser.hand_off(412, WEB, "雲の上の郵便屋さん S01E03", lines)
+    assert browser.finish(412, [{"n": [1], "why": "x"}, {"n": {"a": 1}}, {"n": 1, "why": "seek failed"}], rev=0)
+    assert browser.state(412) == {"failed": [{"n": 1, "why": "seek failed"}]}
+
+
+def test_two_posts_of_one_line_at_once_keep_the_one_put_in_place_first():
+    """The door answers each call on a thread of its own: while one post of a line streams, another of it lands
+    whole. The first put in place holds the line, its bytes with its own times."""
+    lines, _index = browser.lines_for(_words(), CUES)
+    browser.hand_off(412, WEB, "雲の上の郵便屋さん S01E03", lines)
+
+    def slow(path):
+        assert _keep(412, 0, 704.29, 709.84, data=b"landed first")
+        with open(path, "wb") as f:
+            f.write(b"landed second")
+    assert browser.keep_clip(412, 0, slow, 650.0, 760.0)
+    video, times = browser.clip(412, 0)
+    with open(video, "rb") as f:
+        assert f.read() == b"landed first"
+    assert times == {"start": 704.29, "end": 709.84}
+    assert not [n for n in os.listdir(browser.place(412)) if n.endswith((".got", ".part"))], "nothing left beside it"

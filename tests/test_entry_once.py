@@ -6,7 +6,8 @@ katakana name an `app.analyzer.JoinedWord`, and `__main__`'s own `isinstance(wor
 katakana name's pieces were never marked known (オノデラ known: デラ listed), while the frozen app (`analyzer` verb, one
 import) read them known. The same split held for the library store's helper from source (its errors and its
 per-process write locks) and the window run as `python -m app.qt.shell` (its one Connect feed). Each entry now hands
-over to the imported module before its body runs (`app/replan_preview.py`'s helper did already).
+over to the imported module before its body runs (`app/replan_preview.py`'s helper handed over after its body: now
+before it too).
 """
 import csv
 import json
@@ -30,13 +31,14 @@ NAME_LINES = ("オノデラさんは駅の前で待っていた。\n"
 
 _STAND_IN = r"""
 import importlib, json, runpy, sys
-how, name, path = sys.argv[1], sys.argv[2], sys.argv[3]
+how, name, attr, path = sys.argv[1:5]
 one = importlib.import_module(name)
 ran = []
 def stand_in(*a, **k):
-    ran.append(list(sys.argv[1:]))
+    # (the script's own module, `__main__` while it runs: its body never ran if it never defined the entry)
+    ran.append([list(sys.argv[1:]), hasattr(sys.modules["__main__"], attr)])
     return 0
-one.main = stand_in
+setattr(one, attr, stand_in)
 if name == "app.qt.shell":
     # A second copy of the window's module would open a window: its QApplication refuses here instead.
     import PyQt6.QtWidgets as widgets
@@ -45,7 +47,7 @@ if name == "app.qt.shell":
         def instance():
             raise RuntimeError("a second copy of app.qt.shell ran its own main")
     widgets.QApplication = NoWindow
-sys.argv = [path] + sys.argv[4:]
+sys.argv = [path] + sys.argv[5:]
 code = "none"
 try:
     if how == "module":
@@ -60,25 +62,27 @@ sys.stdout.write("\nENTRY " + json.dumps({"ran": ran, "code": code}) + "\n")
 """
 
 
-@pytest.mark.parametrize("how, name, rel, args", [
-    ("path", "app.analyzer", "app/analyzer.py", ["--language=ja", "--no-open"]),          # the window's Generate
-    ("path", "app.library_store", "app/library_store.py", ["sync", "--language", "zh"]),  # the store's helper
-    ("module", "app.qt.shell", "app/qt/shell.py", []),                                     # python -m app.qt.shell
+@pytest.mark.parametrize("how, name, attr, rel, args", [
+    ("path", "app.analyzer", "main", "app/analyzer.py", ["--language=ja", "--no-open"]),     # the window's Generate
+    ("path", "app.library_store", "main", "app/library_store.py", ["sync", "--language", "zh"]),  # the store's helper
+    ("path", "app.replan_preview", "helper_main", "app/replan_preview.py", ["--language", "ja"]),  # the re-plan's
+    ("module", "app.qt.shell", "main", "app/qt/shell.py", []),                                # python -m app.qt.shell
 ])
-def test_each_script_entry_runs_the_one_imported_modules_main(tmp_path, how, name, rel, args):
+def test_each_script_entry_runs_the_one_imported_modules_main(tmp_path, how, name, attr, rel, args):
     # why: the imported module's `main` (a stand-in here) is the one the script runs, with the script's own
-    # arguments; before, the file ran its body again as `__main__` and called that copy's main.
+    # arguments, and the file's body never runs as `__main__` (handed over before it); before, the file ran its body
+    # again as `__main__` and called that copy's main.
     root = tmp_path / "root"
     root.mkdir()
     path = os.path.join(cases.REPO, *rel.split("/"))
     env = cases.child_env(str(root))
     env["QT_QPA_PLATFORM"] = "offscreen"
-    p = subprocess.run([sys.executable, "-c", _STAND_IN, how, name, path] + args, cwd=cases.REPO, env=env,
+    p = subprocess.run([sys.executable, "-c", _STAND_IN, how, name, attr, path] + args, cwd=cases.REPO, env=env,
                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=110)
     lines = [l for l in p.stdout.splitlines() if l.startswith("ENTRY ")]
     assert lines, p.stdout[-2000:] + p.stderr[-2000:]
     got = json.loads(lines[-1][len("ENTRY "):])
-    assert got["ran"] == [args], (got, p.stderr[-2000:])
+    assert got["ran"] == [[args, False]], (got, p.stderr[-2000:])
     assert got["code"] == 0
 
 
@@ -132,16 +136,6 @@ def _words(blob):
     return {row["Word"] for row in csv.DictReader(blob.decode("utf-8-sig").splitlines())}
 
 
-def test_a_known_katakana_names_pieces_are_known_when_the_analyzer_runs_as_a_script(tmp_path):
-    # why: the rule "a known joined word marks its pieces known" held only in the frozen app; run as a script, the
-    # name's piece デラ (used alone four times) was listed as a word to learn.
-    root = str(tmp_path / "root")
-    _library(root, "ja")
-    words = _words(_generate(root, "ja", "script")["priority_learning_list.csv"])
-    assert words                                                 # the run listed the file's words
-    assert "デラ" not in words
-
-
 @pytest.mark.parametrize("language", ["ja", "zh"])
 def test_the_script_and_the_frozen_apps_verb_write_the_same_lists(tmp_path, language):
     # why: source results/ (the window from source, the benches, the trains) must read the way the shipped app does:
@@ -152,4 +146,10 @@ def test_the_script_and_the_frozen_apps_verb_write_the_same_lists(tmp_path, lang
         root = str(tmp_path / entry / "root")
         _library(root, language)
         out[entry] = _generate(root, language, entry)
+    words = _words(out["script"]["priority_learning_list.csv"])
+    assert words                                                 # the run listed the library's words
+    if language == "ja":
+        # The rule "a known joined word marks its pieces known" held only in the frozen app: run as a script, the
+        # known name オノデラ's piece デラ (used alone, three times) was listed as a word to learn.
+        assert "デラ" not in words
     assert out["script"] == out["verb"]

@@ -47,6 +47,10 @@ import time
 if __name__ == "__main__" and __package__ is None:     # the helper from source: `python app/replan_preview.py …`
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+if __name__ == "__main__":
+    from app import replan_preview as _module      # the helper runs in the module every import shares, its body once
+    sys.exit(_module.helper_main())
+
 from app.services import window_idle   # noqa: E402  (Qt-free: the hand-over's one owner, `_share_the_window`)
 
 SWITCH = "junban_replan_preview"
@@ -1599,8 +1603,3 @@ def _log_shadow(line):
             f.write(time.strftime("%Y-%m-%d %H:%M:%S") + " · " + line + "\n")
     except Exception:
         pass
-
-
-if __name__ == "__main__":
-    from app import replan_preview as _module      # the helper runs in the module every import shares
-    sys.exit(_module.helper_main())

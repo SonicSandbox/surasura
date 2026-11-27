@@ -305,12 +305,12 @@ def _miner(path, settings):
     if held is not None and stamp is not None and held["stamp"] == stamp:
         return held["miner"]
     try:
-        info = anki_miner.version(exe)
+        info, listed = anki_miner.look_ups(exe, stamp, keep=anki_miner.keeps_look_ups(settings),   # AM-START
+                                           wants=lambda found: set(FEATURES) <= set(found.get("features") or ()))
         if not set(FEATURES) <= set(info.get("features") or ()):
             miner = None
         else:
             name = str(settings.get("connect_anki_miner_profile") or anki_miner.DEFAULT_PROFILE)
-            listed = anki_miner.profiles(exe)
             try:
                 profile = anki_miner.choose_profile(info, listed, name)
             except anki_miner.AnkiMinerError:

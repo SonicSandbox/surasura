@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Netflix and Disney+ subtitles from 鵜飼 Ukai become library items (Ukai SPEC §6 U-S2): Mattias's #474
+"""Netflix and Disney+ subtitles from 鵜 Ukai become library items (Ukai SPEC §6 U-S2): Mattias's #474
 (`app/online_receiver.py`, by mattias) — its parsing, checks, tidying and item kept as he wrote them; its listener,
 token and Origin checks replaced by the one door's (`app/door.py`, Ukai's class, and the pairing).
 

@@ -3228,7 +3228,7 @@ def file_sentences(store, tokenizer, file_path, language, words=None):
 # logic.count_song_lyrics is off (the default): their sentences keep their place in each file — the plan and the re-pick
 # number them — with no words, as a ♪～ line reads. Spoken files only (subtitles, transcripts), grouped by work
 # (`_series_name`); each file's lines are the token store's (`Store.file_lines`), else read here.
-_SPOKEN = ("subtitle", "youtube", "bilibili", "netflix", "disneyplus")     # (Netflix, Disney+: 鵜飼 Ukai's, #474)
+_SPOKEN = ("subtitle", "youtube", "bilibili", "netflix", "disneyplus")     # (Netflix, Disney+: 鵜 Ukai's, #474)
 
 
 def songs_left_out(files):

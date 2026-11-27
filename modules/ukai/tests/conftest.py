@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Shared pytest setup for 鵜飼 Ukai's module tests (`pytest modules/ukai/tests`): the project root on sys.path,
+"""Shared pytest setup for 鵜 Ukai's module tests (`pytest modules/ukai/tests`): the project root on sys.path,
 the harness guards every suite shares, a library store on a temp SURASURA_TEST_ROOT."""
 import os
 import sys

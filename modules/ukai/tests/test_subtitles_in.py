@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""鵜飼 Ukai's subtitles in, through the one door (Ukai SPEC §6 U-S2; ported from #474's
+"""鵜 Ukai's subtitles in, through the one door (Ukai SPEC §6 U-S2; ported from #474's
 `tests/test_online_receiver.py`, by mattias): Netflix-X's run again — a simulated loopback POST with the real JSON
 shape, real lines from Test Resources — on the real door's Ukai class with a real pairing and a real library store.
 

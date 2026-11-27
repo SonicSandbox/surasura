@@ -548,9 +548,21 @@ def fetch_first(shell, urls, language, said, ended):
     fetched as a `youtube` job on a thread of its own (`_fetch`). On the window's thread: `said(line)` for each line it
     says, then `ended(created, problems)` — the new transcripts' paths and the plain-words lines of what went wrong
     (`view.problems`). -> the job."""
+    return _fetch_links(shell, S.JOB_SETUP, urls, language, said, ended, first_only=True)
+
+
+def fetch_links(shell, urls, language, said, ended):
+    """鵜 Ukai's links (`POST /v1/youtube`; #474, by mattias): downloaded as the window's *Download* runs pasted links
+    (every video), as a `youtube` job of its own (`_fetch`: one yt-dlp run at a time, the bot check's hold inside
+    `core.extract`). `said` / `ended` as `fetch_first`'s. -> the job."""
+    return _fetch_links(shell, S.JOB_DOWNLOAD, urls, language, said, ended)
+
+
+def _fetch_links(shell, label, urls, language, said, ended, first_only=False):
+    """`urls` read in the language's default captions (`run_extract`), on a `youtube` job of its own (`_fetch`)."""
     caption = view.default_caption_language(language)
-    return _fetch(shell, S.JOB_SETUP, lambda log, stop: view.run_extract(
-        urls, language, caption, False, True, log, should_stop=stop, first_only=True), said, ended)
+    return _fetch(shell, label, lambda log, stop: view.run_extract(
+        urls, language, caption, False, True, log, should_stop=stop, first_only=first_only), said, ended)
 
 
 def _fetch(shell, label, work, said, ended, settle=None, automatic=False):

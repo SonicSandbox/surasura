@@ -1,4 +1,4 @@
-"""鵜飼 Ukai's Allow card (UKAI-S1; Ukai SPEC §0 U4: one Allow, nothing typed). Ukai asked to pair
+"""鵜 Ukai's Allow card (UKAI-S1; Ukai SPEC §0 U4: one Allow, nothing typed). Ukai asked to pair
 (`app/services/ukai_pairing.py`, on the door's thread, through the bridge's `ukai_asked`): the window comes to the
 front and asks with the one confirmation card (`confirm.ask`), naming the 4-digit code Ukai's menu shows, the store an
 id came from (an id no store gave: a warning line), and that a new pairing replaces the one kept. *Allow* is the

@@ -812,7 +812,7 @@ def media_type_guess(counts, anilist_id=None, tmdb_id=None):
 
 def source_of(item, work):
     """hato · youtube · netflix · disneyplus · anilist · None: where an item came from (its chip's word and colour). A
-    Netflix or Disney+ episode (鵜飼 Ukai's) is its site's, never the disk's (Netflix-X's bug: its chip said *disk*)."""
+    Netflix or Disney+ episode (鵜 Ukai's) is its site's, never the disk's (Netflix-X's bug: its chip said *disk*)."""
     if (item.get("rel_path") or "").startswith(HATO_FOLDER):
         return "hato"
     if item.get("source_type") in ("netflix", "disneyplus"):
@@ -1270,7 +1270,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     verb = VERB[word]
     # its video is online (try a9.1, Sonic: "the play button for a youtube video should be the video"): ▶ opens its
     # page in the browser (`play.online_link`, on the click's worker) — always shown, never looked for on disk
-    online = item.get("source_type") in ONLINE_TYPES       # (Netflix and Disney+: 鵜飼 Ukai's, #474)
+    online = item.get("source_type") in ONLINE_TYPES       # (Netflix and Disney+: 鵜 Ukai's, #474)
     said = connect.get(item["id"]) if connect is not None else None
     # row 55 (Sonic: "if it doesn't find the media, there shouldn't be a play button"): ▶ only where ▶'s own lookup
     # (`play.Looks`, its answers `playable`) found the file — never asked where it can't be, nor where Connect says

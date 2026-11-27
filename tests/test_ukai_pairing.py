@@ -1,4 +1,4 @@
-"""鵜飼 Ukai's pairing (app/services/ukai_pairing.py; Ukai SPEC §0 U4, §6 U-S1; the token's file adapted from #474):
+"""鵜 Ukai's pairing (app/services/ukai_pairing.py; Ukai SPEC §0 U4, §6 U-S1; the token's file adapted from #474):
 `POST /v1/pair` -> the window's Allow card with a 4-digit code -> `GET /v1/pair/<id>` hands the token over once.
 
 What a wrong answer would cost a learner: a web page, another extension or a replayed request getting the token (and
@@ -501,6 +501,7 @@ class _Bridge:
     def __init__(self):
         self.connected = []
         self.ukai_asked = type("S", (), {"connect": lambda _s, slot, *a: self.connected.append(slot)})()
+        self.ukai_youtube = type("S", (), {"connect": lambda _s, slot, *a: self.connected.append(slot)})()
 
     def ask_ukai(self, request):
         pass
@@ -508,11 +509,15 @@ class _Bridge:
     def ukai_changed(self):
         pass
 
+    def run_ukai_youtube(self, urls, release):
+        pass
+
 
 def _window():
     from types import SimpleNamespace
     services = SimpleNamespace(writer=None, settings=SimpleNamespace(get=lambda: {"covers_download": False}))
-    return SimpleNamespace(services=services, bridge=_Bridge(), _ukai_allow=lambda request: None)
+    return SimpleNamespace(services=services, bridge=_Bridge(), _ukai_allow=lambda request: None,
+                           _ukai_youtube=lambda job: None)
 
 
 def test_without_ukais_module_the_window_builds_no_class_and_nothing_listens(monkeypatch):
@@ -533,6 +538,9 @@ def test_with_ukais_module_the_class_carries_its_subtitle_route_behind_the_pairi
     assert isinstance(ext, door.Extension) and isinstance(window.ukai_pairing, up.Pairing)
     fn, _groups, unpaired = ext.route("POST", "/v1/online-subtitle")
     assert unpaired is False, "the subtitle route is a paired one"
+    _fn, _g, unpaired = ext.route("POST", "/v1/youtube")
+    assert unpaired is False, "U-S3: YouTube links only from the paired extension"
+    assert window._ukai_youtube in window.bridge.connected, "the links run on the window's thread"
     hello, _g, open_ = ext.route("GET", "/v1/hello")
     assert open_ is True and "languages" in hello(None)
 

@@ -3553,7 +3553,7 @@ class Store:
         return row[0] if row else None
 
     def paired_item(self, content_key):
-        """The item a pairing record with `content_key` is on (鵜飼 Ukai's `netflix:<id>`: never a second item for one
+        """The item a pairing record with `content_key` is on (鵜 Ukai's `netflix:<id>`: never a second item for one
         video; #474, by mattias), or None. One primary-key read."""
         with self._reading():
             row = self.conn.execute("SELECT item_id FROM pairings WHERE content_key = ?", (content_key,)).fetchone()

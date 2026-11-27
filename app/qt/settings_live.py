@@ -703,7 +703,7 @@ class Live(QObject):
             self.parts[row_id] = {"mark": mark, "find": find, "tip": row.tip}
             if "hato" in self.facts:
                 self._hato(self.facts["hato"])
-        elif row_id == "ukai":                          # 鵜飼 Ukai (UKAI-S2, U9): paired or not, *Forget Ukai*
+        elif row_id == "ukai":                          # 鵜 Ukai (UKAI-S2, U9): paired or not, *Forget Ukai*
             mark = sc.StatusMark(False, S.UKAI_NOT_PAIRED, tooltip=row.tip, name=S.ROW_TAGS["ukai"])
             forget = qpress.room(sc.Door(S.FORGET_UKAI, tooltip=S.FORGET_UKAI_TIP, name=S.FORGET_UKAI))
             forget.clicked.connect(lambda _c=False: self.forget_ukai())

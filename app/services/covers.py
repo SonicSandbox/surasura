@@ -613,7 +613,7 @@ def keep_user_image(language, work_id, source_path, writer, current=None):
 def keep_user_bytes(language, work_id, data, writer, current=None, source="user", ref=None, locked=True, auto=False):
     """`keep_user_image` for an image already in hand (W3.2 Q7: a candidate picked, a pasted link's image): recorded
     `set_cover(work_id, source, ref=ref, path="user:<name>", locked=True)` — the user's pick, on the Undo stack.
-    `locked` False and `auto` (鵜飼 Ukai's artwork, `modules/ukai/subtitles.keep_cover`; #474, by mattias): nobody's
+    `locked` False and `auto` (鵜 Ukai's artwork, `modules/ukai/subtitles.keep_cover`; #474, by mattias): nobody's
     choice, off the Undo stack, and *Change cover…* still replaces it."""
     ext = image_ext(data) if len(data) <= MAX_IMAGE else None
     if ext is None:

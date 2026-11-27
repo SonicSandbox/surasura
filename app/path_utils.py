@@ -519,7 +519,7 @@ _YOUTUBE_ID_RE = re.compile(r"\[([A-Za-z0-9_-]{11})\][\s_()\-.\d]*$")
 # hence the explicit prefix the downloader writes.
 _BILIBILI_ID_RE = re.compile(r"\[bilibili-(\d+)\][\s_()\-.\d]*$")
 
-# Netflix's and Disney+'s subtitles 鵜飼 Ukai sent (`modules/ukai/subtitles.py`, #474 by mattias) end "[netflix-<id>]" /
+# Netflix's and Disney+'s subtitles 鵜 Ukai sent (`modules/ukai/subtitles.py`, #474 by mattias) end "[netflix-<id>]" /
 # "[disneyplus-<id>]" the same way: the site's name first, never a bare id.
 SITE_ID_RE = re.compile(r"\[(netflix|disneyplus)-([A-Za-z0-9-]+)\][\s_()\-.\d]*$")
 
@@ -877,7 +877,7 @@ PARTS = (
     ("roaming", "report_send.json", "report_send", MOVES, STAYS),    # the Discord name and sender code: as settings
     ("roaming", "youtube_rest_*.json", "youtube_rest", MOVES, STAYS),
     ("roaming", "youtube_hold.json*", "youtube_hold", STAYS, STAYS),    # Yt-B: YouTube's answer to this computer
-    ("roaming", "ukai_keystore.json*", "ukai_pairing", STAYS, STAYS),   # UKAI-S1: 鵜飼 Ukai's pairing (its token)
+    ("roaming", "ukai_keystore.json*", "ukai_pairing", STAYS, STAYS),   # UKAI-S1: 鵜 Ukai's pairing (its token)
     ("local", "library.json", "library_note", STAYS, STAYS),     # P8: the installer's and the start gate's notes
     ("local", "installs.json", "installs_note", STAYS, STAYS),
     ("local", "installs.lock", "installs_note", STAYS, STAYS),

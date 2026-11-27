@@ -98,6 +98,10 @@ def test_the_count_gathers_again_only_when_it_changes(world, monkeypatch):
     n = ny.gathers
     ny.ai_waiting_in(18)
     assert ny.gathers == n and not ny._running
+    ny.ai_waiting_in(25)                                 # more cards wait: the card says the new count
+    assert wait_until(lambda: ny.gathers > n and not ny._running, 10)
+    assert card_of(ny).data == {"n": 25}
+    n = ny.gathers
     ny.ai_waiting_in(0)
     assert wait_until(lambda: ny.gathers > n and not ny._running, 10)
     assert card_of(ny) is None

@@ -83,7 +83,7 @@ _LIVE, _CONNECT_ROWS, _RULES = "app.qt.settings_live", "app.qt.settings_connect"
 _STORE = "app.qt.settings_store"
 FILLED_BY = {
     "setup_known": _LIVE, "setup_anki": _LIVE, "setup_mining": _LIVE, "setup_level": _LIVE, "setup_cards": _LIVE,
-    "anki_connection": _LIVE, "hato": _LIVE, "jimaku": _LIVE, "anilist": _LIVE, "more_from_houseki": _LIVE,
+    "anki_connection": _LIVE, "hato": _LIVE, "ukai": _LIVE, "jimaku": _LIVE, "anilist": _LIVE, "more_from_houseki": _LIVE,
     "connect_needs_miner": _LIVE,               # row 13
     "export_frequency_list": _LIVE, "export_reading_words": _LIVE, "export_sentence_list": _LIVE,
     "logs": _LIVE, "data_credits": _LIVE, "version": _LIVE,
@@ -426,6 +426,7 @@ ROWS = (
     _row("practice_ai", "connect", "custom"),                  # A6 (H9): Copy, per AI app, for the practice server
     _row("practice_keep_rounds", "connect", "toggle", ("practice_keep_rounds",), sub=True),   # A6: saved rounds
     _row("hato", "connect", "status", group="houseki"),
+    _row("ukai", "connect", "status", group="houseki", when=_module("ukai_on")),     # UKAI-S2: off until Ukai 1.0
     _row("jimaku", "connect", "status", when=_never),          # row 13: hidden until hato hands its key over
     _row("anilist", "connect", "status", when=_never),         # row 13: hidden until AniList's import is built
     # --- W3.2 L3: the covers' switch (01 §1.3 C1: off until the user says yes) and *Remove downloaded covers*

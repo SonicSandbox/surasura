@@ -501,7 +501,9 @@ def is_content_file(path):
 # Kinds the learner can act on differently: a subtitle line belongs to a video, a YouTube line to a
 # timestamped video, a bilibili.tv line to an episode page, an EPUB chapter to a book, everything
 # else is plain text. An audiobook's item (Hon, H-7) is "audio": it waits for Anki Miner, never in a report.
-SOURCE_TYPES = ("subtitle", "youtube", "bilibili", "epub", "text", "audio")
+SOURCE_TYPES = ("subtitle", "youtube", "bilibili", "netflix", "disneyplus", "epub", "text", "audio")
+# The online videos' types: a transcript whose video is a page in the browser, never a file here (▶ opens the page)
+ONLINE_TYPES = ("youtube", "bilibili", "netflix", "disneyplus")
 
 # The transcript downloader names its output "<Title> [<11-char video id>].txt", so the id ends the
 # stem — but Graduate/Demote append a `_<timestamp>` when resolving a name collision, sometimes more
@@ -516,6 +518,10 @@ _YOUTUBE_ID_RE = re.compile(r"\[([A-Za-z0-9_-]{11})\][\s_()\-.\d]*$")
 # bare digits, and a bare bracketed number is far too common to trust ("[20240101]", fansub CRCs),
 # hence the explicit prefix the downloader writes.
 _BILIBILI_ID_RE = re.compile(r"\[bilibili-(\d+)\][\s_()\-.\d]*$")
+
+# Netflix's and Disney+'s subtitles 鵜飼 Ukai sent (`modules/ukai/subtitles.py`, #474 by mattias) end "[netflix-<id>]" /
+# "[disneyplus-<id>]" the same way: the site's name first, never a bare id.
+SITE_ID_RE = re.compile(r"\[(netflix|disneyplus)-([A-Za-z0-9-]+)\][\s_()\-.\d]*$")
 
 # A producer that KNOWS what it made (Extract, for instance) drops this beside its output. Needed
 # because an EPUB chapter and an ordinary note are both plain .txt — nothing in the filename tells
@@ -579,6 +585,9 @@ def infer_source_type(path, declared=None, marker_type=None):
         stem = os.path.splitext(os.path.basename(name))[0]
         if _BILIBILI_ID_RE.search(stem):
             return "bilibili"
+        site = SITE_ID_RE.search(stem)
+        if site:
+            return site.group(1)
         if _YOUTUBE_ID_RE.search(stem):
             return "youtube"
     return "text"

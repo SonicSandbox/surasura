@@ -544,6 +544,13 @@ class CreditsCard(_Card):
 
 
 # --- the live rows ------------------------------------------------------------------------------------------------- #
+def _let_go(signal, slot):
+    try:
+        signal.disconnect(slot)
+    except (TypeError, RuntimeError):                   # (already gone)
+        pass
+
+
 class Live(QObject):
     """The page's live rows. Made by `SettingsPage`; fills each slot as its row is built (`page.row_built`)."""
 
@@ -696,6 +703,20 @@ class Live(QObject):
             self.parts[row_id] = {"mark": mark, "find": find, "tip": row.tip}
             if "hato" in self.facts:
                 self._hato(self.facts["hato"])
+        elif row_id == "ukai":                          # 鵜飼 Ukai (UKAI-S2, U9): paired or not, *Forget Ukai*
+            mark = sc.StatusMark(False, S.UKAI_NOT_PAIRED, tooltip=row.tip, name=S.ROW_TAGS["ukai"])
+            forget = qpress.room(sc.Door(S.FORGET_UKAI, tooltip=S.FORGET_UKAI_TIP, name=S.FORGET_UKAI))
+            forget.clicked.connect(lambda _c=False: self.forget_ukai())
+            forget.setVisible(False)                    # only while Ukai is paired
+            slot = self._slot(row_id).layout()
+            slot.addWidget(mark)
+            slot.addWidget(forget)
+            self.parts[row_id] = {"mark": mark, "forget": forget}
+            if getattr(self.shell, "bridge", None) is not None:     # paired or forgotten while Settings is open
+                signal, slot = self.shell.bridge.ukai_paired, self._ukai_changed
+                signal.connect(slot)
+                self.destroyed.connect(lambda _o=None: _let_go(signal, slot))  # (the window's bridge outlives a page)
+            self._read_ukai()
         elif row_id in COMING:
             hint = QLabel(COMING[row_id])
             hint.setObjectName("settingshint")
@@ -1083,6 +1104,42 @@ class Live(QObject):
             return
         self.facts["hato_update"] = tuple(answer) if answer else (None, None)
         self._hato(version)
+
+    def _ukai_changed(self, _none=None):
+        if self._alive():
+            self._read_ukai()
+
+    def _read_ukai(self):
+        """Ukai's pairing as the window keeps it (`ShellWindow.ukai_pairing`, built only while the door's Ukai class is
+        on), read on a worker (its first read is the file), painted on the row."""
+        pairing = getattr(self.shell, "ukai_pairing", None)
+        if "ukai" not in self.parts:
+            return
+        if pairing is None:
+            self._ukai(None)
+        else:
+            self._run(pairing.paired, then=self._ukai)
+
+    def _ukai(self, paired):
+        part = self.parts.get("ukai")
+        if part is None:
+            return
+        version = (paired or {}).get("version")
+        words = ((S.UKAI_PAIRED.format(version=version) if version else S.UKAI_PAIRED_PLAIN) if paired
+                 else S.UKAI_NOT_PAIRED)
+        if part["mark"].value() != bool(paired) or part["mark"].words() != words:
+            part["mark"].set_value(bool(paired), words)
+        if part["forget"].isHidden() == bool(paired):
+            part["forget"].setVisible(bool(paired))
+
+    def forget_ukai(self):
+        """*Forget Ukai*: the pairing let go on a worker (`Pairing.forget`: the next call from Ukai is refused at once);
+        the bar says so — and says so when its file couldn't be removed (unpaired until Surasura closes)."""
+        pairing = getattr(self.shell, "ukai_pairing", None)
+        if pairing is None:
+            return
+        self._press("ukai", "forget", pairing.forget, then=lambda _answer: self.say(S.UKAI_FORGOTTEN, "ukai"),
+                    failed=lambda info: self.say(S.UKAI_FORGET_STUCK.format(why=info[1]), "ukai"))
 
     def find_hato(self):
         """*Find hato…*: hato's folder picked (the system's dialog; never while a press of it is live), `open_hato` on a

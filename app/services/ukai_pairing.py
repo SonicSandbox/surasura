@@ -82,10 +82,12 @@ def _error(message, kind, status):
 
 class Pairing:
     """Ukai's one pairing. `ask(Request)` opens the window's card (any thread; it must not wait for the answer, which
-    comes back through `answer`); `where` the file (default `path()`); `clock` monotonic seconds."""
+    comes back through `answer`); `where` the file (default `path()`); `clock` monotonic seconds; `changed()` (any
+    thread, never under the lock; UKAI-S2) once Ukai is paired or forgotten — Settings' row paints again."""
 
-    def __init__(self, ask, where=None, clock=time.monotonic):
+    def __init__(self, ask, where=None, clock=time.monotonic, changed=None):
         self._ask, self._where, self._clock = ask, where, clock
+        self._changed = changed
         self._lock = threading.Lock()
         self._kept = _UNREAD
         self._pending = None
@@ -157,7 +159,8 @@ class Pairing:
             except OSError:                                 # (said as busy, never a crash: its log line names the id)
                 raise _error("Surasura couldn't save the pairing: try again.", "busy", 503) from None
             self._kept, self._pending = kept, None
-            return {"state": ALLOWED, "token": kept["token"]}
+        self._said()
+        return {"state": ALLOWED, "token": kept["token"]}
 
     # --- the window's side -------------------------------------------------------------------------------------- #
     def answer(self, pair_id, allowed):
@@ -174,15 +177,36 @@ class Pairing:
     def forget(self):
         """*Forget Ukai*: the next call is refused at once (the kept copy first), then the file goes. OSError: the
         file stays on disk (the caller says so); this session is unpaired all the same."""
+        held = None
+        try:
+            with self._lock:
+                self._kept, self._pending = None, None
+                for name in (self._file(), self._file() + ".part"):     # the pairing first: a held .part never keeps it
+                    try:
+                        os.remove(name)
+                    except FileNotFoundError:
+                        pass
+                    except OSError as e:
+                        held = held or e
+            if held is not None:
+                raise held
+        finally:
+            self._said()
+
+    def paired(self):
+        """{"origin", "version"} of the paired Ukai, or None — what Settings' row shows (never the token)."""
         with self._lock:
-            self._kept, self._pending = None, None
-            for name in (self._file() + ".part", self._file()):
-                try:
-                    os.remove(name)
-                except FileNotFoundError:
-                    pass
+            kept = self._load()
+        return {"origin": kept["origin"], "version": kept.get("version") or ""} if kept else None
 
     # --- inside ------------------------------------------------------------------------------------------------- #
+    def _said(self):
+        if self._changed is not None:
+            try:
+                self._changed()
+            except Exception:                               # (the row's repaint is never a reason to fail a pairing)
+                pass
+
     def _asked(self, p):
         return {"pair": p.id, "code": p.code, "wait_s": int(WAIT_S)}
 

@@ -2102,7 +2102,7 @@ def _warm():
 def _look_for(wanted, settings=None):
     """(A worker.) -> (the catalog's ctx: the modules found + "koe_revealed" + the tools found, "hato_found" and
     "miner_found" (row 13); the doors' modules {name: found})."""
-    found = set(catalog.installed_modules()) | _tools_found(settings)
+    found = set(catalog.installed_modules()) | _tools_found(settings) | _ukai_on()
     if "modules.koe" in found:
         try:
             import importlib
@@ -2111,6 +2111,17 @@ def _look_for(wanted, settings=None):
         except Exception as e:                                   # the gate unread: Speech stays hidden
             applog.log("settings", f"the Speech gate: {e}")
     return found, windows._look_for(wanted)
+
+
+def _ukai_on():
+    """(A worker.) 鵜飼 Ukai's row (UKAI-S2) shows only while the door's Ukai class is on (`door.EXTENSION_ON`, off
+    until Ukai 1.0) and its module is here -> {"ukai_on"} or none."""
+    import importlib.util
+    from app import door
+    try:
+        return {"ukai_on"} if door.EXTENSION_ON and importlib.util.find_spec("modules.ukai") is not None else set()
+    except (ImportError, ValueError):
+        return set()
 
 
 def _tools_found(settings):

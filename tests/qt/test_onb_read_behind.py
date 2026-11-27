@@ -380,7 +380,8 @@ def test_shows_that_reach_new_arrivals_after_a_language_switch_fill_the_page_fro
             super().__init__(settings)
             self.library_bridge = qbridge.Bridge(parent=self)      # the language the window opened with
 
-        def switch(self):                                          # as `_show_switched` does, in its order
+        def switch(self):                                          # `_show_switched`'s bridge steps, in its order
+            #                                                        (its `show_library`: `_with_shows` below)
             old = self.library_bridge
             old.stop()
             old.deleteLater()
@@ -390,6 +391,11 @@ def test_shows_that_reach_new_arrivals_after_a_language_switch_fill_the_page_fro
     monkeypatch.setattr(test_wizard, "FakeShell", SwitchingShell)
     wiz, shell, api, _s, _m = make(api=HeldApi())
     shell.switch()                                                     # page 1's zh
+    _walk(wiz, "shows")
+    read, asked = wiz.read_rows, []
+    monkeypatch.setattr(wiz, "read_rows", lambda *a, **k: (asked.append(1), read(*a, **k))[1])
+    shell.library_bridge.library_changed.emit(None)                    # + Add's files reach the new library
+    assert asked, "*Your shows*' rows follow the new library's views too"
     wiz._read_ids = [11, 12]                                           # the scan took files in; the view has none yet
     _walk(wiz, "watching")
     page = wiz.page

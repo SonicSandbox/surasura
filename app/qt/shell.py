@@ -30,6 +30,13 @@ import threading
 import time
 import traceback
 
+# Run as `python -m app.qt.shell`, the window is the ONE imported module's: this file's body run as `__main__` was a
+# second copy beside the `app.qt.shell` that needs.py, settings_sources.py and the wizard import, with a Connect feed
+# of its own (`_CONNECT_FEEDS`: the window's one feed) (ENTRY-ONCE, 3.0.21; analyzer.py's entry). Before the body.
+if __name__ == "__main__":
+    from app.qt import shell as _one
+    sys.exit(_one.main())
+
 from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (QFontMetrics, QFontMetricsF, QGuiApplication, QIcon, QKeySequence,
@@ -5273,7 +5280,3 @@ def quiet_exit(workers_ms=QUIT_WORKERS_MS, join_s=QUIT_THREAD_JOIN_S, gone=()):
             thread.join(join_s)
             ended = ended and not thread.is_alive()
     return ended
-
-
-if __name__ == "__main__":
-    sys.exit(main())

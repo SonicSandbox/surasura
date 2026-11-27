@@ -207,14 +207,6 @@ def book_audiobook(language, need_id, path=None, answer=None):
     return True
 
 
-def book_ai_audio(language, need_id, path=None):
-    """Iro-AA *Make AI audio (beta)* on the same question (PROVISIONAL): answered as *Mine without audio* is — mined as
-    the book, kept for good — with the answer `runner.AI_AUDIO`, so each part's new cards are queued for the AI voice
-    as it fills (`runner._mark_ai_audio`). -> `book_audiobook`'s answer."""
-    from app.connect import runner
-    return book_audiobook(language, need_id, path, answer=runner.AI_AUDIO)
-
-
 def first_run_aside(language, path=None):
     """Kantan-B2b: the first run's *Not now* -> how many jobs were set aside (0 with no ledger: nothing written)."""
     path = path or book.path()

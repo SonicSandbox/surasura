@@ -1582,8 +1582,6 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "no_audiobook": ("Mine without audio", "Its cards are made without sentence audio. Surasura doesn't ask about "
                                            "this book again"),
     # Iro-AA (PROVISIONAL): the AI voice's beta, on and installed
-    "ai_audio": ("Make AI audio (beta)", "Mined without audio, then an AI voice made on this computer reads each new "
-                                         "card's sentence. Its audiobook, if you have it, sounds better"),
     # Kura-AB3 A2 (PROVISIONAL): a book lined up with its audiobook after some of its cards were made
     "add_audio": ("Add the narrator's voice", "Each of those cards gets its sentence in the narrator's voice: only an "
                                               "empty sentence-audio field is filled, nothing else on the card changes, "
@@ -1858,7 +1856,6 @@ NEEDS_SPEECH_NO = "Their cards come without sentence audio"
 NEEDS_KEPT_TOGETHER = "Kept together: the book's cards come without sentence audio"
 NEEDS_SEPARATED = "The audiobook is its own title again"
 NEEDS_NO_AUDIOBOOK = "Its cards come without sentence audio"           # Kura-AB2 (PROVISIONAL)
-NEEDS_AI_AUDIO = "Its cards get AI sentence audio (beta) once they're made"    # Iro-AA (PROVISIONAL)
 NEEDS_AUDIO_ADDED = "The narrator's voice is on {n} of 「{title}」's cards"          # Kura-AB3 A2 (PROVISIONAL)
 NEEDS_AUDIO_SOME = ("The narrator's voice is on {n} of 「{title}」's cards · {m} couldn't be cut ({why}): the book's menu "
                     "tries them again")

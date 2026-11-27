@@ -246,7 +246,7 @@ def _label(text, name, parent, wrap=True):
 ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "check_again", "skip_words", "dismiss",
            "make_cards", "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading",
            "keep_waiting", "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows", "get_speech_model",
-           "no_speech_model", "keep_together", "separate_them", "no_audiobook", "ai_audio",
+           "no_speech_model", "keep_together", "separate_them", "no_audiobook",
            "move_cards", "leave_cards",                                                  # Michi-DK
            "put_back_shelf", "leave_shelf",                                              # Kyou-SH
            "undo_tidy", "leave_tidy",                                                    # Kyou-SH2
@@ -652,17 +652,6 @@ def _connect_callable(module, name):
         return None
 
 
-def _ai_audio_on(settings, language):
-    """(A worker.) Iro-AA: the AI voice's beta on, installed, its writer there and the language Japanese
-    (`modules.irodori.on`: settings + a file look) — the book's *Make AI audio (beta)* shown; the module absent or
-    failing: never."""
-    try:
-        from modules import irodori
-        return bool(irodori.on(settings, language))
-    except Exception:
-        return False
-
-
 def _read_sound(counted, language):
     """(A worker.) AUDIO-FILL: Card sound's count, as Connect last kept it (`card_sound.counted`: one ledger row), or
     None (none kept, Connect absent, a read that failed)."""
@@ -1003,15 +992,12 @@ class NeedsYou(QObject):
                               "open_anki": _connect_callable("open_anki", "for_you"),     # A3W-6
                               "speech_model": _connect_callable("actions", "speech_model"),   # Michi-AB Stage B
                               "book_audiobook": _connect_callable("actions", "book_audiobook"),     # Kura-AB2
-                              "book_ai_audio": _connect_callable("actions", "book_ai_audio"),       # Iro-AA
                               "skip_words": _connect_callable("actions", "skip_refused"),     # Michi-RM3
                               "add_audio": _connect_callable("actions", "add_audio"),               # Kura-AB3 A2
                               "add_audio_undo": _connect_callable("actions", "add_audio_undo"),
                               "add_sound": _connect_callable("card_sound", "press"),               # AUDIO-FILL
                               "add_sound_undo": _connect_callable("card_sound", "press_undo"),
                               "sound_count": _connect_callable("card_sound", "counted")}
-        self.ai_audio_on = _ai_audio_on          # Iro-AA (a worker; tests replace it)
-        self._ai_audio = False                   # ... its last answer, left by the gather for `has`
         self.cards = page.cards
         self.cards.shown = self.available
         self.cards.has_more = lambda e: e.kind not in service.NO_LATER
@@ -1199,7 +1185,7 @@ class NeedsYou(QObject):
         view, failures, lang, data_dir = self.view, self.failures, self.language, self.data_dir
         read_connect, read_asks, find_offline, read_settings = (self.read_connect, self.read_asks,
                                                                  self.find_offline, self.read_settings)
-        find_miner, ai_audio_on = self.find_miner, self.ai_audio_on
+        find_miner = self.find_miner
         gone_folders = self.gone_folders
         library = self._library()
         emptied = self._emptied()
@@ -1216,8 +1202,6 @@ class NeedsYou(QObject):
             settings = read_settings() or {}
             connect = read_connect(lang) if settings.get("connect_enabled") else None
             sound = _read_sound(sound_count, lang) if connect is not None else None   # AUDIO-FILL: Connect's count
-            # Iro-AA: read here, on the worker; the window's thread reads only the bool it leaves (`has`)
-            self._ai_audio = bool(ai_audio_on(settings, lang)) if connect is not None else False
             rels = [e.rel_path for r in view.rows for e in r.episodes if e.rel_path] if view.mode == "store" else []
             roots = find_offline(lang, rels, data_dir) if rels else []
             asks = read_asks()
@@ -1333,8 +1317,6 @@ class NeedsYou(QObject):
             return self.connect_calls.get("speech_model") is not None
         if name == "no_audiobook":                   # Kura-AB2: the book's answer is Connect's
             return self.connect_calls.get("book_audiobook") is not None
-        if name == "ai_audio":                       # Iro-AA: ... and the AI voice's, while its beta is on + installed
-            return self._ai_audio and self.connect_calls.get("book_ai_audio") is not None
         if name == "add_audio":                      # Kura-AB3 A2: Connect's, its Undo too
             return self.connect_calls.get("add_audio") is not None and \
                 self.connect_calls.get("add_audio_undo") is not None
@@ -1891,24 +1873,6 @@ class NeedsYou(QObject):
                 self._stays("no_audiobook", entry)
             self._connect_done(strings.NEEDS_NO_AUDIOBOOK if ok else strings.NEEDS_MINE_ANYWAY_NOT)
         self._press("no_audiobook", entry, run, then=done)
-
-    def _do_ai_audio(self, entry, _line):
-        """Iro-AA *Make AI audio (beta)*: the book's answer kept (`actions.book_ai_audio`), Connect kicked."""
-        answer, kick, lang, read_settings = (self.connect_calls["book_ai_audio"], self.connect_calls.get("kick"),
-                                             self.language, self.read_settings)
-        need_id = entry.data["need_id"]
-
-        def run():
-            ok = answer(lang, need_id)
-            if ok and kick is not None:
-                kick(read_settings() or {})
-            return ok
-
-        def done(ok):
-            if not ok:
-                self._stays("ai_audio", entry)
-            self._connect_done(strings.NEEDS_AI_AUDIO if ok else strings.NEEDS_MINE_ANYWAY_NOT)
-        self._press("ai_audio", entry, run, then=done)
 
     # Kura-AB3 A2 (PROVISIONAL): a book lined up after some of its cards were made — the narrator's voice on them
     def _do_add_audio(self, entry, _line):

@@ -182,9 +182,9 @@ CONNECT_ACTIONS = {"not-timed": ("check_again", "change_video", "mine_anyway"), 
                    "speech-model": ("get_speech_model", "no_speech_model"),
                    # Kura-AB2 (PROVISIONAL): a book about to be mined with no audiobook paired — *Pick its audiobook…*
                    # · *Mine without audio*
-                   # Iro-AA (PROVISIONAL): *Make AI audio (beta)* between them, shown only while the AI voice's beta
-                   # is on and installed (`NeedsYou.has`)
-                   "book-audiobook": ("pick_audiobook", "ai_audio", "no_audiobook"),
+                   # (Iro-AA's *Make AI audio (beta)* between them retired, AUDIO-FILL: Card sound voices a book's
+                   # cards as they come due, whatever the answer)
+                   "book-audiobook": ("pick_audiobook", "no_audiobook"),
                    # Kura-AB3 A2 (PROVISIONAL): a book lined up — its earlier text-only cards get the narrator's voice
                    "book-add-audio": ("add_audio",),
                    # AM-FIX 2 (the lead's ruling 2): a swap an Anki Miner without `render` can't make — *Update*

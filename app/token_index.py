@@ -1141,6 +1141,8 @@ class WalkFile:
 # The store
 # --------------------------------------------------------------------------- #
 READINGS_CHUNK = 500               # lemmas per query of `Store.readings` (SQLite's own limit is 32766)
+HOLDING_CHUNK = 500                # paths per query of `Store.holding`
+HOLDING_SET_AT = 16                # words asked at once from which `Store.holding` reads a file's counts into a set
 
 
 class Store:
@@ -1202,27 +1204,58 @@ class Store:
         first look before a pass that reads them (Piyo's rounds from Anki, `sentence_corpus.files_holding`). `most`:
         each key or run's first `most` files only (a common word is in nearly every file; a run's words may stand
         apart in a file, 手 … を … 出す, so a caller looks again without `most` for what those didn't give). The counts
-        are the tokenizer's words, before the name tables: a name they join (app/names.py) is found as its parts."""
+        are the tokenizer's words, before the name tables: a name they join (app/names.py) is found as its parts.
+        AUDIO-WASTE: the blobs are read HOLDING_CHUNK paths a query, and with HOLDING_SET_AT words or more asked, a
+        file's counts are read once into its keys and lemmas (one look a word, not one search of the blob a word: 145 s
+        for 1,000 words over 20,000 files) — the same answer as the byte search, which stays for few words and for a
+        blob or word JSON writes with an escape (a backslash: then a quote in it isn't the key's own)."""
         wanted = [[json.dumps(make_key(lemma, reading), ensure_ascii=False).encode("utf-8")] for lemma, reading in keys]
+        looks = [[(True, make_key(lemma, reading))] for lemma, reading in keys]
         wanted += [[json.dumps(lemma, ensure_ascii=False)[:-1].encode("utf-8") + b"|" for lemma in run]
                    for run in runs if run]
+        looks += [[(False, lemma) for lemma in run] for run in runs if run]
+        plain = [all(b"\\" not in p for p in parts) and all(whole or "|" not in s for whole, s in look)
+                 for parts, look in zip(wanted, looks)]
+        by_set = len(wanted) >= HOLDING_SET_AT
         found = [0] * len(wanted)
         out = []
-        for path in paths:
-            if most is not None and all(n >= most for n in found):
-                break
-            row = self.conn.execute("SELECT counts FROM files WHERE path=?", (_norm(path),)).fetchone()
-            try:
-                text = zlib.decompress(row[0]) if row and row[0] else b""
-            except zlib.error:
-                text = b""
-            hit = False
-            for at, parts in enumerate(wanted):
-                if (most is None or found[at] < most) and all(p in text for p in parts):
-                    found[at] += 1
-                    hit = True
-            if hit:
-                out.append(path)
+        for at in range(0, len(paths), HOLDING_CHUNK):
+            batch = paths[at:at + HOLDING_CHUNK]
+            normed = [_norm(p) for p in batch]
+            names = list(dict.fromkeys(normed))
+            blobs = dict(self.conn.execute(
+                f"SELECT path, counts FROM files WHERE path IN ({','.join('?' * len(names))})", names))
+            for path, name in zip(batch, normed):
+                if most is not None and all(n >= most for n in found):
+                    return out
+                blob = blobs.get(name)
+                try:
+                    text = zlib.decompress(blob) if blob else b""
+                except zlib.error:
+                    text = b""
+                counts = lemmas = None
+                if by_set and text and b"\\" not in text:
+                    try:
+                        counts = json.loads(text)
+                    except ValueError:
+                        counts = None
+                    if isinstance(counts, dict):
+                        lemmas = {k.partition("|")[0] for k in counts}
+                    else:
+                        counts = None
+                hit = False
+                for n, parts in enumerate(wanted):
+                    if most is not None and found[n] >= most:
+                        continue
+                    if counts is not None and plain[n]:
+                        held = all((s in counts) if whole else (s in lemmas) for whole, s in looks[n])
+                    else:
+                        held = all(p in text for p in parts)
+                    if held:
+                        found[n] += 1
+                        hit = True
+                if hit:
+                    out.append(path)
         return out
 
     def _tokens_of(self, ids, cur=None):

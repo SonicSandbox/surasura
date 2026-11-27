@@ -690,10 +690,10 @@ CREATE TABLE IF NOT EXISTS kept (
 def kept_text_path(language, data_dir):
     """`kept_text_<lang>_<key>.db`: beside the library store's own file and keyed as it is (the language and the data
     folder: `library_store.library_db_path`) — the local data folder, never %APPDATA% beside this cache; under the test
-    root as the library store's."""
+    root as the library store's. Only the path: its folder is made when the file is (`_KeptText._connect`), so a
+    reconcile with nothing kept, or a look at where it sits, makes nothing in the data folder."""
     from app import library_store
     db = library_store.library_db_path(language, data_dir)
-    os.makedirs(os.path.dirname(db), exist_ok=True)
     return os.path.join(os.path.dirname(db), "kept_text_" + os.path.basename(db)[len("library_"):])
 
 
@@ -721,6 +721,7 @@ class _KeptText:
         return _norm(os.path.join(self.root, rel)) if self.root and not os.path.isabs(rel) else rel
 
     def _connect(self):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)     # (made with the file, never before it)
         c = sqlite3.connect(self.path, timeout=5.0)
         try:
             c.execute("PRAGMA busy_timeout=5000")

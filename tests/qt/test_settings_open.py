@@ -158,3 +158,13 @@ def test_the_level_read_is_asked_once_and_only_once_a_row_that_shows_it_is_built
     assert wait_until(lambda: page.built, 20)
     assert len(asked) == 1 and asked[0], asked                  # once, with a row there to show it
     page.close()
+
+
+def test_a_package_whose_sections_build_no_row_is_still_attached_before_the_page_is_built(qapp):
+    # (a package that names no row of the catalog's, or one whose rows all fail to build: attached all the same)
+    page, _calls = _page()
+    seen = []
+    page.attach_later(lambda p: seen.append(p.built), ())
+    assert wait_until(lambda: page.built, 20)
+    assert seen == [False]
+    page.close()

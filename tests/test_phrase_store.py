@@ -76,8 +76,8 @@ def _words(listed):
 
 
 def test_the_store_counts_each_phrase_as_generate_lists_it(library):
-    """After an index: 気を付ける met 3 times (気をつけて folds into it), 気が付く twice (never across the comma), and
-    the uses 手っ取り and 眉根 give their phrases."""
+    """After an index: 気を付ける met 3 times (気をつけて folds into it), 気が付く 3 times (twice alone, once inside
+    気がつくと: ENGINE 54; never across the comma), and the uses 手っ取り and 眉根 give their phrases."""
     _switch(library, True)
     store = _reconcile(library)
     try:
@@ -85,7 +85,7 @@ def test_the_store_counts_each_phrase_as_generate_lists_it(library):
     finally:
         store.close()
     rows = table["rows"]
-    assert rows["気を付ける|キヲツケル"][0] == 3 and rows["気が付く|キガツク"][0] == 2
+    assert rows["気を付ける|キヲツケル"][0] == 3 and rows["気が付く|キガツク"][0] == 3
     assert {"気がつく", "気がつい", "気が付い"} <= set(rows["気が付く|キガツク"][1])
     assert table["taken"]["手っ取り|テットリ"] == 2 and table["taken"]["眉根|マユネ"] == 2
 
@@ -248,7 +248,7 @@ def test_generate_reads_each_files_phrases_from_the_index_and_searches_a_file_th
         sentences, flat = store.phrase_matches([path])[path]
         assert sentences == len(store.file_tokens(path)) and len(flat) % 4 == 0
         met = Counter(phrases.load().entry(index).word for index in flat[3::4])
-        assert met["気を付ける"] == 3 and met["気が付く"] == 2, "the uses the table counts"
+        assert met["気を付ける"] == 3 and met["気が付く"] == 3, "the uses the table counts"
     finally:
         store.close()
     searched = []

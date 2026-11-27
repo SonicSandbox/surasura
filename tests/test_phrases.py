@@ -54,10 +54,10 @@ def test_a_phrase_is_found_by_its_lemmas_in_any_form(found_in, tokenizer):
 
 
 def test_the_longest_phrase_wins_and_the_search_goes_on_after_it(found_in, tokenizer):
-    """あっという間に holds あっという間: the longer phrase is the one met there, never both; then the rest of the
-    sentence is read on."""
+    """あっという間に holds あっという間: the longer phrase is the one met there, and a use of it is a use of the shorter
+    one inside it too, listed right after it (ENGINE 54); then the rest of the sentence is read on."""
     assert _found(found_in, tokenizer, "夏休みはあっという間に終わり、本題に入った。") == [
-        ("あっと言う間に", "あっという間に"), ("本題に入る", "本題に入っ")]
+        ("あっと言う間に", "あっという間に"), ("あっと言う間", "あっという間"), ("本題に入る", "本題に入っ")]
 
 
 def test_a_run_across_a_dropped_comma_is_no_phrase(found_in, tokenizer):
@@ -76,6 +76,83 @@ def test_across_a_comma_the_next_shorter_phrase_at_that_place_is_tried(tokenizer
     assert found_in.entry(index).display == "あっという間"
 
 
+# Real phrases (app/phrase_data.py's rows) that stand inside longer ones, for the inner uses below.
+NESTED = [
+    ["身|に|余る", "ミ|ニ|アマル", "cgc", "身に余る", "ミニアマル"],
+    ["身|に|余る|光栄", "ミ|ニ|アマル|コウエイ", "cgcc", "身に余る光栄", "ミニアマルコウエイ"],
+    ["と|為る|て", "ト|スル|テ", "gbg", "として", "トシテ", 0, 1],
+    ["と|為る", "ト|スル", "gb", "とする", "トスル", 0, 1],
+    ["断固|と|為る|て", "ダンコ|ト|スル|テ", "cglg", "断固として", "ダンコトシテ"],
+    ["場合|に|因る", "バアイ|ニ|ヨル", "cgc", "場合による", "バアイニヨル"],
+    ["に|因る", "ニ|ヨル", "gb", "による", "ニヨル", 0, 1],
+    ["痛い|目", "イタイ|メ", "cc", "痛い目", "イタイメ"],
+    ["痛い|目|に|会う", "イタイ|メ|ニ|アウ", "ccgc", "痛い目に遭う", "イタイメニアウ"],
+    ["痛い|目|に|会う|せる", "イタイ|メ|ニ|アウ|セル", "ccgcg", "痛い目に遭わせる", "イタイメニアワセル"],
+    ["腑|に|落ちる", "フ|ニ|オチル", "bgc", "腑に落ちる", "フニオチル"],
+    ["腑|に|落ちる|ない", "フ|ニ|オチル|ナイ", "cgcg", "腑に落ちない", "フニオチナイ"],
+    ["こう|言う", "コウ|イウ", "cc", "こういう", "コウイウ", 2],
+]
+
+
+def _met(text, tokenizer, rows=NESTED):
+    """[(the phrase's spelling, where it starts, where it ends)] for each sentence of `text`, in find's order."""
+    found_in, out = phrases.PhraseSet(rows), []
+    for sentence, tokens in tokenizer.tokenize_sentences(text):
+        out += [(found_in.entry(i).display, a, b) for a, b, i in found_in.find(tokens, sentence)]
+    return out
+
+
+def test_a_longer_phrase_is_also_a_use_of_the_shorter_one_inside_it(tokenizer):
+    """身に余る光栄 'an honour I don't deserve' holds 身に余る 'more than one deserves': the learner who meets the longer
+    phrase meets the shorter one too, so its use counts for both (ENGINE 54) — the longer first, the inner one right
+    after it. 身に余る alone is only itself, and a sentence with no longer phrase reads as before."""
+    assert _met("身に余る光栄です。", tokenizer) == [("身に余る光栄", 0, 4), ("身に余る", 0, 3)]
+    assert _met("身に余るお言葉をいただきました。", tokenizer) == [("身に余る", 0, 3)]
+    assert _met("今日は晴れです。", tokenizer) == []
+
+
+def test_a_phrase_later_inside_a_longer_one_is_a_use_too(tokenizer):
+    """場合による 'it depends on the case' holds the grammar expression による 'depending on' from its second word; a
+    negative 腑に落ちない holds 腑に落ちる from its first."""
+    assert _met("それは場合によるね。", tokenizer) == [("場合による", 2, 5), ("による", 3, 5)]
+    assert _met("その説明はどうも腑に落ちない。", tokenizer) == [("腑に落ちない", 4, 8), ("腑に落ちる", 4, 7)]
+
+
+def test_inner_phrases_are_found_in_turn_longest_first(tokenizer):
+    """痛い目に遭わせる 'make someone pay' holds 痛い目に遭う 'have a bitter experience', which holds 痛い目: each is a use
+    of the next, so all three are met — each the longest at its place inside the one before."""
+    assert _met("痛い目に遭わせてやる。", tokenizer) == [
+        ("痛い目に遭わせる", 0, 5), ("痛い目に遭う", 0, 4), ("痛い目", 0, 2)]
+
+
+def test_a_grammar_expression_gives_no_use_to_one_inside_it(tokenizer):
+    """A grammar expression is learned as one unit (every word in it is the expression's): として 'as' is never a use
+    of とする 'to suppose'. Inside a phrase that isn't grammar, 断固として 'firmly', the longest inner phrase is として —
+    and that gives とする nothing in turn."""
+    assert _met("教師として働く。", tokenizer) == [("として", 1, 4)]
+    assert _met("断固として拒否する。", tokenizer) == [("断固として", 0, 4), ("として", 1, 4)]
+
+
+def test_an_inner_phrase_must_stand_there_as_the_finder_asks(tokenizer):
+    """The inner phrase passes the same checks a phrase met alone does: こういう 'this kind of' is a pre-noun
+    adjectival, so inside こういった人 — standing before た, never a word of its own — it is no use (`before_a_noun`);
+    and the longer phrase's very span is never counted twice."""
+    rows = NESTED + [["こう|言う|た", "コウ|イウ|タ", "ccg", "こういった", "コウイッタ", 2]]
+    assert _met("こういった人が好きだ。", tokenizer, rows) == [("こういった", 0, 3)]
+    assert _met("こういう人が好きだ。", tokenizer, rows) == [("こういう", 0, 2)]
+
+
+def test_a_word_living_only_inside_a_phrase_is_given_once_however_many_stand_over_it(tokenizer):
+    """あっという間に and あっという間 both stand over 間 (a word living only inside them, `bound_at`): its one use is
+    given once — to the tally's taken uses, which the Rarity slider takes off the word — while each phrase counts the
+    use as its own."""
+    found_in = phrases.PhraseSet(ROWS)
+    sentences = list(tokenizer.tokenize_sentences("あっという間に終わった。"))
+    uses, taken = phrases.tally(sentences, found_in)
+    assert {found_in.entry(i).display: n for i, (n, _spelled) in uses.items()} == {"あっという間に": 1, "あっという間": 1}
+    assert taken == {"間|マ": 1}
+
+
 def test_a_phrase_with_a_form_of_its_own_is_found_only_in_that_form(tokenizer):
     """そういうことなら and ここまで来たら end in grammar in a form of their own (なら, たら — never the dictionary form
     だ, た): そういうことだ and ここまで来た are other expressions, and the next shorter phrase there is tried
@@ -85,7 +162,8 @@ def test_a_phrase_with_a_form_of_its_own_is_found_only_in_that_form(tokenizer):
         ["そう|言う", "ソウ|イウ", "cc", "そういう", "ソウイウ"],
         ["此処|まで|来る|た", "ココ|マデ|クル|タ", "cgcg", "ここまで来たら", "ココマデキタラ"],
         ["目|を|輝く|せる", "メ|ヲ|カガヤク|セル", "cgcg", "目を輝かせる", "メヲカガヤカセル"]])
-    assert _found(found_in, tokenizer, "そういうことなら、行こう。") == [("そう言う事だ", "そういうことなら")]
+    assert _found(found_in, tokenizer, "そういうことなら、行こう。") == [("そう言う事だ", "そういうことなら"),
+                                                                  ("そう言う", "そういう")]   # the one inside it
     assert _found(found_in, tokenizer, "答えは簡単で、つまりそういうことだ。") == [("そう言う", "そういう")]
     assert _found(found_in, tokenizer, "ここまで来たら戻れない。") == [("此処まで来るた", "ここまで来たら")]
     assert _found(found_in, tokenizer, "長い旅だったが、ここまで来たんだ。") == []
@@ -217,9 +295,10 @@ def test_nothing_to_find(found_in, tokenizer):
 
 
 def test_a_phrase_is_at_most_five_words_and_at_least_two(found_in):
-    """The trie holds nothing longer than the data does (2-5 words): a six-word run matches its longest prefix."""
+    """The trie holds nothing longer than the data does (2-5 words): a six-word run matches its longest prefix (and
+    the shorter phrase inside that one)."""
     tokens = [[w, "", w, w] for w in ("あっ", "と", "言う", "間", "に", "も")]
-    assert found_in.find(tokens, "あっと言う間にも") == [(0, 5, 2)]
+    assert found_in.find(tokens, "あっと言う間にも") == [(0, 5, 2), (0, 4, 1)]
 
 
 def test_readiness_waits_only_for_real_words_it_does_not_hold_alone():

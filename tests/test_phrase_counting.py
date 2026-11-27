@@ -30,8 +30,10 @@ FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Test Resourc
 OUTPUTS = ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json", "library_frequency.json",
            "file_words.json", "analyzed_files.json", "file_statistics.json", "file_statistics.txt",
            "reading_words.csv", "sources.json")
-# The phrases the fixture meets twice or more, by their rows' Word — and the words that live only inside them.
-PHRASE_ROWS = {"気が付く", "気を付ける", "手っ取り早い", "若しか為るた", "本題に入る", "眉根を寄せる", "首を傾げる"}
+# The phrases the fixture meets twice or more, by their rows' Word — and the words that live only inside them. 腑に落ちる
+# is met once alone and once inside 腑に落ちない, a use of it too (ENGINE 54).
+PHRASE_ROWS = {"気が付く", "気を付ける", "手っ取り早い", "若しか為るた", "本題に入る", "眉根を寄せる", "首を傾げる",
+               "腑に落ちる"}
 BOUND = {"手っ取り", "眉根", "傾げる"}
 # A word whose uses a grammar expression's row takes (Phrase.grammar, ENGINE 38): 成る's only other use, 冷たくなった,
 # leaves it under the cut-off once 夕方になると's is the grammar row になると's (met once: not listed itself).
@@ -125,14 +127,15 @@ def test_on_adds_the_phrase_rows_and_every_word_row_stays_but_the_bound_ones(lib
 
 
 def test_a_phrase_row_counts_every_form_but_never_across_a_comma(library):
-    """気がついた and 気が付いて are two uses of 気が付く — named 気がつく, its commonest spelling, its reading the
+    """気がついた and 気が付いて are uses of 気が付く — named 気がつく, its commonest spelling, its reading the
     dictionary's; 気が、ついたら is none (the comma between its words), and ふと気がつくと is its own phrase (気が付くと,
-    met once). 気をつけて is 気をつける + て: three uses of 気を付ける with 気をつける itself. Coverage is the tokens': a
-    phrase row learned in the progressive list makes no more of the file known."""
+    met once) and a use of 気が付く inside it too (ENGINE 54): three. 気をつけて is 気をつける + て: three uses of 気を付ける
+    with 気をつける itself. Coverage is the tokens': a phrase row learned in the progressive list makes no more of the
+    file known."""
     _switch(library, True)
     rows = _run(library)
     notice = rows["気が付く"]
-    assert (notice["Orth"], notice["Reading"], notice["Occurrences"]) == ("気がつく", "キガツク", 2)
+    assert (notice["Orth"], notice["Reading"], notice["Occurrences"]) == ("気がつく", "キガツク", 3)
     assert set(notice["Forms"].split("|")) == {"気がつい", "気が付い"}
     assert rows["気を付ける"]["Occurrences"] == 3 and rows["気を付ける"]["Orth"] == "気をつける"
     assert rows["若しか為るた"]["Orth"] == "もしかしたら" and rows["若しか為るた"]["Reading"] == "モシカシタラ"
@@ -140,6 +143,18 @@ def test_a_phrase_row_counts_every_form_but_never_across_a_comma(library):
     prog = pd.read_csv(library / "results" / "progressive_learning_list.csv", keep_default_na=False)
     for _, row in prog[prog["Word"].isin(PHRASE_ROWS)].iterrows():
         assert row["Current %"] == row["New %"], row["Word"]
+
+
+def test_a_use_inside_a_longer_phrase_counts_for_the_shorter_one(library):
+    """The learner who meets 腑に落ちない 'not convincing' meets 腑に落ちる 'make sense' in it: met once alone (やっと腑に
+    落ちた) and once inside the longer phrase, 腑に落ちる has the two uses a row needs, and the longer phrase's
+    sentence is among its examples; 腑に落ちない itself, met once, stays under the cut-off (ENGINE 54)."""
+    _switch(library, True)
+    rows = _run(library)
+    row = rows["腑に落ちる"]
+    assert row["Occurrences"] == 2 and "腑に落ちない" not in rows
+    examples = {row[f"Context {n}"] for n in (1, 2, 3)}
+    assert {"その説明はどうも腑に落ちない。", "先生の話を聞いて、やっと腑に落ちた。"} <= examples
 
 
 def test_a_phrase_of_known_words_sits_lower_and_one_waiting_for_a_word_sorts_after_it(library):
@@ -184,10 +199,11 @@ def test_known_or_ignored_as_a_whole_is_no_row(library):
 
 
 def test_the_cut_off_is_a_words(library):
-    """A phrase is a row by exactly a word's test: 気を付ける (3 uses) at a floor of 3, 気が付く (2) not."""
+    """A phrase is a row by exactly a word's test: 気を付ける and 気が付く (3 uses each, one of 気が付く's inside 気がつくと)
+    at a floor of 3, 腑に落ちる (2: one inside 腑に落ちない) not."""
     _switch(library, True)
     rows = _run(library, "--min-freq", "3")
-    assert "気を付ける" in rows and "気が付く" not in rows
+    assert "気を付ける" in rows and "気が付く" in rows and "腑に落ちる" not in rows
 
 
 def test_without_the_token_store_the_phrase_rows_are_the_same(library):

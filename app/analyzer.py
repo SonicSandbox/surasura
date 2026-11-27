@@ -234,7 +234,9 @@ ENSURE_AUDIO_EXAMPLE = False
 # 53: kana つかれ with no stem before it is 疲れる where nothing before it can be what a つく verb takes (_tsukare's
 #     _alone: もうつかれた, つかれた！, お前はつかれた, おつかれ is お疲れ; 嘘つかれた, 不意をつかれた, 狐につかれた keep
 #     the tagger's). SCHEMA_VERSION 33.
-ENGINE_REVISION = 53
+# 54: a use of a longer set phrase is a use of each shorter one inside it (phrases.PhraseSet._inside: 身に余る光栄 counts
+#     for 身に余る; MATCHER_VERSION 7), a word living only inside a phrase given once however many stand over it.
+ENGINE_REVISION = 54
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -7505,9 +7507,11 @@ def main():
                     phrase, _waits, bound = _phrase_facts(index)
                     if bound:
                         if taken is None:
-                            taken = Counter()
+                            taken, given = Counter(), set()
                         for k in bound:
-                            taken[(s_tokens[start + k][0], s_tokens[start + k][1])] += 1
+                            if start + k not in given:      # once, however many phrases stand over it (an inner one)
+                                given.add(start + k)
+                                taken[(s_tokens[start + k][0], s_tokens[start + k][1])] += 1
                     orth, written = _phrases.spellings(s_tokens, start, end, phrase)
                     entry = phrase_stats.get(index)
                     if entry is None:
@@ -7968,10 +7972,8 @@ def main():
                 else:
                     found = _phrase_set.find(s_tokens, s_text) if _phrase_set is not None else ()
                 if found:
-                    taken = Counter()
-                    for start, _end, index in found:
-                        for k in _phrase_facts(index)[2]:
-                            taken[(s_tokens[start + k][0], s_tokens[start + k][1])] += 1
+                    taken = Counter((s_tokens[at][0], s_tokens[at][1]) for at in {
+                        start + k for start, _end, index in found for k in _phrase_facts(index)[2]})
                     if taken:
                         uses = Counter(key for key in unknown_keys if key in taken)
                         targets = targets - {key for key, n in uses.items() if n <= taken[key]}

@@ -226,8 +226,11 @@ def record(sentences, view, file_path=None, source_type=None, names=None):
                 bound = view.phrase_bound[p_index] = phrases.bound_at(phrase)
             if bound:
                 if taken is None:
-                    taken = Counter()
+                    taken, given = Counter(), set()
                 for k in bound:
+                    if start + k in given:
+                        continue                # once, however many phrases stand over it (an inner one)
+                    given.add(start + k)
                     taken[(s_tokens[start + k][0], s_tokens[start + k][1])] += 1
                     name = f"{s_tokens[start + k][0]}|{s_tokens[start + k][1]}"
                     taken_names[name] = taken_names.get(name, 0) + 1

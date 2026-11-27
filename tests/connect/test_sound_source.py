@@ -220,10 +220,11 @@ def test_the_tally_is_what_needs_you_says(lib):
     _made(env, OTHER, [(591, env["said"][3], None)])
     env["anki"].add(592, "誰も言わない一文です。", "誰も")
     got = ss.tally(_plan(env, [590, 591, 592]))
-    assert got == {"line": 1, "audiobook": 0, "elsewhere": 1, "ai": 1, "silent": 0, "has_sound": 0}
+    assert got == {"line": 1, "audiobook": 0, "elsewhere": 1, "ai": 1, "silent": 0, "has_sound": 0,
+                   "other": 0}
 
 
-def test_a_book_card_gets_the_narrators_line_add_audio_would_cut(book, monkeypatch):  # noqa: F811
+def test_a_book_card_gets_the_narrators_line_add_audio_would_cut(book, monkeypatch, tmp_path):  # noqa: F811
     """The add-audio suite's book: each card Connect made from it is placed in its line-up exactly where *Add audio*
     places it (the same cue), the card with audio is not planned, the one the audiobook never says waits for the
     voice, and the card of another item is no card of this book's."""
@@ -231,7 +232,8 @@ def test_a_book_card_gets_the_narrators_line_add_audio_would_cut(book, monkeypat
     monkeypatch.setattr(ss, "_sound_files", lambda language, s: {})      # (no episode in this library)
     want = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)["can"]
     notes = book["anki"].notes([100, 101, 102, 103, 104, 200, 201, 300])
-    got = ss.plan("ja", notes, MAPPING, book["steps"], ledger_path=None)
+    got = ss.plan("ja", notes, MAPPING, book["steps"], ledger_path=str(tmp_path / "no-ledger.sqlite"))
+    assert want
     for nid, cue in want.items():
         assert got[nid].kind == ss.AUDIOBOOK and got[nid].cue == cue
     assert got[200].kind == ss.NONE and got[201].why == ss.AI
@@ -330,3 +332,96 @@ def test_the_ledgers_card_lines_are_one_reader_for_piyo_and_the_cards_sound(tmp_
     assert ledger_mod.note_lines(path, [600, 601], "ja") == {600: (EPISODE, 1.0, 3.2, "文化祭まで、あと三日しかないよ。")}
     assert card_translations._outcomes(path, [600], "ja") == {600: (EPISODE, 1.0, "文化祭まで、あと三日しかないよ。")}
     assert ledger_mod.note_lines(path, [600], "zh") == {} and ledger_mod.note_lines(None, [600]) == {}
+
+
+# --- the review's cases (AUDIO-FIND, 2026-11-26) ---------------------------------------------------------------- #
+def test_a_line_saying_only_part_of_the_sentence_at_its_start_is_never_its_sound(lib, tmp_path):
+    """Re-timed so the cue now at the card's start says only the first half of its sentence (both halves 8+
+    characters): half its sound is no sound — the cue that holds the whole sentence, elsewhere in the file, is it."""
+    env = lib("ja")
+    said = env["said"]
+    whole = said[0].text + said[1].text
+    env["steps"].subtitles[EPISODE] = _srt(tmp_path / "half.srt", [(1000, 3200, said[0].text), (40000, 45000, whole)])
+    cue = said[0]._replace(text=whole)
+    _made(env, EPISODE, [(700, cue, 1.0)])
+    got = _plan(env, [700])[700]
+    assert (got.kind, got.start) == (ss.LINE, 40000)
+
+
+def test_a_line_shown_again_is_one_line_never_two_after_a_retime(lib):
+    """The suite's repeated-lines episode shows 図書館の鍵を忘れちゃった twice back to back (one line, shown
+    again): re-timed, it is still found — its first copy — never refused as two lines."""
+    env = lib("ja")
+    path = os.path.join(RESOURCES, "ja", "repeated_lines.ja.srt")
+    env["steps"].subtitles[EPISODE] = path
+    first = cues.read(path, "ja")[0]
+    _made(env, EPISODE, [(710, first, 9.9)])
+    got = _plan(env, [710])[710]
+    assert (got.kind, got.start) == (ss.LINE, first.start)
+
+
+@pytest.mark.parametrize("off, found", [(5, True), (6, False)])
+def test_a_start_off_by_five_ms_keeps_its_line_and_six_looks_by_its_words(lib, tmp_path, off, found):
+    """Within NEAR_MS the cue at the start is the card's even when its text was retyped longer; one more ms and it
+    is looked for by its words, which this one no longer says alone."""
+    env = lib("ja")
+    said = env["said"]
+    longer = said[2].text + said[3].text
+    env["steps"].subtitles[EPISODE] = _srt(tmp_path / "near.srt", [(said[2].start + off, said[2].end, longer)])
+    _made(env, EPISODE, [(720, said[2], None)])
+    assert (_plan(env, [720])[720].kind == ss.LINE) is found
+
+
+def test_a_subtitle_that_cant_be_read_leaves_only_its_own_cards_to_the_next_step(lib, monkeypatch):
+    env = lib("ja")
+    _made(env, EPISODE, [(730, env["said"][0], None)])
+    real = cues.read
+
+    def broken(path, *a, **k):
+        if path == SUBS["ja"]:
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "a damaged file")
+        return real(path, *a, **k)
+    monkeypatch.setattr(cues, "read", broken)
+    got = _plan(env, [730])[730]
+    assert got.kind == ss.ELSEWHERE and got.item_id == RECAP
+
+
+def test_the_tally_keeps_a_card_with_no_audio_field_apart_from_one_with_sound(lib):
+    env = lib("ja")
+    env["anki"].add(740, env["said"][0].text, "文化", audio="[sound:mine.mp3]")
+    unmapped = MAPPING._replace(fields={"word": "Expression", "sentence": "Sentence"})
+    assert ss.tally(ss.plan("ja", env["anki"].notes([740]), unmapped, env["steps"], env["ledger"]))["other"] == 1
+    assert ss.tally(_plan(env, [740]))["has_sound"] == 1
+
+
+def test_a_busy_ledger_is_a_wait_never_cards_without_their_lines(lib, monkeypatch):
+    import sqlite3
+    from app.connect import runner
+    env = lib("ja")
+    _made(env, EPISODE, [(750, env["said"][0], None)])
+
+    def busy(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(ledger_mod, "note_lines", busy)
+    with pytest.raises(runner.Wait):
+        _plan(env, [750])
+
+
+def test_a_note_with_a_review_later_and_a_new_card_first_in_line_is_due_today(monkeypatch):
+    from app import anki_connect
+    cards = {1: (11, "review", 2, False), 2: (11, "new", 1, False)}
+    cards.update({10 + k: (20 + k, "new", 2 + k, False) for k in range(10)})
+    monkeypatch.setattr(anki_connect, "invoke", FakeAnkiSearch(cards))
+    assert ss.due_days("u", None, 3, per_day=2)[11] == 0
+
+
+def test_a_sparse_new_queue_widens_its_search_until_the_window_is_full(monkeypatch):
+    """Junban spaces the places far apart (DevTest: 3,564 … 997,709): the search doubles past them, then halves."""
+    from app import anki_connect
+    cards = {100 + k: (200 + k, "new", 1000 * (k + 1), False) for k in range(40)}
+    fake = FakeAnkiSearch(cards)
+    monkeypatch.setattr(anki_connect, "invoke", fake)
+    got = ss.due_days("u", None, 1)
+    assert got == {200 + k: 0 for k in range(ss.NEW_PER_DAY)}
+    asked = [q for _a, q in fake.calls if q and "prop:pos" in q]
+    assert len(asked) == len(set(asked)) and len(asked) <= 2 * 16, "no place asked twice"

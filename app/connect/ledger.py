@@ -393,12 +393,14 @@ def homes_of(note_ids, db_path=None):
 
 
 
-def note_lines(ledger_path, ids, language="ja"):
+def note_lines(ledger_path, ids, language="ja", strict=False):
     """{note id: (item id, line start s, line end s, sentence)} of the notes Connect made (`outcomes`, this
     language's jobs: item ids are the language's store's), read only; {} when there's none or it can't be read now.
     The item is the one whose line the card was cut from: the job's own, or (Kantan-SD 6, *Card sentences: Best*) the
     other episode its pick names for the word (`from`). The one reader of a card's line: Piyo's translations
-    (`card_translations`) and the card's sound (`sound_source`, AUDIO-FIND) ask it."""
+    (`card_translations`) and the card's sound (`sound_source`, AUDIO-FIND) ask it. `strict`: a ledger that can't be
+    read just now (busy, damaged) raises its sqlite3.Error instead of answering {} — "no record" would be a wrong
+    answer there. An id that isn't a number is no note."""
     if not ledger_path or not os.path.isfile(ledger_path) or not ids:
         return {}
     from pathlib import Path
@@ -406,7 +408,7 @@ def note_lines(ledger_path, ids, language="ja"):
     try:
         conn.execute("PRAGMA query_only=1")
         picks = "j.picked" if "picked" in {r[1] for r in conn.execute("PRAGMA table_info(jobs)")} else "NULL"
-        ids, out, cut = sorted({int(n) for n in ids}), {}, {}
+        ids, out, cut = sorted({int(n) for n in ids if isinstance(n, int) or str(n).isdigit()}), {}, {}
         for at in range(0, len(ids), 500):
             part = ids[at:at + 500]
             for note, item, start, end, sentence, word, reading, job, picked in conn.execute(
@@ -418,6 +420,8 @@ def note_lines(ledger_path, ids, language="ja"):
                 out[int(note)] = (cut[job].get((word, reading), item), start, end, sentence)
         return out
     except sqlite3.Error:
+        if strict:
+            raise
         return {}
     finally:
         conn.close()
@@ -431,9 +435,12 @@ def cut_from(picked):
     except (TypeError, ValueError, AttributeError):
         return {}
     out = {}
-    for w in words:
-        if isinstance(w, dict) and isinstance(w.get("from"), int) and not isinstance(w.get("from"), bool):
-            out[(w.get("word"), w.get("reading"))] = w["from"]
+    try:
+        for w in words:
+            if isinstance(w, dict) and isinstance(w.get("from"), int) and not isinstance(w.get("from"), bool):
+                out[(w.get("word"), w.get("reading"))] = w["from"]
+    except TypeError:                   # (`words` not a list, a word that can't be a key: a pick that can't be read)
+        return {}
     return out
 
 

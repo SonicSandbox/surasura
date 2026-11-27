@@ -16,7 +16,9 @@
      (`TokenStore.holding`, one look for every card at once), each read once (`cues.read`, no tokenizer), its cues
      looked up in {sentence: cards}. The card's own episode is not "elsewhere". The first in the library's order.
   else `NONE`: `AI` (the AI voice's turn: Japanese) or `SILENT` (no voice for Chinese: it stays a sentence card).
-- **`tally(plan)`** -> {"line", "audiobook", "elsewhere", "ai", "silent", "has_sound"}: *Needs you*'s count.
+- **`tally(plan)`** -> {"line", "audiobook", "elsewhere", "ai", "silent", "has_sound", "other"}: *Needs you*'s count
+  ("other": no audio field mapped, a note gone).
+- One file that can't be read (a subtitle, a line-up) leaves its cards to the next step, never the plan.
 - **`due_days(url, deck, days, per_day)`** -> {note id: day}: the notes with a card due within `days` days (0 = today,
   overdue too), unsuspended — learning cards today, review cards by Anki's due day (`prop:due`), new cards by their
   place in the new queue (`per_day` a day, the order Junban writes): only the AI voice waits for this window, soonest
@@ -41,6 +43,8 @@ SILENT = "no sound for it here"                 # NONE's why in a language with 
 NO_FIELD = "Anki Miner's field mapping names no field for the sentence's audio"
 NEAR_MS = 5                                     # a re-time this small keeps a line's id (`swap.line_cue`)
 NEW_PER_DAY = 20                                # Anki's own default, when the deck's can't be read
+MAX_DAYS = 31                                   # the window's widest (the setting offers 1 / 3 / 7)
+_NEAR = sorted(range(-NEAR_MS, NEAR_MS + 1), key=abs)        # the offsets a line's start is looked at, nearest first
 _LAST_POS = 1 << 31                             # a new card's place is a 32-bit number in Anki
 
 # One card's answer: `kind` LINE / AUDIOBOOK / ELSEWHERE / NONE; `item_id` the episode (LINE, ELSEWHERE) or the
@@ -71,7 +75,12 @@ def plan(language, notes, mapping, steps, ledger_path=None):
         cards[nid] = _Card(add_audio._text(raw), add_audio._text(word), raw)
     if not cards:
         return out
-    lines = ledger.note_lines(ledger_path or ledger.path(), list(cards), language)
+    import sqlite3
+    from app.connect import runner
+    try:
+        lines = ledger.note_lines(ledger_path or ledger.path(), list(cards), language, strict=True)
+    except sqlite3.Error:
+        raise runner.Wait("Connect's ledger is busy just now") from None
     for step in (_own_lines, _audiobooks, _elsewhere):
         left = {n: c for n, c in cards.items() if n not in out}
         if not left:
@@ -84,12 +93,14 @@ def plan(language, notes, mapping, steps, ledger_path=None):
 
 def tally(sources):
     """*Needs you*'s count of a plan: how many cards each source gives, the AI voice's turn, none, sound already."""
-    out = {LINE: 0, AUDIOBOOK: 0, ELSEWHERE: 0, "ai": 0, "silent": 0, "has_sound": 0}
+    from app.connect import sentence_audio as sa
+    out = {LINE: 0, AUDIOBOOK: 0, ELSEWHERE: 0, "ai": 0, "silent": 0, "has_sound": 0, "other": 0}
     for s in (sources or {}).values():
         if s.kind != NONE:
             out[s.kind] += 1
         else:
-            out["ai" if s.why == AI else "silent" if s.why == SILENT else "has_sound"] += 1
+            out["ai" if s.why == AI else "silent" if s.why == SILENT else
+                "has_sound" if s.why == sa.HAS_AUDIO else "other"] += 1
     return out
 
 
@@ -110,13 +121,13 @@ class _Said:
                 self.by_text.setdefault(text, []).append(cue)
 
     def at(self, ms, want):
-        """The cue starting within NEAR_MS of `ms` that says `want` — word for word, or (MIN_CHARS or longer, as
-        `add_audio.place` finds a line) held in it or holding it — nearest first; None. A short line now at that start
-        is never the card's (うん inside うん、わかった)."""
+        """The cue starting within NEAR_MS of `ms` that says `want` — word for word, or holding it whole (MIN_CHARS or
+        longer, as `add_audio.place` finds a line) — nearest first; None. A line that says only part of it is never
+        the card's (half its sentence's sound), nor a short line now at that start."""
         from app.connect import lineup
-        for off in sorted(range(-NEAR_MS, NEAR_MS + 1), key=abs):
+        for off in _NEAR:
             for cue, text in self.by_start.get(ms + off, ()):
-                if text == want or (min(len(text), len(want)) >= lineup.MIN_CHARS and (want in text or text in want)):
+                if text == want or (len(want) >= lineup.MIN_CHARS and want in text):
                     return cue
         return None
 
@@ -141,9 +152,19 @@ def _line(language, steps, item_id):
     return (subtitle, video) if video and os.path.isfile(video) else None
 
 
+def _read_cues(path, language):
+    """`cues.read` of one subtitle (times only), or None when it can't be read (logged): its cards go on to the next
+    step."""
+    from app import cues
+    try:
+        return cues.read(path, language, clues=False)
+    except (OSError, UnicodeError, ValueError):
+        log.info("Card sound: a subtitle couldn't be read", exc_info=True)
+        return None
+
+
 def _own_lines(language, steps, cards, lines):
     """Step 1: each Connect card's own line in its own episode (one read of each episode's subtitle)."""
-    from app import cues
     from app.connect import lineup, swap
     by_item = {}
     for nid in cards:
@@ -155,7 +176,10 @@ def _own_lines(language, steps, cards, lines):
         here = _line(language, steps, item_id)
         if here is None:
             continue
-        said = _Said(cues.read(here[0], language, clues=False))
+        found = _read_cues(here[0], language)
+        if found is None:
+            continue
+        said = _Said(found)
         for nid in nids:
             want = lineup.clean(cards[nid].sentence or lines[nid][3])
             if not want:
@@ -176,11 +200,15 @@ def _audiobooks(language, steps, cards, lines):
             books.append((lined, nids))
     out = {}
     for lined, nids in books:
-        found = lineup.cues(lined["lineup"])
+        try:
+            found = lineup.cues(lined["lineup"])
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+            log.info("Card sound: a book's line-up couldn't be read", exc_info=True)
+            continue
         by_text = {}
         for cue in found:
             by_text.setdefault(cue.text, []).append(cue)
-        for nid in sorted(nids):
+        for nid in sorted(nids - set(out)):         # (a note two books claim: the first's)
             card = cards[nid]
             exact = by_text.get(lineup.clean(card.sentence))
             if exact:                           # (`place`'s first rule, as a look-up: two answers is none)
@@ -195,19 +223,32 @@ def _audiobooks(language, steps, cards, lines):
 def _books(language, steps, nids):
     """[(a paired book's EPUB, the notes of `nids` Connect made from its parts)] — the store's made words, as *Add
     audio* finds a book's cards (`add_audio.book_items` / `made_notes`)."""
+    import json
     from app.connect import add_audio, library
-    out = []
     with steps._open(language) as store:
+        book_of = {}
         for epub, _audiobook, _sha in library.paired_books(store):
-            mine = set(add_audio.made_notes(store, add_audio.book_items(store, epub))) & nids
-            if mine:
-                out.append((epub, mine))
-    return out
+            for item in add_audio.book_items(store, epub):
+                book_of.setdefault(item, epub)
+        if not book_of or not store._has_table("made_words"):
+            return []
+        mine = {}
+        with store._reading():              # the made words read once for every book (`made_notes`' rows)
+            for item_id, ids in store.conn.execute("SELECT item_id, note_ids FROM made_words"):
+                epub = book_of.get(item_id)
+                if epub is None:
+                    continue
+                try:
+                    held = {int(n) for n in json.loads(ids)} & nids
+                except (TypeError, ValueError):
+                    continue
+                if held:
+                    mine.setdefault(epub, set()).update(held)
+    return [(epub, mine[epub]) for epub in dict.fromkeys(book_of.values()) if epub in mine]
 
 
 def _elsewhere(language, steps, cards, lines):
     """Step 3: the same sentence word for word in another episode, its video here (the first in the library's order)."""
-    from app import cues
     from app.connect import lineup, swap
     want, words = {}, set()
     for nid, card in cards.items():
@@ -224,14 +265,16 @@ def _elsewhere(language, steps, cards, lines):
     out = {}
     for path in _holding(language, list(files), [[w] for w in sorted(words)]):
         item_id = files[path]
+        if _line(language, steps, item_id) is None:         # (no video here: its subtitle isn't even read)
+            continue
         hits = {}
-        for cue in cues.read(path, language, clues=False):
+        for cue in _read_cues(path, language) or ():
             if cue.sung or cue.repeats is not None:
                 continue
             for nid in want.get(lineup.clean(cue.text), ()):
                 if nid not in out and nid not in hits and own.get(nid) != item_id:
                     hits[nid] = cue
-        if not hits or _line(language, steps, item_id) is None:
+        if not hits:
             continue
         for nid, cue in hits.items():
             out[nid] = Source(ELSEWHERE, item_id, cue.start, cue.end, swap.line_id(item_id, cue.start / 1000.0))
@@ -270,7 +313,7 @@ def due_days(url, deck, days, per_day=None):
     writes), `per_day` a day — the deck's *New cards/day* when not given (Anki's default when it can't be read)."""
     from app import anki_connect
     from app.connect import anki_session
-    days = max(0, int(days or 0))
+    days = min(MAX_DAYS, max(0, int(days or 0)))
     if not days:
         return {}
     scope = (f'deck:"{anki_connect.escape_query(deck)}" ' if deck else "") + "-is:suspended"
@@ -288,8 +331,8 @@ def due_days(url, deck, days, per_day=None):
         info = [c for c in anki_connect.cards_info(url, window) or () if isinstance(c, dict)]
         info.sort(key=lambda c: (c.get("due", 0), c.get("cardId", 0)))
         for rank, card in enumerate(info[:per_day * days]):
-            if isinstance(card.get("note"), int):
-                out.setdefault(card["note"], rank // per_day)
+            if isinstance(card.get("note"), int):          # (a note's review card may be due later: the soonest)
+                out[card["note"]] = min(out.get(card["note"], days), rank // per_day)
     return out
 
 
@@ -302,8 +345,12 @@ def _first_new(url, query, k):
     if len(every) <= k:
         return every
 
+    asked = {}
+
     def upto(pos):
-        return anki_connect.find_cards(url, f"{query} prop:pos<={pos}")
+        if pos not in asked:
+            asked[pos] = anki_connect.find_cards(url, f"{query} prop:pos<={pos}")
+        return asked[pos]
     lo, hi = -1, max(k, 1)
     while len(upto(hi)) < k:
         if hi > _LAST_POS:              # (a queue Anki can't place: never a search without end)

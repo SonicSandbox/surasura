@@ -302,6 +302,31 @@ def keep_look_ups(path, now, info, listed):
     _write_kept(LOOK_UPS_KEPT, lambda: {"key": _kept_key(path, now), "version": info, "profiles": listed})
 
 
+def look_ups(path, now=None, *, keep, wants=None):
+    """AM-START: (the `version` answer, the `profiles` list) of the Anki Miner at `path` for the track and no-subtitle
+    looks (`tracks._miner`, `no_subs.can_make`) — the kept pair while what they answer for is as it was
+    (`kept_look_ups`; `now`: its files' `stamp`, taken before any read), else read and, with `keep`, kept for the next
+    reader (`keeps_look_ups`: never while Connect is off). `wants(info)` False: this Anki Miner can't do what the caller
+    asks, so `profiles` isn't asked (None) and nothing is kept. Raises as `version` and `profiles` do (nothing kept)."""
+    now = stamp(path) if now is None else now
+    kept = kept_look_ups(path, now)
+    if kept is not None:
+        return kept
+    info = version(path)
+    if wants is not None and not wants(info):
+        return info, None
+    listed = profiles(path)
+    if keep:
+        keep_look_ups(path, now, info, listed)
+    return info, listed
+
+
+def keeps_look_ups(settings):
+    """May a reader with no run of its own keep the pair (`look_ups`)? Only while Connect is switched on: with it off
+    nothing of Connect's is written (`setup.checks`' rule, 2.5's); the kept pair is still read."""
+    return bool((settings or {}).get("connect_enabled"))
+
+
 def _write_kept(name, made):
     """`made()` written as the kept file `name`, atomically (temp + replace). Never raises."""
     try:

@@ -117,6 +117,19 @@ def rows_for(store, work_ids, chunk=500):
     return items, works
 
 
+WORK_COLS = ("id", "cover_source", "cover_ref", "cover_path", "cover_locked")      # what `works_from` reads of a work
+
+
+def works_all(store):
+    """[Work] of the whole library (the open's disk scan), with their own folders and books (`originals`): only the
+    columns `works_from` reads, in one read transaction — never the feed's whole rows."""
+    with store._reading():
+        items = [{"id": r[0], "ord": r[1], "work_id": r[2], "rel_path": r[3]} for r in store.conn.execute(
+            "SELECT id, ord, work_id, rel_path FROM items WHERE work_id IS NOT NULL AND rel_path IS NOT NULL")]
+        works = [dict(zip(WORK_COLS, r)) for r in store.conn.execute(f"SELECT {', '.join(WORK_COLS)} FROM works")]
+    return works_from(items, works, originals(store))
+
+
 def works_for(store, work_ids):
     """[Work] for these works only (Hon a7: the titles whose files arrived or changed mid-session), with their own
     folders and books (`originals`)."""
@@ -269,38 +282,44 @@ def _full(data_dir, rel):
 def _folders(rel_paths):
     """The folders a work's art may be in: each folder holding its files (in the list's order), then the show folder
     above a season folder; never a tier's own folder or the data folder."""
-    out = []
+    out = {}                                     # a dict: in the list's order, each folder looked up once
     for rel in rel_paths:
         parts = rel.split("/")[:-1]
         if len(parts) < 2:
             continue
         for at in (parts, parts[:-1] if len(parts) >= 3 and season_folder(parts[-1]) is not None else None):
-            if at and "/".join(at) not in out:
-                out.append("/".join(at))
-    return out
+            if at:
+                out.setdefault("/".join(at))
+    return list(out)
 
 
-def _listing(data_dir, folder):
-    """{lower-cased name: name} of a folder: data-folder relative, or absolute (`data_dir` None)."""
+def _listing(data_dir, folder, listings=None):
+    """{lower-cased name: name} of a folder: data-folder relative, or absolute (`data_dir` None) — kept in `listings`
+    when given (the scan's: a folder is listed once however many of its works look in it)."""
+    key = (data_dir is None, folder)
+    if listings is not None and key in listings:
+        return listings[key]
     try:
         names = sorted(os.listdir(folder if data_dir is None else _full(data_dir, folder)))
     except OSError:
-        return {}
+        names = ()
     by_lower = {}
     for name in names:
         by_lower.setdefault(name.lower(), name)
+    if listings is not None:
+        listings[key] = by_lower
     return by_lower
 
 
-def art_beside(data_dir, rel_paths, own_folders=()):
+def art_beside(data_dir, rel_paths, own_folders=(), listings=None, folders=None):
     """The art files beside a work's files, best first: data-folder relative paths, then absolute ones beside its
-    originals (`own_folders`) — by name: not read yet."""
+    originals (`own_folders`) — by name: not read yet. `folders`: `_folders(rel_paths)` when the caller has it."""
     out = []
-    for folder in _folders(rel_paths):
-        names = _listing(data_dir, folder)
+    for folder in _folders(rel_paths) if folders is None else folders:
+        names = _listing(data_dir, folder, listings)
         out += [f"{folder}/{names[s + e]}" for s in ART_STEMS for e in ART_EXTS if s + e in names]
     for folder in own_folders:
-        names = _listing(None, folder)
+        names = _listing(None, folder, listings)
         out += [os.path.join(folder, names[s + e]) for s in ART_STEMS for e in ART_EXTS if s + e in names]
     return out
 
@@ -310,15 +329,16 @@ def _ref_path(data_dir, ref):
     return ref if os.path.isabs(ref) else _full(data_dir, ref)
 
 
-def epubs_beside(data_dir, rel_paths):
+def epubs_beside(data_dir, rel_paths, listings=None, folders=None):
     """The EPUBs beside a work's files: the one its folder's source marker names first (the book its parts came from),
-    then by name."""
+    then by name — the marker read only when it has two or more to choose between."""
     out = []
-    for folder in _folders(rel_paths):
-        names = _listing(data_dir, folder)
+    for folder in _folders(rel_paths) if folders is None else folders:
+        names = _listing(data_dir, folder, listings)
         books = [n for low, n in sorted(names.items()) if low.endswith(EPUB_EXT)]
-        origin = str(path_utils.read_source_marker(_full(data_dir, folder)).get("origin") or "").lower()
-        books.sort(key=lambda n: n.lower() != origin)
+        if len(books) > 1:
+            origin = str(path_utils.read_source_marker(_full(data_dir, folder)).get("origin") or "").lower()
+            books.sort(key=lambda n: n.lower() != origin)
         out += [f"{folder}/{n}" for n in books]
     return out
 
@@ -526,6 +546,7 @@ def scan(language, works, writer, cancel=None, data_dir=None, progress=None):
     data_dir = data_dir or path_utils.get_data_path(language)
     found = 0
     works = list(works)
+    listings = {}                                   # each folder listed once this scan (a show's seasons share one)
     for done, work in enumerate(works, 1):
         if progress is not None and done > 1:
             progress(done - 1, len(works))
@@ -534,7 +555,7 @@ def scan(language, works, writer, cancel=None, data_dir=None, progress=None):
         if not _my_turn(writer, cancel):
             break
         try:
-            found += 1 if _scan_one(language, data_dir, work, writer) else 0
+            found += 1 if _scan_one(language, data_dir, work, writer, listings) else 0
         except Exception as e:                      # one title's trouble never stops the rest
             print(f"Covers: work {work.id} skipped: {e!r}")
     if progress is not None and works:
@@ -551,17 +572,18 @@ def _my_turn(writer, cancel):
     return True
 
 
-def _scan_one(language, data_dir, work, writer):
+def _scan_one(language, data_dir, work, writer, listings=None):
     if not _may_write(work):
         return False                                # nothing read for a title the disk can't give a cover
-    for ref in art_beside(data_dir, work.rel_paths, work.own_folders):
+    folders = _folders(work.rel_paths)
+    for ref in art_beside(data_dir, work.rel_paths, work.own_folders, listings, folders):
         if (work.cover_source, work.cover_ref, work.cover_path) == ("file", ref, None):
             return False                            # recorded: read where it is, a change shows by itself
         if not _replaceable(language, data_dir, work, ref):
             return False
         if _read_image(_ref_path(data_dir, ref)) is not None:
             return writer.set_cover(work.id, "file", ref=ref, auto=True) is not None
-    for ref in tuple(work.own_books) + tuple(epubs_beside(data_dir, work.rel_paths)):
+    for ref in tuple(work.own_books) + tuple(epubs_beside(data_dir, work.rel_paths, listings, folders)):
         recorded = _epub_record(language, data_dir, work, ref, path=_ref_path(data_dir, ref))
         if recorded is False:
             return False

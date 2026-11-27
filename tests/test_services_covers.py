@@ -339,6 +339,45 @@ def test_the_book_its_folders_source_marker_names_gives_the_cover_before_the_oth
     assert (source, ref) == ("file", lib.rel(origin)) and path.endswith(".png")
 
 
+def test_the_opens_scan_reads_no_source_marker_without_two_books_to_choose_and_lists_each_folder_once(lib, monkeypatch):
+    """START-READS: at every open the scan looked in every title's folder twice and opened its source marker to sort
+    the folder's books, though a folder with no book, or one, has nothing to sort (lib20k: 1,669 opens of a marker
+    no folder held, 3,338 listings, ~380 ms beside the open's first reads). The marker only where two books are; a
+    folder once, however many of its titles look in it (a show's seasons share the show's folder)."""
+    item = lib.store.ids("goal")[0]
+    folder = lib.folder_of(item)
+    epub(os.path.join(folder, "第一巻.epub"), "第一巻", cover=jpeg(), language=lib.language)
+    one_book = lib.folder_of(lib.store.ids("soon")[0])
+    assert one_book != folder
+    epub(os.path.join(one_book, "第三巻.epub"), "第三巻", cover=png(), language=lib.language)
+    path_utils.write_source_marker(one_book, "epub", origin="第三巻.epub")
+    read, listed = [], []
+    marker, listdir = path_utils.read_source_marker, os.listdir
+    monkeypatch.setattr(path_utils, "read_source_marker", lambda d: read.append(d) or marker(d))
+    monkeypatch.setattr(C.os, "listdir", lambda d=".": listed.append(os.path.normcase(d)) or listdir(d))
+    works = lib.works()
+    assert len(works) > 2
+    assert lib.scan(works) == 2, "both books' covers found"
+    assert read == [], "one book, or none, in each folder: no marker opened"
+    assert len(listed) == len(set(listed)), "a folder listed once in the scan"
+    epub(os.path.join(folder, "第二巻.epub"), "第二巻", cover=png(), language=lib.language)
+    path_utils.write_source_marker(folder, "epub", origin="第二巻.epub")
+    read.clear()
+    lib.scan()                                      # (the book recorded stays: the marker is still read to choose)
+    assert [os.path.normcase(d) for d in read] == [os.path.normcase(folder)], "two books: their folder's marker, once"
+
+
+def test_the_opens_scan_reads_the_same_titles_from_its_own_columns_as_from_the_whole_feed(lib):
+    """START-READS: the open's scan read the store's whole feed (every column of every row) for the five a cover
+    needs; `works_all` reads only those and must name the same titles, files in the list's order and covers."""
+    poster = write(os.path.join(lib.folder_of(lib.store.ids("now")[0]), "poster.jpg"), jpeg())
+    assert lib.scan() == 1
+    store = lib.store
+    feed = store.read_feed()
+    assert C.works_all(store) == C.works_from(feed["items"], feed["works"], C.originals(store))
+    assert any(w.cover_ref == lib.rel(poster) for w in C.works_all(store))
+
+
 def test_a_books_cover_named_outside_its_package_folder_is_refused(tmp_path):
     """A cover href climbing out of the book's folder (../) is never taken, whatever the zip holds under that name."""
     import zipfile

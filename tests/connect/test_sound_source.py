@@ -251,6 +251,7 @@ class FakeAnkiSearch:
     def __call__(self, action, url, **params):
         self.calls.append((action, params.get("query")))
         if action == "cardsInfo":
+            self.info = list(params["cards"])
             return [{"cardId": c, "note": self.cards[c][0], "due": self.cards[c][2]} for c in params["cards"]]
         q = params["query"]
         hits = []
@@ -418,10 +419,129 @@ def test_a_note_with_a_review_later_and_a_new_card_first_in_line_is_due_today(mo
 def test_a_sparse_new_queue_widens_its_search_until_the_window_is_full(monkeypatch):
     """Junban spaces the places far apart (DevTest: 3,564 … 997,709): the search doubles past them, then halves."""
     from app import anki_connect
-    cards = {100 + k: (200 + k, "new", 1000 * (k + 1), False) for k in range(40)}
+    cards = {100 + k: (200 + k, "new", 1500 * (k + 1), False) for k in range(40)}  # (the doubling overshoots)
     fake = FakeAnkiSearch(cards)
     monkeypatch.setattr(anki_connect, "invoke", fake)
     got = ss.due_days("u", None, 1)
     assert got == {200 + k: 0 for k in range(ss.NEW_PER_DAY)}
     asked = [q for _a, q in fake.calls if q and "prop:pos" in q]
     assert len(asked) == len(set(asked)) and len(asked) <= 2 * 16, "no place asked twice"
+    assert sorted(fake.info) == [100 + k for k in range(ss.NEW_PER_DAY)], "cardsInfo for the window's cards only"
+
+
+# --- the mutants' cases (AUDIO-FIND b, 2026-11-26) ---------------------------------------------------------------- #
+def test_a_short_sentence_inside_a_longer_line_at_its_start_is_never_its_line(lib, tmp_path):
+    """A four-character line (行こうよ) is only found whole: a longer cue now at its start that holds it among other
+    words is not its sound (MIN_CHARS), and no cue says it alone, so it is the voice's turn."""
+    env = lib("ja")
+    said = env["said"]
+    env["steps"].subtitles[EPISODE] = _srt(tmp_path / "short.srt",
+                                           [(said[2].start, said[2].end, "行こうよ、" + said[2].text)])
+    _made(env, EPISODE, [(800, said[2]._replace(text="行こうよ。"), None)])
+    assert _plan(env, [800])[800] == ss.Source(ss.NONE, why=ss.AI)
+
+
+def test_a_sung_line_is_never_a_cards_sound_in_its_own_episode_or_elsewhere(lib, tmp_path, monkeypatch):
+    """The episode's line at the card's start is sung (♪ … ♪): a card is never cut from a song — not the card Connect
+    made from it, nor a Yomitan card of the same words looking for it in the library."""
+    env = lib("ja")
+    said = env["said"]
+    sung = _srt(tmp_path / "sung.srt", [(said[2].start, said[2].end, "♪" + said[2].text + "♪")])
+    env["steps"].subtitles[EPISODE] = sung
+    monkeypatch.setattr(ss, "_sound_files", lambda language, s: {sung: EPISODE, env["recap"]: RECAP})
+    _made(env, EPISODE, [(810, said[2], None)])
+    env["anki"].add(811, said[2].text, said[2].text[:2])
+    got = _plan(env, [810, 811])
+    assert got[810] == got[811] == ss.Source(ss.NONE, why=ss.AI)
+
+
+def test_the_soonest_day_of_a_notes_cards_is_kept_whichever_is_asked_last(monkeypatch):
+    """A note learning today with a review card due in two days; a note overdue with another card due in two; a note
+    learning today whose new card sits late in the window: each is due today."""
+    from app import anki_connect
+    cards = {1: (11, "learn", 0, False), 2: (11, "review", 2, False), 3: (12, "review", -1, False),
+             4: (12, "review", 2, False), 5: (13, "learn", 0, False), 6: (13, "new", 5, False)}
+    cards.update({10 + k: (20 + k, "new", 1 + k, False) for k in range(4)})
+    monkeypatch.setattr(anki_connect, "invoke", FakeAnkiSearch(cards))
+    got = ss.due_days("u", None, 3, per_day=2)
+    assert (got[11], got[12], got[13]) == (0, 0, 0)
+    assert {got[20 + k] for k in range(4)} == {0, 1}, "the new queue still a day's worth at a time"
+
+
+def test_a_window_wider_than_a_month_asks_a_month_and_no_new_cards_a_day_is_ankis_default(monkeypatch):
+    """MAX_DAYS caps the day searches; a deck's *New cards/day* of 0 (or one that can't be read) is Anki's default,
+    never a window with no new cards in it."""
+    from app import anki_connect
+    cards = {100 + k: (200 + k, "new", k + 1, False) for k in range(25)}
+    fake = FakeAnkiSearch(cards)
+    monkeypatch.setattr(anki_connect, "invoke", fake)
+    ss.due_days("u", None, 400, per_day=1)
+    assert len([q for _a, q in fake.calls if q and "prop:due" in q]) == ss.MAX_DAYS
+    for none in (0, -3):
+        assert ss.due_days("u", None, 1, per_day=none) == {200 + k: 0 for k in range(ss.NEW_PER_DAY)}
+
+
+def test_a_damaged_ledger_is_a_wait_and_only_made_cards_have_lines(lib, tmp_path):
+    """A ledger file that isn't a database: `strict` raises (the plan's Wait), the quiet reader answers {}. A word
+    Anki Miner turned down (its outcome not `made`) is no card's line, even with a note id written beside it."""
+    import sqlite3
+    from app.connect import runner
+    env = lib("ja")
+    bad = tmp_path / "damaged.sqlite"
+    bad.write_bytes(b"not a database, " * 64)
+    with pytest.raises(sqlite3.DatabaseError):
+        ledger_mod.note_lines(str(bad), [1], "ja", strict=True)
+    assert ledger_mod.note_lines(str(bad), [1], "ja") == {}
+    env["anki"].add(820, env["said"][0].text, env["said"][0].text[:2])
+    with pytest.raises(runner.Wait):
+        ss.plan("ja", env["anki"].notes([820]), MAPPING, env["steps"], ledger_path=str(bad))
+    with Ledger(env["ledger"]) as ledger:
+        job = ledger.queue("ja", EPISODE, "test", None)
+        with ledger.transaction():
+            ledger.record_outcomes(job, 1, [{"word": "文化祭", "reading": "ブンカサイ", "sentence": "文化祭まで。",
+                                             "line_start": 1.0, "line_end": 3.2, "outcome": "duplicate",
+                                             "note_id": 821}])
+    assert ledger_mod.note_lines(env["ledger"], [821], "ja") == {}
+
+
+def test_a_picks_from_must_be_an_item_number_never_true(tmp_path):
+    """`from: true` (JSON's true is Python's 1) names no episode; a real item number does."""
+    import json
+    pick = json.dumps({"words": [{"word": "鍵", "reading": "かぎ", "from": True},
+                                 {"word": "図書館", "reading": "としょかん", "from": 9}]})
+    assert ledger_mod.cut_from(pick) == {("図書館", "としょかん"): 9}
+
+
+def test_a_card_with_an_empty_sentence_field_finds_its_line_by_the_ledgers_sentence(lib):
+    """The card's Sentence field was emptied in Anki: the ledger still keeps the line's words, and its line is the
+    cue at its start that says them."""
+    env = lib("ja")
+    cue = env["said"][4]
+    with Ledger(env["ledger"]) as ledger:
+        job = ledger.queue("ja", EPISODE, "test", None)
+        with ledger.transaction():
+            ledger.record_outcomes(job, 1, [{"word": cue.text[:2], "reading": "r", "sentence": cue.text,
+                                             "line_start": cue.start / 1000.0, "line_end": cue.end / 1000.0,
+                                             "outcome": "made", "note_id": 830}])
+    env["anki"].add(830, "", cue.text[:2])
+    got = _plan(env, [830])[830]
+    assert (got.kind, got.item_id, got.start) == (ss.LINE, EPISODE, cue.start)
+
+
+def test_a_book_sentence_its_line_up_says_twice_word_for_word_is_none(book, monkeypatch, tmp_path):  # noqa: F811
+    """The narrator reads one of the cards' sentences twice (two cues, the same clean words): which one is the card's
+    can't be told, so it waits for the voice — the other cards keep their cues."""
+    from app.connect import add_audio
+    monkeypatch.setattr(ss, "_sound_files", lambda language, s: {})
+    want = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)["can"]
+    notes = {n["noteId"]: n for n in book["anki"].notes(list(want))}
+    exact = [nid for nid, cue in want.items()
+             if cue.text == lineup.clean(add_audio._text(notes[nid]["fields"][MAPPING.sentence]["value"]))]
+    assert exact, "a card whose sentence a cue says whole"
+    twice = want[exact[0]]
+    real = lineup.cues
+    monkeypatch.setattr(lineup, "cues", lambda state: real(state) + [twice._replace(start=twice.end + 60.0,
+                                                                                    end=twice.end + 63.0)])
+    got = ss.plan("ja", list(notes.values()), MAPPING, book["steps"], ledger_path=str(tmp_path / "no-ledger.sqlite"))
+    assert got[exact[0]] == ss.Source(ss.NONE, why=ss.AI)
+    assert all(got[n].kind == ss.AUDIOBOOK for n in want if n != exact[0])

@@ -303,12 +303,12 @@ def test_a_new_pairing_is_looked_for_again_and_an_unread_record_is_never_kept(mo
     monkeypatch.setattr(play, "_rows", lambda language, rels, library=None: (
         {rel: (5, "anime", [json.dumps(record)] if record else [],
                [(record.get("origin"), record.get("video_path"), None)] if record else [])}, ""))
-    monkeypatch.setattr(play, "_pairings", lambda language, ids, moved=None: {5: dict(record)})
+    monkeypatch.setattr(play, "_pairings", lambda language, ids, moved=None, handed=None: {5: dict(record)})
     memo = {}
     assert play.files("ja", [rel], memo=memo) == {rel: beside}
     record.update(producer="hato", video_path=paired)
     assert play.files("ja", [rel], memo=memo) == {rel: paired}
-    monkeypatch.setattr(play, "_pairings", lambda language, ids, moved=None: {5: None})
+    monkeypatch.setattr(play, "_pairings", lambda language, ids, moved=None, handed=None: {5: None})
     memo.clear()
     assert play.files("ja", [rel], memo=memo) == {rel: beside} and memo == {}
 

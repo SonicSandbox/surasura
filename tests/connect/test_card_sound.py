@@ -768,4 +768,94 @@ def test_the_fold_counts_first_and_parses_no_record_while_too_few_are_old(tmp_pa
                 _put(ledger, _old(n), _rec("ai-audio", {str(n): "[sound:a.mp3]"}, tag=cs.AI_TAG))
         monkeypatch.setattr(cs, "_records", lambda *a, **k: pytest.fail("parsed records with too few to fold"))
         assert cs.fold(ledger) == 0
-        assert cs._meta_json(ledger, sa.FOLD_UPTO, None) is None
+        assert cs._meta_json(ledger, sa.FOLD_UPTO, "") == ""
+
+
+# --- the mutants' gaps (AUDIO-FILL e) ------------------------------------------------------------------------------- #
+@pytest.mark.parametrize("pair", [("x", "x"), ("y", ""), ("", ""), ("x", "y")])
+def test_a_type_the_learner_set_is_never_flipped_with_or_without_sound(pair):
+    # why: decision 4 flips only Anki Miner's own two pairs (A1); both marks set, or any other value, is the learner's
+    note = {"fields": {MARKS[0]: {"value": pair[0]}, MARKS[1]: {"value": pair[1]}}}
+    assert cs.flip_of(note, MARKS, True) is None and cs.flip_of(note, MARKS, False) is None
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_suspended_card_keeps_its_ai_clip_when_its_real_line_turns_up(lib, lang, tmp_path):
+    # why: the press never touches a suspended card — a swap (decision 3) included, not only an empty field
+    env = lib(lang)
+    env["anki"] = Anki()
+    said = env["said"]
+    _made(env, EPISODE, [(950, said[0], None), (951, said[2], None)])
+    with Ledger(env["ledger"]) as ledger:
+        sa.fill(env["anki"], ledger, {950: _clip(tmp_path, "a.mp3"), 951: _clip(tmp_path, "b.mp3")},
+                tag=cs.AI_TAG, by="ai-audio")
+    ai_951 = env["anki"].value(951)
+    env["anki"].suspended.add(951)
+    got = _run(env, tmp_path, ai=False)
+    assert got["swapped"] == 1, "only the unsuspended card's AI clip is replaced"
+    assert env["anki"].value(951) == ai_951
+
+
+def test_remove_all_ai_audio_takes_a_tagged_card_only_when_its_field_is_one_clip_alone(lib, tmp_path):
+    # why: A2 — a hand-made AI card (tag only, no record) is taken only when its field holds that one [sound:] and
+    # nothing else: two clips, or a clip with the learner's words, are left as they are
+    env = lib("ja")
+    env["anki"] = Anki()
+    said = env["said"]
+    values = {1200: "[sound:iro-c-1200.mp3]", 1201: "[sound:iro-c-1201.mp3][sound:mine.mp3]",
+              1202: "[sound:iro-c-1202.mp3] 自分で録った"}
+    for n, v in values.items():
+        env["anki"].add(n, said[n - 1200].text, "雨", audio=v)
+        env["anki"].notes_[n]["tags"].append(cs.AI_TAG)
+    with Ledger(env["ledger"]) as ledger:
+        assert cs.ai_cards(env["anki"], ledger, "SentenceAudio") == {1200: values[1200]}
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_yesterdays_plans_are_never_read_as_todays_count(lib, lang, tmp_path):
+    # why: a card's plan is kept for its day only (SEEN): an episode added overnight gives yesterday's AI card its line
+    env = lib(lang)
+    env["anki"] = Anki()
+    _made(env, EPISODE, [(1650, env["said"][0], None)])
+    with Ledger(env["ledger"]) as ledger:
+        cs._put_meta(ledger, cs.SEEN + lang, {"day": "2000-01-01", "kinds": {"1650": cs.SILENT}})
+        got = cs.recount(env["anki"], ledger, lang, MAPPING, env["steps"], ledger_path=env["ledger"])
+    assert (got["real"], got["silent"]) == (1, 0)
+
+
+def test_the_fold_never_takes_a_record_less_than_a_day_old(tmp_path, monkeypatch):
+    # why: a record of today's may still be undone by its run's Undo; only those a day old or more are folded
+    monkeypatch.setattr(cs, "FOLD_MIN", 2)
+    with Ledger(str(tmp_path / "l.sqlite")) as ledger:
+        with ledger.transaction():
+            for n in (1, 2):
+                _put(ledger, _old(n), _rec("ai-audio", {str(n): "[sound:a.mp3]"}, tag=cs.AI_TAG))
+            _put(ledger, f"{time.time_ns()}-ffff0001", _rec("ai-audio", {"3": "[sound:b.mp3]"}, tag=cs.AI_TAG))
+        assert cs.fold(ledger) == 2
+        assert cs._meta_json(ledger, sa.FOLD_UPTO, "") == _old(2)
+
+
+def test_a_fold_whose_two_keys_disagree_is_never_read(tmp_path, monkeypatch):
+    # why: the snapshot and its upto key are written together; a pair that disagrees (a half-written fold) reads every
+    # record again instead of trusting a stale snapshot
+    a = "[sound:surasura-ai-5.mp3]"
+    with Ledger(str(tmp_path / "l.sqlite")) as ledger:
+        with ledger.transaction():
+            _put(ledger, _old(1), _rec("ai-audio", {"5": a}, tag=cs.AI_TAG))
+        cs._put_meta(ledger, sa.FOLD, {"upto": _old(0), "held": {"9": "[sound:stale.mp3]"}})
+        cs._put_meta(ledger, sa.FOLD_UPTO, _old(1))
+        assert cs.ai_held(ledger) == {5: a}
+
+
+def test_an_undo_of_the_folds_last_record_drops_the_fold(tmp_path, monkeypatch):
+    # why: the fold's upto record is inside it: its Undo changes what is held, so the snapshot goes
+    monkeypatch.setattr(cs, "FOLD_MIN", 1)
+    rec = _rec("ai-audio", {"5": "[sound:a.mp3]"}, tag=cs.AI_TAG)
+    with Ledger(str(tmp_path / "l.sqlite")) as ledger:
+        with ledger.transaction():
+            _put(ledger, _old(1), rec)
+        assert cs.fold(ledger) == 1
+        with ledger.transaction():
+            sa._write_record(ledger, _old(1), dict(rec, state=sa.UNDONE))
+        assert cs._meta_json(ledger, sa.FOLD, None) is None
+        assert cs.ai_held(ledger) == {}

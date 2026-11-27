@@ -109,6 +109,7 @@ def test_a_tsuka_at_the_end_of_the_words_is_left_alone(tokenizer):
     "そしてすっかりつかれてしまった。",                   # a conjunction and an adverb
     "今日は もう つかれた。",                             # a caption's spaces
     "見ているのさえ少しつかれた。",                       # さえ after の, not after a noun
+    "ひどくつかれ、何もできない。",                       # an adjective's 連用形, walked over to the line's start
 ])
 def test_tsukare_with_nothing_before_it_a_tsuku_verb_takes_is_tsukareru(tokenizer, text):
     # Why: the tagger read every one of these as 突く 'poke' + れる and put 突く on the list; 'be tired' takes
@@ -136,6 +137,7 @@ def test_otsukare_is_one_word_as_written_in_kanji(tokenizer):
     "何者かに取ッつかれたようだった。",         # ッ is a letter the tagger left as a mark, no boundary
     "神経がつかれた。",                         # が: 気がつく's letters too — left as read
     "隙こそつかれた。",                         # こそ right after a noun: only は / も count as the topic
+    "犬に指を噛りつかれた。",                   # 噛りつく (噛みつく) with the tagger's り: no ending 'tired' follows
 ])
 def test_tsukare_after_a_word_a_tsuku_verb_can_take_keeps_the_taggers_reading(tokenizer, text):
     # Why: every other つかれる is a つく verb made passive, honorific or potential, and keeps what it takes before it.

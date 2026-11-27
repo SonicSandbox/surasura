@@ -58,6 +58,7 @@ docs/pre release notes
 modules/*
 !modules/junban/
 !modules/youtube_downloader/
+!modules/ukai/
 launch_immersion_architect.py
 CLAUDE.md
 

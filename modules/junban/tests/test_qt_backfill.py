@@ -24,7 +24,7 @@ import pytest
 pytest.importorskip("PyQt6")
 from PyQt6.QtCore import Qt  # noqa: E402
 from PyQt6.QtTest import QTest  # noqa: E402
-from PyQt6.QtWidgets import QApplication, QFileDialog  # noqa: E402
+from PyQt6.QtWidgets import QApplication, QFileDialog, QPushButton  # noqa: E402
 
 from tests.qt.conftest import _per_test_window_state, qapp, wait_until  # noqa: E402,F401  (the window harness)
 from tests.qt.test_wiring import problems  # noqa: E402
@@ -153,6 +153,21 @@ def test_opening_the_window_writes_no_setting(main):
     win = _open(main)
     QTest.qWait(50)
     assert main.services.settings.pending() == before and win.choices.fills == ("patterns",)
+
+
+@pytest.mark.parametrize("connect", [True, False])
+def test_sentence_audio_is_a_line_pointing_at_add_sound_never_a_button_of_its_own(main, connect):
+    # why: AUDIO-FILL (Sonic § 106 decision 10): Backfill's AI audio button retired into Card sound's one press; while
+    # Connect is on (Add sound's row needs it) a tipped line says where it is, and Backfill offers no audio of its own
+    main.services.settings.set({"connect_enabled": connect})
+    win = _open(main)
+    assert not hasattr(win, "ai_audio")
+    if connect:
+        assert win.sound_line is not None and win.sound_line.text() == S.BF_SOUND_LINE and win.sound_line.toolTip()
+    else:
+        assert win.sound_line is None
+    labels = [w.text() for w in win.findChildren(QPushButton)]
+    assert not any("audio" in t.casefold() or "voice" in t.casefold() for t in labels)
 
 
 def test_the_window_opens_without_tkinter(tmp_path):

@@ -36,6 +36,7 @@ held by `tests/connect/test_lineup.py`; plan: `tracks/pipeline/work/AB/plan.md`)
 
 Light: the standard library; Anki Miner is called through `anki_miner`.
 """
+import bisect
 import difflib
 import hashlib
 import json
@@ -386,34 +387,101 @@ def cues(state):
     return out
 
 
+class Book:
+    """A book's line-up cues (`cues`) indexed once (AUDIO-WASTE for *Add audio*'s `add_audio.place`; BOOK-ONCE moved it
+    here, beside the cues, for Connect's pick `place` and *Card sound*'s audiobook step too): each text's cues, the
+    texts joined (a cue's text holds no separator: only letters and digits, `clean`) with each one's start, the cues
+    of MIN_CHARS or longer by their first MIN_CHARS characters, and each unit's first cue. Built in one pass over the
+    cues; then a card or a word costs a dict look, one or two `str.find` over the joined text (C speed) and a look a
+    MIN_CHARS window of its sentence — never a Python pass over the cues."""
+
+    def __init__(self, found):
+        self.found, self.n = list(found), MIN_CHARS
+        self.by_text, self.by_head, self.by_unit, self.starts, texts, at = {}, {}, {}, [], [], 0
+        for k, cue in enumerate(self.found):
+            text = cue.text or ""
+            self.by_text.setdefault(text, []).append(k)
+            if len(text) >= self.n:
+                self.by_head.setdefault(text[:self.n], []).append(k)
+            try:
+                self.by_unit.setdefault(cue.unit, k)
+            except TypeError:                   # (a damaged unit, a list: never the number a pick asks for)
+                pass
+            self.starts.append(at)
+            texts.append(text)
+            at += len(text) + 1
+        self.joined = "\n".join(texts)
+
+    def __len__(self):
+        return len(self.found)
+
+    def holders(self, want, more=True):
+        """The cues whose text holds `want` (never empty, no separator) — the first's index and whether a second
+        exists: (k, more) or None (`more=False`: the first alone, no second look: (k, False))."""
+        pos = self.joined.find(want)
+        if pos < 0:
+            return None
+        k = bisect.bisect_right(self.starts, pos) - 1
+        if not more:
+            return k, False
+        nxt = self.starts[k + 1] if k + 1 < len(self.starts) else len(self.joined)
+        return k, self.joined.find(want, nxt) >= 0
+
+    def inside(self, want):
+        """The cues of MIN_CHARS or longer whose text sits inside `want` (each cue of a head `want` holds looked at
+        once) -> {cue index}."""
+        n, seen, out = self.n, set(), set()
+        for head in {want[i:i + n] for i in range(len(want) - n + 1)}:
+            for k in self.by_head.get(head, ()):
+                if k not in seen:
+                    seen.add(k)
+                    if self.found[k].text in want:
+                        out.add(k)
+        return out
+
+
 def place(line_text, spelling, found, unit=None):
     """The cue a word's card is cut from -> a Cue, or None (its sentence wasn't heard: the book's card, no clip). The
     book's unit the pick knows (`unit`, Anki Miner's own index: the sync's `cues[].index`) names it when its cue holds
     the word. Else its sentence (`line_text`) is a cue, or holds one / sits inside one (MIN_CHARS or longer: a short
     line is only ever its own cue), and that cue holds the word as written (`spelling`) — the one cue of the sentence
-    that does (review B-14: two of its cues holding it, 人 in 人間 and in 人, is no answer): never a neighbour's clip."""
+    that does (review B-14: two of its cues holding it, 人 in 人間 and in 人, is no answer): never a neighbour's clip.
+    The book's first cue that answers decides, as a walk in the book's order would. `found`: the book's cues, or their
+    `Book` (BOOK-ONCE: a caller placing many words builds it once, as `split` does)."""
     hold = clean(spelling)
+    book = found if isinstance(found, Book) else Book(found)
     if isinstance(unit, int) and not isinstance(unit, bool):
-        cue = next((c for c in found if c.unit == unit), None)
-        if cue is not None and (not hold or hold in cue.text):
-            return cue
+        k = book.by_unit.get(unit)
+        if k is not None and (not hold or hold in book.found[k].text):
+            return book.found[k]
     want = clean(line_text)
     if not want:
         return None
-    for k, cue in enumerate(found):
-        if not cue.text:
-            continue
-        if cue.text == want or (len(want) >= MIN_CHARS and want in cue.text):
-            return cue if not hold or hold in cue.text else None
-        if len(cue.text) >= MIN_CHARS and cue.text in want:
-            run = [cue]                     # the sentence's cues, in a row
-            for nxt in found[k + 1:]:
-                if not nxt.text or nxt.text not in want or len(nxt.text) < MIN_CHARS:
-                    break
-                run.append(nxt)
-            holding = [c for c in run if not hold or hold in c.text]
-            return holding[0] if len(holding) == 1 else None
-    return None
+    firsts = []                                 # the first cue that is it or holds it, the first inside it
+    exact = book.by_text.get(want)
+    if exact:
+        firsts.append(exact[0])
+    held = book.holders(want, more=False) if len(want) >= MIN_CHARS else None
+    if held is not None:
+        firsts.append(held[0])
+    inside = book.inside(want)
+    if inside:
+        firsts.append(min(inside))
+    if not firsts:
+        return None
+    k = min(firsts)
+    cue = book.found[k]
+    if cue.text == want or (len(want) >= MIN_CHARS and want in cue.text):
+        return cue if not hold or hold in cue.text else None
+    run, j = [cue], k + 1                       # the sentence's cues, in a row
+    while j < len(book.found):
+        nxt = book.found[j]
+        if not nxt.text or nxt.text not in want or len(nxt.text) < MIN_CHARS:
+            break
+        run.append(nxt)
+        j += 1
+    holding = [c for c in run if not hold or hold in c.text]
+    return holding[0] if len(holding) == 1 else None
 
 
 # Kyou-PB: what a paired book's usable line-up says, by `place`'s own rule for a line — its cues' clean texts (`lines`:
@@ -496,7 +564,7 @@ def split(words, state):
     (`place`, its spelling as the line writes it) goes as its file's audio episode, its `line_start` the cue's start;
     a word not placed, or every word of a line-up not `usable`, goes as the book."""
     groups, rest = {}, []
-    found = cues(state) if usable(state) else []
+    found = Book(cues(state)) if usable(state) else []       # (indexed once for every word)
     for word in words:
         cue = place(word.get("line_text"), word.get("surface") or word.get("orth") or word.get("word"), found,
                     word.get("unit_index")) if found else None

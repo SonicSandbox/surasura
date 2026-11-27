@@ -511,18 +511,19 @@ class _BookSteps:
 
 
 def _ai_marked(ledger, job):
-    from app.connect import runner
-    return runner._meta(ledger, f"{runner.AI_JOB}{job['id']}") is not None
+    """Any mark for the AI voice left in the ledger (there is none since 3.0.21: Card sound voices a card by its due
+    day, never by a job's mark)."""
+    return ledger.conn.execute("SELECT 1 FROM meta WHERE key = ?", (f"ai_audio_job:{job['id']}",)).fetchone() is not None
 
 
-def test_a_best_job_at_a_book_with_no_audiobook_is_never_asked_and_its_cards_get_the_ai_voice(tmp_path, irodori):
+def test_a_best_job_at_a_book_with_no_audiobook_is_never_asked_and_is_mined_without_audio(tmp_path, irodori):
     from app.connect import runner
     epub = str(tmp_path / "本.epub")
     ask = {"book_ask": "Do you have the audiobook?", "item_id": 7, "key": "k-7", "epub": epub}
     with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
         best = {"id": 41, "item_id": 7, "kind": LEVEL, "source": level.BEST, "words": [("冒険", "ボウケン")]}
         assert runner._line_up(_BookSteps(ask), ledger, "ja", best, ("本.txt", epub)) is None
-        assert _ai_marked(ledger, best), "mined without audio, the voice fills it"
+        assert not _ai_marked(ledger, best), "mined without audio: Card sound voices it in its window, no mark"
         ordinary = {"id": 42, "item_id": 7, "kind": "new"}
         with pytest.raises(runner.Wait):
             runner._line_up(_BookSteps(ask), ledger, "ja", ordinary, ("本.txt", epub))

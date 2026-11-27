@@ -1550,11 +1550,16 @@ class Store:
         rolled back on a failure (a store locked by the indexer) and raised. `settings`: the run's one read."""
         from app import analyzer
         state = self._songs_state_now = self._songs_state(settings)
-        names = _digest(_names_reads(self.names_tables())) if self.language == "ja" else None
+        reads = switches = names = None
+        if self.language == "ja":
+            reads, switches = _names_reads(self.names_tables()), _library_switches(self.language)
+            names = _digest(reads)
         try:
             held_sum = json.loads(self.get_meta("songs_counted") or "{}")
         except ValueError:
             held_sum = {}
+        if not isinstance(held_sum, dict):
+            held_sum = {}                               # (not a sum this code wrote: counted again)
         same_state = held_sum.get("state") == state
         held = {}
         if same_state:
@@ -1569,9 +1574,6 @@ class Store:
                     f"({','.join('?' * len(batch))})", batch):
                 rows[path] = (mtime, size, blob)
         names_moved = held_sum.get("names") != names
-        reads = switches = None
-        if self.language == "ja":
-            reads, switches = _names_reads(self.names_tables()), _library_switches(self.language)
         found = None
         if self.language == "ja" and phrase_rows_on(self.language, settings):
             from app import phrases
@@ -1581,7 +1583,7 @@ class Store:
         for path, (mtime, size, blob) in rows.items():
             entry = held.get(path)
             if entry is not None and not names_moved and entry[:2] == (mtime, size) \
-                    and json.loads(entry[2])[0] == wanted[path]:
+                    and _tag_numbers(entry[2]) == wanted[path]:
                 continue                                # read as it was: its share stands
             read_in = _names_read_in(blob, reads, switches) if reads is not None and blob else None
             tag = json.dumps([wanted[path], read_in], ensure_ascii=False, separators=(",", ":"))
@@ -1595,6 +1597,8 @@ class Store:
                 sung = some[path][1]
             else:
                 sentences = self.file_tokens(path)
+                if not sentences:
+                    continue                            # its row can't be read: no share kept, its songs count
                 sung = [sentences[n] for n in wanted[path] if n < len(sentences)]
             counts, total, pieces = Counter(), 0, Counter()
             for text, tokens in sung:
@@ -1640,7 +1644,8 @@ class Store:
             if own:
                 self.conn.commit()
         except Exception:
-            self.conn.rollback()
+            if own:                                     # (a caller's own transaction is the caller's to end)
+                self.conn.rollback()
             raise
 
     def _songs_state(self, settings=None):
@@ -2800,6 +2805,14 @@ def songs_counted(settings=None):
         return bool(settings_manager.loaded(settings)["logic"].get("count_song_lyrics", False))
     except Exception:
         return False
+
+
+def _tag_numbers(tag):
+    """A `songs` row's tag -> its sentence numbers, or None when it can't be read (the file is read again)."""
+    try:
+        return json.loads(tag)[0]
+    except (ValueError, TypeError, KeyError, IndexError):
+        return None
 
 
 def _song_share(row):

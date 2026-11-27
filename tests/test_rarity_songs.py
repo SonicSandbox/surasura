@@ -293,3 +293,42 @@ def test_some_tokens_gives_each_asked_sentence_as_file_tokens_gives_it_the_names
         assert store.some_tokens({}) == {}
     finally:
         store.close()
+
+
+def test_a_file_whose_row_cant_be_read_keeps_no_share_and_its_songs_count(tmp_path):
+    """A counted file whose cached sentences can't be read gives no share (never a share of nothing, which would stand
+    until the file's stamp moved): the others are kept, its songs still count, and nothing raises."""
+    store, data_dir, paths = _library(tmp_path, "ja", JA_SHOW)
+    try:
+        songs = analyzer.song_sentences(_found(paths), data_dir, store, None, "ja")
+        broken = paths[2]
+        store.conn.execute("UPDATE files SET texts = x'00' WHERE path = ?", (ti._norm(broken),))
+        store.conn.commit()
+        store.keep_song_counts(songs)
+        kept = {p for (p,) in store.conn.execute("SELECT path FROM songs")}
+        assert ti._norm(broken) not in kept
+        assert kept == {ti._norm(p) for p in paths if p != broken and songs.get(p)}
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("damage", ["tag", "sum"])
+def test_an_unreadable_tag_or_sum_is_counted_again_never_raised(tmp_path, damage):
+    """A row's tag or the kept sum this code can't read (a hand-edited or damaged store) is no answer: that share (or
+    all of them) is counted again at the next Generate — the counts then the list's — instead of failing every run."""
+    store, data_dir, paths = _library(tmp_path, "ja", JA_SHOW)
+    try:
+        songs = _kept(store, data_dir, paths, "ja")
+        store.songs_out = True
+        out = store.word_counts()
+        if damage == "tag":
+            store.conn.execute("UPDATE songs SET tag = 'not json' WHERE path = ?", (ti._norm(paths[1]),))
+        else:
+            store.conn.execute("UPDATE meta SET value = '[1]' WHERE key = 'songs_counted'")
+        store.conn.commit()
+        store.keep_song_counts(songs)
+        assert store.word_counts() == out
+        assert ti._tag_numbers(store.conn.execute("SELECT tag FROM songs WHERE path = ?",
+                                                  (ti._norm(paths[1]),)).fetchone()[0]) == sorted(songs[paths[1]])
+    finally:
+        store.close()

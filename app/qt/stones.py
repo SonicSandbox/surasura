@@ -123,6 +123,11 @@ def _paint(p, ops):
 GAP = 2                                         # device px of nothing between two pictures (no bleed when scaled)
 
 
+def paint_ops(p, ops):
+    """A display list painted with `p` as it is set (ONB-1: setup's *Your start* draws a few stones at its own size)."""
+    _paint(p, ops)
+
+
 class Sheet:
     """Every picture at one (device-pixel ratio, text size), packed into `images` (QImage atlases)."""
 

@@ -467,7 +467,7 @@ def test_the_journey_is_signed_with_the_marks_of_the_read_it_was_drawn_from_and_
     results, patches = _empty_results(tmp_path)
 
     def drawn(facts_read, marks_read):
-        with patches[0], patches[1], patches[2], patches[3],                 patch.object(journey_render, "store_facts", lambda _l: facts_read),                 patch.object(analyzer, "journey_marks", lambda _l: marks_read):
+        with patches[0], patches[1], patches[2], patches[3],                 patch.object(journey_render, "store_facts", lambda _l, **_: facts_read),                 patch.object(analyzer, "journey_marks", lambda _l: marks_read):
             return gen.generate_static_html(open_browser=False, language="ja")
     assert drawn(facts, other) == drawn_marks, "the marks of the read the page was drawn from"
     assert drawn(facts._replace(marks=ls.UNREAD), other) == ls.UNREAD, "its marks unread: never signed current"

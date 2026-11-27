@@ -23,6 +23,7 @@ shows plays from — the same lookup, so the page and the window never disagree;
 file (its record's, whatever the transcript is called), one of several files from none (the transcript's times run
 across them all).
 """
+import contextlib
 import itertools
 import json
 import os
@@ -248,7 +249,7 @@ PLAYABLE = (".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".oga", ".opus", ".flac", ".
 #   (Kiku-L). Not .mkv / .avi / .wmv / .ts / .flv, nor .mov (its codecs vary).
 
 
-def files(language, rel_paths, memo=None, explain=False, cut_kinds=()):
+def files(language, rel_paths, memo=None, explain=False, cut_kinds=(), library=None):
     """{rel path: the file its lines play from, or None} for the journey page's ▶ (Kiku-L): the report's render asks
     once for every timed source it shows — at a cost the render barely feels where nothing can play (most anime
     libraries) and only while something changed where it can.
@@ -272,12 +273,15 @@ def files(language, rel_paths, memo=None, explain=False, cut_kinds=()):
     None — a hint from the listings already made, never a lookup.
 
     `cut_kinds` (the journey's render, J-CLIP: the one cutter's videos, `runner.VIDEO_EXTENSIONS`): files of these
-    kinds pass the gate too — the journey's ▶ cuts a line the browser can't play (`clips`); the old page asks none."""
+    kinds pass the gate too — the journey's ▶ cuts a line the browser can't play (`clips`); the old page asks none.
+
+    `library`: the render's open library store (ONE-READ 3: one open a render), read through and left open; None:
+    `_rows` opens its own."""
     from app import path_utils
     from app.services.view_rows import MEDIA_WORD
     rel_paths = list(dict.fromkeys(rel_paths))
     out = dict.fromkeys(rel_paths)
-    known, sources = _rows(language, rel_paths)
+    known, sources = _rows(language, rel_paths, library=library)
     data_dir = path_utils.get_data_path(language)
     listings, playable, digests, stamps, copies = {}, {}, {}, {}, {}
     kinds = PLAYABLE + tuple(cut_kinds)
@@ -331,20 +335,25 @@ def files(language, rel_paths, memo=None, explain=False, cut_kinds=()):
 _UNKNOWN = (None, None, (), ())         # `_rows`' answer for a source the store doesn't hold (or no store)
 
 
-def _rows(language, rel_paths):
+def _rows(language, rel_paths, library=None):
     """({rel path: (item id, its title's type, its pairing rows as stored, each row's (origin, video_path, audiobook
     files as JSON) as SQLite reads them)}, the library's sources as one string) through one store open, 500 at a time; ({}, "") with no store or one that can't be read now (each
     source then looked at as a 2.x library's file). No record is picked here (`pairing_of` picks, for the few the
-    gate and the memo send on)."""
+    gate and the memo send on). `library`: the caller's open library store (the journey's render: its one open,
+    ONE-READ 3), read through and left open; None: opened here."""
     from app import library_store, path_utils
     data_dir = path_utils.get_data_path(language)
     try:
-        if library_store.check_mode(language, data_dir, busy_wait=0.0)[0] != "store":
-            return {}, ""
-        store = library_store.open_store(language, data_dir, path_utils.get_user_files_path(language), role="reader")
-        if store is None:
-            return {}, ""
-        with store:
+        if library is not None:
+            store = library
+        else:
+            if library_store.check_mode(language, data_dir, busy_wait=0.0)[0] != "store":
+                return {}, ""
+            store = library_store.open_store(language, data_dir, path_utils.get_user_files_path(language),
+                                             role="reader")
+            if store is None:
+                return {}, ""
+        with (contextlib.nullcontext() if library is not None else store):
             ids = {rel: i for rel, i in zip(rel_paths, store.item_ids(rel_paths)) if i is not None}
             wanted = sorted(set(ids.values()))
             works, texts, fields = {}, {}, {}

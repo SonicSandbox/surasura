@@ -67,6 +67,7 @@ reader every ignore set calls.
 """
 import hashlib
 import json
+import os
 import re
 import threading
 import time
@@ -112,7 +113,7 @@ _NAME_LINKS = frozenset(("ノ", "ヶ", "ケ", "之"))
 _BREAKS = ("補助記号", "空白")
 _NO_START = frozenset(_BREAKS) | _NOT_IN_A_NAME | {"接尾辞"}     # what no name starts with (kanji_name's guards)
 _HIRAGANA = re.compile(r"^[ぁ-ゖー]+$")
-_library = {"tables": None, "at": None, "pinned": False}
+_library = {"tables": None, "at": None, "pinned": False, "stamp": None}
 
 # A work's own kanji terms.
 _TERM_LAST = frozenset("君様殿氏達等共方内中外上下前後間")   # an honorific, a plural or a position word ends no term
@@ -1103,30 +1104,49 @@ def apply_spans(sentences, spans, tables, recurring=True, kanji=True, terms=True
 
 
 def library_tables():
-    """The library's tables this process applies: those the last index stored in the Japanese token store (read
-    again every REFRESH seconds, so a window open across a Generate picks up the new ones), or those a caller set
-    (`use_library_tables`). None before the first index."""
+    """The library's tables this process applies: those the last index stored in the Japanese token store (looked
+    for again every REFRESH seconds, so a window open across a Generate picks up the new ones), or those a caller set
+    (`use_library_tables`). None before the first index. The look is two stats (`_store_stamp`): the store is read
+    again only when its files moved since the tables were read from it (ONE-READ 3: a connection and a parse every
+    30 s a process, the tables unchanged almost always)."""
     if not _library["pinned"]:
         now = time.monotonic()
         if _library["at"] is None or now - _library["at"] > REFRESH:
             _library["at"] = now
             try:
                 from app import token_index
-                _library["tables"] = token_index.read_names_tables("ja")
+                stamp = _store_stamp(token_index.store_path_for("ja"))
+                if stamp is None or stamp != _library["stamp"]:     # (taken before the read: a write between the
+                    _library["tables"] = token_index.read_names_tables("ja")      # two is read again next time)
+                    _library["stamp"] = stamp
             except Exception:
-                _library["tables"] = None
+                _library.update(tables=None, stamp=None)
     return _library["tables"]
+
+
+def _store_stamp(path):
+    """The token store's database and its `-wal` as they stand on disk — (file id, mtime, size) each, None for one
+    that isn't there; None when neither is. Every write moves one of them (a WAL write, a checkpoint, a store made
+    again and put in its place), so the tables read under one stamp are still the store's under the same stamp."""
+    out = []
+    for name in (path, path + "-wal"):
+        try:
+            st = os.stat(name)
+            out.append((st.st_ino, st.st_mtime_ns, st.st_size))
+        except OSError:
+            out.append(None)
+    return tuple(out) if out[0] is not None or out[1] is not None else None
 
 
 def use_library_tables(tables, pin=False):
     """Apply `tables` in this process from now on — the ones an index just computed; `pin`: never read the store for
-    newer ones (a measurement that must not move)."""
-    _library.update(tables=tables, at=time.monotonic(), pinned=pin)
+    newer ones (a measurement that must not move). Not the store's read: the next look reads the store."""
+    _library.update(tables=tables, at=time.monotonic(), pinned=pin, stamp=None)
 
 
 def forget_library_tables():
     """Back to reading the tables from the token store on next use."""
-    _library.update(tables=None, at=None, pinned=False)
+    _library.update(tables=None, at=None, pinned=False, stamp=None)
 
 
 # --- A show's own name clues ---------------------------------------------------------------------------------------- #

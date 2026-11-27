@@ -239,7 +239,7 @@ def test_the_journey_drawn_with_the_rows_never_reads_the_lists(tmp_path, monkeyp
     seen = []
     monkeypatch.setattr(gen, "PRIORITY_CSV", str(tmp_path / "p.csv"))         # (never the real results' lists)
     monkeypatch.setattr(gen, "PROGRESSIVE_CSV", str(tmp_path / "q.csv"))
-    monkeypatch.setattr(journey_render, "store_facts", lambda language: type("Facts", (), {"marks": None})())
+    monkeypatch.setattr(journey_render, "store_facts", lambda language, **_: type("Facts", (), {"marks": None})())
     monkeypatch.setattr(journey_render, "render", lambda language, rows=None, priority=None, **kw: seen.append(
         (rows, priority)) or (_ for _ in ()).throw(RuntimeError("drawn")))
     rows, priority = [{"Word": "夜市", "Context 1": "夜市に行った。"}], [{"Word": "夜市"}]

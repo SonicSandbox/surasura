@@ -714,20 +714,31 @@ _ITEM_FIELDS = ("id", "rel_path", "tier", "work_id", "parent_folder", "watched",
 _WORK_FIELDS = ("id", "media_type", "title", "youtube_channel")
 
 
-def store_facts(language, data_dir=None, user_files_dir=None):
+def open_library(language, data_dir=None, user_files_dir=None):
+    """The library store as the render reads it — `store_facts` and the ▶'s rows (`play.files`) through this one
+    handle, one open a render (ONE-READ 3: each opened its own) — or None with no ready store. Never raises; the
+    caller closes it."""
+    try:
+        from app import library_store
+        from app.path_utils import get_data_path, get_user_files_path
+        return library_store.open_store(language, data_dir or get_data_path(language),
+                                        user_files_dir or get_user_files_path(language), role="analyzer",
+                                        busy_wait=0.5)
+    except Exception:
+        return None
+
+
+def store_facts(language, data_dir=None, user_files_dir=None, library=None):
     """The episodes' facts from the library store, read in one go through its readers (`read_feed`, `scheduled_ids`,
     `cards_of`, and — once their lanes land — `prestudied_marks`, `growth_of`), or None with no ready store (the page
     then names episodes by file only). One read transaction (`_reading`), the stones' marks (`watched_marks`) in it:
     the page and the render signature it is signed with read the same store (J-FIX 3: a mark landing between two reads
-    was drawn but not signed, so its Undo left the stone). Never writes, never raises."""
-    try:
-        from app import library_store
-        from app.path_utils import get_data_path, get_user_files_path
-        data_dir = data_dir or get_data_path(language)
-        user_files_dir = user_files_dir or get_user_files_path(language)
-        store = library_store.open_store(language, data_dir, user_files_dir, role="analyzer", busy_wait=0.5)
-    except Exception:
+    was drawn but not signed, so its Undo left the stone). Never writes, never raises. `library`: the render's open
+    store (`open_library`), read through and left open; False: the caller's open found none (None, never a second
+    open); None: opened here and closed."""
+    if library is False:
         return None
+    store = library if library is not None else open_library(language, data_dir, user_files_dir)
     if store is None:
         return None
     try:
@@ -765,10 +776,11 @@ def store_facts(language, data_dir=None, user_files_dir=None):
         print(f"Warning: the journey couldn't read the library store: {e}")
         return None
     finally:
-        try:
-            store.close()
-        except Exception:
-            pass
+        if library is None:
+            try:
+                store.close()
+            except Exception:
+                pass
 
 
 def _with_aside(counted, items):
@@ -1384,12 +1396,14 @@ def _known_terms(language, script="asis", store=None, settings=None):
 
 
 def render(language, rows=None, priority=None, stats=None, *, settings=None, facts=None, plan=None, tagger=None,
-           stamp=None, known=None, store=None):
+           stamp=None, known=None, store=None, library=None):
     """The page's data for this language's last Generate: the analyzer's rows in-process when it has them (G11), the
     results' CSVs otherwise; the store, the Anki backlog, the known words and the ▶'s memos read here, read-only.
     `known`: the run's known lemmas when the Generate hands them (the sets its list was decided by: no store opened
     for them, STORE-KEY 3 — so also when the store couldn't keep them, where the lookup found none), else read
-    (`_known_terms`: through `store`, the run's open token store, when handed — the redraw's, ONE-READ)."""
+    (`_known_terms`: through `store`, the run's open token store, when handed — the redraw's, ONE-READ). `library`:
+    the render's open library store (`open_library`), read through for the facts and the ▶'s rows and left open;
+    None: each opens its own."""
     from app import settings_manager
     from app import static_html_generator as gen
     if settings is None:
@@ -1408,7 +1422,7 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
         except Exception:
             stats = []
     if facts is None:
-        facts = store_facts(language)
+        facts = store_facts(language, library=library)
     elif facts is False:                        # the caller's read found no store: never a second read (J-FIX 3)
         facts = None
     backlog = gen.anki_backlog_keys(language, settings, gen.PRIORITY_CSV)
@@ -1426,7 +1440,7 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
     if settings.get("line_player", True) and timed:
         from app.connect.runner import VIDEO_EXTENSIONS     # the one cutter's videos: the page cuts their lines (J-CLIP)
         media, dirs = gen._line_media(language, timed, os.path.join(gen.RESULTS_DIR, gen.LINE_MEDIA_MEMO),
-                                      cut_kinds=VIDEO_EXTENSIONS)
+                                      cut_kinds=VIDEO_EXTENSIONS, library=library)
         if any(where for where, _why in media.values()):
             timer = gen.AnchorFinder(cache_path=os.path.join(gen.RESULTS_DIR, gen.LINE_TIMES_MEMO),
                                      script=script, language=language)

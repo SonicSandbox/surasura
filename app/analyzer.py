@@ -3354,6 +3354,7 @@ def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None
     kept, keep, built = {}, {}, None
     if store is not None and works:
         try:
+            from app import token_index as _token_index
             kept = store.songs_kept()
             built = store.get_meta("build_sig")   # a new tokenizer re-reads every file, its stamps unchanged
         except Exception:
@@ -3364,7 +3365,10 @@ def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None
         if store is not None:
             try:
                 stamps = store.file_stamps(paths)
-                digest = hashlib.sha1(json.dumps([song_lines.RULE, ENGINE_REVISION, built, sorted((p, stamps.get(p)) for p in paths)],
+                # what the answer depends on — the rule, the stored lines' form and tokenizer, each file's stamp —
+                # never ENGINE_REVISION: a bump for another rule finds no work's songs again (RARITY-SONGS 2)
+                digest = hashlib.sha1(json.dumps([song_lines.RULE, _token_index.SCHEMA_VERSION, built,
+                                                  sorted((p, stamps.get(p)) for p in paths)],
                                                  ensure_ascii=False).encode("utf-8")).hexdigest()
             except Exception:
                 digest = None

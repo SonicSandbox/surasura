@@ -32,7 +32,9 @@ from app.unicode_ranges import HAN, KANA
 
 LOW, HIGH, SHARE = 3, 6, 0.25      # the episodes a pair recurs in: a quarter of the title's, at least 3, at most 6
 RUN, GAP = 4, 1                    # a run: this many sentences or more, one other sentence between allowed
-RULE = 1                           # the rule's version: a change to what it finds moves it (the kept answers)
+RULE = 1                           # the rule's version: a change to what it finds moves it (the kept answers;
+                                   # analyzer.song_sentences' digest, which ENGINE_REVISION doesn't move — so a
+                                   # change here, to episode_names.identity or to analyzer._series_name moves RULE)
 
 NOTE, STYLED = 1, 2                # a sentence's marks: ♪ in its text; its .ass event's style is a song style
 

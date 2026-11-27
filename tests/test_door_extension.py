@@ -25,6 +25,7 @@ from app import door
 ORIGIN = "chrome-extension://kbmfpngjjgdllneeigpgjifpgocmfgmb"
 OTHER = "chrome-extension://aapbdbdomjkkjkaonfhkkikfgjllcleb"
 TOKEN = "ukai-no-kotoba-wa-hoshi-no-yo-ni"
+REAL_EXT_PORT = door.EXT_PORT                  # (27631: a test moves EXT_PORT, never binds this one)
 
 
 def _cues(resources, name):
@@ -412,33 +413,73 @@ def test_a_route_that_takes_no_body_still_answers_and_a_second_read_fails_at_onc
 
 
 # --- the port --------------------------------------------------------------------------------------------------------- #
+def _hold_a_run():
+    """A run of EXT_PORTS_MORE + 1 free ports side by side, each held by a listening socket — found below every
+    system's dynamic range (Windows hands out 49152+, Linux 32768+: every outgoing connection on the PC takes its own
+    port from there). A run from there could lose the port a test frees to any connection made in the gap (the 3.0.20
+    cut's --all: `None == 49689`); here only a program binding that very port could take it. Blocks stay aligned, so
+    two runs of this side by side never take from each other, and the door's real ports are skipped."""
+    n = door.EXT_PORTS_MORE + 1
+    real = range(REAL_EXT_PORT, REAL_EXT_PORT + n)
+    for base in range(20000, 32768 - n, n):
+        if base in real or base + n - 1 in real:
+            continue
+        held = []
+        for p in range(base, base + n):
+            s = socket.socket()
+            try:
+                s.bind((door.HOST, p))
+            except OSError:
+                s.close()
+                break
+            s.listen()
+            held.append(s)
+        if len(held) == n:
+            return held
+        for s in held:
+            s.close()
+    pytest.skip("no run of free ports here")
+
+
+def test_a_port_taken_between_the_pick_and_the_bind_moves_to_the_next(tmp_path, monkeypatch):
+    """Another program on the learner's PC takes 27631 after nothing held it, just before the door binds it: the door
+    goes on to the next (Ukai says hello on each), never gives up while one of its ports is free."""
+    monkeypatch.setattr(door, "EXTENSION_ON", True)
+    held = _hold_a_run()
+    ports = [s.getsockname()[1] for s in held]
+    for s in held:
+        s.close()                                                     # the whole run free ...
+    monkeypatch.setattr(door, "EXT_PORT", ports[0])
+    strangers = []
+
+    class Racing(door._ExtServer):
+        def server_bind(self):
+            if self.server_address[1] == ports[0] and not strangers:  # ... and taken in the gap, no sleep
+                s = socket.socket()
+                s.bind((door.HOST, ports[0]))
+                s.listen()
+                strangers.append(s)
+            super().server_bind()
+
+    monkeypatch.setattr(door, "_ExtServer", Racing)
+    d = door.Door({}, str(tmp_path), extension=door.Extension({}, lambda: (ORIGIN, TOKEN))).start()
+    try:
+        assert strangers and d.ext_port == ports[1]
+        assert _ask(d.ext_port, "GET", "/v1/hello")[0] == 200
+    finally:
+        d.stop()
+        for s in strangers:
+            s.close()
+
+
 def test_a_taken_port_moves_to_the_next_and_none_free_listens_nowhere(tmp_path, monkeypatch):
     """Another program on 27631: the next one (Ukai says hello on each); none free: no listener, said once, and the
     page's class unharmed. A port another socket holds is never shared (Windows' SO_REUSEADDR would let it be)."""
     monkeypatch.setattr(door, "EXTENSION_ON", True)
     held = []
     try:
-        for _ in range(door.EXT_PORTS_MORE + 1):
-            s = socket.socket()
-            s.bind((door.HOST, 0))
-            s.listen()
-            held.append(s)
-        ports = sorted(s.getsockname()[1] for s in held)
-        if ports != list(range(ports[0], ports[0] + len(ports))):     # (not side by side: hold a free run instead)
-            for s in held:
-                s.close()
-            held = []
-            base = _free_port()
-            for p in range(base, base + door.EXT_PORTS_MORE + 1):
-                s = socket.socket()
-                try:
-                    s.bind((door.HOST, p))
-                except OSError:
-                    s.close()
-                    pytest.skip("no run of free ports here")
-                s.listen()
-                held.append(s)
-            ports = list(range(base, base + door.EXT_PORTS_MORE + 1))
+        held = _hold_a_run()
+        ports = [s.getsockname()[1] for s in held]
         monkeypatch.setattr(door, "EXT_PORT", ports[0])
         ext = door.Extension({}, lambda: (ORIGIN, TOKEN))
         last = next(s for s in held if s.getsockname()[1] == ports[-1])

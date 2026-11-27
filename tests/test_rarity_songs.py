@@ -289,6 +289,8 @@ def test_some_tokens_gives_each_asked_sentence_as_file_tokens_gives_it_the_names
             numbers, sentences = some[p]
             assert numbers == [n for n in asked[p] if n < len(whole[p])]
             assert sentences == [whole[p][n] for n in numbers], p
+        for p in paths:                                 # a sentence asked alone sits first: its own spans, never 0's
+            assert store.some_tokens({p: [1]})[p] == ([1], [whole[p][1]]), p
         assert store.some_tokens({paths[0]: []}) == {paths[0]: ([], [])}
         assert store.some_tokens({}) == {}
     finally:
@@ -330,5 +332,62 @@ def test_an_unreadable_tag_or_sum_is_counted_again_never_raised(tmp_path, damage
         assert store.word_counts() == out
         assert ti._tag_numbers(store.conn.execute("SELECT tag FROM songs WHERE path = ?",
                                                   (ti._norm(paths[1]),)).fetchone()[0]) == sorted(songs[paths[1]])
+    finally:
+        store.close()
+
+
+def test_when_the_name_tables_moved_only_a_file_they_read_otherwise_is_read_again(tmp_path):
+    """The name tables moved since the last Generate (a new index): a file whose names they read as before keeps its
+    share unread; one they read otherwise is read again, alone, and the sum moves by it — the counts as before."""
+    import json
+    from tests.test_names import HOMURA, JIN, PARK, SHOP, STATION, _library as names_library
+    store, paths = names_library(tmp_path / "lib", {"station.txt": STATION, "shop.txt": SHOP, "park.txt": PARK,
+                                                    "a.txt": HOMURA, "b.txt": JIN})
+    try:
+        songs = {p: [1] for p in paths}                 # each file's second line, as a song
+        store.keep_song_counts(songs)
+        store.songs_out = True
+        out = store.word_counts()
+        held = json.loads(store.get_meta("songs_counted"))
+        names = held["names"]
+        held["names"] = "the tables before"
+        store.set_meta("songs_counted", json.dumps(held, ensure_ascii=False, separators=(",", ":")))
+        target = ti._norm(paths[0])
+        tag = json.loads(store.conn.execute("SELECT tag FROM songs WHERE path=?", (target,)).fetchone()[0])
+        real = tag[1]
+        tag[1] = "read before"
+        store.conn.execute("UPDATE songs SET tag=? WHERE path=?", (json.dumps(tag), target))
+        store.conn.commit()
+        read = []
+        some = ti.Store.some_tokens
+
+        def counting(self, asked):
+            read.extend(asked)
+            return some(self, asked)
+        with patch.object(ti.Store, "some_tokens", counting):
+            store.keep_song_counts(songs)
+        assert read == [target], "only the file the tables read otherwise"
+        assert json.loads(store.conn.execute("SELECT tag FROM songs WHERE path=?", (target,)).fetchone()[0])[1] == real
+        assert json.loads(store.get_meta("songs_counted"))["names"] == names
+        assert store.word_counts() == out
+    finally:
+        store.close()
+
+
+def test_a_piece_only_the_songs_use_is_gone_from_the_pieces(tmp_path):
+    """A one-kanji word whose every use as a piece is in the songs has none left (gone from `bound_counts`, never a
+    0 kept): the list reads its uses on its own as its whole count. test_one_kanji_words' diary (年 in 三年 and
+    10年), every line sung."""
+    from tests.test_one_kanji_words import DIARY
+    show = tmp_path / "diary"
+    show.mkdir()
+    (show / "diary.txt").write_text(DIARY, encoding="utf-8")
+    store, _data_dir, paths = _library(tmp_path, "ja", str(show))
+    try:
+        before = store.bound_counts()
+        assert before.get(("年", "ネン")), "the diary uses 年 as a piece"
+        store.keep_song_counts({p: list(range(len(store.file_tokens(p)))) for p in paths})
+        store.songs_out = True
+        assert not store.bound_counts()
     finally:
         store.close()

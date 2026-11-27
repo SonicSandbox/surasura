@@ -18,7 +18,10 @@ Fakes, and why (each where the real thing would reach outside the test, or take 
   * the window's Generate is accepted and left running (`api.generate` recorded, no analyzer child): with *Your start*
     offered the wizard goes on at once, so the list's end is never waited for — the real Generate is
     `test_services_generate.py`'s; without it the wizard waits on *Your list* (the bug this test would see);
-  * *Start*'s answer is recorded (`api.start_cards`), never Connect's own start (it would start Anki Miner).
+  * *Start*'s answer is recorded (`api.start_cards`), never Connect's own start (it would start Anki Miner);
+  * the app's timers are off in the suites (SURASURA_NO_UI_TIMERS), so the two things the start runs on a timer are
+    asked here at the moment it would: `start_duties` (the window's first frame), then the store's helper
+    (`Chores._maintain`, 1.5 s in and again 2 s after a language switch).
 """
 import os
 import time
@@ -110,6 +113,9 @@ def window(qapp, monkeypatch, real_store_helper):
     win.show()
     QApplication.processEvents()
     yield win
+    chores = services.chores                                           # (its indexer child ends by itself, as at quit:
+    if chores is not None:                                             # waited for, so it never writes past the test)
+        wait_until(lambda: not chores.indexing(), READ_WAIT)
     win.close()
     services.shutdown(2.0)
 
@@ -175,6 +181,7 @@ def _sort_the_rest(wiz, wait=READ_WAIT):
         before = screen.top_arrival().key
         QTest.mouseClick(screen.choice_buttons["soon"], Qt.MouseButton.LeftButton)
         wait_until(lambda: screen.top_arrival() is None or screen.top_arrival().key != before, 5.0)
+    assert screen.top_arrival() is None, "shows still waiting in the sort after Soon for each"
     QTest.mouseClick(screen.btn_done, Qt.MouseButton.LeftButton)
     assert wait_until(lambda: wiz.covered is None, wait), "the sort's Done never closed it"
 
@@ -182,6 +189,14 @@ def _sort_the_rest(wiz, wait=READ_WAIT):
 @pytest.mark.parametrize("language", ["ja", "zh"])
 def test_the_whole_first_run_shows_next_your_start_and_your_lists_numbers(window, language):
     problems = []                         # what a learner would see as broken (all of them said at the end)
+    try:
+        _first_run(window, language, problems)
+    except AssertionError as e:            # (a later step failing still says what broke before it)
+        raise AssertionError("\n".join(problems + [str(e)])) from None
+    assert not problems, "\n".join(problems)
+
+
+def _first_run(window, language, problems):
     api = RealApi()
     wiz = first_run.host(window, api=api, miner=FakeMiner(miner_look("ready", version="3.9.0")))
     assert isinstance(wiz, W.SetupWizard)
@@ -190,13 +205,13 @@ def test_the_whole_first_run_shows_next_your_start_and_your_lists_numbers(window
 
     # Language: the glyph tiles, then Next
     _on(wiz, "language")
-    wiz.pages[0].channel.choose(language, user=True)
+    _click(wiz, wiz.pages[0].channel.choice(language))
     _next(wiz, "language", problems=problems)
     if language != "ja":
         _store_built(window, language)                             # (the window follows the language picked)
     # What you know (Anki isn't answering): *Start fresh*
     _on(wiz, "known")
-    wiz.by_id["known"].channel.choose("fresh", user=True)
+    _click(wiz, wiz.by_id["known"].channel.choice("fresh"))
     _next(wiz, "known", problems=problems)
     # Your shows: the folder, covers off (no AniList), Next — the read starts behind the pages
     _on(wiz, "shows")
@@ -245,5 +260,5 @@ def test_the_whole_first_run_shows_next_your_start_and_your_lists_numbers(window
         assert wait_until(lambda: any(c.isVisible() for c in start.cards.values()), PRESS_WAIT)
         _next(wiz, "start", problems=problems)
         assert wait_until(lambda: api.started, PRESS_WAIT), "Start never answered the first cards"
+        assert api.started[-1][0][2] == "full"                   # (a fresh learner's start as offered)
         assert wait_until(lambda: first_run.opened(window) is None, PRESS_WAIT)
-    assert not problems, "\n".join(problems)

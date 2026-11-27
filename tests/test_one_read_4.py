@@ -250,6 +250,11 @@ def test_without_a_role_a_span_keeps_one_handle_a_role_as_before(language):
         with ls.held(role="analyzer"):
             assert ls.open_store(language, data_dir, user_files_dir, role="reader").role == "analyzer"
             raise KeyError("the run stopped")
+    outside = ls.open_store(language, data_dir, user_files_dir, role="reader")
+    try:                                     # outside any span: the role asked, never the ended run's
+        assert outside is not None and outside.role == "reader"
+    finally:
+        outside.close()
     with ls.held(role="analyzer"):
         with ls.held():                      # a span inside the run's joins it: still the run's one handle
             assert ls.open_store(language, data_dir, user_files_dir, role="reader").role == "analyzer"

@@ -379,8 +379,9 @@ def test_a_slice_that_builds_only_rows_below_the_reveal_lays_nothing_out_itself(
 def test_each_slice_shows_each_section_it_built_rows_in_once(qapp, monkeypatch):
     # a section's rows asked their rules once a slice, not once for every row the slice built (Anki & mining's 35:
     # 35 times each in one go)
-    monkeypatch.setattr(sp, "BUILD_MS", 10 ** 6)                # (the whole page in as few slices as the warm allows)
     page, _calls = _page()
+    assert wait_until(lambda: page.slice_ms, 20)               # (its first slice was queued before the wrappers)
+    monkeypatch.setattr(sp, "BUILD_MS", 10 ** 6)                # (the rest in as few slices as the warm allows)
     log = _per_slice(monkeypatch, page)
     assert wait_until(lambda: page.built, 20)
     built = [entry for entry in log if entry["rows"]]

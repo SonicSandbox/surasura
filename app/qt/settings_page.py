@@ -2115,13 +2115,9 @@ def _look_for(wanted, settings=None):
 
 def _ukai_on():
     """(A worker.) 鵜 Ukai's row (UKAI-S2) shows only while the door's Ukai class is on (`door.EXTENSION_ON`, off
-    until Ukai 1.0) and its module is here -> {"ukai_on"} or none."""
-    import importlib.util
+    until Ukai 1.0) and its module is here (`door.ukai_on`, the rule Connect reads too) -> {"ukai_on"} or none."""
     from app import door
-    try:
-        return {"ukai_on"} if door.EXTENSION_ON and importlib.util.find_spec("modules.ukai") is not None else set()
-    except (ImportError, ValueError):
-        return set()
+    return {"ukai_on"} if door.ukai_on() else set()
 
 
 def _tools_found(settings):

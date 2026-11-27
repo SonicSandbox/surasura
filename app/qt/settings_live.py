@@ -544,6 +544,16 @@ class CreditsCard(_Card):
 
 
 # --- the live rows ------------------------------------------------------------------------------------------------- #
+def _ukai_waits():
+    """(A worker.) How many lines wait for Ukai to record (`connect.browser.waiting_lines`: one listing, one file a
+    waiting job); 0 when none can be read."""
+    try:
+        from app.connect import browser
+        return browser.waiting_lines()
+    except Exception:
+        return 0
+
+
 def _let_go(signal, slot):
     try:
         signal.disconnect(slot)
@@ -1118,15 +1128,17 @@ class Live(QObject):
         if pairing is None:
             self._ukai(None)
         else:
-            self._run(pairing.paired, then=self._ukai)
+            self._run(lambda: (pairing.paired(), _ukai_waits()), then=lambda got: self._ukai(*got))
 
-    def _ukai(self, paired):
+    def _ukai(self, paired, waits=0):
         part = self.parts.get("ukai")
         if part is None:
             return
         version = (paired or {}).get("version")
         words = ((S.UKAI_PAIRED.format(version=version) if version else S.UKAI_PAIRED_PLAIN) if paired
                  else S.UKAI_NOT_PAIRED)
+        if waits:                       # UKAI-S4: what waits for Ukai to record (Connect's Netflix / Disney+ jobs)
+            words = (S.UKAI_WAITS_ONE if waits == 1 else S.UKAI_WAITS).format(words=words, n=waits)
         if part["mark"].value() != bool(paired) or part["mark"].words() != words:
             part["mark"].set_value(bool(paired), words)
         if part["forget"].isHidden() == bool(paired):

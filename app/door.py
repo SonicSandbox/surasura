@@ -82,6 +82,16 @@ EXT_TIMEOUT = 15.0              # a socket silent this long ends (a 40 MB clip o
 NOT_UKAI = "only Surasura's browser extension, on this computer"
 
 
+def ukai_on():
+    """Is Ukai's half on: the switch (EXTENSION_ON) and its module here (`modules/ukai`, CLAUDE.md §2)? The one rule
+    the window (Settings' row) and Connect (`online.is_online`: a Netflix item handed to Ukai) both read."""
+    import importlib.util
+    try:
+        return EXTENSION_ON and importlib.util.find_spec("modules.ukai") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 class RouteError(Exception):
     """A route's refusal in plain words (the page shows `message`); `kind` for the page to act on; `status` the HTTP
     status Ukai's class answers it with (the page's class always answers 200)."""
@@ -277,6 +287,22 @@ class Call:
         if not isinstance(body, dict):
             raise BodyError(400, "the body must be a JSON object")
         return body
+
+    def skip(self, limit=None):
+        """The body read and dropped (≤ EXT_MAX_STREAM, EXT_CHUNK at a time) -> its size: a route that refuses a large
+        body after a look (a clip for a job that no longer waits) still answers one Ukai can read (unread, Windows
+        resets the socket before the answer). Raises BodyError."""
+        length = left = self._length(EXT_MAX_STREAM if limit is None else limit)
+        while left:
+            try:
+                chunk = self._read(min(EXT_CHUNK, left))
+            except OSError:
+                chunk = b""
+            if not chunk:
+                self._handler.close_connection = True
+                raise BodyError(400, "the body ended before its Content-Length")
+            left -= len(chunk)
+        return length
 
     def save(self, path, limit=None):
         """The body streamed to `path` (≤ EXT_MAX_STREAM, EXT_CHUNK at a time) -> its size. Written to a `.part` beside

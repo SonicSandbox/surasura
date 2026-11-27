@@ -414,11 +414,12 @@ def test_a_route_that_takes_no_body_still_answers_and_a_second_read_fails_at_onc
 
 # --- the port --------------------------------------------------------------------------------------------------------- #
 def _hold_a_run():
-    """A run of EXT_PORTS_MORE + 1 free ports side by side, each held by a listening socket — found below every
-    system's dynamic range (Windows hands out 49152+, Linux 32768+: every outgoing connection on the PC takes its own
-    port from there). A run from there could lose the port a test frees to any connection made in the gap (the 3.0.20
-    cut's --all: `None == 49689`); here only a program binding that very port could take it. Blocks stay aligned, so
-    two runs of this side by side never take from each other, and the door's real ports are skipped."""
+    """A run of EXT_PORTS_MORE + 1 free ports side by side, each held by a listening socket — found below the default
+    dynamic ranges (Windows hands out 49152+, Linux 32768+: every outgoing connection on the PC takes its own port
+    from there, and Windows reserves blocks there on the fly). A run from there could lose the port a test frees to any
+    connection made in the gap (the 3.0.20 cut's --all: `None == 49689`); here only a program binding that very port
+    takes it. Blocks stay aligned and a test keeps its block's first port held, so two runs of this side by side never
+    take from each other; the door's real ports are skipped."""
     n = door.EXT_PORTS_MORE + 1
     real = range(REAL_EXT_PORT, REAL_EXT_PORT + n)
     for base in range(20000, 32768 - n, n):
@@ -429,10 +430,10 @@ def _hold_a_run():
             s = socket.socket()
             try:
                 s.bind((door.HOST, p))
+                s.listen()
             except OSError:
                 s.close()
                 break
-            s.listen()
             held.append(s)
         if len(held) == n:
             return held
@@ -442,33 +443,36 @@ def _hold_a_run():
 
 
 def test_a_port_taken_between_the_pick_and_the_bind_moves_to_the_next(tmp_path, monkeypatch):
-    """Another program on the learner's PC takes 27631 after nothing held it, just before the door binds it: the door
-    goes on to the next (Ukai says hello on each), never gives up while one of its ports is free."""
+    """Another program on the learner's PC takes the door's first port after nothing held it, just before the door
+    binds it: the door goes on to the next one free (Ukai says hello on each) instead of giving up."""
     monkeypatch.setattr(door, "EXTENSION_ON", True)
-    held = _hold_a_run()
+    held = _hold_a_run()                                              # (the block's first stays held: its guard)
     ports = [s.getsockname()[1] for s in held]
-    for s in held:
-        s.close()                                                     # the whole run free ...
-    monkeypatch.setattr(door, "EXT_PORT", ports[0])
+    for s in held[1:3]:
+        s.close()                                                     # the door's first port and the next free ...
+    held[1:3] = []
+    monkeypatch.setattr(door, "EXT_PORT", ports[1])
     strangers = []
 
     class Racing(door._ExtServer):
         def server_bind(self):
-            if self.server_address[1] == ports[0] and not strangers:  # ... and taken in the gap, no sleep
+            if self.server_address[1] == ports[1] and not strangers:  # ... the first taken in the gap, no sleep
                 s = socket.socket()
-                s.bind((door.HOST, ports[0]))
+                s.bind((door.HOST, ports[1]))
                 s.listen()
                 strangers.append(s)
             super().server_bind()
 
     monkeypatch.setattr(door, "_ExtServer", Racing)
-    d = door.Door({}, str(tmp_path), extension=door.Extension({}, lambda: (ORIGIN, TOKEN))).start()
     try:
-        assert strangers and d.ext_port == ports[1]
-        assert _ask(d.ext_port, "GET", "/v1/hello")[0] == 200
+        d = door.Door({}, str(tmp_path), extension=door.Extension({}, lambda: (ORIGIN, TOKEN))).start()
+        try:
+            assert strangers and d.ext_port == ports[2]
+            assert _ask(d.ext_port, "GET", "/v1/hello")[0] == 200
+        finally:
+            d.stop()
     finally:
-        d.stop()
-        for s in strangers:
+        for s in strangers + held:
             s.close()
 
 

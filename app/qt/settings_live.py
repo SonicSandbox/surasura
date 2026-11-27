@@ -36,7 +36,7 @@ help line.
 import os
 import time
 
-from PyQt6.QtCore import QEvent, QObject, QPoint, QRectF, Qt
+from PyQt6.QtCore import QEvent, QObject, QPoint, QRectF, Qt, QTimer
 from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit, QVBoxLayout
 
@@ -573,6 +573,10 @@ class CreditsCard(_Card):
         p.end()
 
 
+LEVEL_AFTER_MS = 500    # BRIDGE-2: the level read this long after the first news that moves it (a word's write is
+#                         two: the list's own and the known count read after it on the automation's worker)
+
+
 # --- the live rows ------------------------------------------------------------------------------------------------- #
 def _ukai_waits():
     """(A worker.) How many lines wait for Ukai to record (`connect.browser.waiting_lines`: one listing, one file a
@@ -609,7 +613,13 @@ class Live(QObject):
         self.asking = None                # *Restart now to apply?* while it is open (text size)
         self._exporting = None            # the export row running (one at a time)
         self._checking = False
-        self._level = {"busy": False, "again": False, "asked": 0}
+        self._level = {"busy": False, "again": False, "asked": 0, "stale": False}
+        controller = getattr(self.services, "controller", None)   # BRIDGE-2: the Generate state heard last (its end
+        self._generating = controller.state() if hasattr(controller, "state") else None   # moves the level)
+        self._moved = QTimer(self)        # BRIDGE-2: what moves the level, heard while Settings shows: one read
+        self._moved.setSingleShot(True)   # `LEVEL_AFTER_MS` after the first news (a write's news come in pairs)
+        self._moved.setInterval(LEVEL_AFTER_MS)
+        self._moved.timeout.connect(lambda: self._level_moved(settled=True))
         self._format = None               # the format last chosen (the pop opens on it)
         self._copies = {}                 # A6: an AI app -> its Copy presses (the latest one sets the name back)
         self._finding = None              # *Find hato…*'s press while it goes (Michi-HD)
@@ -621,8 +631,9 @@ class Live(QObject):
         b.settings_written.connect(self._written)
         b.status_changed.connect(self._status)
         b.automation_changed.connect(self._automation)
-        b.library_changed.connect(lambda _view: self._read_level())
-        b.indexed.connect(lambda _language: self._read_level())
+        b.indexed.connect(lambda _language: self._level_moved())            # new or changed files in the token store
+        b.words_marked.connect(self._words_marked)                          # BRIDGE-2: Known, Ignore, Still learning
+        b.generate_changed.connect(self._generated)                         # BRIDGE-2: a Generate's remembered band
         b.update_changed.connect(lambda _state: self._read_skipped())
         page.installEventFilter(self)               # Kantan-B2: Piyo's last round read again as Settings shows
         page.takes["text_size"] = self._text_size
@@ -895,7 +906,7 @@ class Live(QObject):
             return
         keys = set(keys)
         from app.services import automation
-        if automation.moves_level(keys) or "exclude_single" in keys or "logic.phrase_rows" in keys:
+        if automation.moves_level(keys) or "exclude_single" in keys:
             self._read_level()
         if "skipped_version" in keys:
             self._read_skipped()
@@ -907,7 +918,7 @@ class Live(QObject):
     def _language(self, _language):
         self.facts.update(known=None, band=None, auto=False, previews=None)
         self._read_known()
-        self._read_level()
+        self._level_moved(now=True)
         self._read_piyo()
         self._read_tidies()
         self._read_sound()
@@ -929,7 +940,7 @@ class Live(QObject):
         known = getattr(state, "known", None)
         if known is not None and getattr(state, "language", None) == self.page.language and known != self.facts["known"]:
             self.facts["known"] = known
-            self._read_level()                            # new known words: the readout's numbers move
+            self._level_moved()                           # new known words: the readout's numbers move
             moved = True
         if moved:
             self._paint_anki()
@@ -975,6 +986,8 @@ class Live(QObject):
         if kind == QEvent.Type.Show and obj is self.page:
             self._read_piyo()
             self._read_hato_update()
+            if self._level["stale"]:
+                self._read_level()                       # BRIDGE-2: the library moved while Settings was out of sight
         elif kind == QEvent.Type.WindowActivate and self._alive() and self.page.isVisible():
             self._read_piyo()
         return False
@@ -1006,9 +1019,36 @@ class Live(QObject):
             line.show()
 
     # --- the level ------------------------------------------------------------------------------------------------- #
+    def _level_moved(self, settled=False, now=False):
+        """BRIDGE-2: something the level's numbers are read from moved — the token store (the indexer), the word lists
+        (`_words_marked`, a sync's new known words), the band a Generate remembers (`_generated`), the language. They
+        never read the library's order: a move is none of these. While Settings shows: read `LEVEL_AFTER_MS` after the
+        first news (`now`: at once), one read for news that come together, one at most per window through a stream;
+        out of sight: only marked stale — read once when Settings shows next."""
+        if not (self._alive() and self.page.isVisible()):
+            self._level["stale"] = True
+        elif settled or now:
+            self._read_level()
+        elif not self._moved.isActive():
+            self._moved.start()
+
+    def _words_marked(self, language):
+        if language == self.page.language:
+            self._level_moved()
+
+    def _generated(self, state):
+        """A Generate's end (the shell's own rule, `ShellWindow._show_generate`): the band it remembers for Automatic
+        (`record_auto_band`) may have moved."""
+        before, self._generating = self._generating, state
+        busy = ("queued", "running", "cancelling")
+        if before is not None and getattr(before, "state", None) in busy and getattr(state, "state", None) not in busy:
+            self._level_moved()
+
     def _read_level(self):
         """The level (S2) and every band's numbers, read on a worker — one at a time, once more if asked meanwhile."""
         level = self._level
+        level["stale"] = False
+        self._moved.stop()                                 # (a read now covers every view before it)
         if level["busy"]:
             level["again"] = True
             return

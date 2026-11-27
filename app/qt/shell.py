@@ -163,6 +163,8 @@ class Services:
         self.replan_heard = []                  # finish-pending: told each line the host says (its worker) — the
         #                                         window's drag controller's: a press waiting for its re-order ends
         #                                         with some
+        self.words_heard = []                   # BRIDGE-2: told (language) each time a word list's write lands (any
+        #                                         thread: `_words_marked`) — Settings' level numbers read again
         self.language = self.settings.get().get("target_language") or "ja"
         self.closing = threading.Event()  # set at quit: a Generate still waiting for `results` starts nothing
         self.quit_hook = None             # the window's: the update hands over (called on a worker)
@@ -364,14 +366,15 @@ class Services:
                 numbers.idle(NUMBERS_WAIT_S)        # (a worker: the card asked again after this sees them out)
             except Exception as e:
                 applog.log("shell", f"the numbers after a mark: {e!r}")
-        if language != self.language:
-            return                                  # (another language's lists: its next Generate reads them)
-        automation = self.automation
-        if automation is not None and hasattr(automation, "known_changed"):
-            automation.known_changed()
-        words_marked = getattr(self.replan, "words_marked", None)
-        if words_marked is not None:
-            words_marked()
+        if language == self.language:               # (another language's lists: its next Generate reads them)
+            automation = self.automation
+            if automation is not None and hasattr(automation, "known_changed"):
+                automation.known_changed()
+            words_marked = getattr(self.replan, "words_marked", None)
+            if words_marked is not None:
+                words_marked()
+        for heard in list(self.words_heard):         # BRIDGE-2: Settings' level numbers (Known, Ignore, Still learning),
+            heard(language)                          # told last: the known count asked again above lands beside this
 
     def _stone_marked(self, language):
         """(The writer's thread.) A watched mark, or its undo, that moved nothing that counts: the journey keeper's
@@ -1653,6 +1656,9 @@ class ShellWindow(QMainWindow):
         # the services, through the bridge
         self.bridge = bridge.Bridge(services.settings, services.registry, services.status, parent=self)
         self.bridge.status_changed.connect(self.show_status)
+        words_heard = getattr(services, "words_heard", None)           # BRIDGE-2: a word list's write, as a signal
+        if words_heard is not None:                                    # (a test's stand-in services may have none)
+            words_heard.append(self.bridge.tell_words)
         self._jobs = ()                                   # the registry's newest snapshot (E20: what the close waits for)
         self._quit = None                                 # None · "waiting" (E20: an Anki write ends first) · "ready"
         self.restart_asked = False                        # *Restart now* (text size): main starts the program again

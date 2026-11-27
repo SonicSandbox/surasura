@@ -13,7 +13,7 @@ given (`youtube_risk_acknowledged`): never past the tick (409 with which).
   the downloader's switch and tick (`refused`, 409), a library open (503 *busy*), the same links not already running
   (`LinkRuns`, 409), then `start(urls, release)` hands them to the window's thread and the answer is
   {"queued": n}. Nothing here touches a widget.
-- `run(shell, urls, release)` (the window's thread) -> the downloader's run, its lines in the bar (`BarLines`);
+- `qt_youtube.run(shell, urls, release)` (the window's thread) -> the downloader's run, its lines in the bar (`BarLines`);
   `release()` once it ends, so the links can be sent again.
 """
 import threading
@@ -147,39 +147,3 @@ def route(writer, settings, start):
         return {"queued": len(urls)}
     return youtube
 
-
-def run(shell, urls, release):
-    """(The window's thread.) The links run as the downloader's window runs pasted ones (`fetch_links`), the
-    transcripts into New arrivals as its own do (`youtube_arrivals`, which says how many arrived). Its progress in the
-    bar as it goes (`BarLines`), and said when it ends with none new; `release()` once it ends (or fails to start)."""
-    from app.qt import applog, windows
-
-    def say(line):
-        windows.say_in_bar(shell, line)
-    try:
-        from modules.youtube_downloader import fetch_links
-        writer = shell.services.writer
-        if writer is None:                          # (the library closed since the route's look)
-            release()
-            say(NO_LIBRARY)
-            return
-        arrived = windows.youtube_arrivals(shell)
-        say(STARTED.format(n=len(urls)))
-
-        def ended(created, problems):
-            release()
-            if problems:
-                say(problems[0])
-            if created:
-                try:
-                    arrived(created)
-                except RuntimeError as e:           # (the library switched meanwhile: they wait in Processed)
-                    say(str(e))
-                except Exception as e:              # (never out of the window's slot: logged, they wait there)
-                    applog.log("ukai", f"YouTube links' transcripts: {e!r}")
-            elif not problems:
-                say(NONE_NEW)
-        fetch_links(shell, list(urls), writer.language, BarLines(say), ended)
-    except Exception as e:                          # the downloader gone or broken: logged, the app goes on
-        release()
-        applog.log("ukai", f"YouTube links: {e!r}")

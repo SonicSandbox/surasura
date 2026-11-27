@@ -161,10 +161,10 @@ def test_ukais_youtube_links_run_on_the_windows_thread_once_paired(main, paired_
     """U-S3 (鵜 Ukai's `POST /v1/youtube`): the paired extension's links reach the window's own thread (the
     downloader's run touches its widgets: never on the door's), as #474's relay did; unpaired, nothing runs."""
     from types import SimpleNamespace
-    from modules.ukai import youtube
+    from modules.ukai import qt_youtube, youtube
     ran = []
     monkeypatch.setattr(youtube, "refused", lambda values: None)          # (the downloader on, its tick given)
-    monkeypatch.setattr(youtube, "run", lambda win, urls, release: ran.append(
+    monkeypatch.setattr(qt_youtube, "run", lambda win, urls, release: ran.append(
         (win, urls, threading.current_thread() is threading.main_thread())))
     monkeypatch.setattr(main.services, "writer", SimpleNamespace(language="ja"))
     links = {"schema": 1, "urls": ["https://www.youtube.com/watch?v=dQw4w9WgXcQ"]}

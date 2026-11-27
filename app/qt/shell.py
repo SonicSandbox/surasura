@@ -3633,9 +3633,9 @@ class ShellWindow(QMainWindow):
         ukai_allow.ask(self, self.ukai_pairing, request)
 
     def _ukai_youtube(self, job):
-        """Ukai's YouTube links (UKAI-S3), on this window's thread: the downloader runs them (`modules/ukai/youtube`)."""
-        from modules.ukai import youtube
-        youtube.run(self, *job)
+        """Ukai's YouTube links (UKAI-S3), on this window's thread: the downloader runs them (`modules/ukai/qt_youtube`)."""
+        from modules.ukai import qt_youtube
+        qt_youtube.run(self, *job)
 
     # --- Kotoba-K: Known / Ignore on the word card ----------------------------------------------------------------- #
     def _card_mark(self, marks):

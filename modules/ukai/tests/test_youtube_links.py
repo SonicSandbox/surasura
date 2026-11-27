@@ -17,7 +17,7 @@ import pytest
 
 from app import door
 from modules import ukai
-from modules.ukai import youtube
+from modules.ukai import qt_youtube, youtube
 from tests.test_library_store_support import LANGUAGES
 
 ORIGIN = "chrome-extension://kbmfpngjjgdllneeigpgjifpgocmfgmb"
@@ -223,7 +223,7 @@ def test_a_runs_progress_shows_in_the_bar_at_most_every_two_seconds():
 
 @pytest.fixture(params=LANGUAGES)
 def window_run(request, monkeypatch):
-    """`youtube.run` with the window's pieces recorded: the bar, New arrivals' hand-in, the downloader's fetch."""
+    """`qt_youtube.run` with the window's pieces recorded: the bar, New arrivals' hand-in, the downloader's fetch."""
     import modules.youtube_downloader as downloader
     from app.qt import windows
     bar, arrived, fetched, released = [], [], [], []
@@ -238,7 +238,7 @@ def window_run(request, monkeypatch):
 
 def test_a_run_downloads_in_the_libraries_language_and_brings_its_transcripts_into_new_arrivals(window_run):
     w = window_run
-    youtube.run(w.shell, LINKS, w.release)
+    qt_youtube.run(w.shell, LINKS, w.release)
     [(urls, language, said, ended)] = w.fetched
     assert urls == LINKS and language == w.language and isinstance(said, youtube.BarLines)
     assert w.bar == [youtube.STARTED.format(n=2)] and w.released == [], "held while it runs"
@@ -249,8 +249,8 @@ def test_a_run_downloads_in_the_libraries_language_and_brings_its_transcripts_in
 
 def test_a_run_with_nothing_new_says_so_and_one_with_a_problem_says_that_instead(window_run):
     w = window_run
-    youtube.run(w.shell, LINKS, w.release)
-    youtube.run(w.shell, LINKS, w.release)
+    qt_youtube.run(w.shell, LINKS, w.release)
+    qt_youtube.run(w.shell, LINKS, w.release)
     w.fetched[0][3]([], [])
     w.fetched[1][3]([], ["YouTube couldn't be reached: check your internet connection"])
     assert w.bar[2:] == [youtube.NONE_NEW, "YouTube couldn't be reached: check your internet connection"]
@@ -266,7 +266,7 @@ def test_transcripts_whose_library_switched_meanwhile_say_where_they_wait(window
         return complete
     monkeypatch.setattr(windows, "youtube_arrivals", arrivals)
     w = window_run
-    youtube.run(w.shell, LINKS, w.release)
+    qt_youtube.run(w.shell, LINKS, w.release)
     w.fetched[0][3](["x [dQw4w9WgXcQ].txt"], [])
     assert w.bar[-1] == strings.YT_OTHER_LIBRARY and w.released == [True]
 
@@ -278,7 +278,7 @@ def test_a_downloader_that_fails_to_start_lets_the_links_go_and_the_app_goes_on(
         raise RuntimeError("yt-dlp's folder is gone")
     monkeypatch.setattr(downloader, "fetch_links", broken)
     w = window_run
-    youtube.run(w.shell, LINKS, w.release)
+    qt_youtube.run(w.shell, LINKS, w.release)
     assert w.released == [True]
 
 
@@ -297,7 +297,7 @@ def test_a_library_closed_before_the_run_starts_says_so_and_lets_the_links_go(wi
     """State: the route saw a library, the window's thread doesn't (a switch between): no run, the bar says why."""
     w = window_run
     w.shell.services.writer = None
-    youtube.run(w.shell, LINKS, w.release)
+    qt_youtube.run(w.shell, LINKS, w.release)
     assert w.fetched == [] and w.released == [True] and w.bar == [youtube.NO_LIBRARY]
 
 
@@ -312,6 +312,6 @@ def test_a_hand_in_that_fails_otherwise_never_leaves_the_windows_slot(window_run
         return complete
     monkeypatch.setattr(windows, "youtube_arrivals", arrivals)
     w = window_run
-    youtube.run(w.shell, LINKS, w.release)
+    qt_youtube.run(w.shell, LINKS, w.release)
     w.fetched[0][3](["x [dQw4w9WgXcQ].txt"], [])
     assert w.released == [True]

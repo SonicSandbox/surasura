@@ -253,6 +253,21 @@ def test_watching_now_pre_picks_the_newest_and_puts_it_on_top_then_the_sort_goes
     QTest.mouseClick(wiz.covered.btn_done, Qt.MouseButton.LeftButton)
 
 
+def test_next_comes_with_the_tiles_when_they_land_after_the_page_opened(make, placed):
+    # why (ONB-FIX, the 3.0.20 cut's C14): on a small library the read had ended before *Watching now* opened, so no
+    # tick repainted the footer once its shows were read: the tiles came with only Back and Skip under them
+    wiz, shell, api, _s, _m = make(api=HeldApi())
+    rows = _with_shows(wiz, shell, placed)
+    _walk(wiz, "watching")
+    page = wiz.page
+    assert wait_until(lambda: page.rows is not None, 5)
+    page.rows = None                                               # (as the page opens, before its rows are read)
+    wiz.paint_footer()
+    assert not wiz.btn_next.isVisible() and wiz.btn_skip.isVisible()
+    page.show_newest(rows)                                         # the newest shows' answer, and nothing else
+    assert wiz.btn_next.isVisible() and any(t.isVisible() for t in page.tiles)
+
+
 def test_none_of_these_places_nothing_and_the_sort_comes_as_before(make, placed):
     wiz, shell, api, _s, _m = make(api=HeldApi())
     _with_shows(wiz, shell, placed)
@@ -345,6 +360,56 @@ def test_shows_that_reach_new_arrivals_after_the_scan_fill_the_page_then(make, p
     wiz._library_moved(shell._arrivals_view)
     assert wait_until(lambda: [t.title for t in page.tiles if t.isVisible()] == [r.title for r in rows], 5)
     assert page.channel.value() == rows[0].key
+
+
+def test_shows_that_reach_new_arrivals_after_a_language_switch_fill_the_page_from_the_new_bridge(make, placed,
+                                                                                                 monkeypatch):
+    """Why (ONB-FIX c, train 96's stress red: zh, 1 round in 20 under load, *Watching now* never got its tiles): page 1's
+    language makes the window show another library (`ShellWindow._show_switched`): a new `library_bridge`, the old one
+    stopped. Setup heard only the bridge it was opened with, so the shows reaching New arrivals after the scan's end
+    never asked for the tiles — the page had them only when the view was already full as it opened. Forced here in
+    that order: the page opens on an empty view, the window switches its bridge, then the shows land on the new one."""
+    from PyQt6.QtCore import pyqtSignal
+    from app.qt import bridge as qbridge
+    from tests.qt import test_wizard
+
+    class SwitchingShell(test_wizard.FakeShell):
+        library_switched = pyqtSignal()
+
+        def __init__(self, settings):
+            super().__init__(settings)
+            self.library_bridge = qbridge.Bridge(parent=self)      # the language the window opened with
+
+        def switch(self):                                          # `_show_switched`'s bridge steps, in its order
+            #                                                        (its `show_library`: `_with_shows` below)
+            old = self.library_bridge
+            old.stop()
+            old.deleteLater()
+            self.library_bridge = qbridge.Bridge(parent=self)
+            self.library_switched.emit()
+
+    monkeypatch.setattr(test_wizard, "FakeShell", SwitchingShell)
+    wiz, shell, api, _s, _m = make(api=HeldApi())
+    _walk(wiz, "shows")
+    read, asked = wiz.read_rows, []
+    monkeypatch.setattr(wiz, "read_rows", lambda *a, **k: (asked.append(1), read(*a, **k))[1])
+    first = shell.library_bridge
+    first.library_changed.emit(None)                                   # + Add's files reach the library opened with
+    assert len(asked) == 1, "*Your shows*' rows follow the window's views"
+    shell.switch()                                                     # page 1's zh (any page: the bridge's rule)
+    first.library_changed.emit(None)                                   # (still there until the loop deletes it)
+    assert len(asked) == 1, "the language left's bridge is no longer heard"
+    shell.library_bridge.library_changed.emit(None)
+    assert len(asked) == 2, "… and the new library's are"
+    wiz._read_ids = [11, 12]                                           # the scan took files in; the view has none yet
+    _walk(wiz, "watching")
+    page = wiz.page
+    assert wait_until(lambda: page.rows == [], 5) and not any(t.isVisible() for t in page.tiles)
+    rows = _with_shows(wiz, shell, placed)                             # (the window's `show_library`, then setup)
+    shell.library_bridge.library_changed.emit(shell._arrivals_view)
+    assert wait_until(lambda: [t.title for t in page.tiles if t.isVisible()] == [r.title for r in rows], 5), \
+        "the shows landed on the window's new bridge: the tiles come then"
+    assert wiz.btn_next.isVisible()
 
 
 def test_youtube_alone_goes_on_and_watching_now_waits_for_its_videos(make, monkeypatch, placed, rest):

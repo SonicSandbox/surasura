@@ -9,6 +9,7 @@ answers the first cards' line (Needs you's card gone, nothing made).
 The wizard calls `setup_wizard`'s START part through `test_wizard`'s stand-ins (`FakeApi`) extended with its names;
 `start_numbers` is the real one (pure), over a view with a learner's own shows.
 """
+import threading
 import types
 
 import pytest
@@ -16,6 +17,7 @@ import pytest
 pytest.importorskip("PyQt6")
 from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QWidget
 
 from app import settings_manager
 from app.qt import strings
@@ -130,8 +132,151 @@ def test_without_the_first_cards_line_generate_closes_as_before(make):
     assert wiz.page.id == "level"
     shell.bridge.generate_changed.emit(GenState("running", "Counting words", 3, 10))
     shell.bridge.generate_changed.emit(GenState("current"))
-    assert seen == ["generated"]
+    # (ONB-FIX: the look's answer may still be on its way when Generate ends: the close waits for it, then goes)
+    assert wait_until(lambda: seen == ["generated"])
 
+
+# --- ONB-FIX: *Your start* decided from the saved line, at the moment it's needed (the 3.0.20 cut's C14) ------------ #
+class HeldStart(StartApi):
+    """`start_offered` held until `gate` is set (a slow look); the line read as it is when the gate opens. `line`:
+    D1's `sorted_offer`, held until `saved` is set, then the line written (`offered` True)."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.gate, self.saved = threading.Event(), threading.Event()
+        self.gate.set()
+        self.saved.set()
+
+    def start_offered(self, settings, language):
+        self.calls.append(("start_offered", language))
+        self.gate.wait(10)
+        return self.offered
+
+    def sorted_offer(self, language, ids):
+        self.calls.append(("sorted_offer", language))
+        self.saved.wait(10)
+        self.offered = True
+        return True
+
+
+def _held_on_level(make, offered):
+    api = HeldStart(offered=offered)
+    wiz, shell, api, settings, _m = make(api=api, data={"connect_enabled": True, "words_per_day": 5})
+    shell.services.library = Reader(view())
+    seen = []
+    wiz.finished.connect(seen.append)
+    api.gate.clear()
+    go_to(wiz, "level")
+    assert wait_until(lambda: ("start_offered", "ja") in api.calls)
+    assert wiz.shown() == W.ORDER                                  # (not decided yet: the look is out)
+    settle(wiz)
+    wiz.next()                                                     # Generate, before the look answered
+    assert wiz.page.id == "level" and wiz.generating
+    return wiz, shell, api, seen
+
+
+def test_generate_pressed_before_your_start_was_decided_goes_on_to_it_once_it_is(make):
+    # why: C14 — Generate pressed straight on, the offer still being read, closed setup with D1's line unanswered
+    wiz, shell, api, seen = _held_on_level(make, offered=True)
+    api.gate.set()
+    assert wait_until(lambda: wiz.page.id == "start")
+    assert wiz.generating and wiz.say_line.text() == S.MAKING_SHORT_NO_PCT     # the list still made behind it
+    shell.bridge.generate_changed.emit(GenState("running", "Counting words", 3, 10))
+    shell.bridge.generate_changed.emit(GenState("current"))
+    assert wiz.page.id == "start" and not wiz.generating and seen == []         # its yes still to come
+
+
+@pytest.mark.parametrize("offered", [True, False])
+def test_a_list_made_before_your_start_was_decided_waits_for_it_then_goes_on_or_closes(make, offered):
+    # why: Generate ending first must neither close past *Your start* nor leave setup open with nothing to show
+    wiz, shell, api, seen = _held_on_level(make, offered=offered)
+    shell.bridge.generate_changed.emit(GenState("running", "Counting words", 3, 10))
+    shell.bridge.generate_changed.emit(GenState("current"))
+    assert wiz._made_unseen and wiz._start_pending()               # the list made, the look still held: …
+    assert seen == [] and wiz.page.id == "level"                   # … the close waits for the answer
+    api.gate.set()
+    if offered:
+        assert wait_until(lambda: wiz.page.id == "start")
+        assert not wiz.generating and seen == [] and wiz.say_line.text() == ""
+    else:
+        assert wait_until(lambda: seen == ["generated"])
+
+
+def test_your_start_is_looked_for_only_once_the_sorts_end_is_saved(make):
+    # why: C14 — *Your list* looked once, before D1's line from the sort was written, and never again: the start
+    # page was skipped. While the sort's end is being saved no look is taken; its end asks, and reads the line.
+    api = HeldStart(offered=False)
+    wiz, shell, api, settings, _m = make(api=api, data={"connect_enabled": True})
+    go_to(wiz, "level")
+    assert wait_until(lambda: ("start_offered", "ja") in api.calls)
+    assert wait_until(lambda: not wiz._start_pending())
+    api.calls.clear()
+    api.saved.clear()
+    wiz._offer_cards([1])                                          # (the sort's Done: its places being saved)
+    assert wait_until(lambda: ("sorted_offer", "ja") in api.calls)
+    wiz.read_start_offered()                                       # (*Your list* entered again meanwhile)
+    assert wiz._start_asking == 0                                  # no look sent (it counts itself out first)
+    assert ("start_offered", "ja") not in api.calls and wiz.shown() == W.ORDER
+    api.saved.set()
+    assert wait_until(lambda: wiz.shown()[-1] == "start")
+    assert api.calls == [("sorted_offer", "ja"), ("start_offered", "ja")]
+
+
+def test_a_cards_line_check_that_raises_still_lets_your_start_be_decided(make, qt_errors):
+    # why: the sort's end failing (the seen file held) must not leave *Your start* undecided for good — Generate
+    # would wait on it forever; the line as it stands is read instead
+    api = HeldStart(offered=True)
+
+    def broken(language, ids):
+        api.calls.append(("sorted_offer", language))
+        raise OSError("the seen file is held by another program")
+    api.sorted_offer = broken
+    wiz, shell, api, settings, _m = make(api=api, data={"connect_enabled": True})
+    go_to(wiz, "level")
+    assert wait_until(lambda: wiz.shown()[-1] == "start")
+    wiz._offer_cards([1])
+    assert wait_until(lambda: not wiz._start_pending())
+    assert api.calls[-2:] == [("sorted_offer", "ja"), ("start_offered", "ja")]
+
+
+
+def test_an_indexer_that_cannot_be_asked_still_lets_the_cards_line_be_looked_for(make):
+    # why: the sort's end asks the window's indexer first (*Your list*'s numbers); an indexer that raises (its child
+    # can't start) must not skip D1's check — the line would never be written and *Your start* never offered
+    api = HeldStart(offered=False)
+    wiz, shell, api, settings, _m = make(api=api, data={"connect_enabled": True})
+    asked = []
+
+    def index(force=False):
+        asked.append(force)
+        raise OSError("the indexer's child could not start")
+    shell.services.chores = types.SimpleNamespace(index=index)
+    go_to(wiz, "level")
+    assert wait_until(lambda: not wiz._start_pending())
+    assert wiz.shown() == W.ORDER                                  # (no line yet: no *Your start*)
+    wiz._offer_cards([1])
+    assert wait_until(lambda: wiz.shown()[-1] == "start")
+    assert asked == [True] and ("sorted_offer", "ja") in api.calls
+
+
+class BrokenNeedsYou(QWidget):
+    """A Needs you that can't redraw (its read raises)."""
+
+    def refresh(self):
+        raise OSError("the needs-you file is held by another program")
+
+
+def test_a_needs_you_that_cannot_redraw_still_lets_your_start_be_decided(make):
+    # why: the sort's end redraws Needs you with D1's new line; a redraw that raises must not leave *Your start*
+    # undecided for good (Generate would wait on it) nor stop the window (the harness fails a raising slot)
+    api = HeldStart(offered=False)
+    wiz, shell, api, settings, _m = make(api=api, data={"connect_enabled": True})
+    shell.needs_you = BrokenNeedsYou(shell)
+    go_to(wiz, "level")
+    assert wait_until(lambda: not wiz._start_pending())
+    wiz._offer_cards([1])
+    assert wait_until(lambda: wiz.shown()[-1] == "start")
+    assert wait_until(lambda: not wiz._start_pending())
 
 def test_another_language_drops_the_offer_until_its_own_line_is_read(make):
     # why: the offer is one language's line — Back to page 1 and another language must not reach *Your start* on it

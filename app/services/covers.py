@@ -122,7 +122,8 @@ WORK_COLS = ("id", "cover_source", "cover_ref", "cover_path", "cover_locked")   
 
 def works_all(store):
     """[Work] of the whole library (the open's disk scan), with their own folders and books (`originals`): only the
-    columns `works_from` reads, in one read transaction — never the feed's whole rows."""
+    columns `works_from` reads (items and works in one read transaction, as `rows_for`) — never the feed's whole
+    rows."""
     with store._reading():
         items = [{"id": r[0], "ord": r[1], "work_id": r[2], "rel_path": r[3]} for r in store.conn.execute(
             "SELECT id, ord, work_id, rel_path FROM items WHERE work_id IS NOT NULL AND rel_path IS NOT NULL")]
@@ -295,14 +296,15 @@ def _folders(rel_paths):
 
 def _listing(data_dir, folder, listings=None):
     """{lower-cased name: name} of a folder: data-folder relative, or absolute (`data_dir` None) — kept in `listings`
-    when given (the scan's: a folder is listed once however many of its works look in it)."""
+    when given (the scan's: a folder is listed once however many of its works look in it; one that couldn't be listed
+    is tried again by the next)."""
     key = (data_dir is None, folder)
     if listings is not None and key in listings:
         return listings[key]
     try:
         names = sorted(os.listdir(folder if data_dir is None else _full(data_dir, folder)))
     except OSError:
-        names = ()
+        return {}
     by_lower = {}
     for name in names:
         by_lower.setdefault(name.lower(), name)

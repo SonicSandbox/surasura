@@ -367,15 +367,34 @@ def test_the_opens_scan_reads_no_source_marker_without_two_books_to_choose_and_l
     assert [os.path.normcase(d) for d in read] == [os.path.normcase(folder)], "two books: their folder's marker, once"
 
 
-def test_the_opens_scan_reads_the_same_titles_from_its_own_columns_as_from_the_whole_feed(lib):
+def test_the_opens_scan_reads_the_same_titles_from_its_own_columns_as_from_the_whole_feed(lib, monkeypatch):
     """START-READS: the open's scan read the store's whole feed (every column of every row) for the five a cover
     needs; `works_all` reads only those and must name the same titles, files in the list's order and covers."""
-    poster = write(os.path.join(lib.folder_of(lib.store.ids("now")[0]), "poster.jpg"), jpeg())
-    assert lib.scan() == 1
     store = lib.store
+    poster = write(os.path.join(lib.folder_of(store.ids("now")[0]), "poster.jpg"), jpeg())
+    locked = lib.work_of(store.ids("goal")[0])
+    lib.writer.set_cover(locked, "generated", locked=True)           # *Use a generated cover*: its lock read too
+    assert h.until(lambda: lib.heard.saved)
+    book = lib.store.ids("soon")[0]
+    epub(os.path.join(lib.folder_of(book), "第一巻.epub"), "第一巻", cover=jpeg(), language=lib.language)
+    assert lib.scan() == 2
+    assert lib.row(lib.work_of(book))[2].startswith("cache:"), "a book's cover: its path read too"
+    show = next(w for w in lib.works() if len(w.rel_paths) > 2)
+    ids = [store.item_id(r) for r in show.rel_paths]
+    store.move([ids[-1]], store.item(ids[0])["tier"], before_id=ids[0], in_order=False)   # its files out of id order
     feed = store.read_feed()
-    assert C.works_all(store) == C.works_from(feed["items"], feed["works"], C.originals(store))
-    assert any(w.cover_ref == lib.rel(poster) for w in C.works_all(store))
+    got = C.works_all(store)
+    assert got == C.works_from(feed["items"], feed["works"], C.originals(store))
+    assert any(w.cover_ref == lib.rel(poster) for w in got)
+    assert next(w for w in got if w.id == locked).cover_locked
+    moved = next(w for w in got if w.id == show.id).rel_paths
+    assert moved[0] == show.rel_paths[-1], "the files in the list's order, not by id"
+    from app.qt import covers as window_covers                       # the open's scan reads through it, not the feed
+    asked = []
+    monkeypatch.setattr(store, "read_feed", lambda *a, **k: pytest.fail("the open's scan read the whole feed"))
+    monkeypatch.setattr(C, "works_all", lambda s: asked.append(s) or got)
+    window_covers._scan_works(store, lib.language, lib.writer, threading.Event(), lib.data_dir)
+    assert asked == [store]
 
 
 def test_a_books_cover_named_outside_its_package_folder_is_refused(tmp_path):

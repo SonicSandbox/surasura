@@ -106,7 +106,7 @@ def to_start(make, api=None, known=False, data=None):
 def test_generate_goes_straight_on_to_your_start_while_the_list_is_made_and_nothing_is_mined(make):
     wiz, shell, api, settings, seen = to_start(make)
     assert wiz.page.id == "start" and wiz.generating and seen == []
-    assert wiz.steps.ids[-1] == "start" and wiz.steps.current == 6
+    assert wiz.steps.ids[-1] == "start" and wiz.steps.current == wiz.pages.index(wiz.by_id["start"])
     assert ("finish",) in api.calls and wait_until(lambda: ("generate",) in api.calls)    # (Generate: on a worker)
     assert wiz.btn_back.isHidden(), "no Back: the list is already being made (PROVISIONAL)"
     wiz.back()                                                     # (a Back press by key or reader: still here —
@@ -125,7 +125,7 @@ def test_without_the_first_cards_line_generate_closes_as_before(make):
     wiz.finished.connect(seen.append)
     go_to(wiz, "level")
     assert wait_until(lambda: ("start_offered", "ja") in api.calls)
-    assert wiz.shown() == W.PAGES and wiz.steps.ids == W.PAGES
+    assert wiz.shown() == W.ORDER and wiz.steps.ids == W.ORDER
     wiz.next()
     assert wiz.page.id == "level"
     shell.bridge.generate_changed.emit(GenState("running", "Counting words", 3, 10))
@@ -140,7 +140,7 @@ def test_another_language_drops_the_offer_until_its_own_line_is_read(make):
     go_to(wiz, "level")
     assert wait_until(lambda: wiz.shown()[-1] == "start")
     wiz._language_changed("zh")
-    assert wiz._start_offered is False and wiz.pages[6].items is None
+    assert wiz._start_offered is False and wiz.by_id["start"].items is None
 
 
 def test_arrows_choose_a_start_and_start_pressed_early_keeps_the_choice_and_closes(make):
@@ -207,13 +207,13 @@ def test_pre_studied_only_is_offered_only_with_its_switch(make, monkeypatch):
     # why: PRESTUDIED-MINE is in this Surasura (train 93), so the third start shows with the real defaults; a
     # Surasura without its switch offers only the two
     wiz, *_ = make(api=StartApi())
-    assert list(wiz.pages[6].cards) == ["small", "full", "prestudied"]
-    assert wiz.pages[6].cards["prestudied"].lines == ("", "")
-    wiz.pages[6].show_numbers({"per_day": 5})
-    assert wiz.pages[6].cards["prestudied"].unit == S.START_PACE_WORD
+    assert list(wiz.by_id["start"].cards) == ["small", "full", "prestudied"]
+    assert wiz.by_id["start"].cards["prestudied"].lines == ("", "")
+    wiz.by_id["start"].show_numbers({"per_day": 5})
+    assert wiz.by_id["start"].cards["prestudied"].unit == S.START_PACE_WORD
     monkeypatch.delitem(settings_manager.DEFAULT_SETTINGS, SW.PRESTUDIED_KEY)
     wiz, *_ = make(api=StartApi())
-    assert list(wiz.pages[6].cards) == ["small", "full"]
+    assert list(wiz.by_id["start"].cards) == ["small", "full"]
 
 
 def test_chinese_setup_starts_on_its_own_language(make):

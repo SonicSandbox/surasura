@@ -112,7 +112,7 @@ def test_generate_closes_onto_current_when_the_windows_generate_ends(window):
     api = FakeApi(numbers=NUMBERS)
     wiz = _host(window, api)
     window.show_tab("settings")
-    while W.PAGES[wiz.index] != "level":
+    while wiz.page.id != "level":
         wiz.skip() if wiz.index else wiz.next()
     wiz.next()
     assert wait_until(lambda: ("generate",) in api.calls)

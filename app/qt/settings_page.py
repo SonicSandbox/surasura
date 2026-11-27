@@ -1182,8 +1182,9 @@ class SettingsPage(QWidget):
             if touched:
                 self._tint()
             self._show_nothing(matches)
-        if above or self._off_aim():
-            self._aim()                       # (rows only below a reveal already at its third: it stands there)
+        if above or self._off_aim() or not self._queue:
+            self._aim()                       # (rows only below a reveal already at its third: it stands there; the
+                                              # last slice aims once, its own rows laid out first)
         self._slice_end = time.perf_counter()
         self.slice_ms.append((self._slice_end - t0) * 1000)
         if self._reveal_wanted is not None and self._section_built(catalog.locate(self._reveal_wanted)[0]):
@@ -1241,13 +1242,14 @@ class SettingsPage(QWidget):
 
     def _off_aim(self):
         """Whether a reveal made while the build goes on is not yet where `_aim` puts it, read from the page as the loop
-        last laid it out (no settle): a reveal clamped by a short page is aimed again as the rows below it come."""
+        last laid it out (no settle): a reveal clamped by a short page is aimed again once the rows below it are laid
+        out (the next slice reads the grown range; the build's last slice aims in any case)."""
         widget = self._revealed
         if widget is None or not _alive(widget) or not widget.isVisible():
             return False
         bar = self.scroll.verticalScrollBar()
         end = max(0, min(bar.maximum(), round(self._y_in_body(widget) - self.scroll.viewport().height() / 3)))
-        return bar.value() != end or end == bar.maximum()
+        return bar.value() != end
 
     def _scroll_to(self, value):
         """The page's own scroll (a glide, a reveal's aim, the never-moves correction): never lets a reveal go."""

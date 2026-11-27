@@ -14,6 +14,7 @@ read before its package filled it (the wrong row lit).
 Never a timing here: what is built in which turn, which read is asked when, and how many times.
 """
 import os
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -326,32 +327,52 @@ def test_settings_modules_imported_on_a_worker_make_no_qt_enum_there():
     assert "OFF []" in out.stdout, out.stdout
 
 
-def _per_slice(monkeypatch, page):
-    """Each slice's record: the sections of the rows it built, its settles, its `_show_section` calls."""
+def _per_slice(monkeypatch):
+    """Each slice's record: the sections of the rows it built, its settles, its `_show_section` calls (on the class:
+    a page made after it, or one whose slices go on, is recorded from its next slice)."""
     log, cur = [], {}
-    real_slice, real_build = page._slice, page._build_guarded
-    real_settle, real_show = page._settle, page._show_section
+    cls = sp.SettingsPage
+    real_slice, real_build = cls._slice, cls._build_guarded
+    real_settle, real_show = cls._settle, cls._show_section
 
-    def slice_():
-        cur.update(rows=[], settles=0, shows=[])
-        real_slice()
-        log.append(dict(cur))
+    real_off = cls._off_aim
 
-    def build(index, row, settings):
+    def slice_(self):
+        cur.clear()
+        cur.update(rows=[], settles=0, aims=0, off=False, shows=[])
+        real_slice(self)
+        log.append(dict(cur, rows=list(cur["rows"]), shows=list(cur["shows"]), last=not self._queue))
+
+    def build(self, index, row, settings):
         cur.setdefault("rows", []).append(row.section)
-        return real_build(index, row, settings)
+        return real_build(self, index, row, settings)
 
-    def settle():
-        cur["settles"] = cur.get("settles", 0) + 1
-        return real_settle()
+    def settle(self):
+        # only the slice's own layout: its `_keeping` or its `_aim` (a read's answer filling a row mid-slice keeps
+        # its own row in place with a settle of its own)
+        frame, names = sys._getframe(1), []
+        while frame is not None and len(names) < 3:
+            names.append(frame.f_code.co_name)
+            frame = frame.f_back
+        if names == ["_keeping", "__exit__", "_slice"]:
+            cur["settles"] = cur.get("settles", 0) + 1
+        elif names[:2] == ["_aim", "_slice"]:
+            cur["aims"] = cur.get("aims", 0) + 1
+        return real_settle(self)
 
-    def show(section_id, *args, **kw):
+    def off_aim(self):
+        off = real_off(self)
+        cur["off"] = cur.get("off", False) or off
+        return off
+
+    def show(self, section_id, *args, **kw):
         cur.setdefault("shows", []).append(section_id)
-        return real_show(section_id, *args, **kw)
-    monkeypatch.setattr(page, "_slice", slice_)
-    monkeypatch.setattr(page, "_build_guarded", build)
-    monkeypatch.setattr(page, "_settle", settle)
-    monkeypatch.setattr(page, "_show_section", show)
+        return real_show(self, section_id, *args, **kw)
+    monkeypatch.setattr(cls, "_slice", slice_)
+    monkeypatch.setattr(cls, "_build_guarded", build)
+    monkeypatch.setattr(cls, "_settle", settle)
+    monkeypatch.setattr(cls, "_off_aim", off_aim)
+    monkeypatch.setattr(cls, "_show_section", show)
     return log
 
 
@@ -362,15 +383,17 @@ def test_a_slice_that_builds_only_rows_below_the_reveal_lays_nothing_out_itself(
     page.reveal("anki")
     assert wait_until(lambda: page._section_built("anki"), 20)
     revealed = page._revealed
-    log = _per_slice(monkeypatch, page)
+    log = _per_slice(monkeypatch)
     assert wait_until(lambda: page.built, 20)
     order = [s.id for s in catalog.SECTIONS]
     anki = order.index("anki")
-    below = [entry for entry in log if entry["rows"] and min(order.index(s) for s in entry["rows"]) > anki]
+    below = [entry for entry in log if entry["rows"] and min(order.index(s) for s in entry["rows"]) > anki
+             and not entry["last"]]                             # (the build's last slice aims once, laid out first)
     above = [entry for entry in log if any(order.index(s) < anki for s in entry["rows"])]
     assert len(below) >= 20 and above, (len(below), len(above))
     assert sum(entry["settles"] for entry in below) == 0, [entry["settles"] for entry in below]
-    assert all(entry["settles"] >= 1 for entry in above)
+    assert all(entry["aims"] == 0 for entry in below if not entry["off"]), [(e["aims"], e["off"]) for e in below]
+    assert all(entry["settles"] + entry["aims"] >= 1 for entry in above)    # (laid out at once: the reveal kept)
     QApplication.processEvents()
     assert _at_third(page, revealed)                            # kept in place all the same
     page.close()
@@ -379,10 +402,9 @@ def test_a_slice_that_builds_only_rows_below_the_reveal_lays_nothing_out_itself(
 def test_each_slice_shows_each_section_it_built_rows_in_once(qapp, monkeypatch):
     # a section's rows asked their rules once a slice, not once for every row the slice built (Anki & mining's 35:
     # 35 times each in one go)
+    log = _per_slice(monkeypatch)                               # (before the page: its first slice recorded too)
+    monkeypatch.setattr(sp, "BUILD_MS", 10 ** 6)                # (in as few slices as the warm allows)
     page, _calls = _page()
-    assert wait_until(lambda: page.slice_ms, 20)               # (its first slice was queued before the wrappers)
-    monkeypatch.setattr(sp, "BUILD_MS", 10 ** 6)                # (the rest in as few slices as the warm allows)
-    log = _per_slice(monkeypatch, page)
     assert wait_until(lambda: page.built, 20)
     built = [entry for entry in log if entry["rows"]]
     assert built and max(len(entry["rows"]) for entry in built) > len(catalog.SECTIONS)

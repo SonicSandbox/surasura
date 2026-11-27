@@ -1184,7 +1184,7 @@ class Store:
         self._adjust = None         # (meta names_adjust as stored, parsed): `_names_entry`
         self.switches = None        # the name switches (`_library_switches`) a process without the run's settings reads
         self.songs_out = None       # are the songs out of the counts: a run's answer (True / False); None reads Settings
-        self._songs_read = None     # (meta songs_counted as stored, parsed): `_songs_share`
+        self._songs_read = None     # (the store state read at, meta songs_counted parsed, the share): `_songs_share`
         self._songs_state_now = None    # the state a run's `keep_song_counts` kept its shares under (no settings read again)
         self._types = {}            # type id -> (lemma, reading, surface, orth): the vocabulary rows read so far
 
@@ -1591,7 +1591,7 @@ class Store:
                 continue                                # the tables moved, but not what they make of this file
             to_read.append((path, mtime, size, tag))
         some = self.some_tokens({path: wanted[path] for path, *_rest in to_read})   # the song lines alone decoded
-        write, plus = [], []
+        write, plus, sung_lines = [], [], {}
         for path, mtime, size, tag in to_read:
             if path in some:
                 sung = some[path][1]
@@ -1600,18 +1600,21 @@ class Store:
                 if not sentences:
                     continue                            # its row can't be read: no share kept, its songs count
                 sung = [sentences[n] for n in wanted[path] if n < len(sentences)]
-            counts, total, pieces = Counter(), 0, Counter()
+            counts, total, pieces, uses, taken = Counter(), 0, Counter(), Counter(), Counter()
             for text, tokens in sung:
-                for lemma, reading, surface, *_rest in tokens:
-                    if has_lang(lemma, self.language) or has_lang(surface, self.language):
-                        counts[(lemma, reading)] += 1
-                        total += 1
-                if self.language == "ja":
-                    for i in analyzer.bound_uses(text, tokens):
-                        pieces[(tokens[i][0], tokens[i][1])] += 1
-            uses, taken = phrases.tally(sung, found) if found is not None else ({}, {})
+                key = (text, tuple(map(tuple, tokens)))
+                line = sung_lines.get(key)
+                if line is None:                        # a song's line, counted once however many episodes sing it
+                    line = sung_lines[key] = self._sung_line(text, tokens, has_lang, found)
+                counts.update(line[0])
+                total += len(line[0])
+                pieces.update(line[1])
+                if line[2]:
+                    uses.update(line[2])
+                if line[3]:
+                    taken.update(line[3])
             share = ([[l, r, n] for (l, r), n in counts.items()], total, [[l, r, n] for (l, r), n in pieces.items()],
-                     [{str(k): v[0] for k, v in uses.items()}, taken])
+                     [dict(uses), dict(taken)])
             write.append((path, mtime, size, tag, total, _encode_counts(share[0]), _encode_counts(share[2]),
                           _encode_counts(share[3])))
             plus.append(share)
@@ -1648,6 +1651,23 @@ class Store:
                 self.conn.rollback()
             raise
 
+    def _sung_line(self, text, tokens, has_lang, found):
+        """One song line as `keep_song_counts` counts it: (its words, a key a token as the aggregate counts them —
+        target-language characters —, its one-kanji pieces, {phrase index: uses}, {"lemma|reading": uses given to a
+        phrase}); `phrases.tally` is a sum over lines, so a file's share is the sum of its lines'."""
+        from app import analyzer
+        words = tuple((lemma, reading) for lemma, reading, surface, *_rest in tokens
+                      if has_lang(lemma, self.language) or has_lang(surface, self.language))
+        pieces = ()
+        if self.language == "ja":
+            pieces = tuple((tokens[i][0], tokens[i][1]) for i in analyzer.bound_uses(text, tokens))
+        uses = taken = None
+        if found is not None:
+            from app import phrases
+            held, taken = phrases.tally([(text, tokens)], found)
+            uses = {str(k): v[0] for k, v in held.items()}
+        return words, pieces, uses, taken
+
     def _songs_state(self, settings=None):
         """What every song share is counted under: the share's form, the schema, the engine, the tokenizer's identity
         and, Japanese, the name switches, the phrase data and its switch (`settings`: a run's one read)."""
@@ -1670,20 +1690,26 @@ class Store:
             out = self.songs_out if self.songs_out is not None else not songs_counted()
             if not out:
                 return None
-            raw = self.get_meta("songs_counted")
-            if not raw:
+            # the store as of this read: another connection's commit moves data_version, this one's total_changes
+            seen = (self.conn.execute("PRAGMA data_version").fetchone()[0], self.conn.total_changes)
+            if self._songs_read is None or self._songs_read[0] != seen:
+                raw = self.get_meta("songs_counted")
+                held = json.loads(raw) if raw else None
+                share = None
+                if isinstance(held, dict):
+                    share = _SongSum(held)
+                    for row in self.conn.execute(
+                            "SELECT s.total, s.counts, s.bound, s.phrases FROM songs s LEFT JOIN files f ON "
+                            "f.path = s.path WHERE f.path IS NULL OR f.counted != 1 OR f.mtime IS NOT s.mtime "
+                            "OR f.size IS NOT s.size"):
+                        share.add(_song_share(row), -1)
+                self._songs_read = (seen, held, share)  # (read once a store state: the readout asks three times)
+            _seen, held, share = self._songs_read
+            if share is None:
                 return None
-            if self._songs_read is None or self._songs_read[0] != raw:
-                self._songs_read = (raw, json.loads(raw))
-            held = self._songs_read[1]
             state = self._songs_state_now if self.songs_out is not None else None
             if held.get("state") != (state or self._songs_state()):
                 return None
-            share = _SongSum(held)
-            for row in self.conn.execute(
-                    "SELECT s.total, s.counts, s.bound, s.phrases FROM songs s LEFT JOIN files f ON f.path = s.path "
-                    "WHERE f.path IS NULL OR f.counted != 1 OR f.mtime IS NOT s.mtime OR f.size IS NOT s.size"):
-                share.add(_song_share(row), -1)
             return share
         except Exception:
             return None

@@ -369,6 +369,16 @@ def test_the_readout_is_read_again_when_a_level_key_or_the_library_changes(qapp,
     assert reads() == 5
 
 
+
+def test_ignore_names_turned_on_reads_the_level_again(qapp, fakes):
+    # review (BRIDGE-2): the band previews' ignore set holds the library's names while Ignore names is on
+    # (`token_index.ignored_names`), so the readout moves with it — though the header's chip key list leaves it out
+    page, store, shell = make(fakes)
+    reads = lambda: fakes.names().count("read_level")      # noqa: E731
+    assert wait_until(lambda: reads() == 1)
+    store.outside({"logic.ignore_names": True})
+    assert wait_until(lambda: reads() == 2)
+
 def test_a_word_marked_and_its_new_known_count_together_read_the_level_once(qapp, fakes):
     # BRIDGE-2: a Still learning mark is two news — the write's own, then the known count the automation reads after
     # it — one read for both

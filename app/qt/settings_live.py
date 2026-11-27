@@ -610,7 +610,8 @@ class Live(QObject):
         self._exporting = None            # the export row running (one at a time)
         self._checking = False
         self._level = {"busy": False, "again": False, "asked": 0, "stale": False}
-        self._generating = None           # BRIDGE-2: the Generate state heard last (its end moves the level)
+        controller = getattr(self.services, "controller", None)   # BRIDGE-2: the Generate state heard last (its end
+        self._generating = controller.state() if hasattr(controller, "state") else None   # moves the level)
         self._moved = QTimer(self)        # BRIDGE-2: what moves the level, heard while Settings shows: one read
         self._moved.setSingleShot(True)   # `LEVEL_AFTER_MS` after the first news (a write's news come in pairs)
         self._moved.setInterval(LEVEL_AFTER_MS)
@@ -898,8 +899,8 @@ class Live(QObject):
             return
         keys = set(keys)
         from app.services import automation
-        if automation.moves_level(keys) or "exclude_single" in keys or "logic.phrase_rows" in keys:
-            self._read_level()
+        if automation.moves_level(keys) or {"exclude_single", "logic.phrase_rows", "logic.ignore_names"} & keys:
+            self._read_level()                # (+ what the band previews read beyond the chip: BRIDGE-2 ignore_names)
         if "skipped_version" in keys:
             self._read_skipped()
         self._paint_level()                   # the page put the settings' band back: Automatic's shown again (S2)

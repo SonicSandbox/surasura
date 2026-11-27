@@ -33,9 +33,9 @@ def count_reads(monkeypatch):
     return reads
 
 
-def settled(reads, page, quiet=0.4):
+def settled(reads, page, quiet=0.7):
     """Wait until the level's reads stop: none waiting to be read, none running, none started for `quiet` seconds ->
-    their count."""
+    their count. (`quiet` past `LEVEL_AFTER_MS`: a late second read is seen.)"""
     n = -1
     while n != len(reads):
         n = len(reads)
@@ -156,3 +156,24 @@ def test_the_indexer_with_settings_open_reads_once(world, monkeypatch):
     before = settled(reads, page)
     page.bridge.indexed.emit("ja")
     assert settled(reads, page) == before + 1
+
+
+def test_a_mark_tells_settings_after_its_known_count_is_asked_again(qapp):
+    # review (waste): a Known / Still learning mark is two news for Settings — the write's own and the known count
+    # the automation reads after it; told in that order, the count lands beside the write's news and the two make one
+    # read (told first, the count came up to `NUMBERS_WAIT_S` later: a second read)
+    from types import SimpleNamespace
+    from app.qt import shell
+    services = shell.Services()
+    try:
+        order = []
+        services.automation = SimpleNamespace(known_changed=lambda: order.append("known count asked"))
+        services.words_heard.append(lambda language: order.append(("told", language)))
+        services._words_marked(services.language)
+        assert order == ["known count asked", ("told", services.language)]
+        order.clear()
+        other = "zh" if services.language == "ja" else "ja"
+        services._words_marked(other)                                # another language's: told, nothing asked
+        assert order == [("told", other)]
+    finally:
+        services.shutdown(0.5)

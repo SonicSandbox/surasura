@@ -351,8 +351,6 @@ class Services:
         Generate after a burst brings the journey and the lists along). Nothing once the quit began."""
         if self.closing.is_set():
             return
-        for heard in list(self.words_heard):         # BRIDGE-2: Settings' level numbers (Known, Ignore, Still learning)
-            heard(language)
         from app.services import word_marks
         numbers = getattr(self.writer, "numbers", None)
         if numbers is not None and getattr(numbers, "language", None) == language and hasattr(numbers, "leave_out"):
@@ -361,14 +359,15 @@ class Services:
                 numbers.idle(NUMBERS_WAIT_S)        # (a worker: the card asked again after this sees them out)
             except Exception as e:
                 applog.log("shell", f"the numbers after a mark: {e!r}")
-        if language != self.language:
-            return                                  # (another language's lists: its next Generate reads them)
-        automation = self.automation
-        if automation is not None and hasattr(automation, "known_changed"):
-            automation.known_changed()
-        words_marked = getattr(self.replan, "words_marked", None)
-        if words_marked is not None:
-            words_marked()
+        if language == self.language:               # (another language's lists: its next Generate reads them)
+            automation = self.automation
+            if automation is not None and hasattr(automation, "known_changed"):
+                automation.known_changed()
+            words_marked = getattr(self.replan, "words_marked", None)
+            if words_marked is not None:
+                words_marked()
+        for heard in list(self.words_heard):         # BRIDGE-2: Settings' level numbers (Known, Ignore, Still learning),
+            heard(language)                          # told last: the known count asked again above lands beside this
 
     def _stone_marked(self, language):
         """(The writer's thread.) A watched mark, or its undo, that moved nothing that counts: the journey keeper's

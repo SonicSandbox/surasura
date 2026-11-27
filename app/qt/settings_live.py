@@ -543,6 +543,10 @@ class CreditsCard(_Card):
         p.end()
 
 
+LEVEL_AFTER_MS = 500    # BRIDGE-2: the level read this long after the first news that moves it (a word's write is
+#                         two: the list's own and the known count read after it on the automation's worker)
+
+
 # --- the live rows ------------------------------------------------------------------------------------------------- #
 def _ukai_waits():
     """(A worker.) How many lines wait for Ukai to record (`connect.browser.waiting_lines`: one listing, one file a
@@ -580,12 +584,11 @@ class Live(QObject):
         self._exporting = None            # the export row running (one at a time)
         self._checking = False
         self._level = {"busy": False, "again": False, "asked": 0, "stale": False}
-        self._heard = None                # BRIDGE-2: the library bridge heard (the window's shown library's) ...
-        self._moved = QTimer(self)        # ... and its views while Settings shows: one read `URGENT_S` after the first
-        self._moved.setSingleShot(True)   # (a move's expectation, then its commit: the reader's window for a command)
-        from app.services.library_reader import URGENT_S
-        self._moved.setInterval(int(URGENT_S * 1000))
-        self._moved.timeout.connect(lambda: self._library_moved(None, settled=True))
+        self._generating = None           # BRIDGE-2: the Generate state heard last (its end moves the level)
+        self._moved = QTimer(self)        # BRIDGE-2: what moves the level, heard while Settings shows: one read
+        self._moved.setSingleShot(True)   # `LEVEL_AFTER_MS` after the first news (a write's news come in pairs)
+        self._moved.setInterval(LEVEL_AFTER_MS)
+        self._moved.timeout.connect(lambda: self._level_moved(settled=True))
         self._format = None               # the format last chosen (the pop opens on it)
         self._copies = {}                 # A6: an AI app -> its Copy presses (the latest one sets the name back)
         self._finding = None              # *Find hato…*'s press while it goes (Michi-HD)
@@ -597,12 +600,10 @@ class Live(QObject):
         b.settings_written.connect(self._written)
         b.status_changed.connect(self._status)
         b.automation_changed.connect(self._automation)
-        b.indexed.connect(lambda _language: self._read_level())
+        b.indexed.connect(lambda _language: self._level_moved())            # new or changed files in the token store
+        b.words_marked.connect(self._words_marked)                          # BRIDGE-2: Known, Ignore, Still learning
+        b.generate_changed.connect(self._generated)                         # BRIDGE-2: a Generate's remembered band
         b.update_changed.connect(lambda _state: self._read_skipped())
-        self._hear()
-        switched = getattr(self.shell, "library_switched", None)
-        if switched is not None:                    # BRIDGE-2: a language switch's new bridge (`_show_switched`)
-            switched.connect(self._hear)
         page.installEventFilter(self)               # Kantan-B2: Piyo's last round read again as Settings shows
         page.takes["text_size"] = self._text_size
         page.takes["app_motion"] = self._motion
@@ -867,7 +868,7 @@ class Live(QObject):
     def _language(self, _language):
         self.facts.update(known=None, band=None, auto=False, previews=None)
         self._read_known()
-        self._read_level()
+        self._level_moved(now=True)
         self._read_piyo()
         self._read_tidies()
         self._paint_setup()
@@ -888,7 +889,7 @@ class Live(QObject):
         known = getattr(state, "known", None)
         if known is not None and getattr(state, "language", None) == self.page.language and known != self.facts["known"]:
             self.facts["known"] = known
-            self._read_level()                            # new known words: the readout's numbers move
+            self._level_moved()                           # new known words: the readout's numbers move
             moved = True
         if moved:
             self._paint_anki()
@@ -967,32 +968,30 @@ class Live(QObject):
             line.show()
 
     # --- the level ------------------------------------------------------------------------------------------------- #
-    def _hear(self):
-        """BRIDGE-2: follow the views of the library the window shows now (`shell.library_bridge`; a language switch
-        makes another and the old one goes silent) — the page's own bridge is the main one, which carries no view."""
-        heard = getattr(self.shell, "library_bridge", None)
-        if heard is self._heard:
-            return
-        old, self._heard = self._heard, heard
-        if old is not None:
-            try:
-                old.library_changed.disconnect(self._library_moved)
-            except (TypeError, RuntimeError):               # already gone (deleteLater) or never connected
-                pass
-        if heard is not None:
-            heard.library_changed.connect(self._library_moved)
-
-    def _library_moved(self, _view, settled=False):
-        """The library moved (the reader's view): while Settings shows, its numbers read again `URGENT_S` after the
-        first view (a learner's command's views — a move's expectation and its commit — one read; a stream of views, an
-        import's, one a second at most, never held off while it lasts); out of sight, only marked stale — read once
-        when Settings shows next (never a read per move it can't be seen)."""
+    def _level_moved(self, settled=False, now=False):
+        """BRIDGE-2: something the level's numbers are read from moved — the token store (the indexer), the word lists
+        (`_words_marked`, a sync's new known words), the band a Generate remembers (`_generated`), the language. They
+        never read the library's order: a move is none of these. While Settings shows: read `LEVEL_AFTER_MS` after the
+        first news (`now`: at once), one read for news that come together, one at most per window through a stream;
+        out of sight: only marked stale — read once when Settings shows next."""
         if not (self._alive() and self.page.isVisible()):
             self._level["stale"] = True
-        elif settled:
+        elif settled or now:
             self._read_level()
         elif not self._moved.isActive():
             self._moved.start()
+
+    def _words_marked(self, language):
+        if language == self.page.language:
+            self._level_moved()
+
+    def _generated(self, state):
+        """A Generate's end (the shell's own rule, `ShellWindow._show_generate`): the band it remembers for Automatic
+        (`record_auto_band`) may have moved."""
+        before, self._generating = self._generating, state
+        busy = ("queued", "running", "cancelling")
+        if before is not None and getattr(before, "state", None) in busy and getattr(state, "state", None) not in busy:
+            self._level_moved()
 
     def _read_level(self):
         """The level (S2) and every band's numbers, read on a worker — one at a time, once more if asked meanwhile."""

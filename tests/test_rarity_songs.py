@@ -128,12 +128,13 @@ def test_an_episode_changed_or_set_aside_counts_its_songs_again_until_the_next_g
         want, total, _pieces = _list_counts(store, paths, {p: n for p, n in songs.items() if p != changed}, "ja")
         assert store.word_counts() == ({k: c for k, c in want.items() if c > 0}, total)
         read = []
-        real = ti.Store.file_tokens
+        real = ti.Store.some_tokens
 
-        def counting(self, path):
-            read.append(path)
-            return real(self, path)
-        with patch.object(ti.Store, "file_tokens", counting):
+        def counting(self, asked):
+            read.extend(asked)
+            return real(self, asked)
+        with patch.object(ti.Store, "some_tokens", counting), \
+                patch.object(ti.Store, "file_tokens", side_effect=AssertionError("a whole file read")):
             store.keep_song_counts(songs)
         assert [ti._norm(p) for p in read] == [ti._norm(changed)], "only the changed episode is read again"
         assert store.word_counts() == out
@@ -257,5 +258,38 @@ def test_a_store_made_before_the_songs_table_gains_it_at_open_with_no_file_read_
         assert {p: store.file_tokens(p) for p in paths} == before
         _kept(store, data_dir, paths, "ja")             # and the table takes a Generate's share
         assert store.get_meta("songs_counted")
+    finally:
+        store.close()
+
+
+def test_some_tokens_gives_each_asked_sentence_as_file_tokens_gives_it_the_names_joined_too(tmp_path):
+    """The share reads only the song lines (`Store.some_tokens`: their texts and tokens sliced out, their name spans
+    alone applied), never the whole file for them — so each asked sentence must be `file_tokens`' own, a name the
+    tables join (メロンベンチ, 焔魄陣) joined in it too; a number past the end, a file not held, nothing asked: none."""
+    from tests.test_names import HOMURA, JIN, PARK, SHOP, STATION, _library as names_library
+    store, paths = names_library(tmp_path / "lib", {"station.txt": STATION, "shop.txt": SHOP, "park.txt": PARK,
+                                                    "a.txt": HOMURA, "b.txt": JIN})
+    try:
+        assert store.names_tables(), "the made-up library has name tables"
+        whole = {p: store.file_tokens(p) for p in paths}
+        joined = set()
+        for p in paths:
+            truth = set()
+            store._named(store._stored(*store.conn.execute("SELECT texts, ids FROM files WHERE path=?",
+                                                          (ti._norm(p),)).fetchone()),
+                         store.conn.execute("SELECT names FROM files WHERE path=?", (ti._norm(p),)).fetchone()[0], truth)
+            joined |= {(p, n) for n in truth}
+        assert joined, "some sentence is joined"
+        # every other sentence, the joined ones among them, and one past the end
+        asked = {p: sorted({n for n in range(len(whole[p])) if n % 2} | {n for q, n in joined if q == p}
+                           | {len(whole[p]) + 3}) for p in paths}
+        some = store.some_tokens(dict(asked, **{str(tmp_path / "no such file.txt"): [0]}))
+        assert set(some) == set(paths)
+        for p in paths:
+            numbers, sentences = some[p]
+            assert numbers == [n for n in asked[p] if n < len(whole[p])]
+            assert sentences == [whole[p][n] for n in numbers], p
+        assert store.some_tokens({paths[0]: []}) == {paths[0]: ([], [])}
+        assert store.some_tokens({}) == {}
     finally:
         store.close()

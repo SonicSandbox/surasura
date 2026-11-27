@@ -1380,9 +1380,45 @@ class Store:
             out.setdefault(p, {})
         return out
 
-    def _named(self, sentences, names_blob, joined=None):
+    def some_tokens(self, asked):
+        """{path: sentence numbers, ascending} -> {path: (numbers, sentences)}: `file_tokens`' sentences of those
+        numbers alone (a number past the file's last sentence left out of both) — only their texts and tokens decoded
+        and only their name spans applied, one query a batch of files. A file the store doesn't hold, or whose row
+        can't be read, is missing: the caller reads `file_tokens`."""
+        keys = {_norm(p): p for p in asked}
+        out, wanted = {}, list(keys)
+        for at in range(0, len(wanted), 500):
+            batch = wanted[at:at + 500]
+            for path, names_blob, texts_blob, ids_blob in self.conn.execute(
+                    f"SELECT path, names, texts, ids FROM files WHERE path IN ({','.join('?' * len(batch))})", batch):
+                got = self._some_stored(texts_blob, ids_blob, asked[keys[path]])
+                if got is not None:
+                    out[keys[path]] = (got[0], self._named(got[1], names_blob, numbers=got[0]))
+        return out
+
+    def _some_stored(self, texts_blob, ids_blob, numbers):
+        """`_stored`'s sentences of `numbers` alone -> (those numbers inside the file, their sentences); None when the
+        row can't be read."""
+        held = _ids_bytes(ids_blob) if ids_blob else None
+        texts = _read_texts(texts_blob, numbers) if texts_blob else None
+        if held is None or texts is None:
+            return None
+        n, raw = held
+        values = _from_int32s(raw)
+        if values[1] != 0 or values[n + 1] != len(values) - n - 2:
+            return None
+        numbers = [k for k in numbers if k in texts and k < n]
+        rows = [values[n + 2 + values[k + 1]:n + 2 + values[k + 2]].tolist() for k in numbers]
+        types = self._tokens_of([i for row in rows for i in row])
+        try:
+            return numbers, [[texts[k], [list(types[i]) for i in row]] for k, row in zip(numbers, rows)]
+        except KeyError:
+            return None                             # (a vocabulary row gone: the store is damaged)
+
+    def _named(self, sentences, names_blob, joined=None, numbers=None):
         """`sentences` with the library's name tables applied (`file_tokens`); `joined`, a set: receives the numbers
-        of the sentences a table joined."""
+        of the sentences a table joined. `numbers`: when `sentences` are some of the file's alone (`some_tokens`),
+        each one's number in the file — only their spans applied (a span joins inside its own sentence)."""
         switches = self.switches if self.switches is not None else _library_switches(self.language)
         if names_blob and any(switches):
             if self._names is None:
@@ -1390,6 +1426,9 @@ class Store:
             if self._names:
                 from app import names
                 spans = _decode_counts(names_blob).get("s", [])
+                if spans and numbers is not None:
+                    at = {n: k for k, n in enumerate(numbers)}
+                    spans = [[at[span[0]]] + list(span[1:]) for span in spans if span[0] in at]
                 if spans:
                     names.apply_spans(sentences, spans, self._names, *switches, joined=joined)
         return sentences
@@ -1538,7 +1577,7 @@ class Store:
             from app import phrases
             found = phrases.load()
         has_lang = analyzer.has_target_language
-        write, plus = [], []
+        to_read = []
         for path, (mtime, size, blob) in rows.items():
             entry = held.get(path)
             if entry is not None and not names_moved and entry[:2] == (mtime, size) \
@@ -1548,8 +1587,15 @@ class Store:
             tag = json.dumps([wanted[path], read_in], ensure_ascii=False, separators=(",", ":"))
             if entry is not None and entry[:2] == (mtime, size) and entry[2] == tag:
                 continue                                # the tables moved, but not what they make of this file
-            sentences = self.file_tokens(path)
-            sung = [sentences[n] for n in wanted[path] if n < len(sentences)]
+            to_read.append((path, mtime, size, tag))
+        some = self.some_tokens({path: wanted[path] for path, *_rest in to_read})   # the song lines alone decoded
+        write, plus = [], []
+        for path, mtime, size, tag in to_read:
+            if path in some:
+                sung = some[path][1]
+            else:
+                sentences = self.file_tokens(path)
+                sung = [sentences[n] for n in wanted[path] if n < len(sentences)]
             counts, total, pieces = Counter(), 0, Counter()
             for text, tokens in sung:
                 for lemma, reading, surface, *_rest in tokens:

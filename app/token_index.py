@@ -1661,13 +1661,13 @@ class Store:
                 state += [phrase_data.REVISION, phrases.MATCHER_VERSION]
         return state
 
-    def _songs_share(self):
+    def _songs_share(self, settings=None):
         """What the songs the last Generate left out count in the files still counted at its stamps (`_SongSum`), or
         None: the songs are counted (Settings' *Count song lyrics* on, or the run said so: `songs_out`), none were
         kept, or they were kept under another tokenizer, name switch, phrase data or engine (`_songs_state`). A file
         changed, set aside or gone since keeps its songs in the counts until the next Generate keeps it again."""
         try:
-            out = self.songs_out if self.songs_out is not None else not songs_counted()
+            out = self.songs_out if self.songs_out is not None else not songs_counted(settings)
             if not out:
                 return None
             # the store as of this read: another connection's commit moves data_version, this one's total_changes
@@ -1688,7 +1688,7 @@ class Store:
             if share is None:
                 return None
             state = self._songs_state_now if self.songs_out is not None else None
-            if held.get("state") != (state or self._songs_state()):
+            if held.get("state") != (state or self._songs_state(settings)):
                 return None
             return share
         except Exception:
@@ -2509,7 +2509,7 @@ class Store:
             table = json.loads(self.get_meta("phrases") or "null")
         except Exception:
             return None
-        songs = self._songs_share()
+        songs = self._songs_share(settings)
         if table and songs is not None and (songs.uses or songs.taken):   # the songs a Generate leaves out
             from app import phrases
             found = phrases.load()
@@ -2635,13 +2635,14 @@ class Store:
         return out
 
     # -- read layer (known/ignore filter WITHOUT re-tokenizing) -------------- #
-    def word_counts(self):
+    def word_counts(self, settings=None):
         """({(lemma, reading): uses}, total tokens) — the aggregate as a run counts the library. Japanese: with the
-        name tables' joins, so these counts are the list's (a joined name counts once, its pieces no more there)."""
+        name tables' joins, so these counts are the list's (a joined name counts once, its pieces no more there).
+        `settings`: the caller's read (the songs' switches: `_songs_share`)."""
         rows = self.conn.execute("SELECT lemma, reading, count FROM aggregate").fetchall()
         counts = {(lemma, reading): n for lemma, reading, n in rows}
         adjust, total_adjust = self._names_adjustment()
-        songs = self._songs_share()
+        songs = self._songs_share(settings)
         if songs is not None:                           # the songs a Generate leaves out (`keep_song_counts`)
             adjust = Counter(adjust)
             adjust.subtract(songs.counts)
@@ -2654,15 +2655,15 @@ class Store:
                 del counts[key]
         return counts, self.total_tokens() + total_adjust
 
-    def bound_counts(self):
+    def bound_counts(self, settings=None):
         """{(lemma, reading): uses} — how often each one-kanji word stands as a piece of something else (年 in 三年,
         斬 in 斬魄刀: analyzer.bound_uses), counted as `word_counts` counts: with the name tables' joins. A one-kanji
-        list word's uses on the list are its count less these."""
+        list word's uses on the list are its count less these. `settings`: as `word_counts`'."""
         rows = self.conn.execute("SELECT lemma, reading, count FROM bound").fetchall()
         bound = {(lemma, reading): n for lemma, reading, n in rows}
         for key, delta in self._names_bound().items():
             bound[key] = bound.get(key, 0) + delta
-        songs = self._songs_share()
+        songs = self._songs_share(settings)
         if songs is not None:                           # the songs a Generate leaves out (`keep_song_counts`)
             for key, n in songs.bound.items():
                 left = bound.get(key, 0) - n
@@ -2677,10 +2678,10 @@ class Store:
         """Project the aggregate into the *learnable unknown* distribution (`unknown_distribution`), the set
         phrases' rows included when the switch is on (`phrase_table`), the one-kanji list words by their uses where
         they stand on their own (`bound_counts`). `settings`: the caller's read (`settings_manager.loaded`)."""
-        counts, total = self.word_counts()
+        counts, total = self.word_counts(settings)
         return unknown_distribution(counts, total, known_tuples, known_lemmas, ignore_set, skip_singles,
                                     self.language, self.phrase_table(settings),
-                                    self.bound_counts() if skip_singles and self.language == "ja" else None)
+                                    self.bound_counts(settings) if skip_singles and self.language == "ja" else None)
 
 
 def unknown_distribution(counts, total_tokens, known_tuples=None, known_lemmas=None, ignore_set=None,

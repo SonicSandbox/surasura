@@ -5,6 +5,7 @@ twice (the second open is the warm one, as the speed rows are measured), `?selft
 """
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -26,9 +27,19 @@ def page_file(folder, lang, n, rail_css=None, rail_js=None, parts=None):
     return path
 
 
+TIMING = re.compile(r"≤ [\d.,]+ ?(ms|s|MB)\b|long task|JS heap")   # a timing row (test_journey_page's TIMING)
+
+
+def _real_fail(res):
+    """A check that failed and isn't a timing row: never retried (TOOLS-321: the best of 3 could keep an attempt that
+    passed it, so a real red vanished on GitHub — JOURNEY-FLAKE's find)."""
+    return any(not good and not TIMING.search(name) for name, good, _detail in res["out"])
+
+
 def run(path, query="", width=1280, height=800, seconds=120, attempts=3, scale=1.0):
-    """The best of up to `attempts` warm runs: a check that fails every time is real; a timing that passes once under
-    the load of other runs on this PC is the page's (the limits never change). `res["attempts"]` says how many."""
+    """The best of up to `attempts` warm runs, retried only for timing rows: a timing that passes once under the load
+    of other runs on this PC is the page's (the limits never change); any other failed check is real, and that run is
+    the one kept. `res["attempts"]` says how many."""
     url = "file:///" + path.replace("\\", "/")
     best, errs, missed = None, [], []
     with Edge(width, height, scale) as e:
@@ -42,6 +53,10 @@ def run(path, query="", width=1280, height=800, seconds=120, attempts=3, scale=1
             errs = errs + e.errors()
             if res:
                 missed.append([o[0] + (" — " + o[2] if o[2] else "") for o in res["out"] if not o[1]])
+            if res and _real_fail(res):
+                best = res
+                best["attempts"] = k + 1
+                break
             if res and (best is None or res["pass"] > best["pass"]):
                 best = res
                 best["attempts"] = k + 1

@@ -30,7 +30,7 @@ The routes themselves are the journey's registry (`app/services/journey_door.py`
 `start(routes)` from the window after its first frame (an earlier window's one-time pages swept), `stop()` at quit
 (this door's pages removed).
 
-**Ukai's caller class** (鵜飼 Ukai, the browser extension: TheForge `Projects/Houseki/Ukai/SPEC.md` §6 U-S0, its
+**Ukai's caller class** (鵜 Ukai, the browser extension: TheForge `Projects/Houseki/Ukai/SPEC.md` §6 U-S0, its
 checks adapted from #474's `online_receiver`): the extension can't be handed a token through a page, and it
 calls a fixed address, so it has a listener of its own on the same door (`Extension`), with its own rules:
 - **127.0.0.1:EXT_PORT** (27631, its CONTRACT.md), or the next EXT_PORTS_MORE when it's taken (Ukai says hello on

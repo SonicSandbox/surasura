@@ -1012,7 +1012,7 @@ def test_a_hato_show_wears_hatos_chip_and_says_its_episodes_cards_and_missing_vi
 
 
 def test_a_netflix_or_disney_episode_arrives_wearing_its_sites_chip_never_disk():
-    """鵜飼 Ukai's subtitles (`modules/ukai`, UKAI-S2; Netflix-X's bug): an episode sent from the browser is the site's
+    """鵜 Ukai's subtitles (`modules/ukai`, UKAI-S2; Netflix-X's bug): an episode sent from the browser is the site's
     in New arrivals (*Netflix* / *Disney+*), never *disk* — it has no file on disk at all; one without the site's
     `source_type` is the disk's as before."""
     work(8, "雲の上の郵便屋さん", media="drama")
@@ -1705,7 +1705,7 @@ def test_A4M1_3_an_audio_titles_parts_wait_quietly_like_a_book_with_audios_words
 
 
 def test_a_netflix_episodes_play_opens_its_page_and_it_is_mined_as_any_episode():
-    """鵜飼 Ukai's subtitles (`modules/ukai`; #474, by mattias): a Netflix or Disney+ episode is an online item (▶
+    """鵜 Ukai's subtitles (`modules/ukai`; #474, by mattias): a Netflix or Disney+ episode is an online item (▶
     opens its page, `online`), never *No video*, so its row offers what any episode's does."""
     work(8, "雲の上の郵便屋さん", media="drama")
     names = ["雲の上の郵便屋さん S01E01 [netflix-81234567].txt", "雲の上の郵便屋さん S01E02 [netflix-81234568].txt"]

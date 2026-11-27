@@ -85,8 +85,9 @@ class Bridge(QObject):
     chores_changed = pyqtSignal(object)          # the chores' State (Connect's line, Koe's port)
     indexed = pyqtSignal(object)                 # the indexer ran (its language)
     quit_asked = pyqtSignal(object)              # the update hands over: the window closes
-    ukai_asked = pyqtSignal(object)              # 鵜飼 Ukai asks to pair (`ukai_pairing.Request`): the Allow card
-    ukai_paired = pyqtSignal(object)             # 鵜飼 Ukai paired or forgotten: Settings' Ukai row (UKAI-S2)
+    ukai_asked = pyqtSignal(object)              # 鵜 Ukai asks to pair (`ukai_pairing.Request`): the Allow card
+    ukai_paired = pyqtSignal(object)             # 鵜 Ukai paired or forgotten: Settings' Ukai row (UKAI-S2)
+    ukai_youtube = pyqtSignal(object)            # 鵜 Ukai's YouTube links (urls, release): the downloader's run (U-S3)
 
     def __init__(self, settings=None, registry=None, status=None, library=None, parent=None):
         super().__init__(parent)
@@ -125,6 +126,11 @@ class Bridge(QObject):
         """(Any thread: the door's at a claim, the window's at *Forget Ukai*.) Ukai's pairing's `changed`: Settings' Ukai
         row paints again on the window's thread (UKAI-S2)."""
         self._emit("ukai_paired", None)
+
+    def run_ukai_youtube(self, urls, release):
+        """(Any thread: the door's.) Ukai's `POST /v1/youtube` (`modules/ukai/youtube.py`, UKAI-S3): the links run on
+        the window's thread, as if pasted in the downloader's window; `release()` once that run ends."""
+        self._emit("ukai_youtube", (urls, release))
 
     def stop(self):
         """The window closed: no service's callback reaches a slot from here on. The quit runs on the window's thread

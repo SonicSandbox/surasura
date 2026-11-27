@@ -1,7 +1,7 @@
-"""Ukai's pairing (鵜飼 Ukai, the browser extension: TheForge `Projects/Houseki/Ukai/SPEC.md` §0 U4, §6 U-S1; the
+"""Ukai's pairing (鵜 Ukai, the browser extension: TheForge `Projects/Houseki/Ukai/SPEC.md` §0 U4, §6 U-S1; the
 token's file adapted from #474's `online_receiver.token_path` / `kept_token`, by mattias).
 
-**One Allow, nothing typed** (Sonic, U4: "zero resistance"): Ukai asks, Surasura's window shows *Allow 鵜飼 Ukai to
+**One Allow, nothing typed** (Sonic, U4: "zero resistance"): Ukai asks, Surasura's window shows *Allow 鵜 Ukai to
 send to Surasura?* with a 4-digit code that Ukai's menu shows too (only to match at a glance), and the learner's Allow
 is the switch. Two routes on the door's extension class (`app/door.py` `Extension`, both `open`: they need no token):
 

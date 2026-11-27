@@ -2114,7 +2114,7 @@ def _look_for(wanted, settings=None):
 
 
 def _ukai_on():
-    """(A worker.) 鵜飼 Ukai's row (UKAI-S2) shows only while the door's Ukai class is on (`door.EXTENSION_ON`, off
+    """(A worker.) 鵜 Ukai's row (UKAI-S2) shows only while the door's Ukai class is on (`door.EXTENSION_ON`, off
     until Ukai 1.0) and its module is here -> {"ukai_on"} or none."""
     import importlib.util
     from app import door

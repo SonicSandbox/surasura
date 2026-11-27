@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""鵜飼 Ukai's routes on the door — optional, self-contained Surasura module (Ukai SPEC §6 U-S2; the subtitle half of
+"""鵜 Ukai's routes on the door — optional, self-contained Surasura module (Ukai SPEC §6 U-S2; the subtitle half of
 Mattias's #474, by mattias, adapted onto the one door).
 
 Ukai, Surasura's browser extension, sends the Netflix or Disney+ subtitle the learner's browser already shows; it
@@ -14,6 +14,9 @@ has checked the address, the extension's Origin and the paired token before a ro
   second item). A language with no library here: 409 *refused* (Ukai drops it, U3); one whose library isn't the open
   one, or a library busy or read-only: 503 *busy* (Ukai keeps it and sends it again); a body the contract doesn't take:
   400 with why. One subtitle is taken in at a time, so the same episode sent twice at once is still one item.
+- `POST /v1/youtube` (paired; U-S3, CONTRACT.md v3) -> {"queued"}: YouTube links for Surasura's own transcript
+  downloader, run on the window's thread as if pasted in its window — only while it is here, on and its risk tick
+  given (409 with which), never a link already running (`youtube.py`).
 
 Lazy-imported by the window (`ShellWindow.ukai_extension`, only while `door.EXTENSION_ON`): Surasura runs normally
 without this folder — Ukai's class is then never built and nothing listens for it. No settings of its own.
@@ -21,7 +24,8 @@ without this folder — Ukai's class is then never built and nothing listens for
 import os
 import threading
 
-CONTRACT = 1                    # Ukai's CONTRACT.md: v1, the subtitle (2: the clips, U-S4; 3: YouTube links, U-S3)
+CONTRACT = 1                    # Ukai's CONTRACT.md: v1, the subtitle (2: the clips, U-S4; 3: YouTube links, U-S3 —
+                                # v3 is v2 plus the links: 3 once both are here, the later of the two lanes sets it)
 NO_LIBRARY = "Surasura has no {name} library: nothing is kept"
 NAMES = {"ja": "Japanese", "zh": "Chinese"}
 _ONE = threading.Lock()         # one subtitle taken in at a time: two posts of one episode are one item
@@ -43,12 +47,14 @@ def libraries():
     return found
 
 
-def routes(writer, settings):
+def routes(writer, settings, youtube=None):
     """The paired routes (and `hello`) for the door's Ukai class. `writer()` -> the open library's writer
     (`moves.Writer`) or None, asked at each call (a language switch gives another); `settings()` -> the settings as
-    the window holds them (`placing_rules`, `covers_download`)."""
+    the window holds them (`placing_rules`, `covers_download`, the YouTube downloader's switch and tick);
+    `youtube(urls, release)` hands Ukai's YouTube links to the window's thread (`youtube.run`), or None: no window to
+    run them (the route says the downloader isn't here)."""
     from app import __version__, door
-    from modules.ukai import subtitles
+    from modules.ukai import subtitles, youtube as links
 
     def values():
         try:
@@ -80,4 +86,5 @@ def routes(writer, settings):
                 raise door.RouteError(str(e) or "Surasura is busy: try again later", "busy", 503) from None
         return {"added": bool(added), "item": item}
 
-    return {"GET /v1/hello": hello, "POST /v1/online-subtitle": online_subtitle}
+    return {"GET /v1/hello": hello, "POST /v1/online-subtitle": online_subtitle,
+            "POST /v1/youtube": links.route(writer, values, youtube)}

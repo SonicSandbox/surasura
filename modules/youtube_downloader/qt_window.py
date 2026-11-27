@@ -553,6 +553,16 @@ def fetch_first(shell, urls, language, said, ended):
         urls, language, caption, False, True, log, should_stop=stop, first_only=True), said, ended)
 
 
+def fetch_links(shell, urls, language, said, ended):
+    """鵜 Ukai's links (`POST /v1/youtube`; #474, by mattias): downloaded as the window's *Download* runs pasted links
+    (`run_extract` with the language's default captions, every video), as a `youtube` job of its own (`_fetch`: one
+    yt-dlp run at a time, the bot check's hold inside `core.extract`). `said` / `ended` as `fetch_first`'s. -> the
+    job."""
+    caption = view.default_caption_language(language)
+    return _fetch(shell, S.JOB_DOWNLOAD, lambda log, stop: view.run_extract(
+        urls, language, caption, False, True, log, should_stop=stop), said, ended)
+
+
 def _fetch(shell, label, work, said, ended, settle=None, automatic=False):
     """One background YouTube run (setup's first videos, a playlist's rest): `work(log, should_stop)` -> the created
     paths, run as a `youtube` job on a thread of its own — one yt-dlp run at a time with the downloader's, the bottom

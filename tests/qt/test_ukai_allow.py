@@ -1,4 +1,4 @@
-"""鵜飼 Ukai's Allow card in the window (app/qt/ukai_allow.py, the shell's `ukai_extension` / `_ukai_allow`, the
+"""鵜 Ukai's Allow card in the window (app/qt/ukai_allow.py, the shell's `ukai_extension` / `_ukai_allow`, the
 bridge's `ukai_asked`; Ukai SPEC §0 U4: one Allow, nothing typed).
 
 What a wrong answer would cost a learner: Ukai's ask never reaching the window (pairing impossible), or reaching it on
@@ -57,7 +57,7 @@ def paired_door(main, tmp_path, monkeypatch):
     d.stop()
 
 
-def _call(d, method, path, body=None):
+def _call(d, method, path, body=None, token=None):
     """On a thread (the window's loop keeps running meanwhile) -> a box filled with (status, answer)."""
     box = []
 
@@ -65,6 +65,8 @@ def _call(d, method, path, body=None):
         conn = http.client.HTTPConnection(door.HOST, d.ext_port, timeout=10)
         headers = {"Host": f"{door.HOST}:{d.ext_port}", "Origin": ORIGIN} if method == "POST" else \
             {"Host": f"{door.HOST}:{d.ext_port}"}
+        if token is not None:
+            headers[door.EXT_TOKEN_HEADER] = token
         data = None if body is None else json.dumps(body).encode("utf-8")
         conn.request(method, path, body=data, headers=headers)
         r = conn.getresponse()
@@ -98,6 +100,7 @@ def test_ukais_ask_opens_the_allow_card_with_its_code_and_allow_pairs(main, pair
     card = _card(main)
     words = _texts(card)
     assert strings.UKAI_ALLOW_TITLE in words and asked["code"] in words, "the same code as Ukai's menu"
+    assert "Allow 鵜 Ukai to send to Surasura?" in words and "鵜飼" not in words, "U1: the one character"
     assert "⚠" in words, "no store has given this id yet: the warning line"
     assert _call(paired_door, "GET", "/v1/pair/" + asked["pair"])[1]["state"] == "waiting"
     _press(card, strings.UKAI_ALLOW_YES)
@@ -152,3 +155,24 @@ def test_a_newer_ask_drops_the_card_whose_pairing_was_let_go(main):
     assert "5678" in _texts(_card(main)) and pairing.answers == []
     _press(_card(main), strings.UKAI_ALLOW_YES)
     assert pairing.answers == [("b" * 22, True)]
+
+
+def test_ukais_youtube_links_run_on_the_windows_thread_once_paired(main, paired_door, monkeypatch):
+    """U-S3 (鵜 Ukai's `POST /v1/youtube`): the paired extension's links reach the window's own thread (the
+    downloader's run touches its widgets: never on the door's), as #474's relay did; unpaired, nothing runs."""
+    from types import SimpleNamespace
+    from modules.ukai import youtube
+    ran = []
+    monkeypatch.setattr(youtube, "refused", lambda values: None)          # (the downloader on, its tick given)
+    monkeypatch.setattr(youtube, "run", lambda win, urls, release: ran.append(
+        (win, urls, threading.current_thread() is threading.main_thread())))
+    monkeypatch.setattr(main.services, "writer", SimpleNamespace(language="ja"))
+    links = {"schema": 1, "urls": ["https://www.youtube.com/watch?v=dQw4w9WgXcQ"]}
+    assert _call(paired_door, "POST", "/v1/youtube", links, token="U" * 32)[0] == 401
+    status, asked = _call(paired_door, "POST", "/v1/pair", {"version": "1.0.0"})
+    assert wait_until(lambda: _card(main) is not None, 10)
+    _press(_card(main), strings.UKAI_ALLOW_YES)
+    token = _call(paired_door, "GET", "/v1/pair/" + asked["pair"])[1]["token"]
+    assert _call(paired_door, "POST", "/v1/youtube", links, token=token) == (200, {"ok": True, "queued": 1})
+    assert wait_until(lambda: ran, 10)
+    assert ran == [(main, links["urls"], True)]

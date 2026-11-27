@@ -34,7 +34,7 @@ FIND_HATO = "Find hato…"
 FIND_HATO_TIP = "Already have hato? Pick its folder.\n• It opens once to connect."
 FIND_HATO_TITLE = "Where is hato?"
 FIND_HATO_BUSY = "Opening hato so it can connect…"
-# 鵜飼 Ukai's row (UKAI-S2, U9; PROVISIONAL): paired or not, *Forget Ukai* — shown only while `door.EXTENSION_ON`
+# 鵜 Ukai's row (UKAI-S2, U9; PROVISIONAL): paired or not, *Forget Ukai* — shown only while `door.EXTENSION_ON`
 UKAI_PAIRED = "paired · {version}"
 UKAI_PAIRED_PLAIN = "paired"
 UKAI_NOT_PAIRED = "not paired"
@@ -170,7 +170,7 @@ SECTION_WHY = {
     "backfill": "Adds to your Anki cards how each word is usually used (パターン), two more sentences from your own "
                 "content (例文), and the furigana and pitch a card is missing. Restore puts every card back",
 }
-ROW_TAGS = {"practice_ai": PRACTICE_NAME, "hato": "hato", "ukai": "鵜飼 Ukai"}   # a row's tool, small beside its name
+ROW_TAGS = {"practice_ai": PRACTICE_NAME, "hato": "hato", "ukai": "鵜 Ukai"}   # a row's tool, small beside its name
 NEEDS_ANKI = "Needs Anki open and connected"
 NEEDS_MINER = "Needs Anki Miner (free)"
 CARDS_WHY = "Cards for episodes at the top of Current, made by themselves."   # (before Anki Miner's found)

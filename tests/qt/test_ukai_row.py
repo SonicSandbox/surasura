@@ -1,4 +1,4 @@
-"""鵜飼 Ukai's row in Settings › Connections › Houseki tools (UKAI-S2, Ukai SPEC U9): whether Ukai is paired, and
+"""鵜 Ukai's row in Settings › Connections › Houseki tools (UKAI-S2, Ukai SPEC U9): whether Ukai is paired, and
 *Forget Ukai* — shown only while the door's Ukai class is on (`door.EXTENSION_ON`, off until Ukai 1.0) and its module
 is here.
 
@@ -93,7 +93,7 @@ def test_off_the_page_never_shows_ukais_row_and_reads_no_pairing(qapp, fakes, tm
 
 def test_on_the_row_shows_under_houseki_tools_with_its_tag(qapp, fakes, tmp_path):
     page, _shell = _make(fakes, tmp_path, pairing=None)
-    assert not page.row("ukai").isHidden() and page.row("ukai").tag.text() == "鵜飼 Ukai"
+    assert not page.row("ukai").isHidden() and page.row("ukai").tag.text() == "鵜 Ukai"
     page.close()
 
 

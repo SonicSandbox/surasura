@@ -915,6 +915,7 @@ class NeedsYou(QObject):
         self.backlog = None                      # ONB-4: the bar's *Anki · N waiting* (the status service's count)
         self.more_open = False                   # ... and whether its card may show (offered, unanswered: the gather's)
         self.ai_waiting = None                   # VOICE-SETUP: Card sound's count of cards waiting for the AI voice
+        self._ai_gathered = None                 # ... and the count the last gather was given (what the page shows)
         self._miner = None                       # Michi-U: the Anki Miner the last gather knew of (the feed's `miner`)
         self.gathers = 0                         # entries worked out (tests: N9)
         self.gone_folders = None                 # T6: the looks' gone rows (None: no look has said yet)
@@ -1065,8 +1066,10 @@ class NeedsYou(QObject):
 
     def ai_waiting_in(self, n):
         """VOICE-SETUP: Card sound's count of this library's cards that wait for the AI voice (no real sound to cut
-        from: `sound_source.tally`'s "ai", AUDIO-FILL's gather) — gathered again only when it comes, goes or crosses 0."""
-        was, self.ai_waiting = self.ai_waiting, n if isinstance(n, int) else None
+        from: `sound_source.tally`'s "ai", AUDIO-FILL's gather) — gathered again only when it comes, goes or changes,
+        judged against the count the page was last gathered with (a library switch forgets the count, not the card)."""
+        self.ai_waiting = n if isinstance(n, int) else None
+        was = self._ai_gathered
         if bool(was) != bool(self.ai_waiting) or (was != self.ai_waiting and self.ai_waiting):
             self.refresh()
 
@@ -1169,7 +1172,7 @@ class NeedsYou(QObject):
         gone_judged = gone_folders if self._gone_judged else None     # never pruned by a summary that judged none
         asking = frozenset(self._dw_asking)
         waiting = self.backlog
-        ai_waiting = self.ai_waiting
+        ai_waiting = self._ai_gathered = self.ai_waiting
         log_path = getattr(getattr(self.win.services, "controller", None), "log_path", None)
         generate_log = log_path() if callable(log_path) else None      # Kantan-B1: a failed Generate's hover
 

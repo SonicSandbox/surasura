@@ -116,6 +116,24 @@ def test_a_language_switch_forgets_the_left_languages_count(world, monkeypatch):
     assert card_of(ny) is None
 
 
+def test_after_a_switch_with_no_gather_the_next_count_of_none_waiting_takes_the_left_librarys_card_off(world,
+                                                                                                      monkeypatch):
+    # why: a switch forgets the count but gathers nothing itself; the new library's first count (0) must be judged
+    # against the count the shown card was gathered with (18), never against the forgotten None — else the left
+    # library's card stays on the page
+    win, ny, _said = opened(world, "ja", monkeypatch, offered=True)
+    assert card_of(ny) is not None
+    assert wait_until(lambda: not ny._running, 10)
+    asked = []
+    refresh = ny.refresh
+    monkeypatch.setattr(ny, "refresh", lambda: (asked.append(1), refresh()))
+    ny._switched()
+    ny.ai_waiting_in(0)
+    assert asked, "the count handed in after the switch gathers the page again"
+    assert wait_until(lambda: not ny._running, 10)
+    assert card_of(ny) is None
+
+
 # --- the whole flow (the private module's guide; skipped where it is absent) --------------------------------------- #
 @pytest.fixture
 def voice_module(monkeypatch):

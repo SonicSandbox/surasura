@@ -84,7 +84,7 @@ def test_install_anki_miner_opens_the_wizard_at_its_anki_miner_page(window, monk
     monkeypatch.setattr(W, "miner_api", lambda: FakeMiner(miner_look("missing")))
     assert settings_connect.install_anki_miner(window) is True
     wiz = first_run.opened(window)
-    assert wiz is not None and W.PAGES[wiz.index] == "cards" and opened == []
+    assert wiz is not None and wiz.page.id == "cards" and opened == []
     wiz._close("later")
     QApplication.processEvents()
 

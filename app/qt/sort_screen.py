@@ -611,12 +611,13 @@ class SortScreen(QWidget):
     """Every title in New arrivals, sorted one at a time from the top (module docstring). `win`: the main window (its
     `moves`, `looks`, `language`); `door`: "setup" (Esc does nothing — setup's rule, WZ-6 — and *Done* goes on),
     "arrivals" (Esc and ✕ close) or "resort" (*Sort my library again*'s: Esc closes, as *Done*; Finished asks nothing,
-    as in setup — Q7). `closed(how)`: "done" / "closed" / "empty"."""
+    as in setup — Q7). `closed(how)`: "done" / "closed" / "empty". `after` (ONB-3): the item its first Current pick
+    goes in under — setup's *What are you watching right now?* show, placed at the top before the sort opens."""
     closed = pyqtSignal(str)
 
-    def __init__(self, win, parent=None, door="setup"):
+    def __init__(self, win, parent=None, door="setup", after=None):
         super().__init__(parent)
-        self.win, self.door = win, door
+        self.win, self.door, self.after = win, door, after
         self.setObjectName("sortscreen")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         # its ground painted by itself, opaque (`paintEvent`): Qt never paints what it covers — Current's list laid
@@ -936,7 +937,7 @@ class SortScreen(QWidget):
         for entry in reversed(self.history):
             if entry["name"] == "now" and not entry.get("gone") and entry["ticket"] is not None and entry["ticket"].ids:
                 return entry["ticket"].ids[-1]
-        return None
+        return self.after                                   # (ONB-3: under the show he's watching; None: the top)
 
     def _ticket(self, entry, ids):
         """The entry's own ticket — kept for its Undo, and told when its command ends unsaved (it landed as nothing,
@@ -1274,13 +1275,18 @@ class LoadRun(QObject):
     `_load_sort`) opens the sorting, `open_sort` by default; `after(how)` once the sort screen closed (`state["ids"]`:
     the scan's items); `empty()` when the scan took nothing in (the cover gone). `language()`: whose indexer runs
     count. `state`: {"step", "ids", "stopped", "indexed", "since" (a time.time_ns())}. Outside setup it hears the
-    window's indexer itself (`shell.bridge.indexed`)."""
+    window's indexer itself (`shell.bridge.indexed`). `behind` (ONB-2, setup's): the same steps run behind setup's
+    pages — `cover` then only holds the load screen for the page that waits on it (never over the wizard), the covers
+    come before the words (the tiles want them), and the end calls `sort()` as the read's end (the wizard opens its
+    sort itself, after *What are you watching right now?*). `told(text)`: each step's line, as the screen shows it."""
 
     def __init__(self, shell, cover, door="setup", stop_scan=None, language=None, sort=None, after=None, empty=None,
-                 sync_running=None, fetching=None, long_read=None, parent=None):
+                 sync_running=None, fetching=None, long_read=None, parent=None, behind=False, told=None):
         super().__init__(parent)
         self.shell, self._cover, self.door = shell, cover, door
         self.setup = door == "setup"
+        self.behind = behind
+        self._told = told
         self._stop_scan = stop_scan
         self._language = language or (lambda: getattr(shell, "language", None))
         self._sort, self._after, self._empty = sort, after, empty
@@ -1320,6 +1326,8 @@ class LoadRun(QObject):
         if screen is not None and not sip.isdeleted(screen) and self.state is not None and \
                 self.state["step"] != "sort":
             screen.set_task(text)
+            if self._told is not None:
+                self._told(text)
 
     def said(self, said):
         """The scan's progress: the wait (`(on,)`), the copy's count (`("copy", done, total)`) or what it found
@@ -1380,6 +1388,8 @@ class LoadRun(QObject):
             return
         if self.state["stopped"]:
             self._to_sort()
+        elif self.behind:
+            self.covers()                             # (ONB-2: the tiles' pictures first, then the words)
         else:
             self.index()
 
@@ -1397,7 +1407,7 @@ class LoadRun(QObject):
         chores = self._chores()
         asked = chores.index(force=True) if chores is not None else "none"
         if asked not in (None, "busy"):               # off (a test's switch), closed, no chores: nothing to wait for
-            self.covers()
+            self._indexed_on()
             return
         self.task(S.LOAD_INDEX_START)
         self.tick()
@@ -1411,7 +1421,7 @@ class LoadRun(QObject):
             return
         idle = getattr(chores, "indexing", None)
         if callable(idle) and not idle():
-            self.covers()
+            self._indexed_on()
             return
         from app.qt import applog, bridge
         from app.services import setup_load
@@ -1431,7 +1441,21 @@ class LoadRun(QObject):
             return
         load["indexed"] += 1
         if load["indexed"] >= 3:
+            self._indexed_on()
+
+    def _indexed_on(self):
+        """The words' step ended: the covers next — or, behind setup (covers first), Anki's wait."""
+        if self.behind:
+            self.anki()
+        else:
             self.covers()
+
+    def _covered_on(self):
+        """The covers' step ended: Anki's wait next — or, behind setup, the words (after *Stop*: straight on)."""
+        if self.behind and not self.state["stopped"]:
+            self.index()
+        else:
+            self.anki()
 
     def covers(self):
         """The covers beside the files and in the EPUBs (`shell.scan_covers`, the window's own disk scan)."""
@@ -1447,7 +1471,7 @@ class LoadRun(QObject):
             if self.state is not load or load["step"] != "covers":
                 return
             if said[0] == "end":
-                self.anki()
+                self._covered_on()
             else:
                 self.task(S.LOAD_COVERS.format(done=said[1], total=said[2]))
         relay.said.connect(self._guard(heard))
@@ -1455,7 +1479,7 @@ class LoadRun(QObject):
                       then=lambda _found: relay.call(("end",))) if scan is not None else None
         if thread is None:
             relay.deleteLater()
-            self.anki()
+            self._covered_on()
             return
         self.task(S.LOAD_COVERS_START)
 

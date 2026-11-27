@@ -459,3 +459,161 @@ def test_undo_and_remove_ai_are_one_or_the_other():
     from app.cli import __main__ as cli
     with pytest.raises(SystemExit):
         cli._parser().parse_args(["add-sound", "--undo", "r7", "--remove-ai"])
+
+
+# --- the review's fixes (AUDIO-FILL c) ------------------------------------------------------------------------------ #
+def _rec(by, notes, tag=None, mode=None):
+    out = {"state": sa.DONE, "by": by, "notes": notes, "tag": tag}
+    if mode:
+        out["mode"] = mode
+    return out
+
+
+def test_a_type_flip_that_writes_the_same_ai_clip_back_leaves_it_held():
+    """Decision 4's flip writes the sound field back as it is (`_flips`): the AI clip still stands, so real sound may
+    still replace it (decision 3) and *Remove all AI audio* still takes it; a later write of another value doesn't."""
+    clip = "[sound:surasura-sa-ai.mp3]"
+    records = [("1", _rec("ai-audio", {"5": clip, "6": clip}, tag=cs.AI_TAG)),
+               ("2", _rec(cs.BY_TYPE, {"5": {"SentenceAudio": clip, "IsSentenceCard": "x"}}, mode=sa.REPLACE)),
+               ("3", _rec(cs.BY_SWAP, {"6": {"SentenceAudio": "[sound:real.mp3]"}}, tag=sa.TAG, mode=sa.REPLACE))]
+    assert cs.ai_held(None, records) == {5: clip}
+
+
+def test_the_runs_record_is_saved_at_its_first_write_and_every_chunk_never_every_write(monkeypatch):
+    # why: saving the whole list after each write made a big Remove all write N²/2 ids (the review's waste find)
+    saved = []
+    monkeypatch.setattr(cs, "_save_run", lambda ledger, rid, rec: saved.append(len(rec["records"])))
+    rec = {"records": []}
+    for n in range(1, 2 * cs.CHUNK + 7):
+        rec["records"].append(str(n))
+        cs._save_some(None, "r", rec)
+    assert saved == [1, cs.CHUNK, 2 * cs.CHUNK]
+
+
+def _plan_one(monkeypatch, n=7):
+    from app.connect import sound_source
+    src = sound_source.Source(sound_source.LINE, 7, 0, 1000, f"7:{n}")
+    monkeypatch.setattr(cs, "look", lambda *a, **k: {"field": "SentenceAudio", "plan": {n: src}, "notes": {n: {}},
+                                                      "held": {}, "silent": 0})
+    monkeypatch.setattr(cs, "_cut_real", lambda *a: ({n: "clip.mp3"}, {}))
+
+    def fill(anki, ledger, clips, field, tag, by, records):
+        records.append("written-1")
+        return {"filled": list(clips)}
+    monkeypatch.setattr(cs, "_fill", fill)
+
+
+def test_a_run_stopped_after_a_write_names_its_undo_even_when_its_record_cant_be_saved(monkeypatch):
+    # why: the stopped run's id must reach the caller (its Undo, Anki's sync owed); a ledger busy at that moment
+    # must not swap the first error for its own
+    import sqlite3
+    _plan_one(monkeypatch)
+
+    def save(ledger, rid, rec):
+        if rec.get("stopped"):
+            raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(cs, "_save_run", save)
+    monkeypatch.setattr(cs, "_voice_on", lambda s, l: (_ for _ in ()).throw(ConnectionError("Anki closed")))
+    with pytest.raises(ConnectionError) as got:
+        cs.run(None, None, "ja", MAPPING, None, settings={})
+    assert got.value.card_sound_id
+
+
+@pytest.fixture
+def act_env(monkeypatch, tmp_path):
+    from app.cli import verbs
+    from app.connect import undo as undoing
+    owed = []
+    monkeypatch.setattr(cs, "Anki", lambda url: Anki())
+    monkeypatch.setattr(cs, "_mapping", lambda s, l: (str(tmp_path / "run"), MAPPING))
+    monkeypatch.setattr(verbs, "require_set_up", lambda lang: None)
+    monkeypatch.setattr(undoing, "owe_sync", lambda s: owed.append(True))
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
+    return owed
+
+
+def test_a_plain_words_error_after_writes_keeps_the_runs_undo_and_owes_the_sync(act_env, monkeypatch):
+    from app.cli.contract import CliError
+
+    def run(*a, **k):
+        e = CliError("needs-you", "Anki Miner's field mapping changed")
+        e.card_sound_id = "r1"
+        raise e
+    monkeypatch.setattr(cs, "run", run)
+    with pytest.raises(CliError) as got:
+        cs.act({"connect_enabled": True}, "ja", confirm=True)
+    assert got.value.context.get("undo") == "r1" and act_env == [True]
+
+
+def test_an_undo_stopped_part_way_still_owes_the_sync(act_env, monkeypatch):
+    monkeypatch.setattr(cs, "run_record", lambda ledger, rid: {"records": []})
+    monkeypatch.setattr(cs, "undo", lambda anki, ledger, rid: (_ for _ in ()).throw(ConnectionError("Anki closed")))
+    with pytest.raises(Exception):
+        cs.act({"connect_enabled": True}, "ja", undo_id="r1")
+    assert act_env == [True]
+
+
+def test_the_toasts_undo_with_connect_off_says_why():
+    got = cs.press_undo("ja", "r1", {"connect_enabled": False})
+    assert got == {"ok": False, "say": cs.UNDO_OFF, "emptied": 0, "kept": 0}
+
+
+def test_remove_all_ai_audio_counts_and_takes_only_the_mappings_deck(monkeypatch, tmp_path):
+    # why: the clips Surasura wrote into another deck are not this deck's to count or take
+    anki = Anki()
+    for n in (1, 2):
+        anki.add(n, "犬が好きだ。", "犬")
+    with Ledger(str(tmp_path / "l.sqlite")) as ledger:
+        sa.fill(anki, ledger, {1: _clip(tmp_path, "1.mp3"), 2: _clip(tmp_path, "2.mp3")}, tag=cs.AI_TAG,
+                by="ai-audio")
+        for n in (1, 2):                                  # (the tagged search finds none: the held half alone)
+            anki.notes_[n]["tags"] = [t for t in anki.notes_[n]["tags"] if t != cs.AI_TAG]
+        asked = []
+        monkeypatch.setattr(cs, "_in_deck", lambda a, deck, ids: asked.append((deck, set(ids))) or {1})
+        assert set(cs.ai_cards(anki, ledger, "SentenceAudio", deck="Mining")) == {1}
+        assert asked == [("Mining", {1, 2})]
+        assert set(cs.ai_cards(anki, ledger, "SentenceAudio")) == {1, 2}, "no deck named: every held clip"
+
+
+def test_the_voices_kinds_and_paragraphs_read_the_cards_items_once(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cs, "_items", lambda *a: calls.append(a) or {5: (9, "book/ch1.epub")})
+    items = cs._items_or_none("ja", None, [5], None)
+    assert cs._kinds("ja", None, [5], None, items) == {5: "book"} and len(calls) == 1
+
+
+def test_a_token_store_that_cant_be_read_gives_no_paragraphs_never_a_stopped_voice(monkeypatch):
+    monkeypatch.setattr(cs, "_paragraph_texts", lambda *a: (_ for _ in ()).throw(OSError("store locked")))
+    assert cs._paragraphs("ja", None, [5], {}, MAPPING, None, {5: (9, "book/ch1.epub")}) == {}
+
+
+def test_a_busy_pc_never_asks_anki_for_the_due_window(auto_env):
+    # why: the hold comes first: a busy PC pays for no due search (~40 Anki look-ups) it then can't use
+    env = auto_env("ja", due={1401: 0}, voice_on=True)
+    said = env["said"]
+    _made(env, EPISODE, [(1400, said[0], None)])
+    env["anki"].add(1401, "犬が好きだ。", "犬")
+    _new(env, [1400])
+    asked = []
+    real_due = env["anki"].due
+    env["anki"].due = lambda deck, days: asked.append(days) or real_due(deck, days)
+    got = _auto(env, ai_hold=lambda: True)
+    assert got["real"] == 1 and asked == [] and env["voiced"] == []
+
+
+def test_a_refused_clip_keeps_its_day_even_when_the_pass_then_stops(auto_env, monkeypatch):
+    # why: a pass stopped after the voice (Anki closed at the write) must not voice the refused clip again next pass
+    env = auto_env("ja", due={1401: 0}, voice_on=True)
+    env["anki"].add(1401, "犬が好きだ。", "犬")
+    env["unheard"] = {1401}
+    real_fill = cs._fill
+
+    def fill(anki, ledger, clips, field, tag, by, records):
+        if tag == cs.AI_TAG:
+            raise ConnectionError("Anki closed")
+        return real_fill(anki, ledger, clips, field, tag, by, records)
+    monkeypatch.setattr(cs, "_fill", fill)
+    with pytest.raises(ConnectionError):
+        _auto(env)
+    with Ledger(env["ledger"]) as ledger:
+        assert 1401 in cs._tried(ledger, "ja")

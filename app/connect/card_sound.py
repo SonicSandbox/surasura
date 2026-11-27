@@ -105,8 +105,9 @@ def ai_held(ledger, records=None):
                 continue
             if ai and isinstance(value, str):
                 held[n] = value
-            elif done:
-                held.pop(n, None)              # a later write of Surasura's: that one stands
+            elif done and not (isinstance(value, dict) and n in held and held[n] in value.values()):
+                held.pop(n, None)              # a later write of Surasura's: that one stands (a flip that wrote the
+                #                                same AI clip back — decision 4's `_flips` — leaves it held)
     return held
 
 
@@ -119,6 +120,14 @@ def _save_run(ledger, rid, rec):
     with ledger.transaction():
         ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
                             (RUN + rid, json.dumps(rec, ensure_ascii=False)))
+
+
+def _save_some(ledger, rid, rec):
+    """The run's record saved at its first write and every CHUNK after (a kill in between leaves the newest writes'
+    own records, each with its Undo; the run's end or stop saves it whole)."""
+    n = len(rec.get("records") or ())
+    if n == 1 or n % CHUNK == 0:
+        _save_run(ledger, rid, rec)
 
 
 def run_record(ledger, rid):
@@ -340,7 +349,7 @@ def run(anki, ledger, language, mapping, steps, settings=None, deck=None, ai=Non
             if _replace(anki, ledger, n, {field: sa.sound(name)}, {field: held[n]}, records,
                         media={name: clips[n]}, keep_dir=keep_dir, tag=TAG, by=BY_SWAP):
                 out["swapped"] += 1
-                _save_run(ledger, rid, rec)
+                _save_some(ledger, rid, rec)
         ai_turn = {n for n, s in planned.items() if s.kind == sound_source.NONE and s.why == sound_source.AI
                    and n not in held}
         voice_on = _voice_on(settings, language) if ai is None else bool(ai)
@@ -349,10 +358,12 @@ def run(anki, ledger, language, mapping, steps, settings=None, deck=None, ai=Non
             order = sorted((n for n in ai_turn if n in due), key=lambda n: (due[n], n))      # soonest first
             out["waiting"] = len(ai_turn) - len(order)
             if order:
+                items = _items_or_none(language, steps, order, ledger_path) \
+                    if kinds is None or paragraphs is None else None
                 report = (make_ai or _make_ai(settings, language, should_stop))(
-                    order, kinds if kinds is not None else _kinds(language, steps, order, ledger_path),
+                    order, kinds if kinds is not None else _kinds(language, steps, order, ledger_path, items),
                     paragraphs if paragraphs is not None else _paragraphs(language, steps, order, notes, mapping,
-                                                                         ledger_path))
+                                                                         ledger_path, items))
                 out["ai_report"] = report
                 files = {int(n): p for n, p in ((report or {}).get("files") or {}).items()}
                 got = _fill(anki, ledger, files, field, AI_TAG, BY_AI, records)
@@ -363,14 +374,18 @@ def run(anki, ledger, language, mapping, steps, settings=None, deck=None, ai=Non
             out["waiting"] = len(ai_turn)
         if marks:
             out["flipped"] = _flips(anki, ledger, language, sorted(notes), field, marks, records, ledger_path,
-                                    lambda: _save_run(ledger, rid, rec))
+                                    lambda: _save_some(ledger, rid, rec))
     except BaseException as e:
         inner = getattr(e, "sentence_audio_id", None)
         if inner and inner not in records:
             records.append(inner)
+        e.card_sound_report = out["ai_report"]          # (auto keeps a refused clip's day even so)
         if records:
-            _save_run(ledger, rid, dict(rec, state=sa.DONE, stopped=True))
             e.card_sound_id = rid
+            try:
+                _save_run(ledger, rid, dict(rec, state=sa.DONE, stopped=True))
+            except Exception:
+                log.warning("Card sound: a stopped run's record couldn't be saved", exc_info=True)
         raise
     if records:
         rec.update(state=sa.DONE, counts={k: out[k] for k in ("real", "swapped", "ai", "flipped")})
@@ -419,6 +434,8 @@ def ai_cards(anki, ledger, field, deck=None):
     hand-made cards) whose field holds that one clip alone and nothing else."""
     from app import anki_connect
     held = ai_held(ledger)
+    if deck and held:
+        held = {n: v for n, v in held.items() if n in _in_deck(anki, deck, set(held))}
     query = f'"tag:{AI_TAG}"' + (f' "deck:{anki_connect.escape_query(deck)}"' if deck else "")
     tagged = set(anki.find(query) or ())
     notes = _notes(anki, set(held) | tagged)
@@ -451,14 +468,17 @@ def remove_ai_audio(anki, ledger, language, field, deck=None, confirm=False, mar
         for n, value in sorted(found.items()):
             if _replace(anki, ledger, n, {field: ""}, {field: value}, records, keep_dir=keep_dir, by=BY_REMOVE):
                 removed.append(n)
-                _save_run(ledger, rid, rec)
+                _save_some(ledger, rid, rec)
         if marks and removed:
             flipped = _flips(anki, ledger, language, removed, field, marks, records, ledger_path,
-                             lambda: _save_run(ledger, rid, rec))
+                             lambda: _save_some(ledger, rid, rec))
     except BaseException as e:
         if records:
-            _save_run(ledger, rid, dict(rec, state=sa.DONE, stopped=True))
             e.card_sound_id = rid
+            try:
+                _save_run(ledger, rid, dict(rec, state=sa.DONE, stopped=True))
+            except Exception:
+                log.warning("Card sound: a stopped removal's record couldn't be saved", exc_info=True)
         raise
     if not records:
         return {"id": None, "removed": [], "flipped": 0}
@@ -520,34 +540,48 @@ def _items(language, steps, nids, ledger_path):
     return {n: (int(v[0]), rel.get(int(v[0]))) for n, v in lines.items() if v and v[0] is not None}
 
 
+def _items_or_none(language, steps, nids, ledger_path):
+    try:
+        return _items(language, steps, nids, ledger_path)
+    except Exception:
+        log.info("Card sound: the cards' items couldn't be read", exc_info=True)
+        return {}
+
+
 def _is_book(rel):
     from app import cues
     low = str(rel or "").lower()
     return bool(low) and not low.endswith(cues.SUBTITLES)
 
 
-def _kinds(language, steps, nids, ledger_path):
+def _kinds(language, steps, nids, ledger_path, items=None):
     """{note id: "book"} for the cards Connect made from a book or a text (their narration: a narrator); the rest are
-    left out (speech: a conversational voice, IRO-P's P2)."""
-    try:
-        return {n: "book" for n, (_item, rel) in _items(language, steps, nids, ledger_path).items() if _is_book(rel)}
-    except Exception:
-        log.info("Card sound: the cards' items couldn't be read", exc_info=True)
-        return {}
+    left out (speech: a conversational voice, IRO-P's P2). `items`: `_items`' answer already read."""
+    if items is None:
+        items = _items_or_none(language, steps, nids, ledger_path)
+    return {n: "book" for n, (_item, rel) in items.items() if _is_book(rel)}
 
 
 PARAGRAPH_BEFORE = 8                            # sentences before the card's read as its paragraph (a quote's start)
 
 
-def _paragraphs(language, steps, nids, notes, mapping, ledger_path):
+def _paragraphs(language, steps, nids, notes, mapping, ledger_path, items=None):
+    """`_paragraph_texts`, never raising: a token store that can't be read gives none (each line read alone)."""
+    try:
+        return _paragraph_texts(language, steps, nids, notes, mapping, ledger_path, items)
+    except Exception:
+        log.info("Card sound: the paragraphs couldn't be read", exc_info=True)
+        return {}
+
+
+def _paragraph_texts(language, steps, nids, notes, mapping, ledger_path, items=None):
     """{note id: the text around its sentence in its book} — the sentences before it and itself, from the token
     store's texts of its item (one read a book part), so the by-line rule sees a long quote's middle sentence inside
     its 「」 (IRO-P's note). A note not found there has none (the rule reads the line alone)."""
     from app.connect import add_audio, lineup
-    try:
-        items = {n: v for n, v in _items(language, steps, nids, ledger_path).items() if _is_book(v[1])}
-    except Exception:
-        return {}
+    if items is None:
+        items = _items_or_none(language, steps, nids, ledger_path)
+    items = {n: v for n, v in items.items() if _is_book(v[1])}
     if not items:
         return {}
     from app import token_index
@@ -583,6 +617,7 @@ NOTHING = "No card here is missing its sentence audio."
 NO_MINER = "Anki Miner isn't installed: it reads which field holds a card's sound."
 NO_FIELD = "Anki Miner's field mapping names no field for the sentence's audio, so there's nowhere to put it."
 NO_UNDO = "There's no Add sound with that number."
+UNDO_OFF = "Connect is off, so the sound couldn't be taken back"
 _HELD = {}                                      # language -> the Anki Miner set `_anki_miner_setup` keeps (15 min)
 
 
@@ -609,7 +644,11 @@ def act(settings, language, confirm=False, undo_id=None, remove_ai=False, should
             if undo_id is not None:
                 if run_record(ledger, undo_id) is None:
                     raise CliError("bad-data", NO_UNDO, undo=undo_id)
-                done = undo(anki, ledger, undo_id)
+                try:
+                    done = undo(anki, ledger, undo_id)
+                except BaseException:
+                    undoing.owe_sync(settings)          # a part already put back: its sync is owed
+                    raise
                 if done.get("emptied"):
                     undoing.owe_sync(settings)
                 return dict(done, language=language, undo=undo_id)
@@ -641,8 +680,12 @@ def act(settings, language, confirm=False, undo_id=None, remove_ai=False, should
             report = done.pop("ai_report") or {}
             return dict(done, language=language, confirm=True, problems=list(report.get("problems") or ()),
                         not_cut=len(done["not_cut"]))
-    except CliError:
-        raise
+    except CliError as e:
+        rid = getattr(e, "card_sound_id", None)
+        if rid is None:
+            raise
+        undoing.owe_sync(settings)
+        raise CliError(e.code, e.message, **dict(e.context, undo=rid)) from None
     except BaseException as e:
         rid = getattr(e, "card_sound_id", None)
         if rid is not None:
@@ -737,13 +780,15 @@ def auto(settings, language, ledger, steps=None, should_stop=None, ai_hold=None,
         if mapping is None:
             return {"skipped": NO_MINER}
         tried = _tried(ledger, language)
+        if ai and ai_hold is not None and ai_hold():
+            ai = False                          # the PC busy: real sound only this pass (asked once, never between)
         due = {n: d for n, d in (anki.due(mapping.deck, days_of(settings)) if ai else {}).items()
                if n not in tried}
         only = set(new) | set(due)
         done = {"id": None}
         if only:
             done = run(anki, ledger, language, mapping, steps or runner.Steps(settings), settings=settings,
-                       deck=mapping.deck, ai=ai, due=due, only=only, should_stop=should_stop, ai_hold=ai_hold,
+                       deck=mapping.deck, ai=ai, due=due, only=only, should_stop=should_stop,
                        make_ai=_make_ai(settings, language, ai_stop or should_stop), run_dir=run_dir,
                        marks=fields.marks(mapping), ledger_path=ledger_path)
         _recount_quietly(anki, ledger, language, mapping, steps or runner.Steps(settings), ledger_path)
@@ -758,6 +803,13 @@ def auto(settings, language, ledger, steps=None, should_stop=None, ai_hold=None,
     except BaseException as e:
         if getattr(e, "card_sound_id", None) is not None:
             undoing.owe_sync(settings)              # a part written before the stop: its Undo works, its sync is owed
+        unheard = {int(n) for n in ((getattr(e, "card_sound_report", None) or {}).get("unheard") or ())}
+        if unheard:
+            try:
+                kept = sorted(_tried(ledger, language) | unheard)
+                _put_meta(ledger, TRIED + language, {"day": _today(), "notes": kept})
+            except Exception:
+                pass
         raise
     finally:
         if run_dir:
@@ -865,7 +917,9 @@ def press_undo(language, rid, settings):
         done = act(settings, language, undo_id=rid)
     except CliError as e:
         return {"ok": False, "say": e.message, "emptied": 0, "kept": 0}
-    if done.get("skipped") or done.get("refused"):
+    if done.get("skipped"):
+        return {"ok": False, "say": UNDO_OFF, "emptied": 0, "kept": 0}
+    if done.get("refused"):
         return {"ok": False, "say": done.get("refused") if done.get("refused") != "nothing to undo" else None,
                 "emptied": 0, "kept": 0}
     return {"ok": True, "emptied": len(done.get("emptied") or ()), "kept": len(done.get("kept") or {}), "say": None}

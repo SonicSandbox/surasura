@@ -24,7 +24,7 @@ SCHEMA = 1
 HOSTS = ("www.youtube.com", "youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be")
 MAX_LINKS = 50
 MAX_URL = 2048
-MAX_BODY = 64 * 1024                    # 50 links of 2,048 characters fit in under 110 KB of JSON; real ones in 4 KB
+MAX_BODY = 128 * 1024                   # 50 links of 2,048 characters are about 103 KB of JSON; real ones under 4 KB
 
 # The 409's words, said in Ukai; the bar's lines (#474's; PROVISIONAL)
 ABSENT = "This Surasura has no YouTube downloader."
@@ -44,8 +44,8 @@ class Bad(ValueError):
 
 def links(body):
     """v3's body (the door's parsed JSON object) -> its links, each once, in order: 1 to MAX_LINKS https links on
-    YouTube's own hosts, each one printable line of at most MAX_URL characters (it goes to yt-dlp as it is). Raises
-    Bad."""
+    YouTube's own hosts (the host alone: no name, password or port before the path), each one printable line of at
+    most MAX_URL characters (it goes to yt-dlp as it is). Raises Bad."""
     urls = body.get("urls") if body.get("schema") == SCHEMA else None
     if not isinstance(urls, list) or not 1 <= len(urls) <= MAX_LINKS:
         raise Bad(f"urls must be 1 to {MAX_LINKS} links")
@@ -57,8 +57,8 @@ def links(body):
             host = parts.hostname or ""
         except ValueError:                      # (a broken address: "https://[")
             parts, host = None, ""
-        if (parts is None or parts.scheme != "https" or host not in HOSTS or len(url) > MAX_URL
-                or any(c.isspace() or not c.isprintable() for c in url)):
+        if (parts is None or parts.scheme != "https" or host not in HOSTS or parts.netloc.lower() != host
+                or len(url) > MAX_URL or not url.isprintable() or " " in url):     # (one line, no spaces)
             raise Bad("each link must be a YouTube https link")
         out[url] = None
     return list(out)
@@ -121,7 +121,8 @@ class BarLines:
 
 def route(writer, settings, start):
     """`POST /v1/youtube`'s function for the door's Ukai class (paired: the door has checked the Origin and the
-    token). `writer()` -> the open library's writer or None; `settings()` -> the settings as the window holds them;
+    token). `writer()` -> the open library's writer or None; `settings()` -> the settings as the window holds them
+    (a dict; `routes`' `values`: {} when they can't be read);
     `start(urls, release)` (any thread) hands the links to the window's thread, or None: no window to run them."""
     from app import door
     runs = LinkRuns()
@@ -131,11 +132,7 @@ def route(writer, settings, start):
             urls = links(call.json(limit=MAX_BODY))
         except Bad as e:
             raise door.RouteError(str(e), "body", 400) from None
-        try:
-            values = settings()
-        except Exception:
-            values = {}
-        why = ABSENT if start is None else refused(values if hasattr(values, "get") else {})
+        why = ABSENT if start is None else refused(settings())
         if why:
             raise door.RouteError(why, "refused", 409)
         if writer() is None:
@@ -162,6 +159,10 @@ def run(shell, urls, release):
     try:
         from modules.youtube_downloader import fetch_links
         writer = shell.services.writer
+        if writer is None:                          # (the library closed since the route's look)
+            release()
+            say(NO_LIBRARY)
+            return
         arrived = windows.youtube_arrivals(shell)
         say(STARTED.format(n=len(urls)))
 
@@ -174,6 +175,8 @@ def run(shell, urls, release):
                     arrived(created)
                 except RuntimeError as e:           # (the library switched meanwhile: they wait in Processed)
                     say(str(e))
+                except Exception as e:              # (never out of the window's slot: logged, they wait there)
+                    applog.log("ukai", f"YouTube links' transcripts: {e!r}")
             elif not problems:
                 say(NONE_NEW)
         fetch_links(shell, list(urls), writer.language, BarLines(say), ended)

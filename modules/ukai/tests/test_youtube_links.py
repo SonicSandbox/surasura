@@ -107,6 +107,8 @@ def test_never_past_the_downloaders_switch_or_its_risk_tick(run, monkeypatch):
     ["https://www.youtube.com.evil.example/watch?v=dQw4w9WgXcQ"], ["https://[www.youtube.com/watch"],
     ["https://www.youtube.com/watch?v=dQw4w9WgXcQ\nhttps://evil.example/"], ["https://youtu.be/dQw4w9WgXcQ x"],
     ["\x00https://www.youtube.com/watch?v=dQw4w9WgXcQ"], ["https://www.youtube.com/watch?v=" + "d" * 2048],
+    ["https://evil.example@www.youtube.com/watch?v=dQw4w9WgXcQ"],
+    ["https://evil.example\\@www.youtube.com/watch?v=dQw4w9WgXcQ"], ["https://www.youtube.com:8443/watch?v=x"],
     [7], [], ["https://youtu.be/dQw4w9WgXcQ"] * 51, "https://youtu.be/dQw4w9WgXcQ", None])
 def test_a_link_that_isnt_youtubes_own_https_one_is_a_400_and_nothing_runs(run, urls):
     d, _held, started = run
@@ -277,4 +279,39 @@ def test_a_downloader_that_fails_to_start_lets_the_links_go_and_the_app_goes_on(
     monkeypatch.setattr(downloader, "fetch_links", broken)
     w = window_run
     youtube.run(w.shell, LINKS, w.release)
+    assert w.released == [True]
+
+
+# --- the review's findings (UKAI-S3 b) --------------------------------------------------------------------------- #
+def test_fifty_links_of_the_longest_length_are_taken(run):
+    """Bounds: the body's cap holds what `links` takes (50 links of 2,048 characters), never a 413 for a good body."""
+    d, _held, started = run
+    base = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t="
+    longest = [base + str(n).rjust(youtube.MAX_URL - len(base), "0") for n in range(youtube.MAX_LINKS)]
+    assert all(len(u) == youtube.MAX_URL for u in longest)
+    assert _ask(d, _links(longest)) == (200, {"ok": True, "queued": youtube.MAX_LINKS})
+    assert started[0][0] == longest
+
+
+def test_a_library_closed_before_the_run_starts_says_so_and_lets_the_links_go(window_run):
+    """State: the route saw a library, the window's thread doesn't (a switch between): no run, the bar says why."""
+    w = window_run
+    w.shell.services.writer = None
+    youtube.run(w.shell, LINKS, w.release)
+    assert w.fetched == [] and w.released == [True] and w.bar == [youtube.NO_LIBRARY]
+
+
+def test_a_hand_in_that_fails_otherwise_never_leaves_the_windows_slot(window_run, monkeypatch):
+    """Bounds: New arrivals' hand-in raising something other than its RuntimeError (a disk error): logged, the links
+    let go, nothing raised out of the window's slot."""
+    from app.qt import windows
+
+    def arrivals(_shell):
+        def complete(_paths):
+            raise OSError(28, "No space left on device")
+        return complete
+    monkeypatch.setattr(windows, "youtube_arrivals", arrivals)
+    w = window_run
+    youtube.run(w.shell, LINKS, w.release)
+    w.fetched[0][3](["x [dQw4w9WgXcQ].txt"], [])
     assert w.released == [True]

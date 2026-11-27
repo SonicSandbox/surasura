@@ -215,7 +215,7 @@ if enable_irodori:
         datas.append((os.path.join(irodori_dir, name), 'modules/irodori'))
     datas.append((os.path.join(irodori_dir, 'voices'), 'modules/irodori/voices'))
     hiddenimports += ['modules.irodori.' + m for m in ('runtime', 'server', 'voice', 'make', 'queue', 'writer',
-                                                       'listen')]
+                                                       'listen', 'hear')]
 
 # The transcripts preview's scoring child (`youtube_preview`, app_entry.py): the 3.0 window runs it as its own process.
 if enable_youtube:

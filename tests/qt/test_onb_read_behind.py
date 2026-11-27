@@ -390,12 +390,17 @@ def test_shows_that_reach_new_arrivals_after_a_language_switch_fill_the_page_fro
 
     monkeypatch.setattr(test_wizard, "FakeShell", SwitchingShell)
     wiz, shell, api, _s, _m = make(api=HeldApi())
-    shell.switch()                                                     # page 1's zh
     _walk(wiz, "shows")
     read, asked = wiz.read_rows, []
     monkeypatch.setattr(wiz, "read_rows", lambda *a, **k: (asked.append(1), read(*a, **k))[1])
-    shell.library_bridge.library_changed.emit(None)                    # + Add's files reach the new library
-    assert asked, "*Your shows*' rows follow the new library's views too"
+    first = shell.library_bridge
+    first.library_changed.emit(None)                                   # + Add's files reach the library opened with
+    assert len(asked) == 1, "*Your shows*' rows follow the window's views"
+    shell.switch()                                                     # page 1's zh (any page: the bridge's rule)
+    first.library_changed.emit(None)                                   # (still there until the loop deletes it)
+    assert len(asked) == 1, "the language left's bridge is no longer heard"
+    shell.library_bridge.library_changed.emit(None)
+    assert len(asked) == 2, "… and the new library's are"
     wiz._read_ids = [11, 12]                                           # the scan took files in; the view has none yet
     _walk(wiz, "watching")
     page = wiz.page

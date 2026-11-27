@@ -293,6 +293,9 @@ def test_two_writes_in_one_clock_tick_keep_their_order(tmp_path, monkeypatch, te
         assert set(cs.ai_held(ledger)) == {1}
         ids = [rid for rid, _rec in cs._records(ledger)]
         assert ids == written, "read back in the order written"
+        swap = sa.replace(anki, ledger, 1, {"SentenceAudio": "[sound:real-1.mp3]"},   # (a real clip over the AI one)
+                          {"SentenceAudio": anki.value(1)}, tag=sa.TAG, by="add-audio")
+        assert swap["filled"] == [1] and cs.ai_held(ledger) == {}
         for language in ("ja", "zh"):                   # a run's Undo takes the newest run: the same tick, the same rule
             rid = cs._new_run(ledger)
             cs._save_run(ledger, rid, {"language": language, "records": ids, "state": sa.DONE})

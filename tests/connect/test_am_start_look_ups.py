@@ -17,6 +17,7 @@ Against the fake Anki Miner (its call log counts the starts); Anki is closed (a 
 import json
 import os
 import shutil
+import time
 
 import pytest
 
@@ -203,10 +204,11 @@ def test_card_sounds_press_after_setups_look_starts_only_its_export(miner, press
 
 
 @pytest.mark.parametrize("lang", LANGS)
-def test_card_sounds_audiobook_step_reads_again_when_anki_miners_profile_moved_meanwhile(miner, press, monkeypatch,
-                                                                                         lang):
-    # why: never a stale answer — the learner switches Anki Miner's profile in its window between the press's read and
-    # the cut: its files' stamp moved, so the cut reads all three again and hands Anki Miner the profile it now names
+def test_card_sounds_audiobook_step_reads_again_when_anki_miners_profiles_changed_meanwhile(miner, press, monkeypatch,
+                                                                                           lang):
+    # why: never a stale answer — the learner edits Anki Miner's profiles in its window between the press's read and
+    # the cut (Connect's own renamed, another made): its files' stamp moved, so the cut reads all three again and hands
+    # Anki Miner the profile it now names
     from app.connect import card_sound
     real_cut_book = card_sound._cut_book
 
@@ -218,13 +220,31 @@ def test_card_sounds_audiobook_step_reads_again_when_anki_miners_profile_moved_m
                        profiles=[{"id": "default", "name": "Default", "active": True},
                                  {"id": "p-other", "name": "Other"}],
                        export=dict(LAPIS_EXPORT, app_version="3.7.0"))
-            _home(profiles=("default", "p-other", "p-surasura-gone"))
+            _home(profiles=("default", "p-other"))
             return cut(l, can, run_dir)
         return go
     monkeypatch.setattr(card_sound, "_cut_book", switched_first)
     press(lang)
     assert miner.commands() == ["version", "profiles", "settings-export"] * 2
     assert press.cut_with == ["default"], "the profile Anki Miner names now (Connect's own gone: its active one)"
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_a_set_another_thread_fills_while_a_set_up_starts_is_never_half_read(miner, monkeypatch, lang):
+    # why: the press's set (`card_sound._HELD`) is shared by the window's press — its line-up read and now its audiobook
+    # cut — and Connect's automatic pass on another thread. Found empty, then filled by the other thread while this one
+    # stamps Anki Miner's files, it was read half: no time with a set (`TypeError`). One look at it now: read afresh
+    held, real_stamp = {}, anki_miner.stamp
+
+    def stamp_while_the_other_fills(path):
+        got = real_stamp(path)
+        held.update(set=("info", "p-surasura", None, {}), stamp=got, at=time.monotonic())
+        return got
+    monkeypatch.setattr(anki_miner, "stamp", stamp_while_the_other_fills)
+    got = verbs._anki_miner_setup(_settings(miner, lang), lang, os.path.join(os.environ["ANKI_MINER_HOME"], "r"),
+                                  held=held)
+    assert got is not None and got[1] == "p-surasura"
+    assert miner.commands() == ["version", "profiles", "settings-export"], "read afresh, never the half-seen set"
 
 
 # --- *Finish its setup* ---------------------------------------------------------------------------------------- #

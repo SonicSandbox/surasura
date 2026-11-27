@@ -280,13 +280,14 @@ def opens(monkeypatch):
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])
-def test_a_render_whose_open_found_no_store_opens_none_again(opens, language):
+def test_a_render_whose_open_found_no_store_opens_none_again(opens, language, capsys):
     # why: the render's one open found no store (a 2.x library, or one busy past its wait): the facts and the ▶'s
-    # rows answer "none" from that, never a second open that could read a store the facts didn't
+    # rows answer "none" from that, never a second open that could read a store the facts didn't — and say nothing
+    # (no store is no failed read)
     from app.services import play
     assert journey_render.store_facts(language, library=False) is None
     assert play._rows(language, ["Show/01.srt"], library=False) == ({}, "")
-    assert opens == []
+    assert opens == [] and capsys.readouterr().out == ""
 
 
 def test_a_journey_whose_open_found_no_store_hands_the_render_none_to_open(monkeypatch):
@@ -307,6 +308,24 @@ def test_a_journey_whose_open_found_no_store_hands_the_render_none_to_open(monke
     with pytest.raises(Drawn):
         shg._write_journey("ja", open_browser=False)
     assert seen["library"] is False and seen["facts"] is False
+
+
+def test_a_lookup_the_memo_misses_hands_the_renders_handle_to_the_pairings(monkeypatch):
+    # why: the first render after a Generate misses the ▶'s memo for a source that may play: its pairing record is
+    # read through the render's handle, the one `files` was given, not a second open
+    from app.services import play
+    handle, seen, rel = _Handle(), [], "Bocchi/01.srt"
+    monkeypatch.setattr(play, "_rows", lambda language, rels, library=None: ({rel: (5, "anime", (), ())}, "Bocchi"))
+    monkeypatch.setattr(play, "_places", lambda data_dir, rel, rows, copies: ["Bocchi"])
+    monkeypatch.setattr(play, "_list_all", lambda folders, listings: None)
+    monkeypatch.setattr(play, "_holds_playable", lambda *a, **k: True)
+    monkeypatch.setattr(play, "_memo_key", lambda *a: "key")
+    monkeypatch.setattr(play, "_pairings",
+                        lambda language, ids, moved, handed=None: seen.append((ids, handed)) or {i: {} for i in ids})
+    monkeypatch.setattr(play, "_finder", lambda language, listings=None: None)
+    monkeypatch.setattr(play, "_find", lambda *a, **k: (None, None))
+    assert play.files("ja", [rel], memo={}, library=handle) == {rel: None}
+    assert seen == [([5], handle)]
 
 
 def test_the_pairings_read_through_the_renders_handle_and_leave_it_open(opens, monkeypatch):

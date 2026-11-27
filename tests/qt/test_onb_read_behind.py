@@ -253,6 +253,21 @@ def test_watching_now_pre_picks_the_newest_and_puts_it_on_top_then_the_sort_goes
     QTest.mouseClick(wiz.covered.btn_done, Qt.MouseButton.LeftButton)
 
 
+def test_next_comes_with_the_tiles_when_they_land_after_the_page_opened(make, placed):
+    # why (ONB-FIX, the 3.0.20 cut's C14): on a small library the read had ended before *Watching now* opened, so no
+    # tick repainted the footer once its shows were read: the tiles came with only Back and Skip under them
+    wiz, shell, api, _s, _m = make(api=HeldApi())
+    rows = _with_shows(wiz, shell, placed)
+    _walk(wiz, "watching")
+    page = wiz.page
+    assert wait_until(lambda: page.rows is not None, 5)
+    page.rows = None                                               # (as the page opens, before its rows are read)
+    wiz.paint_footer()
+    assert not wiz.btn_next.isVisible() and wiz.btn_skip.isVisible()
+    page.show_newest(rows)                                         # the newest shows' answer, and nothing else
+    assert wiz.btn_next.isVisible() and any(t.isVisible() for t in page.tiles)
+
+
 def test_none_of_these_places_nothing_and_the_sort_comes_as_before(make, placed):
     wiz, shell, api, _s, _m = make(api=HeldApi())
     _with_shows(wiz, shell, placed)

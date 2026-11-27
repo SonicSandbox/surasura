@@ -30,12 +30,14 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
+from app import token_index
 from app.qt import first_run, shell, windows
 from app.qt import wizard as W
 from tests.qt.conftest import wait_until
 from tests.qt.test_wizard import FakeMiner, miner_look
 from tests.test_sources_scan import RESOURCES, _drive, _write
 
+REAL_TOKEN_STORE = token_index.store_path_for  # (before the suites' per-test path: the window's indexer child's)
 DEAD_ANKI = "http://127.0.0.1:9"          # the discard port: AnkiConnect never answers (the real Anki is never asked)
 # made-up shows, newest first by their files' dates (the order *What are you watching right now?* must show)
 SHOWS = {"ja": (("星祭りの夜", 2), ("星屑ステーション", 2), ("夜明けの旅団", 2)),
@@ -97,6 +99,9 @@ def window(qapp, monkeypatch, real_store_helper):
     """The real main window on the test's fresh root, Anki a dead port; its indexer on and its store built by its own
     helper, as the app's start does 1.5 s in (`Chores.started`: under the suites' no-timers switch, asked here)."""
     monkeypatch.delenv("SURASURA_NO_AUTOINDEX", raising=False)          # the window's real indexer reads the words
+    # … into the token store it writes: the test root's (`SURASURA_TEST_ROOT`), never the suites' per-test path,
+    # which only this process sees (the window would read an empty store the child never wrote)
+    monkeypatch.setattr(token_index, "store_path_for", REAL_TOKEN_STORE)
     monkeypatch.setattr(windows, "open_url", lambda url: None)          # (the ⭐ link: never a browser)
     services = shell.open_services()                                   # (as `main` makes them: the library, the writer)
     services.settings.set({"anki_connect_url": DEAD_ANKI}, now=True)

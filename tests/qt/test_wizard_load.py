@@ -297,6 +297,31 @@ def test_the_cards_line_is_checked_only_once_the_sorts_places_are_saved(make, em
     assert wait_until(lambda: seen == [0], 5)
 
 
+def test_the_words_are_read_again_once_the_sorts_places_are_saved_before_the_cards_line(make, empty_library,
+                                                                                        tmp_path):
+    """ONB-FIX (the 3.0.20 cut's C14: *Your list* said *Counting your shows…* for good): the read's words step comes
+    before the sort, while a plain folder's shows all wait in New arrivals, which the indexer doesn't count — so the
+    sort's *Done*, once its places are saved, asks the window's indexer (forced) for the shows it put in Current, and
+    only then looks for D1's line: never before the places landed (the indexer would read the store without them)."""
+    wiz, shell, _log = _start(make, tmp_path, runs=False)
+    chores = shell.services.chores
+    writer = shell.services.writer = _Writer(2)
+    order = []
+    asked = chores.index
+    chores.index = lambda force=False: (order.append(("index", force, writer.n)), asked(force))[1]
+    real = wiz.api.sorted_offer
+    wiz.api.sorted_offer = lambda language, ids: (order.append(("line", writer.n)), real(language, ids))[1]
+    wiz.next()
+    _to_the_sort(wiz, shell)
+    order.clear()                                                              # (the read's own asks, before the sort)
+    QTest.mouseClick(wiz.covered.btn_done, Qt.MouseButton.LeftButton)
+    QTest.qWait(300)
+    assert order == []                                                         # two places still being saved
+    writer.n = 0
+    assert wait_until(lambda: len(order) == 2, 5)
+    assert order == [("index", True, 0), ("line", 0)]
+
+
 # --- Mado-SB: *Show covers* in force before the sort pad ---------------------------------------------------------- #
 class _Fetcher:
     """The window's online covers fetcher as `covers.ask` uses it: `on()` reads the switch from the settings as they

@@ -411,6 +411,14 @@ def test_a_known_sentence_marks_the_set_phrases_in_it_known(found_in, tmp_path, 
     assert {"彼女", "振り返る", "方法"} <= lemmas, "its words, as before"
 
 
+def test_a_known_sentence_marks_the_phrases_inside_its_phrases_known(found_in, tmp_path, monkeypatch):
+    """PROVISIONAL (ENGINE 54, listed for Sonic): a known sentence's set phrases are known, and a use of a longer phrase
+    is a use of each one inside it — so あっという間に known marks あっという間 known too (as a known お気に入り
+    'favourite' marks 気に入る 'to like')."""
+    lemmas = _known(tmp_path, monkeypatch, found_in, ["あっという間に終わった。"])
+    assert {"あっと言う間に", "あっと言う間"} <= lemmas
+
+
 def test_a_known_sentence_marks_only_what_the_finder_finds_there(found_in, tmp_path, monkeypatch):
     """The finder's own rules, never a second matcher's: words on both sides of a comma are no phrase (気が、ついた),
     a phrase with a form of its own is that form only (もしかして is not もしかしたら), and a sentence holding none

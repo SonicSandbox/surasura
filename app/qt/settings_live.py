@@ -49,6 +49,10 @@ from app.qt import settings_strings as S
 from app.services import settings as settings_service
 
 SETUP = ("setup_known", "setup_anki", "setup_mining", "setup_level", "setup_cards")
+# The rows that show the level read's answer (`read_level`: every band's numbers over the token store, 0.7 s of a
+# worker's Python cold): it is first asked when one of them is built, never at the page's making — opened at Anki &
+# mining, a read made then held Python's lock against every slice of the build for 1.3–2 s (SETTINGS-OPEN)
+LEVEL_ROWS = ("setup_level", "level")
 EXPORTS = {"export_frequency_list": "frequency_list", "export_reading_words": "reading_words",
            "export_sentence_list": "sentence_list"}
 COMING = {"jimaku": S.COMING_WITH_HATO, "anilist": S.COMING_LATER, "more_from_houseki": S.COMING_LATER}
@@ -624,7 +628,8 @@ class Live(QObject):
         page.takes["text_size"] = self._text_size
         page.takes["app_motion"] = self._motion
         self._read_known()
-        self._read_level()
+        if any(row_id in page.rows for row_id in LEVEL_ROWS):
+            self._read_level()            # (else asked when the first row that shows it is built: `_built`)
         self._run(read_hato, then=self._hato)
         self._run(read_licence, then=self._show_licence)
         self._read_skipped()
@@ -698,6 +703,8 @@ class Live(QObject):
     # --- a row built: its live parts ------------------------------------------------------------------------------- #
     def _built(self, row_id):
         row = catalog.ROW[row_id]
+        if row_id in LEVEL_ROWS and not self._level["asked"]:
+            self._read_level()            # SETTINGS-OPEN: the level's first read waits for a row that shows it
         if row_id in SETUP:
             door = sc.Door(S.CHANGE, tooltip=row.tip, name=f"{row.label}: {S.CHANGE}")
             door.clicked.connect(lambda _c=False, t=row.target: self.page.reveal(t))

@@ -281,12 +281,7 @@ def test_a_first_screens_cache_from_before_the_update_reads_its_own_cards_and_ne
     try:
         items = _three_shows(language)
         view = vr.build(items, WORKS, {"mine_line": 20}, cards=CARDS, language=language)
-        old = _json.loads(_json.dumps(vr.to_cache(view)))
-        for row in old["rows"]:
-            for e in row.get("episodes") or ():
-                if isinstance(e, dict) and "elsewhere" in e:
-                    e["elsewhere"] = 22
-        back = vr.from_cache(old)
+        back = vr.from_cache(_json.loads(_json.dumps(vr.to_cache(view))))
         back_rows = [r._replace(episodes=tuple(e._replace(elsewhere=22) for e in r.episodes), elsewhere=40)
                      for r in back.rows]
         rows, changed = vr.topped(back_rows, 2)

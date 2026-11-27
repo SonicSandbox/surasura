@@ -18,12 +18,15 @@ or a journey signed as current while its stones couldn't be read (an Undo that l
 libraries (ja + zh, `plan_file_cases`) Generated in a child process as the dashboard runs it, each run counted in a
 child of its own; real words in the stores and files made here.
 """
+import builtins
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
+import types
 
 import pytest
 
@@ -156,8 +159,6 @@ def test_a_redraw_opens_the_library_store_once_for_its_whole_run(root):
     # why: the redraw from the plan (only the order moved) opened prepare_library's, record_analysed's, the
     # fingerprint's and the render's: one span too
     root, language = root
-    if language != "ja":
-        pytest.skip("the run's span is the same code for both; the ja library is the one moved")
     cases.generate(root, f"rp2-{language}", extra_env=LEVEL_2)        # the plan of this very order
     p = subprocess.run([sys.executable, "-c", _MOVE, language, root], cwd=cases.REPO, env=_env(root),
                        capture_output=True, text=True, encoding="utf-8", errors="replace")
@@ -204,7 +205,7 @@ def test_a_runs_span_serves_every_plain_role_with_one_handle_and_checks_its_mode
             pass
         assert a.meta() is not None
         assert made["opens"] == ["analyzer"] and made["probes"] == 1, made
-    with pytest.raises(Exception):
+    with pytest.raises(sqlite3.ProgrammingError):
         a.conn.execute("SELECT 1")           # closed at the span's end
 
 
@@ -267,11 +268,95 @@ def test_a_store_damaged_during_a_runs_span_is_let_go_and_answered_as_damaged(la
         try:
             assert ls.open_store_mode(language, data_dir, user_files_dir, role="reader") == (
                 None, ("read-only", "damaged"))
-            with pytest.raises(Exception):
+            with pytest.raises(sqlite3.ProgrammingError):
                 a.conn.execute("SELECT 1")   # let go of at once
             assert ls.check_mode(language, data_dir)[0] == "read-only"
         finally:
             os.remove(ls.damaged_marker(a.db_path))
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_span_without_a_role_hands_each_role_its_own_handle_again_and_again(language, made):
+    # why: Connect's job spans (`held()`, no role) keep one handle a role — the same reader asked twice is one handle,
+    # opened once, and a run's role never reaches them
+    data_dir, user_files_dir = roots(language)
+    migrated(language).close()
+    made["opens"].clear()
+    with ls.held():
+        reader = ls.open_store(language, data_dir, user_files_dir, role="reader")
+        assert reader is not None and reader.role == "reader"
+        assert ls.open_store(language, data_dir, user_files_dir, role="reader") is reader
+        window = ls.open_store(language, data_dir, user_files_dir, role="window")
+        assert window is not None and window is not reader and window.role == "window"
+    assert made["opens"] == ["reader", "window"], made
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_runs_span_inside_a_span_without_a_role_joins_it_as_it_is(language):
+    # why: a span inside another joins the outer one; the outer (Connect's job) set no role, so the inner run's role
+    # changes nothing there — each role keeps its own handle, as the outer span's owner expects
+    data_dir, user_files_dir = roots(language)
+    migrated(language).close()
+    with ls.held():
+        with ls.held(role="analyzer"):
+            reader = ls.open_store(language, data_dir, user_files_dir, role="reader")
+            analyzer = ls.open_store(language, data_dir, user_files_dir, role="analyzer")
+            assert reader is not None and analyzer is not None and reader is not analyzer
+            assert (reader.role, analyzer.role) == ("reader", "analyzer")
+        assert ls.open_store(language, data_dir, user_files_dir, role="reader") is reader, "still the outer's"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_mode_check_on_a_held_handle_whose_store_was_marked_damaged_says_damaged(language):
+    # why: `check_mode` reads through the run's handle; a store marked damaged since (before any other open) must be
+    # answered as damaged — never "store" from the handle's own read
+    data_dir, user_files_dir = roots(language)
+    migrated(language).close()
+    with ls.held(role="analyzer"):
+        a = ls.open_store(language, data_dir, user_files_dir, role="analyzer")
+        assert a is not None and ls.check_mode(language, data_dir) == ("store", None)
+        ls.mark_damaged(a.db_path, "test: damaged during the run")
+        try:
+            assert ls.check_mode(language, data_dir) == ("read-only", "damaged")
+        finally:
+            os.remove(ls.damaged_marker(a.db_path))
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_held_handle_closed_under_the_run_is_let_go_and_the_next_open_opens_anew(language, made):
+    # why: a reader that closed the run's connection itself (not through `close()`) leaves a dead handle in the span;
+    # a mode check still answers from the file, and the open after the one that found it dead opens a working one
+    data_dir, user_files_dir = roots(language)
+    migrated(language).close()
+    made["opens"].clear()
+    with ls.held(role="analyzer"):
+        a = ls.open_store(language, data_dir, user_files_dir, role="analyzer")
+        assert a is not None
+        a.conn.close()
+        assert ls.check_mode(language, data_dir) == ("store", None)
+        store, (mode, reason) = ls.open_store_mode(language, data_dir, user_files_dir, role="reader")
+        assert store is None and mode == "read-only" and str(reason).startswith("io"), (mode, reason)
+        b = ls.open_store(language, data_dir, user_files_dir, role="reader")
+        assert b is not None and b is not a and b.meta() is not None
+    assert made["opens"] == ["analyzer", "analyzer"], made
+
+
+def test_a_runs_span_on_one_language_opens_the_others_store_as_its_own(made):
+    # why: the span's handle is one store's (one file): a ja run asked for the zh store must never be handed the ja
+    # handle, nor have the zh mode checked through it
+    ja_data, ja_user = roots("ja")
+    zh_data, zh_user = roots("zh")
+    migrated("ja").close()
+    migrated("zh").close()
+    made["opens"].clear()
+    with ls.held(role="analyzer"):
+        ja = ls.open_store("ja", ja_data, ja_user, role="analyzer")
+        zh = ls.open_store("zh", zh_data, zh_user, role="reader")
+        assert ja is not None and zh is not None and zh is not ja
+        assert (ja.language, zh.language) == ("ja", "zh")
+        assert ls.open_store("zh", zh_data, zh_user, role="window") is zh, "the zh store's one handle too"
+        assert ls.check_mode("zh", zh_data) == ("store", None)
+    assert made["opens"] == ["analyzer", "analyzer"], made
 
 
 # --- the journey without the store's facts: the open's own look ---------------------------------------------------- #
@@ -291,6 +376,14 @@ def test_a_journey_open_that_found_no_store_says_how_it_is_signed(monkeypatch, f
     assert journey_render.open_library_look("ja") == (None, marks)
 
 
+def test_a_journey_open_whose_look_raised_is_never_signed_as_current(monkeypatch):
+    # why: an open that raised (a folder it can't work out, a broken store module) is neither "no store" nor current
+    def raised(*a, **k):
+        raise OSError("test: the data folder is gone")
+    monkeypatch.setattr(ls, "open_store_mode", raised)
+    assert journey_render.open_library_look("ja") == (None, ls.UNREAD)
+
+
 def test_a_journey_open_with_a_handle_signs_a_failed_read_as_unread(monkeypatch):
     # why: a store there whose facts couldn't be read through the handle is never signed as current
     handle = object()
@@ -304,18 +397,17 @@ def test_the_journey_drawn_without_facts_never_opens_the_store_again(monkeypatch
     from app import analyzer
     from app import static_html_generator as shg
 
-    class Drawn(Exception):
-        pass
     seen = {}
 
     def render(language, **k):
         seen.update(k)
-        raise Drawn
+        return types.SimpleNamespace(head={"counts": {"eps": 0, "words": 0}})
     monkeypatch.setattr(journey_render, "open_library_look", lambda *a, **k: (None, without))
     monkeypatch.setattr(journey_render, "render", render)
+    monkeypatch.setattr(journey_render, "write_page", lambda *a, **k: None)
     monkeypatch.setattr(analyzer, "journey_marks", lambda language: pytest.fail("opened the store again"))
-    with pytest.raises(Drawn):
-        shg._write_journey("ja", open_browser=False)
+    # the run's render signature takes these marks: no store -> as before (None), unreadable -> never current
+    assert shg._write_journey("ja", open_browser=False) is without
     assert seen["library"] is False and seen["facts"] is False
 
 
@@ -342,13 +434,27 @@ class _Reads:
     def __init__(self, monkeypatch, path):
         from app import analyzer, path_utils
         self.n = 0
-        real = path_utils.read_text
+        self._inside = False
+        target = os.path.normcase(os.path.abspath(path))
+        real, real_open = path_utils.read_text, builtins.open
 
         def read_text(p, *a, **k):
-            self.n += os.path.normcase(os.path.abspath(p)) == os.path.normcase(os.path.abspath(path))
-            return real(p, *a, **k)
+            self.n += os.path.normcase(os.path.abspath(p)) == target
+            self._inside = True             # its own open() of the file is this same read
+            try:
+                return real(p, *a, **k)
+            finally:
+                self._inside = False
+
+        def opened(file, *a, **k):          # a raw open() of the file counts too (a reader past read_text)
+            mode = a[0] if a else k.get("mode", "r")
+            if (not self._inside and isinstance(file, (str, os.PathLike)) and "r" in mode and "+" not in mode
+                    and os.path.normcase(os.path.abspath(os.fspath(file))) == target):
+                self.n += 1
+            return real_open(file, *a, **k)
         monkeypatch.setattr(path_utils, "read_text", read_text)
         monkeypatch.setattr(analyzer, "read_text", read_text)
+        monkeypatch.setattr(builtins, "open", opened)
 
 
 def _tokenizer(language):

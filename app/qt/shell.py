@@ -2242,6 +2242,7 @@ class ShellWindow(QMainWindow):
                 page.language = self.language
         self.library_bridge = bridge.Bridge(library=reader, parent=self)
         self.library_bridge.library_changed.connect(self.show_library)
+        self.library_bridge.library_changed.connect(self.search.library_moved)     # (the old one's went with it)
         if writer is not None:
             from app.qt import drag
             self.moves = drag.DragController(self, writer, reader)

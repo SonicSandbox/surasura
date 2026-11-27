@@ -157,6 +157,7 @@ def test_card_sound_indexes_a_paired_book_once_for_all_its_cards(book, monkeypat
             built.append(len(cues))
             super().__init__(cues)
     monkeypatch.setattr(lineup, "Book", Counted)
+    monkeypatch.setattr(add_audio, "Book", Counted)                     # (either name counts)
     got = ss.plan("ja", notes, MAPPING, book["steps"], ledger_path=str(tmp_path / "no-ledger.sqlite"))
     assert len(built) == 1 and built[0] > 4
     assert want and all(got[nid].kind == ss.AUDIOBOOK and got[nid].cue == cue for nid, cue in want.items())
@@ -176,3 +177,24 @@ def test_a_card_with_no_letters_in_its_sentence_never_takes_a_no_letters_cue(boo
     got = ss.plan("ja", notes, MAPPING, book["steps"], ledger_path=str(tmp_path / "no-ledger.sqlite"))
     assert got[first["noteId"]].kind != ss.AUDIOBOOK
     assert all(got[n["noteId"]].kind == ss.AUDIOBOOK for n in notes[1:])
+
+
+def test_the_walks_own_edges_a_short_cue_ends_a_run_a_cue_is_its_own_line_the_first_answer_and_a_shared_unit():
+    """Hand-made books for the walk's edges (each answer the old pass's too): a run of the sentence's cues ends at a
+    short cue (はい); a cue that is the sentence answers itself though a later cue sits inside it; a cue inside the
+    sentence earlier in the book answers before the sentence's own cue; a unit on two cues names only the first."""
+    def book_of(*texts, units=None):
+        return [lineup.Cue("a.m4b", "a.srt", float(k), k + 0.9, lineup.clean(t), (units or {}).get(k))
+                for k, t in enumerate(texts)]
+    x, yes, z = "今日はとても良い天気ですね", "はい", "明日も晴れるといいですね"
+    found = book_of(x, yes, z)
+    assert lineup.place(x + yes + z, None, lineup.Book(found)) == found[0] == _place_before(x + yes + z, None, found)
+    whole, part = "本当にありがとうございました", "ありがとうございました"
+    found = book_of(whole, part)
+    assert lineup.place(whole, None, lineup.Book(found)) == found[0] == _place_before(whole, None, found)
+    found = book_of(part, "全然関係のない別の話です", whole)
+    assert lineup.place(whole, None, lineup.Book(found)) == found[0] == _place_before(whole, None, found)
+    found = book_of(x, z, units={0: 5, 1: 5})
+    assert lineup.place("聞いたことのない文です", "明日", lineup.Book(found), unit=5) is None
+    assert _place_before("聞いたことのない文です", "明日", found, unit=5) is None
+    assert lineup.place("聞いたことのない文です", "今日", lineup.Book(found), unit=5) == found[0]

@@ -39,7 +39,6 @@ Light: the standard library; Anki Miner is called through `anki_miner`.
 import bisect
 import difflib
 import hashlib
-import itertools
 import json
 import os
 import re
@@ -416,13 +415,15 @@ class Book:
     def __len__(self):
         return len(self.found)
 
-    def holders(self, want):
+    def holders(self, want, more=True):
         """The cues whose text holds `want` (never empty, no separator) — the first's index and whether a second
-        exists: (k, more) or None."""
+        exists: (k, more) or None (`more=False`: the first alone, no second look: (k, False))."""
         pos = self.joined.find(want)
         if pos < 0:
             return None
         k = bisect.bisect_right(self.starts, pos) - 1
+        if not more:
+            return k, False
         nxt = self.starts[k + 1] if k + 1 < len(self.starts) else len(self.joined)
         return k, self.joined.find(want, nxt) >= 0
 
@@ -460,7 +461,7 @@ def place(line_text, spelling, found, unit=None):
     exact = book.by_text.get(want)
     if exact:
         firsts.append(exact[0])
-    held = book.holders(want) if len(want) >= MIN_CHARS else None
+    held = book.holders(want, more=False) if len(want) >= MIN_CHARS else None
     if held is not None:
         firsts.append(held[0])
     inside = book.inside(want)
@@ -472,11 +473,13 @@ def place(line_text, spelling, found, unit=None):
     cue = book.found[k]
     if cue.text == want or (len(want) >= MIN_CHARS and want in cue.text):
         return cue if not hold or hold in cue.text else None
-    run = [cue]                                 # the sentence's cues, in a row
-    for nxt in itertools.islice(book.found, k + 1, None):
+    run, j = [cue], k + 1                       # the sentence's cues, in a row
+    while j < len(book.found):
+        nxt = book.found[j]
         if not nxt.text or nxt.text not in want or len(nxt.text) < MIN_CHARS:
             break
         run.append(nxt)
+        j += 1
     holding = [c for c in run if not hold or hold in c.text]
     return holding[0] if len(holding) == 1 else None
 

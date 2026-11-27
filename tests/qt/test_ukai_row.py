@@ -189,3 +189,19 @@ def test_a_closed_page_leaves_nothing_listening_on_the_bridge(qapp, fakes, tmp_p
     assert shell.bridge.receivers(signal) == 0
     shell.bridge.ukai_changed()                                     # (nothing painted, nothing raised)
     QApplication.processEvents()
+
+
+@pytest.mark.parametrize("lines, words", [(2, "paired · 1.0.0 · 2 lines to record"),
+                                          (1, "paired · 1.0.0 · 1 line to record"), (0, "paired · 1.0.0")])
+def test_the_row_says_how_many_lines_wait_for_ukai_to_record(qapp, fakes, tmp_path, lines, words):
+    """UKAI-S4 (U9's *what waits to be recorded*): Connect's Netflix jobs' lines still missing a clip, counted on the
+    row's worker (`connect.browser.waiting_lines`); none waiting says nothing more."""
+    from app.connect import browser
+    if lines:
+        browser.hand_off(412, {"site": "netflix", "url": "https://www.netflix.com/watch/80000003"}, "第3話",
+                         [{"n": n, "start": 1.0 + 3 * n, "end": 3.2 + 3 * n, "text": "文化祭まで、あと三日しかないよ。"}
+                          for n in range(lines)])
+    pairing = up.Pairing(None, where=str(_paired_file(tmp_path)))
+    page, _shell = _make(fakes, tmp_path, pairing)
+    assert wait_until(lambda: _mark(page).words() == words), _mark(page).words()
+    page.close()

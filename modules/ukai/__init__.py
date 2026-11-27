@@ -14,6 +14,12 @@ has checked the address, the extension's Origin and the paired token before a ro
   second item). A language with no library here: 409 *refused* (Ukai drops it, U3); one whose library isn't the open
   one, or a library busy or read-only: 503 *busy* (Ukai keeps it and sends it again); a body the contract doesn't take:
   400 with why. One subtitle is taken in at a time, so the same episode sent twice at once is still one item.
+- v2, the clips (U-S4; Connect's half is `app/connect/browser.py`), all paired: `GET /v1/jobs` -> {"jobs"}: every
+  Connect job waiting for Ukai, each with only the lines still missing a clip; `POST /v1/jobs/<job>/clips/<n>` (the
+  clip's bytes, `X-Clip-Start` / `X-Clip-End` its first and last frame's video time) streamed whole to the job's
+  folder (`door.Call.save`, ≤ 40 MB, never held in memory) -> {}; `POST /v1/jobs/<job>/done` ({"failed", "rev"?})
+  -> {}. A job or line that no longer waits: 404 *gone* (Ukai skips it; its body read first); bad times or body: 400;
+  the disk refusing: 503 *busy* (Ukai sends it again).
 
 Lazy-imported by the window (`ShellWindow.ukai_extension`, only while `door.EXTENSION_ON`): Surasura runs normally
 without this folder — Ukai's class is then never built and nothing listens for it. No settings of its own.
@@ -21,7 +27,8 @@ without this folder — Ukai's class is then never built and nothing listens for
 import os
 import threading
 
-CONTRACT = 1                    # Ukai's CONTRACT.md: v1, the subtitle (2: the clips, U-S4; 3: YouTube links, U-S3)
+CONTRACT = 2                    # Ukai's CONTRACT.md: v1, the subtitle; v2, the clips (U-S4); 3: YouTube links, U-S3
+GONE = "that job or line doesn't wait for a clip"
 NO_LIBRARY = "Surasura has no {name} library: nothing is kept"
 NAMES = {"ja": "Japanese", "zh": "Chinese"}
 _ONE = threading.Lock()         # one subtitle taken in at a time: two posts of one episode are one item
@@ -43,11 +50,22 @@ def libraries():
     return found
 
 
-def routes(writer, settings):
+def _seconds(value):
+    """A clip header's seconds -> a float ≥ 0 and finite, or None."""
+    try:
+        got = float(value)
+    except (TypeError, ValueError):
+        return None
+    return got if 0 <= got < float("inf") else None
+
+
+def routes(writer, settings, clips=None):
     """The paired routes (and `hello`) for the door's Ukai class. `writer()` -> the open library's writer
     (`moves.Writer`) or None, asked at each call (a language switch gives another); `settings()` -> the settings as
-    the window holds them (`placing_rules`, `covers_download`)."""
+    the window holds them (`placing_rules`, `covers_download`); `clips` Connect's folder for Ukai's jobs (None:
+    `connect.browser.folder()`)."""
     from app import __version__, door
+    from app.connect import browser
     from modules.ukai import subtitles
 
     def values():
@@ -80,4 +98,35 @@ def routes(writer, settings):
                 raise door.RouteError(str(e) or "Surasura is busy: try again later", "busy", 503) from None
         return {"added": bool(added), "item": item}
 
-    return {"GET /v1/hello": hello, "POST /v1/online-subtitle": online_subtitle}
+    def jobs(_call):
+        return {"jobs": browser.waiting(clips)}
+
+    def clip(call):
+        job, n = (int(g) for g in call.groups)
+        start, end = (_seconds(call.headers.get(h)) for h in ("X-Clip-Start", "X-Clip-End"))
+        if start is None or end is None or not start < end:
+            raise door.RouteError("X-Clip-Start and X-Clip-End must be the clip's seconds", "body", 400)
+        try:
+            kept = browser.keep_clip(job, n, call.save, start, end, clips)
+        except OSError as e:
+            raise door.RouteError(f"Surasura couldn't keep the clip ({e.strerror or e})", "busy", 503) from None
+        if not kept:
+            call.skip()                 # (read first: unread, Windows would reset the socket before the answer)
+            raise door.RouteError(GONE, "gone", 404)
+        return {}
+
+    def done(call):
+        body = call.json()
+        failed, rev = body.get("failed") or [], body.get("rev")
+        if not isinstance(failed, list) or (rev is not None and (isinstance(rev, bool) or not isinstance(rev, int))):
+            raise door.RouteError('the body must be {"failed": [...]}', "body", 400)
+        try:
+            kept = browser.finish(int(call.groups[0]), failed, clips, rev=rev)
+        except OSError as e:
+            raise door.RouteError(f"Surasura couldn't end the job ({e.strerror or e})", "busy", 503) from None
+        if not kept:
+            raise door.RouteError(GONE, "gone", 404)
+        return {}
+
+    return {"GET /v1/hello": hello, "POST /v1/online-subtitle": online_subtitle, "GET /v1/jobs": jobs,
+            r"POST /v1/jobs/(\d{1,9})/clips/(\d{1,5})": clip, r"POST /v1/jobs/(\d{1,9})/done": done}

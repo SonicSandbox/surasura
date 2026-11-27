@@ -39,6 +39,7 @@ from collections import Counter, namedtuple
 from itertools import chain
 
 from app.connect import feed as connect_feed     # P4.1 L2: Connect's kinds (a light module: no Qt, no Tk)
+from app.connect import browser                  # 鵜 Ukai's wait line (standard library only)
 from app.episode_names import identity           # LM1a: the one reading of a file name (pure)
 from app.path_utils import ONLINE_TYPES, infer_source_type
 from app import tracks                            # Michi-ST: a waiting video's tracks (standard library only)
@@ -343,6 +344,7 @@ STRINGS = {
     # folder you pick as one Surasura reads, and the show finds its episodes there
     "tip_connect_moved": "{tip}\n• Find its folder or link its video",
     "play_moved": "{tip}\n• Find its folder: in its ⋯ menu, or on its No {word}",
+    "waits_for_ukai": "Waits for Ukai",    # a Netflix / Disney+ episode whose lines Ukai records (PROVISIONAL)
     "not_timed": "Not timed", "tip_not_timed": "{words}: its cards wait for you\n• Check it plays in time, then "
                                                 "Mine anyway: in Needs you",
     # Michi-AB Stage B (AB-Q3, PROVISIONAL): a book lined up with its audiobook before its cards are made
@@ -1392,6 +1394,8 @@ def _connected(st, item, word, online=None):
         return Status("no_media", STRINGS["no_media"].format(word=word),
                       STRINGS["tip_connect_moved" if moved else "tip_connect_no_media"].format(tip=item.tip), "warn",
                       moved=moved)
+    if item.kind == connect_feed.WAITING and item.tip == browser.WAIT:      # Netflix / Disney+ (`connect.browser`)
+        return Status("waiting", STRINGS["waits_for_ukai"], item.tip, "dim")
     if item.kind == connect_feed.NOT_TIMED:
         return Status("waiting", STRINGS["not_timed"], STRINGS["tip_not_timed"].format(words=item.words), "warn")
     if item.kind == connect_feed.SKIPPED:   # T2: refused, its entry dismissed — quiet, never a *Waiting* to mine

@@ -691,9 +691,10 @@ def export_dictionary(words, sources, save_path, language, tag=None, progress=No
 # --------------------------------------------------------------------------------------------- #
 def known_sets(language, store, settings):
     """(known_tuples, known_lemmas, ignore): the analyzer's own sets — the known words as the token
-    store caches them (by KnownWord.json's signature), and the Ignore, Blacklist and Graduated lists with
+    store caches them (by KnownWord.json's signature; changed, through the store's per-term cache as Generate reads
+    them, `analyzer.read_known_words`: only the terms not read before are tokenized — a card Connect writes moves the
+    file, and every ~10k terms were read again at each one, #ZGBCD9), and the Ignore, Blacklist and Graduated lists with
     KnownWord.json's IGNORED entries (`analyzer.load_ignored_entries`, as the list and the slider read them)."""
-    import sqlite3
     from app import analyzer, token_index
     from app.path_utils import get_user_files_path
     from app.zh_script import effective
@@ -703,19 +704,16 @@ def known_sets(language, store, settings):
     user_files = get_user_files_path(language)
     known_file = os.path.join(user_files, "KnownWord.json")
     signature = token_index.known_signature(known_file, script)
-    cached = store.get_cached_known(signature)
+    suffix = store.known_suffix(settings)   # the key, once for the miss (STORE-KEY), with the caller's settings (ONE-READ)
+    cached = store.get_cached_known(signature, suffix)
     if cached is None:
         tok = (analyzer.ChineseTokenizer(reinforce_segmentation=reinforce, script=script)
                if language == "zh" else analyzer.JapaneseTokenizer())
-        cached = analyzer.load_known_words(known_file, tok)
-        try:
-            store.set_cached_known(signature, *cached)
-        except sqlite3.Error:
-            pass
+        cached = analyzer.read_known_words(store, known_file, signature, tok, missed=suffix)    # (kept, as before)
     ignore = set()
     for name in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"):
         ignore |= analyzer.load_simple_list(os.path.join(user_files, name), script, language)
-    ignore |= analyzer.load_ignored_entries(user_files, script, language)
+    ignore |= analyzer.load_ignored_entries(user_files, script, language, settings, store)   # (the caller's switch, store)
     return cached[0], cached[1], ignore
 
 

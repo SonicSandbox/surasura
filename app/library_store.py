@@ -1134,8 +1134,9 @@ ADDED_DATES = "items_watched_at"
 # watching or reading it. Two added columns, as the watched date's (no row rewritten, no schema version: an older
 # Surasura never reads them, and a row it writes keeps them): `prestudied_at`, when it was marked (NULL: it isn't), and
 # `prestudied_by`, how — NULL never touched, 'end' the journey's end card, 'press' a press, 'off' un-marked by a press
-# (an end card never marks it again: `set_prestudied`). Nothing else reads them: the order, the tiers, watched, Connect,
-# Junban and the cards stay as they are (a status write: state_version only). Carried by the copy (ITEM_FIELDS), a
+# (an end card never marks it again: `set_prestudied`). The order, the tiers, watched, Junban and the cards stay as they
+# are (a status write: state_version only); Connect reads the mark only while *Mine only episodes I've pre-studied* is
+# on (PRESTUDIED-MINE, 3.0.20: `runner.Steps.prestudied` — an unmarked episode's cards wait). Carried by the copy (ITEM_FIELDS), a
 # Remove's trash row and Put back, Repair; a switch in place keeps the row. Made at a writer's first open
 # (`_added_prestudied`); the index, on the marked rows only, keeps the reader's look to them (`prestudied_marks`).
 # Dropped as easily: DROP INDEX items_prestudied_at, then the two columns.
@@ -5230,6 +5231,15 @@ class Store:
             out.append(ids)
         return out
 
+    def file_times(self, tier="arrivals"):
+        """ONB-3 (setup's *What are you watching right now?*): {item id: its file's `mtime_ns`} for the items of `tier`
+        — one read of the tier (a first scan stamps every `added_at` alike, so the file's own date says which show is
+        the newest)."""
+        if tier not in TIERS:
+            return {}
+        with self._reading():
+            return {i: m or 0 for i, m in self.conn.execute("SELECT id, mtime_ns FROM items WHERE tier = ?", (tier,))}
+
     def search(self, query, tiers=("now", "soon", "goal", "arrivals", "graduated")):
         """The window's search (05 §5.3), on its reader worker: (work ids, item ids) whose folded key holds the folded
         query, the works first — over Current, 6+ Months, New arrivals and Finished. Romaji finds a title only through a
@@ -6217,8 +6227,9 @@ class Store:
 
     def prestudied_marks(self, ids=None, by=False):
         """J-STORE: {item id: the date it was marked pre-studied} of every item marked (of `ids` only, when given) —
-        with `by`, {item id: (date, how)}, how 'end' or 'press'. An un-marked item is not in it. Read by the stones and
-        the journey only (the render, the door's `state`); never in the render signature (S19: a press never redraws
+        with `by`, {item id: (date, how)}, how 'end' or 'press'. An un-marked item is not in it. Read by the stones, the
+        journey (the render, the door's `state`) and Connect while *Mine only episodes I've pre-studied* is on
+        (PRESTUDIED-MINE: one id a job, `runner.Steps.prestudied`); never in the render signature (S19: a press never redraws
         the journey). One read transaction, through the index on the marked rows; {} on a store without the columns."""
         with self._reading():
             if not self._prestudied_column():
@@ -10016,7 +10027,9 @@ def spawn_maintain(language, *extra):
         return None
     flags = 0
     if sys.platform == "win32":
-        flags = 0x00000008 | 0x00000200 | 0x08000000   # DETACHED_PROCESS | NEW_PROCESS_GROUP | NO_WINDOW
+        # NEW_PROCESS_GROUP | NO_WINDOW: a console of its own with no window. Never DETACHED_PROCESS: beside it
+        # NO_WINDOW is ignored, and each console child the helper starts flag-less would open a window (TERM-POPUPS).
+        flags = 0x00000200 | 0x08000000
     from app.connect.power import popen_below_normal          # a7: background work, below the window
     proc = popen_below_normal(_helper_args(language, "maintain", *extra), env=_helper_env(), creationflags=flags,
                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

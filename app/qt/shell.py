@@ -1745,7 +1745,9 @@ class ShellWindow(QMainWindow):
             self.needs_you.changed.connect(self._connect_fault)
             self.needs_you.changed.connect(self._first_cards_circle)
             needs_page.controller = self.needs_you
-            self.needs_you.failures_in(services.status.snapshot().needs_you)
+            snap = services.status.snapshot()
+            self.needs_you.backlog = getattr(snap, "backlog", None)         # ONB-4, before a gather
+            self.needs_you.failures_in(snap.needs_you)
             if needs_page.view_model is not None:
                 self.needs_you.view_in(needs_page.view_model)
         # --- end W3.2 Q5
@@ -2520,6 +2522,7 @@ class ShellWindow(QMainWindow):
             needs_page.set_failures(snap.needs_you)
         if getattr(self, "needs_you", None) is not None:          # W3.2 Q5: Connect's line moved: its entries may have
             self.needs_you.connect_in(snap.connect)
+            self.needs_you.backlog_in(getattr(snap, "backlog", None))     # ONB-4: *Ready for more?* reads it
         if self.duties is not None and bool(logs_before) != bool(snap.logs):
             self._show_update(self.duties.update_state, force_cards=True)     # the cards' *Open the logs folder*
         self._paint_needs()
@@ -2876,6 +2879,8 @@ class ShellWindow(QMainWindow):
                 refresh("connect")
         if {"connect_enabled", "logic.automation", "connect_anki_miner_path"} & set(keys or ()):
             self._path_repaint()                        # the cards step's press follows its switches (Mado-EZP)
+        if {"anki_sync_decks", "anki_sync_fields"} & set(keys or ()) and self.services.automation is not None:
+            self.services.automation.decks_changed()    # *N waiting* read again for the decks now chosen (#SYQF6C)
         if self.duties is not None:
             self._duty_settings(keys)
             if "logic.automation" in keys:
@@ -3602,6 +3607,19 @@ class ShellWindow(QMainWindow):
         return journey_door.routes(journey_door.App(
             services=services, language=lambda: self.language, closing=services.closing.is_set,
             log=lambda where, e: applog.log("door", f"{where}: {e!r}")))
+
+    def ukai_extension(self):
+        """(The door's starting thread, only while `door.EXTENSION_ON`.) 鵜飼 Ukai's caller class (UKAI-S1): its
+        pairing (`app/services/ukai_pairing.py`, kept as `ukai_pairing` for Settings' *Forget Ukai*), whose Allow card
+        opens in this window through the bridge (`_ukai_allow`). No widget is touched here."""
+        from app.services import ukai_pairing
+        self.bridge.ukai_asked.connect(self._ukai_allow, Qt.ConnectionType.QueuedConnection)
+        self.ukai_pairing = ukai_pairing.Pairing(ask=self.bridge.ask_ukai)
+        return self.ukai_pairing.extension()
+
+    def _ukai_allow(self, request):
+        from app.qt import ukai_allow
+        ukai_allow.ask(self, self.ukai_pairing, request)
 
     # --- Kotoba-K: Known / Ignore on the word card ----------------------------------------------------------------- #
     def _card_mark(self, marks):
@@ -4629,6 +4647,11 @@ class ShellWindow(QMainWindow):
             if got is not None and got.total:
                 known.set_work_share(100.0 * (got.done or 0) / got.total)
             self._known_followed()                          # ... until its sync ends
+        card = self._detached_card                          # row 35: all it names ended while it asks (the store's
+        if card is not None and not jobs_module.detached_at_quit(views):   # helper at the open runs ~1 s): the
+            self._detached_card = None                      # question no longer stands — the close goes on as Quit,
+            card.drop()                                     # its default, as E20's wait closes by itself (below)
+            self._detached_answer(False)
         if self._quit == "waiting" and self._replan_waited and getattr(self, "_moves_waited", True) and \
                 not jobs_module.waits_at_quit(views):
             self._close_now()
@@ -4648,7 +4671,8 @@ class ShellWindow(QMainWindow):
         is of a kind it may stop, `jobs.STOPPABLE_AT_QUIT`: Connect alone → Quit is the one button). Asked once a close,
         first in it (before E20's wait); never for the update's hand-over, *Restart now* or the session ending (a
         logoff never waits on a sheet). Any other card open in the window is dropped first: the sheet never stacks on
-        one. While it asks nothing new starts (every answer quits). A close while it is open is Quit. None under way →
+        one. While it asks nothing new starts (every answer quits). A close while it is open is Quit; so is everything
+        it names ending while it asks (`_jobs_changed` drops it: the question no longer stands). None under way →
         nothing asked, the close as before. -> True when the close waits for the answer."""
         card = self._detached_card
         if self._quit is not None or self.restart_asked or _session_ending():
@@ -5107,7 +5131,14 @@ def start_door(window):
         try:
             from app import door
             from app.path_utils import get_user_file
-            door.start(routes, get_user_file("results"), on_error=lambda path, e: applog.log("door", f"{path}: {e!r}"))
+            extension = None
+            if door.EXTENSION_ON:               # 鵜飼 Ukai's class: off until Ukai 1.0 ships with it
+                try:
+                    extension = window.ukai_extension()
+                except Exception as e:          # (the journey's door opens all the same)
+                    applog.log("shell", f"Ukai's pairing: {e!r}")
+            door.start(routes, get_user_file("results"), on_error=lambda path, e: applog.log("door", f"{path}: {e!r}"),
+                       extension=extension)
             if _door_quit.is_set():             # (the quit came while it started, and waited past its join)
                 door.stop()
         except Exception as e:
@@ -5188,7 +5219,9 @@ def relaunch(argv, move=False):
         args = [sys.executable, "-m", "app.qt.shell"] + list(argv[1:])
     else:
         args = [sys.executable, os.path.abspath(argv[0])] + list(argv[1:])
-    flags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0   # DETACHED_PROCESS | NEW_PROCESS_GROUP
+    # NO_WINDOW | NEW_PROCESS_GROUP, never DETACHED_PROCESS: from source the window is a console Python, and with no
+    # console its worker pools opened a console window each (TERM-POPUPS). Frozen, a windowed program: no console.
+    flags = 0x08000000 | 0x00000200 if sys.platform == "win32" else 0
     try:
         return subprocess.Popen(args, creationflags=flags, close_fds=True, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

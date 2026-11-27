@@ -934,6 +934,45 @@ def test_backlog_read_before_a_generate_only_with_decks(live, monkeypatch):
     auto.close()
 
 
+def test_a_deck_change_reads_the_backlog_again_and_a_second_one_during_the_read_is_read_too(live, monkeypatch):
+    # why: *N waiting* followed the decks only at the next sync or Generate (#SYQF6C); and the Anki window saves at
+    # each click, so a second removal while the first one's read runs (a read already live: "running") must still be
+    # read before it ends — never left at the first click's decks
+    anki = _Anki(monkeypatch)
+    settings = _settings(anki_sync_decks={"ja": ["Japanese::Mining Deck", "Japanese::Jalup Sentences",
+                                                 "Japanese::Anki Miner"]})
+    entered, gate = threading.Event(), threading.Event()
+    real = anki._backlog
+
+    def held(language, url, decks, fields):
+        real(language, url, decks, fields)
+        if len(anki.backlogs) == 1:
+            entered.set()
+            gate.wait(10)                       # the first read, held while the learner clicks again
+    monkeypatch.setattr(anki_sync, "sync_backlog", held)
+    auto, registry, _c, _l = _make(settings)
+    settings.values["anki_sync_decks"] = {"ja": ["Japanese::Mining Deck", "Japanese::Anki Miner"]}
+    auto.decks_changed()
+    assert entered.wait(5)
+    settings.values["anki_sync_decks"] = {"ja": ["Japanese::Mining Deck"]}
+    auto.decks_changed()                        # finds the first read running: adds nothing of its own
+    assert auto.worker.idle(5)                  # (that ask answered before the first read ends)
+    gate.set()
+    _settle(auto, registry)
+    assert anki.backlogs == [("ja", ("Japanese::Mining Deck", "Japanese::Anki Miner")),
+                             ("ja", ("Japanese::Mining Deck",))], "each pick read once, the last one last"
+    # Every deck taken out: nothing to read in Anki, and the saved backlog says none waits
+    cleared = []
+    monkeypatch.setattr(anki_sync, "clear_backlog", cleared.append)
+    settings.values["anki_sync_decks"] = {"ja": [], "zh": ["中文"]}
+    auto.decks_changed()
+    _settle(auto, registry)
+    assert cleared == ["ja"] and len(anki.backlogs) == 2
+    auto.close()
+    auto.decks_changed()                        # closed: nothing asked, never an error
+    assert len(anki.backlogs) == 2 and cleared == ["ja"]
+
+
 def test_close_leaves_nothing(live, monkeypatch):
     """After `close`: no alarm, no start timer, no trigger acting, the controller's listener gone."""
     h.seed_library("ja")

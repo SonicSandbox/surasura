@@ -33,7 +33,8 @@ STEPS_NAME = "Setup steps"
 STEP_DONE_NAME = "{name}, done"
 STEP_HERE_NAME = "{name}, this step"
 STEPS = {"language": "Your language", "known": "What you know", "shows": "Your shows", "order": "Card order",
-         "cards": "Cards made for you", "level": "Your list"}
+         "cards": "Cards made for you", "watching": "Watching now", "level": "Your list",
+         "start": "Your start"}
 RECOMMENDED = "RECOMMENDED"
 SWITCH_TIP = "{name}\n{tip}"                # a switch has no words of its own: its tip names it first
 ANKI_CLOSED = "Anki isn't open"
@@ -378,6 +379,40 @@ MAKING = "Making your list… The first time reads every show and book, so it ca
 MAKING_PCT = "Making your list… {pct} % · The first time can take a few minutes."
 NOT_STARTED = "Your list couldn't start: press Generate at the top when you're ready."
 
+# --- ONB-1: *Your start* (Sonic § 102 / § 105, 2026-11-26; every word PROVISIONAL) — after *Your list*, while the first
+# cards wait for the learner's yes: three starts on his own show, its *Start* the yes (nothing is mined before it)
+START_TITLE = "How would you like to start?"
+START_ABOUT = "Choose how many cards Surasura makes at first. Change it any time in Settings › Anki & mining."
+START_ABOUT_NAME = "About how to start"
+START_TOP = "{title} is at the top"
+START_PACE = "{n} new cards a day"
+START_CHOICE_NAME = "How would you like to start?"
+START_NAMES = {"small": "Try it small", "full": "Full start", "prestudied": "Pre-studied only"}
+START_TIPS = {"small": "Cards for your next 3 episodes, up to 50 waiting at a time.\n• More come as you study them.",
+              "full": "Cards for your next 20 episodes, up to 300 waiting at a time.",
+              "prestudied": "An episode's cards come once you've gone through it in the journey and marked it "
+                            "pre-studied.\n• Mine now still makes them."}
+START_DAYS = "days"
+START_DAY = "day"
+START_COUNTING = "counting"
+START_PACE_WORD = "at your pace"
+START_SHOW_EPS = "{show} {first}–{last}"
+START_SHOW_EP = "{show} {first}"
+START_NEXT_N = "your next {n} episodes"
+START_NEXT_EPS = "{eps} · {titles}"
+START_TITLES = {1: "1 title"}
+START_TITLES_N = "{n} titles"
+START_CARDS = "about {n} cards · {cap} wait at a time"
+START_WAIT = "{cap} wait at a time"
+START_PRE_LINE = "an episode's cards come once"
+START_PRE_LINE_2 = "you've gone through it"
+START = "Start"
+START_TIP = "Start making your cards this way.\n• Enter"
+START_HINT = "← → to choose · Enter to start"
+MAKING_SHORT = "Making your list · {pct} %"
+MAKING_SHORT_NO_PCT = "Making your list…"
+START_FAILED = "Your cards couldn't start: Needs you asks again."
+
 # --- after page 3: the load screen and the sort screen (Sonic 2026-10-30) ------------------------------------------- #
 LOAD_NAME = "Getting your library ready"
 LOAD_MARK_NAME = "Surasura"
@@ -457,3 +492,22 @@ SORT_OVER_SAYING = "Putting {n:,} titles back to sort…"
 SORT_OVER_SAYING_ONE = "Putting 1 title back to sort…"
 SORT_OVER_SAID_ONE = "1 title back to sort"
 SORT_KEYS_NAME = "Keys"
+
+# --- ONB-3: *What are you watching right now?* (before the sort; every word PROVISIONAL) ---------------------------- #
+WATCH_TITLE = "What are you watching right now?"
+WATCH_ABOUT = "It goes to the top of Current, so its cards come first. You sort the rest next."
+WATCH_ABOUT_NAME = "About what you're watching"
+WATCH_CHOICE_NAME = "Your shows, newest first"
+WATCH_TILE_TIP = "Put {title} at the top of Current"
+WATCH_NONE = "None of these"
+WATCH_NONE_TIP = "Sort every show yourself next"
+WATCH_SEARCH = "Search your shows"
+WATCH_SEARCH_TIP = "Find a show that isn't shown here"
+WATCH_NO_HIT = "No show called that"
+WATCH_EPISODE = "I'm on"
+WATCH_EPISODE_TIP = "The episodes before it count as watched: no cards are made for them"
+WATCH_HINT = "← → to choose · Enter to go on"
+WATCH_READING = "Finding your shows…"
+WATCH_PLACED = "{title} is at the top of Current"
+WATCH_MORE = "· {n} more in the next step"
+STEP_WARN_NAME = " · {name}: a folder couldn't be read"

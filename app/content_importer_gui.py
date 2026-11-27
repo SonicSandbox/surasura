@@ -2223,7 +2223,7 @@ class ContentImporterApp:
                 project_root = os.path.dirname(app_dir)
                 env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
                 cmd = [sys.executable, os.path.join(app_dir, script_name)] + list(extra_args)
-            subprocess.Popen(cmd, env=env)
+            subprocess.Popen(cmd, env=env, creationflags=0x08000000 if sys.platform == "win32" else 0)   # NO_WINDOW
             self._refresh_on_focus = True
         except Exception as e:
             messagebox.showerror("Error", f"Could not launch {script_name}:\n{e}")

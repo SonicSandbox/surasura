@@ -1,0 +1,87 @@
+{
+  "version": "3.0.20",
+  "date": "2026-11-26",
+  "items": [
+    {
+      "id": "setup-reads-behind",
+      "kind": "new",
+      "for": ["everyone"],
+      "text": "Setup reads your library behind its steps, not in one long wait at the end."
+    },
+    {
+      "id": "watching-now",
+      "kind": "new",
+      "for": ["shows"],
+      "text": "What are you watching right now?: pick your show and episode; seen episodes get no cards."
+    },
+    {
+      "id": "how-to-start",
+      "kind": "new",
+      "for": ["anki", "miner"],
+      "text": "How would you like to start?: Try it small, Full start or Pre-studied only."
+    },
+    {
+      "id": "ready-for-more",
+      "kind": "new",
+      "for": ["anki", "miner"],
+      "text": "Started small? Ready for more? asks once, when those cards are nearly studied."
+    },
+    {
+      "id": "prestudied-mine",
+      "kind": "new",
+      "for": ["anki", "miner"],
+      "text": "Mine only episodes I've pre-studied: Connect waits for the journey's pre-studied mark.",
+      "where": "settings:connect_prestudied_only"
+    },
+    {
+      "id": "hato-ready",
+      "kind": "tweak",
+      "for": ["hato"],
+      "text": "hato's row says ready in hato when its update waits; hato 1.5.0 installs it quietly.",
+      "where": "settings:hato"
+    },
+    {
+      "id": "soon-line",
+      "kind": "tweak",
+      "for": ["everyone"],
+      "text": "A clearer Soon line: a thin line in Surasura's colours between Current and Soon.",
+      "where": "tab:current"
+    },
+    {
+      "id": "faster-known-words",
+      "kind": "tweak",
+      "for": ["anki", "miner"],
+      "text": "After each new card, your known words are read in 0.18 s instead of 0.84 s."
+    },
+    {
+      "id": "decks-heard",
+      "kind": "fix",
+      "for": ["anki"],
+      "text": "Removing a deck clears its N waiting; a deck change refreshes the Decks row."
+    },
+    {
+      "id": "same-known-words",
+      "kind": "fix",
+      "for": ["anki", "miner", "junban"],
+      "text": "Connect and the card order count the same known words as your list."
+    },
+    {
+      "id": "remake-anki-closed",
+      "kind": "fix",
+      "for": ["anki"],
+      "text": "Make my new cards again… with Anki closed says Anki isn't open, and deletes nothing."
+    },
+    {
+      "id": "still-finishing",
+      "kind": "fix",
+      "for": ["everyone"],
+      "text": "Still finishing goes away once its work has ended, and the window closes."
+    },
+    {
+      "id": "words-tsukare-tou",
+      "kind": "fix",
+      "for": ["ja"],
+      "text": "Words: 歩き疲れる and 研究棟 are one word each, no longer split."
+    }
+  ]
+}

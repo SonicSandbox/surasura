@@ -62,7 +62,7 @@ class View:
         known_file = os.path.join(user_files_dir, "KnownWord.json")
         known_tuples, known_lemmas = analyzer.read_known_words(
             store, known_file, token_index.known_signature(known_file, script), tokenizer, keep=False)
-        ignore = analyzer.load_ignore_set(user_files_dir, script, language)
+        ignore = analyzer.load_ignore_set(user_files_dir, script, language, store=store)   # (the names: its store)
 
         def known(lr):
             return lr in known_tuples or lr[0] in known_lemmas or lr[0] in ignore

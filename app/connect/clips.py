@@ -142,6 +142,9 @@ def cut(language, line_id, settings=None, steps=None, miner=None):
             held = _cutting.get(key)
             mine = held is None
             if mine:
+                kept = _kept(key)       # a cut that put its clip in place, then let its claim go, since the look
+                if kept:                # above: one cut a line (TEST-FLAKES)
+                    return kept
                 held = _cutting[key] = [threading.Event(), None]
         if mine:
             break
@@ -254,6 +257,9 @@ def _cut_ahead(language, ids, settings, steps, miner):
         for key in list(mine):                  # one line at a time (~0.15 s each), a press heard between lines
             if _ahead["stop"].is_set():
                 return
+            if _kept(key):                      # a press cut it between the look above and the claim: let go,
+                _release(mine.pop(key), key)    # never cut twice (TEST-FLAKES)
+                continue
             video, subtitle, cue = can[key]
             clip = _direct(language, video, cue, miner, os.path.join(run_dir, key), below=True,
                            stop=_ahead["stop"]) if direct else None

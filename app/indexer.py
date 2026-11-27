@@ -197,7 +197,8 @@ def main():
             # delete, or new). Makes the preview's known-filter EXACT (not the GUI's dictForm approx).
             known_file = os.path.join(get_user_files_path(language), "KnownWord.json")
             sig = token_index.known_signature(known_file, script)
-            if store.get_cached_known(sig) is None:
+            suffix = store.known_suffix()    # the key's settings and tables, worked out once (STORE-KEY)
+            if store.get_cached_known(sig, suffix) is None:
                 from app import analyzer
                 analyzer.SANITIZE_JA = (language == "ja")
                 # The SAME tokenizer a run uses. This used to build ChineseTokenizer() with no
@@ -205,7 +206,7 @@ def main():
                 tok = (analyzer.ChineseTokenizer(reinforce_segmentation=reinforce, script=script)
                        if language == "zh" else analyzer.JapaneseTokenizer())
                 # Through the store's per-term cache (G8): after a sync only the words it added are tokenized.
-                analyzer.read_known_words(store, known_file, sig, tok)
+                analyzer.read_known_words(store, known_file, sig, tok, missed=suffix)
         finally:
             store.close()
         print(f"Indexer: reconciled {len(files)} files for '{language}'.")

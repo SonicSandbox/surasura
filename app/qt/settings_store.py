@@ -68,7 +68,9 @@ def resume_connect(before, changes):
     return True
 
 
-RELEASE_KEYS = ("connect_backlog_cap",)      # changed at all: Connect looks again (a cap read live, laptop round 7 #42)
+# changed at all: Connect looks again (a cap read live, laptop round 7 #42; PRESTUDIED-MINE's switch: off lets the
+# episodes waiting for a mark go, on is read at the next episode)
+RELEASE_KEYS = ("connect_backlog_cap", "connect_prestudied_only")
 VIDEO_KEYS = ("connect_video_folders",)      # changed: Connect looks for the waiting episodes' videos again (Michi-VF)
 
 

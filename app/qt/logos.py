@@ -33,6 +33,7 @@ CLEARED = {
     "anki_miner": ("anki_miner.svg",),
     "hato": ("hato-32.png", "hato-64.png", "hato-128.png"),
     "tsubasa": ("tsubasa-32.png", "tsubasa-64.png", "tsubasa-128.png"),
+    "ukai": ("ukai-32.png", "ukai-48.png", "ukai-128.png"),     # Ukai's own icons (its repo's icons/, GPL-3.0)
     "tmdb": ("tmdb_blue_short.svg",),
 }
 # A tile drawn behind the logo (never over it): Anki Miner's black tile would vanish into the dark ground (LOGOS.md:
@@ -156,7 +157,7 @@ def _pixmap(key):
 
 # The Settings page's rows that show a logo, and whose (Connections' and Anki's own status row). AnkiWeb, tsubasa and
 # TMDB have a cleared logo but no row of their own yet; AniList, jimaku, YouTube and More from Houseki keep the name.
-ROWS = {"anki_connection": "anki", "anki_miner": "anki_miner", "hato": "hato"}
+ROWS = {"anki_connection": "anki", "anki_miner": "anki_miner", "hato": "hato", "ukai": "ukai"}
 ROW_PX = 20                     # a row's logo, logical px at text size M: below the label's two lines, never the mark
 
 

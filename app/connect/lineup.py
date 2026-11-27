@@ -658,6 +658,37 @@ def heard_lines(subtitle, language, video=False):
     return [(cues.seconds(c.start), cues.seconds(c.end), c.text) for c in read if c.counted and not c.sung]
 
 
+def hear(miner, language, profile, files, where, timeout=SPOT_TIMEOUT):
+    """Anki Miner's `transcribe` for `files`, all in one call (its model loads once) -> what it heard in each, in
+    `files`' order: the text, "" (it listened and wrote nothing), or None (a None file, or one it couldn't listen to).
+    Its jobs file and run folder go in `where`. Raises AnkiMinerError for a refusal of the whole call (SETUP_ERROR: no
+    speech model). The spot-check's listening, and the AI voice's listen-back (Iro-P)."""
+    from app.connect import anki_miner
+    out = [None] * len(files)
+    if not any(files):
+        return out
+    run_dir = os.path.join(where, "run")
+    os.makedirs(run_dir, exist_ok=True)
+    job = {"schema": 1, "run_dir": run_dir, "language": language,
+           "episodes": [{"run_id": f"heard-{k}", "audio_file": os.path.abspath(f)} for k, f in enumerate(files, 1) if f]}
+    if profile:
+        job["profile"] = profile
+    path = os.path.join(where, "transcribe.json")
+    _write_json(path, job)
+    verdict = anki_miner.api(miner, ["transcribe", path], timeout=timeout, look_up=True)
+    if not verdict.get("runs") and not verdict.get("ok"):
+        anki_miner._result(verdict)             # SETUP_ERROR (no speech model) and the like: raised
+    runs = {r.get("run_id"): r for r in verdict.get("runs") or () if isinstance(r, dict)}
+    for k, f in enumerate(files, 1):
+        run = runs.get(f"heard-{k}")
+        if not f or run is None or not run.get("ok"):
+            continue
+        made = _read_json(os.path.join(run_dir, f"heard-{k}", os.path.basename(str(run.get("file") or "")))) or {}
+        out[k - 1] = "".join(t for _s, _e, t in srt_cues(made["subtitle_file"])) \
+            if isinstance(made.get("subtitle_file"), str) else ""
+    return out
+
+
 def _spot_check(miner, language, profile, audio, subtitle, timeout=SPOT_TIMEOUT, offset=0.0):
     """AB-Q5: is `subtitle` timed to `audio`? SAMPLES places of it cut from the audio (`media`, one call) and heard
     (`transcribe`, one call), each compared with its lines (`overlap`): MATCHES of them at MATCH or more → MATCHED,
@@ -710,29 +741,17 @@ def _spot_check(miner, language, profile, audio, subtitle, timeout=SPOT_TIMEOUT,
     places = [(s, a, line.get("text") if isinstance(line.get("text"), str) and line.get("text") else t)
               for (s, a, t), line in zip(places, lines)]
     shares = []
-    if any(clips):
-        heard_job = dict(base, episodes=[{"run_id": f"heard-{k}", "audio_file": os.path.abspath(c)}
-                                         for k, c in enumerate(clips, 1) if c])
-        path = os.path.join(where, "transcribe.json")
-        _write_json(path, heard_job)
-        verdict = anki_miner.api(miner, ["transcribe", path], timeout=timeout, look_up=True)
-        if not verdict.get("runs") and not verdict.get("ok"):
-            anki_miner._result(verdict)             # SETUP_ERROR (no speech model) and the like: raised
-    for k, (_s, _a, said) in enumerate(places, 1):
-        if clips[k - 1] is None:
+    heard = hear(miner, language, profile, clips, where, timeout)
+    for k, (_s, _a, said) in enumerate(places):
+        if clips[k] is None:
             shares.append(0.0)
             continue
-        run = next((r for r in verdict.get("runs") or () if isinstance(r, dict) and r.get("run_id") == f"heard-{k}"),
-                   None)
-        if run is None or not run.get("ok"):
+        if heard[k] is None:
             # a clip it couldn't listen to (the drill of record: a clip of silence past this audio's end, refused as
             # unreadable) is heard as nothing; every clip refused is no answer (looked at again)
             shares.append(None)
             continue
-        made = _read_json(os.path.join(run_dir, f"heard-{k}", os.path.basename(str(run.get("file") or "")))) or {}
-        heard = "".join(t for _s2, _e2, t in srt_cues(made["subtitle_file"])) \
-            if isinstance(made.get("subtitle_file"), str) else ""
-        shares.append(overlap(said, heard))
+        shares.append(overlap(said, heard[k]))
     if any(clips) and all(s is None for s, c in zip(shares, clips) if c):
         return None
     shares = [0.0 if s is None else s for s in shares]

@@ -39,8 +39,9 @@ from collections import Counter, namedtuple
 from itertools import chain
 
 from app.connect import feed as connect_feed     # P4.1 L2: Connect's kinds (a light module: no Qt, no Tk)
+from app.connect import browser                  # 鵜 Ukai's wait line (standard library only)
 from app.episode_names import identity           # LM1a: the one reading of a file name (pure)
-from app.path_utils import infer_source_type
+from app.path_utils import ONLINE_TYPES, infer_source_type
 from app import tracks                            # Michi-ST: a waiting video's tracks (standard library only)
 from app import no_subs                           # Michi-NS: a waiting video's subtitle, found or made (std library)
 from app.services import stone_plan
@@ -242,7 +243,7 @@ Episode = namedtuple("Episode", Episode._fields + ("new_faded",), defaults=tuple
 # --- Michi-ST (PROVISIONAL): `tracks`, what a waiting video's own tracks say (`app/tracks.note`): "pictures" — its only
 # subtitles are drawn as pictures, not read yet; "no-miner" — no Anki Miner here to read a track inside it; else None
 Episode = namedtuple("Episode", Episode._fields + ("tracks",), defaults=tuple(Episode._field_defaults.values()) + (None,))
-# --- try a9.1 (Mado-Y): `online`, an online video's `source_type` ("youtube" · "bilibili"): ▶ opens its page in the
+# --- try a9.1 (Mado-Y): `online`, an online video's `source_type` (`path_utils.ONLINE_TYPES`): ▶ opens its page in the
 # browser (`play.online_link`); None for a file on disk and in a cache from before
 Episode = namedtuple("Episode", Episode._fields + ("online",), defaults=tuple(Episode._field_defaults.values()) + (None,))
 # --- Michi-NS (PROVISIONAL): `subs`, what `no_subs.note` says of its subtitle — a waiting video's "making", "looking",
@@ -343,6 +344,7 @@ STRINGS = {
     # folder you pick as one Surasura reads, and the show finds its episodes there
     "tip_connect_moved": "{tip}\n• Find its folder or link its video",
     "play_moved": "{tip}\n• Find its folder: in its ⋯ menu, or on its No {word}",
+    "waits_for_ukai": "Waits for Ukai",    # a Netflix / Disney+ episode whose lines Ukai records (PROVISIONAL)
     "not_timed": "Not timed", "tip_not_timed": "{words}: its cards wait for you\n• Check it plays in time, then "
                                                 "Mine anyway: in Needs you",
     # Michi-AB Stage B (AB-Q3, PROVISIONAL): a book lined up with its audiobook before its cards are made
@@ -489,7 +491,8 @@ STRINGS = {
     "acc_hero": "Up next: {title} {ep} · {pct} · {new} · all of it: {status}",     # AD-9: the status is its row's
     # New arrivals (W3.2 S1): the tray's groups, its source chips and each row's one line and number
     "arr_new": "New", "arr_watched": "Already watched",
-    "chip": {"hato": "hato", "youtube": "YouTube", "anilist": "AniList", "disk": "disk"},
+    "chip": {"hato": "hato", "youtube": "YouTube", "anilist": "AniList", "disk": "disk", "netflix": "Netflix",
+             "disneyplus": "Disney+"},
     "arr_cards": "{n} in Anki", "arr_no_media": "{n} files gone", "arr_no_media_one": "1 file gone",   # W3.2 Q5
     "per_ep": "{n} new / {unit}", "per_unit": {"eps": "ep", "videos": "video", "parts": "part"},
     "arr_units": {"eps": ("episode", "episodes"), "videos": ("video", "videos"), "parts": ("part", "parts")},
@@ -810,9 +813,12 @@ def media_type_guess(counts, anilist_id=None, tmdb_id=None):
 
 
 def source_of(item, work):
-    """hato · youtube · anilist · None: where an item came from (its chip's colour)."""
+    """hato · youtube · netflix · disneyplus · anilist · None: where an item came from (its chip's word and colour). A
+    Netflix or Disney+ episode (鵜 Ukai's) is its site's, never the disk's (Netflix-X's bug: its chip said *disk*)."""
     if (item.get("rel_path") or "").startswith(HATO_FOLDER):
         return "hato"
+    if item.get("source_type") in ("netflix", "disneyplus"):
+        return item["source_type"]
     if item.get("source_type") in ("youtube", "bilibili") or (work or {}).get("media_type") == "youtube":
         return "youtube"
     if (work or {}).get("anilist_id"):
@@ -1266,7 +1272,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     verb = VERB[word]
     # its video is online (try a9.1, Sonic: "the play button for a youtube video should be the video"): ▶ opens its
     # page in the browser (`play.online_link`, on the click's worker) — always shown, never looked for on disk
-    online = item.get("source_type") in ("youtube", "bilibili")
+    online = item.get("source_type") in ONLINE_TYPES       # (Netflix and Disney+: 鵜 Ukai's, #474)
     said = connect.get(item["id"]) if connect is not None else None
     # row 55 (Sonic: "if it doesn't find the media, there shouldn't be a play button"): ▶ only where ▶'s own lookup
     # (`play.Looks`, its answers `playable`) found the file — never asked where it can't be, nor where Connect says
@@ -1388,6 +1394,8 @@ def _connected(st, item, word, online=None):
         return Status("no_media", STRINGS["no_media"].format(word=word),
                       STRINGS["tip_connect_moved" if moved else "tip_connect_no_media"].format(tip=item.tip), "warn",
                       moved=moved)
+    if item.kind == connect_feed.WAITING and item.tip == browser.WAIT:      # Netflix / Disney+ (`connect.browser`)
+        return Status("waiting", STRINGS["waits_for_ukai"], item.tip, "dim")
     if item.kind == connect_feed.NOT_TIMED:
         return Status("waiting", STRINGS["not_timed"], STRINGS["tip_not_timed"].format(words=item.words), "warn")
     if item.kind == connect_feed.SKIPPED:   # T2: refused, its entry dismissed — quiet, never a *Waiting* to mine

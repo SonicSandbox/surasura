@@ -67,7 +67,7 @@ CALL_SITES = {
     "app/services/moves.py": 1,
     "app/services/needs.py": 1,
     "app/services/settings_io.py": 1,
-    "app/services/ukai_pairing.py": 1,  # UKAI-S1: 鵜飼 Ukai's pairing file (PARTS: roaming, stays)
+    "app/services/ukai_pairing.py": 1,  # UKAI-S1: 鵜 Ukai's pairing file (PARTS: roaming, stays)
     "app/telemetry.py": 3,
     "app/youtube_hold.py": 1,         # Yt-B: YouTube's hold, the persistent folder
     "app/token_index.py": 1,

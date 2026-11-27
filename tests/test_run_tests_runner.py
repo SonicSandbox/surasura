@@ -702,7 +702,7 @@ def test_pr_yml_runs_every_public_module_suite_with_the_shards_install():
     assert tracked.returncode == 0, "git ls-files failed"
     suites = sorted({"/".join(p.split("/")[:3]) for p in tracked.stdout.split()
                      if len(p.split("/")) > 3 and p.split("/")[2] == "tests"})
-    assert suites == ["modules/junban/tests", "modules/youtube_downloader/tests"]
+    assert suites == ["modules/junban/tests", "modules/ukai/tests", "modules/youtube_downloader/tests"]
     runs = [line.strip() for line in modules.splitlines() if line.strip().startswith("run: python -m pytest")]
     assert runs == [f"run: python -m pytest {suite} -v -ra -p no:cacheprovider" for suite in suites]
     assert modules.count("if: ${{ !cancelled() }}") == len(suites) - 1

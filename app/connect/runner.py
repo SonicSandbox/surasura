@@ -70,8 +70,8 @@ import threading
 import time
 from types import SimpleNamespace
 
-from app import youtube_hold
-from app.connect import fit_check, inbox, level, stopping
+from app import path_utils, youtube_hold
+from app.connect import browser, fit_check, inbox, level, stopping
 from app.connect.lineup import SPEECH_ASK, SPEECH_FAILED     # Stage B: the speech model's question
 from app.connect.ledger import (ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, OPEN, PREPARE_KINDS, SHOW, STOPPED_REASON,
                                 SWAP, Ledger)
@@ -227,6 +227,19 @@ BOOKS_WAIT = "Waits for Anki Miner to read books: Surasura makes its cards by it
 # A4M1-3 (lean taken, PROVISIONAL): an audiobook's or a podcast's the same way, until Anki Miner mines audio (Z-16)
 AUDIO_WAIT = "Waits for Anki Miner to mine audio: Surasura makes its cards by itself once Anki Miner can."
 WAIT_REASONS = {"books": BOOKS_WAIT, "audio": AUDIO_WAIT}       # `library.waits_for`'s kinds -> the job's line
+# Netflix and Disney+ (鵜 Ukai SPEC §6 U-S4, by mattias in #474; `app/connect/browser.py`): their video is never fetched
+# (DRM: nothing tries). The job picks its words from the transcript's own cues, hands their lines to Ukai and waits
+# with this line until Ukai has recorded them in the browser (`_browser_clips`); each clip then goes to Anki Miner as a
+# video of its own. The lines it couldn't record are said once (BROWSER_LOST, the first and how many more: *Needs you*
+# keeps one entry an episode) and asked for again by a *Mine*.
+# (PROVISIONAL words.) Only while Ukai's half is on (`door.ukai_on`, via `online.is_online`).
+BROWSER_WAIT = browser.WAIT
+BROWSER_LINE = "browser-line"           # *Needs you*'s kind for a line Ukai couldn't record
+BROWSER_LOST = "{title}: the line at {at} (「{text}」) wasn't recorded by Ukai ({why}). Mine it to ask again."
+BROWSER_LOST_MORE = ("{title}: {count} lines weren't recorded by Ukai — the first at {at} (「{text}」, {why}). Mine it to "
+                     "ask again.")
+BROWSER_NONE = "None of its lines were recorded by Ukai: Mine it to ask again."
+BROWSER_NO_CUES = "Its transcript keeps no line times, so Ukai can't record its lines: send it again from Ukai."
 # Z-9: a book or a text Anki Miner couldn't open (`SOURCE_UNREADABLE`, with its reason) — *Needs you*, plain: nothing
 # here sends you to Anki Miner (alpha 4 M1); the job is tried again at Connect's next start
 BOOK_UNREADABLE = "{title}: Anki Miner couldn't read this book or text ({why})."
@@ -617,6 +630,7 @@ def _consume(steps, ledger, lang):
             with ledger.transaction():
                 ledger.reopen_skipped(lang, line, MINER_ABSENT)
         _books_aside(steps, ledger, lang, ledger.jobs(lang, states=OPEN))
+        _close_browser_folders(ledger)
     except Exception:
         log.exception("Connect couldn't read its inbox (%s); it looks again", lang)
         return True
@@ -904,6 +918,8 @@ def _language(steps, ledger, lang, prepared, parked, out):
                 elif ended.get("state") in ("done", "undone"):  # Michi-RM2: the part went through: its records go
                     _forget_alone(ledger, lang, job["item_id"])     # (never skipped: reopened; nor dropped: unmined)
                 keep |= _add_audio_says(ledger, lang, job["item_id"])     # Kura-AB3 A2 r1 S6: the book's line stays
+                keep |= {n["say"] for n in ledger.needs(lang, listed=False)     # a line Ukai didn't record: stays
+                         if n["kind"] == BROWSER_LINE and n["item_id"] == job["item_id"]}   # till a *Mine*
                 _fixed(ledger, lang, item_id=job["item_id"], keep=keep)
                 _book_orphans(ledger, lang)    # Kura-AB2: a book's question no part waits on any more
         except Wait as w:
@@ -1360,6 +1376,7 @@ def _job(steps, ledger, lang, job, store_now, line, out, only_marked=False):
                         _stop_here(steps, ledger, lang, job, step, record)
                         _mine(steps, ledger, lang, job, record=record)
                         _drop_online(steps, job)    # Michi-YT: its clips and pictures are made: the video goes now
+                        _drop_browser(steps, job)   # Netflix / Disney+: Ukai's clips too (`connect.browser`)
                         step = "filling"
                     break
                 except _Again:
@@ -1835,6 +1852,7 @@ def _pick(steps, ledger, lang, job, record=True):
         picked["elsewhere"] = best                  # Kantan-SD: words whose card comes from a better sentence elsewhere
     if web is not None:
         picked["online"], picked["names"] = web["site"], web["names"]     # Michi-YT: its Source names the transcript
+        picked["url"] = web.get("url")      # (Netflix / Disney+: the page Ukai records it on)
     if book is not None:
         picked["reading"], picked["book"] = book    # the file Anki Miner reads; the EPUB its cards are placed in
         if lined:
@@ -2151,6 +2169,16 @@ def _drop_online(steps, job):
             log.exception("Connect couldn't remove job %s's downloaded video", job.get("id"))
 
 
+def _drop_browser(steps, job):
+    """Netflix / Disney+: Ukai's clips for the job gone once its cards are made — never a reason for it to fail."""
+    drop = getattr(steps, "drop_browser", None)
+    if drop is not None:
+        try:
+            drop(job)
+        except Exception:
+            log.exception("Connect couldn't remove job %s's recorded clips", job.get("id"))
+
+
 def _sweep_online(steps):
     sweep = getattr(steps, "sweep_online", None)
     if sweep is not None:
@@ -2453,6 +2481,9 @@ def _mine(steps, ledger, lang, job, record=True):
     (skipped, failed)."""
     jid = job["id"]
     picked = ledger.picked(jid) or {}
+    from app.connect import online
+    if picked.get("online") in online.BROWSER_SITES:
+        picked = _browser_clips(steps, ledger, lang, job, picked, record)    # waits until Ukai recorded them
     words = picked.get("words") or []
     by_key = {(w["word"], w["reading"]): w for w in words}
     ran = False                     # a batch ran in this call: the next one waits for an update staged meanwhile
@@ -2630,6 +2661,107 @@ def _alone(ledger, jid):
     except ValueError:
         return None
     return got if isinstance(got, dict) else None
+
+
+def _close_browser_folders(ledger):
+    """Netflix / Disney+: the folder of a job that left (dropped from the top lines, failed, skipped) closed, so Ukai
+    is never asked to record for it (`browser.close`) — kept while it holds clips a later job of its episode may take
+    over; a folder whose job the ledger doesn't know, or holding no clip, gone. (One listing; nothing when none.)"""
+    try:
+        for jid in browser.folders():
+            job = ledger.job_by_id(jid)
+            browser.close(jid, keep=None if job is not None and job.get("state") in OPEN else job is not None)
+    except Exception:
+        log.exception("Connect couldn't look at Ukai's folders")
+
+
+def _earlier_jobs(ledger, lang, job):
+    """The episode's earlier jobs no longer open, the newest first (a job dropped when you reordered the list, or one
+    that failed: its clips are taken over, `browser.take_over`) — never a newer job, nor one still waiting."""
+    conn = getattr(ledger, "conn", None)
+    if conn is None:
+        return []
+    marks = ", ".join("?" * len(OPEN))
+    return [r[0] for r in conn.execute(f"SELECT id FROM jobs WHERE language = ? AND item_id = ? AND id < ? AND state "
+                                       f"NOT IN ({marks}) ORDER BY id DESC", (lang, job["item_id"], job["id"], *OPEN))]
+
+
+def _browser_clips(steps, ledger, lang, job, picked, record=True):
+    """Netflix / Disney+ (contract v2, `connect.browser`; by mattias, #474): the job's lines handed to Ukai, then a wait
+    (BROWSER_WAIT, looked at again in 2 minutes; resumed at mining by a later run) until it says it is done ->
+    `picked` with `clips` {line n: {"video", "subtitle", "shift"}} and only the words whose line has a clip that holds
+    it (each naming its `clip`) — and the words cut from another episode's line (`from`, Kantan-SD 6), which go with
+    that episode as any job's.
+
+    A word is matched to its line by the line's place in the video (`browser.span`), never by its order: the `n` in
+    `lines.json` names that line's clip for the job's whole life. A line the words want that wasn't handed (a pick again
+    after the hand-off) is added with a new `n` and Ukai asked again. A line with no clip, or a clip that doesn't hold
+    its line (`browser.covers`), is said once in *Needs you* (BROWSER_LOST: which line, why; BROWSER_LOST_MORE: the
+    first of several) — its words stay unmade,
+    so a *Mine* asks for them again; never a clip with the line outside it. No word left: the job ends skipped
+    (BROWSER_NONE). Worked out again from the folder at every look while it is there; the folder gone (its cards
+    made): `picked` as it is. One look: the subtitle read once and its starts made once (`browser.index`); each word's
+    line and each clip's cues found by halving."""
+    jid = job["id"]
+    got = browser.state(jid)
+    if got is None and picked.get("clips") is not None:
+        return picked
+    cues = browser.read_srt(picked.get("video") or "")
+    at = browser.index(cues)
+    lines, index = browser.lines_for(picked.get("words") or [], cues, at[0])
+    if got is None:
+        name = (picked.get("names") or ["", ""])[1] or ""
+        site_id = path_utils.SITE_ID_RE.search(name)
+        browser.hand_off(jid, {"site": picked["online"], "url": picked.get("url"),
+                               "video_id": site_id.group(2) if site_id else ""},
+                         path_utils.SITE_ID_RE.sub("", name).strip(), lines)
+        log.info("Connect: job %s handed %d line(s) to Ukai", jid, len(lines))
+    numbered = browser.handed(jid)
+    new = [ln for ln in lines if browser.span(ln) not in numbered]
+    if new:
+        numbered.update(browser.add_lines(jid, new))
+        log.info("Connect: job %s asked Ukai for %d more line(s)", jid, len(new))
+    got = browser.state(jid)
+    if not isinstance(got, dict):
+        # an earlier job of the episode (dropped when the list was reordered, or failed) may hold some of its clips:
+        # taken over at every look while it waits, so only the lines nobody recorded wait for Ukai
+        taken = browser.take_over(jid, _earlier_jobs(ledger, lang, job))
+        if taken:
+            log.info("Connect: job %s took over %d clip(s) an earlier job of its episode recorded", jid, taken)
+        got = browser.state(jid)
+    if not isinstance(got, dict):
+        raise Wait(BROWSER_WAIT, resume="mining")
+    failed = {f.get("n"): f.get("why") for f in got.get("failed") or () if isinstance(f, dict)}
+    clips, of_line, lost = {}, {}, []
+    for line in lines:
+        n = numbered[browser.span(line)]
+        kept = browser.clip(jid, n)
+        why = failed.get(n) or "no clip arrived"
+        if kept is not None and not browser.covers(kept[1], line):
+            kept, why = None, "its clip doesn't hold the line"
+        if kept is None:
+            lost.append((line, why))
+            continue
+        video, times = kept
+        clips[str(n)] = {"video": video, "shift": float(times["start"]),
+                         "subtitle": browser.clip_subtitle(jid, n, cues, times["start"], times["end"], at=at)}
+        of_line[line["n"]] = n
+    if lost:                # one entry an episode in *Needs you* (`ledger.need`): the first line, and how many
+        (line, why), start = lost[0], int(lost[0][0]["start"])
+        said = dict(title=steps.title(lang, job) or "", at=f"{start // 60}:{start % 60:02d}", text=line["text"], why=why)
+        say = BROWSER_LOST_MORE.format(count=len(lost), **said) if len(lost) > 1 else BROWSER_LOST.format(**said)
+        ledger.need(lang, BROWSER_LINE, say, item_id=job["item_id"], job_id=jid)
+    words = [w if w.get("from") is not None else dict(w, clip=of_line[index[browser.line_key(w)]])
+             for w in picked.get("words") or ()
+             if w.get("from") is not None or index.get(browser.line_key(w)) in of_line]
+    picked = dict(picked, words=words, clips=clips)
+    if not words:
+        browser.drop(jid)
+        _record_made(steps, ledger, lang, job, record)
+        ledger.set_state(jid, "skipped", reason=BROWSER_NONE, picked=picked, skipped={"mining": BROWSER_NONE})
+        raise _Finished("skipped")
+    ledger.set_state(jid, "mining", picked=picked)
+    return picked
 
 
 def _mine_batch(steps, ledger, lang, job, picked, todo, attempt):
@@ -3537,6 +3669,15 @@ class Steps:
         kept = getattr(self, "_fetched", {}).get(str(job["id"]))
         if kept and all(_on_disk(p) for p in kept):
             return kept
+        if web.get("site") in online.BROWSER_SITES:     # never fetched (DRM): its words picked from its own cues
+            with _held():
+                with self._open(lang) as store:
+                    rel = str((store.item(job["item_id"]) or {}).get("rel_path") or "")
+            srt = browser.subtitle(job["id"], os.path.join(path_utils.get_data_path(lang), *rel.split("/"))) \
+                if rel else None
+            if srt is None:
+                raise Needs(online.KIND, BROWSER_NO_CUES, once=True)
+            return srt, srt                 # (the pick reads a file as its video: the subtitle stands in, never cut)
         if self._settings(lang).get("youtube_risk_acknowledged") is not True:
             raise Needs(online.KIND, online.NOT_TICKED, standing=True)
 
@@ -3629,6 +3770,10 @@ class Steps:
             if not anki_miner.listens_large(miner, lang, profile, held[3] if held else None):
                 return online.NOT_LARGE
         return source
+
+    def drop_browser(self, job):
+        """Netflix / Disney+: the job's folder of Ukai's clips gone (`browser.drop`)."""
+        browser.drop(job["id"])
 
     def drop_online(self, job):
         """Michi-YT: the job's downloaded video gone (`online.drop`), and forgotten."""
@@ -5196,19 +5341,36 @@ class Steps:
         the book (`lineup.split`); outcomes in the words' order. A call that fails after another made cards returns
         those, the rest not attempted: the next batch sends only them (and meets the failure again, as itself)."""
         lined = picked.get("lineup") if picked.get("reading") else None
-        if not lined:
+        clips = picked.get("clips")
+        if not lined and not clips:
             return self._mine_spread(lang, job, picked, words, attempt)
-        from app.connect import lineup
-        groups, rest = lineup.split(words, lined)
-        runs = [dict(picked, video=audio, subtitle=srt, reading=None, offset=0.0, _words=ws)
-                for (audio, srt), ws in groups.items()]
+        if clips:
+            # Netflix / Disney+ (contract v2, by mattias in #474): each clip Ukai recorded is a video of its own — its
+            # words with their line's start in clip time, its own .srt; the cards' Source still names the transcript
+            # (`names`). A word cut from another episode's line (`from`) goes with that episode (`_mine_spread`)
+            groups, rest = {}, []
+            for w in words:
+                c = clips.get(str(w.get("clip")))
+                if c is None:
+                    rest.append(w)
+                    continue
+                groups.setdefault((c["video"], c["subtitle"]), []).append(
+                    dict(w, line_start=max(0.0, round(float(w["line_start"]) - c["shift"], 3))))
+                # (a clip may start up to `browser.COVER_SLACK` after its line: its .srt's cue is cut to start at 0
+                # too — never a negative start, which Anki Miner's run file refuses)
+        else:
+            from app.connect import lineup
+            groups, rest = lineup.split(words, lined)
+        runs = [dict(picked, video=video, subtitle=srt, reading=None, offset=0.0, _words=ws)
+                for (video, srt), ws in groups.items()]
         if rest:
-            runs.append(dict(picked, _words=rest))
+            runs.append(dict(picked, _words=rest, _spread=bool(clips)))
         got, out = {}, None
         for n, run in enumerate(runs):
             ws = run.pop("_words")
+            mine = self._mine_spread if run.pop("_spread", False) else self._mine_one
             try:
-                done = self._mine_one(lang, job, run, ws, attempt if n == 0 else f"{attempt}-{n}")
+                done = mine(lang, job, run, ws, attempt if n == 0 else f"{attempt}-{n}")
             except (Wait, Needs, Skip, Repick, stopping.Stopped):
                 if not got:
                     raise

@@ -231,7 +231,10 @@ ENSURE_AUDIO_EXAMPLE = False
 # 52: a verb's stem + つかれ in kana is 疲れる, never 突く's passive (_tsukare: 歩きつかれた is 歩き疲れる, 書きつかれた
 #     書き + 疲れる), and 棟 right after a kanji or a katakana word is a piece of it (_after_a_word: 研究棟's 棟 is とう,
 #     never the noun むね). SCHEMA_VERSION 32. 3.0.20.
-ENGINE_REVISION = 52
+# 53: kana つかれ with no stem before it is 疲れる where nothing before it can be what a つく verb takes (_tsukare's
+#     _alone: もうつかれた, つかれた！, お前はつかれた, おつかれ is お疲れ; 嘘つかれた, 不意をつかれた, 狐につかれた keep
+#     the tagger's). SCHEMA_VERSION 33.
+ENGINE_REVISION = 53
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -1911,9 +1914,20 @@ def _kansai(words):
 # stem + 疲れる whole (歩き疲れる, 探し疲れる, as it reads them written in kanji), else the stem and 疲れる (書き + 疲れる) —
 # except where the stem + つく said aloud is a verb the tagger knows (とりつく, いきつく): the letters are that verb's
 # passive or honorific there too (執りつかれた is 取り憑かれた), and the tagger's reading stands. The stem is a verb's
-# 連用形 or a noun UniDic also reads as one (走り, 笑い). A line holding no つか passes in C. A change here changes cached
-# tokenization: SCHEMA_VERSION + ENGINE_REVISION. Decision: STEM-TSUKARE (the suite's decisions_ja_reported.py).
+# 連用形 or a noun UniDic also reads as one (走り, 笑い).
+# With no stem before it, the tagger reads kana つかれ as 突く + れる nearly every time (もうつかれた, つかれた！). 疲れる is
+# the one つかれる that stands alone — 'be tired' takes nothing — while every other one is a つく verb made passive,
+# honorific or potential, and keeps what that verb takes before it: what is poked or told (不意を, 嘘を, 嘘つかれた with
+# the を dropped), where (気が, 席に, 狐に), what one gets into (風呂に, 水風呂つかれます). So a kana つか + れる is 疲れる
+# where the word before it, once adverbs and an adjective's 連用形 are passed over (肩をちょいとつかれて is still を's),
+# can't be what a つく verb takes: nothing (the line's start), a mark, a conjunction, an interjection, a noun used as
+# an adverb (今日, 夜, 五時頃: UniDic's 副詞可能), a clause's ending (て, ので, と, し), an auxiliary's ending (た, だ,
+# ない, ようだ …: つかれたつかれた, 精神的に), the topic は / も, or a focus particle not right after a noun (ばかり
+# after 嘘 keeps it what was told); and お + つかれ is お疲れ. A case particle (を, に, が, で, の) or a noun before it
+# keeps the tagger's reading. A line holding no つか passes in C. A change here changes cached tokenization:
+# SCHEMA_VERSION + ENGINE_REVISION. Decisions: STEM-TSUKARE, BARE-TSUKARE (the suite's decisions_ja_reported.py).
 _TSUKA = "つか"
+_ALONE_AUX = frozenset(("た", "だ", "ず", "ない", "ます", "です", "ようだ", "そうだ", "みたいだ", "らしい", "たい"))
 
 
 def _verb_stem(word):
@@ -1928,34 +1942,90 @@ def _verb_stem(word):
                                     for x in names._listed_as(word.surface))
 
 
+def _alone(words, i):
+    """Can nothing before the つか at `i` be what a つく verb takes (§ above)? The word reached once adverbs and an
+    adjective's 連用形 are passed over decides: True, False, or "お" (お + つかれ is お疲れ)."""
+    j = i - 1
+    while j >= 0 and (words[j].feature.pos1 == "副詞"
+                      or (words[j].feature.pos1 == "形容詞" and (words[j].feature.cForm or "").startswith("連用形"))):
+        j -= 1
+    if j < 0:
+        return True
+    f = words[j].feature
+    pos1 = f.pos1
+    if pos1 == "補助記号":
+        return words[j].surface not in ("ッ", "っ")      # 取ッつかれた: a letter the tagger took for a mark
+    if pos1 == "接続詞" or pos1 == "感動詞":
+        return True
+    if pos1 == "名詞" or pos1 == "接尾辞":
+        return f.pos3 == "副詞可能"                     # 今日, 五時頃 — never 嘘, 水風呂, 二度
+    if pos1 == "接頭辞":
+        return "お" if j == i - 1 and f.lemma == "御" else False
+    if pos1 == "助動詞":
+        return f.lemma in _ALONE_AUX
+    if pos1 == "助詞":
+        if f.pos2 == "接続助詞" or f.pos2 == "終助詞":
+            return True
+        if f.pos2 == "係助詞":
+            return f.lemma == "は" or f.lemma == "も"
+        if f.pos2 == "副助詞":
+            return j == 0 or words[j - 1].feature.pos1 not in ("名詞", "代名詞")
+    return False
+
+
+def _tired(w, ending):
+    """The node for つか + `ending` read as 疲れる, in the ending's form, with the つか's spaces before it."""
+    f = ending.feature
+    return ReadNode(_TSUKA + ending.surface, f._replace(
+        pos1="動詞", pos2="一般", pos3="*", pos4="*", cType="下一段-ラ行", lForm="ツカレル", lemma="疲れる",
+        orth=_TSUKA + ending.surface, orthBase="疲れる", pron="ツカ" + (f.pron or ""), pronBase="ツカレル",
+        kana="ツカ" + (f.kana or ""), kanaBase="ツカレル", form="ツカ" + (f.form or ""), formBase="ツカレル"),
+        False, getattr(w, "white_space", ""))
+
+
 def _tsukare(words):
-    """join_affixes' 〜つかれた (§ above): `words` with each stem + つか + れる read as 疲れる — the same list when there is
-    none. Only the tokens written つか are looked at."""
+    """join_affixes' 〜つかれた (§ above): `words` with each kana つか + れる that says 疲れる read so — the same list
+    when there is none. Only the tokens written つか are looked at."""
     out, last, n = None, 0, len(words)
     for i in compress(range(n), map(_TSUKA.__eq__, map(_SURFACE, words))):
-        if not 0 < i < n - 1 or i - 1 < last:
+        if i >= n - 1 or i < last:
             continue
-        stem, w, ending = words[i - 1], words[i], words[i + 1]
+        w, ending = words[i], words[i + 1]
         if (w.feature.pos1 != "動詞" or ending.feature.lemma != "れる" or ending.feature.pos1 != "助動詞"
-                or getattr(w, "white_space", "") or getattr(ending, "white_space", "") or not _verb_stem(stem)):
+                or getattr(ending, "white_space", "")):
             continue
-        said = names._read_whole(names._hira(stem.feature.kana or "") + "つく")
-        if said is not None and said.pos1 == "動詞":
-            continue                    # とりつく, いきつく: the つく verb's passive is a reading too
-        f = ending.feature
-        tired = ReadNode(_TSUKA + ending.surface, f._replace(
-            pos1="動詞", pos2="一般", pos3="*", pos4="*", cType="下一段-ラ行", lForm="ツカレル", lemma="疲れる",
-            orth=_TSUKA + ending.surface, orthBase="疲れる", pron="ツカ" + (f.pron or ""), pronBase="ツカレル",
-            kana="ツカ" + (f.kana or ""), kanaBase="ツカレル", form="ツカ" + (f.form or ""), formBase="ツカレル"),
-            False, "")
-        whole = names._read_whole(stem.surface + "疲れる")
-        if out is None:
-            out = []
-        out.extend(words[last:i - 1])
-        if whole is not None and whole.pos1 == "動詞" and whole.lemma.endswith("疲れる"):
-            out.append(_joined([stem, tired], stem.surface + "疲れる", "動詞", (whole.lemma, whole.lForm)))
+        stem = words[i - 1] if i > last else None
+        if stem is not None and not getattr(w, "white_space", "") and _verb_stem(stem):
+            said = names._read_whole(names._hira(stem.feature.kana or "") + "つく")
+            if said is not None and said.pos1 == "動詞":
+                continue                # とりつく, いきつく: the つく verb's passive is a reading too
+            tired = _tired(w, ending)
+            whole = names._read_whole(stem.surface + "疲れる")
+            if out is None:
+                out = []
+            out.extend(words[last:i - 1])
+            if whole is not None and whole.pos1 == "動詞" and whole.lemma.endswith("疲れる"):
+                out.append(_joined([stem, tired], stem.surface + "疲れる", "動詞", (whole.lemma, whole.lForm)))
+            else:
+                out.extend((stem, tired))
+            last = i + 2
+            continue
+        alone = _alone(words, i)
+        if not alone:
+            continue
+        if alone == "お":
+            entry = affix_joins().get("お疲れ") if ending.surface == "れ" else None
+            if not entry or getattr(w, "white_space", ""):
+                continue                # おつかれ + another ending is no word; お and つかれ apart stay apart
+            if out is None:
+                out = []
+            out.extend(words[last:i - 1])
+            out.append(_joined([words[i - 1], _tired(w, ending)], "お疲れ", "名詞", tuple(entry)))
         else:
-            out.extend((stem, tired))
+            if out is None:
+                out = []
+            out.extend(words[last:i])
+            out.append(_tired(w, ending))
         last = i + 2
     if out is None:
         return words
@@ -3228,7 +3298,7 @@ def file_sentences(store, tokenizer, file_path, language, words=None):
 # logic.count_song_lyrics is off (the default): their sentences keep their place in each file — the plan and the re-pick
 # number them — with no words, as a ♪～ line reads. Spoken files only (subtitles, transcripts), grouped by work
 # (`_series_name`); each file's lines are the token store's (`Store.file_lines`), else read here.
-_SPOKEN = ("subtitle", "youtube", "bilibili")
+_SPOKEN = ("subtitle", "youtube", "bilibili", "netflix", "disneyplus")     # (Netflix, Disney+: 鵜 Ukai's, #474)
 
 
 def songs_left_out(files):
@@ -7364,7 +7434,7 @@ def main():
         file_phrase_firsts = {}     # phrase index -> its first sentence here, likewise
         file_basename = os.path.basename(file_path)   # constant per file — hoisted out of the token loop
         # Modality inputs, also constant per file (see app/modality.py).
-        file_is_spoken = source_type in ("subtitle", "youtube", "bilibili")
+        file_is_spoken = source_type in _SPOKEN
         file_series = _series_name(file_path, data_dir)
         library_series.add(file_series)
         if file_is_spoken:

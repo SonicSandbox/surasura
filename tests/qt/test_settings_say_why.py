@@ -221,7 +221,8 @@ def test_the_rows_show_their_tag_and_their_what_you_get_line_behind_the_question
     page, store, shell = make(fakes, dict(ALL_ON, connect_enabled=False))
     for row_id, tag in S.ROW_TAGS.items():
         view = page.rows[row_id]
-        assert view.tag.text() == tag and view.tag.isVisibleTo(page), row_id
+        hidden = row_id == "ukai"           # (hidden while door.EXTENSION_ON is off: test_ukai_row shows its tag on)
+        assert view.tag.text() == tag and (hidden or view.tag.isVisibleTo(page)), row_id
         assert view.label.text() == S.ROWS[row_id][0]
     hato = page.rows["hato"]                                                     # Kantan-S2: what you get behind its ?
     assert not hato.help.isVisibleTo(page) and hato.mark.isVisibleTo(page) and hato.mark.toolTip() == S.ROWS["hato"][1]

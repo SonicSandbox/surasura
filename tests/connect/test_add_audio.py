@@ -728,3 +728,71 @@ def test_act_names_why_the_cards_not_cut_got_nothing(book, fake_miner, monkeypat
     done = add_audio.act({"connect_enabled": True}, "ja", book=book["book"], confirm=True)
     assert done["filled"] == 4 and done["not_cut"] == 1
     assert done["not_cut_why"].endswith(add_audio.NO_CLIP.format(n=1))
+
+
+# --- AUDIO-WASTE: the book's cues indexed once (`Book`), the same answers as the three passes ---------------------- #
+def _place_before(sentence, form, found):
+    """`place` as it was before AUDIO-WASTE: three passes over every cue for each card — the reference."""
+    want = lineup.clean(sentence)
+    if not want:
+        return None
+    exact = [c for c in found if c.text == want]
+    if exact:
+        return exact[0] if len(exact) == 1 else None
+    holders = [c for c in found if c.text and want in c.text] if len(want) >= lineup.MIN_CHARS else []
+    if holders:
+        return holders[0] if len(holders) == 1 else None
+    hold = lineup.clean(form) if form else ""
+    hits = [c for c in found if c.text and len(c.text) >= lineup.MIN_CHARS and c.text in want and
+            (not hold or hold in c.text)]
+    return hits[0] if len(hits) == 1 else None
+
+
+@pytest.mark.parametrize("language,names", [
+    ("ja", ["placed_episode.srt", "repeated_lines.ja.srt", "utterances_sample.srt", "verses_sample.srt"]),
+    ("zh", ["night_market.srt", "repeated_lines.zh.srt", "utterances_sample.srt"])])
+def test_place_by_the_books_index_answers_as_the_three_passes_ja_and_zh(language, names):
+    """Every card shape against the old rule, on real lines: a cue's own line (once, or said twice: no answer), two
+    and three cues in a row, a cue's line with a word more (held inside a longer cue?), part of a cue, a short line,
+    an empty cue, a line not in the book; forms none / held / not held — the same Cue (or None) by a list or a Book."""
+    found = []
+    for name in names:
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Test Resources", language,
+                            name)
+        found += [lineup.Cue(path + ".m4b", path, a, z, lineup.clean(t)) for a, z, t in lineup.srt_cues(path)]
+    found.insert(3, lineup.Cue("a.m4b", "a.srt", 0.0, 1.0, ""))         # a cue with no letters (♪ only)
+    found += [c._replace(start=c.start + 600) for c in found[4:6]]     # two lines said again later in the book
+    found += [found[6]._replace(start=900.0, text=found[6].text * 2),     # a line said twice in one cue
+              found[7]._replace(start=901.0, text=found[7].text[:lineup.MIN_CHARS]),   # a cue of MIN_CHARS exactly
+              found[8]._replace(start=902.0, text=(found[0].text + found[5].text) * 2)]  # held twice in one cue
+    texts = [c.text for c in found if c.text]
+    assert len(texts) > 8 and len(set(texts)) < len(texts)            # real lines, some said twice
+    other = _other_lines(language)
+    sentences = texts + [a + b for a, b in zip(texts, texts[1:])] + \
+        [a + b + c for a, b, c in zip(texts, texts[1:], texts[2:])] + \
+        [t[1:-1] for t in texts] + [t[:4] for t in texts] + [t + "です" for t in texts] + list(other) + ["", "。"] +         [a + b[:lineup.MIN_CHARS] for a, b in zip(texts, texts[1:])] + [found[0].text + found[5].text]
+    book = add_audio.Book(found)
+    checked = 0
+    for s in sentences:
+        clean = lineup.clean(s)
+        for form in (None, clean[:2], clean[-3:-1], "存在しない", "「" + clean[:2] + "」"):
+            want = _place_before(s, form, found)
+            assert add_audio.place(s, form, book) == want, (s, form)
+            assert add_audio.place(s, form, found) == want, (s, form)
+            checked += want is not None
+    assert checked > 100                                               # (not a pass of all None)
+
+
+def test_the_plan_indexes_the_books_cues_once_for_all_its_cards(book, monkeypatch):
+    """Red before AUDIO-WASTE: each card's `place` walked every cue up to three times. The plan builds the book's
+    index once and places every card in it (the counts are the plan's own test's)."""
+    built = []
+    real = add_audio.Book
+
+    class Counted(real):
+        def __init__(self, found):
+            built.append(len(found))
+            super().__init__(found)
+    monkeypatch.setattr(add_audio, "Book", Counted)
+    got = add_audio.plan(book["anki"], book["steps"], "ja", book["book"], MAPPING)
+    assert len(got["can"]) >= 4 and len(built) == 1 and built[0] > 4

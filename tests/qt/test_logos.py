@@ -40,6 +40,9 @@ SHIPPED = {
     "tsubasa-32.png": ("tsubasa/icon-32.png", "d3be58c6e0d527a493be1f70af403d3e367386f0457b3b5fadb14b6456485851"),
     "tsubasa-64.png": ("tsubasa/icon-64.png", "a67bb27ccd5d50bee63b3437ed0ada7110ed4631c57096cc3d1eb65e08c8683d"),
     "tsubasa-128.png": ("tsubasa/icon-128.png", "3ca5a31ee9518f7e1f130a16994c61dd2a2399349a2543cf9145e508633d4554"),
+    "ukai-32.png": ("ukai/icon-32.png", "78d1653d92356978cb532b2a76702f03076d6b30a03a40b0b73ea3abf4229f36"),
+    "ukai-48.png": ("ukai/icon-48.png", "96dbe6d12a018b2775f52c60dce0447d1f3f1be69783f704cf00c429b7f5c893"),
+    "ukai-128.png": ("ukai/icon-128.png", "2ada02362de63ae6f397db3b7aefcba84e3243795c3e6dfb9472a650c7ad3238"),
     "tmdb_blue_short.svg": ("tmdb/tmdb_blue_short.svg",
                             "8e7b30f73a4020692ccca9c88bafe5dcb6f8a62a4c6bc55cd9ba82bb2cd95f6c"),
 }

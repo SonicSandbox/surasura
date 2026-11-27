@@ -329,6 +329,15 @@ def _passed(settings, page):
     return {PASSED: [p for p in PAGES if p in had or p == page]}
 
 
+def reopen_at(settings):
+    """ONB-2 (closed mid-setup, setup opens at the step it was on): a profile that never finished setup -> the furthest
+    page it saved with *Next* (`PASSED`) — the wizard opens on the step after it — or None (none yet, or finished)."""
+    if not _new(settings):
+        return None
+    had = (settings or {}).get(PASSED) or []
+    return next((p for p in reversed(PAGES) if p in had), None)
+
+
 def finish(settings_service):
     """Setup done (Generate pressed, or *Skip* on the last page): `onboarding_completed`, and this version's pages seen
     -> the dict written."""
@@ -841,10 +850,38 @@ def start_numbers(items, view, per_day):
 def start_cards(language, settings, start, data_dir=None):
     """(A worker.) *Start*: the yes D1's line waits for, with the start's mine line (`first_cards(mine_line=)`) — Connect
     then makes the cards of that many episodes, kept up to the start's cap (written on the window's thread first,
-    `save(START)`). -> the ids logged."""
+    `save(START)`). A small start's yes also offers ONB-4's one-time *Ready for more?* (`needs.MORE_CARDS`: listed once
+    its cards are nearly studied, `needs._more_entry`); an offer that can't be written is said in the log only (the
+    start itself is made). -> the ids logged."""
     if start not in STARTS:
         raise ValueError(f"not a start: {start!r}")
-    return first_cards(language, settings, data_dir, mine_line=START_SIZES[start][0])
+    ids = first_cards(language, settings, data_dir, mine_line=START_SIZES[start][0])
+    if start == "small" and ids:
+        from app.services import needs
+        try:
+            needs.offer(_language(language), needs.MORE_CARDS)
+        except Exception as e:                           # the seen file held or newer: no *Ready for more?*
+            print(f"Setup: Ready for more? couldn't be offered ({e})")
+    return ids
+
+
+def more_cards(settings_service, writer, language):
+    """(A worker: both queue.) ONB-4's *Next 20 episodes*: the full start's two knobs through their owners — this
+    language's *Keep up to* raised to the full start's 300 (`_cap_update`, as `save(START)` writes it; never lowered:
+    a cap set higher, or none (0), stays) and on disk first (`flush`: Connect, told once the line moves, reads it at
+    its step), then the store's line to its 20 (`Writer.set_options`, Settings' own row: the files that cross it
+    logged, Connect told after it). PRESTUDIED-MINE's switch is left as it is (the learner's own since). -> the
+    writer's command number, or None when the store can't be written now (`Writer.reason`: nothing written)."""
+    from app.connect.settings_values import cap_of
+    from app.services.settings import thaw
+    if writer is None or writer.reason() is not None:
+        return None
+    language = _language(language)
+    line, cap = START_SIZES["full"]
+    if 0 < cap_of(thaw(settings_service.get()).get("connect_backlog_cap", 300), language) < cap:
+        settings_service.set({}, update=_cap_update(language, cap), keys=("connect_backlog_cap",))
+        settings_service.flush(10)
+    return writer.set_options(mine_line=line)
 
 
 NOTHING_TO_COUNT = {"empty": "library"}     # `level_numbers`' answers when nothing can be counted (Disc-T1): no
@@ -987,3 +1024,66 @@ def generate(services):
     except Exception as e:
         print(f"Setup: Generate couldn't be asked for ({e})")
         return False
+
+
+# --- ONB-3: *What are you watching right now?* (Sonic ~13:4x: his shows by date, the newest pre-picked, a search) --- #
+WATCHING_SHOWN = 8                                        # the tiles shown at once; the search finds the rest
+
+
+def watching_rows(language, rows, limit=WATCHING_SHOWN):
+    """(A worker: one read of the store.) The page's tiles: New arrivals' rows still to watch (`rows`, the view's
+    `arrivals`; its *Already watched* group left out) newest first by their newest file's date (`Store.file_times`,
+    one read of the tier), the first `limit` (top k, no sort of every title) -> [row, ...]. Equal dates — and a store
+    that can't be read — keep the tray's own order."""
+    import heapq
+    rows = [r for r in rows or () if getattr(r, "group", "new") != "watched"]
+    if not rows:
+        return []
+    times = {}
+    store = _window_store(_language(language), role="reader")
+    if store is not None:
+        try:
+            with store:
+                times = store.file_times("arrivals")
+        except Exception as e:                            # (the tray's order then: never no page)
+            print(f"Setup: the shows' dates couldn't be read ({e})")
+    order = {id(r): n for n, r in enumerate(rows)}
+    return heapq.nlargest(limit, rows, key=lambda r: (max((times.get(i, 0) for i in r.item_ids), default=0),
+                                                      -order[id(r)]))
+
+
+def watching_search(language, rows, query, limit=WATCHING_SHOWN):
+    """(A worker.) The page's search box: the store's own search (`Store.search`, the window's search's folded keys,
+    romaji titles among them) over New arrivals alone -> the first `limit` of `rows` (the view's `arrivals`, *Already
+    watched* left out) it found, in the tray's order; [] for an empty query, no store or no hit."""
+    if not (query or "").strip():
+        return []
+    store = _window_store(_language(language), role="reader")
+    if store is None:
+        return []
+    with store:
+        work_ids, item_ids = store.search(query, tiers=("arrivals",))
+    works, items = set(work_ids), set(item_ids)
+    out = []
+    for r in rows or ():
+        if getattr(r, "group", "new") != "watched" and (r.work_id in works or any(i in items for i in r.item_ids)):
+            out.append(r)
+            if len(out) >= limit:
+                break
+    return out
+
+
+def watching_place(writer_place, writer_watched, row, episode=0):
+    """The pick, through New arrivals' own calls: `writer_place(ids, "top")` (Current's top: the store's `place`)
+    and, for *I'm on episode N* (`episode`: the index of the one he is on), `writer_watched(the earlier ids)` — the
+    store's Watched record. -> the show's last item id (the sort's first Current pick goes in under it), or None."""
+    ids = list(getattr(row, "item_ids", None) or ())
+    if not ids:
+        return None
+    if writer_place(ids, "top") is None:
+        return None
+    episodes = list(getattr(row, "episodes", None) or ())
+    before = [ep.id for ep in episodes[:max(0, int(episode or 0))]]
+    if before:
+        writer_watched(before)
+    return ids[-1]

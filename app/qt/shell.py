@@ -1745,7 +1745,9 @@ class ShellWindow(QMainWindow):
             self.needs_you.changed.connect(self._connect_fault)
             self.needs_you.changed.connect(self._first_cards_circle)
             needs_page.controller = self.needs_you
-            self.needs_you.failures_in(services.status.snapshot().needs_you)
+            snap = services.status.snapshot()
+            self.needs_you.backlog = getattr(snap, "backlog", None)         # ONB-4, before a gather
+            self.needs_you.failures_in(snap.needs_you)
             if needs_page.view_model is not None:
                 self.needs_you.view_in(needs_page.view_model)
         # --- end W3.2 Q5
@@ -2520,6 +2522,7 @@ class ShellWindow(QMainWindow):
             needs_page.set_failures(snap.needs_you)
         if getattr(self, "needs_you", None) is not None:          # W3.2 Q5: Connect's line moved: its entries may have
             self.needs_you.connect_in(snap.connect)
+            self.needs_you.backlog_in(getattr(snap, "backlog", None))     # ONB-4: *Ready for more?* reads it
         if self.duties is not None and bool(logs_before) != bool(snap.logs):
             self._show_update(self.duties.update_state, force_cards=True)     # the cards' *Open the logs folder*
         self._paint_needs()

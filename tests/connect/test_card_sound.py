@@ -267,3 +267,126 @@ def test_ai_held_follows_the_writers_records_in_order(tmp_path):
         sa.undo(anki, ledger, a["id"])
         assert cs.ai_held(ledger) == {}
     assert os.path.isdir(str(tmp_path))
+
+
+# --- Connect's automatic pass (`auto`: § 106 "new cards get sound by themselves while the switch is on") --------- #
+@pytest.fixture
+def auto_env(lib, tmp_path, monkeypatch):
+    """`auto` with this suite's Anki, cut and voice in place of the real ones (Anki Miner's mapping, the clip cut, the
+    AI voice, the sync owed recorded)."""
+    from app.connect import undo as undoing
+
+    def make(lang, due=None, voice_on=False):
+        env = lib(lang)
+        env["anki"] = Anki(due=due)
+        env["cut"], env["voiced"], env["synced"] = [], [], []
+        env["unheard"] = set()
+
+        def voice(note_ids, kinds, paragraphs):
+            env["voiced"].append(list(note_ids))
+            return {"files": {n: _clip(tmp_path, f"ai-{n}.mp3") for n in note_ids if n not in env["unheard"]},
+                    "problems": [], "unheard": sorted(env["unheard"] & set(note_ids))}
+        monkeypatch.setattr(cs, "Anki", lambda url: env["anki"])
+        monkeypatch.setattr(cs, "_mapping", lambda s, l: (str(tmp_path / "run"), MAPPING))
+        monkeypatch.setattr(cs, "_cut_line", _cutter(tmp_path, env["cut"]))
+        monkeypatch.setattr(cs, "_cut_book", lambda s, l: (lambda *a: {}))
+        monkeypatch.setattr(cs, "_make_ai", lambda s, l, stop: voice)
+        monkeypatch.setattr(cs, "_voice_on", lambda s, l: voice_on)
+        monkeypatch.setattr(cs, "_kinds", lambda *a: {})
+        monkeypatch.setattr(cs, "_paragraphs", lambda *a: {})
+        monkeypatch.setattr(undoing, "owe_sync", lambda s: env["synced"].append(True))
+        monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)     # (every test sets it: Anki here is the fake)
+        return env
+    return make
+
+
+def _auto(env, **kw):
+    with Ledger(env["ledger"]) as ledger:
+        return cs.auto({"connect_enabled": True}, env["lang"], ledger, steps=env["steps"],
+                       ledger_path=env["ledger"], **kw)
+
+
+def _new(env, ids):
+    with Ledger(env["ledger"]) as ledger:
+        cs.queue_new(ledger, env["lang"], ids)
+        return cs._meta_json(ledger, cs.NEW + env["lang"], [])
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_the_automatic_pass_gives_connects_new_cards_their_real_sound_and_only_those(auto_env, lang):
+    """A part's two new cards are noted when it fills; the pass gives them their line's sound once and clears the
+    list. An older soundless card nobody noted waits for the press (the pass never plans the whole deck)."""
+    env = auto_env(lang)
+    said = env["said"]
+    _made(env, EPISODE, [(1200, said[0], None), (1201, said[2], None), (1202, said[3], None)])
+    assert _new(env, [1200, 1201]) == [1200, 1201]
+    got = _auto(env)
+    assert got["real"] == 2 and got["id"] and env["synced"]
+    assert env["anki"].value(1200).startswith("[sound:surasura-sa-") and env["anki"].value(1202) == ""
+    assert _new(env, []) == [], "looked at once"
+    assert _auto(env) == {"skipped": cs.NOTHING}, "nothing new and the voice off: Anki isn't even asked"
+
+
+def test_the_automatic_pass_voices_the_window_soonest_first_and_a_refused_clip_waits_for_tomorrow(auto_env):
+    """The voice on: three soundless cards due today / in 2 days / in 5 (3-day window) — the two inside are voiced,
+    soonest first; one the voice's check refused is tried again tomorrow, never at every pass."""
+    env = auto_env("ja", due={1301: 2, 1302: 0, 1303: 5}, voice_on=True)
+    for n in (1301, 1302, 1303):
+        env["anki"].add(n, "犬が好きだ。", "犬")
+    env["unheard"] = {1301}
+    got = _auto(env)
+    assert env["voiced"] == [[1302, 1301]] and got["ai"] == 1
+    assert env["anki"].value(1302).startswith("[sound:") and env["anki"].value(1301) == ""
+    assert _auto(env)["id"] is None, "the refused one isn't asked again today"
+    assert env["voiced"] == [[1302, 1301]]
+    with Ledger(env["ledger"]) as ledger:                   # tomorrow: tried again
+        cs._put_meta(ledger, cs.TRIED + "ja", {"day": "2000-01-01", "notes": [1301]})
+    _auto(env)
+    assert env["voiced"][-1] == [1301]
+
+
+def test_a_busy_pc_holds_the_ai_voice_but_never_the_real_sound(auto_env):
+    """`ai_hold` (the CPU busy) keeps the voice from starting; the new cards' real sound still goes on."""
+    env = auto_env("ja", due={1401: 0, 1402: 0}, voice_on=True)
+    said = env["said"]
+    _made(env, EPISODE, [(1400, said[0], None)])
+    env["anki"].add(1401, "犬が好きだ。", "犬")
+    _new(env, [1400])
+    got = _auto(env, ai_hold=lambda: True)
+    assert got["real"] == 1 and env["voiced"] == [] and env["anki"].value(1401) == ""
+
+
+def test_a_stop_between_two_lines_leaves_the_rest_for_the_next_pass(auto_env):
+    """A part coming in (`should_stop`) stops the cut between two lines: what was cut is written, and the card the
+    stop left stays on the list, so the next pass cuts it."""
+    env = auto_env("ja")
+    said = env["said"]
+    _made(env, EPISODE, [(1500, said[0], None), (1501, said[2], None)])
+    _new(env, [1500, 1501])
+    asks = iter([False, True] + [True] * 10)
+    got = _auto(env, should_stop=lambda: next(asks))
+    assert got["real"] == 1 and len(env["cut"]) == 1
+    left = _new(env, [])
+    assert len(left) == 1 and env["anki"].value(left[0]) == ""
+    assert _auto(env)["real"] == 1 and _new(env, []) == []
+
+
+def test_the_automatic_pass_does_nothing_with_connect_off_or_anki_switched_off(auto_env, monkeypatch):
+    env = auto_env("ja", voice_on=True)
+    with Ledger(env["ledger"]) as ledger:
+        assert cs.auto({}, "ja", ledger)["skipped"]
+        monkeypatch.setenv("SURASURA_NO_ANKI_SYNC", "1")
+        assert cs.auto({"connect_enabled": True}, "ja", ledger)["skipped"]
+    assert env["anki"].searches == []
+
+
+def test_the_new_cards_list_keeps_each_card_once_and_its_newest_within_the_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(cs, "NEW_MAX", 3)
+    with Ledger(str(tmp_path / "ledger.db")) as ledger:
+        cs.queue_new(ledger, "ja", [1, 2])
+        cs.queue_new(ledger, "ja", [2, 3, 4])
+        assert cs._meta_json(ledger, cs.NEW + "ja", []) == [2, 3, 4]
+        assert cs._meta_json(ledger, cs.NEW + "zh", []) == []
+        ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (cs.NEW + "zh", "not json"))
+        cs.queue_new(ledger, "zh", [5])                     # a damaged list is started again, never a failure
+        assert cs._meta_json(ledger, cs.NEW + "zh", []) == [5]

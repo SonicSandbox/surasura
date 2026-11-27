@@ -182,12 +182,11 @@ ADD_AUDIO_WAIT = ("「{title}」 has its audiobook now: the cards Connect made f
 ADD_AUDIO_WAITING, ADD_AUDIO_LINED, ADD_AUDIO_GONE = "waiting", "lined", "gone"   # the record's stage: offered
 # before its line-up / after / it can't be lined up any more (its line fixed)
 NO_AUDIOBOOK, DISMISSED = "none", "dismissed"     # *Mine without audio*; the card dismissed
-# Iro-AA (PROVISIONAL): *Make AI audio (beta)* — mined as *Mine without audio*, then each part's new cards queued for the
-# AI voice (`modules.irodori`, the beta: off by default, absent in a build without it) when the part fills
-# (`_queue_ai_audio`, the job marked `AI_JOB<id>` at its pick), their audio made once the run's jobs are through
-# (`_ai_audio`): only an empty SentenceAudio, through the shared writer, one Undo a part
-AI_AUDIO = "ai"
-AI_JOB = "ai_audio_job:"
+# AUDIO-FILL (3.0.21, Sonic § 106 decision 10): a part's new cards are noted for *Card sound* when it fills
+# (`card_sound.queue_new`), and once the run's jobs are through its automatic pass gives them their real sound — and,
+# while the AI voice is on and the PC quiet, the cards due in its window their AI clip (`_card_sound`). The book's
+# *Make AI audio* answer, Best's AI mark and the AI voice's own waiting list are gone: a book's cards are mined as the
+# sentence card (BOOK-CARD), and Card sound makes each one the learner's audio card again once it has sound.
 # Kura-AB3 (PROVISIONAL): an audiobook's own timed subtitle lines its book up when its last cue ends inside the audio's
 # length and this much (a subtitle of a longer cut is another recording's); its spot-check's answer of its own: *Trust
 # my subtitles' timing* on (never listened to)
@@ -871,8 +870,8 @@ def _language(steps, ledger, lang, prepared, parked, out):
             if _after_mining(steps, ledger, lang, out, on_battery=only_asked):
                 look = True     # the level look on the new run: the jobs it queued run in this run (no second prepare)
                 continue
-            if not only_asked and _ai_audio(steps, ledger, lang, parked, tried):
-                look = True     # Iro-AA: a part came in while the AI voice worked: it goes first, the voice after
+            if not only_asked and _card_sound(steps, ledger, lang, parked, tried):
+                look = True     # a part came in while Card sound worked: it goes first, the sound after
                 continue
             break
         failed = None
@@ -1155,6 +1154,34 @@ def _generate_first():
         return str((locks.read_holder("results") or {}).get("verb") or "").startswith("Generate")
     except Exception:
         return False
+
+
+def _cpu_busy(load=None, clock=None, sleep=None):
+    """AUDIO-FILL (A5): the window scheduler's rule for background work (`gentle`: it waits while this computer's CPU is
+    busy, at or over `power.BUSY`, every program's share over LOAD_WINDOW_S), for Connect's own process, which has no
+    scheduler of its own (`gentle.hold` answers only in the window's) -> `busy()`: the share since this was made,
+    waited out to the scheduler's window when the pass's sound work took less; True at or over the line; a reading
+    that fails is quiet. Stand-ins (tests): `load` a `power.CpuLoad`, `clock`, `sleep`."""
+    from app.connect import power
+    from app.services import gentle
+    load = load if load is not None else power.CpuLoad()
+    clock, sleep = clock or time.monotonic, sleep or time.sleep
+    began = clock()
+    try:
+        load.sample()
+    except Exception:
+        pass
+
+    def busy():
+        left = gentle.LOAD_WINDOW_S - (clock() - began)
+        if left > 0:
+            sleep(left)
+        try:
+            share = load.sample()
+        except Exception:
+            return False
+        return share is not None and share >= power.BUSY
+    return busy
 
 
 def _resume_of(job):
@@ -1470,7 +1497,7 @@ def _line_up(steps, ledger, lang, job, book):
     (SPEECH_NEED: recorded once for the language, the book held by it). AB-Q4's plain line recorded once a book."""
     line_up = getattr(steps, "line_up", None)
     if line_up is None or not book or not book[1]:
-        return _best_ai_audio(steps, ledger, lang, job)
+        return None
     try:
         got = line_up(lang, job, book[1])
     except Wait as w:
@@ -1483,14 +1510,13 @@ def _line_up(steps, ledger, lang, job, book):
         raise
     if got and got.get("book_ask"):
         if job.get("source") == level.BEST:
-            return _best_ai_audio(steps, ledger, lang, job)    # never the book's question: one sentence borrowed
+            return None                 # never the book's question: one sentence borrowed (Card sound voices it)
         if _book_question(ledger, lang, got):
             raise Wait(got["book_ask"])
-        _mark_ai_audio(ledger, lang, job, got)
         return None
     _book_answered(ledger, lang, book[1])
     if not got:
-        return _best_ai_audio(steps, ledger, lang, job)
+        return None
     if got.get("ask"):
         if ledger.need(lang, SPEECH_NEED, got["ask"], standing=True):
             log.info("Connect: asks for Anki Miner's speech model (%s)", lang)
@@ -1499,61 +1525,23 @@ def _line_up(steps, ledger, lang, job, book):
         ledger.need(lang, PARTIAL_NEED, got["line"], item_id=got["item_id"], standing=True)
     if got.get("lineup") and got.get("item_id") is not None:
         _add_audio_offer(steps, ledger, lang, book[1], got["item_id"])
-    return got.get("lineup") or _best_ai_audio(steps, ledger, lang, job)
+    return got.get("lineup") or None
 
 
-def _mark_ai_audio(ledger, lang, job, got):
-    """Iro-AA: a part of a book answered *Make AI audio (beta)* — its job marked (`AI_JOB<id>`), so its new cards are
-    queued for the AI voice when it fills. Read first: an unmarked book writes nothing."""
-    key, epub = got.get("key"), got.get("epub")
-    keys = [k for k in dict.fromkeys((key, book_key(epub) if epub else None)) if k]
-    if not any(_meta(ledger, f"{BOOK_SAID}{lang}:{k}") == AI_AUDIO for k in keys):
-        return
-    _mark_ai_job(ledger, job)
+def _queue_sound(ledger, lang, ids):
+    """AUDIO-FILL: a part's new cards noted for Card sound's automatic pass (`card_sound.queue_new`; never raises)."""
+    from app.connect import card_sound
+    card_sound.queue_new(ledger, lang, ids)
 
 
-def _mark_ai_job(ledger, job):
-    mark = f"{AI_JOB}{int(job['id'])}"
-    if _meta(ledger, mark) is None:
-        with ledger.transaction():
-            ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (mark, "1"))
-
-
-def _best_ai_audio(steps, ledger, lang, job):
-    """Kantan-SD 2 (Sonic 2026-11-22): a Best job cut from a book's line with no audiobook lined up — the picker chose
-    it because the AI voice can make its audio (`sentences.heard`) — is mined without audio, its new cards marked for
-    the AI voice (`AI_JOB`, as *Make AI audio* marks a book's part), never asked the book's question. Any other job, or
-    the voice off since: nothing. -> None (mined as the book)."""
-    if job.get("source") == level.BEST:
-        from app.connect import sentences
-        if sentences.ai_voice(steps._settings(lang) if hasattr(steps, "_settings") else {}, lang):
-            _mark_ai_job(ledger, job)
-    return None
-
-
-def _queue_ai_audio(steps, ledger, lang, job, ids):
-    """Iro-AA: the marked part's new cards handed to the AI voice's waiting list (`steps.queue_ai_audio`), its mark
-    gone. A failure is logged: the cards stay as Anki Miner made them (without audio), never a reason to stop."""
-    mark = f"{AI_JOB}{int(job['id'])}"
-    if _meta(ledger, mark) is None:
-        return
-    queue = getattr(steps, "queue_ai_audio", None)
-    try:
-        if queue is not None:
-            queue(lang, ids, job)
-        with ledger.transaction():
-            ledger.conn.execute("DELETE FROM meta WHERE key = ?", (mark,))
-    except Exception:
-        log.warning("Connect couldn't queue job %s's cards for AI audio", job["id"], exc_info=True)
-
-
-def _ai_audio(steps, ledger, lang, parked, tried=()):
-    """Iro-AA: once the language's jobs are through this pass, the AI voice's waiting list made (`steps.ai_audio`). It
-    stops between two sentences — and the pass goes on — when a part comes in meanwhile (an open job: *Mine now*, a
-    placement read; AI audio never holds a part back), for Connect's stop or an update staged, on battery, and when
-    the session can't write now (you review, Anki closed, another profile: `_blocked`). -> True when it stopped for a
-    part (the loop looks again). Never raises."""
-    make = getattr(steps, "ai_audio", None)
+def _card_sound(steps, ledger, lang, parked, tried=()):
+    """AUDIO-FILL: once the language's jobs are through this pass, Card sound's automatic pass (`steps.card_sound`:
+    the new cards' real sound, the AI voice's window). It stops between two lines or two sentences — and the pass
+    goes on — when a part comes in meanwhile (an open job: *Mine now*, a placement read; sound never holds a part
+    back), for Connect's stop or an update staged, on battery, and when the session can't write now (you review, Anki
+    closed, another profile, a Generate first on a gentle PC: `_blocked`). -> True when it stopped for a part (the
+    loop looks again). Never raises."""
+    make = getattr(steps, "card_sound", None)
     if make is None or _stop(steps):
         return False
     came = []
@@ -1569,9 +1557,9 @@ def _ai_audio(steps, ledger, lang, parked, tried=()):
         return bool(_stop(steps) or getattr(steps, "on_battery", lambda: False)() or
                     _blocked(steps, lang, None) is not None)
     try:
-        make(lang, should_stop=should_stop)
+        make(lang, ledger, should_stop=should_stop)
     except Exception:
-        log.warning("Connect's AI audio stopped on an error (%s)", lang, exc_info=True)
+        log.warning("Connect's Card sound stopped on an error (%s)", lang, exc_info=True)
     return bool(came)
 
 
@@ -2668,8 +2656,6 @@ def _mine_batch(steps, ledger, lang, job, picked, todo, attempt):
         done = steps.swap_new_card(lang, job, _part_read(steps, lang, job, picked), todo, attempt, ledger, row)             if row is not None else None
         if done is not None:
             return done                     # None: mined as any card (Anki takes it, or render didn't find the word)
-    if _meta(ledger, f"{AI_JOB}{int(job['id'])}") is not None:
-        picked = dict(picked, voiced=True)  # BOOK-CARD: the AI voice reads its cards after: the learner's card type
     if not _alone(ledger, job["id"]):
         return steps.mine(lang, job, _part_read(steps, lang, job, picked), todo, attempt)
     got, out, refused = {}, None, []
@@ -3040,7 +3026,7 @@ def _fill(steps, ledger, lang, job):
     if not ids:
         ledger.set_state(jid, "ordering")
         return
-    _queue_ai_audio(steps, ledger, lang, job, ids)     # Iro-AA: before Backfill, which fills other fields
+    _queue_sound(ledger, lang, ids)                   # AUDIO-FILL: Card sound's automatic pass looks at them
     if _circle_paused(steps, "junban"):     # Kantan-G: 順 paused — its cards made, Backfill and the re-order wait
         raise Wait(JUNBAN_PAUSED, look=False, resume="filling")
     wait = _blocked(steps, lang, "filling", asked=bool(job.get("asked_at")))
@@ -3773,32 +3759,26 @@ class Steps:
         from app.connect import power
         return power.on_battery()
 
-    def queue_ai_audio(self, lang, note_ids, job):
-        """Iro-AA: a book part's new cards on the AI voice's waiting list (`modules.irodori`; absent: nothing)."""
-        try:
-            from modules import irodori
-        except ImportError:
-            return 0
-        return irodori.queue_notes(lang, note_ids, source={"job": job.get("id"), "item": job.get("item_id")})
-
-    def ai_audio(self, lang, should_stop):
-        """Iro-AA: the AI voice's waiting list made — the beta on, the voice installed, the shared writer there; else it
-        waits (`irodori.run_queue`). settings.json read now, and again between two sentences: the beta switched off in
-        the window stops it (review r2 #4). The cards it wrote: the session's sync clock, as any new write (S3)."""
-        try:
-            from modules import irodori
-        except ImportError:
-            return None
+    def card_sound(self, lang, ledger, should_stop):
+        """AUDIO-FILL: Card sound's automatic pass (`card_sound.auto`) — settings.json read now, and the AI voice's
+        switch again between two sentences (switched off in the window, it stops). The AI voice starts only while
+        the PC is quiet (`_cpu_busy`: asked once, the window scheduler's own line). The cards it wrote: the session's sync
+        clock, as any new write (S3)."""
         from app import settings_manager
+        from app.connect import card_sound
 
         def fresh():
             try:
                 return settings_manager.load_settings(strict=True)
             except Exception:
                 return {}                       # unreadable now: read as off (nothing made)
-        got = irodori.run_queue(fresh(), lang, should_stop=lambda: bool(should_stop() or not irodori.enabled(fresh())))
-        if got.get("written"):              # each run's Undo is kept by the module (`irodori.last_run`)
-            log.info("Connect: AI sentence audio added to %d cards (%s)", got["written"], lang)
+        settings = fresh()
+        busy = _cpu_busy()
+        got = card_sound.auto(settings, lang, ledger, steps=self, should_stop=should_stop, ai_hold=busy,
+                              ai_stop=lambda: bool(should_stop() or not card_sound._voice_on(fresh(), lang)))
+        if got.get("id"):                   # the run's Undo is Card sound's (`card_sound.last_run`)
+            log.info("Connect: sound added to %d cards (%d by the AI voice) (%s)",
+                     got.get("real", 0) + got.get("swapped", 0) + got.get("ai", 0), got.get("ai", 0), lang)
             self.after_write(lang)
         return got
 
@@ -5464,7 +5444,7 @@ class Steps:
                                          show=self.show(lang, job), reading=picked.get("reading"),
                                          from_audio=bool(picked.get("from_audio")), names=picked.get("names"),
                                          word_audio=runfile.word_audio_on(now, lang), workers=workers, more=more,
-                                         should_pause=self._reviewing, voiced=bool(picked.get("voiced")))
+                                         should_pause=self._reviewing)
         except anki_miner.AnkiMinerError as e:
             _drop_held(held)                    # any Anki Miner failure (a profile changed too): read again
             if e.kind == "profile-changed":

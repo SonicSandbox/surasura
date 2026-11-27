@@ -1437,8 +1437,8 @@ class Store:
                     out[keys[path]] = _sung_share(lines, types, lang, ones, found,
                                                   flat[1] if flat is not None and flat[0] == n else None, numbers,
                                                   language)
-                except KeyError:
-                    continue                            # (a vocabulary row gone: the store is damaged)
+                except (KeyError, IndexError):
+                    continue                            # (a vocabulary row gone, kept matches past a line: damaged)
         return out
 
     def _named(self, sentences, names_blob, joined=None):

@@ -10,6 +10,7 @@ was cut on tokens the list never counts. Now each counted file's share of the so
 Real data: the made-up shows of tests/Test Resources/<lang>/songs_* (星祭り's four episodes: an opening in ♪ and an
 ending with no mark; 星星节's three Chinese episodes), Generated for real.
 """
+import json
 import os
 import re
 import shutil
@@ -378,6 +379,44 @@ def test_a_sung_line_whose_only_one_character_word_is_a_kanji_piece_still_counts
         assert store._song_shares({str(song): [0, 1]}, found, {}, {}, set())[str(song)] == whole
     finally:
         store.close()
+
+
+def test_kept_phrase_matches_that_dont_fit_the_tokens_are_searched_again_never_raised(tmp_path):
+    """A damaged store's kept phrase matches (every start past its line's end, the file's stamp and sentence count
+    still current) are no answer: the file is read whole and its phrases searched for, the same share as an undamaged
+    store's — never an IndexError that rolls back the whole count. あっという間 and お世話になる hold a word that lives
+    only inside them (their `taken`), the word the count looks up at the match's place."""
+    stores = []
+    for side in ("whole", "damaged"):
+        work = tmp_path / side / "data" / "ja" / "HighPriority" / "Natsu"
+        work.mkdir(parents=True)
+        song = work / "song.ja.srt"
+        song.write_text(LINES_SRT, encoding="utf-8")
+        db = str(tmp_path / side / "store.db")
+        ti.reconcile_language("ja", [str(song)], path=db)
+        stores.append((ti.open_store("ja", db), str(song)))
+    try:
+        (whole, path), (damaged, damaged_path) = stores
+        kept = json.loads(damaged.get_meta("phrase_matches"))
+        flat = kept["files"][ti._norm(damaged_path)][3]
+        assert flat, "the index kept the file's phrase matches"
+        for at in range(0, len(flat), 4):
+            flat[at + 1] += 10 ** 6
+        damaged.set_meta("phrase_matches", json.dumps(kept, ensure_ascii=False))
+        for store, p in stores:
+            store.keep_song_counts({p: list(range(len(store.file_tokens(p))))})
+        table = lambda s: list(s.conn.execute("SELECT tag, total, counts, bound, phrases FROM songs"))
+        assert table(whole) and table(damaged) == table(whole)
+        assert json.loads(whole.get_meta("songs_counted"))["taken"], "the phrases took their words"
+    finally:
+        for store, _p in stores:
+            store.close()
+
+
+LINES_SRT = (
+    "1\n00:00:01,000 --> 00:00:03,000\nあっという間に夏が過ぎた\n\n"
+    "2\n00:00:04,000 --> 00:00:06,000\n本当にお世話になりました\n\n"
+    "3\n00:00:07,000 --> 00:00:09,000\nあっという間の夢だった\n\n")
 
 
 def test_a_first_count_takes_the_phrases_the_index_found_and_asks_each_types_language_once(tmp_path):

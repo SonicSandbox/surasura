@@ -3036,6 +3036,7 @@ class WatchingPage(_Page):
         self.total = len(self.rows) if total is None else total
         if not self.search.edit.text().strip():
             self._show_rows(self.rows)
+        self.wiz.paint_footer()                           # (ONB-FIX: *Next* comes with the tiles — `next_offered`)
 
     def show_found(self, query, rows):
         """The search's answer for `query` (dropped when the box moved on); an empty box shows the newest again."""
@@ -3237,6 +3238,9 @@ class SetupWizard(QWidget):
         self._starting = None               # … its *Start* pressed: the press, until its worker answers
         self._start_seq = 0
         self._start_reading = self._start_again = False     # … its numbers read on a worker (one at a time)
+        self._offer_seq, self._offering = 0, False      # ONB-FIX: the sort's end being saved (D1's line: `_offer_cards`)
+        self._start_asking = 0              # … `start_offered` looks on a worker (*Your start* not decided while > 0)
+        self._made_unseen = False           # … the list made before *Your start* was decided (the close waits for it)
         self._gone = False
         self._stopped = False               # the window's quit began: no question is asked from here on
         self._shown_at, self._painted = 0.0, False      # the page shown: when it came up, whether it was painted
@@ -3280,10 +3284,11 @@ class SetupWizard(QWidget):
         adder = self._adder()               # --- W3.2 Q3: what + Add hands the writer shows in page 3's rows
         if adder is not None:
             adder.given.connect(self._added)
-        lib = getattr(shell, "library_bridge", None)
-        if lib is not None:
-            lib.library_changed.connect(self._added)
-            lib.library_changed.connect(self._library_moved)
+        self._heard = None                  # the window's library bridge heard (a language switch makes another)
+        self._hear()
+        switched = getattr(shell, "library_switched", None)
+        if switched is not None:            # ONB-FIX c: page 1's language shows another library, through its own bridge
+            switched.connect(self._hear)
         bridge.run_in_worker(windows.module_present, "junban", then=self.alive(self._junban_looked),
                              failed=lambda info: applog.log("wizard", f"looking for 順: {info[0]}"))
         closing = getattr(shell, "closing", None)
@@ -4475,26 +4480,50 @@ class SetupWizard(QWidget):
             self._read_ready()
 
     def _offer_cards(self, ids):
-        """D1's cards line, looked for once the sort's last places are saved (setup's sort, behind or covered)."""
+        """The sort's end, in order, once its last places are saved (setup's sort, behind or covered): the window's
+        indexer asked — the shows it put in Current count now (ONB-FIX: the read's words step came before the sort,
+        when a plain folder's shows were all in New arrivals, which it doesn't count: *Your list*'s numbers come from
+        this run, `_indexed`) — then D1's cards line looked for; then *Your start* decided from that saved line
+        (`read_start_offered`: never a look taken before the line was written)."""
         language, shell = self.language, self.shell
+        self._offer_seq += 1
+        seq, self._offering = self._offer_seq, True
 
         def offered(_yes):
+            self.alive(self._cards_offered)(seq)          # (first: a Needs you that can't redraw never holds it)
             needs = getattr(shell, "needs_you", None)
-            if needs is not None and not sip.isdeleted(needs):
-                needs.refresh()
+            try:
+                if needs is not None and not sip.isdeleted(needs):
+                    needs.refresh()
+            except Exception as e:
+                applog.log("wizard", f"needs you after sorting: {e}")
         offer = getattr(self.api, "sorted_offer", None)
-        writer = getattr(getattr(shell, "services", None), "writer", None)
+        services = getattr(shell, "services", None)
+        writer, chores = getattr(services, "writer", None), getattr(services, "chores", None)
 
         def once_saved(language, ids):
-            """(A worker.) D1's check once the sort's last places are saved (the writer idle; at most SAVED_WAIT s) —
-            *Done* pressed straight after a key never checks before its place landed."""
+            """(A worker.) Once the sort's last places are saved (the writer idle; at most SAVED_WAIT s) — *Done*
+            pressed straight after a key never asks before its place landed: the indexer, then D1's check."""
             end = time.monotonic() + SAVED_WAIT
             while writer is not None and writer.pending() and time.monotonic() < end:
                 time.sleep(0.05)
-            return offer(language, ids)
-        if callable(offer):
-            bridge.run_in_worker(once_saved, language, list(ids), then=offered,
-                                 failed=lambda info: applog.log("wizard", f"cards line after sorting: {info[0]}"))
+            if chores is not None:
+                try:
+                    chores.index(force=True)              # (returns at once: one check, one indexer at a time)
+                except Exception as e:                    # (no count now: D1's line is still looked for)
+                    applog.log("wizard", f"the indexer after sorting: {e}")
+            return offer(language, ids) if callable(offer) else False
+
+        def failed(info):
+            applog.log("wizard", f"cards line after sorting: {info[0]}")
+            offered(False)
+        bridge.run_in_worker(once_saved, language, list(ids), then=offered, failed=failed)
+
+    def _cards_offered(self, seq):
+        """The sort's end is saved (D1's line written or not): *Your start* is decided now, from the saved line."""
+        if seq == self._offer_seq:
+            self._offering = False
+            self.read_start_offered()
     # --- end Mado-O
 
     # --- ONB-2: the read behind the pages (Sonic § 102, ~13:4x: setup goes on; a loading page only where it's needed)
@@ -4904,31 +4933,61 @@ class SetupWizard(QWidget):
         elif self._saw_busy:
             self.hairline.set_value(1.0)
             if self.page.id != StartPage.id:
+                if self._start_pending():                 # ONB-FIX: *Your start* not decided yet: the close waits
+                    self._made_unseen = True              # for it (`_start_looked`)
+                    return
                 self._close("generated")
                 return
-            self.generating = False                       # ONB-1: the list is made; *Your start* stays for its yes
-            self.hairline.set_value(None)
-            self.say("")
-            self.paint_footer()
-            self.read_start(again=True)                   # (its cards are counted now)
+            self._made()
+
+    def _made(self):
+        """ONB-1: the list is made under *Your start*; the page stays for its yes."""
+        self._made_unseen = False
+        self.generating = False
+        self.hairline.set_value(None)
+        self.say("")
+        self.paint_footer()
+        self.read_start(again=True)                       # (its cards are counted now)
 
     # --- ONB-1: *Your start* (page 7, while D1's first cards wait for a yes) ----------------------------------------- #
+    def _start_pending(self):
+        """ONB-FIX: *Your start* isn't decided yet — the sort's end still being saved, or a look still out."""
+        return self._offering or self._start_asking > 0
+
     def read_start_offered(self):
-        """(*Your list* shown.) Is *Your start* next (`start_offered`, a small file read)? On a worker; the steps follow."""
+        """(*Your list* shown, and once the sort's end is saved.) Is *Your start* next (`start_offered`, a small file
+        read)? On a worker; the steps follow. Never while the sort's end is being saved: it asks once D1's line is
+        written (`_cards_offered`), so the look reads the saved line."""
         offered = getattr(self.api, "start_offered", None)
-        if offered is None or self.resort is not None:
+        if offered is None or self.resort is not None or self._offering:
             return
         language = self.language
+        self._start_asking += 1
+
+        def failed(info):
+            applog.log("wizard", f"your start: {info[0]}")
+            self._start_looked(False, language)
         bridge.run_in_worker(offered, thaw(self._settings()), language,
                              then=self.alive(lambda got: self._start_looked(got, language)),
-                             failed=lambda info: applog.log("wizard", f"your start: {info[0]}"))
+                             failed=self.alive(failed))
 
     def _start_looked(self, offered, language):
+        """The look's answer: the steps follow on *Your list*. Generate pressed before it came: on to *Your start* now,
+        as the press would have gone (or, the list already made with no start to offer, closed as it would have)."""
+        self._start_asking = max(0, self._start_asking - 1)
         offered = bool(offered)
-        if language != self.language or self.page.id != "level" or self.generating or offered == self._start_offered:
-            return                                        # (never changed under Generate or *Your start* itself)
-        self._start_offered = offered
-        self.steps.set_state(self.index, self.passed, self.shown())
+        if language == self.language and self.page.id == "level" and offered != self._start_offered:
+            self._start_offered = offered                 # (*Your start* itself never changed under it: not on "level")
+            self.steps.set_state(self.index, self.passed, self.shown())
+            if offered and self.generating:
+                if not self._made_unseen:
+                    self.say(S.MAKING_SHORT_NO_PCT)
+                self._advance()
+                if self._made_unseen:
+                    self._made()
+                return
+        if self._made_unseen and not self._start_pending() and self.page.id == "level":
+            self._close("generated")
 
     def read_start(self, again=False):
         """*Your start*'s numbers on a worker: the episodes each start covers (`start_items`, once a page entry; `again`
@@ -4963,6 +5022,25 @@ class SetupWizard(QWidget):
             page.show_numbers(numbers)
         if self._start_again and self.page.id == StartPage.id:
             self.read_start(again=True)
+
+    def _hear(self):
+        """Follow the views of the library the window shows now (its bridge: a language switch makes another and stops
+        the old one — `settings_store`'s rule). ONB-FIX c: setup heard only the bridge it opened with, so after page
+        1's zh *Watching now* got its tiles only when New arrivals was full as it opened (train 96's stress red). Each
+        page reads the view as it is when it opens (`entered`), so a switch (page 1 only) needs no read of its own."""
+        heard = getattr(self.shell, "library_bridge", None)
+        if heard is self._heard:
+            return
+        old, self._heard = self._heard, heard
+        if old is not None and not sip.isdeleted(old):
+            for slot in (self._added, self._library_moved):
+                try:
+                    old.library_changed.disconnect(slot)
+                except (TypeError, RuntimeError):     # never connected, or already gone
+                    pass
+        if heard is not None:
+            heard.library_changed.connect(self._added)
+            heard.library_changed.connect(self._library_moved)
 
     def _library_moved(self, _view=None):
         """(`library_changed`) The window's view moved — the list being made: *Your start*'s numbers again; the read's

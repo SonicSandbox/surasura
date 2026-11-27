@@ -189,7 +189,9 @@ def test_remove_is_japanese_only_and_both_rows_need_connect(world):
     # why: the AI voice reads only Japanese, so a Chinese library has no AI audio to remove; with Connect off there is
     # no Anki Miner field mapping to write through
     from tests.qt.test_settings_live import make
+    # (every row is built; its `when` shows or hides it)
     page, _store, _shell = _page(world, "zh")
-    assert "card_sound_add" in page.live.parts and "card_sound_remove_ai" not in page.live.parts
+    assert wait_until(lambda: page.rows["card_sound_add"].isVisibleTo(page), 5)
+    assert not page.rows["card_sound_remove_ai"].isVisibleTo(page)
     off, _s, _sh = make(world["fakes"], data={"connect_enabled": False}, language="ja")
-    assert "card_sound_add" not in off.live.parts and "card_sound_remove_ai" not in off.live.parts
+    assert not off.rows["card_sound_add"].isVisibleTo(off) and not off.rows["card_sound_remove_ai"].isVisibleTo(off)

@@ -457,7 +457,8 @@ def test_the_command_lines_add_sound_is_card_sounds_one_door(monkeypatch, argv, 
 
 def test_undo_and_remove_ai_are_one_or_the_other():
     from app.cli import __main__ as cli
-    with pytest.raises(SystemExit):
+    from app.cli import contract
+    with pytest.raises(contract.CliError):                # (the CLI's parser answers a usage error, never an exit)
         cli._parser().parse_args(["add-sound", "--undo", "r7", "--remove-ai"])
 
 

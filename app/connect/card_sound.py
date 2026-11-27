@@ -435,7 +435,8 @@ def ai_cards(anki, ledger, field, deck=None):
     from app import anki_connect
     held = ai_held(ledger)
     if deck and held:
-        held = {n: v for n, v in held.items() if n in _in_deck(anki, deck, set(held))}
+        inside = _in_deck(anki, deck, set(held))
+        held = {n: v for n, v in held.items() if n in inside}
     query = f'"tag:{AI_TAG}"' + (f' "deck:{anki_connect.escape_query(deck)}"' if deck else "")
     tagged = set(anki.find(query) or ())
     notes = _notes(anki, set(held) | tagged)

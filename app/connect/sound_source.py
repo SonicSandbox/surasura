@@ -25,8 +25,8 @@
   first; real sound never waits (Sonic § 106).
 
 Costs (the DSA floor): cards are grouped by item, so each subtitle is read once and its cues kept in two dicts (by
-start, by clean text): a card's own line is a look-up, never a scan; a book's line-up is read once a book, its cues by
-clean text (`place`'s scan only for a sentence no cue says whole); the other episodes are one byte search of the token
+start, by clean text): a card's own line is a look-up, never a scan; a book's line-up is read and indexed once a book
+(`lineup.Book`: a card is a dict look and a `str.find` in it, never a pass over its cues); the other episodes are one byte search of the token
 store's counts for every card's word at once, then only the files that hold one are read; Anki is asked one search a
 day and a few id-only searches for the new queue, never once a card, and `cardsInfo` only for the new cards in the
 window. Standard library; Anki through `anki_connect`.
@@ -201,20 +201,13 @@ def _audiobooks(language, steps, cards, lines):
     out = {}
     for lined, nids in books:
         try:
-            found = lineup.cues(lined["lineup"])
+            found = lineup.Book(lineup.cues(lined["lineup"]))     # (indexed once: every card of the book placed in it)
         except (OSError, UnicodeError, ValueError, KeyError, TypeError):
             log.info("Card sound: a book's line-up couldn't be read", exc_info=True)
             continue
-        by_text = {}
-        for cue in found:
-            by_text.setdefault(cue.text, []).append(cue)
         for nid in sorted(nids - set(out)):         # (a note two books claim: the first's)
             card = cards[nid]
-            exact = by_text.get(lineup.clean(card.sentence))
-            if exact:                           # (`place`'s first rule, as a look-up: two answers is none)
-                cue = exact[0] if len(exact) == 1 else None
-            else:
-                cue = add_audio.place(card.sentence, add_audio._form(card.raw, card.word), found)
+            cue = add_audio.place(card.sentence, add_audio._form(card.raw, card.word), found)
             if cue is not None:
                 out[nid] = Source(AUDIOBOOK, lined.get("item_id"), _ms(cue.start), _ms(cue.end), cue=cue)
     return out

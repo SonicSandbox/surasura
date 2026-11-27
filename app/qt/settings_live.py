@@ -161,6 +161,32 @@ def _nothing_new():
 PUT_BACK_KEY = "settings:connect_tidy:put-back"       # its own press: *Tidy now* working doesn't silence it
 
 
+def read_sound(language):
+    """(A worker.) AUDIO-FILL: *Add sound*'s count as Connect last kept it (`card_sound.counted`: one ledger row), or
+    None (none kept yet, Connect absent, a read that failed)."""
+    try:
+        from app.connect import card_sound
+        return card_sound.counted(language)
+    except Exception:
+        return None
+
+
+def sound_count_line(got):
+    """*Add sound*'s count beside its button, or "" (none kept yet: nothing shown)."""
+    if not got:
+        return ""
+    n = int(got.get("real") or 0)
+    return S.SOUND_COUNT_ONE if n == 1 else S.SOUND_COUNT.format(n=n) if n else S.SOUND_COUNT_NONE
+
+
+def sound_words(got):
+    """*Add sound*'s answer in plain words, where no toast can show it (a page with no window)."""
+    n = int(got.get("real") or 0)
+    if n:
+        return strings.NEEDS_SOUND_ADDED_ONE if n == 1 else strings.NEEDS_SOUND_ADDED.format(n=n)
+    return got.get("say") or strings.NEEDS_SOUND_NONE
+
+
 def tidy_line(past):
     """One past tidy in *Put back…*'s menu: when (your clock), how many cards, and whether it went back already."""
     from app.connect import tidy, undo
@@ -799,6 +825,22 @@ class Live(QObject):
             door.clicked.connect(lambda _c=False: self.remake_count())
             self._slot(row_id).layout().addWidget(door)
             self.parts[row_id] = {"remake": door}
+        elif row_id == "card_sound_add":                           # --- AUDIO-FILL: *Add sound* + its count
+            door = qpress.room(sc.Door(S.SOUND_ADD, tooltip=row.tip, name=row.label))
+            door.clicked.connect(lambda _c=False: self.add_sound())
+            count = QLabel()
+            count.setObjectName("settingshint")
+            count.setToolTip(S.SOUND_COUNT_TIP)
+            count.setVisible(False)                                 # until the count is read (on a worker)
+            self._slot(row_id).layout().addWidget(count)
+            self._slot(row_id).layout().addWidget(door)
+            self.parts[row_id] = {"add": door, "count": count}
+            self._read_sound()
+        elif row_id == "card_sound_remove_ai":                     # --- AUDIO-FILL: *Remove all AI audio…*
+            door = qpress.room(sc.Door(S.SOUND_REMOVE, tooltip=row.tip, name=row.label))
+            door.clicked.connect(lambda _c=False: self.remove_ai_count())
+            self._slot(row_id).layout().addWidget(door)
+            self.parts[row_id] = {"remove": door}
         elif row_id == "remove_downloaded_covers":                 # --- W3.2 L3
             door = qpress.room(sc.Door(S.COVERS_REMOVE, tooltip=row.tip, name=row.label))
             door.clicked.connect(lambda _c=False: self.remove_covers())
@@ -830,6 +872,7 @@ class Live(QObject):
         self._read_level()
         self._read_piyo()
         self._read_tidies()
+        self._read_sound()
         self._paint_setup()
 
     def _status(self, snap):
@@ -1448,6 +1491,107 @@ class Live(QObject):
     # --- Kyou-SH3 part 2: *Put back…* — the last 10 tidies (`tidy.past`), each with the Undo *Needs you* gives the
     # newest (`tidy.act_undo`: its rules hold for every one); one already put back, or whose copy is gone, is shown so
     # and can't be pressed; the press reads the list again on a worker, then the menu opens
+    # --- AUDIO-FILL (3.0.21; PROVISIONAL words): *Card sound*'s *Add sound* — real sound on every card that can get it
+    # now (`card_sound.press`, on a worker: the AI voice's cards stay Connect's quiet-PC pass), a toast with its Undo,
+    # the count read again after; *Remove all AI audio…* — the count first (`card_sound.press_remove`), then the sheet
+    # (No by default), the removal on a worker, a toast with its Undo (`press_undo`: the same run record)
+    def _read_sound(self):
+        if "count" not in self.parts.get("card_sound_add", {}):
+            return                                        # (its row not built yet: read when it is)
+        language = self.page.language
+        self._run(read_sound, language, then=lambda got, lang=language: self._sound(lang, got))
+
+    def _sound(self, language, got):
+        from PyQt6 import sip
+        count = self.parts.get("card_sound_add", {}).get("count")
+        if count is None or sip.isdeleted(count) or language != self.page.language:
+            return False
+        line = sound_count_line(got)
+        if count.text() != line or count.isVisible() != bool(line):
+            with self.page._keeping(self.page._last):
+                count.setText(line)
+                count.setVisible(bool(line))
+        return True
+
+    def _toast(self, got, language, row_id, back=None):
+        """A press's answer: the window's toast with its Undo (`needs.sound_added`; `back` its Undo's words), or its
+        words alone."""
+        from app.connect import card_sound
+        from app.qt import needs
+        if self.shell is None or not hasattr(self.shell, "toasts"):
+            return self.say(sound_words(got), row_id)
+        needs.sound_added(self.shell, got, lambda text: self.say(text, row_id), card_sound.press_undo, language,
+                          self._settings, failed=lambda info: self.say(S.SOUND_CANT.format(why=info[1]), row_id),
+                          back=back)
+        return None
+
+    def add_sound(self):
+        language = self.page.language
+        settings = dict(self._settings() or {})
+
+        def go():
+            from app.connect import card_sound
+            return card_sound.press(language, settings)
+
+        def done(got):
+            self._toast(got or {}, language, "card_sound_add")
+            self._read_sound()
+        return self._press("card_sound_add", "add", go, then=done,
+                           failed=lambda info: self.say(S.SOUND_CANT.format(why=info[1]), "card_sound_add"))
+
+    def remove_ai_count(self):
+        language = self.page.language
+        settings = dict(self._settings() or {})
+
+        def count():
+            from app.connect import card_sound
+            return card_sound.press_remove(language, settings)
+        return self._press("card_sound_remove_ai", "remove", count, then=lambda got: self._remove_ask(language, got),
+                           failed=lambda info: self.say(S.SOUND_CANT.format(why=info[1]), "card_sound_remove_ai"))
+
+    def _remove_ask(self, language, got):
+        got = got or {}
+        if language != self.page.language:
+            return None
+        if not got.get("ok"):
+            self.say(S.SOUND_CANT.format(why=got.get("say") or strings.NEEDS_SOUND_NONE), "card_sound_remove_ai")
+            return None
+        n = int(got.get("cards") or 0)
+        if not n:
+            self.say(S.SOUND_REMOVE_NONE, "card_sound_remove_ai")
+            return None
+        body = S.SOUND_REMOVE_BODY
+        if got.get("voice"):
+            body = f"{body}\n\n{S.SOUND_REMOVE_VOICE_ON}"
+        self.remove_card = confirm.ask(
+            self.page, S.SOUND_REMOVE_ASK_ONE if n == 1 else S.SOUND_REMOVE_ASK.format(n=n), body, S.SOUND_REMOVE_YES,
+            S.SOUND_REMOVE_YES_TIP, default_no=True, danger=True,
+            on_answer=lambda yes: yes and self.remove_ai_go(language))
+        return self.remove_card
+
+    def remove_ai_go(self, language):
+        """The sheet's yes for the language it counted (never the one shown now, if the learner switched)."""
+        settings = dict(self._settings() or {})
+
+        def go():
+            from app.connect import card_sound
+            return card_sound.press_remove(language, settings, confirm=True)
+
+        def done(got):
+            got = got or {}
+            n = int(got.get("removed") or 0)
+            if got.get("ok") and n:
+                line = S.SOUND_REMOVED_ONE if n == 1 else S.SOUND_REMOVED.format(n=n)
+            elif got.get("say"):
+                line = S.SOUND_CANT.format(why=got["say"])
+            else:
+                line = S.SOUND_REMOVE_NONE
+            self._toast({"id": got.get("id"), "ok": False, "say": line}, language, "card_sound_remove_ai",
+                        back=(S.SOUND_BACK, S.SOUND_BACK_KEPT))
+            self._read_sound()
+        return self._press("card_sound_remove_ai", "remove", go, then=done,
+                           failed=lambda info: self.say(S.SOUND_CANT.format(why=info[1]), "card_sound_remove_ai"))
+
     def _read_tidies(self):
         if "back" not in self.parts.get("connect_tidy", {}):
             return                                        # (its row not built yet: read when it is)

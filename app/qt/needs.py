@@ -617,10 +617,11 @@ def _audio_added(win, got, title, say, undo, lang, read_settings, failed=None):
                                                             then=undone, failed=failed))
 
 
-def sound_added(win, got, say, undo, lang, read_settings, failed=None):
+def sound_added(win, got, say, undo, lang, read_settings, failed=None, back=None):
     """AUDIO-FILL: *Add sound*'s answer (`card_sound.press`, from *Needs you* or Settings' *Card sound*) shown — a toast
     with its *Undo* (`undo`: `card_sound.press_undo`, on a worker) whenever something was written (a press stopped
-    part-way too), else its plain words in the bar (`say`)."""
+    part-way too), else its plain words in the bar (`say`). `back`: the Undo's own two lines ({n}; {n}, {k}) — Settings'
+    *Remove all AI audio* puts clips back rather than taking them off."""
     got = got or {}
     if not got.get("id"):
         say(got.get("say") or strings.NEEDS_SOUND_NONE)
@@ -630,14 +631,16 @@ def sound_added(win, got, say, undo, lang, read_settings, failed=None):
         strings.NEEDS_SOUND_SOME.format(n=n, m=m) if m else \
         strings.NEEDS_SOUND_ADDED_ONE if n == 1 else strings.NEEDS_SOUND_ADDED.format(n=n)
 
-    def undone(back):
-        back = back or {}
-        if not back.get("ok"):
-            say(back.get("say") or strings.NEEDS_AUDIO_GONE)
-        elif back.get("kept"):
-            say(strings.NEEDS_SOUND_UNDONE_KEPT.format(n=back["emptied"], k=back["kept"]))
+    words = back or (strings.NEEDS_SOUND_UNDONE, strings.NEEDS_SOUND_UNDONE_KEPT)
+
+    def undone(answer):
+        answer = answer or {}
+        if not answer.get("ok"):
+            say(answer.get("say") or strings.NEEDS_AUDIO_GONE)
+        elif answer.get("kept"):
+            say(words[1].format(n=answer["emptied"], k=answer["kept"]))
         else:
-            say(strings.NEEDS_SOUND_UNDONE.format(n=back["emptied"]))
+            say(words[0].format(n=answer["emptied"]))
     rid = got["id"]
     win.toasts.show(text, undo=lambda: bridge.run_in_worker(lambda: undo(lang, rid, read_settings() or {}),
                                                             then=undone, failed=failed))

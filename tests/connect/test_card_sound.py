@@ -434,3 +434,28 @@ def test_the_windows_reader_says_none_without_a_ledger_or_with_a_damaged_count(t
                                                                                         '{"real": "many"}'))
     assert cs.counted("ja", ledger_path=str(tmp_path / "ledger.db")) is None
     assert cs.counted("zh", ledger_path=str(tmp_path / "ledger.db")) is None
+
+
+@pytest.mark.parametrize("argv, want", [(["add-sound"], (False, None, False)),
+                                        (["add-sound", "--confirm"], (True, None, False)),
+                                        (["add-sound", "--undo", "r7"], (False, "r7", False)),
+                                        (["add-sound", "--remove-ai", "--confirm"], (True, None, True))])
+def test_the_command_lines_add_sound_is_card_sounds_one_door(monkeypatch, argv, want):
+    # why: surasura-cli's *Add sound* is the window's press (`act`): the counts without --confirm, one run's Undo,
+    # *Remove all AI audio* — never a second writer
+    from app.cli import __main__ as cli
+    from app.cli import connect_verbs
+    asked = []
+    monkeypatch.setattr(connect_verbs, "settings", lambda: {"target_language": "zh"})
+    monkeypatch.setattr(cs, "act", lambda s, lang, confirm=False, undo_id=None, remove_ai=False:
+                        asked.append((lang, confirm, undo_id, remove_ai)) or {"ok": True})
+    args = cli._parser().parse_args(argv)
+    assert args.verb == "add-sound"
+    assert connect_verbs.add_sound(args) == {"ok": True}
+    assert asked == [("zh",) + want]
+
+
+def test_undo_and_remove_ai_are_one_or_the_other():
+    from app.cli import __main__ as cli
+    with pytest.raises(SystemExit):
+        cli._parser().parse_args(["add-sound", "--undo", "r7", "--remove-ai"])

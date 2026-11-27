@@ -100,6 +100,8 @@ FILLED_BY = {
     "connect_remake": _LIVE,                    # --- REMAKE: *Make my new cards again…*
     "practice_ai": _LIVE,                       # --- A6: the practice server's setup, one Copy per AI app
     "ai_audio": "modules.irodori.qt_settings",  # --- Iro-AA: the AI voice's beta (its switch, Install, Remove)
+    "card_sound_add": _LIVE,                    # --- AUDIO-FILL: *Add sound* (+ its count)
+    "card_sound_remove_ai": _LIVE,              # --- AUDIO-FILL: *Remove all AI audio…*
 }
 
 
@@ -321,6 +323,11 @@ ROWS = (
     # (`modules.irodori.qt_settings`); a Japanese library only (the voice reads Japanese)
     _row("ai_audio", "anki", "custom", ("enable_irodori", "irodori_card_voice", "card_sound_days"), group="card_sound",
          when=_all(_module("modules.irodori"), _ja)),
+    # AUDIO-FILL (3.0.21, Sonic § 106 decisions 9 + 10; PROVISIONAL words): *Add sound* — real sound on every card
+    # that can get it now, its count beside it (`card_sound.counted`) — and *Remove all AI audio…* (count first, then
+    # the sheet; a copy kept, Undo in the toast). Real sound needs no AI voice: both languages; the AI's row, Japanese
+    _row("card_sound_add", "anki", "custom", group="card_sound", when=_CONNECT),
+    _row("card_sound_remove_ai", "anki", "custom", group="card_sound", when=_all(_CONNECT, _ja)),
     _row("anki_sync_delay_min", "anki", "select", ("anki_sync_delay_min",), adv=True, group="anki"),
     _row("automation", "anki", "toggle", ("logic.automation",), adv=True),
     _row("journey_settle_s", "anki", "number", ("journey_settle_s",), adv=True, bounds=(0, None)),

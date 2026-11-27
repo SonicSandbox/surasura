@@ -1156,12 +1156,16 @@ def _generate_first():
         return False
 
 
+_CPU_BUSY = [False]             # Connect's process: the busy line's last answer (its hysteresis across passes)
+
+
 def _cpu_busy(load=None, clock=None, sleep=None):
-    """AUDIO-FILL (A5): the window scheduler's rule for background work (`gentle`: it waits while this computer's CPU is
-    busy, at or over `power.BUSY`, every program's share over LOAD_WINDOW_S), for Connect's own process, which has no
-    scheduler of its own (`gentle.hold` answers only in the window's) -> `busy()`: the share since this was made,
-    waited out to the scheduler's window when the pass's sound work took less; True at or over the line; a reading
-    that fails is quiet. Stand-ins (tests): `load` a `power.CpuLoad`, `clock`, `sleep`."""
+    """AUDIO-FILL (A5, the lead 2026-11-26): the window scheduler's own rule for background work, for Connect's process,
+    which has no scheduler (`gentle.hold` answers only in the window's) — `gentle.busy_line`, the one function both ask:
+    every program's CPU share since this was made (waited out to `gentle.LOAD_WINDOW_S` when the pass's real sound took
+    less), busy at or over `power.BUSY`, quiet again only under `power.QUIET` (the last answer kept for the process,
+    `_CPU_BUSY`). -> `busy()`; a reading that fails keeps the last answer. Stand-ins (tests): `load` a
+    `power.CpuLoad`, `clock`, `sleep`."""
     from app.connect import power
     from app.services import gentle
     load = load if load is not None else power.CpuLoad()
@@ -1179,8 +1183,9 @@ def _cpu_busy(load=None, clock=None, sleep=None):
         try:
             share = load.sample()
         except Exception:
-            return False
-        return share is not None and share >= power.BUSY
+            share = None
+        _CPU_BUSY[0] = gentle.busy_line(share, _CPU_BUSY[0])
+        return _CPU_BUSY[0]
     return busy
 
 

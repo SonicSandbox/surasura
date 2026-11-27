@@ -200,3 +200,22 @@ def test_the_guides_not_now_from_the_card_answers_the_card(world, monkeypatch, v
     assert wait_until(lambda: service.VOICE_SETUP in service.read_answered("ja"), 5)
     gather(ny)
     assert card_of(ny) is None and job.calls["install"] == 0
+
+
+@pytest.mark.parametrize("kept, shown", [({"cards": 9, "real": 2, "ai": 7, "silent": 0, "at": "x"}, 7),
+                                         ({"cards": 2, "real": 2, "ai": 0, "silent": 0, "at": "x"}, None),
+                                         (None, None)])
+def test_with_no_count_handed_in_the_card_reads_card_sounds_own_ai_count(world, monkeypatch, kept, shown):
+    # why: AUDIO-FILL — nothing in the window hands `ai_waiting_in` a number yet; the count Connect's pass kept
+    # (`card_sound.counted`, read on the gather's worker while Connect is on) says how many wait for the voice, so
+    # the card shows from it — and never from a count with no AI cards, or none kept
+    win, ny, _said = opened(world, "ja", monkeypatch, waiting=None, offered=True)
+    ny.read_settings = lambda: {"connect_enabled": True}
+    asked = []
+    ny.connect_calls["sound_count"] = lambda lang: asked.append(lang) or kept
+    gather(ny)
+    e = card_of(ny)
+    assert asked == ["ja"], "Card sound's one ledger row, read once a gather"
+    assert (e is not None) is (shown is not None)
+    if shown:
+        assert e.data["n"] == shown

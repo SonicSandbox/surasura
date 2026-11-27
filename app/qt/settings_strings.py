@@ -681,6 +681,14 @@ ROWS = {
                  "Nothing is sent anywhere.",
                  "Use the AI voice (beta) for cards with no real sound",
                  "ai audio voice tts beta irodori sentence card sound made ahead test pack"),
+    "card_sound_add": ("Add sound", "Cards with no sentence audio get the sound of their own line, from your episode or "
+                                    "its audiobook. Only empty fields are filled.",
+                       "Puts real sound on every card that can get it now; Undo takes it off again.",
+                       "add sound audio sentence audio clip episode audiobook cards missing silent fill"),
+    "card_sound_remove_ai": ("Remove all AI audio", "Takes the AI voice's clips off your cards. A copy of each is kept, "
+                                                    "so Undo puts them back.",
+                             "Removes the AI voice's sound from your cards; your own audio stays.",
+                             "remove ai audio voice tts clips delete undo sound"),
     "telemetry_enabled": ("Anonymous usage counts", "No words, files or content — ever",
                           "Send anonymous usage counts", "telemetry anonymous usage"),
     # a9.1: the one way to the logs (the bar's *Open the logs folder* went; Send report carries them), beside the
@@ -867,6 +875,26 @@ TIDY_PAST_BACK_TIP = "Already put back: a tidy goes back once."
 TIDY_PAST_GONE_TIP = "Its copy isn't on disk any more, so it can't go back."
 # REMAKE (3.0.19; PROVISIONAL words): *Make my new cards again…*'s press, its sheet and its answers
 REMAKE_NOW = "Make my new cards again…"
+# --- AUDIO-FILL (PROVISIONAL words): *Card sound*'s two presses
+SOUND_ADD = "Add sound"
+SOUND_COUNT = "{n:,} cards can get sound now"
+SOUND_COUNT_ONE = "1 card can get sound now"
+SOUND_COUNT_NONE = "Every card that can get sound has it"
+SOUND_COUNT_TIP = "Counted when Connect last looked at your cards"
+SOUND_REMOVE = "Remove all AI audio…"
+SOUND_REMOVE_NONE = "No card has AI audio"
+SOUND_REMOVE_ASK = "Remove the AI audio from {n:,} cards?"
+SOUND_REMOVE_ASK_ONE = "Remove the AI audio from 1 card?"
+SOUND_REMOVE_BODY = ("Only the AI voice's clips go; your own audio and real sound stay. A copy of each is kept: Undo "
+                     "puts them back.")
+SOUND_REMOVE_VOICE_ON = "The AI voice is still on, so cards due soon get it again. Switch it off above to keep them silent."
+SOUND_REMOVE_YES = "Remove"
+SOUND_REMOVE_YES_TIP = "Takes the AI clips off these cards now"
+SOUND_REMOVED = "The AI audio is off {n:,} cards"
+SOUND_REMOVED_ONE = "The AI audio is off 1 card"
+SOUND_CANT = "Not done: {why}"
+SOUND_BACK = "The AI audio is back on {n:,} cards"
+SOUND_BACK_KEPT = "The AI audio is back on {n:,} cards · {k:,} you changed since keep yours"
 REMAKE_ASK = "Delete {n} new cards and make them again?"
 REMAKE_ASK_ONE = "Delete 1 new card and make it again?"
 REMAKE_ASK_BEFORE = "Delete the {n} cards from before Surasura and make them again?"

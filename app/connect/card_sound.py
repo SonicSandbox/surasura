@@ -871,6 +871,23 @@ def press_undo(language, rid, settings):
     return {"ok": True, "emptied": len(done.get("emptied") or ()), "kept": len(done.get("kept") or {}), "say": None}
 
 
+def press_remove(language, settings, confirm=False):
+    """(A worker.) Settings' *Remove all AI audio* -> without `confirm` the count first {"ok", "cards", "voice"}; with
+    it {"ok", "id" (its Undo: `press_undo`), "removed", "say"} — Anki's write, a copy of each clip kept. A "couldn't"
+    -> {"ok": False, "say": its plain words}."""
+    from app.cli.contract import CliError
+    try:
+        done = act(settings, language, remove_ai=True, confirm=confirm)
+    except CliError as e:
+        return {"ok": False, "id": getattr(e, "context", {}).get("undo"), "say": e.message, "cards": 0, "removed": 0}
+    if done.get("skipped"):
+        return {"ok": False, "id": None, "say": NO_MINER if done["skipped"] == NO_MINER else None, "cards": 0,
+                "removed": 0}
+    if not confirm:
+        return {"ok": True, "cards": int(done.get("cards") or 0), "voice": _voice_on(settings, language)}
+    return {"ok": True, "id": done.get("id"), "removed": len(done.get("removed") or ()), "say": None}
+
+
 def _kick(settings):
     try:
         from app.connect import kick

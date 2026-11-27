@@ -672,6 +672,27 @@ def add_audio(args):
     return {k: v for k, v in got.items() if k != "looked"}      # (the notes a press looked at: Connect's own record)
 
 
+def add_sound_args(parser):
+    add_language(parser)
+    which = parser.add_mutually_exclusive_group()
+    which.add_argument("--undo", metavar="ID", help="take back one *Add sound* (its id, as the answer gave it)")
+    which.add_argument("--remove-ai", action="store_true", help="*Remove all AI audio*: the AI voice's clips off "
+                                                                "your cards (a copy kept; its answer's id undoes it)")
+    parser.add_argument("--confirm", action="store_true", help="do it; without it, only how many cards it would fill")
+
+
+def add_sound(args):
+    """*Add sound* (AUDIO-FILL, Settings › Anki & mining › *Card sound*'s press; `app/connect/card_sound.py`): real
+    sound — the card's own line in its episode, its book's audiobook, the same sentence elsewhere in the library — into
+    every soundless card at once; the AI voice only for cards due in the window while it is on. Without `--confirm`,
+    the counts only (nothing written). `--undo ID` takes one run back; `--remove-ai` the AI voice's clips off. Only
+    empty fields (or an untouched AI clip of Surasura's) are written; never while you review."""
+    loaded = settings()
+    from app.connect import card_sound
+    return card_sound.act(loaded, language(args, loaded), confirm=args.confirm, undo_id=args.undo,
+                          remove_ai=args.remove_ai)
+
+
 def _owe_sync(loaded):
     """Cards deleted or back from the shelf change tomorrow's cards: the session's sync (P2.3), sent by Connect."""
     from app.connect import undo as undoing

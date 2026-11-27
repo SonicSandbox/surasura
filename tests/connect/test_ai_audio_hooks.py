@@ -195,6 +195,12 @@ class _Load:
         return got
 
 
+@pytest.fixture(autouse=True)
+def _quiet_before(monkeypatch):
+    # why: Connect's process keeps the busy line's last answer (its hysteresis); each test starts from a quiet one
+    monkeypatch.setattr(runner, "_CPU_BUSY", [False])
+
+
 @pytest.mark.parametrize("share, busy", [(0.95, True), (0.70, True), (0.69, False), (None, False),
                                          (OSError("no counters"), False)])
 def test_the_ai_voice_waits_on_a_busy_cpu_by_the_window_schedulers_own_line(share, busy):
@@ -207,6 +213,28 @@ def test_the_ai_voice_waits_on_a_busy_cpu_by_the_window_schedulers_own_line(shar
     now[0] += 2.0                                            # the real sound took 2 s
     assert busy_now() is busy
     assert slept == [pytest.approx(gentle.LOAD_WINDOW_S - 2.0)]
+
+
+@pytest.mark.parametrize("was, share, busy", [(True, 0.60, True), (True, 0.55, True), (True, 0.54, False),
+                                              (False, 0.60, False), (True, None, True),
+                                              (True, OSError("no counters"), True)])
+def test_a_busy_computer_is_quiet_again_only_under_the_quiet_line_across_passes(was, share, busy):
+    """The lead on A5: the scheduler's rule whole — busy at `power.BUSY`, quiet again only under `power.QUIET` — so a
+    pass after a busy one doesn't start the voice at 60 % CPU; a reading that fails keeps the last answer."""
+    runner._CPU_BUSY[0] = was
+    now = [0.0]
+    busy_now = runner._cpu_busy(_Load([None, share]), clock=lambda: now[0], sleep=lambda s: None)
+    now[0] += 10.0
+    assert busy_now() is busy and runner._CPU_BUSY[0] is busy
+
+
+def test_connect_and_the_window_ask_the_one_busy_line(monkeypatch):
+    # why: one rule for both processes (the lead on A5), never a copy that drifts from the scheduler's
+    from app.services import gentle
+    asked = []
+    monkeypatch.setattr(gentle, "busy_line", lambda share, was: asked.append((share, was)) or "the line's answer")
+    busy_now = runner._cpu_busy(_Load([None, 0.42]), clock=lambda: 99.0, sleep=lambda s: None)
+    assert busy_now() == "the line's answer" and asked == [(0.42, False)]
 
 
 def test_a_long_real_sound_half_is_its_own_window_and_never_waits_more():

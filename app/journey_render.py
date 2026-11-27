@@ -1478,7 +1478,7 @@ def silent_lines(results_dir, settings):
     showed (`analyzer.ListSentences.keep`, results/`SHOWN_FILE`'s "silent") — only while *Ensure an audio example* is
     on (SPEC § 4.5: they stay in their true order, marked silent) and the list is the reader's (release 2); set()
     otherwise, with none kept, or kept by another run than the plan's (a Generate whose reader kept nothing leaves the
-    last one's: never its marks). Read here, not through the analyzer: a run's analyzer is `__main__`."""
+    last one's: never its marks). Read here, not through the analyzer."""
     from app import plan_rules
     if plan_rules.SENTENCE_TABLE < 2 or not (settings or {}).get("ensure_audio_example"):
         return set()

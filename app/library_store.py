@@ -51,6 +51,14 @@ from contextlib import contextmanager
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Run as a script (the store's helper from source: `python app/library_store.py maintain …`), the helper is the ONE
+# imported module's, as the frozen app's `library_maintain` verb runs it. This file's body run as `__main__` was a second
+# copy beside the `app.library_store` that library_watch, sources and audiobooks import: its own StoreBusy, and its own
+# per-process write locks (`_WRITE_LOCKS`) (ENTRY-ONCE, 3.0.21; analyzer.py's entry). Before the body: it never runs twice.
+if __name__ == "__main__":
+    from app import library_store as _one
+    sys.exit(_one.main())
+
 from app import library_watch
 from app.services import window_idle
 from app.path_utils import (CONTENT_EXTENSIONS, TRASH_DAYS, backup_to_trash, decode_text, infer_source_type,
@@ -17476,7 +17484,3 @@ def sync_process(language, folders=None):
         return EXIT_BUSY                                                # its own code: the window keeps it owed
     except Exception:
         return EXIT_FAILED
-
-
-if __name__ == "__main__":
-    sys.exit(main())

@@ -11075,12 +11075,20 @@ def read_watched_marks(language, data_dir):
     (never built, synced or waited on, as `read_auto_band`), in one read transaction. None with no ready store (JSON
     mode, the switch off, a damaged store, one made by a newer Surasura or read-only on a newer one's copy): the
     report is then what it was. `UNREAD` when the store is there but can't be read now (busy, an sqlite error): a
-    report drawn so is never recorded as current (`analyzer.signed_render`)."""
+    report drawn so is never recorded as current (`analyzer.signed_render`). Inside a `held()` span that has the store
+    open (a Generate's run, ONE-READ 4), read through that handle — no connection of its own."""
     if not STORE_LIVE:
         return None
     db_path = library_db_path(language, data_dir)
     if not os.path.exists(db_path) or os.path.exists(damaged_marker(db_path)):
         return None
+    held_store = _span_store(db_path)
+    if held_store is not None:
+        try:
+            if _mode_on(held_store.conn)[0] == "store":
+                return held_store.watched_marks()
+        except sqlite3.Error:
+            return UNREAD
     import pathlib
     try:
         conn = sqlite3.connect(pathlib.Path(db_path).as_uri() + "?mode=ro", uri=True, timeout=1.0,

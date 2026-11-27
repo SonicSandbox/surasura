@@ -1781,8 +1781,17 @@ class Store:
         if terms is not None:
             rows.append(("known_terms", self._known_terms_value(script, terms, suffix)))
         if ignored is not None:
-            rows.append(("known_ignored", json.dumps([ignored[0], list(ignored[1])], ensure_ascii=False)))
+            rows.append(self._ignored_row(ignored))
         self._put_meta(rows)
+
+    @staticmethod
+    def _ignored_row(ignored):
+        return "known_ignored", json.dumps([ignored[0], list(ignored[1])], ensure_ascii=False)
+
+    def set_cached_ignored(self, ignored):
+        """Keep (the file's `known_signature`, its IGNORED dictForms) alone: a cache hit whose store had no row yet (a
+        store from before it) writes it once, from the ignore set's one parse, so the next hit parses none."""
+        self._put_meta((self._ignored_row(ignored),))
 
     def cached_ignored(self, file_signature):
         """KnownWord.json's IGNORED dictForms as the last miss parsed them (`set_cached_known(ignored=)`), while the file

@@ -3235,6 +3235,11 @@ def read_known_words(store, known_file, known_sig, tokenizer, keep=True, missed=
                 ignored = store.cached_ignored(signature)
                 if ignored is not None:
                     token_index.keep_ignored_entries(known_file, language, signature, entries=ignored)
+                elif keep:  # a store from before the row: the ignore set's own parse, now, kept once for the next hits
+                    token_index._ignored_file_entries(os.path.dirname(known_file), language)
+                    kept = token_index.kept_ignored_entries(known_file, language)
+                    if kept is not None and kept[0] == signature:
+                        store.set_cached_ignored(kept)
             except Exception:
                 pass
             return cached

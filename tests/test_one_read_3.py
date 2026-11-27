@@ -304,7 +304,7 @@ def test_a_journey_whose_open_found_no_store_hands_the_render_none_to_open(monke
         raise Drawn
     monkeypatch.setattr(journey_render, "open_library_look", lambda *a, **k: (None, None))
     monkeypatch.setattr(journey_render, "render", render)
-    monkeypatch.setattr(analyzer, "journey_marks", lambda language: None)
+    monkeypatch.setattr(analyzer, "journey_marks", lambda language: pytest.fail("opened the store again (ONE-READ 4)"))
     with pytest.raises(Drawn):
         shg._write_journey("ja", open_browser=False)
     assert seen["library"] is False and seen["facts"] is False

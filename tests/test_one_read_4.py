@@ -219,6 +219,8 @@ def test_the_helper_and_connects_role_keep_handles_of_their_own_in_a_runs_span(l
         plain = ls.open_store(language, data_dir, user_files_dir, role="reader")
         connect = ls.open_store(language, data_dir, user_files_dir, role="connect")
         assert plain is not None and connect is not None and connect is not plain and connect.role == "connect"
+        helper = ls.open_store(language, data_dir, user_files_dir, role="helper")
+        assert helper is not None and helper is not plain and helper.role == "helper"
         seen = {}
 
         def other_thread():
@@ -234,9 +236,17 @@ def test_the_helper_and_connects_role_keep_handles_of_their_own_in_a_runs_span(l
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_without_a_role_a_span_keeps_one_handle_a_role_as_before(language):
-    # why: Connect's job spans (`held()`) are unchanged: a reader asked inside one gets a handle of its own
+    # why: Connect's job spans (`held()`) are unchanged: a reader asked inside one gets a handle of its own — also
+    # after a run's span on this thread ended, even by an exception (its role never outlives it)
     data_dir, user_files_dir = roots(language)
     migrated(language).close()
+    with pytest.raises(KeyError):
+        with ls.held(role="analyzer"):
+            assert ls.open_store(language, data_dir, user_files_dir, role="reader").role == "analyzer"
+            raise KeyError("the run stopped")
+    with ls.held(role="analyzer"):
+        with ls.held():                      # a span inside the run's joins it: still the run's one handle
+            assert ls.open_store(language, data_dir, user_files_dir, role="reader").role == "analyzer"
     with ls.held():
         a = ls.open_store(language, data_dir, user_files_dir, role="connect")
         reader = ls.open_store(language, data_dir, user_files_dir, role="reader")
@@ -408,3 +418,56 @@ def test_a_miss_keeps_the_ignored_entries_it_parsed_in_its_one_commit(monkeypatc
         store.close()
     assert count.n == 1, f"one parse a miss: {count.n}"
     assert kept is not None and len(kept) == 2 and all(e.strip() == e and e for e in kept), kept
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_hit_on_a_store_from_before_the_row_keeps_it_once_and_the_next_hit_parses_none(monkeypatch, language):
+    # why: a store whose cache came before the row never meets a miss while KnownWord.json stays as it is (no sync):
+    # without the row its every hit parsed the file; the first hit writes it from the ignore set's own parse — a reader
+    # that writes nothing (`keep=False`) leaves it
+    from app import analyzer
+    folder, path = _known_file(language)
+    monkeypatch.setattr(ti, "_IGNORED_ENTRIES", {})
+    tokenizer = _tokenizer(language)
+    sig = ti.known_signature(path, getattr(tokenizer, "script", "asis"))
+    store = ti.open_store(language)
+    try:
+        known = analyzer.read_known_words(store, path, sig, tokenizer)
+        store.set_meta("known_ignored", "")                     # the cache as a store from before the row holds it
+        monkeypatch.setattr(ti, "_IGNORED_ENTRIES", {})
+        analyzer.read_known_words(store, path, sig, tokenizer, keep=False)
+        assert store.cached_ignored(ti.known_signature(path)) is None, "a reader that writes nothing wrote it"
+        monkeypatch.setattr(ti, "_IGNORED_ENTRIES", {})
+        count = _Reads(monkeypatch, path)
+        assert analyzer.read_known_words(store, path, sig, tokenizer) == known
+        assert count.n == 1, f"the first hit parses once (the ignore set's parse, kept): {count.n}"
+        assert ti._ignored_file_entries(folder, language) and count.n == 1
+        monkeypatch.setattr(ti, "_IGNORED_ENTRIES", {})
+        analyzer.read_known_words(store, path, sig, tokenizer)
+        assert ti._ignored_file_entries(folder, language) and count.n == 1, f"the next hit parses none: {count.n}"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_journeys_marks_read_inside_a_run_take_the_runs_handle(language, monkeypatch):
+    # why: the up-to-date path signs its check with `analyzer.journey_marks`, which opened a read-only connection of
+    # its own inside a run already holding the store: read through the run's handle, the same marks
+    import sqlite3
+    data_dir, user_files_dir = roots(language)
+    window = migrated(language)
+    try:
+        window.set_watched([window.ids("now")[0]], True)
+    finally:
+        window.close()
+    outside = ls.read_watched_marks(language, data_dir)
+    assert outside and outside != ls.UNREAD
+    connects = []
+    real = sqlite3.connect
+    with ls.held(role="analyzer"):
+        assert ls.open_store(language, data_dir, user_files_dir, role="analyzer") is not None
+        monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: connects.append(a[0]) or real(*a, **k))
+        inside = ls.read_watched_marks(language, data_dir)
+        monkeypatch.setattr(sqlite3, "connect", real)
+    assert inside == outside
+    assert connects == [], f"no connection of its own: {connects}"

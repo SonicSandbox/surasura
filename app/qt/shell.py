@@ -3609,17 +3609,33 @@ class ShellWindow(QMainWindow):
             log=lambda where, e: applog.log("door", f"{where}: {e!r}")))
 
     def ukai_extension(self):
-        """(The door's starting thread, only while `door.EXTENSION_ON`.) 鵜飼 Ukai's caller class (UKAI-S1): its
-        pairing (`app/services/ukai_pairing.py`, kept as `ukai_pairing` for Settings' *Forget Ukai*), whose Allow card
-        opens in this window through the bridge (`_ukai_allow`). No widget is touched here."""
+        """(The door's starting thread, only while `door.EXTENSION_ON`.) 鵜 Ukai's caller class (UKAI-S1): its
+        pairing (`app/services/ukai_pairing.py`, kept as `ukai_pairing` for Settings' row and *Forget Ukai*), whose
+        Allow card opens in this window through the bridge (`_ukai_allow`), and Ukai's module's routes (UKAI-S2,
+        `modules/ukai`: the subtitles in, through this window's writer as the YouTube downloader's transcripts go;
+        UKAI-S3: YouTube links, run on this window's thread through the bridge, `_ukai_youtube`) —
+        None without the module (nothing listens for Ukai: Surasura runs as before). No widget is touched here."""
+        try:
+            import modules.ukai as ukai
+        except ImportError:
+            return None
         from app.services import ukai_pairing
+        services = self.services
+        routes = ukai.routes(writer=lambda: getattr(services, "writer", None), settings=services.settings.get,
+                             youtube=self.bridge.run_ukai_youtube)
         self.bridge.ukai_asked.connect(self._ukai_allow, Qt.ConnectionType.QueuedConnection)
-        self.ukai_pairing = ukai_pairing.Pairing(ask=self.bridge.ask_ukai)
-        return self.ukai_pairing.extension()
+        self.bridge.ukai_youtube.connect(self._ukai_youtube, Qt.ConnectionType.QueuedConnection)
+        self.ukai_pairing = ukai_pairing.Pairing(ask=self.bridge.ask_ukai, changed=self.bridge.ukai_changed)
+        return self.ukai_pairing.extension(routes)
 
     def _ukai_allow(self, request):
         from app.qt import ukai_allow
         ukai_allow.ask(self, self.ukai_pairing, request)
+
+    def _ukai_youtube(self, job):
+        """Ukai's YouTube links (UKAI-S3), on this window's thread: the downloader runs them (`modules/ukai/qt_youtube`)."""
+        from modules.ukai import qt_youtube
+        qt_youtube.run(self, *job)
 
     # --- Kotoba-K: Known / Ignore on the word card ----------------------------------------------------------------- #
     def _card_mark(self, marks):
@@ -5120,7 +5136,7 @@ def start_door(window):
     global _door_starting
     try:
         from app.services import journey_door
-        if not journey_door.enabled():
+        if not journey_door.enabled():          # (Ukai's class too: one door, one switch to open it — UKAI-S2)
             return None
         routes = window.door_routes()
     except Exception as e:
@@ -5132,7 +5148,7 @@ def start_door(window):
             from app import door
             from app.path_utils import get_user_file
             extension = None
-            if door.EXTENSION_ON:               # 鵜飼 Ukai's class: off until Ukai 1.0 ships with it
+            if door.EXTENSION_ON:               # 鵜 Ukai's class: off until Ukai 1.0 ships with it
                 try:
                     extension = window.ukai_extension()
                 except Exception as e:          # (the journey's door opens all the same)

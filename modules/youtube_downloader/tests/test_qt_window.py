@@ -1162,6 +1162,35 @@ def test_setups_fetch_runs_as_a_youtube_job_and_hands_back_its_files_and_why_not
                         lang="Japanese", keep=False, first=True, on_gui=False)
 
 
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_ukais_links_run_as_pasted_links_every_video_in_the_libraries_captions(main, monkeypatch, language):
+    """`yt.fetch_links` (鵜 Ukai's `POST /v1/youtube`; #474, by mattias): the links as the window's *Download* runs
+    pasted ones — every video, never only a playlist's first — in the language's default captions, on a `youtube`
+    job off the window's thread; its end on the window's thread with the new transcripts."""
+    monkeypatch.setattr(ytdlp_manager, "ensure_available", lambda log: "yt-dlp.exe")
+    seen = {}
+
+    def extract(urls, folder, lang, keep_timestamps, channel_first, log, should_stop=None, first_only=False):
+        seen.update(urls=urls, lang=lang, keep=keep_timestamps, first=first_only,
+                    on_gui=threading.current_thread() is threading.main_thread())
+        with open(os.path.join(folder, f"{names(language)[0]} [lecture0001].txt"), "w", encoding="utf-8") as f:
+            f.write(names(language)[1])
+        log("  [ok] (manual) " + names(language)[0])
+    monkeypatch.setattr(core, "extract", extract)
+    ended = []
+    links = ["https://www.youtube.com/watch?v=lecture0001", "https://www.youtube.com/playlist?list=PLx"]
+    job = yt.fetch_links(main, links, language, lambda _line: None,
+                         lambda created, problems: ended.append((created, problems,
+                                                                 threading.current_thread() is threading.main_thread())))
+    assert job is not None
+    assert wait_until(lambda: ended, 10)
+    created, found, on_gui = ended[0]
+    assert on_gui and [os.path.basename(p) for p in created] == [f"{names(language)[0]} [lecture0001].txt"]
+    assert found == []
+    assert seen == dict(urls=links, lang=view.default_caption_language(language), keep=False, first=False,
+                        on_gui=False)
+
+
 def test_setups_fetch_without_yt_dlp_says_so_in_plain_words(main, monkeypatch):
     monkeypatch.setattr(ytdlp_manager, "ensure_available",
                         lambda log: log("Could not download yt-dlp: <urlopen error timed out>") or None)

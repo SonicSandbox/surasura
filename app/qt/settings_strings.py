@@ -34,6 +34,17 @@ FIND_HATO = "Find hato…"
 FIND_HATO_TIP = "Already have hato? Pick its folder.\n• It opens once to connect."
 FIND_HATO_TITLE = "Where is hato?"
 FIND_HATO_BUSY = "Opening hato so it can connect…"
+# 鵜 Ukai's row (UKAI-S2, U9; PROVISIONAL): paired or not, *Forget Ukai* — shown only while `door.EXTENSION_ON`
+UKAI_PAIRED = "paired · {version}"
+UKAI_PAIRED_PLAIN = "paired"
+UKAI_NOT_PAIRED = "not paired"
+# … and what waits for Ukai to record (UKAI-S4: Connect's Netflix / Disney+ jobs, `connect.browser.waiting_lines`)
+UKAI_WAITS_ONE = "{words} · 1 line to record"
+UKAI_WAITS = "{words} · {n} lines to record"
+FORGET_UKAI = "Forget Ukai"
+FORGET_UKAI_TIP = "Ukai stops sending to Surasura at once\n• Pair it again from Ukai's menu"
+UKAI_FORGOTTEN = "Ukai is forgotten: pair it again from its menu"
+UKAI_FORGET_STUCK = "Ukai is forgotten until Surasura closes: its pairing file couldn't be removed ({why})"
 HATO_CONNECTED = "hato {version} is connected"
 HATO_CONNECTED_PLAIN = "hato is connected"
 HATO_NOT_CONNECTED = {                       # `tools_found.open_hato` / `hato_seen`'s why -> the bar's words
@@ -162,7 +173,7 @@ SECTION_WHY = {
     "backfill": "Adds to your Anki cards how each word is usually used (パターン), two more sentences from your own "
                 "content (例文), and the furigana and pitch a card is missing. Restore puts every card back",
 }
-ROW_TAGS = {"practice_ai": PRACTICE_NAME, "hato": "hato"}       # a row's tool, small beside its plain name
+ROW_TAGS = {"practice_ai": PRACTICE_NAME, "hato": "hato", "ukai": "鵜 Ukai"}   # a row's tool, small beside its name
 NEEDS_ANKI = "Needs Anki open and connected"
 NEEDS_MINER = "Needs Anki Miner (free)"
 CARDS_WHY = "Cards for episodes at the top of Current, made by themselves."   # (before Anki Miner's found)
@@ -579,6 +590,10 @@ ROWS = {
     "hato": ("Subtitles for videos without them",
     "Finds subtitles for your shows, and sends new episodes to New arrivals",
              "Whether hato is installed", "hato install houseki suite subtitles"),
+    "ukai": ("Subtitles from your browser",                  # UKAI-S2 (U9; PROVISIONAL)
+             "Sends the Netflix and Disney+ subtitles you watch to your library",
+             "Whether Ukai, Surasura's browser extension, is paired: pair it from Ukai's menu",
+             "ukai browser extension netflix disney houseki suite subtitles pair forget"),
     "practice_ai": ("Practise with your AI",
                     "Your AI quizzes you. What it's told goes to that AI's company.",
                     "Copy the setup, paste it to your AI. Try a short story.",

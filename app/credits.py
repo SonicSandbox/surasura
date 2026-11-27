@@ -85,6 +85,19 @@ def _ai_voice_here():
         return False
 
 
+def ai_voice_credits():
+    """AI_VOICE_CREDITS, then the voices' own credit lines, which the module's voice packs carry (the readers a voice
+    was made from, under the terms they gave): each as a bullet; the module unreadable, the lines it couldn't give."""
+    lines = []
+    try:
+        import importlib
+        lines = [line for line in importlib.import_module("modules.irodori").credits()
+                 if isinstance(line, str) and line.strip()]
+    except Exception:
+        lines = []
+    return AI_VOICE_CREDITS + "".join(f"\n• {line.strip()}" for line in lines)
+
+
 # The user's own content (Sonic, 2026-11-02): the installer's agreement page (packaging/agreement.txt) and README's
 # *Your content* say it in full; the Data credits card ends with it in one line.
 CONTENT_NOTE = """Your content
@@ -139,7 +152,7 @@ def all_credits():
     """`data_credits()` followed by the logos' and the covers' credits, Surasura's own licence and the software it
     bundles (`software_note()`), then the user's own content (`CONTENT_NOTE`): what the 3.0 window's Data credits
     shows."""
-    voice = AI_VOICE_CREDITS + "\n\n" if _ai_voice_here() else ""
+    voice = ai_voice_credits() + "\n\n" if _ai_voice_here() else ""
     return data_credits() + "\n\n" + LOGO_CREDITS + "\n\n" + COVER_CREDITS + "\n\n" + voice + software_note() + \
         "\n\n" + CONTENT_NOTE
 

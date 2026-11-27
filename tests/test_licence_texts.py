@@ -330,3 +330,23 @@ def test_data_credits_lists_the_bundled_software_from_the_programs_index(tmp_pat
     assert note in credits.all_credits() and credits.all_credits().endswith("\n\n" + credits.CONTENT_NOTE)
     (folder / "_internal" / "licenses" / "INDEX.txt").unlink()
     assert credits.bundled() == [] and credits.software_note() == credits.SOFTWARE_NOTE
+
+
+def test_the_ai_voices_own_credit_lines_follow_the_ai_voice_credits(monkeypatch):
+    """Iro-P: a voice blended from readers under CC BY must credit them wherever it goes — the lines live in the AI
+    voice's own packs (the module), and the Credits page shows them under the AI voice's part, one bullet each; a
+    module that can't give them (absent, or raising) leaves the part as it was, never a crash."""
+    import types
+    from app import credits
+    lines = ["朗読の声 — 青空文庫の読み手から作った声 (CC BY 3.0)", "  ", None]
+    monkeypatch.setitem(sys.modules, "modules.irodori", types.SimpleNamespace(credits=lambda: lines))
+    monkeypatch.setattr(credits, "_ai_voice_here", lambda: True)
+    assert credits.ai_voice_credits() == credits.AI_VOICE_CREDITS + "\n• 朗読の声 — 青空文庫の読み手から作った声 (CC BY 3.0)"
+    assert credits.ai_voice_credits() + "\n\n" in credits.all_credits()
+
+    def broken():
+        raise ValueError("a pack folder that can't be read")
+    monkeypatch.setitem(sys.modules, "modules.irodori", types.SimpleNamespace(credits=broken))
+    assert credits.ai_voice_credits() == credits.AI_VOICE_CREDITS
+    monkeypatch.setattr(credits, "_ai_voice_here", lambda: False)
+    assert credits.AI_VOICE_CREDITS not in credits.all_credits()

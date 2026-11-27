@@ -1,4 +1,5 @@
-"""A verb's stem + つかれ in kana is 疲れる (ENGINE 52, SCHEMA 32; app/analyzer.py § 〜つかれた).
+"""Kana つかれ read as 疲れる (app/analyzer.py § 〜つかれた): after a verb's stem (ENGINE 52, SCHEMA 32), and with no stem
+before it where nothing there can be what a つく verb takes (ENGINE 53, SCHEMA 33).
 
 UniDic knows the つく compounds as words of their own (抱きつく, 噛みつく, 住みつく), but where it doesn't know the stem +
 つく it cuts the run as the stem + 突く 'poke' + れる: 歩きつかれた 'tired from walking' put 突く on the list. The tokenizer
@@ -90,3 +91,98 @@ def test_a_tsuka_at_the_end_of_the_words_is_left_alone(tokenizer):
     nodes = tokenizer.tagger("一日中歩きつかれた。")
     at = [w.surface for w in nodes].index("つか")
     assert analyzer._tsukare(nodes[:at + 1]) == nodes[:at + 1]
+
+
+# --- no stem before it (ENGINE 53) ------------------------------------------------------------------------------- #
+@pytest.mark.parametrize("text", [
+    "つかれたから、先に寝るね。",                       # the line's start
+    "「つかれた！もう一歩も歩けない。」",                 # a mark
+    "今日はもうつかれたから、先に寝るね。",               # an adverb, walked over to は
+    "お前はつかれた顔をしているな。",                     # the topic は
+    "君もつかれただろう、少し休もう。",                   # も
+    "一日中歩いてつかれた。",                             # a clause's て
+    "昨日は眠れなかったのでつかれた。",                   # ので
+    "あんなにつかれていたのに、また走り出した。",         # an adverbial に
+    "みんなつかれたから、今日はここまでにしよう。",       # a noun used as an adverb
+    "五時頃つかれて家に帰った。",                         # 頃, a suffix used as an adverb
+    "あーつかれた、やっと終わった。",                     # an interjection
+    "そしてすっかりつかれてしまった。",                   # a conjunction and an adverb
+    "今日は もう つかれた。",                             # a caption's spaces
+    "見ているのさえ少しつかれた。",                       # さえ after の, not after a noun
+    "ひどくつかれ、何もできない。",                       # an adjective's 連用形, walked over to the line's start
+])
+def test_tsukare_with_nothing_before_it_a_tsuku_verb_takes_is_tsukareru(tokenizer, text):
+    # Why: the tagger read every one of these as 突く 'poke' + れる and put 突く on the list; 'be tired' takes
+    # nothing, and nothing before the letters here can be what is poked, told or got into.
+    words = _words(tokenizer, text)
+    lemmas = {lemma for _s, lemma in words}
+    assert ("つかれ", "疲れる") in words
+    assert "突く" not in lemmas and "付く" not in lemmas
+
+
+def test_otsukare_is_one_word_as_written_in_kanji(tokenizer):
+    # Why: お + つかれ is お疲れ 'good work' — the same word the app reads お疲れ as (お joined to 疲れ), never お + 突く.
+    assert _words(tokenizer, "おつかれ、また明日ね。")[0] == ("おつかれ", "お疲れ")
+    assert _words(tokenizer, "お疲れ、また明日ね。")[0] == ("お疲れ", "お疲れ")
+
+
+@pytest.mark.parametrize("text", [
+    "隙をまんまとつかれた。",                   # を, an adverb between: 突く's passive
+    "肩をちょいとつかれて振り返った。",
+    "嘘つかれたのが一番悲しかった。",           # a noun right before it: 嘘をつく with を dropped
+    "水風呂つかれますか？",                     # 浸かる's potential, に dropped
+    "二度つかれた傷がまだ痛む。",               # a count before it
+    "狐につかれたような顔をしている。",         # に: 憑く
+    "嘘ばかりつかれて、もう誰も信じられない。", # ばかり right after a noun keeps the noun the object
+    "何者かに取ッつかれたようだった。",         # ッ is a letter the tagger left as a mark, no boundary
+    "神経がつかれた。",                         # が: 気がつく's letters too — left as read
+    "隙こそつかれた。",                         # こそ right after a noun: only は / も count as the topic
+    "犬に指を噛りつかれた。",                   # 噛りつく (噛みつく) with the tagger's り: no ending 'tired' follows
+])
+def test_tsukare_after_a_word_a_tsuku_verb_can_take_keeps_the_taggers_reading(tokenizer, text):
+    # Why: every other つかれる is a つく verb made passive, honorific or potential, and keeps what it takes before it.
+    assert "疲れる" not in {lemma for _s, lemma in _words(tokenizer, text)}
+
+
+def test_mou_tsukareta_counts_tsukareru_never_tsuku(tokenizer):
+    # Why: the list counted 突く 'poke' for もうつかれた, the commonest kana つかれ in general text.
+    counted = _counted(tokenizer, "今日はもうつかれたから、先に寝るね。")
+    assert "疲れる" in counted and "突く" not in counted
+
+
+def test_the_tired_word_keeps_the_space_before_it(tokenizer):
+    # Why: a caption's space before つかれ is the line's own; the word read from it keeps it, as the tagger's word did.
+    nodes = analyzer.join_affixes(tokenizer.tagger("今日は もう つかれた。"), analyzer.affix_joins(), library=False)
+    tired = next(w for w in nodes if w.feature.lemma == "疲れる")
+    assert tired.white_space == " "
+
+
+def test_otsuka_with_another_ending_is_left_alone(tokenizer):
+    # Why: お + つか + れる (終止形) is no word: only おつかれ (れ) is お疲れ; the rest stays as the tagger read it.
+    nodes = tokenizer.tagger("おつかれる。")         # the tagger: お + つか + れる
+    words = [(w.surface, w.feature.lemma) for w in analyzer._tsukare(list(nodes))]
+    assert "お疲れ" not in {lemma for _s, lemma in words}
+
+
+def test_only_o_right_before_the_letters_makes_otsukare(tokenizer):
+    # Why: お疲れ is お + つかれ written together. Another prefix (超, 'super') is no お, and an お with a word between it
+    # and the letters is not their お: neither may become お疲れ (the word between would be swallowed into it).
+    assert "お疲れ" not in {lemma for _s, lemma in _words(tokenizer, "超つかれた。")}
+    o = list(tokenizer.tagger("お茶"))[0]                       # お as the tagger reads a prefix (御)
+    rest = list(tokenizer.tagger("もうつかれた。"))             # もう + つか + れ + た + 。
+    assert o.feature.pos1 == "接頭辞" and rest[1].surface == "つか"
+    words = [(w.surface, w.feature.lemma) for w in analyzer._tsukare([o] + rest)]
+    assert "お疲れ" not in {lemma for _s, lemma in words}
+    assert words[1] == ("もう", "もう")
+
+
+def test_letters_split_by_a_space_are_left_as_the_tagger_read_them(tokenizer):
+    # Why: a space between つか and れ (a caption's line broken inside the word) is the line's own; the step joins
+    # nothing across a space, as the stem step doesn't either.
+    words = _words(tokenizer, "もう つか れた。")
+    assert ("つかれ", "疲れる") not in words
+    assert "つか" in {s for s, _l in words}
+    # お and つかれ with a space between them are not joined into お疲れ either: the space would be lost.
+    nodes = analyzer.join_affixes(tokenizer.tagger("お つかれ、また明日ね。"), analyzer.affix_joins(), library=False)
+    assert "お疲れ" not in {w.feature.lemma for w in nodes}
+    assert "".join(getattr(w, "white_space", "") + w.surface for w in nodes) == "お つかれ、また明日ね。"

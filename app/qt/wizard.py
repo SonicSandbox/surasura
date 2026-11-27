@@ -3286,7 +3286,7 @@ class SetupWizard(QWidget):
         self._hear()
         switched = getattr(shell, "library_switched", None)
         if switched is not None:            # ONB-FIX c: page 1's language shows another library, through its own bridge
-            switched.connect(self._library_switched)
+            switched.connect(self._hear)
         bridge.run_in_worker(windows.module_present, "junban", then=self.alive(self._junban_looked),
                              failed=lambda info: applog.log("wizard", f"looking for 順: {info[0]}"))
         closing = getattr(shell, "closing", None)
@@ -5024,7 +5024,8 @@ class SetupWizard(QWidget):
     def _hear(self):
         """Follow the views of the library the window shows now (its bridge: a language switch makes another and stops
         the old one — `settings_store`'s rule). ONB-FIX c: setup heard only the bridge it opened with, so after page
-        1's zh *Watching now* got its tiles only when New arrivals was full as it opened (train 96's stress red)."""
+        1's zh *Watching now* got its tiles only when New arrivals was full as it opened (train 96's stress red). Each
+        page reads the view as it is when it opens (`entered`), so a switch (page 1 only) needs no read of its own."""
         heard = getattr(self.shell, "library_bridge", None)
         if heard is self._heard:
             return
@@ -5038,14 +5039,6 @@ class SetupWizard(QWidget):
         if heard is not None:
             heard.library_changed.connect(self._added)
             heard.library_changed.connect(self._library_moved)
-
-    def _library_switched(self):
-        """(`library_switched`) Another language's library shown: its bridge heard, and the window's view read as it
-        is now (a view shown before this was heard is never waited for)."""
-        if self._gone or sip.isdeleted(self):
-            return
-        self._hear()
-        self._library_moved()
 
     def _library_moved(self, _view=None):
         """(`library_changed`) The window's view moved — the list being made: *Your start*'s numbers again; the read's

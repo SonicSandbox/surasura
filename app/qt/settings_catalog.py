@@ -316,6 +316,11 @@ ROWS = (
     # Mado-LT 4: a list, not three side by side — its longest words, and a held fourth (順's *5 minutes after*), set
     # side by side at Large text were wider than a small window's page: opening the fold widened the page past its
     # view (its right edge cut off) and laid and painted it all again
+    # VOICE-SETUP (3.0.21, Sonic § 108 10; PROVISIONAL): *Card sound* — the AI voice's row moved here from App › Beta,
+    # still BETA: its switch, the setup guide, *Voice*, *Made ahead for*, own packs, *Test again*, *Remove*
+    # (`modules.irodori.qt_settings`); a Japanese library only (the voice reads Japanese)
+    _row("ai_audio", "anki", "custom", ("enable_irodori", "irodori_card_voice", "card_sound_days"), group="card_sound",
+         when=_all(_module("modules.irodori"), _ja)),
     _row("anki_sync_delay_min", "anki", "select", ("anki_sync_delay_min",), adv=True, group="anki"),
     _row("automation", "anki", "toggle", ("logic.automation",), adv=True),
     _row("journey_settle_s", "anki", "number", ("journey_settle_s",), adv=True, bounds=(0, None)),
@@ -476,9 +481,7 @@ ROWS = (
     _row("settings_file", "app", "custom"),                      # a6: export / import, `settings_io`
     _row("set_up_again", "app", "custom"),                       # S10: the wizard (W3.5 part 3), `settings_store`
     # The Beta list (Michi-LP, PROVISIONAL): one list under one name, each item a switch and one ? line, off as shipped
-    # Iro-AA (PROVISIONAL): the AI voice's beta — its switch, then *Install* / *Remove* (`modules.irodori.qt_settings`)
-    _row("ai_audio", "app", "custom", ("enable_irodori",), group="beta", when=_module("modules.irodori")),
-    _row("connect_low_priority", "app", "toggle", ("connect_low_priority",), when=_CONNECT),     # Michi-LP
+    _row("connect_low_priority", "app", "toggle", ("connect_low_priority",), group="beta", when=_CONNECT),  # Michi-LP
     # a9.1 (Sonic: "a button for each that launches"): a block of its own, three buttons evenly across — the server's
     # invite, surasura.dev, the star ask's GitHub (never prompted), each in the browser (*Start over completely* went:
     # Content's *Sort again or start over…* offers it). Never a row of the group above it (`settings_page`)
@@ -514,8 +517,6 @@ NOT_SHOWN = {
     "index_pool_workers": "speed only: every file's tokens are the same either way",
     "koe_port": "settings.json only: the speech helper's port",
     "irodori_voice": "settings.json only: the AI voice's listening rounds' pack (the cards' voice: irodori_card_voice)",
-    "irodori_card_voice": "settings.json only until the AI voice's own setup: the cards' voice — by the line, a woman's, "
-                          "a man's, or one pack's id",
     "irodori_default_voice": "settings.json only: the cards' voice when a line has no cue (a woman's)",
     "junban_show_tags": "settings.json only: Junban's show labels, off for a positions-only run",
     "junban_replan_preview": "2.x's preview: 3.0 writes the plan always",

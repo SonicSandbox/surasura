@@ -1616,6 +1616,10 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                                        "• Change it any time: Settings › Anki & mining"),
     "keep_small": ("Keep it small", "Cards stay a few episodes at a time, and this isn't asked again.\n"
                                     "• Change it any time: Settings › Anki & mining"),
+    # VOICE-SETUP (PROVISIONAL words): cards first wait for the AI voice
+    "voice_setup": ("Set it up", "Opens the AI voice's setup: its size first, the voices, your choices and a test here"),
+    "voice_not_now": ("Not now", "Those cards stay without sound, and this isn't asked again.\n"
+                                 "• Settings › Anki & mining › Card sound has it any time"),
     "mark_known": ("Mark them known", "Their words count as known from now on: your list and journey follow at the "
                                       "next Generate"),
     "leave_known": ("Leave them", "Their words stay as they are, and these cards stop asking. Cards you suspend or "
@@ -1782,6 +1786,7 @@ NEEDS_MORE_MADE = "Cards for your next 20 episodes are on their way · change it
 NEEDS_MORE_MADE_PAUSED = "Cards for your next 20 episodes are made once you resume Anki Miner"
 NEEDS_MORE_NOT_NOW = "Your library can't be changed right now: try again in a moment"
 NEEDS_KEPT_SMALL = "Kept small · change it any time in Settings › Anki & mining"
+NEEDS_VOICE_NOT_NOW = "Not now · the AI voice is in Settings › Anki & mining › Card sound any time"
 NEEDS_KNOWN_MARKED = "{n} words are known now · your list follows at the next Generate"
 NEEDS_KNOWN_MARKED_NONE = "Their words were known already"
 NEEDS_KNOWN_LEFT = "Left as they are · cards you suspend or mark from now on still count"

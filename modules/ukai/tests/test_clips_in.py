@@ -197,7 +197,8 @@ def test_another_origin_or_no_pairing_gets_nothing(ukai_door, call):
 def test_hello_says_ukai_can_send_clips(ukai_door):
     d, _p = ukai_door
     status, got = _ask(d, "GET", "/v1/hello", token=None)
-    assert status == 200 and got["contract"] == ukai.CONTRACT == 2
+    # (contract v2 is the clips; with U-S3's YouTube links also here it is v3 = v2 + the links: train 97's join)
+    assert status == 200 and got["contract"] == ukai.CONTRACT == 3
 
 
 # --- end to end: Connect's job, Ukai's round, the cards ---------------------------------------------------------- #

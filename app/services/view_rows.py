@@ -253,9 +253,10 @@ Episode = namedtuple("Episode", Episode._fields + ("subs",), defaults=tuple(Epis
 # title's next file (`library_store.side_pair`) when a drop reads the top again; None in a cache from before
 Episode = namedtuple("Episode", Episode._fields + ("mined_at",),
                      defaults=tuple(Episode._field_defaults.values()) + (None,))
-# --- Michi-CK2: `elsewhere`, how many of its words have a card not made from it (`card_chip.Chips`' answer: other
-# episodes', other shows', hand-made) — its ✓ counts its own cards and these (`status_of`); None while not counted
-# (no answer yet, not in Anki): the ✓ its own cards alone, as before. A Row's the same over its files' words, each once
+# --- Michi-CK2, CARD-LEFT (Sonic § 113): `elsewhere`, the ✓ chip's answer (`card_chip.Chips`): (left, done) — of its
+# words with a card, wherever it was made, how many Surasura doesn't count known yet and how many it does; its ✓ shows
+# the cards left (`status_of`); None while not counted (no answer yet, not in Anki): the ✓ its own cards alone, as
+# before. A Row's the same over its files' words, each once
 Episode = namedtuple("Episode", Episode._fields + ("elsewhere",),
                      defaults=tuple(Episode._field_defaults.values()) + (None,))
 Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("elsewhere", "string"),
@@ -307,14 +308,20 @@ STRINGS = {
     "nothing": "Nothing new to mine", "nothing_n": "Nothing new to mine · {n}",
     "tip_nothing": "It was mined, but every word in it already has a card or is one you know, so no card was made",
     "tip_in_anki": "Mined · {n} cards in Anki", "tip_in_anki_k": "{k} mined · {n} cards in Anki",
-    # Michi-CK2 (Sonic's ruling 2, 2026-11-17; PROVISIONAL words): the ✓ counts every word of it with a card
-    "tip_in_anki_chip": "{own} from this episode · {other} from other episodes and shows",
-    "tip_in_anki_chip_k": "{own} from its {k} episodes · {other} from other episodes and shows",
+    # CARD-LEFT (Sonic § 113, 2026-11-27; PROVISIONAL words): the ✓ counts the cards holding its words still left to
+    # study (none left: the ✓ alone); the hover keeps the record — left, its words on cards in all, the known ones,
+    # the cards made from it
+    "in_anki_none": "", "in_anki_words_none": "In Anki, no cards left to study",
+    "tip_left": "{left} cards left to study", "tip_left_one": "1 card left to study",
+    "tip_left_none": "No cards left to study",
+    "tip_in_anki_chip": "{left_line} · {all} of its words have cards, {done} known · {own} made from this episode",
+    "tip_in_anki_chip_k": "{left_line} · {all} of its words have cards, {done} known · {own} made from its {k} "
+                          "episodes",
     # ... lean A (PROVISIONAL words): its own cards split when some are i+1 words below the list
-    "tip_in_anki_chip_lv": "{own} from this episode, {at} at your level and {below} below it · {other} from other "
-                           "episodes and shows",
-    "tip_in_anki_chip_k_lv": "{own} from its {k} episodes, {at} at your level and {below} below it · {other} from "
-                             "other episodes and shows",
+    "tip_in_anki_chip_lv": "{left_line} · {all} of its words have cards, {done} known · {own} made from this "
+                           "episode, {at} at your level and {below} below it",
+    "tip_in_anki_chip_k_lv": "{left_line} · {all} of its words have cards, {done} known · {own} made from its {k} "
+                             "episodes, {at} at your level and {below} below it",
     # Mattias's field report (3.0.0, #5; PROVISIONAL words): Anki Miner stopped on it twice — a button, its click a
     # new try for the words its cards don't hold yet (`rows`' *Try again*)
     "retry": "Try again", "tip_retry": "{tip}: {k} of its {n} cards made",
@@ -903,7 +910,7 @@ def _said(line):
 def spoken(status):
     """A status as a screen reader says it: the pill shows ✓ and the number only (G2.3 R2), the words go with it."""
     if status is not None and status.kind == "in_anki":
-        return STRINGS["in_anki_words"].format(n=status.label)
+        return STRINGS["in_anki_words"].format(n=status.label) if status.label else STRINGS["in_anki_words_none"]
     return status.label if status is not None else ""
 
 
@@ -936,10 +943,10 @@ def status_of(eps, word, line_n, elsewhere=None, level=None):
     rest ready → *Mine rest*; none mined, ready → *Mine*; nothing left that could be mined → *No video*. And the
     on-disk mark beside it when something isn't there. `line_n` None: Connect is off — no top, so no *Waiting* (row 13:
     nothing mines by itself) and no "top" in the tips. An episode in the top that Connect won't mine by itself (`own`,
-    Michi-EO's BY_YOU) is *Mine* (*Mine rest*), never *Waiting*. `elsewhere` (Michi-CK2): how many of their words
-    have a card not made from them — *N in Anki* then counts every word of theirs with a card (its own and these),
-    its hover says which; None: its own cards alone. `level` (lean A): (at your level, below it) of its own cards —
-    said in the hover while some are below and the two make its own count."""
+    Michi-EO's BY_YOU) is *Mine* (*Mine rest*), never *Waiting*. `elsewhere` (Michi-CK2, CARD-LEFT): (left, done) of
+    their words with a card — *N in Anki* then counts the cards left to study (none: the ✓ alone), its hover the
+    record; None: its own cards alone. `level` (lean A): (at your level, below it) of its own cards — said in the
+    hover while some are below and the two make its own count."""
     n = len(eps)
     mined = [e for e in eps if e.cards or e.mined]
     k = len(mined)
@@ -967,14 +974,18 @@ def status_of(eps, word, line_n, elsewhere=None, level=None):
     elif not unmined:                                              # every item mined (or its cards deleted)
         label = STRINGS["in_anki"].format(n=cards)      # mined = its cards are there, so cards > 0 (B-13, IK-27)
         tip = STRINGS["tip_in_anki"].format(n=cards) if n == 1 else STRINGS["tip_in_anki_k"].format(k=k, n=cards)
-        if elsewhere is not None:                       # Michi-CK2: every word of it with a card, wherever made
-            label = STRINGS["in_anki"].format(n=cards + elsewhere)
+        if isinstance(elsewhere, (tuple, list)) and len(elsewhere) == 2:     # CARD-LEFT: the cards holding its words
+            left, done = (max(0, x) for x in elsewhere)                    # still left to study (a bare number: a
+            #                                                                first screen's cache from before, not
+            #                                                                counted yet — its own cards, as before)
+            label = STRINGS["in_anki"].format(n=left) if left else STRINGS["in_anki_none"]
+            line = STRINGS["tip_left"].format(left=left) if left > 1 else \
+                STRINGS["tip_left_one" if left else "tip_left_none"]
             split = level is not None and level[1] > 0 and level[0] + level[1] == cards
             lv = "_lv" if split else ""
             at, below = level if split else (0, 0)
-            tip = STRINGS["tip_in_anki_chip" + lv].format(own=cards, other=elsewhere, at=at, below=below) \
-                if n == 1 else STRINGS["tip_in_anki_chip_k" + lv].format(own=cards, other=elsewhere, k=k, at=at,
-                                                                           below=below)
+            tip = STRINGS[("tip_in_anki_chip" if n == 1 else "tip_in_anki_chip_k") + lv].format(
+                left_line=line, all=left + done, done=done, own=cards, k=k, at=at, below=below)
         st = Status("in_anki", label, tip, "ok")
     elif (ready or heard) and all(e in heard or (getattr(e, "text", False) and not _mines(e.text))
                                   for e in ready + heard):

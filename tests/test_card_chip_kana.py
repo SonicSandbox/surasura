@@ -42,10 +42,11 @@ def lib(tmp_path, _ja):
 
 
 def _count(lib, chips, step=1):
-    """One ask of the four episodes (`step`: a new ask, as the reader's next build makes one) -> the answers."""
+    """One ask of the four episodes (`step`: a new ask, as the reader's next build makes one) -> each answer's cards
+    left (CARD-LEFT: no known words here, so every carded word is left)."""
     chips.want(lib.ask([1, 2, 3, 4], cards=step))
     _settle(chips)
-    return chips.answers()
+    return {k: v[0] for k, v in chips.answers().items() if not (type(k) is tuple and k[:1] == ("level",))}
 
 
 def test_a_kana_cards_word_counts_as_the_word_its_sentence_says(lib):

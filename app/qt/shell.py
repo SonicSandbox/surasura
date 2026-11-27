@@ -197,6 +197,14 @@ class Services:
     # --- W3.5: the dashboard's duties --------------------------------------------------------------------------- #
     SESSION_LOOK_EVERY = 60.0     # seconds between two of the session's looks at a focus (the Tk CONNECT_LOOK_EVERY)
 
+    def _known_moved(self, language):
+        """(The indexer's or a Generate's thread.) Either normalizes KnownWord.json again when a sync moved it: the ✓
+        chip's counter of the library open (its language's) reads the token store's known words again (CARD-LEFT)."""
+        library = getattr(self, "library", None)
+        chips = getattr(library, "chips", None)
+        if chips is not None and getattr(chips, "language", None) == language:
+            chips.known_moved()
+
     def has_duties(self):
         return None not in (self.controller, self.updates, self.automation, self.chores)
 
@@ -217,6 +225,7 @@ class Services:
             self.automation = automation_module.Automation(self.registry, self.controller, self.settings,
                                                            self.language, index=lambda: chores.index(force=True))
             chores.on_indexed(lambda _language: self.automation.recheck())     # IK-10: asked again after the indexer
+            chores.on_indexed(self._known_moved)                                 # CARD-LEFT: the ✓'s known words
         if self.replan is None:
             from app.services import replan_host as replan_module
             self.replan = replan_module.Replan(self.registry, self.controller, self.settings, self.language,
@@ -252,6 +261,7 @@ class Services:
             return
         if getattr(self.gentle, "gentle", False):
             self._wake_connect()          # Haya-LD: its next step waited for this Generate (GENERATE_FIRST)
+        self._known_moved(self.language)  # CARD-LEFT: a Generate normalizes the known words: the ✓ reads them again
         numbers = getattr(self.writer, "numbers", None)
         steps = (getattr(numbers, "resync", None),) if outcome == "current" else ()
         # Kura-GS2: its snapshots are written after its plan (a move between read them early), by a run whose report

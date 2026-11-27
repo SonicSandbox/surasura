@@ -435,7 +435,9 @@ def _add(settings, language, book, confirm, anki, ledger):
     steps = runner.Steps(settings)
     run_dir = os.path.join(_connect_folder(), "add-audio", f"{time.time_ns()}")
     try:
-        setup = _anki_miner_setup(settings, language, run_dir)
+        # AM-START: a run set of the press's own, so `version` and `profiles` come from the pair kept across runs and
+        # looks (`anki_miner.kept_look_ups`): one start, the export, where it started three before the first clip
+        setup = _anki_miner_setup(settings, language, run_dir, held={})
         if setup is None:
             return {"language": language, "skipped": NO_MINER}
         _version, profile, mapping = setup

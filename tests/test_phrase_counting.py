@@ -157,6 +157,25 @@ def test_a_use_inside_a_longer_phrase_counts_for_the_shorter_one(library):
     assert {"その説明はどうも腑に落ちない。", "先生の話を聞いて、やっと腑に落ちた。"} <= examples
 
 
+def test_a_word_inside_two_phrases_gives_its_use_once(library):
+    """間 'a pause' lives only inside あっという間 'in an instant' (`bound_at`), and あっという間に holds あっという間:
+    both stand over the one 間 of each sentence below, which also says 間 on its own (間が長い 'long pauses'). Its use
+    inside the phrases is given once, however many stand over it (ENGINE 54): 間 keeps its own three uses, and these
+    sentences stay its examples — taken twice, the two uses of each sentence would both be gone (Generate's count, and
+    the finished walk's example targets)."""
+    high = library / "data" / "ja" / "HighPriority"
+    (high / "phrases_sample.srt").unlink()
+    lines = ["彼の話は間が長いが、あっという間に終わった。", "先生の話は間が長いのに、あっという間に終わった。",
+             "その歌は間が長いけど、あっという間に終わった。"]
+    (high / "pauses.srt").write_text("".join(
+        f"{n}\n00:00:0{n},000 --> 00:00:0{n},900\n{line}\n\n" for n, line in enumerate(lines, 1)), encoding="utf-8")
+    _switch(library, True)
+    rows = _run(library)
+    row = rows["間"]
+    assert row["Occurrences"] == 3
+    assert {row[f"Context {n}"] for n in (1, 2, 3)} == set(lines)
+
+
 def test_a_phrase_of_known_words_sits_lower_and_one_waiting_for_a_word_sorts_after_it(library):
     """本題に入る waits for 本題 while 本題 is new: full score, listed after 本題 (the two tie). Once 本題 and 入る are
     known it is ready, every real word known: half score. 眉根を寄せる is ready with 眉根 new — 眉根 lives only

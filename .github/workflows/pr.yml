@@ -61,10 +61,6 @@ jobs:
       fail-fast: false      # every shard runs to the end: one red shard still shows the others' results
       # Eight: a Free account runs 20 jobs at once, so two pull requests' runs (8 shards + the module suites each) fit
       # side by side; a third waits for runners, as it would with fewer, longer shards.
-      # A train's run (and a release's, into main) never waits behind lanes' (2026-11-27: trains 92 and 96 each
-      # waited 7-10 min behind two lane pull requests' runs): a lane's run takes 4 shards at a time, so two lanes'
-      # (4 + the module suites, each) and a train's (8 + 1) fit in the 20 together.
-      max-parallel: ${{ (startsWith(github.head_ref, 'train/') || github.base_ref == 'main') && 8 || 4 }}
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:

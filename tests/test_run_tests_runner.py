@@ -688,23 +688,15 @@ def test_pr_yml_runs_every_shard_once_and_one_tests_job_reads_them_all():
     assert "SHARDS: ${{ needs.shards.result }}" in tests and "MODULES: ${{ needs.modules.result }}" in tests
 
 
-def test_pr_yml_caps_a_lanes_shards_so_a_trains_run_beside_two_lanes_never_waits_for_runners():
-    """Trains 92 and 96 (2026-11-26) waited 7-10 min for runners behind two lane pull requests' runs (a Free account
-    runs 20 jobs at once): a train's or a release's run takes every shard at once, anyone else's at most a cap low
-    enough that two lanes' Windows jobs (the cap + the module suites, each) and a train's (all + 1) fit in 20."""
+def test_pr_yml_runs_every_pull_requests_shards_at_once_with_no_cap():
+    """Every pull request's run takes all its shards at once. A cap on lanes' runs (4 at a time, so a train's never
+    waited behind two lanes': trains 92 and 96 waited 7-10 min, 2026-11-26) doubled every lane run's time, and a lane
+    waits for GitHub green before READY: it cost more than it saved (2026-11-27). So no max-parallel."""
     root = os.path.dirname(os.path.abspath(run_tests.__file__))
     with open(os.path.join(root, ".github", "workflows", "pr.yml"), encoding="utf-8") as f:
         text = f.read()
     shards = text.split("\n  shards:\n", 1)[1].split("\n  modules:\n", 1)[0]
-    n = len(shards.split("shard: [", 1)[1].split("]", 1)[0].split(","))
-    line = [s.strip() for s in shards.splitlines() if s.strip().startswith("max-parallel:")]
-    assert len(line) == 1, "one max-parallel line in the shards' strategy"
-    expr = line[0].split("${{", 1)[1].rsplit("}}", 1)[0].strip()
-    cond, rest = expr.rsplit("&&", 1)
-    full, cap = (int(x) for x in rest.split("||"))
-    assert "startsWith(github.head_ref, 'train/')" in cond and "github.base_ref == 'main'" in cond
-    assert full == n and 1 <= cap < n
-    assert 2 * (cap + 1) + (n + 1) <= 20
+    assert "max-parallel" not in shards
 
 
 def test_pr_yml_runs_every_public_module_suite_with_the_shards_install():

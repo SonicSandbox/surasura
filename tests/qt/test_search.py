@@ -529,6 +529,19 @@ def test_a_view_published_while_the_results_show_asks_again(world):
     assert wait_until(lambda: win.search.asked == before + 1)
 
 
+def test_after_a_language_switch_a_view_the_new_bridge_publishes_still_asks_the_results_again(world):
+    # SEARCH-BRIDGE: the results heard only the bridge the window opened with; a switch makes a new one and stops the
+    # old (`_show_switched`), so open results stopped following moves in the language switched to
+    seed, win, writer = world()
+    ask(win, "星")
+    first = win.library_bridge
+    win._show_switched(win._reader_shown, writer)                   # the switch's bridge steps, forced (no sleep)
+    assert win.library_bridge is not first
+    before = win.search.asked
+    win._reader_shown.republish()                                   # the reader publishes a view: through the new bridge
+    assert wait_until(lambda: win.search.asked > before)
+
+
 def test_every_control_in_the_results_is_wired_tipped_and_named(world):
     from tests.qt.test_wiring import problems
     seed, win, _writer = world()

@@ -190,34 +190,25 @@ def test_the_run_files_card_type_is_one_anki_miner_takes(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# The AI voice's book: sound is coming
+# The AI voice's book (AUDIO-FILL, Sonic § 106 decision 4): always the sentence card first, Card sound flips it
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("lang", ["ja", "zh"])
-def test_a_book_the_ai_voice_will_read_keeps_the_audio_card(fake_miner, tmp_path, lang):
-    """A book part answered *Make AI audio (beta)*, or a Best line the AI voice reads (`runner.AI_JOB`): its new cards
-    get their SentenceAudio from the voice after the mine, so the mine is `voiced` and keeps the learner's audio card
-    (PROVISIONAL, listed for Sonic)."""
-    assert "card_type" not in _mine(fake_miner, tmp_path, lang, _export(lang), voiced=True)
-
-
-def test_the_runner_tells_the_mine_a_job_the_ai_voice_will_read(tmp_path):
-    """`runner._mine_batch`: a job marked for the AI voice (`AI_JOB<id>` in the ledger, `_mark_ai_job`) reaches
-    `Steps.mine` as `voiced`; an unmarked job never does."""
+def test_a_job_an_older_connect_marked_for_the_ai_voice_is_mined_as_any_book(tmp_path):
+    """`runner._mine_batch`: a ledger from before 3.0.21 still holding a job's AI mark (`ai_audio_job:<id>`) never
+    reaches `Steps.mine` as anything else — the book's cards are the sentence card, and Card sound makes each the
+    learner's audio card once it has sound (`card_sound.flip_of`)."""
     seen = []
 
     class Steps:
         def mine(self, lang, job, picked, words, attempt):
-            seen.append(picked.get("voiced"))
+            seen.append(dict(picked))
             return {"outcomes": [], "app": None, "doubt": False}
 
     picked = {"reading": TEXT["ja"], "words": []}
     with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        with ledger.transaction():
+            ledger.conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)", ("ai_audio_job:7", "1"))
         runner._mine_batch(Steps(), ledger, "ja", {"id": 7}, picked, [], 1)
-        runner._mark_ai_job(ledger, {"id": 7})
-        runner._mine_batch(Steps(), ledger, "ja", {"id": 7}, picked, [], 1)
-        runner._mine_batch(Steps(), ledger, "ja", {"id": 8}, picked, [], 1)
-    assert seen == [None, True, None]
-    assert "voiced" not in picked, "the job's own pick is never changed"
+    assert seen == [picked]
 
 
 # --------------------------------------------------------------------------- #
@@ -253,11 +244,9 @@ def test_the_setup_connect_mines_with_carries_the_mark_and_drops_one_the_note_ty
     assert verbs._anki_miner_setup(loaded, lang, run_dir)[2].quiet_mark == "IsSentenceCard"
 
 
-@pytest.mark.parametrize("voiced", [False, True])
-def test_the_runners_mine_hands_the_ai_voices_mark_to_anki_miner(tmp_path, monkeypatch, voiced):
-    """`Steps._mine_one` (the runner's one call of `mine_batch`): a pick the AI voice will read (`voiced`, set by
-    `_mine_batch` from the job's `AI_JOB` mark) goes to Anki Miner as `voiced`; any other as not — the book's
-    reading file either way."""
+def test_the_runners_mine_hands_anki_miner_the_books_reading_and_no_voice_mark(tmp_path, monkeypatch):
+    """`Steps._mine_one` (the runner's one call of `mine_batch`): the book's reading file, and no AI-voice mark (a
+    pick still carrying one from before 3.0.21 too): the run is quiet, so the card is the sentence card."""
     from types import SimpleNamespace
     from app.cli import verbs
     mapping = fields.from_export(_export("ja"))
@@ -273,10 +262,9 @@ def test_the_runners_mine_hands_the_ai_voices_mark_to_anki_miner(tmp_path, monke
                             _anki_miner_held=lambda lang: {}, _settings=lambda lang: {}, show=lambda lang, job: None,
                             _reviewing=lambda: False, _place=lambda *a: None)
     picked = {"reading": TEXT["ja"], "video": None, "subtitle": None, "words": []}
-    if voiced:
-        picked["voiced"] = True
+    picked["voiced"] = True                                     # (an older pick's)
     runner.Steps._mine_one(steps, "ja", {"id": 7}, picked, [], 1)
-    assert sent["voiced"] is voiced and sent["reading"] == TEXT["ja"]
+    assert "voiced" not in sent and sent["reading"] == TEXT["ja"]
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])

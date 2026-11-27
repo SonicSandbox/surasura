@@ -82,6 +82,17 @@ def hold(kind):
         return None
 
 
+def busy_line(share, was_busy):
+    """The one busy line every process asks (the window's scheduler at each look; Connect's Card sound before the AI
+    voice starts — the lead on A5, 2026-11-26: one rule, never a copy): the CPU's busy share over LOAD_WINDOW_S at or
+    over `power.BUSY` is busy, and a busy computer is quiet again only under `power.QUIET` (no flapping at the line).
+    `share` None (no reading) keeps `was_busy`."""
+    if share is None:
+        return bool(was_busy)
+    from app.connect import power
+    return share >= power.BUSY or (bool(was_busy) and share >= power.QUIET)
+
+
 def press(kind, on):
     """A press asks for work of `kind` (Finished's *What if* through the arrivals worker): while `on`, nothing holds
     that kind — its job starts at once. Off when the press's last answer came. Nothing with no scheduler attached."""
@@ -245,8 +256,7 @@ class Gentle:
             mean = (sum(s for _t, s in self._samples) / len(self._samples)) if self._samples else None
             self.busy_share = mean
         if mean is not None:
-            from app.connect import power
-            busy = mean >= power.BUSY or (self.busy and mean >= power.QUIET)
+            busy = busy_line(mean, self.busy)
             if busy != self.busy:
                 self.busy = busy
                 if not busy:

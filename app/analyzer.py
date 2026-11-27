@@ -3500,7 +3500,14 @@ def load_known_words(json_path, tokenizer, terms=None):
     
     # In the file's own encoding (path_utils.read_text): saved with a BOM (Notepad's "UTF-8 with
     # BOM") or as UTF-16, json.load refused it and Generate stopped. The tokenizer says the language.
-    data = json.loads(read_text(json_path, "ja" if isinstance(tokenizer, JapaneseTokenizer) else "zh"))
+    from app import token_index
+    language = "ja" if isinstance(tokenizer, JapaneseTokenizer) else "zh"
+    signature = token_index.known_signature(json_path)
+    data = json.loads(read_text(json_path, language))
+    try:                        # the ignore set's IGNORED entries from this one parse (ONE-READ 3: it parsed it again)
+        token_index.keep_ignored_entries(json_path, language, signature, data)
+    except Exception:
+        pass
         
     all_tuples, all_lemmas = set(), set()
     met, before = {}, terms or {}

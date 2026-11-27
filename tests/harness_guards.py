@@ -489,6 +489,11 @@ _no_window_children()
 # (Windows: the child watch's Popen wrapper; a test meeting "Anki closed" points its child at port 9). NO_PROXY=* for
 # the run: a loopback proxy would carry a request to the port past the check. Not covered: code calling the C socket
 # type's methods directly, and a child (not Python, or not caught by the check above) that reaches Anki anyway.
+# Since TOOLS-322 (2026-11-27: train 98's smoke window reached a running Anki) every child a test starts but a marked
+# test's own (subprocess and multiprocessing both start through _winapi.CreateProcess) also gets ANKI_CLOSED, the
+# guarded ports: app/anki_connect answers a call to one "Anki closed" before a socket opens, whatever its switch or
+# its settings. This process keeps it out (a with-lock ticket sets it): here the guard above refuses the port and
+# names the try, which a quiet "closed" would hide. Not covered: a child started past _winapi (QProcess, os.spawn*).
 ANKI_PORT_MARK = "anki_port"
 ANKI_PORTS = frozenset({8765,                        # AnkiConnect's (app/anki_connect.DEFAULT_URL)
                         8766, 8770, 18765, 28765})   # the suites' stand-in anki_connect_url / junban_url addresses
@@ -611,6 +616,25 @@ def _guard_the_anki_port():
     IocpProactor.connect = proactor_connect
 
 
+def _close_the_port_for_children():
+    """Every child started while no marked test's own code runs gets ANKI_CLOSED (unless its environment names one).
+    Windows only, like the child watch: the suites run there (on GitHub too)."""
+    if sys.platform != "win32":
+        return
+    import _winapi
+    if getattr(_winapi.CreateProcess, "_anki_closed", False):
+        return
+    create, ports = _winapi.CreateProcess, ",".join(str(p) for p in sorted(ANKI_PORTS))
+
+    def CreateProcess(name, command, process_attrs, thread_attrs, inherit, flags, env, *rest):
+        if not _opted_in_now():
+            env = dict(os.environ if env is None else env)
+            env.setdefault(ANKI_CLOSED, ports)
+        return create(name, command, process_attrs, thread_attrs, inherit, flags, env, *rest)
+    CreateProcess._anki_closed = True
+    _winapi.CreateProcess = CreateProcess
+
+
 def _tag_threads():
     """Every thread remembers the test that started it, for the message when it tries the port after that test."""
     if getattr(threading.Thread.start, "_tagged_by_conftest", False):
@@ -632,7 +656,10 @@ def _tag_threads():
 NO_ANKI = "SURASURA_NO_ANKI_SYNC"
 os.environ.setdefault(NO_ANKI, "1")      # the app's Anki callers stay off, in this process and every child it starts
 os.environ["NO_PROXY"] = os.environ["no_proxy"] = "*"       # no proxy carries a request to the port past the check
+ANKI_CLOSED = "SURASURA_ANKI_CLOSED"                        # app/anki_connect.CLOSED_ENV (the harness loads first)
+os.environ.pop(ANKI_CLOSED, None)                           # this process: the socket guard's, never a quiet "closed"
 _guard_the_anki_port()
+_close_the_port_for_children()
 _tag_threads()
 
 

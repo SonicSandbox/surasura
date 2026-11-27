@@ -192,3 +192,47 @@ def test_a_new_processs_track_and_no_subtitle_looks_start_nothing_once_the_answe
         mod.can_make(_settings(miner, lang), path=miner.path)
     assert got == (miner.path, "p-surasura")
     assert miner.commands()[before:] == [], "answered from the kept pair"
+
+
+@pytest.mark.parametrize("module", ["tracks", "no_subs"])
+def test_an_anki_miner_without_the_feature_is_asked_no_profiles_and_keeps_nothing(miner, monkeypatch, module):
+    # why: an Anki Miner that can't look inside a video (before 3.11) or make subtitles has no use for its profiles:
+    # one start, `version`, as before — and no pair kept from half a read
+    import importlib
+    mod = importlib.import_module(f"app.{module}")
+    monkeypatch.setattr(mod, "_MINERS", {})                    # (nothing in memory from another test)
+    miner.plan(app="3.7.0", features=FEATURES_37, export=dict(LAPIS_EXPORT, app_version="3.7.0"))
+    got = mod._miner(miner.path, _settings(miner, "ja")) if module == "tracks" else \
+        mod.can_make(_settings(miner, "ja"), path=miner.path)
+    assert got is None
+    assert miner.commands() == ["version"]
+    assert not os.path.exists(anki_miner._kept_path())
+
+
+@pytest.mark.parametrize("lang", LANGS)
+@pytest.mark.parametrize("module", ["tracks", "no_subs"])
+def test_with_connect_off_the_track_and_no_subtitle_looks_keep_nothing(miner, monkeypatch, lang, module):
+    # why: nothing of Connect's is written while it is off (`setup.checks`' rule) — these looks run with it off too
+    import importlib
+    mod = importlib.import_module(f"app.{module}")
+    monkeypatch.setattr(mod, "_MINERS", {})                    # (nothing in memory from another test)
+    off = dict(_settings(miner, lang), connect_enabled=False)
+    got = mod._miner(miner.path, off) if module == "tracks" else mod.can_make(off, path=miner.path)
+    assert got == (miner.path, "p-surasura")
+    assert miner.commands() == ["version", "profiles"]
+    assert not os.path.exists(anki_miner._kept_path())
+
+
+@pytest.mark.parametrize("module", ["tracks", "no_subs"])
+def test_a_track_or_no_subtitle_look_with_nothing_kept_keeps_its_read_for_the_next_window(miner, monkeypatch, module):
+    # why: the first window after a fresh install reads the pair here before any setup look: kept (Connect on), so the
+    # next window's look, and Connect's run, start nothing for it
+    import importlib
+    mod = importlib.import_module(f"app.{module}")
+    monkeypatch.setattr(mod, "_MINERS", {})
+    look = (lambda: mod._miner(miner.path, _settings(miner, "zh"))) if module == "tracks" else \
+        (lambda: mod.can_make(_settings(miner, "zh"), path=miner.path))
+    assert look() == (miner.path, "p-surasura")
+    monkeypatch.setattr(mod, "_MINERS", {})                    # the next window
+    assert look() == (miner.path, "p-surasura")
+    assert miner.commands() == ["version", "profiles"]

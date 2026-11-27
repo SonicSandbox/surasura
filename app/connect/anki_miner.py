@@ -302,7 +302,7 @@ def keep_look_ups(path, now, info, listed):
     _write_kept(LOOK_UPS_KEPT, lambda: {"key": _kept_key(path, now), "version": info, "profiles": listed})
 
 
-def look_ups(path, now=None, keep=True, wants=None):
+def look_ups(path, now=None, *, keep, wants=None):
     """AM-START: (the `version` answer, the `profiles` list) of the Anki Miner at `path` for the track and no-subtitle
     looks (`tracks._miner`, `no_subs.can_make`) — the kept pair while what they answer for is as it was
     (`kept_look_ups`; `now`: its files' `stamp`, taken before any read), else read and, with `keep`, kept for the next

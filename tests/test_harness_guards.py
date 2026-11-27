@@ -633,6 +633,43 @@ def test_a_child_of_surasuras_code_that_would_reach_anki_unguarded_is_flagged(mo
     assert len(flagged) == 1 and "Anki's own port and no SURASURA_NO_ANKI_SYNC" in flagged[0], flagged
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="the children's environment is set where Windows starts them")
+def test_every_child_a_test_starts_meets_the_anki_port_closed_and_this_process_keeps_its_own_guard(monkeypatch):
+    # Why: train 98's smoke (2026-11-27) reached the developer's running Anki; a test's child is as far out of the
+    # socket guard's reach, and SURASURA_NO_ANKI_SYNC switches off only the callers that read it. So every child a
+    # test starts — Python or not, with the environment it was given — gets SURASURA_ANKI_CLOSED (the guarded ports):
+    # app/anki_connect answers Anki closed there before a socket opens. This process keeps it out (a with-lock ticket
+    # sets it): here the socket guard refuses the port and names the try, which a quiet "closed" would hide. A wrong
+    # answer: a test's child reaching a real Anki — or a leaky patch in this process passing unnamed.
+    closed = "SURASURA_ANKI_CLOSED"
+    assert closed not in os.environ, "this process: the socket guard's, never a quiet closed port"
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC")                       # the switch off: only the port stands
+    # a guarded stand-in port, never Anki's own: nothing listens there, so even before this guard (or with it broken)
+    # the child can't reach a real Anki — it says closed by the variable, or "Could not reach" without it (red)
+    code = ("from app import anki_connect\n"
+            "try:\n    anki_connect.invoke('version', 'http://127.0.0.1:18765', timeout=5)\n"
+            "except anki_connect.AnkiError as e:\n    print(e.kind, '|', e)\n")
+    child = subprocess.run([sys.executable, "-c", code], cwd=PROJECT, capture_output=True, timeout=120,
+                           env=dict(os.environ, PYTHONPATH=PROJECT, PYTHONIOENCODING="utf-8"))
+    said = child.stdout.decode("utf-8", "replace")
+    assert said.startswith("offline |") and closed in said, (said, child.stderr.decode("utf-8", "replace"))
+    harness_guards._claim_anki_tries()                                 # the child check flags it too: its own case
+    shell = subprocess.run(["cmd", "/c", f"echo %{closed}%"], capture_output=True, text=True)
+    assert set(shell.stdout.strip().split(",")) == {str(p) for p in harness_guards.ANKI_PORTS}, shell.stdout
+    own = subprocess.run(["cmd", "/c", f"echo %{closed}%"], capture_output=True, text=True,
+                         env=dict(os.environ, **{closed: "9"}))         # a test that names its own: kept
+    assert own.stdout.strip() == "9", own.stdout
+
+
+@pytest.mark.anki_port
+@pytest.mark.skipif(sys.platform != "win32", reason="the children's environment is set where Windows starts them")
+def test_a_marked_tests_child_meets_the_anki_port_as_it_is():
+    # Why: the live drills (DevTest only, under the anki lock) start children that must reach Anki. A wrong answer:
+    # every drill's child meeting "Anki closed".
+    shell = subprocess.run(["cmd", "/c", "echo [%SURASURA_ANKI_CLOSED%]"], capture_output=True, text=True)
+    assert shell.stdout.strip() == "[%SURASURA_ANKI_CLOSED%]", shell.stdout     # cmd leaves an unset name as typed
+
+
 def test_other_loopback_ports_stay_open():
     # Why: the suites' own servers (port 0) and "Anki is closed" (port 9) are loopback connections the guard leaves
     # alone. A wrong answer: refusals no leak caused.

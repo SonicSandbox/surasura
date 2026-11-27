@@ -36,6 +36,7 @@ CARD_B = 1789711432547
 NOTE_A = CARD_A - 1
 
 URL = anki_connect.DEFAULT_URL
+CLOSED = "SURASURA_ANKI_CLOSED"      # the ports a run treats as closed (dev only: app/anki_connect.CLOSED_ENV)
 
 # Real decks on the reference collection.
 DECKS = ["Default", "TheBank", "The Accelerator", "Migaku Reference"]
@@ -240,6 +241,70 @@ def test_a_non_loopback_url_is_refused_before_any_request(url):
 def test_every_loopback_spelling_is_accepted(url):
     """The guard must not lock out the addresses AnkiConnect really listens on."""
     assert anki_connect.is_loopback(url) is True
+
+
+# --------------------------------------------------------------------------- #
+# A port closed for the run (SURASURA_ANKI_CLOSED: with-lock.sh's tickets, the test harness's children)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8765", "http://localhost:8765/", "http://[::1]:8765"])
+def test_a_port_closed_for_the_run_is_anki_closed_before_any_request(monkeypatch, url):
+    """Train 98's smoke window (a test library, Connect on, the default address) reached the developer's running Anki
+    and asked an AnkiWeb sync of their own profile. A ticket that isn't the anki lock's names AnkiConnect's port in
+    SURASURA_ANKI_CLOSED: every call to it — whatever the spelling of loopback — is Anki closed, answered here, and
+    nothing reaches the wire. A wrong answer: a window or a CLI run under a test ticket reaching a real Anki."""
+    monkeypatch.setenv(CLOSED, "8765")
+    fake, patched = _run(_route(deckNames=_ok(DECKS), version=_ok(6)))
+    with patched:
+        with pytest.raises(AnkiError) as caught:
+            anki_connect.invoke("deckNames", url)
+        with pytest.raises(AnkiError) as batch:
+            anki_connect.multi([{"action": "deckNames"}], url)
+        report = anki_connect.probe(url)                     # a window's connection row: plain data, never raised
+    assert caught.value.kind == "offline" and batch.value.kind == "offline"
+    assert getattr(caught.value, "timed_out", None) is False  # closed, not busy: the sync rule's "Anki closed since"
+    assert "Is Anki running?" in str(caught.value) and CLOSED in str(caught.value)
+    assert report["ok"] is False and report["timed_out"] is False and "Is Anki running?" in report["error"]
+    assert fake.requests == []
+
+
+def test_the_sync_door_meets_a_closed_port_as_anki_closed(monkeypatch):
+    """`sync` (the one AnkiWeb door, the call train 98 asked) sends through the same door: with the port closed it is
+    Anki closed (`errors`: raised as offline; without: "failed: …"), and no request leaves."""
+    monkeypatch.setenv(CLOSED, "8765")
+    monkeypatch.setattr(anki_connect, "_writer_held", lambda what: None)   # the writer lock is another test's
+    fake, patched = _run(_route(sync=_ok(None)))
+    with patched:
+        said = anki_connect.sync(URL)
+        with pytest.raises(AnkiError) as caught:
+            anki_connect.sync(URL, errors=True)
+    assert said.startswith("failed: ") and "Is Anki running?" in said
+    assert caught.value.kind == "offline"
+    assert fake.requests == []
+
+
+@pytest.mark.parametrize("closed", ["", "18765", " 28765 , 18765 ", "8765x", ","])
+def test_a_port_not_named_closed_is_still_reached(monkeypatch, closed):
+    """Only the ports named are closed: unset, another port (the suites' own fakes listen on a port of their own), a
+    stray space, a word that isn't the port. A wrong answer: every Anki test in the run failing as "Anki closed"."""
+    monkeypatch.setenv(CLOSED, closed)
+    fake, patched = _run(_route(deckNames=_ok(DECKS)))
+    with patched:
+        assert anki_connect.invoke("deckNames", URL) == DECKS
+    assert fake.actions == ["deckNames"]
+
+
+def test_a_list_of_ports_closes_each(monkeypatch):
+    """The harness hands its children the whole guarded set (Anki's port + the suites' stand-ins), comma-separated; a
+    port is a number (a leading zero names the same port)."""
+    monkeypatch.setenv(CLOSED, "18765, 08765,28765")
+    fake, patched = _run(_route(version=_ok(6)))
+    with patched:
+        for url in (URL, "http://127.0.0.1:18765", "http://localhost:28765"):
+            with pytest.raises(AnkiError) as caught:
+                anki_connect.invoke("version", url)
+            assert caught.value.kind == "offline"
+        assert anki_connect.invoke("version", "http://127.0.0.1:8770") == 6
+    assert fake.actions == ["version"]
 
 
 def test_urlopen_is_called_through_the_module_attribute():

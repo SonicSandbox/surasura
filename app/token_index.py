@@ -2277,10 +2277,10 @@ class Store:
         except Exception:
             return {}
 
-    def phrase_table(self):
+    def phrase_table(self, settings=None):
         """The phrase table the last index counted ({"rows", "taken"}, `_update_phrases`), or None — none with the
-        switch off, for Chinese, or before the first index."""
-        if self.language != "ja" or not phrase_rows_on(self.language):
+        switch off, for Chinese, or before the first index. `settings`: the caller's read (`phrase_rows_on`)."""
+        if self.language != "ja" or not phrase_rows_on(self.language, settings):
             return None
         try:
             return json.loads(self.get_meta("phrases") or "null")
@@ -2412,13 +2412,13 @@ class Store:
         return bound
 
     def unknown_frequencies(self, known_tuples=None, known_lemmas=None, ignore_set=None,
-                            skip_singles=False):
+                            skip_singles=False, settings=None):
         """Project the aggregate into the *learnable unknown* distribution (`unknown_distribution`), the set
         phrases' rows included when the switch is on (`phrase_table`), the one-kanji list words by their uses where
-        they stand on their own (`bound_counts`)."""
+        they stand on their own (`bound_counts`). `settings`: the caller's read (`settings_manager.loaded`)."""
         counts, total = self.word_counts()
         return unknown_distribution(counts, total, known_tuples, known_lemmas, ignore_set, skip_singles,
-                                    self.language, self.phrase_table(),
+                                    self.language, self.phrase_table(settings),
                                     self.bound_counts() if skip_singles and self.language == "ja" else None)
 
 
@@ -2677,7 +2677,7 @@ def known_signature(known_path, script="asis"):
 # --------------------------------------------------------------------------- #
 # The Rarity slider's distribution — one recipe for the dashboard and the analyzer
 # --------------------------------------------------------------------------- #
-def preview_frequencies(store, language, user_files_dir, script="asis"):
+def preview_frequencies(store, language, user_files_dir, script="asis", settings=None):
     """The unknown-word distribution behind the Rarity slider's numbers. ONE recipe, shared: the
     dashboard's preview reads it, and the analyzer's automatic rarity decides from it, so the band the
     dashboard shows is the band Generate uses. Neither side keeps its own copy.
@@ -2687,23 +2687,29 @@ def preview_frequencies(store, language, user_files_dir, script="asis"):
     approximation; the three lists are their plain lines (the analyzer's own ignore set also reads a
     hiragana line through the tokenizer, する -> 為る, and still decides the list itself — this one
     only the band); Japanese one-character words count as the list counts them, by Settings' "List one-kanji
-    words only when they're dictionary words" (`singles_rule`). None for an empty store."""
+    words only when they're dictionary words" (`singles_rule`). None for an empty store. `settings`: the caller's read
+    (`settings_manager.loaded`: the Settings page's level read hands its own), read for every switch here instead of
+    settings.json (SETTINGS-OPEN 2: four reads of the file a preview, each one parsed)."""
     if not store.has_tokens():
         return None
-    return store.unknown_frequencies(**preview_lists(store, language, user_files_dir, script))
+    return store.unknown_frequencies(**preview_lists(store, language, user_files_dir, script, settings),
+                                     settings=settings)
 
 
-def preview_lists(store, language, user_files_dir, script="asis"):
+def preview_lists(store, language, user_files_dir, script="asis", settings=None):
     """The learner's lists as `preview_frequencies` counts by them: {known_tuples, known_lemmas, ignore_set,
-    skip_singles} — `unknown_frequencies`' (and `unknown_distribution`'s) keyword arguments."""
-    cached = store.get_cached_known(known_signature(os.path.join(user_files_dir, "KnownWord.json"), script))
+    skip_singles} — `unknown_frequencies`' (and `unknown_distribution`'s) keyword arguments. `settings`: as
+    `preview_frequencies`'."""
+    signature = known_signature(os.path.join(user_files_dir, "KnownWord.json"), script)
+    suffix = store.known_suffix(settings) if signature and settings is not None else None
+    cached = store.get_cached_known(signature, suffix)
     if cached is not None:
         known_tuples, known_lemmas = cached
     else:
         known_tuples, known_lemmas = None, preview_known_approx(user_files_dir, language, script)
     return {"known_tuples": known_tuples, "known_lemmas": known_lemmas,
-            "ignore_set": preview_ignore_set(user_files_dir, language, script, store),
-            "skip_singles": language == "ja" and singles_rule()}
+            "ignore_set": preview_ignore_set(user_files_dir, language, script, store, settings),
+            "skip_singles": language == "ja" and singles_rule(settings)}
 
 
 def prepare_preview(language, user_files_dir):
@@ -2723,24 +2729,25 @@ def prepare_preview(language, user_files_dir):
         pass
 
 
-def singles_rule():
+def singles_rule(settings=None):
     """Settings -> "List one-kanji words only when they're dictionary words" (exclude_single, on by default): the
     analyzer's rule for Japanese one-character words (analyzer § One-character words) — off lists every one. Read
     fresh, as the build signature's switches are: the dashboard's slider must see a change as the next Generate
-    will."""
+    will (`settings`: the caller's fresh read, `settings_manager.loaded`)."""
     try:
         from app import settings_manager
-        return bool(settings_manager.load_settings().get("exclude_single", True))
+        return bool(settings_manager.loaded(settings).get("exclude_single", True))
     except Exception:
         return True
 
 
-def preview_ignore_set(user_files_dir, language, script="asis", store=None):
+def preview_ignore_set(user_files_dir, language, script="asis", store=None, settings=None):
     """The ignore / blacklist / graduated words as preview_frequencies reads them — cheap plain-text
     reads, each file in its own encoding, in the library's Chinese script like the analyzer reads them
     (stdlib only, so the conversion is safe in the GUI process; the tables load only if a script is
     chosen) — and KnownWord.json's IGNORED entries and, with Ignore names on, the library's names (`ignored_entries`),
-    as the analyzer ignores them. `store`: the caller's open token store, read for the names (`ignored_names`)."""
+    as the analyzer ignores them. `store`: the caller's open token store, read for the names (`ignored_names`);
+    `settings`: the caller's read, for Ignore names."""
     from app.path_utils import read_text
     from app.zh_script import convert
     ignore = set()
@@ -2752,7 +2759,7 @@ def preview_ignore_set(user_files_dir, language, script="asis", store=None):
                     ignore.add(convert(s, script))
         except Exception:
             pass
-    ignore.update(convert(term, script) for term in ignored_entries(user_files_dir, language, store=store))
+    ignore.update(convert(term, script) for term in ignored_entries(user_files_dir, language, settings, store))
     return ignore
 
 

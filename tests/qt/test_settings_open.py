@@ -13,6 +13,7 @@ read before its package filled it (the wrong row lit).
 
 Never a timing here: what is built in which turn, which read is asked when, and how many times.
 """
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -168,3 +169,245 @@ def test_a_package_whose_sections_build_no_row_is_still_attached_before_the_page
     assert wait_until(lambda: page.built, 20)
     assert seen == [False]
     page.close()
+
+
+
+# --- SETTINGS-OPEN 2: the rest of the open ------------------------------------------------------------------------- #
+# Measured at SETTINGS-OPEN's head (Anki & mining by a click, my lib2k): the click's stretch imported the page's modules
+# (60–240 ms) and drew its frame's 28 nav icons (QIcon's enums made with them: ~100 ms); the page's first reads, `_warm`,
+# the modules' look and the AI voice row's look went to workers at the page's making and took Python's lock from the
+# section's turn (100–250 ms of worker time beside it); then every slice of the rest settled the whole page's layout
+# ten passes deep twice (a reveal's row in view) and showed its section again for each row it built.
+
+
+def _jobs(monkeypatch, events):
+    """Every job handed to a worker recorded in `events` as ("job", its name), in order with the build's own marks."""
+    from app.qt import bridge
+    real = bridge.run_in_worker
+
+    def run(fn, *args, **kw):
+        events.append(("job", getattr(fn, "__qualname__", repr(fn))))
+        return real(fn, *args, **kw)
+    monkeypatch.setattr(bridge, "run_in_worker", run)
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_links_section_is_built_before_any_of_the_pages_reads_goes_to_a_worker(qapp, monkeypatch, language):
+    # the reads still all go — the known words, hato's entry, the licence, the modules' look — in the turn after the
+    # section's, so none takes Python's lock from it
+    events = []
+    _jobs(monkeypatch, events)
+    real_finish = sp.SettingsPage._finish_build_of
+
+    def finish(page, section_id):
+        real_finish(page, section_id)
+        events.append(("built", section_id))
+    monkeypatch.setattr(sp.SettingsPage, "_finish_build_of", finish)
+    store = Recorder(dict(ALL_ON, target_language=language))
+    page = sp.SettingsPage(SimpleNamespace(settings=store), language)      # (found=None: the modules looked for)
+    for attach, rows in shell.settings_attaches():
+        page.attach_later(attach, rows)
+    page.resize(1100, 700)
+    page.show()
+    page.reveal("anki")
+    assert [e for e in events if e[0] == "job"] == [], "nothing at the page's making"
+    assert wait_until(lambda: page._section_built("anki"), 20)
+    assert wait_until(lambda: {"read_hato", "read_licence", "_look_for"} <= {e[1] for e in events}, 20), events
+    built = events.index(("built", "anki"))
+    assert [e for e in events[:built] if e[0] == "job"] == [], events[:built]
+    assert wait_until(lambda: page.built, 20)
+    page.close()
+
+
+def test_opened_at_its_top_the_pages_reads_go_after_its_first_slice(qapp, monkeypatch):
+    # (no link: the page is built in slices from the top; its first slice paints before the reads go)
+    events = []
+    _jobs(monkeypatch, events)
+    real_slice = sp.SettingsPage._slice
+
+    def slice_(page):
+        real_slice(page)
+        events.append(("slice", len(page.slice_ms)))
+    monkeypatch.setattr(sp.SettingsPage, "_slice", slice_)
+    page, _calls = _page()
+    assert [e for e in events if e[0] == "job"] == []
+    assert wait_until(lambda: {"read_hato", "read_licence"} <= {e[1] for e in events}, 20), events
+    first_job = next(i for i, e in enumerate(events) if e[0] == "job")
+    assert ("slice", 1) in events[:first_job], events[:first_job + 1]
+    assert wait_until(lambda: page.built, 20)
+    page.close()
+
+
+def test_a_read_asked_after_the_first_build_turn_goes_at_once(qapp):
+    page, _calls = _page()
+    assert wait_until(lambda: page.built, 20)
+    ran = []
+    page.after_first_build(lambda: ran.append(True))
+    assert ran == [True]
+    page.close()
+
+
+def test_a_held_read_that_fails_never_keeps_the_others_from_going(qapp):
+    page, _calls = _page()
+    ran = []
+    page.after_first_build(lambda: 1 / 0)
+    page.after_first_build(lambda: ran.append(True))
+    assert wait_until(lambda: ran == [True], 20)
+    assert wait_until(lambda: page.built, 20)
+    page.close()
+
+
+def test_the_icons_the_page_draws_first_are_drawn_by_the_warm_up_and_none_again_by_the_page(qapp, monkeypatch):
+    # warmed at the window's idle after its start (`ShellWindow._warm_settings`): the page's frame, the slab's head and
+    # *More options* then draw no icon of their own at the click
+    monkeypatch.setattr(sp, "_PIXMAPS", {})
+    steps = sp.warm_icons()
+    assert len(steps) >= 2 * len(catalog.SECTIONS) + 1
+    for step in steps:
+        step()
+    assert len(sp._PIXMAPS) >= 2 * len(catalog.SECTIONS)
+    drawn = []
+    real = sp.QSvgRenderer
+    monkeypatch.setattr(sp, "QSvgRenderer", lambda *args: drawn.append(args) or real(*args))
+    page, _calls = _page()
+    page.reveal("anki")
+    assert wait_until(lambda: page._section_built("anki"), 20)
+    QApplication.processEvents()
+    assert drawn == [], f"{len(drawn)} icons drawn at the click the warm-up should have drawn"
+    assert wait_until(lambda: page.built, 20)
+    page.close()
+
+
+def test_the_window_warms_settings_icons_a_few_a_turn_and_stops_once_the_page_is_made(qapp, monkeypatch):
+    monkeypatch.setattr(sp, "_PIXMAPS", {})
+    win = SimpleNamespace(settings_page=None)
+    turns = []
+
+    def again(steps):
+        turns.append(len(steps))
+        shell.ShellWindow._warm_icons(win, steps)
+    win._warm_icons = again
+    shell.ShellWindow._warm_icons(win, None)
+    assert wait_until(lambda: len(sp._PIXMAPS) >= 2 * len(catalog.SECTIONS), 20)
+    assert turns, "spread over the window's turns, never one stretch"
+    monkeypatch.setattr(sp, "_PIXMAPS", {})
+    win.settings_page = object()                                # made meanwhile: it draws what it needs itself
+    shell.ShellWindow._warm_icons(win, None)
+    assert sp._PIXMAPS == {}
+    asked = []
+    monkeypatch.setattr(shell.bridge, "run_in_worker", lambda *a, **k: asked.append(a))
+    shell.ShellWindow._warm_settings(win)
+    assert asked == [], "no warm-up once the page is made"
+
+
+def test_settings_modules_imported_on_a_worker_make_no_qt_enum_there():
+    # PyQt6 makes a class's enums at their first look-up; two threads at once can each make their own (the GUI guide
+    # § 4): what the warm-up imports on a worker must look none up at import (a fresh process: nothing imported yet)
+    import subprocess
+    import sys
+    code = (
+        "import enum, sys, threading\n"
+        "from app.qt import bridge, shell\n"
+        "bridge.warm_worker_types()\n"
+        "made = []\n"
+        "real = enum.EnumType._create_\n"
+        "def create(cls, class_name, *a, **k):\n"
+        "    made.append((class_name, threading.current_thread() is threading.main_thread()))\n"
+        "    return real(cls, class_name, *a, **k)\n"
+        "enum.EnumType._create_ = create\n"
+        "t = threading.Thread(target=shell._import_settings)\n"
+        "t.start(); t.join()\n"
+        "assert 'app.qt.settings_page' in sys.modules and 'app.qt.settings_connect' in sys.modules\n"
+        "print('OFF', [name for name, main in made if not main])\n")
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", PYTHONPATH=root)
+    out = subprocess.run([sys.executable, "-c", code], cwd=root, env=env, capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert "OFF []" in out.stdout, out.stdout
+
+
+def _per_slice(monkeypatch, page):
+    """Each slice's record: the sections of the rows it built, its settles, its `_show_section` calls."""
+    log, cur = [], {}
+    real_slice, real_build = page._slice, page._build_guarded
+    real_settle, real_show = page._settle, page._show_section
+
+    def slice_():
+        cur.update(rows=[], settles=0, shows=[])
+        real_slice()
+        log.append(dict(cur))
+
+    def build(index, row, settings):
+        cur.setdefault("rows", []).append(row.section)
+        return real_build(index, row, settings)
+
+    def settle():
+        cur["settles"] = cur.get("settles", 0) + 1
+        return real_settle()
+
+    def show(section_id, *args, **kw):
+        cur.setdefault("shows", []).append(section_id)
+        return real_show(section_id, *args, **kw)
+    monkeypatch.setattr(page, "_slice", slice_)
+    monkeypatch.setattr(page, "_build_guarded", build)
+    monkeypatch.setattr(page, "_settle", settle)
+    monkeypatch.setattr(page, "_show_section", show)
+    return log
+
+
+def test_a_slice_that_builds_only_rows_below_the_reveal_lays_nothing_out_itself(qapp, monkeypatch):
+    # opened at Anki & mining: the slabs above it (Your setup, Known words) are laid out at once to keep its row in
+    # place; a slab built below it can't move it, so the loop lays the page out in its own turn
+    page, _calls = _page()
+    page.reveal("anki")
+    assert wait_until(lambda: page._section_built("anki"), 20)
+    revealed = page._revealed
+    log = _per_slice(monkeypatch, page)
+    assert wait_until(lambda: page.built, 20)
+    order = [s.id for s in catalog.SECTIONS]
+    anki = order.index("anki")
+    below = [entry for entry in log if entry["rows"] and min(order.index(s) for s in entry["rows"]) > anki]
+    above = [entry for entry in log if any(order.index(s) < anki for s in entry["rows"])]
+    assert len(below) >= 20 and above, (len(below), len(above))
+    assert sum(entry["settles"] for entry in below) == 0, [entry["settles"] for entry in below]
+    assert all(entry["settles"] >= 1 for entry in above)
+    QApplication.processEvents()
+    assert _at_third(page, revealed)                            # kept in place all the same
+    page.close()
+
+
+def test_each_slice_shows_each_section_it_built_rows_in_once(qapp, monkeypatch):
+    # a section's rows asked their rules once a slice, not once for every row the slice built (Anki & mining's 35:
+    # 35 times each in one go)
+    monkeypatch.setattr(sp, "BUILD_MS", 10 ** 6)                # (the whole page in as few slices as the warm allows)
+    page, _calls = _page()
+    log = _per_slice(monkeypatch, page)
+    assert wait_until(lambda: page.built, 20)
+    built = [entry for entry in log if entry["rows"]]
+    assert built and max(len(entry["rows"]) for entry in built) > len(catalog.SECTIONS)
+    for entry in built:
+        assert sorted(entry["shows"]) == sorted(set(entry["rows"])), (entry["rows"], entry["shows"])
+    page.close()
+
+
+def test_the_level_read_hands_its_own_settings_to_the_numbers(monkeypatch, tmp_path):
+    # SETTINGS-OPEN 2: one level read read settings.json four times (the known words' switches, Ignore names, one-kanji
+    # words, set phrases): the page's settings go down with it instead
+    from app import token_index
+    path = tmp_path / "token_store_ja.db"
+    path.write_bytes(b"")
+    handed = []
+
+    class Store:
+        def close(self):
+            pass
+
+        def file_count(self):
+            return 1
+    monkeypatch.setattr(token_index, "store_path_for", lambda language: str(path))
+    monkeypatch.setattr(token_index, "open_store", lambda language: Store())
+    monkeypatch.setattr(token_index, "preview_frequencies", lambda *a, **k: handed.append((a, k)))
+    settings = {"logic": {"selection": {}}, "zh_script": "asis"}
+    assert settings_live.read_previews(settings, "ja") is None
+    (args, kw), = handed
+    assert (list(args) + list(kw.values()))[-1] is settings

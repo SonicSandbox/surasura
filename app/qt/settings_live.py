@@ -98,7 +98,8 @@ def read_previews(settings, language):
     store = token_index.open_store(language)
     try:
         freqs = token_index.preview_frequencies(store, language, get_user_files_path(language),
-                                                effective(language, settings.get("zh_script", "asis")))
+                                                effective(language, settings.get("zh_script", "asis")),
+                                                settings)       # (its one read, never settings.json again)
         if freqs is None:
             return None
         return word_selection.band_previews(
@@ -643,7 +644,8 @@ class Live(QObject):
         return _alive(self.page)
 
     def _run(self, fn, *args, then=None, failed=None):
-        """`fn(*args)` on a worker; `then(answer)` on the GUI thread while the page lives."""
+        """`fn(*args)` on a worker; `then(answer)` on the GUI thread while the page lives — sent after the page's first
+        build turn (`SettingsPage.after_first_build`: at once after it)."""
         def done(answer):
             if then is not None and self._alive():
                 then(answer)
@@ -652,7 +654,11 @@ class Live(QObject):
             applog.log("settings", f"{getattr(fn, '__name__', 'a read')}: {info[1]}")
             if failed is not None and self._alive():
                 failed(info)
-        return bridge.run_in_worker(fn, *args, then=done, failed=fault)
+        after = getattr(self.page, "after_first_build", None)
+        if after is None:
+            bridge.run_in_worker(fn, *args, then=done, failed=fault)
+        else:
+            after(lambda: bridge.run_in_worker(fn, *args, then=done, failed=fault))
 
     def _press(self, row_id, part, fn, *args, then=None, failed=None, busy=None, key=None):
         """Round 8 row 45: `row_id`'s button pressed — its arc turns, painted before `fn` goes to the worker (as `_run`

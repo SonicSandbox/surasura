@@ -232,6 +232,31 @@ def test_the_rarity_slider_and_example_sentences_count_no_name_when_on(tmp_path)
         store.close()
 
 
+def test_the_rarity_slider_reads_the_settings_it_is_handed_and_never_settings_json(tmp_path, monkeypatch):
+    """SETTINGS-OPEN 2: the Settings page's level read hands the numbers its own settings — every switch they read
+    (Ignore names, one-kanji words, set phrases, the known words' name switches) comes from those, and settings.json is
+    not read again (it was four reads a preview, each one parsed). Handed none, the file is read as before. (Chinese
+    reads none of these switches.)"""
+    _library(tmp_path / "lib", {"village.txt": VILLAGE})
+    uf = os.path.join(os.environ["SURASURA_TEST_ROOT"], "User Files", "ja")
+    os.makedirs(uf, exist_ok=True)
+    _switch(False)                                     # the file: names count
+    loaded = settings_manager.load_settings()
+    handed = dict(loaded, logic=dict(loaded["logic"], ignore_names=True))
+    reads = []
+    real = settings_manager.load_settings
+    monkeypatch.setattr(settings_manager, "load_settings", lambda *a, **k: reads.append(1) or real(*a, **k))
+    store = ti.open_store("ja")
+    try:
+        unknown = dict(ti.preview_frequencies(store, "ja", uf, settings=handed)["unknown"])
+        assert reads == [], f"settings.json read {len(reads)} times"
+        assert "スドウ|スドウ" not in unknown and "冒険|ボウケン" in unknown     # the handed switch, not the file's
+        unknown = dict(ti.preview_frequencies(store, "ja", uf)["unknown"])
+        assert reads and "スドウ|スドウ" in unknown                             # none handed: the file's
+    finally:
+        store.close()
+
+
 # --- the Settings window ------------------------------------------------------------------------------------------ #
 def test_the_checkbox_saves_loads_shows_for_japanese_only_and_refreshes_the_slider(monkeypatch):
     """Settings -> Language & Parsing: one checkbox below the phrases switch, off by default, with its tooltip;

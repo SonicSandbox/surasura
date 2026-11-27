@@ -110,6 +110,8 @@ def test_a_blob_or_word_json_escapes_falls_back_to_the_byte_search_and_answers_t
         odd2 = zlib.compress(json.dumps({"abc": 1, "x|y": "ab|c", "p|q": {"a|b": 1}, "普通|フツウ": 2},
                                         ensure_ascii=False).encode("utf-8"))      # not the writer's shape
         store.conn.execute("UPDATE files SET counts = ? WHERE path = ?", (odd2, ti._norm(paths[2])))
+        store.conn.execute("UPDATE files SET counts = ? WHERE path = ?",          # the writer's shape, a bar in a lemma
+                           (ti._encode_counts({"棒|線|ボウ": 1, "普通|フツウ": 1}), ti._norm(paths[3])))
         store.conn.commit()
         lemmas = ["abc", "ab", "a", "x", "p", '言"う', "円\\記号", "タブ\tの", "棒", "棒|線", "普通", '"', "う", "言", ""] + \
             [w[0] for w in _words(store)][:40]
@@ -119,6 +121,9 @@ def test_a_blob_or_word_json_escapes_falls_back_to_the_byte_search_and_answers_t
                      dict(runs=[["棒", "普通"], ['言"う', "普通"]] + [[w] for w in lemmas])):
             assert store.holding(paths, **case) == _reference(store, paths, **case), case
         assert len(dict(runs=[[w] for w in lemmas])["runs"]) >= ti.HOLDING_SET_AT     # (the set read was asked)
+        # each word and key alone (asked HOLDING_SET_AT times: the set read, and no other word hiding its answer)
+        for case in [dict(runs=[[w]] * ti.HOLDING_SET_AT) for w in lemmas] +                 [dict(keys=[k] * ti.HOLDING_SET_AT) for k in keys]:
+            assert store.holding(paths, **case) == _reference(store, paths, **case), case
     finally:
         store.close()
 

@@ -12,7 +12,9 @@ lines, a recap of the same lines; Connect's ledger is a real one; Anki is the wr
 the two searches the press asks; the cut and the AI voice hand back real files on disk.
 """
 import base64
+import json
 import os
+import time
 from collections import namedtuple
 
 import pytest
@@ -657,3 +659,101 @@ def test_a_refused_clip_keeps_its_day_even_when_the_pass_then_stops(auto_env, mo
         _auto(env)
     with Ledger(env["ledger"]) as ledger:
         assert 1401 in cs._tried(ledger, "ja")
+
+
+# --- the three waste finds (AUDIO-FILL d) ------------------------------------------------------------------------ #
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_press_plans_the_deck_once_and_its_count_takes_the_runs_plan(lib, lang, tmp_path, monkeypatch):
+    # why: a press on a new day planned every soundless card twice — `run`'s look, then the count's — at ~one
+    # `sound_source.plan` over the whole deck each
+    from app.connect import sound_source
+    env = lib(lang)
+    env["anki"] = Anki()
+    said = env["said"]
+    _made(env, EPISODE, [(1700, said[0], None)])
+    env["anki"].add(1701, UNSAID[lang].text, UNSAID[lang].text[:2])          # no line: waits (ja) or silent (zh)
+    real_plan, planned = sound_source.plan, []
+
+    def plan(language, notes, mapping, steps, ledger_path=None):
+        planned.append(sorted(int(n["noteId"]) for n in notes))
+        return real_plan(language, notes, mapping, steps, ledger_path=ledger_path)
+    monkeypatch.setattr(sound_source, "plan", plan)
+    got = _run(env, tmp_path, ai=False)
+    with Ledger(env["ledger"]) as ledger:
+        counts = cs.recount(env["anki"], ledger, lang, MAPPING, env["steps"], ledger_path=env["ledger"],
+                            known=got.pop("kinds"))
+    assert planned == [[1700, 1701]], "planned once: the count took the run's plan"
+    assert got["real"] == 1 and counts["cards"] == 1 and counts["real"] == 0
+
+
+def test_the_press_hands_its_runs_plan_to_the_count_and_never_into_its_answer(act_env, monkeypatch):
+    handed = []
+    monkeypatch.setattr(cs, "run", lambda *a, **k: {"id": None, "real": 0, "swapped": 0, "ai": 0, "flipped": 0,
+                                                    "not_cut": {}, "ai_report": None, "kinds": {5: cs.REAL}})
+    monkeypatch.setattr(cs, "_recount_quietly", lambda *a, **k: handed.append(k.get("known")))
+    got = cs.act({"connect_enabled": True}, "ja", confirm=True, ai=False)
+    assert handed == [{5: cs.REAL}] and "kinds" not in got
+
+
+def _old(n):
+    return f"{1000000000000000000 + n}-abcd{n:04d}"     # (a record id from long ago: time_ns, then its tag)
+
+
+def _put(ledger, rid, rec):
+    ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (sa.RECORD + rid, json.dumps(rec)))
+
+
+def test_the_fold_reads_the_same_clips_as_every_record_and_stops_at_one_still_being_written(tmp_path, monkeypatch):
+    # why: every look read every writer record ever made (77 ms at 5,000 records, measured): the old ones are folded
+    # once into a snapshot, and a look reads only what came after it
+    monkeypatch.setattr(cs, "FOLD_MIN", 2)
+    a, b = "[sound:surasura-ai-5.mp3]", "[sound:surasura-ai-6.mp3]"
+    recs = [(_old(1), _rec("ai-audio", {"5": a, "6": b}, tag=cs.AI_TAG)),
+            (_old(2), _rec(cs.BY_SWAP, {"6": {"SentenceAudio": "[sound:real.mp3]"}}, tag=sa.TAG, mode=sa.REPLACE)),
+            (_old(3), dict(_rec("ai-audio", {"8": a}, tag=cs.AI_TAG), state=sa.WRITING)),
+            (_old(4), _rec("ai-audio", {"7": a}, tag=cs.AI_TAG))]
+    with Ledger(str(tmp_path / "l.sqlite")) as ledger:
+        with ledger.transaction():
+            for rid, rec in recs:
+                _put(ledger, rid, rec)
+        whole = cs.ai_held(None, recs)
+        assert cs.fold(ledger) == 2, "folded up to the record still being written, never past it"
+        assert cs._meta_json(ledger, sa.FOLD, {})["upto"] == _old(2)
+        assert [rid for rid, _r in cs._records(ledger, _old(2))] == [_old(3), _old(4)]
+        assert cs.ai_held(ledger) == whole == {5: a, 7: a}
+        assert cs.fold(ledger) == 0, "fewer than FOLD_MIN past it: left as it is"
+        with ledger.transaction():                       # an Undo of a folded record: the fold goes
+            sa._write_record(ledger, _old(1), dict(recs[0][1], state=sa.UNDONE))
+        assert cs._meta_json(ledger, sa.FOLD, None) is None
+        assert cs.ai_held(ledger) == {7: a}, "read from every record again"
+
+
+def test_a_new_record_written_again_never_drops_the_fold(tmp_path, monkeypatch):
+    # why: a fill re-saves its own record as it goes (writing → done): that must not throw the snapshot away
+    monkeypatch.setattr(cs, "FOLD_MIN", 1)
+    with Ledger(str(tmp_path / "l.sqlite")) as ledger:
+        with ledger.transaction():
+            _put(ledger, _old(1), _rec("ai-audio", {"5": "[sound:a.mp3]"}, tag=cs.AI_TAG))
+        assert cs.fold(ledger) == 1
+        with ledger.transaction():
+            sa._write_record(ledger, f"{time.time_ns()}-ffff0000", _rec("ai-audio", {"6": "[sound:b.mp3]"}))
+        assert cs._meta_json(ledger, sa.FOLD, {}).get("upto") == _old(1)
+
+
+def test_the_type_flips_read_again_only_the_cards_written_and_those_whose_type_is_off(lib, tmp_path, monkeypatch):
+    # why: `_flips` read every soundless Connect card again at each press (one notesInfo over the whole deck); a
+    # silent card already the sentence card has nothing to flip
+    from app.connect import ledger as ledger_mod
+    env = lib("ja")
+    env["anki"] = Anki()
+    said = env["said"]
+    _made(env, EPISODE, [(1800, said[0], None)])
+    _made(env, 99, [(1801, UNSAID["ja"], None), (1802, UNSAID["ja"], None)])
+    _marked(env["anki"], 1800, "x", "")                  # gets its line: becomes the audio card
+    _marked(env["anki"], 1801, "", "x")                  # silent audio card: off already
+    _marked(env["anki"], 1802, "x", "")                  # silent sentence card: right as it is
+    real, asked = ledger_mod.note_lines, []
+    monkeypatch.setattr(ledger_mod, "note_lines", lambda path, nids, lang, **kw: (                # (the plan's
+        None if kw else asked.append(sorted(nids))) or real(path, nids, lang, **kw))            # own read: strict=)
+    got = _run(env, tmp_path, ai=False, mapping=MARKED, marks=MARKS)
+    assert asked == [[1800, 1801]] and got["flipped"] == 2

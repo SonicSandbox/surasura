@@ -49,6 +49,9 @@ import uuid
 FIELD = "SentenceAudio"
 TAG = "surasura::audio-added"
 RECORD = "sentence_audio:"            # ledger meta: `sentence_audio:<id>` -> the call's Undo record (JSON)
+# AUDIO-FILL (3.0.21): a reader's fold of the records up to an id ({"upto": id, …}: Card sound's `ai_held` snapshot,
+# so a look reads only the records after it). A record at or before `upto` written again (an Undo) drops the fold.
+FOLD = "sentence_audio_fold"
 VERB = "Adding sentence audio"
 CHUNK = 50                            # notes written between two looks at whether you're reviewing
 WRITING, DONE, UNDONE = "writing", "done", "undone"
@@ -144,9 +147,18 @@ def _by_id(notes):
 
 
 def _write_record(ledger, rid, record, new=False):
-    """A call's record: its first write a plain INSERT (an id met twice raises, never overwrites an Undo: r2 N2)."""
+    """A call's record: its first write a plain INSERT (an id met twice raises, never overwrites an Undo: r2 N2). An
+    older record written again (an Undo) inside the fold drops it (FOLD: the next look reads every record again)."""
     ledger.conn.execute(("INSERT" if new else "INSERT OR REPLACE") + " INTO meta (key, value) VALUES (?, ?)",
                         (RECORD + rid, json.dumps(record, ensure_ascii=False)))
+    if not new:
+        row = ledger.conn.execute("SELECT value FROM meta WHERE key = ?", (FOLD,)).fetchone()
+        try:
+            upto = str((json.loads(row[0]) or {}).get("upto") or "") if row else ""
+        except (TypeError, ValueError, AttributeError):
+            upto = "~"                                     # (a fold that can't be read: dropped too)
+        if upto and str(rid) <= upto:
+            ledger.conn.execute("DELETE FROM meta WHERE key = ?", (FOLD,))
 
 
 def pending(ledger):

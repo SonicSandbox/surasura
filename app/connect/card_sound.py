@@ -75,11 +75,12 @@ class Anki(sa.AnkiConnectNotes):
 
 
 # --- what the writer's records say --------------------------------------------------------------------------- #
-def _records(ledger):
-    """Every writer record, oldest first: [(id, record)] (one read of the meta table)."""
+def _records(ledger, after=""):
+    """The writer's records after the id `after` (every one: ""), oldest first: [(id, record)] (one read of the meta
+    table, by its key's index)."""
     out = []
-    for key, value in ledger.conn.execute("SELECT key, value FROM meta WHERE key LIKE ? ORDER BY key",
-                                          (sa.RECORD + "%",)):
+    for key, value in ledger.conn.execute("SELECT key, value FROM meta WHERE key > ? AND key < ? ORDER BY key",
+                                          (sa.RECORD + after, sa.RECORD[:-1] + chr(ord(sa.RECORD[-1]) + 1))):
         try:
             rec = json.loads(value)
         except (TypeError, ValueError):
@@ -92,9 +93,52 @@ def _records(ledger):
 def ai_held(ledger, records=None):
     """{note id: the AI clip's value} of the notes whose LAST write by Surasura was an AI clip still standing (its
     record done, not undone): what decision 3 may replace and *Remove all AI audio* takes off — still only where the
-    field holds exactly that value (the caller compares). One pass over the records."""
-    held = {}
-    for _rid, rec in records if records is not None else _records(ledger):
+    field holds exactly that value (the caller compares). One pass over the records — those after the fold
+    (`sa.FOLD`, made by `fold` once a day) on top of its snapshot, or `records` alone when handed in."""
+    if records is not None:
+        return _held_over(records, {})
+    held, upto = _folded(ledger)
+    return _held_over(_records(ledger, upto), held)
+
+
+FOLD_MIN = 200                                  # records past the fold, a day old or more, before it moves on
+FOLD_AGE_S = 86400
+
+
+def _folded(ledger):
+    """The fold's snapshot -> ({note: clip}, the last record id in it), or ({}, "") (none, or one that can't be read)."""
+    got = _meta_json(ledger, sa.FOLD, {})
+    try:
+        return {int(n): v for n, v in (got.get("held") or {}).items() if isinstance(v, str)}, str(got.get("upto") or "")
+    except (TypeError, ValueError, AttributeError):
+        return {}, ""
+
+
+def fold(ledger):
+    """The records a day old or more folded into `sa.FOLD` (`ai_held`'s snapshot), once FOLD_MIN of them are past the
+    last fold — never past a record still being written (its Undo can still change it). An Undo of a folded record
+    drops the fold (`sentence_audio._write_record`). -> how many were folded. Never raises."""
+    try:
+        held, upto = _folded(ledger)
+        cut = f"{time.time_ns() - FOLD_AGE_S * 10 ** 9}"
+        old = []
+        for rid, rec in _records(ledger, upto):
+            if rid >= cut or rec.get("state") == sa.WRITING:
+                break
+            old.append((rid, rec))
+        if len(old) < FOLD_MIN:
+            return 0
+        held = _held_over(old, held)
+        _put_meta(ledger, sa.FOLD, {"upto": old[-1][0], "held": {str(n): v for n, v in sorted(held.items())}})
+        return len(old)
+    except Exception:
+        log.info("Card sound: the writer's records weren't folded", exc_info=True)
+        return 0
+
+
+def _held_over(records, held):
+    held = dict(held)
+    for _rid, rec in records:
         notes = rec.get("notes") or {}
         done = rec.get("state") == sa.DONE
         ai = done and rec.get("tag") == AI_TAG and rec.get("mode") != sa.REPLACE and rec.get("by") in AI_BY
@@ -329,7 +373,7 @@ def run(anki, ledger, language, mapping, steps, settings=None, deck=None, ai=Non
     seen = look(anki, ledger, language, mapping, steps, deck=deck, ledger_path=ledger_path, only=only)
     field, planned, notes, held = seen["field"], seen["plan"], seen["notes"], seen["held"]
     out = {"id": None, "real": 0, "swapped": 0, "ai": 0, "flipped": 0, "waiting": 0, "silent": seen["silent"],
-           "not_cut": {}, "ai_report": None}
+           "not_cut": {}, "ai_report": None, "kinds": {n: _kind(s) for n, s in planned.items() if n not in held}}
     if not field or not planned:
         return out
     rid, records = _new_run(), []
@@ -344,11 +388,13 @@ def run(anki, ledger, language, mapping, steps, settings=None, deck=None, ai=Non
         if records:
             _save_run(ledger, rid, rec)
         out["real"] = len(got["filled"])
+        wrote = set(got["filled"])
         for n in sorted(set(clips) & set(held)):                # decision 3: only over its own untouched AI clip
             name = sa.clip_name(clips[n])[0]
             if _replace(anki, ledger, n, {field: sa.sound(name)}, {field: held[n]}, records,
                         media={name: clips[n]}, keep_dir=keep_dir, tag=TAG, by=BY_SWAP):
                 out["swapped"] += 1
+                wrote.add(n)
                 _save_some(ledger, rid, rec)
         ai_turn = {n for n, s in planned.items() if s.kind == sound_source.NONE and s.why == sound_source.AI
                    and n not in held}
@@ -368,12 +414,15 @@ def run(anki, ledger, language, mapping, steps, settings=None, deck=None, ai=Non
                 files = {int(n): p for n, p in ((report or {}).get("files") or {}).items()}
                 got = _fill(anki, ledger, files, field, AI_TAG, BY_AI, records)
                 out["ai"] = len(got["filled"])
+                wrote |= set(got["filled"])
                 if records:
                     _save_run(ledger, rid, rec)
         else:
             out["waiting"] = len(ai_turn)
-        if marks:
-            out["flipped"] = _flips(anki, ledger, language, sorted(notes), field, marks, records, ledger_path,
+        if marks:                               # the cards written now, and those whose type is off already (as read)
+            off = {n for n, note in notes.items() if n not in wrote and _value(note, field) is not None
+                   and flip_of(note, marks, bool(_value(note, field)))}
+            out["flipped"] = _flips(anki, ledger, language, sorted(wrote | off), field, marks, records, ledger_path,
                                     lambda: _save_some(ledger, rid, rec))
     except BaseException as e:
         inner = getattr(e, "sentence_audio_id", None)
@@ -677,7 +726,7 @@ def act(settings, language, confirm=False, undo_id=None, remove_ai=False, should
                        should_stop=should_stop, run_dir=run_dir, marks=marks)
             if done["id"]:
                 undoing.owe_sync(settings)
-            _recount_quietly(anki, ledger, language, mapping, steps)
+            _recount_quietly(anki, ledger, language, mapping, steps, known=done.pop("kinds", None))
             report = done.pop("ai_report") or {}
             return dict(done, language=language, confirm=True, problems=list(report.get("problems") or ()),
                         not_cut=len(done["not_cut"]))
@@ -793,7 +842,8 @@ def auto(settings, language, ledger, steps=None, should_stop=None, ai_hold=None,
                        deck=mapping.deck, ai=ai, due=due, only=only, should_stop=should_stop,
                        make_ai=_make_ai(settings, language, ai_stop or should_stop), run_dir=run_dir,
                        marks=fields.marks(mapping), ledger_path=ledger_path)
-        _recount_quietly(anki, ledger, language, mapping, steps or runner.Steps(settings), ledger_path)
+        _recount_quietly(anki, ledger, language, mapping, steps or runner.Steps(settings), ledger_path,
+                         known=done.pop("kinds", None))
         unheard = {int(n) for n in ((done.get("ai_report") or {}).get("unheard") or ())}
         if unheard:
             _put_meta(ledger, TRIED + language, {"day": _today(), "notes": sorted(tried | unheard)})
@@ -824,14 +874,20 @@ SEEN = "card_sound_seen:"                       # ledger meta: <lang> -> {"day",
 REAL, AI, SILENT, OTHER = "real", "ai", "silent", "other"
 
 
-def recount(anki, ledger, language, mapping, steps, ledger_path=None):
+def _kind(src):
+    from app.connect import sound_source
+    return (OTHER if src is None else REAL if src.kind != sound_source.NONE else
+            AI if src.why == sound_source.AI else SILENT if src.why == sound_source.SILENT else OTHER)
+
+
+def recount(anki, ledger, language, mapping, steps, ledger_path=None, known=None):
     """*Needs you*'s count -> {"cards", "real", "ai", "silent", "at"} (kept in the ledger, COUNT), or None (no audio
     field): of the deck's soundless unsuspended cards, how many can get real sound now, how many wait for the AI
     voice, how many have none. Each card is planned once a day (SEEN: its answer kept; a card that got sound since
     drops out with the next search): one `findNotes`, then `sound_source.plan` over the cards not planned today
     only — never the whole deck at every pass. Its answer for a card can lag a day behind a library change (an
-    episode added) — the press itself plans every card again."""
-    from app.connect import sound_source
+    episode added) — the press itself plans every card again. `known` ({note: kind}: the run just made, `run`'s
+    `kinds`) stands for those cards' plans (never planned twice in one press). Folds the writer's old records too."""
     field = (mapping.fields or {}).get("audio") if mapping is not None else None
     if not field:
         return None
@@ -845,19 +901,21 @@ def recount(anki, ledger, language, mapping, steps, ledger_path=None):
                     kinds[int(n)] = kind
             except (TypeError, ValueError):
                 continue
+    for n, kind in (known or {}).items():
+        if n in empty:
+            kinds[n] = kind
     todo = empty - set(kinds)
     if todo:
         planned = look(anki, ledger, language, mapping, steps, deck=mapping.deck, ledger_path=ledger_path,
                        only=todo)["plan"]
         for n in todo:
-            src = planned.get(n)
-            kinds[n] = (OTHER if src is None else REAL if src.kind != sound_source.NONE else
-                        AI if src.why == sound_source.AI else SILENT if src.why == sound_source.SILENT else OTHER)
+            kinds[n] = _kind(planned.get(n))
     counts = {k: sum(1 for v in kinds.values() if v == k) for k in (REAL, AI, SILENT)}
     counts.update(cards=counts[REAL] + counts[AI] + counts[SILENT], at=time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                                                                      time.gmtime()))
     _put_meta(ledger, SEEN + language, {"day": _today(), "kinds": {str(n): k for n, k in sorted(kinds.items())}})
     _put_meta(ledger, COUNT + language, counts)
+    fold(ledger)
     return counts
 
 
@@ -870,9 +928,9 @@ def forget(ledger, language):
         log.info("Card sound: the day memo wasn't dropped (%s)", language, exc_info=True)
 
 
-def _recount_quietly(anki, ledger, language, mapping, steps, ledger_path=None):
+def _recount_quietly(anki, ledger, language, mapping, steps, ledger_path=None, known=None):
     try:
-        return recount(anki, ledger, language, mapping, steps, ledger_path=ledger_path)
+        return recount(anki, ledger, language, mapping, steps, ledger_path=ledger_path, known=known)
     except Exception:
         log.info("Card sound: the count for Needs you wasn't kept (%s)", language, exc_info=True)
         return None

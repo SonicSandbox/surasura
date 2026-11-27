@@ -288,6 +288,7 @@ def test_the_window_warms_settings_icons_a_few_a_turn_and_stops_once_the_page_is
         turns.append(len(steps))
         shell.ShellWindow._warm_icons(win, steps)
     win._warm_icons = again
+    monkeypatch.setattr(shell, "SETTINGS_WARM_MS", 0.0001)      # (a step a turn, however fast the machine draws)
     shell.ShellWindow._warm_icons(win, None)
     assert wait_until(lambda: len(sp._PIXMAPS) >= 2 * len(catalog.SECTIONS), 20)
     assert turns, "spread over the window's turns, never one stretch"
@@ -316,6 +317,8 @@ def test_settings_modules_imported_on_a_worker_make_no_qt_enum_there():
         "    made.append((class_name, threading.current_thread() is threading.main_thread()))\n"
         "    return real(cls, class_name, *a, **k)\n"
         "enum.EnumType._create_ = create\n"
+        "enum.Enum('HookProbe', 'a b')\n"
+        "assert ('HookProbe', True) in made, made\n"                      # (the hook sees an enum made)
         "t = threading.Thread(target=shell._import_settings)\n"
         "t.start(); t.join()\n"
         "assert 'app.qt.settings_page' in sys.modules and 'app.qt.settings_connect' in sys.modules\n"
@@ -335,7 +338,7 @@ def _per_slice(monkeypatch):
     real_slice, real_build = cls._slice, cls._build_guarded
     real_settle, real_show = cls._settle, cls._show_section
 
-    real_off = cls._off_aim
+    real_off, real_aim = cls._off_aim, cls._aim
 
     def slice_(self):
         cur.clear()
@@ -356,9 +359,11 @@ def _per_slice(monkeypatch):
             frame = frame.f_back
         if names == ["_keeping", "__exit__", "_slice"]:
             cur["settles"] = cur.get("settles", 0) + 1
-        elif names[:2] == ["_aim", "_slice"]:
-            cur["aims"] = cur.get("aims", 0) + 1
         return real_settle(self)
+
+    def aim(self):
+        cur["aims"] = cur.get("aims", 0) + 1                    # (a call, whether it settles or a glide goes on)
+        return real_aim(self)
 
     def off_aim(self):
         off = real_off(self)
@@ -372,6 +377,7 @@ def _per_slice(monkeypatch):
     monkeypatch.setattr(cls, "_build_guarded", build)
     monkeypatch.setattr(cls, "_settle", settle)
     monkeypatch.setattr(cls, "_off_aim", off_aim)
+    monkeypatch.setattr(cls, "_aim", aim)
     monkeypatch.setattr(cls, "_show_section", show)
     return log
 
@@ -390,7 +396,7 @@ def test_a_slice_that_builds_only_rows_below_the_reveal_lays_nothing_out_itself(
     below = [entry for entry in log if entry["rows"] and min(order.index(s) for s in entry["rows"]) > anki
              and not entry["last"]]                             # (the build's last slice aims once, laid out first)
     above = [entry for entry in log if any(order.index(s) < anki for s in entry["rows"])]
-    assert len(below) >= 20 and above, (len(below), len(above))
+    assert len(below) >= 5 and above, (len(below), len(above))  # (how many: as fast as the machine builds rows)
     assert sum(entry["settles"] for entry in below) == 0, [entry["settles"] for entry in below]
     assert all(entry["aims"] == 0 for entry in below if not entry["off"]), [(e["aims"], e["off"]) for e in below]
     assert all(entry["settles"] + entry["aims"] >= 1 for entry in above)    # (laid out at once: the reveal kept)

@@ -4590,8 +4590,10 @@ class ShellWindow(QMainWindow):
                 from app.qt import settings_page
                 steps = settings_page.warm_icons()
             t0 = time.perf_counter()
-            while steps and (time.perf_counter() - t0) * 1000 < SETTINGS_WARM_MS:
+            while steps:                                      # (one a turn at least: always on its way)
                 steps.pop(0)()
+                if (time.perf_counter() - t0) * 1000 >= SETTINGS_WARM_MS:
+                    break
         except Exception as e:                                # a warm-up never troubles the window: the page draws
             applog.log("shell", f"Settings' icons not warmed: {e!r}")
             return

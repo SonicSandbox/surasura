@@ -144,12 +144,15 @@ def icon_pixmap(name, colour, size_name, dpr=None):
 
 
 _ORDER = {}                     # (section id -> its place, row id -> (its place, under More options, its index)), made once
+_ORDER_OF = [None]              # the ROWS it was made from (made again if a test swaps ROWS, as `catalog.rows`)
 
 
 def _place(row):
-    if not _ORDER:
+    if _ORDER_OF[0] is not catalog.ROWS:
+        _ORDER.clear()
         _ORDER.update({section.id: i for i, section in enumerate(catalog.SECTIONS)})
         _ORDER.update({r.id: (_ORDER[r.section], bool(r.adv), i) for i, r in enumerate(catalog.ROWS)})
+        _ORDER_OF[0] = catalog.ROWS
     return _ORDER[row.id]
 
 

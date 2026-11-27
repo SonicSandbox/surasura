@@ -331,6 +331,55 @@ def test_each_files_share_is_the_one_its_whole_sentences_give_the_names_joined_a
         show.close()
 
 
+def test_a_word_whose_lemma_is_latin_counts_by_its_kana_surface_as_the_list_counts_it(tmp_path):
+    """Unidic writes some loanwords' lemma in Latin letters (エイズ -> ＡＩＤＳ, ユニセフ -> ＵＮＩＣＥＦ): the aggregate
+    counts such a token by its surface. The first count asks each type's language once (`lang`), and must ask its
+    surface too — else a song's エイズ stays in the store's counts while the list leaves it out. CRLF lines, and an
+    empty file beside them, as a learner's folder has."""
+    from app import phrases
+    work = tmp_path / "data" / "ja" / "HighPriority" / "Kokuren"
+    work.mkdir(parents=True)
+    song = work / "song.txt"
+    song.write_bytes("エイズのない世界へ。\r\nユニセフの歌を歌おう。\r\nユネスコの空に届け。\r\n".encode("utf-8"))
+    (work / "empty.txt").write_bytes(b"")
+    db = str(tmp_path / "store.db")
+    ti.reconcile_language("ja", [str(song), str(work / "empty.txt")], path=db)
+    store = ti.open_store("ja", db)
+    try:
+        lemmas = {t[0] for _text, tokens in store.file_tokens(str(song)) for t in tokens}
+        assert {"ＡＩＤＳ", "ＵＮＩＣＥＦ"} <= lemmas, "the tokenizer's lemmas are Latin for these"
+        found = phrases.load()
+        asked = {str(song): [0, 1, 2]}
+        for met in ({}, store.phrase_matches([ti._norm(str(song))])):
+            got = store._song_shares(asked, found, {ti._norm(k): v for k, v in met.items()}, {}, set())
+            assert got[str(song)] == _share_read_whole(store, str(song), [0, 1, 2], found)
+            counted = {lemma for lemma, _reading, _n in got[str(song)][0]}
+            assert {"ＡＩＤＳ", "ＵＮＩＣＥＦ"} <= counted, "counted by its kana surface"
+    finally:
+        store.close()
+
+
+def test_a_sung_line_whose_only_one_character_word_is_a_kanji_piece_still_counts_the_piece(tmp_path):
+    """The first count runs `bound_uses` only on a line holding a word written as one kanji (`ones`: one character at
+    or past U+3400, bound_uses' own first test). A line of numbers and pieces alone — ３年, 十年 — has no kana of one
+    character beside them, so only that test lets its 年 be counted as the piece the whole read counts."""
+    from app import phrases
+    work = tmp_path / "data" / "ja" / "HighPriority" / "Nikki"
+    work.mkdir(parents=True)
+    song = work / "song.txt"
+    song.write_text("３年\n十年\n", encoding="utf-8")
+    db = str(tmp_path / "store.db")
+    ti.reconcile_language("ja", [str(song)], path=db)
+    store = ti.open_store("ja", db)
+    try:
+        found = phrases.load()
+        whole = _share_read_whole(store, str(song), [0, 1], found)
+        assert ["年", "ネン", 2] in whole[2], "the whole read counts 年 twice as a piece"
+        assert store._song_shares({str(song): [0, 1]}, found, {}, {}, set())[str(song)] == whole
+    finally:
+        store.close()
+
+
 def test_a_first_count_takes_the_phrases_the_index_found_and_asks_each_types_language_once(tmp_path):
     """A first count (every song line of a library: the first Generate after an update) searches no song line for
     its phrases — the index found them (`phrase_matches`) — and asks a word's language once a type, never once a

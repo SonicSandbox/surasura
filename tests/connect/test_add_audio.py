@@ -151,10 +151,15 @@ def test_act_asks_nothing_of_anki_with_connect_off_or_anki_switched_off(monkeypa
     assert add_audio.act({"connect_enabled": True}, "ja", book="x.epub")["skipped"]
 
 
-def test_the_command_line_takes_add_audio_with_its_plan_first():
+def test_the_command_line_takes_add_audio_as_the_books_line_up_and_its_older_undo():
+    """AUDIO-FILL d: `add-audio --book` lines the book up (the write is `add-sound`'s) — no `--confirm` any more;
+    `--undo ID` still takes back an *Add audio* made before."""
     from app.cli import __main__ as cli
     args = cli._parser().parse_args(["add-audio", "--book", "x.epub"])
-    assert args.verb == "add-audio" and args.book == "x.epub" and args.confirm is False
+    assert args.verb == "add-audio" and args.book == "x.epub" and not hasattr(args, "confirm")
+    from app.cli.contract import CliError
+    with pytest.raises(CliError):
+        cli._parser().parse_args(["add-audio", "--book", "x.epub", "--confirm"])
     args = cli._parser().parse_args(["add-audio", "--undo", "17-ab"])
     assert args.undo == "17-ab"
 

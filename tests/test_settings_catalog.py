@@ -248,6 +248,8 @@ def _other(row, settings, language):
         return list(shown) + [r"D:\Anime\ひとり・で・ぽっぷ！"]
     if row.id == "placing_rules":
         return ("hato", "top")
+    if row.kind == "custom" and len(row.keys) > 1:      # a row of its own controls (the AI voice's): its switch flipped
+        return dict(shown, **{row.keys[0]: not shown[row.keys[0]]})
     if row.kind in ("choice", "cards", "select"):
         return next(v for v, _l, _line in catalog.options(row, settings, language) if v != shown)
     if row.kind == "toggle" or isinstance(shown, bool):
@@ -306,6 +308,20 @@ def test_a_value_set_to_what_is_already_there_writes_nothing(language):
         elif row.id == "placing_rules":
             shown = dict(shown or {})
         assert catalog.change(row, settings, language, shown) == ({}, None), row.id
+
+
+def test_a_row_of_its_own_controls_with_several_keys_writes_only_its_keys_that_moved():
+    # why: the AI voice's row (its switch, its voice, its days) took a whole {key: value} as the switch's one value —
+    # `{"enable_irodori": {...}}` — so a change of the shown value wrote a dict into the switch (AUDIO-FILL d's reds)
+    row = catalog.ROW["ai_audio"]
+    settings = {"target_language": "ja", "enable_irodori": True, "irodori_card_voice": "man", "card_sound_days": 3}
+    shown = catalog.value(row, settings, "ja")
+    assert shown == {"enable_irodori": True, "irodori_card_voice": "man", "card_sound_days": 3}
+    assert catalog.change(row, settings, "ja", shown) == ({}, None)
+    assert catalog.change(row, settings, "ja", dict(shown, card_sound_days=7, ui_theme="dark")) == (
+        {"card_sound_days": 7}, None)
+    with pytest.raises(ValueError):
+        catalog.change(row, settings, "ja", True)
 
 
 def test_toggles_choices_numbers_and_text_write_their_value():

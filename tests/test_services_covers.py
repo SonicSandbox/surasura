@@ -367,6 +367,23 @@ def test_the_opens_scan_reads_no_source_marker_without_two_books_to_choose_and_l
     assert [os.path.normcase(d) for d in read] == [os.path.normcase(folder)], "two books: their folder's marker, once"
 
 
+def test_the_opens_scan_lists_a_shows_folder_once_for_both_its_seasons_and_both_take_its_poster(lib, monkeypatch):
+    """START-READS: two seasons of one show are two titles that both look in the show's folder: listed once a scan."""
+    title = names(lib.language)[40]
+    show = os.path.join(lib.data_dir, ls.FOLDER_OF_TIER["now"], title)
+    eps = [write(os.path.join(show, f"Season {s}", f"[Group] {title} S{s} - {n:02d}.ja.srt"),
+                 f"{title} {s} {n}\n".encode("utf-8")) for s in (1, 2) for n in (1, 2)]
+    lib.store.insert(eps, "now")
+    seasons = {lib.work_of(lib.store.item_id(lib.rel(e))) for e in eps}
+    assert len(seasons) == 2, "each season its own title"
+    poster = write(os.path.join(show, "poster.jpg"), jpeg())
+    listed, listdir = [], os.listdir
+    monkeypatch.setattr(C.os, "listdir", lambda d=".": listed.append(os.path.normcase(d)) or listdir(d))
+    lib.scan()
+    assert [d for d in listed if d == os.path.normcase(show)] == [os.path.normcase(show)], "the show's folder once"
+    assert all(lib.row(w)[:2] == ("file", lib.rel(poster)) for w in seasons)
+
+
 def test_the_opens_scan_reads_the_same_titles_from_its_own_columns_as_from_the_whole_feed(lib, monkeypatch):
     """START-READS: the open's scan read the store's whole feed (every column of every row) for the five a cover
     needs; `works_all` reads only those and must name the same titles, files in the list's order and covers."""

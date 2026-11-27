@@ -107,11 +107,19 @@ FOLD_AGE_S = 86400
 
 def _folded(ledger):
     """The fold's snapshot -> ({note: clip}, the last record id in it), or ({}, "") (none, or one that can't be read)."""
-    got = _meta_json(ledger, sa.FOLD, {})
+    upto = _upto(ledger)
+    got = _meta_json(ledger, sa.FOLD, {}) if upto else {}
     try:
-        return {int(n): v for n, v in (got.get("held") or {}).items() if isinstance(v, str)}, str(got.get("upto") or "")
+        if str(got.get("upto") or "") != upto:
+            return {}, ""                       # (the two keys disagree: read every record)
+        return {int(n): v for n, v in (got.get("held") or {}).items() if isinstance(v, str)}, upto
     except (TypeError, ValueError, AttributeError):
         return {}, ""
+
+
+def _upto(ledger):
+    got = _meta_json(ledger, sa.FOLD_UPTO, "")
+    return got if isinstance(got, str) else ""
 
 
 def fold(ledger):
@@ -119,17 +127,25 @@ def fold(ledger):
     last fold — never past a record still being written (its Undo can still change it). An Undo of a folded record
     drops the fold (`sentence_audio._write_record`). -> how many were folded. Never raises."""
     try:
-        held, upto = _folded(ledger)
         cut = f"{time.time_ns() - FOLD_AGE_S * 10 ** 9}"
-        old = []
-        for rid, rec in _records(ledger, upto):
-            if rid >= cut or rec.get("state") == sa.WRITING:
-                break
-            old.append((rid, rec))
-        if len(old) < FOLD_MIN:
-            return 0
-        held = _held_over(old, held)
-        _put_meta(ledger, sa.FOLD, {"upto": old[-1][0], "held": {str(n): v for n, v in sorted(held.items())}})
+        with ledger.transaction():              # read and written together: an Undo meanwhile waits (it drops it)
+            upto = _upto(ledger)
+            n = ledger.conn.execute("SELECT count(*) FROM meta WHERE key > ? AND key < ?",
+                                    (sa.RECORD + upto, sa.RECORD + cut)).fetchone()[0]
+            if n < FOLD_MIN:
+                return 0                        # (counted by the key's index: no record parsed)
+            held, upto = _folded(ledger)
+            old = []
+            for rid, rec in _records(ledger, upto):
+                if rid >= cut or rec.get("state") == sa.WRITING:
+                    break
+                old.append((rid, rec))
+            if len(old) < FOLD_MIN:
+                return 0
+            held = _held_over(old, held)
+            snap = {"upto": old[-1][0], "held": {str(n): v for n, v in sorted(held.items())}}
+            ledger.conn.executemany("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                                    [(sa.FOLD, json.dumps(snap)), (sa.FOLD_UPTO, json.dumps(old[-1][0]))])
         return len(old)
     except Exception:
         log.info("Card sound: the writer's records weren't folded", exc_info=True)
@@ -824,8 +840,7 @@ def auto(settings, language, ledger, steps=None, should_stop=None, ai_hold=None,
     try:
         new = [int(n) for n in _meta_json(ledger, NEW + language, [])]
         ai = _voice_on(settings, language)
-        counted_today = _meta_json(ledger, SEEN + language, {}).get("day") == _today()
-        if not new and not ai and counted_today and _meta_json(ledger, COUNT + language, {}):
+        if not new and not ai and _meta_json(ledger, COUNT + language, {}).get("day") == _today():
             return {"skipped": NOTHING}         # (counted today, nothing new: a new day or `forget` counts again)
         run_dir, mapping = _mapping(settings, language)
         if mapping is None:
@@ -911,7 +926,7 @@ def recount(anki, ledger, language, mapping, steps, ledger_path=None, known=None
         for n in todo:
             kinds[n] = _kind(planned.get(n))
     counts = {k: sum(1 for v in kinds.values() if v == k) for k in (REAL, AI, SILENT)}
-    counts.update(cards=counts[REAL] + counts[AI] + counts[SILENT], at=time.strftime("%Y-%m-%dT%H:%M:%SZ",
+    counts.update(day=_today(), cards=counts[REAL] + counts[AI] + counts[SILENT], at=time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                                                                      time.gmtime()))
     _put_meta(ledger, SEEN + language, {"day": _today(), "kinds": {str(n): k for n, k in sorted(kinds.items())}})
     _put_meta(ledger, COUNT + language, counts)
@@ -924,6 +939,10 @@ def forget(ledger, language):
     pass's end plans every soundless card again. Inside the caller's transaction; never raises."""
     try:
         ledger.conn.execute("DELETE FROM meta WHERE key = ?", (SEEN + language,))
+        count = _meta_json(ledger, COUNT + language, {})
+        if count.pop("day", None) is not None:          # (the pass reads the count's day: counted again at its end)
+            ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                                (COUNT + language, json.dumps(count)))
     except Exception:
         log.info("Card sound: the day memo wasn't dropped (%s)", language, exc_info=True)
 

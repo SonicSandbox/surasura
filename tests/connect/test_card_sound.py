@@ -408,14 +408,14 @@ def test_nothing_new_and_the_voice_off_counts_again_on_a_new_day_or_once_forgott
     first = _auto(env)
     assert "skipped" not in first and env["anki"].searches, "no count yet: counted"
     assert _auto(env) == {"skipped": cs.NOTHING}, "counted today, nothing new: Anki isn't asked"
-    with Ledger(env["ledger"]) as ledger:                   # yesterday's memo
-        cs._put_meta(ledger, cs.SEEN + "ja", dict(cs._meta_json(ledger, cs.SEEN + "ja", {}), day="2000-01-01"))
+    with Ledger(env["ledger"]) as ledger:                   # yesterday's count (the pass reads its day, never the memo)
+        cs._put_meta(ledger, cs.COUNT + "ja", dict(cs._meta_json(ledger, cs.COUNT + "ja", {}), day="2000-01-01"))
     asked = len(env["anki"].searches)
     assert "skipped" not in _auto(env) and len(env["anki"].searches) > asked, "a new day: counted again"
     with Ledger(env["ledger"]) as ledger:
         assert cs._meta_json(ledger, cs.SEEN + "ja", {})["day"] == cs._today()
-        ledger.conn.execute("DELETE FROM meta WHERE key = ?", (cs.SEEN + "ja",))    # the memo gone (`forget`'s)
-        ledger.conn.commit()
+        with ledger.transaction():                          # a book lined up since
+            cs.forget(ledger, "ja")
     asked = len(env["anki"].searches)
     assert "skipped" not in _auto(env) and len(env["anki"].searches) > asked, "no memo: counted again"
     assert _auto(env) == {"skipped": cs.NOTHING}
@@ -757,3 +757,15 @@ def test_the_type_flips_read_again_only_the_cards_written_and_those_whose_type_i
         None if kw else asked.append(sorted(nids))) or real(path, nids, lang, **kw))            # own read: strict=)
     got = _run(env, tmp_path, ai=False, mapping=MARKED, marks=MARKS)
     assert asked == [[1800, 1801]] and got["flipped"] == 2
+
+
+def test_the_fold_counts_first_and_parses_no_record_while_too_few_are_old(tmp_path, monkeypatch):
+    # why: the review's complexity find — the fold parsed every record past it at each count, though it folds rarely
+    monkeypatch.setattr(cs, "FOLD_MIN", 3)
+    with Ledger(str(tmp_path / "l.sqlite")) as ledger:
+        with ledger.transaction():
+            for n in (1, 2):
+                _put(ledger, _old(n), _rec("ai-audio", {str(n): "[sound:a.mp3]"}, tag=cs.AI_TAG))
+        monkeypatch.setattr(cs, "_records", lambda *a, **k: pytest.fail("parsed records with too few to fold"))
+        assert cs.fold(ledger) == 0
+        assert cs._meta_json(ledger, sa.FOLD_UPTO, None) is None

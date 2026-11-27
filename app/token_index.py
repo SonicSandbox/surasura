@@ -1591,7 +1591,7 @@ class Store:
                 continue                                # the tables moved, but not what they make of this file
             to_read.append((path, mtime, size, tag))
         some = self.some_tokens({path: wanted[path] for path, *_rest in to_read})   # the song lines alone decoded
-        write, plus, sung_lines = [], [], {}
+        write, plus = [], []
         for path, mtime, size, tag in to_read:
             if path in some:
                 sung = some[path][1]
@@ -1600,21 +1600,18 @@ class Store:
                 if not sentences:
                     continue                            # its row can't be read: no share kept, its songs count
                 sung = [sentences[n] for n in wanted[path] if n < len(sentences)]
-            counts, total, pieces, uses, taken = Counter(), 0, Counter(), Counter(), Counter()
+            counts, total, pieces = Counter(), 0, Counter()
             for text, tokens in sung:
-                key = (text, tuple(map(tuple, tokens)))
-                line = sung_lines.get(key)
-                if line is None:                        # a song's line, counted once however many episodes sing it
-                    line = sung_lines[key] = self._sung_line(text, tokens, has_lang, found)
-                counts.update(line[0])
-                total += len(line[0])
-                pieces.update(line[1])
-                if line[2]:
-                    uses.update(line[2])
-                if line[3]:
-                    taken.update(line[3])
+                for lemma, reading, surface, *_rest in tokens:
+                    if has_lang(lemma, self.language) or has_lang(surface, self.language):
+                        counts[(lemma, reading)] += 1
+                        total += 1
+                if self.language == "ja":
+                    for i in analyzer.bound_uses(text, tokens):
+                        pieces[(tokens[i][0], tokens[i][1])] += 1
+            uses, taken = phrases.tally(sung, found) if found is not None else ({}, {})
             share = ([[l, r, n] for (l, r), n in counts.items()], total, [[l, r, n] for (l, r), n in pieces.items()],
-                     [dict(uses), dict(taken)])
+                     [{str(k): v[0] for k, v in uses.items()}, taken])
             write.append((path, mtime, size, tag, total, _encode_counts(share[0]), _encode_counts(share[2]),
                           _encode_counts(share[3])))
             plus.append(share)
@@ -1650,23 +1647,6 @@ class Store:
             if own:                                     # (a caller's own transaction is the caller's to end)
                 self.conn.rollback()
             raise
-
-    def _sung_line(self, text, tokens, has_lang, found):
-        """One song line as `keep_song_counts` counts it: (its words, a key a token as the aggregate counts them —
-        target-language characters —, its one-kanji pieces, {phrase index: uses}, {"lemma|reading": uses given to a
-        phrase}); `phrases.tally` is a sum over lines, so a file's share is the sum of its lines'."""
-        from app import analyzer
-        words = tuple((lemma, reading) for lemma, reading, surface, *_rest in tokens
-                      if has_lang(lemma, self.language) or has_lang(surface, self.language))
-        pieces = ()
-        if self.language == "ja":
-            pieces = tuple((tokens[i][0], tokens[i][1]) for i in analyzer.bound_uses(text, tokens))
-        uses = taken = None
-        if found is not None:
-            from app import phrases
-            held, taken = phrases.tally([(text, tokens)], found)
-            uses = {str(k): v[0] for k, v in held.items()}
-        return words, pieces, uses, taken
 
     def _songs_state(self, settings=None):
         """What every song share is counted under: the share's form, the schema, the engine, the tokenizer's identity

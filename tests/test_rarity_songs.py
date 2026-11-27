@@ -419,35 +419,3 @@ def test_the_readout_reads_the_share_once_a_store_state_and_sees_another_program
             assert made.call_count == 2
     finally:
         store.close()
-
-
-def test_a_line_sung_alike_in_two_episodes_is_counted_once_but_a_line_read_otherwise_by_its_own_tokens(tmp_path):
-    """A song's line is counted once however many episodes sing it — by its text and its tokens, never its text
-    alone: the same text the name tables join in one episode (a name made one word) and not in the other counts
-    each as read."""
-    store, data_dir, paths = _library(tmp_path, "ja", JA_SHOW)
-    try:
-        text = "星祭りの夜に会おう"
-        apart = [["星", "ホシ", "星", "星"], ["祭り", "マツリ", "祭り", "祭り"], ["の", "ノ", "の", "の"],
-                 ["夜", "ヨル", "夜", "夜"], ["に", "ニ", "に", "に"], ["会う", "アウ", "会お", "会う"],
-                 ["う", "ウ", "う", "う"]]
-        joined = [["星祭り", "ホシマツリ", "星祭り", "星祭り"]] + [list(t) for t in apart[2:]]
-        lines = {ti._norm(paths[0]): apart, ti._norm(paths[1]): joined, ti._norm(paths[2]): apart}
-        made = []
-        real = ti.Store._sung_line
-
-        def counting(self, line_text, tokens, *rest):
-            made.append(tuple(t[0] for t in tokens))
-            return real(self, line_text, tokens, *rest)
-
-        def some(self, asked):
-            return {p: ([0], [[text, [list(t) for t in lines[ti._norm(p)]]]]) for p in asked if ti._norm(p) in lines}
-        with patch.object(ti.Store, "some_tokens", some), patch.object(ti.Store, "_sung_line", counting):
-            store.keep_song_counts({p: [0] for p in paths[:3]})
-        assert sorted(made) == sorted([tuple(t[0] for t in apart), tuple(t[0] for t in joined)])
-        shares = {path: ti._decode_counts(blob) for path, blob in store.conn.execute("SELECT path, counts FROM songs")}
-        assert ["星祭り", "ホシマツリ", 1] in shares[ti._norm(paths[1])]
-        assert ["星", "ホシ", 1] in shares[ti._norm(paths[0])] and ["星", "ホシ", 1] in shares[ti._norm(paths[2])]
-    finally:
-        store.close()
-

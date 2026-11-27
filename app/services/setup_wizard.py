@@ -841,10 +841,38 @@ def start_numbers(items, view, per_day):
 def start_cards(language, settings, start, data_dir=None):
     """(A worker.) *Start*: the yes D1's line waits for, with the start's mine line (`first_cards(mine_line=)`) — Connect
     then makes the cards of that many episodes, kept up to the start's cap (written on the window's thread first,
-    `save(START)`). -> the ids logged."""
+    `save(START)`). A small start's yes also offers ONB-4's one-time *Ready for more?* (`needs.MORE_CARDS`: listed once
+    its cards are nearly studied, `needs._more_entry`); an offer that can't be written is said in the log only (the
+    start itself is made). -> the ids logged."""
     if start not in STARTS:
         raise ValueError(f"not a start: {start!r}")
-    return first_cards(language, settings, data_dir, mine_line=START_SIZES[start][0])
+    ids = first_cards(language, settings, data_dir, mine_line=START_SIZES[start][0])
+    if start == "small" and ids:
+        from app.services import needs
+        try:
+            needs.offer(_language(language), needs.MORE_CARDS)
+        except Exception as e:                           # the seen file held or newer: no *Ready for more?*
+            print(f"Setup: Ready for more? couldn't be offered ({e})")
+    return ids
+
+
+def more_cards(settings_service, writer, language):
+    """(A worker: both queue.) ONB-4's *Next 20 episodes*: the full start's two knobs through their owners — this
+    language's *Keep up to* raised to the full start's 300 (`_cap_update`, as `save(START)` writes it; never lowered:
+    a cap set higher, or none (0), stays) and on disk first (`flush`: Connect, told once the line moves, reads it at
+    its step), then the store's line to its 20 (`Writer.set_options`, Settings' own row: the files that cross it
+    logged, Connect told after it). PRESTUDIED-MINE's switch is left as it is (the learner's own since). -> the
+    writer's command number, or None when the store can't be written now (`Writer.reason`: nothing written)."""
+    from app.connect.settings_values import cap_of
+    from app.services.settings import thaw
+    if writer is None or writer.reason() is not None:
+        return None
+    language = _language(language)
+    line, cap = START_SIZES["full"]
+    if 0 < cap_of(thaw(settings_service.get()).get("connect_backlog_cap", 300), language) < cap:
+        settings_service.set({}, update=_cap_update(language, cap), keys=("connect_backlog_cap",))
+        settings_service.flush(10)
+    return writer.set_options(mine_line=line)
 
 
 NOTHING_TO_COUNT = {"empty": "library"}     # `level_numbers`' answers when nothing can be counted (Disc-T1): no

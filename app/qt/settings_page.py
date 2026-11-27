@@ -2112,6 +2112,19 @@ class SettingsPage(QWidget):
         if self._held is not None:
             self._first_build_over()
 
+    def revealed_section(self):
+        """The section a reveal made while the page builds brought (or is bringing) into view, else None (the page
+        opened at its top)."""
+        if self._reveal_wanted is not None:
+            located = catalog.locate(self._reveal_wanted)
+            return located[0] if located else None
+        widget = self._revealed
+        row = getattr(widget, "row", None)
+        if row is not None:
+            return row.section
+        section = getattr(widget, "section", None)
+        return getattr(section, "id", None)
+
     def _first_shown_row(self, section_id):
         for row in catalog.rows(section_id):
             view = self.rows.get(row.id)

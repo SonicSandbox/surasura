@@ -434,3 +434,59 @@ def test_the_level_read_hands_its_own_settings_to_the_numbers(monkeypatch, tmp_p
     assert settings_live.read_previews(settings, "ja") is None
     (args, kw), = handed
     assert (list(args) + list(kw.values()))[-1] is settings
+
+
+@pytest.mark.parametrize("target, prepared, language, waits", [
+    ("anki", False, "ja", True),            # a section with no level row, the tables not decoded: after the build
+    ("anki", True, "ja", False),            # decoded already (the chores' warm-up, a read): nothing to hold for
+    ("anki", False, "zh", False),           # Chinese has no table to decode
+    (None, False, "ja", False),             # opened at its top: Your setup's level line is in view
+    ("level", False, "ja", False),          # opened at the Level row itself
+])
+def test_the_level_read_waits_for_the_build_only_when_its_tables_are_cold_and_no_level_row_is_in_view(
+        qapp, monkeypatch, target, prepared, language, waits):
+    # SETTINGS-OPEN 2: a level read's first step decodes the reference tables (json.loads, Python's lock held 50–110 ms
+    # a table): Settings opened in the window's first seconds, before the chores' warm-up, stalled a slice of the
+    # build 160–270 ms in one go. Opened at a section that shows no level row, its numbers wait for the build's end
+    from app import token_index
+    monkeypatch.setattr(token_index, "_PREPARED", {language} if prepared else set())
+    asked = []
+    real = settings_live.Live._read_level
+
+    def read_level(live):
+        asked.append(live.page.built)
+        return real(live)
+    monkeypatch.setattr(settings_live.Live, "_read_level", read_level)
+    page, _calls = _page(language=language)
+    if target:
+        page.reveal(target)
+    assert wait_until(lambda: page.built, 20)
+    QApplication.processEvents()
+    assert asked == [waits], asked                              # once: after the build, or while it went on
+    page.close()
+
+
+def test_a_preview_read_or_the_warm_up_marks_the_tables_decoded(monkeypatch, tmp_path):
+    # `preview_prepared`: False for Japanese until `prepare_preview` (the chores' warm-up) or a preview read has run in
+    # the process; Chinese has nothing to decode
+    from app import token_index
+    monkeypatch.setattr(token_index, "_PREPARED", set())
+    assert token_index.preview_prepared("zh")
+    assert not token_index.preview_prepared("ja")
+    token_index.prepare_preview("ja", str(tmp_path))            # (an empty user folder: no KnownWord.json)
+    assert token_index.preview_prepared("ja")
+
+
+def test_a_sections_rows_are_its_rows_in_order_looked_up_not_walked(monkeypatch):
+    # SETTINGS-OPEN 2: `catalog.rows` walked all of ROWS (149) for each call, three calls a section each time the page
+    # showed one: now an index made once — the same rows, in order; made again if ROWS itself is swapped (a test does)
+    for section in catalog.SECTIONS:
+        assert list(catalog.rows(section.id)) == [row for row in catalog.ROWS if row.section == section.id]
+    assert catalog.rows("no such section") == ()
+    first = catalog.rows("app")
+    assert catalog.rows("app") is first                         # looked up, never built again
+    rows = list(catalog.ROWS)
+    moved = next(row for row in rows if row.section == "app")
+    monkeypatch.setattr(catalog, "ROWS", tuple(r for r in rows if r is not moved) + (moved._replace(section="junban"),))
+    assert moved.id not in {row.id for row in catalog.rows("app")}
+    assert catalog.rows("junban")[-1].id == moved.id

@@ -610,7 +610,7 @@ class Live(QObject):
         self.asking = None                # *Restart now to apply?* while it is open (text size)
         self._exporting = None            # the export row running (one at a time)
         self._checking = False
-        self._level = {"busy": False, "again": False, "asked": 0}
+        self._level = {"busy": False, "again": False, "asked": 0, "held": False}
         self._format = None               # the format last chosen (the pop opens on it)
         self._copies = {}                 # A6: an AI app -> its Copy presses (the latest one sets the name back)
         self._finding = None              # *Find hato…*'s press while it goes (Michi-HD)
@@ -709,8 +709,8 @@ class Live(QObject):
     # --- a row built: its live parts ------------------------------------------------------------------------------- #
     def _built(self, row_id):
         row = catalog.ROW[row_id]
-        if row_id in LEVEL_ROWS and not self._level["asked"]:
-            self._read_level()            # SETTINGS-OPEN: the level's first read waits for a row that shows it
+        if row_id in LEVEL_ROWS and not self._level["asked"] and not self._level["held"]:
+            self._first_level_read()      # SETTINGS-OPEN: the level's first read waits for a row that shows it
         if row_id in SETUP:
             door = sc.Door(S.CHANGE, tooltip=row.tip, name=f"{row.label}: {S.CHANGE}")
             door.clicked.connect(lambda _c=False, t=row.target: self.page.reveal(t))
@@ -1012,6 +1012,27 @@ class Live(QObject):
             line.show()
 
     # --- the level ------------------------------------------------------------------------------------------------- #
+    def _first_level_read(self):
+        """The level's first read: at once — unless the page is still building, the reference tables aren't decoded yet
+        (`token_index.preview_prepared`: Settings opened in the window's first seconds, before the chores' warm-up)
+        and the page was opened at a section that shows no level row: then at the build's end (SETTINGS-OPEN 2: the
+        read's decode held Python's lock 160–270 ms in one go, a stall of the build's slices)."""
+        page = self.page
+        from app import token_index
+        level_sections = {catalog.ROW[row_id].section for row_id in LEVEL_ROWS}
+        if (page.built or token_index.preview_prepared(page.language)
+                or page.revealed_section() in level_sections | {None}):
+            self._read_level()
+            return
+        self._level["held"] = True
+        page.ready.connect(self._level_after_build)
+
+    def _level_after_build(self):
+        self.page.ready.disconnect(self._level_after_build)
+        self._level["held"] = False
+        if not self._level["asked"]:
+            self._read_level()
+
     def _read_level(self):
         """The level (S2) and every band's numbers, read on a worker — one at a time, once more if asked meanwhile."""
         level = self._level

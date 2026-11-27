@@ -2692,8 +2692,10 @@ def preview_frequencies(store, language, user_files_dir, script="asis", settings
     settings.json (SETTINGS-OPEN 2: four reads of the file a preview, each one parsed)."""
     if not store.has_tokens():
         return None
-    return store.unknown_frequencies(**preview_lists(store, language, user_files_dir, script, settings),
-                                     settings=settings)
+    out = store.unknown_frequencies(**preview_lists(store, language, user_files_dir, script, settings),
+                                    settings=settings)
+    _PREPARED.add(language)                     # (its tables decoded: `preview_prepared`)
+    return out
 
 
 def preview_lists(store, language, user_files_dir, script="asis", settings=None):
@@ -2724,9 +2726,21 @@ def prepare_preview(language, user_files_dir):
             from app import analyzer
             analyzer.compound_parts()
             analyzer.single_kind(("手", "テ"))      # a one-kanji word: its table is read on the first one asked
+            _PREPARED.add(language)
         _ignored_file_entries(user_files_dir, language)
     except Exception:
         pass
+
+
+_PREPARED = set()                   # the languages whose preview tables this process has decoded
+
+
+def preview_prepared(language):
+    """Whether a preview read now decodes nothing first: `prepare_preview` or a preview read has run in this process
+    (Chinese has no table to decode). Before that, a read's first step is json.loads of the reference tables — C calls
+    that hold Python's lock 50–110 ms each, so the window's thread waits on them (SETTINGS-OPEN 2: the Settings
+    page's level read, asked while the page builds, then waits for its build's end)."""
+    return language != "ja" or language in _PREPARED
 
 
 def singles_rule(settings=None):

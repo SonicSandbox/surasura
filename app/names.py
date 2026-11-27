@@ -1117,8 +1117,8 @@ def library_tables():
                 from app import token_index
                 stamp = _store_stamp(token_index.store_path_for("ja"))
                 if stamp is None or stamp != _library["stamp"]:     # (taken before the read: a write between the
-                    _library["tables"] = token_index.read_names_tables("ja")      # two is read again next time)
-                    _library["stamp"] = stamp
+                    tables = token_index.read_names_tables("ja")        # two is read again next time; so is a
+                    _library.update(tables=tables, stamp=stamp if tables is not None else None)   # failed read)
             except Exception:
                 _library.update(tables=None, stamp=None)
     return _library["tables"]

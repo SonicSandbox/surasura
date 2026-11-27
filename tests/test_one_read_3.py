@@ -24,7 +24,7 @@ import time
 
 import pytest
 
-from app import names
+from app import journey_render, names
 from app import token_index as ti
 from tests import plan_file_cases as cases
 
@@ -126,7 +126,7 @@ def test_a_generates_journey_opens_the_library_store_once_and_parses_the_known_w
     assert "Journey written" in got["out"], got["out"][-1500:]
     assert got["opens"] == 1, f"the library store opened once in the render: {got}"
     assert got["probes"] <= 1, f"its mode checked once (the open's own): {got}"
-    assert got["closes"] >= got["opens"], f"and closed in the render, never left open: {got}"
+    assert got["closes"] == got["opens"], f"closed once in the render, by its opener (never by a reader): {got}"
     assert got["known_reads"] == 1, f"KnownWord.json read once a run: {got}"
 
 
@@ -141,7 +141,7 @@ def test_a_redraws_journey_opens_the_library_store_once(root):
     assert p.returncode == 0, p.stderr[-2000:]
     got = _counted(root, language, "redraw")
     assert "Redrew the journey" in got["out"], got["out"][-1500:]
-    assert got["opens"] == 1 and got["probes"] <= 1 and got["closes"] >= 1, got
+    assert got["opens"] == 1 and got["probes"] <= 1 and got["closes"] == 1, got
 
 
 # --- the name tables: a look before a read ------------------------------------------------------------------------ #
@@ -150,12 +150,19 @@ def _tables(word):
     return {"k": {word: [1.0, word, "", word]}, "j": {}, "w": {}, "stamp": word}
 
 
+_WRITTEN = [time.time_ns()]
+
+
 def _store_with(tables):
     store = ti.open_store("ja")
     try:
         store.set_meta("names_tables", json.dumps(tables, ensure_ascii=False))
     finally:
         store.close()
+    # (a second write inside one clock tick can leave the same mtime and page count: the test's two writes, not a
+    # learner's index minutes apart — each one dated apart, so the look is tested and never the clock's grain)
+    _WRITTEN[0] += 2_000_000_000
+    os.utime(ti.store_path_for("ja"), ns=(_WRITTEN[0], _WRITTEN[0]))
 
 
 @pytest.fixture
@@ -208,9 +215,113 @@ def test_tables_a_caller_set_are_read_over_at_the_next_look_and_pinned_ones_neve
     assert "ヒナタ" in names.library_tables()["k"] and len(reads) == 2
 
 
+def test_tables_forgotten_are_read_from_the_store_again(reads):
+    # why: `forget_library_tables` is "back to the store on next use": the store that stood still is still read, never
+    # answered "no tables" by the stamp of the read before
+    _store_with(_tables("メロンベンチ"))
+    names.library_tables()
+    names.forget_library_tables()
+    assert "メロンベンチ" in names.library_tables()["k"] and len(reads) == 2
+
+
 def test_no_token_store_yet_means_no_tables_and_no_error(reads):
     # why: a first run, before any index: nothing to read, every look cheap
     assert names.library_tables() is None and names.library_tables() is None
+
+
+def test_a_read_that_failed_is_read_again_at_the_next_look(reads, monkeypatch):
+    # why: a store busy at the look (its read answers None) never keeps its stamp: the next look reads it again, as
+    # every look did before, instead of no names until the next index moves the store
+    _store_with(_tables("メロンベンチ"))
+    real, failed = ti.read_names_tables, [None]
+    monkeypatch.setattr(ti, "read_names_tables", lambda language: failed.pop() if failed else real(language))
+    assert names.library_tables() is None
+    assert "メロンベンチ" in names.library_tables()["k"], "the store that stood still, read at the next look"
+
+
+def test_the_stamp_moves_with_the_wal_and_an_empty_wal_is_none(tmp_path):
+    # why: a commit in WAL mode moves only the -wal until a checkpoint, so the look must see it; a reader's open makes
+    # an empty -wal that holds no write, and must not read as one
+    db = tmp_path / "token_store_ja.db"
+    db.write_bytes(b"\0" * 4096)
+    alone = names._store_stamp(str(db))
+    wal = tmp_path / "token_store_ja.db-wal"
+    wal.write_bytes(b"")
+    assert names._store_stamp(str(db)) == alone, "an empty -wal is no write"
+    wal.write_bytes(b"\1" * 4152)
+    committed = names._store_stamp(str(db))
+    assert committed != alone, "a commit in the -wal moves the stamp"
+    wal.write_bytes(b"\1" * 8272)
+    assert names._store_stamp(str(db)) != committed, "and the next one again"
+    assert names._store_stamp(str(tmp_path / "token_store_zh.db")) is None, "no store: None"
+
+
+# --- the render's one handle: where its open found none, and a ▶ lookup that reaches the pairings ----------------- #
+class _Handle:
+    """The render's open library store as a reader gets it: a reader that closes it (`with`) is counted."""
+    closed = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.closed += 1
+
+
+@pytest.fixture
+def opens(monkeypatch):
+    """Every library-store open and mode check a reader makes itself, counted (each answers "no store")."""
+    from app import library_store
+    got = []
+    monkeypatch.setattr(library_store, "check_mode", lambda *a, **k: got.append("probe") or ("missing", None))
+    monkeypatch.setattr(library_store, "open_store", lambda *a, **k: got.append("open"))
+    monkeypatch.setattr(journey_render, "open_library", lambda *a, **k: got.append("open"))
+    return got
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_render_whose_open_found_no_store_opens_none_again(opens, language):
+    # why: the render's one open found no store (a 2.x library, or one busy past its wait): the facts and the ▶'s
+    # rows answer "none" from that, never a second open that could read a store the facts didn't
+    from app.services import play
+    assert journey_render.store_facts(language, library=False) is None
+    assert play._rows(language, ["Show/01.srt"], library=False) == ({}, "")
+    assert opens == []
+
+
+def test_a_journey_whose_open_found_no_store_hands_the_render_none_to_open(monkeypatch):
+    # why: `_write_journey`'s one open found no store: the render is told so (False), so its ▶ rows never open one
+    from app import analyzer
+    from app import static_html_generator as shg
+
+    class Drawn(Exception):
+        pass
+    seen = {}
+
+    def render(language, **k):
+        seen.update(k)
+        raise Drawn
+    monkeypatch.setattr(journey_render, "open_library", lambda *a, **k: None)
+    monkeypatch.setattr(journey_render, "render", render)
+    monkeypatch.setattr(analyzer, "journey_marks", lambda language: None)
+    with pytest.raises(Drawn):
+        shg._write_journey("ja", open_browser=False)
+    assert seen["library"] is False and seen["facts"] is False
+
+
+def test_the_pairings_read_through_the_renders_handle_and_leave_it_open(opens, monkeypatch):
+    # why: a ▶ lookup the memo misses reads the sources' pairing records; in the render that is the render's handle,
+    # read through and left for its opener to close, not a mode check and an open of its own
+    from app.connect import library
+    from app.services import play
+    handle = _Handle()
+    monkeypatch.setattr(library, "pairing_of",
+                        lambda store, i: {"origin": "hato", "item": i} if store is handle else None)
+    monkeypatch.setattr(library, "moved_of", lambda store, i, record, roots: None)
+    moved = {}
+    got = play._pairings("ja", [3, 7], moved, handed=handle)
+    assert got == {3: {"origin": "hato", "item": 3}, 7: {"origin": "hato", "item": 7}} and moved == {3: None, 7: None}
+    assert opens == [] and handle.closed == 0
 
 
 # --- the ignore set from the known words' one parse --------------------------------------------------------------- #
@@ -275,6 +386,27 @@ def test_a_write_between_the_parse_and_the_ignore_set_is_read_again(known_file, 
     os.utime(path, (later, later))
     assert ti._ignored_file_entries(folder, "ja") == ["危険", "価値", "有名"]
     assert count.n == 2
+
+
+def test_a_write_while_the_known_words_are_parsed_is_read_again(known_file, monkeypatch):
+    # why: the entries are kept under the file's signature from before the read; a sync's write landing while it is
+    # read leaves a newer file than the parse, so the ignore set reads it again instead of the parse's older entries
+    from app import analyzer
+    folder, path = known_file
+    real, written = analyzer.read_text, []
+
+    def read_then_written(p, *a, **k):
+        text = real(p, *a, **k)
+        if not written:
+            written.append(p)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"words": KNOWN + [{"dictForm": "有名", "knownStatus": "IGNORED"}]}, f, ensure_ascii=False)
+            later = time.time() + 5
+            os.utime(path, (later, later))
+        return text
+    monkeypatch.setattr(analyzer, "read_text", read_then_written)
+    analyzer.load_known_words(path, analyzer.JapaneseTokenizer())
+    assert written and ti._ignored_file_entries(folder, "ja") == ["危険", "価値", "有名"]
 
 
 def test_an_unreadable_known_words_file_leaves_the_ignore_set_to_read_it(known_file, monkeypatch):

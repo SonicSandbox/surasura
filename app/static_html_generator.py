@@ -1086,8 +1086,9 @@ def _write_journey(language, app_mode=False, open_browser=True, tagger=None, pla
         except Exception:
             language = "ja"
     library = journey_render.open_library(language)     # one open a render: the facts and the ▶'s rows (ONE-READ 3)
+    handed = library if library is not None else False  # (none found: no reader opens a second one)
     try:
-        facts = journey_render.store_facts(language, library=library if library is not None else False)
+        facts = journey_render.store_facts(language, library=handed)
         if facts is not None:
             marks = facts.marks
         else:                                   # no store, or one that couldn't be read: never signed with stones
@@ -1095,7 +1096,7 @@ def _write_journey(language, app_mode=False, open_browser=True, tagger=None, pla
             marks = None if analyzer.journey_marks(language) is None else library_store.UNREAD
         out = journey_render.render(language, rows=rows, priority=priority, facts=facts or False,
                                     tagger=tagger if language == "ja" else None, plan=plan, known=known,
-                                    settings=settings, store=store, library=library)
+                                    settings=settings, store=store, library=handed)
     finally:
         if library is not None:
             try:

@@ -69,21 +69,27 @@ def pairing(language, item_id):
     return _pairings(language, [item_id])[item_id]
 
 
-def _pairings(language, ids, moved=None):
+def _pairings(language, ids, moved=None, handed=None):
     """{item_id: its record, as `pairing` says it} for every one of `ids`, read through one store open; `moved` (a
-    dict): each one's `connect.library.Moved` put in it (D5 / MV-2: a source folder's root, its marked videos)."""
+    dict): each one's `connect.library.Moved` put in it (D5 / MV-2: a source folder's root, its marked videos).
+    `handed`: the caller's open library store (the journey's render, ONE-READ 3), read through and left open."""
     from app import library_store, path_utils
     from app.connect import library
     data_dir = path_utils.get_data_path(language)
     try:
-        # the mode is probed once (R2-5): a store that turns read-only between two probes never reads as a 2.x library
-        mode = library_store.check_mode(language, data_dir, busy_wait=0.0)[0]
-        if mode != "store":
-            return dict.fromkeys(ids, None if mode == "read-only" else {})
-        store = library_store.open_store(language, data_dir, path_utils.get_user_files_path(language), role="reader")
-        if store is None:
-            return dict.fromkeys(ids)       # a store, not ready since the probe: can't be read just now
-        with store:
+        if handed is not None:
+            store = handed
+        else:
+            # the mode is probed once (R2-5): a store that turns read-only between two probes never reads as a 2.x
+            # library
+            mode = library_store.check_mode(language, data_dir, busy_wait=0.0)[0]
+            if mode != "store":
+                return dict.fromkeys(ids, None if mode == "read-only" else {})
+            store = library_store.open_store(language, data_dir, path_utils.get_user_files_path(language),
+                                             role="reader")
+            if store is None:
+                return dict.fromkeys(ids)       # a store, not ready since the probe: can't be read just now
+        with (contextlib.nullcontext() if handed is not None else store):
             records = {i: library.pairing_of(store, i) for i in ids}
             if moved is not None:
                 roots = {}                          # the sources read once for all of them
@@ -275,8 +281,9 @@ def files(language, rel_paths, memo=None, explain=False, cut_kinds=(), library=N
     `cut_kinds` (the journey's render, J-CLIP: the one cutter's videos, `runner.VIDEO_EXTENSIONS`): files of these
     kinds pass the gate too — the journey's ▶ cuts a line the browser can't play (`clips`); the old page asks none.
 
-    `library`: the render's open library store (ONE-READ 3: one open a render), read through and left open; None:
-    `_rows` opens its own."""
+    `library`: the render's open library store (ONE-READ 3: one open a render), read through and left open by `_rows`
+    and `_pairings`; False: the render's open found none (no store read, never a second open); None: each opens its
+    own."""
     from app import path_utils
     from app.services.view_rows import MEDIA_WORD
     rel_paths = list(dict.fromkeys(rel_paths))
@@ -313,7 +320,7 @@ def files(language, rel_paths, memo=None, explain=False, cut_kinds=(), library=N
         return out
     ids = sorted({known[r][0] for r in misses if r in known})
     moved = {}
-    records = _pairings(language, ids, moved) if ids else {}
+    records = _pairings(language, ids, moved, handed=library) if ids else {}
     find = _finder(language, listings)
     for rel, key in misses.items():
         item_id, media = known.get(rel, _UNKNOWN)[:2]
@@ -340,9 +347,12 @@ def _rows(language, rel_paths, library=None):
     files as JSON) as SQLite reads them)}, the library's sources as one string) through one store open, 500 at a time; ({}, "") with no store or one that can't be read now (each
     source then looked at as a 2.x library's file). No record is picked here (`pairing_of` picks, for the few the
     gate and the memo send on). `library`: the caller's open library store (the journey's render: its one open,
-    ONE-READ 3), read through and left open; None: opened here."""
+    ONE-READ 3), read through and left open; False: the caller's open found none (({}, ""), never a second open);
+    None: opened here."""
     from app import library_store, path_utils
     data_dir = path_utils.get_data_path(language)
+    if library is False:
+        return {}, ""
     try:
         if library is not None:
             store = library

@@ -1403,7 +1403,7 @@ def render(language, rows=None, priority=None, stats=None, *, settings=None, fac
     for them, STORE-KEY 3 — so also when the store couldn't keep them, where the lookup found none), else read
     (`_known_terms`: through `store`, the run's open token store, when handed — the redraw's, ONE-READ). `library`:
     the render's open library store (`open_library`), read through for the facts and the ▶'s rows and left open;
-    None: each opens its own."""
+    False: the caller's open found none (neither reads a store); None: each opens its own."""
     from app import settings_manager
     from app import static_html_generator as gen
     if settings is None:

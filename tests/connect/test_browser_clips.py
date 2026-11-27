@@ -525,3 +525,21 @@ def test_without_ukais_module_connect_never_hands_a_netflix_episode_off(monkeypa
     import sys
     monkeypatch.setitem(sys.modules, "modules.ukai", None)
     assert not online.is_online({"source_type": "netflix"})
+
+
+def test_a_word_halfway_between_two_lines_is_on_the_earlier_one():
+    """An exact tie (as a walk of every cue chose: the first nearest)."""
+    cues = [(10.0, 12.0, "文化祭まで、あと三日しかないよ。"), (20.0, 22.5, "二時間目の授業、ちゃんと聞いてた？")]
+    assert browser.lines_for([_ep8_word("授業", 15.0)], cues)[0][0]["start"] == 10.0
+
+
+def test_connects_look_closes_the_folder_of_a_job_the_ledger_no_longer_knows(tmp_path):
+    """Every look at the inbox (`runner._consume`) closes the folders of jobs that left: one the ledger doesn't know,
+    holding no clip, goes — so Ukai is never asked to record for it."""
+    from app.connect.ledger import Ledger
+    from tests.connect.fake_steps import FakeSteps
+    lines, _index = browser.lines_for([_ep8_word("大物", 337.042)], EP8)
+    browser.hand_off(999, WEB, "t", lines)
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        assert runner._consume(FakeSteps(str(tmp_path), {}), ledger, "ja") is False
+    assert browser.folders() == [] and browser.waiting() == []

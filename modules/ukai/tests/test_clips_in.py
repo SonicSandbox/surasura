@@ -291,3 +291,15 @@ def test_while_ukai_is_off_connect_never_hands_a_netflix_episode_off(tmp_path, m
     monkeypatch.setattr(door, "EXTENSION_ON", False)
     assert not online.is_online({"source_type": "netflix", "rel_path": "Processed/第3話 [netflix-80000003].txt"})
     assert not os.path.exists(browser.folder())
+
+
+def test_the_windows_class_keeps_ukais_job_routes_behind_the_pairing(tmp_path):
+    """As the window builds it (`Pairing.extension`, `ShellWindow.ukai_extension`): only the pairing's own two routes
+    and hello are open — what waits, a clip and a done each need the paired token and Origin."""
+    from app.services import ukai_pairing as up
+    ext = up.Pairing(None, where=str(tmp_path / up.FILE)).extension(ukai.routes(writer=lambda: None,
+                                                                               settings=lambda: {}))
+    for method, path in (("GET", "/v1/jobs"), ("POST", "/v1/jobs/412/clips/0"), ("POST", "/v1/jobs/412/done")):
+        found = ext.route(method, path)
+        assert found is not None and found[2] is False, (method, path)
+    assert ext.route("GET", "/v1/hello")[2] is True

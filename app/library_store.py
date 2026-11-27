@@ -952,6 +952,9 @@ def _own_bumps(db_path):
 # ------------------------------------------------------------------------------------------------ #
 
 ROLES = ("window", "helper", "analyzer", "register", "reader", "connect")
+# The roles one handle serves alike (a plain connection: no checkpoint at its close, no copy trigger at its commit) —
+# inside a `held(role=…)` span every open of one of them is the span's handle (ONE-READ 4: a Generate's run)
+SHARED_ROLES = ("window", "analyzer", "register", "reader")
 
 # A record whose `verdict` says its text is its video's own (`fill_track`'s: "extracted", Michi-ST; "transcribed",
 # no-subs): the expression `pairings_extracted` indexes — written the same wherever it is read, so the index serves the
@@ -1623,8 +1626,54 @@ def _probe(db_path, busy_wait):
 
 
 def check_mode(language, data_dir, busy_wait=BUSY_AT_OPEN):
-    """('store' | 'read-only' | 'json', reason). Cheap: no scans, no parsing (I10)."""
-    return _probe(library_db_path(language, data_dir), busy_wait)
+    """('store' | 'read-only' | 'json', reason). Cheap: no scans, no parsing (I10). Inside a `held()` span that has
+    this store open, read through that handle (two cached reads, as `StoreOpener.check`), never a new connection."""
+    db_path = library_db_path(language, data_dir)
+    store = _span_store(db_path)
+    if store is not None:
+        try:
+            if not os.path.exists(damaged_marker(db_path)) and _mode_on(store.conn)[0] == "store":
+                return "store", None
+        except sqlite3.Error:
+            pass
+    return _probe(db_path, busy_wait)
+
+
+def open_store_mode(language, data_dir, user_files_dir, role="window", busy_wait=BUSY_AT_OPEN):
+    """(`open_store`'s answer, (mode, reason)): the mode its look found — ("store", None) with a handle; the probe's
+    answer without one, or ("read-only", "io: …") when the open itself failed after a "store" look. For a caller that
+    must tell no store from one it can't read now without looking again (ONE-READ 4: the journey's marks)."""
+    db_path = library_db_path(language, data_dir)
+    span = _span()
+    role = _span_role(role)
+    key = (os.path.normcase(os.path.abspath(db_path)), role)
+    if span is not None and key in span:
+        store = span[key]
+        try:
+            found = ("read-only", "damaged") if os.path.exists(damaged_marker(db_path)) else _mode_on(store.conn)
+        except sqlite3.Error as exc:
+            found = ("read-only", f"io: {exc}")
+        if found[0] == "store":
+            return store, found
+        span.pop(key)                                   # let go of it now (damaged: so Repair can set the file aside)
+        store._held = False
+        try:
+            store.close()
+        except Exception:
+            pass
+        return None, found
+    mode, reason = _probe(db_path, busy_wait)
+    if mode != "store":
+        return None, (mode, reason)
+    try:
+        # Schema 2: the Soon line is canonical and the tiers follow it (L2.2 05 §5.1); an open no longer re-counts it
+        store = Store(db_path, language, data_dir, user_files_dir, role)
+    except (sqlite3.DatabaseError, StoreError) as exc:
+        return None, ("read-only", f"io: {exc}")       # a failed open closed its own connection (`Store`, §6.12)
+    if span is not None:
+        store._held = True
+        span[key] = store
+    return store, ("store", None)
 
 
 def open_store(language, data_dir, user_files_dir, role="window", busy_wait=BUSY_AT_OPEN):
@@ -1633,36 +1682,7 @@ def open_store(language, data_dir, user_files_dir, role="window", busy_wait=BUSY
     Inside `held()` on this thread, the span's handle for this store and role (opened by the first call), its mode
     read again through it each time (two cached reads): a store marked damaged, made newer or no longer migrated
     meanwhile is let go of and None, as outside a span."""
-    db_path = library_db_path(language, data_dir)
-    span = _span()
-    key = (os.path.normcase(os.path.abspath(db_path)), role)
-    if span is not None and key in span:
-        store = span[key]
-        try:
-            ready = not os.path.exists(damaged_marker(db_path)) and _mode_on(store.conn)[0] == "store"
-        except sqlite3.Error:
-            ready = False
-        if ready:
-            return store
-        span.pop(key)                                   # let go of it now (damaged: so Repair can set the file aside)
-        store._held = False
-        try:
-            store.close()
-        except Exception:
-            pass
-        return None
-    mode, _reason = _probe(db_path, busy_wait)
-    if mode != "store":
-        return None
-    try:
-        # Schema 2: the Soon line is canonical and the tiers follow it (L2.2 05 §5.1); an open no longer re-counts it
-        store = Store(db_path, language, data_dir, user_files_dir, role)
-    except (sqlite3.DatabaseError, StoreError):
-        return None                                     # a failed open closed its own connection (`Store`, §6.12)
-    if span is not None:
-        store._held = True
-        span[key] = store
-    return store
+    return open_store_mode(language, data_dir, user_files_dir, role, busy_wait)[0]
 
 
 _HELD = threading.local()
@@ -1672,21 +1692,45 @@ def _span():
     return getattr(_HELD, "span", None)
 
 
+def _span_role(role):
+    """The role an open takes: inside a `held(role=…)` span, one of SHARED_ROLES is the span's role (one handle)."""
+    shared = getattr(_HELD, "role", None)
+    return shared if shared is not None and role in SHARED_ROLES else role
+
+
+def _span_store(db_path):
+    """This thread's span's open handle on `db_path` (any role), or None."""
+    span = _span()
+    if not span:
+        return None
+    path = os.path.normcase(os.path.abspath(db_path))
+    for (held_path, _role), store in span.items():
+        if held_path == path:
+            return store
+    return None
+
+
 @contextmanager
-def held():
+def held(role=None):
     """One handle a store and role for a span on this thread (Connect's job, §6.12): `open_store` inside it returns
     the handle its first call opened, and that handle's `close()` waits for the span's end — so a job that asks for
     its store ten times opens it once. A span inside another joins the outer one. A store that isn't ready is asked
     again at each `open_store`, as outside a span; one marked damaged meanwhile is None, as outside. Never
-    around a window's `StoreOpener.handle()` (it keeps its handle for the window's life)."""
+    around a window's `StoreOpener.handle()` (it keeps its handle for the window's life).
+    `role` (ONE-READ 4, a Generate's run: `analyzer.main`): every open of one of SHARED_ROLES in the span is one
+    handle, opened as `role` — the run's reads (the indexer's lists, the render, the "In Anki" fingerprint) and its
+    writes (`record_analysed`) through it, and `check_mode` read through it; the helper and Connect's role keep their
+    own. Only this thread's opens: a thread the span starts (Connect's dates read ahead) opens its own."""
     if _span() is not None:
         yield
         return
     span = _HELD.span = {}
+    _HELD.role = role if role in SHARED_ROLES else None
     try:
         yield
     finally:
         _HELD.span = None
+        _HELD.role = None
         for store in span.values():
             store._held = False
             try:

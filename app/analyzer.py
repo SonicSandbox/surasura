@@ -3222,12 +3222,21 @@ def read_known_words(store, known_file, known_sig, tokenizer, keep=True, missed=
     `missed`: the `Store.known_suffix` a caller's own `get_cached_known` just missed with — the store isn't asked again,
     and the miss's every step takes that one key (STORE-KEY: each working-out reads settings.json and the name tables).
     `settings`: the run's one read, for the key's switches (ONE-READ); None reads them now."""
+    from app import token_index
+    language = "ja" if isinstance(tokenizer, JapaneseTokenizer) else "zh"
     suffix = missed
     if store and suffix is None:
         suffix = store.known_suffix(settings)
         cached = store.get_cached_known(known_sig, suffix)
         if cached is not None:
             print("Reused cached known-words normalization.")
+            try:            # the ignore set's IGNORED entries kept beside them: the file parsed for none (ONE-READ 4)
+                signature = token_index.known_signature(known_file)
+                ignored = store.cached_ignored(signature)
+                if ignored is not None:
+                    token_index.keep_ignored_entries(known_file, language, signature, entries=ignored)
+            except Exception:
+                pass
             return cached
     # Changed (a sync added a word): each term read before is taken from the store's own (G8), the new ones read here.
     script = getattr(tokenizer, "script", "asis")
@@ -3244,7 +3253,8 @@ def read_known_words(store, known_file, known_sig, tokenizer, keep=True, missed=
             # The per-term cache written only when its terms changed: a move that adds no term (a card Connect
             # wrote) rewrote all ~10k terms' blob for nothing (SYQF-FIX); with the signature, in one commit.
             store.set_cached_known(known_sig, *known, suffix=suffix,
-                                   terms=terms if terms is not None and set(terms) != held else None, script=script)
+                                   terms=terms if terms is not None and set(terms) != held else None, script=script,
+                                   ignored=token_index.kept_ignored_entries(known_file, language))
         except Exception:
             pass
     return known
@@ -6598,9 +6608,27 @@ def _holding_results(run):
     return wrapper
 
 
+def _one_library_handle(run):
+    """Run `run` inside one library-store span (`library_store.held(role="analyzer")`, ONE-READ 4): the run's opens on
+    its own thread — `prepare_library`, the indexer's lists, `record_analysed`, the "In Anki" fingerprint, the journey's
+    render — are one handle, closed when the run ends (each opened its own: ~15 ms an open). The store's helper
+    (`maintain`) and a thread the run starts (Connect's dates read ahead) keep their own."""
+    import functools
+
+    @functools.wraps(run)
+    def wrapper(*args, **kwargs):
+        ls = _library_store()
+        if ls is None:
+            return run(*args, **kwargs)
+        with ls.held(role="analyzer"):
+            return run(*args, **kwargs)
+    return wrapper
+
+
 @_reporting_progress
 @without_cycle_collection
 @_holding_results
+@_one_library_handle
 def main():
     """The analyzer's run. Returns its exit code: None (0) when it finished, 1 when the report couldn't be written
     (results/ is complete; the next Generate re-renders it), RESULTS_BUSY when another program held results/,

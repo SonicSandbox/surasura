@@ -302,7 +302,7 @@ def test_a_journey_whose_open_found_no_store_hands_the_render_none_to_open(monke
     def render(language, **k):
         seen.update(k)
         raise Drawn
-    monkeypatch.setattr(journey_render, "open_library", lambda *a, **k: None)
+    monkeypatch.setattr(journey_render, "open_library_look", lambda *a, **k: (None, None))
     monkeypatch.setattr(journey_render, "render", render)
     monkeypatch.setattr(analyzer, "journey_marks", lambda language: None)
     with pytest.raises(Drawn):

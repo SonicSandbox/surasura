@@ -1947,7 +1947,7 @@ def _alone(words, i):
     adjective's 連用形 are passed over decides: True, False, or "お" (お + つかれ is お疲れ)."""
     j = i - 1
     while j >= 0 and (words[j].feature.pos1 == "副詞"
-                      or (words[j].feature.pos1 == "形容詞" and words[j].feature.cForm.startswith("連用形"))):
+                      or (words[j].feature.pos1 == "形容詞" and (words[j].feature.cForm or "").startswith("連用形"))):
         j -= 1
     if j < 0:
         return True
@@ -2015,8 +2015,8 @@ def _tsukare(words):
             continue
         if alone == "お":
             entry = affix_joins().get("お疲れ") if ending.surface == "れ" else None
-            if not entry:
-                continue                # おつかれ + another ending is no word
+            if not entry or getattr(w, "white_space", ""):
+                continue                # おつかれ + another ending is no word; お and つかれ apart stay apart
             if out is None:
                 out = []
             out.extend(words[last:i - 1])

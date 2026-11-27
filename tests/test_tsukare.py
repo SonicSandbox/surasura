@@ -135,6 +135,7 @@ def test_otsukare_is_one_word_as_written_in_kanji(tokenizer):
     "嘘ばかりつかれて、もう誰も信じられない。", # ばかり right after a noun keeps the noun the object
     "何者かに取ッつかれたようだった。",         # ッ is a letter the tagger left as a mark, no boundary
     "神経がつかれた。",                         # が: 気がつく's letters too — left as read
+    "隙こそつかれた。",                         # こそ right after a noun: only は / も count as the topic
 ])
 def test_tsukare_after_a_word_a_tsuku_verb_can_take_keeps_the_taggers_reading(tokenizer, text):
     # Why: every other つかれる is a つく verb made passive, honorific or potential, and keeps what it takes before it.
@@ -158,4 +159,28 @@ def test_otsuka_with_another_ending_is_left_alone(tokenizer):
     # Why: お + つか + れる (終止形) is no word: only おつかれ (れ) is お疲れ; the rest stays as the tagger read it.
     nodes = tokenizer.tagger("おつかれる。")         # the tagger: お + つか + れる
     words = [(w.surface, w.feature.lemma) for w in analyzer._tsukare(list(nodes))]
-    assert ("おつかれ", "お疲れ") not in words
+    assert "お疲れ" not in {lemma for _s, lemma in words}
+
+
+def test_only_o_right_before_the_letters_makes_otsukare(tokenizer):
+    # Why: お疲れ is お + つかれ written together. Another prefix (超, 'super') is no お, and an お with a word between it
+    # and the letters is not their お: neither may become お疲れ (the word between would be swallowed into it).
+    assert "お疲れ" not in {lemma for _s, lemma in _words(tokenizer, "超つかれた。")}
+    o = list(tokenizer.tagger("お茶"))[0]                       # お as the tagger reads a prefix (御)
+    rest = list(tokenizer.tagger("もうつかれた。"))             # もう + つか + れ + た + 。
+    assert o.feature.pos1 == "接頭辞" and rest[1].surface == "つか"
+    words = [(w.surface, w.feature.lemma) for w in analyzer._tsukare([o] + rest)]
+    assert "お疲れ" not in {lemma for _s, lemma in words}
+    assert words[1] == ("もう", "もう")
+
+
+def test_letters_split_by_a_space_are_left_as_the_tagger_read_them(tokenizer):
+    # Why: a space between つか and れ (a caption's line broken inside the word) is the line's own; the step joins
+    # nothing across a space, as the stem step doesn't either.
+    words = _words(tokenizer, "もう つか れた。")
+    assert ("つかれ", "疲れる") not in words
+    assert "つか" in {s for s, _l in words}
+    # お and つかれ with a space between them are not joined into お疲れ either: the space would be lost.
+    nodes = analyzer.join_affixes(tokenizer.tagger("お つかれ、また明日ね。"), analyzer.affix_joins(), library=False)
+    assert "お疲れ" not in {w.feature.lemma for w in nodes}
+    assert "".join(getattr(w, "white_space", "") + w.surface for w in nodes) == "お つかれ、また明日ね。"

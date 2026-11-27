@@ -285,15 +285,14 @@ def test_two_writes_in_one_clock_tick_keep_their_order(tmp_path, monkeypatch, te
     for n in (1, 2, 3):
         anki.add(n, text, text[:1])
     with Ledger(str(tmp_path / "l.sqlite")) as ledger:
-        sa.fill(anki, ledger, {1: _clip(tmp_path, "1.mp3"), 2: _clip(tmp_path, "2.mp3"),
-                               3: _clip(tmp_path, "3.mp3")}, tag=cs.AI_TAG, by="ai-audio")
-        anki.notes_[2]["fields"]["SentenceAudio"]["value"] = ""
-        sa.fill(anki, ledger, {2: _clip(tmp_path, "2r.mp3")}, tag=sa.TAG, by="add-audio")
-        anki.notes_[3]["fields"]["SentenceAudio"]["value"] = ""
-        sa.fill(anki, ledger, {3: _clip(tmp_path, "3r.mp3")}, tag=sa.TAG, by="add-audio")
+        written = [sa.fill(anki, ledger, {1: _clip(tmp_path, "1.mp3"), 2: _clip(tmp_path, "2.mp3"),
+                                          3: _clip(tmp_path, "3.mp3")}, tag=cs.AI_TAG, by="ai-audio")["id"]]
+        for n in (2, 3):
+            anki.notes_[n]["fields"]["SentenceAudio"]["value"] = ""
+            written.append(sa.fill(anki, ledger, {n: _clip(tmp_path, f"{n}r.mp3")}, tag=sa.TAG, by="add-audio")["id"])
         assert set(cs.ai_held(ledger)) == {1}
         ids = [rid for rid, _rec in cs._records(ledger)]
-        assert len(set(ids)) == 3 and [r["by"] for _i, r in cs._records(ledger)] == ["ai-audio", "add-audio", "add-audio"]
+        assert ids == written, "read back in the order written"
         for language in ("ja", "zh"):                   # a run's Undo takes the newest run: the same tick, the same rule
             rid = cs._new_run(ledger)
             cs._save_run(ledger, rid, {"language": language, "records": ids, "state": sa.DONE})

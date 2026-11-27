@@ -210,7 +210,7 @@ def test_an_edge_whose_page_never_answers_is_stopped_and_its_profile_removed(sta
 
 class _Clock:
     """The harness's clock, forced: each of its waits moves it on at once (no real wait), so a start that takes a cold
-    runner tens of seconds runs here in milliseconds, the same every time."""
+    runner tens of seconds runs here in a second at most, the same every time."""
 
     def __init__(self):
         self.t = 0.0

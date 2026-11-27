@@ -72,7 +72,7 @@ def test_the_words_stay_words_where_the_expression_isnt_one(loaded, tokenizer, t
 
 def test_a_set_phrase_wins_where_it_holds_the_expression(loaded, tokenizer):
     # あっという間に holds という: the longest match at its first word wins; the phrases inside it are uses too
-    # (ENGINE 54: あっという間, and という inside that), listed after it.
+    # (ENGINE 55: あっという間, and という inside that), listed after it.
     assert [d for d, _w, _b in _found(loaded, tokenizer, "あっという間に終わった。")] == [
         "あっという間に", "あっという間", "という"]
     # ような気がする's words from 気 on are 気がする: never a grammar row of its own.

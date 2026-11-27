@@ -234,9 +234,15 @@ ENSURE_AUDIO_EXAMPLE = False
 # 53: kana つかれ with no stem before it is 疲れる where nothing before it can be what a つく verb takes (_tsukare's
 #     _alone: もうつかれた, つかれた！, お前はつかれた, おつかれ is お疲れ; 嘘つかれた, 不意をつかれた, 狐につかれた keep
 #     the tagger's). SCHEMA_VERSION 33.
-# 54: a use of a longer set phrase is a use of each shorter one inside it (phrases.PhraseSet._inside: 身に余る光栄 counts
+# 54: the songs a run leaves out are out of the token store's counts too (RARITY-SONGS; KO2-D3): each counted file's
+#     share kept beside the songs (Store.keep_song_counts, the store's `songs` table), so the Rarity readout, Automatic
+#     rarity and Generate's floor — the library's tokens, the rare compounds, the rows that can reach the cut-off, the
+#     shortlist's ranking — count what the list counts; the first pass without the store reads the songs blanked
+#     (`_sentences_of`). No tokenizing changed: SCHEMA_VERSION stays 33 (a store made before gets the table at its
+#     next open). 3.0.21.
+# 55: a use of a longer set phrase is a use of each shorter one inside it (phrases.PhraseSet._inside: 身に余る光栄 counts
 #     for 身に余る; MATCHER_VERSION 7), a word living only inside a phrase given once however many stand over it.
-ENGINE_REVISION = 54
+ENGINE_REVISION = 55
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -6936,9 +6942,19 @@ def main():
         except Exception as e:                    # never a Generate lost to it: the songs counted, as before
             print(f"Warning: the songs couldn't be found ({e}); this run counts them.")
         else:
+            # ...and out of the store's counts (the floor below, Automatic rarity, the Rarity readout): each counted
+            # file's share of them kept beside them (Store.keep_song_counts), read again only where its songs moved.
+            if _store is not None:
+                try:
+                    _store.keep_song_counts(_songs, settings=_settings)
+                    _store.songs_out = True
+                except Exception as e:            # the store's counts hold the songs this run, as before
+                    print(f"Warning: the songs couldn't be taken out of the token store's counts ({e}).")
             print(f"Songs left out: {sum(map(len, _songs.values()))} sentences in {len(_songs)} files "
                   f"({_songs_stats.get('read', 0)} works read, {_songs_stats.get('kept', 0)} kept; "
                   f"{time.perf_counter() - _songs_t0:.2f} s)")
+    if _store is not None and not _store.songs_out:
+        _store.songs_out = False                  # the songs count (on, or not found): so do the store's counts
 
     # Known-words normalization tokenizes ~10k terms — expensive. Reuse the cached result when
     # KnownWord.json is unchanged; any edit / delete / newly-added file flips _known_sig (computed
@@ -7094,9 +7110,9 @@ def main():
         _counts, total_tokens, _bound_counts = Counter(), 0, Counter()
         tallies = [] if _phrase_set is not None else None
         for file_path, _label, _weight, _type in found_files:
-            # As the store counts them, songs too (§ Songs out of the counts: only the walk leaves them out), so the
-            # floor and the ranking are the same numbers with or without the store.
-            sentences = file_sentences(_store, tokenizer, file_path, language)
+            # As the store counts them — the songs left out, as the walk leaves them out (Store.keep_song_counts) — so
+            # the floor and the ranking are the same numbers with or without the store.
+            sentences = _sentences_of(file_path)
             if tallies is not None:
                 sentences, flat = list(sentences), []
                 tallies.append(_phrases.tally(sentences, _phrase_set, flat))
@@ -7309,7 +7325,7 @@ def main():
     if _whole is None:
         _whole = Counter()
         for file_path, _label, _weight, _type in found_files:
-            for _s_text, s_tokens in file_sentences(_store, tokenizer, file_path, language):     # as the store counts
+            for _s_text, s_tokens in _sentences_of(file_path):     # as the store counts: the songs left out
                 for lemma, reading, surface, _orth in s_tokens:
                     if has_target_language(lemma, language) or has_target_language(surface, language):
                         _whole[(lemma, reading)] += 1

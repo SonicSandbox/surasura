@@ -55,7 +55,7 @@ def test_a_phrase_is_found_by_its_lemmas_in_any_form(found_in, tokenizer):
 
 def test_the_longest_phrase_wins_and_the_search_goes_on_after_it(found_in, tokenizer):
     """あっという間に holds あっという間: the longer phrase is the one met there, and a use of it is a use of the shorter
-    one inside it too, listed right after it (ENGINE 54); then the rest of the sentence is read on."""
+    one inside it too, listed right after it (ENGINE 55); then the rest of the sentence is read on."""
     assert _found(found_in, tokenizer, "夏休みはあっという間に終わり、本題に入った。") == [
         ("あっと言う間に", "あっという間に"), ("あっと言う間", "あっという間"), ("本題に入る", "本題に入っ")]
 
@@ -104,7 +104,7 @@ def _met(text, tokenizer, rows=NESTED):
 
 def test_a_longer_phrase_is_also_a_use_of_the_shorter_one_inside_it(tokenizer):
     """身に余る光栄 'an honour I don't deserve' holds 身に余る 'more than one deserves': the learner who meets the longer
-    phrase meets the shorter one too, so its use counts for both (ENGINE 54) — the longer first, the inner one right
+    phrase meets the shorter one too, so its use counts for both (ENGINE 55) — the longer first, the inner one right
     after it. 身に余る alone is only itself, and a sentence with no longer phrase reads as before."""
     assert _met("身に余る光栄です。", tokenizer) == [("身に余る光栄", 0, 4), ("身に余る", 0, 3)]
     assert _met("身に余るお言葉をいただきました。", tokenizer) == [("身に余る", 0, 3)]
@@ -412,7 +412,7 @@ def test_a_known_sentence_marks_the_set_phrases_in_it_known(found_in, tmp_path, 
 
 
 def test_a_known_sentence_marks_the_phrases_inside_its_phrases_known(found_in, tmp_path, monkeypatch):
-    """PROVISIONAL (ENGINE 54, listed for Sonic): a known sentence's set phrases are known, and a use of a longer phrase
+    """PROVISIONAL (ENGINE 55, listed for Sonic): a known sentence's set phrases are known, and a use of a longer phrase
     is a use of each one inside it — so あっという間に known marks あっという間 known too (as a known お気に入り
     'favourite' marks 気に入る 'to like')."""
     lemmas = _known(tmp_path, monkeypatch, found_in, ["あっという間に終わった。"])

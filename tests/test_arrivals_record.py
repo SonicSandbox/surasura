@@ -139,7 +139,7 @@ def test_the_record_of_every_counted_file_is_its_plan_line(tmp_path, name):
 def test_a_word_inside_two_phrases_is_recorded_once_as_generate_counts_it(tmp_path):
     """間 'a pause' lives only inside あっという間 'in an instant', and あっという間に holds あっという間: both stand over
     the one 間 of each line of pauses_sample.srt, which also says 間 on its own. Its use there is given to the phrases
-    once (ENGINE 54) — in the record as in the Generate — so the record is still the file's plan line."""
+    once (ENGINE 55) — in the record as in the Generate — so the record is still the file's plan line."""
     with open(os.path.join(cases.RES, "ja", "pauses_sample.srt"), encoding="utf-8") as f:
         text = f.read()
     library = ("ja", lambda: [("now", "pauses_sample.srt", text)], False, ["--min-freq", "1"])

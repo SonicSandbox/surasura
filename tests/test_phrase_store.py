@@ -77,7 +77,7 @@ def _words(listed):
 
 def test_the_store_counts_each_phrase_as_generate_lists_it(library):
     """After an index: 気を付ける met 3 times (気をつけて folds into it), 気が付く 3 times (twice alone, once inside
-    気がつくと: ENGINE 54; never across the comma), and the uses 手っ取り and 眉根 give their phrases."""
+    気がつくと: ENGINE 55; never across the comma), and the uses 手っ取り and 眉根 give their phrases."""
     _switch(library, True)
     store = _reconcile(library)
     try:

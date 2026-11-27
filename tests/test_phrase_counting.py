@@ -27,13 +27,13 @@ import app
 from app import analyzer
 
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Test Resources", "ja", "phrases_sample.srt")
-# Three lines each saying 間 'a pause' on its own and inside あっという間に, which holds あっという間 (ENGINE 54).
+# Three lines each saying 間 'a pause' on its own and inside あっという間に, which holds あっという間 (ENGINE 55).
 PAUSES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Test Resources", "ja", "pauses_sample.srt")
 OUTPUTS = ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json", "library_frequency.json",
            "file_words.json", "analyzed_files.json", "file_statistics.json", "file_statistics.txt",
            "reading_words.csv", "sources.json")
 # The phrases the fixture meets twice or more, by their rows' Word — and the words that live only inside them. 腑に落ちる
-# is met once alone and once inside 腑に落ちない, a use of it too (ENGINE 54).
+# is met once alone and once inside 腑に落ちない, a use of it too (ENGINE 55).
 PHRASE_ROWS = {"気が付く", "気を付ける", "手っ取り早い", "若しか為るた", "本題に入る", "眉根を寄せる", "首を傾げる",
                "腑に落ちる"}
 BOUND = {"手っ取り", "眉根", "傾げる"}
@@ -131,7 +131,7 @@ def test_on_adds_the_phrase_rows_and_every_word_row_stays_but_the_bound_ones(lib
 def test_a_phrase_row_counts_every_form_but_never_across_a_comma(library):
     """気がついた and 気が付いて are uses of 気が付く — named 気がつく, its commonest spelling, its reading the
     dictionary's; 気が、ついたら is none (the comma between its words), and ふと気がつくと is its own phrase (気が付くと,
-    met once) and a use of 気が付く inside it too (ENGINE 54): three. 気をつけて is 気をつける + て: three uses of 気を付ける
+    met once) and a use of 気が付く inside it too (ENGINE 55): three. 気をつけて is 気をつける + て: three uses of 気を付ける
     with 気をつける itself. Coverage is the tokens': a phrase row learned in the progressive list makes no more of the
     file known."""
     _switch(library, True)
@@ -150,7 +150,7 @@ def test_a_phrase_row_counts_every_form_but_never_across_a_comma(library):
 def test_a_use_inside_a_longer_phrase_counts_for_the_shorter_one(library):
     """The learner who meets 腑に落ちない 'not convincing' meets 腑に落ちる 'make sense' in it: met once alone (やっと腑に
     落ちた) and once inside the longer phrase, 腑に落ちる has the two uses a row needs, and the longer phrase's
-    sentence is among its examples; 腑に落ちない itself, met once, stays under the cut-off (ENGINE 54)."""
+    sentence is among its examples; 腑に落ちない itself, met once, stays under the cut-off (ENGINE 55)."""
     _switch(library, True)
     rows = _run(library)
     row = rows["腑に落ちる"]
@@ -162,7 +162,7 @@ def test_a_use_inside_a_longer_phrase_counts_for_the_shorter_one(library):
 def test_a_word_inside_two_phrases_gives_its_use_once(library):
     """間 'a pause' lives only inside あっという間 'in an instant' (`bound_at`), and あっという間に holds あっという間:
     both stand over the one 間 of each sentence below, which also says 間 on its own (間が長い 'long pauses'). Its use
-    inside the phrases is given once, however many stand over it (ENGINE 54): 間 keeps its own three uses, and these
+    inside the phrases is given once, however many stand over it (ENGINE 55): 間 keeps its own three uses, and these
     sentences stay its examples — taken twice, the two uses of each sentence would both be gone (Generate's count, and
     the finished walk's example targets)."""
     high = library / "data" / "ja" / "HighPriority"

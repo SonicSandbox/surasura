@@ -656,20 +656,22 @@ def undo(args):
 def add_audio_args(parser):
     add_language(parser)
     which = parser.add_mutually_exclusive_group(required=True)
-    which.add_argument("--book", metavar="EPUB", help="the book (its EPUB in the library) whose cards get its audiobook's audio")
-    which.add_argument("--undo", metavar="ID", help="take back one *Add audio* (its id, as the answer gave it)")
-    parser.add_argument("--confirm", action="store_true", help="do it; without it, only how many cards it would fill")
+    which.add_argument("--book", metavar="EPUB", help="the book (its EPUB in the library) to line up with its "
+                                                      "audiobook, so add-sound can give its cards the narrator's voice")
+    which.add_argument("--undo", metavar="ID", help="take back one *Add audio* made before 3.0.21 (its id, as the "
+                                                    "answer gave it)")
 
 
 def add_audio(args):
-    """*Add audio to these cards* (Kura-AB3): the narrator's clip into the empty sentence-audio field of each card
-    Connect made from `--book`, once the book is lined up with its audiobook (`app/connect/add_audio.py`). Without
-    `--confirm`, the counts only (nothing written). `--undo ID` takes one back. Only with Connect on; never while you
-    review."""
+    """The book's line-up (Kura-AB3; AUDIO-FILL, 3.0.21: the write is `add-sound`'s now) — `actions.line_up`: not lined
+    up yet, its first part to mine (`line_up`: the job lines it up); lined up, `add-sound` gives its cards the
+    narrator. Writes nothing in Anki. `--undo ID` still takes back an *Add audio* made before (its record's)."""
     loaded = settings()
-    from app.connect import add_audio as adding
-    got = adding.act(loaded, language(args, loaded), book=args.book, confirm=args.confirm, undo_id=args.undo)
-    return {k: v for k, v in got.items() if k != "looked"}      # (the notes a press looked at: Connect's own record)
+    if args.undo:
+        from app.connect import add_audio as adding
+        return adding.act(loaded, language(args, loaded), undo_id=args.undo)
+    from app.connect import actions
+    return actions.line_up(language(args, loaded), os.path.abspath(args.book), loaded)
 
 
 def add_sound_args(parser):

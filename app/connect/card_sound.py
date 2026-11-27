@@ -775,8 +775,9 @@ def auto(settings, language, ledger, steps=None, should_stop=None, ai_hold=None,
     try:
         new = [int(n) for n in _meta_json(ledger, NEW + language, [])]
         ai = _voice_on(settings, language)
-        if not new and not ai and _meta_json(ledger, COUNT + language, {}):
-            return {"skipped": NOTHING}
+        counted_today = _meta_json(ledger, SEEN + language, {}).get("day") == _today()
+        if not new and not ai and counted_today and _meta_json(ledger, COUNT + language, {}):
+            return {"skipped": NOTHING}         # (counted today, nothing new: a new day or `forget` counts again)
         run_dir, mapping = _mapping(settings, language)
         if mapping is None:
             return {"skipped": NO_MINER}
@@ -858,6 +859,15 @@ def recount(anki, ledger, language, mapping, steps, ledger_path=None):
     _put_meta(ledger, SEEN + language, {"day": _today(), "kinds": {str(n): k for n, k in sorted(kinds.items())}})
     _put_meta(ledger, COUNT + language, counts)
     return counts
+
+
+def forget(ledger, language):
+    """The day memo of `recount` dropped (a book lined up with its audiobook: its cards may get real sound now), so the
+    pass's end plans every soundless card again. Inside the caller's transaction; never raises."""
+    try:
+        ledger.conn.execute("DELETE FROM meta WHERE key = ?", (SEEN + language,))
+    except Exception:
+        log.info("Card sound: the day memo wasn't dropped (%s)", language, exc_info=True)
 
 
 def _recount_quietly(anki, ledger, language, mapping, steps, ledger_path=None):

@@ -263,7 +263,7 @@ PRESSED = ANSWERS + ("voice_setup", "keep_words", "ask_hato", "choose_folder", "
                      "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
                      "make_from_audio", "find_with_hato", "find_with_hato_zh",     # Michi-NS: each a long ask
-                     "add_audio",                                                  # Kura-AB3 A2: Anki written
+                     "add_audio",                                                  # Kura-AB3 A2: a line-up asked
                      "add_sound",                                                  # AUDIO-FILL: Anki written
                      "change_video",                                               # Kantan-B5: a picker's start
                      "dw_known", "dw_ignore", "dw_bad", "dw_forget",    # Kyou-DW: a line's own answer (Parsing
@@ -577,44 +577,19 @@ def deleted_undone_said(out):
 
 
 # --- the page's controller ---------------------------------------------------------------------------------------- #
-def audio_added(win, got, title, say, undo, lang, read_settings, failed=None):
-    """(See below.) A book not lined up yet (`line_up`: its first part) → that part's *Mine now* through the window's
-    own path (`MineActions.ask_items`: its row turns, its job lines the book up, seen and stoppable there)."""
+def audio_added(win, got, say, undo, lang, read_settings, failed=None):
+    """The book's line-up line's answer (`actions.add_audio`): not lined up yet (`line_up`: its first part) → that
+    part's *Mine now* through the window's own path (`MineActions.ask_items`: its row turns, its job lines the book up,
+    seen and stoppable there); lined up already → Card sound's *Add sound* answer (`sound`: its toast and Undo,
+    `sound_added`); else its plain words in the bar."""
     got = got or {}
     mine = getattr(getattr(win, "mine", None), "ask_items", None)
     if got.get("line_up") is not None and mine is not None:
         mine(got.get("say") or "", [got["line_up"]])
-        return
-    _audio_added(win, got, title, say, undo, lang, read_settings, failed)
-
-
-def _audio_added(win, got, title, say, undo, lang, read_settings, failed=None):
-    """Kura-AB3 A2: *Add the narrator's voice*'s answer (`actions.add_audio` / `add_audio_book`, from the book's line
-    or its row's ⋯) shown: a toast with its *Undo* (`undo`, `actions.add_audio_undo`, on a worker) whenever something
-    was written — a press stopped part-way too —, else its plain words in the bar (`say`)."""
-    got = got or {}
-    if not got.get("id"):
-        say(got.get("say") or strings.NEEDS_AUDIO_GONE)
-        return
-    title, n = got.get("title") or title, got.get("filled") or 0
-    if not got.get("ok"):
-        text = got.get("say") or strings.NEEDS_AUDIO_GONE
-    elif got.get("not_cut") and got.get("why"):
-        text = strings.NEEDS_AUDIO_SOME.format(n=n, title=title, m=got["not_cut"], why=got["why"])
+    elif got.get("sound"):
+        sound_added(win, got, say, undo, lang, read_settings, failed)
     else:
-        text = strings.NEEDS_AUDIO_ADDED.format(n=n, title=title)
-
-    def undone(back):
-        back = back or {}
-        if not back.get("ok"):
-            say(back.get("say") or strings.NEEDS_AUDIO_GONE)
-        elif back.get("kept"):
-            say(strings.NEEDS_AUDIO_UNDONE_KEPT.format(n=back["emptied"], k=back["kept"]))
-        else:
-            say(strings.NEEDS_AUDIO_UNDONE.format(n=back["emptied"]))
-    rid = got["id"]
-    win.toasts.show(text, undo=lambda: bridge.run_in_worker(lambda: undo(lang, rid, read_settings() or {}),
-                                                            then=undone, failed=failed))
+        say(got.get("say") or strings.NEEDS_AUDIO_GONE)
 
 
 def sound_added(win, got, say, undo, lang, read_settings, failed=None, back=None):
@@ -997,7 +972,6 @@ class NeedsYou(QObject):
                               "book_audiobook": _connect_callable("actions", "book_audiobook"),     # Kura-AB2
                               "skip_words": _connect_callable("actions", "skip_refused"),     # Michi-RM3
                               "add_audio": _connect_callable("actions", "add_audio"),               # Kura-AB3 A2
-                              "add_audio_undo": _connect_callable("actions", "add_audio_undo"),
                               "add_sound": _connect_callable("card_sound", "press"),               # AUDIO-FILL
                               "add_sound_undo": _connect_callable("card_sound", "press_undo"),
                               "sound_count": _connect_callable("card_sound", "counted")}
@@ -1320,9 +1294,9 @@ class NeedsYou(QObject):
             return self.connect_calls.get("speech_model") is not None
         if name == "no_audiobook":                   # Kura-AB2: the book's answer is Connect's
             return self.connect_calls.get("book_audiobook") is not None
-        if name == "add_audio":                      # Kura-AB3 A2: Connect's, its Undo too
+        if name == "add_audio":                      # Kura-AB3 A2: Connect's, Card sound's Undo too (AUDIO-FILL)
             return self.connect_calls.get("add_audio") is not None and \
-                self.connect_calls.get("add_audio_undo") is not None
+                self.connect_calls.get("add_sound_undo") is not None
         if name == "pick_audiobook":                 # ... its pick the store's (the writer's Undo)
             return getattr(self.win, "moves", None) is not None
         if name == "stop_reading":                   # T6: through the window's writer (its Undo)
@@ -1877,26 +1851,22 @@ class NeedsYou(QObject):
             self._connect_done(strings.NEEDS_NO_AUDIOBOOK if ok else strings.NEEDS_MINE_ANYWAY_NOT)
         self._press("no_audiobook", entry, run, then=done)
 
-    # Kura-AB3 A2 (PROVISIONAL): a book lined up after some of its cards were made — the narrator's voice on them
+    # Kura-AB3 A2, cut down by AUDIO-FILL (PROVISIONAL): a book paired after some of its cards were made — its line-up
     def _do_add_audio(self, entry, _line):
-        """*Add the narrator's voice*: `actions.add_audio` on a worker (the arc turns meanwhile: Anki Miner cuts the
-        clips, Anki's empty sentence-audio fields are filled under the one writer), then a toast with its *Undo* (the
-        record's own: `actions.add_audio_undo`, on a worker too). A "couldn't" leaves the line, pressed again it asks
-        again."""
-        add, kick = self.connect_calls["add_audio"], self.connect_calls.get("kick")
+        """*Line it up*: `actions.add_audio` on a worker — its first part's *Mine now* (the job lines the book up), or,
+        lined up already, Card sound's *Add sound* (`card_sound.press`: it kicks Connect itself) and its toast's Undo
+        (`card_sound.press_undo`, on a worker too). A "couldn't" leaves the line, pressed again it asks again."""
+        add = self.connect_calls["add_audio"]
         lang, read_settings, need_id = self.language, self.read_settings, entry.data["need_id"]
 
         def run():
-            got = add(lang, need_id, read_settings() or {})
-            if (got or {}).get("id") and kick is not None:
-                kick(read_settings() or {})          # Anki's sync it owes, sent by Connect (r1 N4)
-            return got
+            return add(lang, need_id, read_settings() or {})
 
         def done(got):
             if not (got or {}).get("ok"):
                 self._stays("add_audio", entry)
             self.refresh()
-            audio_added(self.win, got, entry.title, self._say, self.connect_calls["add_audio_undo"], lang,
+            audio_added(self.win, got, self._say, self.connect_calls["add_sound_undo"], lang,
                         read_settings, self._failed)
         self._press("add_audio", entry, run, then=done)
 

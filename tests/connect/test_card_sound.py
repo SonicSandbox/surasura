@@ -380,6 +380,45 @@ def test_the_automatic_pass_does_nothing_with_connect_off_or_anki_switched_off(a
     assert env["anki"].searches == []
 
 
+def test_forget_drops_only_that_languages_day_memo_and_keeps_its_count(tmp_path):
+    """AUDIO-FILL d (a book lined up with its audiobook): `forget` drops the language's day memo (SEEN) so the pass's
+    end plans its soundless cards again — never its count (the window's *Needs you* line keeps its number meanwhile),
+    nor another language's memo."""
+    with Ledger(str(tmp_path / "ledger.db")) as ledger:
+        cs._put_meta(ledger, cs.SEEN + "ja", {"day": cs._today(), "kinds": {"1600": cs.SILENT}})
+        cs._put_meta(ledger, cs.SEEN + "zh", {"day": cs._today(), "kinds": {"1700": cs.REAL}})
+        cs._put_meta(ledger, cs.COUNT + "ja", {"cards": 1, "real": 0, "ai": 0, "silent": 1, "at": "x"})
+        with ledger.transaction():
+            cs.forget(ledger, "ja")
+        keys = {r[0] for r in ledger.conn.execute("SELECT key FROM meta")}
+        assert cs.SEEN + "ja" not in keys
+        assert {cs.SEEN + "zh", cs.COUNT + "ja"} <= keys
+        assert cs._meta_json(ledger, cs.COUNT + "ja", {})["silent"] == 1
+        cs.forget(ledger, "ja")                             # nothing to drop: never a failure
+
+
+def test_nothing_new_and_the_voice_off_counts_again_on_a_new_day_or_once_forgotten(auto_env):
+    """AUDIO-FILL d: the pass skips Anki only while today's count stands — a memo from another day, or none (a book
+    lined up since: `forget`), and the pass's end counts again, so a book's earlier cards show on *Needs you*."""
+    env = auto_env("ja")
+    said = env["said"]
+    _made(env, EPISODE, [(1800, said[0], None)])
+    first = _auto(env)
+    assert "skipped" not in first and env["anki"].searches, "no count yet: counted"
+    assert _auto(env) == {"skipped": cs.NOTHING}, "counted today, nothing new: Anki isn't asked"
+    with Ledger(env["ledger"]) as ledger:                   # yesterday's memo
+        cs._put_meta(ledger, cs.SEEN + "ja", dict(cs._meta_json(ledger, cs.SEEN + "ja", {}), day="2000-01-01"))
+    asked = len(env["anki"].searches)
+    assert "skipped" not in _auto(env) and len(env["anki"].searches) > asked, "a new day: counted again"
+    with Ledger(env["ledger"]) as ledger:
+        assert cs._meta_json(ledger, cs.SEEN + "ja", {})["day"] == cs._today()
+        ledger.conn.execute("DELETE FROM meta WHERE key = ?", (cs.SEEN + "ja",))    # the memo gone (`forget`'s)
+        ledger.conn.commit()
+    asked = len(env["anki"].searches)
+    assert "skipped" not in _auto(env) and len(env["anki"].searches) > asked, "no memo: counted again"
+    assert _auto(env) == {"skipped": cs.NOTHING}
+
+
 def test_the_new_cards_list_keeps_each_card_once_and_its_newest_within_the_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(cs, "NEW_MAX", 3)
     with Ledger(str(tmp_path / "ledger.db")) as ledger:

@@ -482,12 +482,13 @@ def test_stop_on_a_part_waiting_while_its_joined_book_lines_up_stops_that_sync(s
     assert fake_miner.commands().count("sync") == 1, "stopped, never started again"
 
 
-def test_its_text_only_cards_get_add_the_narrators_voice_unchanged_the_offer_the_rows_entry_and_the_plan(
+def test_its_text_only_cards_are_looked_at_once_the_joined_book_lines_up_and_the_plan_places_them(
         split, fake_miner, tmp_path):
-    """B4 (A1/A2 as they are): Mattias's cards made from a part before its audiobook was paired are offered the
-    narrator's voice once the joined book lines up — the one *Needs you* line on the audiobook, the row's ⋯ entry on
-    any part — and *Add audio*'s plan places each card's sentence in the line-up: heard → can, never heard → unheard."""
-    from app.connect import actions, add_audio
+    """B4 (A1/A2, cut down by AUDIO-FILL: the write is Card sound's): Mattias's cards made from a part before its
+    audiobook was paired — once the joined book lines up, no line is asked; Card sound's day memo is dropped (its count
+    plans those cards at the pass's end), and the book's line-up places each card's sentence: heard → can, never
+    heard → unheard."""
+    from app.connect import add_audio, card_sound
     from tests.connect.test_add_audio import MAPPING
     from tests.connect.test_sentence_audio import FakeAnki
     book, _key, (_one, two), _names = _synced(split, fake_miner)
@@ -501,10 +502,11 @@ def test_its_text_only_cards_get_add_the_narrators_voice_unchanged_the_offer_the
     assert split["steps"].made_before("ja", book) == (TITLE, [500, 501], sha)
     ledger_path = str(tmp_path / "ledger.sqlite")
     with Ledger(ledger_path) as ledger:
+        card_sound._put_meta(ledger, card_sound.SEEN + "ja", {"day": card_sound._today(), "kinds": {}})
         runner._add_audio_offers(split["steps"], ledger, "ja")
-        [offer] = [n for n in ledger.needs("ja") if n["kind"] == runner.ADD_AUDIO_NEED]
-        assert offer["item_id"] == split["audio"] and offer["say"] == runner.ADD_AUDIO_ASK.format(title=TITLE)
-    assert actions.add_audio_offer("ja", split["parts"][:1], {"connect_enabled": True}, steps=split["steps"],
-                                   path=ledger_path) == {"epub": os.path.abspath(book), "title": TITLE, "n": 2}
+        assert [n for n in ledger.needs("ja") if n["kind"] == runner.ADD_AUDIO_NEED] == []
+        assert ledger.conn.execute("SELECT 1 FROM meta WHERE key = ?", (card_sound.SEEN + "ja",)).fetchone() is None
+        rec = json.loads(runner._meta(ledger, f"{runner.ADD_AUDIO_ASKED}ja:{runner.book_key(book, sha)}"))
+        assert rec["notes"] == [500, 501] and rec["stage"] == runner.ADD_AUDIO_LINED
     got = add_audio.plan(anki, split["steps"], "ja", book, MAPPING)
     assert got["lined"] and sorted(got["can"]) == [500] and got["unheard"] == [501]

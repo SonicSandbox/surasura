@@ -12,6 +12,7 @@ lines, a recap of the same lines; Connect's ledger is a real one; Anki is the wr
 the two searches the press asks; the cut and the AI voice hand back real files on disk.
 """
 import base64
+import itertools
 import json
 import os
 import time
@@ -269,6 +270,34 @@ def test_ai_held_follows_the_writers_records_in_order(tmp_path):
         sa.undo(anki, ledger, a["id"])
         assert cs.ai_held(ledger) == {}
     assert os.path.isdir(str(tmp_path))
+
+
+@pytest.mark.parametrize("text", ["犬が好きだ。", "我喜欢狗。"])
+def test_two_writes_in_one_clock_tick_keep_their_order(tmp_path, monkeypatch, text):
+    """Windows' clock moves in ~16 ms steps: two writes inside one step got the same time in their ids, and the ids'
+    random tails then ordered them, so a real clip written after an AI one read as written before it — the note
+    still counted as AI audio, for *Remove all AI audio* to take off (GitHub, 2026-11-27, on one run in two). The
+    clock stands still here and each tail sorts below the one before: the later write must still read as later."""
+    monkeypatch.setattr(sa.time, "time_ns", lambda: 1_764_000_000_000_000_000)
+    down = itertools.count()
+    monkeypatch.setattr(sa.uuid, "uuid4", lambda: type("U", (), {"hex": f"{0xffffffff - next(down):08x}" * 4})())
+    anki = Anki()
+    for n in (1, 2, 3):
+        anki.add(n, text, text[:1])
+    with Ledger(str(tmp_path / "l.sqlite")) as ledger:
+        sa.fill(anki, ledger, {1: _clip(tmp_path, "1.mp3"), 2: _clip(tmp_path, "2.mp3"),
+                               3: _clip(tmp_path, "3.mp3")}, tag=cs.AI_TAG, by="ai-audio")
+        anki.notes_[2]["fields"]["SentenceAudio"]["value"] = ""
+        sa.fill(anki, ledger, {2: _clip(tmp_path, "2r.mp3")}, tag=sa.TAG, by="add-audio")
+        anki.notes_[3]["fields"]["SentenceAudio"]["value"] = ""
+        sa.fill(anki, ledger, {3: _clip(tmp_path, "3r.mp3")}, tag=sa.TAG, by="add-audio")
+        assert set(cs.ai_held(ledger)) == {1}
+        ids = [rid for rid, _rec in cs._records(ledger)]
+        assert len(set(ids)) == 3 and [r["by"] for _i, r in cs._records(ledger)] == ["ai-audio", "add-audio", "add-audio"]
+        for language in ("ja", "zh"):                   # a run's Undo takes the newest run: the same tick, the same rule
+            rid = cs._new_run(ledger)
+            cs._save_run(ledger, rid, {"language": language, "records": ids, "state": sa.DONE})
+        assert cs.last_run(ledger)[1]["language"] == "zh"
 
 
 # --- Connect's automatic pass (`auto`: § 106 "new cards get sound by themselves while the switch is on") --------- #
@@ -545,7 +574,7 @@ def _plan_one(monkeypatch, n=7):
     monkeypatch.setattr(cs, "_fill", fill)
 
 
-def test_a_run_stopped_after_a_write_names_its_undo_even_when_its_record_cant_be_saved(monkeypatch):
+def test_a_run_stopped_after_a_write_names_its_undo_even_when_its_record_cant_be_saved(monkeypatch, tmp_path):
     # why: the stopped run's id must reach the caller (its Undo, Anki's sync owed); a ledger busy at that moment
     # must not swap the first error for its own
     import sqlite3
@@ -556,8 +585,8 @@ def test_a_run_stopped_after_a_write_names_its_undo_even_when_its_record_cant_be
             raise sqlite3.OperationalError("database is locked")
     monkeypatch.setattr(cs, "_save_run", save)
     monkeypatch.setattr(cs, "_voice_on", lambda s, l: (_ for _ in ()).throw(ConnectionError("Anki closed")))
-    with pytest.raises(ConnectionError) as got:
-        cs.run(None, None, "ja", MAPPING, None, settings={})
+    with Ledger(str(tmp_path / "l.sqlite")) as ledger, pytest.raises(ConnectionError) as got:
+        cs.run(None, ledger, "ja", MAPPING, None, settings={})   # (a real ledger: the run's id is past its newest)
     assert got.value.card_sound_id
 
 

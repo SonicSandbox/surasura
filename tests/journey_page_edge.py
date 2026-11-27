@@ -14,8 +14,12 @@ import tempfile
 import time
 import urllib.parse
 
-PORT_WAIT_S = 15      # Edge's start to its DevTools port (as the 150 looks of 0.1 s before): a start that hangs fails
-PAGE_WAIT_S = 10      # the port to a page listed (the 50 looks before: 5 s and more): never hangs a test
+# Edge's start waits on Edge itself — alive, then its DevTools port, then a page listed — and a dead Edge fails at
+# once. A warm PC starts it in ~1 s; a cold GitHub runner's first Edge took ~14 s to its port and listed no page in
+# the 10 s after (2026-11-27, core 1/8 on #768: the fixed 15 s + 10 s before), and the next one's first answer took
+# over 60 s, while the shard's other tests ran at their usual speed. The budgets only stop an Edge that hangs.
+START_WAIT_S = 180    # the start to a page listed (its port and its page, one budget)
+CALL_WAIT_S = 180     # one DevTools answer (a socket that closes — Edge gone — fails at once)
 
 CANDIDATES = (
     os.environ.get("SURASURA_EDGE") or "",
@@ -34,7 +38,7 @@ def find_edge():
 class _Socket:
     """One WebSocket connection (client side: masked text frames out, any frames in)."""
 
-    def __init__(self, url, timeout=60):
+    def __init__(self, url, timeout=CALL_WAIT_S):
         u = urllib.parse.urlsplit(url)
         self.sock = socket.create_connection(("127.0.0.1", u.port), timeout=timeout)
         key = base64.b64encode(os.urandom(16)).decode("ascii")
@@ -123,13 +127,12 @@ class Edge:
              "--enable-precise-memory-info", "--js-flags=--expose-gc", "--allow-file-access-from-files", "about:blank"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    def _port(self):
+    def _port(self, end):
         """Edge's DevTools port, from the profile's DevToolsActivePort ("<port>\\n<browser path>") once Edge has
         written it whole. Edge still holds the file a moment after its bytes are there, and Windows refuses a reader
         then (PermissionError: GitHub, 2026-11-22, three reds); a read before its newline would take part of the port.
         So it waits for the file to open with both lines, as it waits for the file to be there."""
         port_file = os.path.join(self.profile, "DevToolsActivePort")
-        end = time.monotonic() + PORT_WAIT_S
         while time.monotonic() < end:
             try:
                 with open(port_file, encoding="ascii") as f:
@@ -141,12 +144,12 @@ class Edge:
             if self.proc.poll() is not None:
                 raise RuntimeError(f"Edge ended before it wrote its DevTools port (exit {self.proc.poll()})")
             time.sleep(0.05)
-        raise RuntimeError(f"Edge wrote no DevTools port in {PORT_WAIT_S} s")
+        raise RuntimeError(f"Edge wrote no DevTools port in {START_WAIT_S} s")
 
     def _start(self, width, height, scale):
-        port = self._port()
+        end = time.monotonic() + START_WAIT_S
+        port = self._port(end)
         tabs = []
-        end = time.monotonic() + PAGE_WAIT_S
         while time.monotonic() < end:
             try:
                 with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
@@ -167,10 +170,12 @@ class Edge:
                     break
             except (OSError, ValueError, IndexError):       # (closed before its header: Edge still starting)
                 pass
+            if self.proc.poll() is not None:
+                raise RuntimeError(f"Edge ended before it listed a page (exit {self.proc.poll()})")
             time.sleep(0.1)
         pages = [t for t in tabs if t.get("type") == "page"]
         if not pages:
-            raise RuntimeError(f"Edge listed no page in {PAGE_WAIT_S} s")
+            raise RuntimeError(f"Edge listed no page in {START_WAIT_S} s")
         self.ws = _Socket(pages[0]["webSocketDebuggerUrl"])
         self.n = 0
         self.events = []
@@ -199,7 +204,9 @@ class Edge:
             raise RuntimeError((d.get("exception") or {}).get("description") or d.get("text"))
         return r.get("result", {}).get("value")
 
-    def open(self, url, until="window.__J && window.__J.TIMES.firstWord", seconds=30):
+    def open(self, url, until="window.__J && window.__J.TIMES.firstWord", seconds=CALL_WAIT_S):
+        """Navigates to `url` and waits for `until` (by default as long as for one answer: a cold Edge's first file
+        page is slow to answer at all, then ready at once)."""
         self.events.clear()
         self.call("Page.navigate", url=url)
         end = time.time() + seconds

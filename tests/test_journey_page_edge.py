@@ -41,7 +41,8 @@ def _hold_and_write(path, text, hold_s):
 class _FakeDevTools:
     """127.0.0.1: GET /json lists one page; its WebSocket answers every call with an empty result."""
 
-    def __init__(self):
+    def __init__(self, listed=lambda: True):
+        self.listed = listed
         self.srv = socket.socket()
         self.srv.bind(("127.0.0.1", 0))
         self.srv.listen(8)
@@ -67,7 +68,8 @@ class _FakeDevTools:
                 head += chunk
             if b"Upgrade: websocket" not in head:
                 body = json.dumps([{"type": "page", "webSocketDebuggerUrl":
-                                    f"ws://127.0.0.1:{self.port}/devtools/page/stand-in"}]).encode()
+                                    f"ws://127.0.0.1:{self.port}/devtools/page/stand-in"}] if self.listed() else
+                                  []).encode()
                 conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(body) + body)
                 return
             conn.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
@@ -198,9 +200,80 @@ def test_an_edge_whose_page_never_answers_is_stopped_and_its_profile_removed(sta
         with open(os.path.join(profile, "DevToolsActivePort"), "w", newline="\n") as f:
             f.write(f"{port}\n/devtools/browser/stand-in")
     stand_in["write"] = write
-    monkeypatch.setattr(jpe, "PAGE_WAIT_S", 0.5)
+    monkeypatch.setattr(jpe, "START_WAIT_S", 0.5)
     with pytest.raises(RuntimeError, match="no page"):
         jpe.Edge()
     assert stand_in["proc"].killed
     assert not os.path.exists(stand_in["profile"])
 
+
+
+class _Clock:
+    """The harness's clock, forced: each of its waits moves it on at once (no real wait), so a start that takes a cold
+    runner tens of seconds runs here in milliseconds, the same every time."""
+
+    def __init__(self):
+        self.t = 0.0
+
+    def monotonic(self):
+        return self.t
+
+    def time(self):
+        return self.t
+
+    def sleep(self, s):
+        self.t += s
+
+
+@pytest.fixture
+def slow_start(stand_in, monkeypatch):
+    """An Edge started as on a cold GitHub runner (2026-11-27, core 1/8 on #768): its port file there at once, its
+    first page listed only `page_at` seconds later, on the forced clock."""
+    clock = _Clock()
+    monkeypatch.setattr(jpe, "time", clock)
+    made = {}
+
+    def make(page_at, ends_at=None):
+        tools = made["tools"] = _FakeDevTools(listed=lambda: clock.t >= page_at)
+
+        def popen(args, **kw):
+            profile = [a for a in args if a.startswith("--user-data-dir=")][0].split("=", 1)[1]
+            with open(os.path.join(profile, "DevToolsActivePort"), "w", newline="\n") as f:
+                f.write(f"{tools.port}\n/devtools/browser/stand-in")       # (written before the harness looks)
+            proc = stand_in["proc"] = _StandInEdge(None)
+            stand_in["profile"] = profile
+            if ends_at is not None:
+                proc.poll = lambda: 0 if clock.t >= ends_at else None
+            return proc
+        monkeypatch.setattr(jpe.subprocess, "Popen", popen)
+        return clock
+    yield make
+    if "tools" in made:
+        made["tools"].close()
+
+
+def test_an_edge_whose_first_page_comes_late_on_a_cold_runner_is_still_driven(slow_start):
+    # The GitHub red: Edge alive, its port up, its page listed only after the fixed 10 s the harness gave it ("Edge
+    # listed no page in 10 s"); a warm PC lists it in under a second. The start waits on Edge itself, not on a clock.
+    clock = slow_start(page_at=40.0)
+    with jpe.Edge() as e:
+        assert e.evaluate("1") is None
+    assert clock.t >= 40.0
+
+
+def test_an_edge_that_ends_while_its_page_is_awaited_fails_at_once(slow_start, stand_in):
+    # Waiting longer must not wait on a dead Edge: one that ends after its port, before a page, says so at once and
+    # leaves no profile behind.
+    clock = slow_start(page_at=1e9, ends_at=2.0)
+    with pytest.raises(RuntimeError, match="ended before"):
+        jpe.Edge()
+    assert clock.t < 3.0
+    assert stand_in["proc"].killed and not os.path.exists(stand_in["profile"])
+
+
+def test_a_start_that_never_lists_a_page_still_ends_within_its_budget(slow_start):
+    # A live Edge that never lists a page (hung) is stopped once the start's budget is spent: a test never hangs.
+    clock = slow_start(page_at=1e9)
+    with pytest.raises(RuntimeError, match="no page"):
+        jpe.Edge()
+    assert jpe.START_WAIT_S <= clock.t < jpe.START_WAIT_S + 1

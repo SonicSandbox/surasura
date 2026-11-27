@@ -84,6 +84,7 @@ class Bridge(QObject):
     automation_changed = pyqtSignal(object)      # automatic sync / Generate / 順's State
     chores_changed = pyqtSignal(object)          # the chores' State (Connect's line, Koe's port)
     indexed = pyqtSignal(object)                 # the indexer ran (its language)
+    words_marked = pyqtSignal(object)            # a word list's write landed (its language: `Services.words_heard`)
     quit_asked = pyqtSignal(object)              # the update hands over: the window closes
     ukai_asked = pyqtSignal(object)              # 鵜 Ukai asks to pair (`ukai_pairing.Request`): the Allow card
     ukai_paired = pyqtSignal(object)             # 鵜 Ukai paired or forgotten: Settings' Ukai row (UKAI-S2)
@@ -112,6 +113,10 @@ class Bridge(QObject):
         if chores is not None:
             chores.subscribe(lambda state: self._emit("chores_changed", state))
             chores.on_indexed(lambda language: self._emit("indexed", language))
+
+    def tell_words(self, language):
+        """(Any thread.) `Services.words_heard`'s: a Known, Ignore or Still learning write landed (BRIDGE-2)."""
+        self._emit("words_marked", language)
 
     def ask_quit(self):
         """(Any thread.) The update service's `on_quit`: the window closes on its own thread."""

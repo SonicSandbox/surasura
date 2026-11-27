@@ -1843,18 +1843,25 @@ def test_junbans_line_and_the_update_that_landed_are_said_once(world, monkeypatc
 
 
 def test_the_level_is_read_again_only_after_what_it_reads(world, monkeypatch):
-    """IK-28 (S19): a `logic` write the level doesn't read (the names switch, phrase rows) never reads the token store
-    again; the selection does."""
+    """IK-28 (S19): a `logic` write the level doesn't read (the example sentences) never reads the token store again;
+    the selection does — and (BRIDGE-2) Ignore names and the phrase rows, which the band previews behind Automatic's
+    band read, each once."""
     reads = []
     monkeypatch.setattr(world.services, "level", lambda: reads.append(1) or ("rare", False))
     world.start()
     assert wait_until(lambda: reads)
     before = len(reads)
-    world.services.settings.set({"logic.ignore_names": True}, now=True)
+    world.services.settings.set({"logic.context": {"count": 3}}, now=True)
     QTest.qWait(80)
     assert len(reads) == before
     world.services.settings.set({"logic.selection.band": "rare"}, now=True)
     assert wait_until(lambda: len(reads) == before + 1)
+    world.services.settings.set({"logic.ignore_names": True}, now=True)
+    assert wait_until(lambda: len(reads) == before + 2)
+    world.services.settings.set({"logic.phrase_rows": False}, now=True)
+    assert wait_until(lambda: len(reads) == before + 3)
+    wait_until(lambda: len(reads) > before + 3, 0.08)
+    assert len(reads) == before + 3                                    # once each
 
 
 def test_a_duty_failure_leaves_the_bar_once_it_is_over(world):

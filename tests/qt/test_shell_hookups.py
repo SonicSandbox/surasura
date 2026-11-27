@@ -56,9 +56,9 @@ def test_the_settings_page_is_made_the_first_time_its_tab_shows_and_only_once(wi
     window.show_tab("current")
     window.show_tab("settings")
     assert window.settings_page is page and len(window.findChildren(sp.SettingsPage)) == 1
+    assert wait_until(lambda: page.built, 20)       # (each package attached before its sections' rows: SETTINGS-OPEN)
     for row_id in ("connect_enabled", "placing_rules", "soon_line", "mine_line", "set_up_again"):
         assert page.custom_row(row_id).layout().count() > 0, f"{row_id}'s rows weren't attached"
-    assert wait_until(lambda: page.built, 20)
 
 
 def test_open_setting_shows_the_settings_tab_with_the_row_brought_into_view(window, monkeypatch):
@@ -74,6 +74,7 @@ def test_a_package_whose_rows_fail_never_keeps_the_page_from_opening(window, mon
     monkeypatch.setattr(settings_connect, "attach", broken)
     window.show_tab("settings")
     assert isinstance(window.settings_page, sp.SettingsPage)
+    assert wait_until(lambda: window.settings_page.built, 20)    # (each attached before its sections: SETTINGS-OPEN)
     assert window.settings_page.custom_row("set_up_again").layout().count() > 0     # the others still attached
 
 

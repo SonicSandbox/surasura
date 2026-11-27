@@ -353,11 +353,57 @@ def test_the_readout_is_read_again_when_a_level_key_or_the_library_changes(qapp,
     store.outside({"telemetry_enabled": False})              # not a level key: no read
     settle()
     assert reads() == 2
-    page.bridge.library_changed.emit(object())
+    page.bridge.indexed.emit("ja")                           # new files in the token store
     assert wait_until(lambda: reads() == 3)
-    page.bridge.indexed.emit("ja")
+    page.bridge.words_marked.emit("ja")                      # BRIDGE-2: a word list's write
     assert wait_until(lambda: reads() == 4)
+    page.hide()                                              # out of sight: only marked stale
+    page.bridge.indexed.emit("ja")
+    page.bridge.words_marked.emit("ja")
+    page.bridge.automation_changed.emit(automation_module.State("synced", "ja", 0, 2470, None, None, 9))  # new known
+    settle(lambda: reads() != 4, 1.0)                        # (past the read's wait: still nothing)
+    assert reads() == 4 and page.live._level["stale"]
+    page.show()                                              # shown again: read once
+    assert wait_until(lambda: reads() == 5)
+    settle()
+    assert reads() == 5
 
+
+
+def test_ignore_names_turned_on_reads_the_level_again(qapp, fakes):
+    # review (BRIDGE-2): the band previews' ignore set holds the library's names while Ignore names is on
+    # (`token_index.ignored_names`), so the readout moves with it — though the header's chip key list leaves it out
+    page, store, shell = make(fakes)
+    reads = lambda: fakes.names().count("read_level")      # noqa: E731
+    assert wait_until(lambda: reads() == 1)
+    store.outside({"logic.ignore_names": True})
+    assert wait_until(lambda: reads() == 2)
+
+def test_a_word_marked_and_its_new_known_count_together_read_the_level_once(qapp, fakes):
+    # BRIDGE-2: a Still learning mark is two news — the write's own, then the known count the automation reads after
+    # it — one read for both
+    page, store, shell = make(fakes, SEEDED)
+    reads = lambda: fakes.names().count("read_level")      # noqa: E731
+    settle(lambda: reads() > 1)
+    before = reads()
+    page.bridge.words_marked.emit("ja")
+    page.bridge.automation_changed.emit(automation_module.State("synced", "ja", 0, 2467, None, None, 5))
+    assert wait_until(lambda: reads() == before + 1)
+    settle(lambda: reads() != before + 1, 1.0)
+    assert reads() == before + 1
+
+
+
+def test_a_stream_of_news_reads_the_level_once_per_wait_never_held_off_while_it_lasts(qapp, fakes):
+    # review (time): an import indexes batch after batch; a wait restarted at every one would never end while it
+    # lasts — the numbers frozen for the whole import
+    page, store, shell = make(fakes)
+    reads = lambda: fakes.names().count("read_level")      # noqa: E731
+    assert wait_until(lambda: reads() == 1)
+    for _ in range(8):                                       # 8 news 0.3 s apart: 2.4 s of a stream
+        page.bridge.indexed.emit("ja")
+        settle(timeout=0.3)
+    assert 2 <= reads() - 1 <= 5                             # one read per `LEVEL_AFTER_MS` (never 0, never 8)
 
 # --- Connection (S6), the Connections rows ------------------------------------------------------------------------ #
 def test_check_refreshes_the_status_and_shows_ankis_word_beside_the_emerald(qapp, fakes):

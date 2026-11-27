@@ -151,7 +151,9 @@ from operator import itemgetter
 # v32 a verb's stem + つかれ in kana is 疲れる (analyzer._tsukare), and 棟 right after a kanji or a katakana word is a
 #    piece (its `bound` counts: analyzer._after_a_word; ENGINE_REVISION 52): a v31 row holds 突く for 歩きつかれた, 棟
 #    むね for 研究棟 — users rebuild once.
-SCHEMA_VERSION = 32
+# v33 kana つかれ with no stem before it is 疲れる where nothing before it can be what a つく verb takes
+#    (analyzer._tsukare, ENGINE_REVISION 53): a v32 row holds 突く for もうつかれた — users rebuild once.
+SCHEMA_VERSION = 33
 
 # The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,
 # Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.

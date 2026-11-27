@@ -21,7 +21,6 @@ PROVISIONAL): the narrator's voice put on the cards Connect made from a book bef
 
 Light: the standard library; Anki through `sentence_audio.AnkiConnectNotes`, Anki Miner through `anki_miner`.
 """
-import bisect
 import html
 import json
 import os
@@ -29,6 +28,8 @@ import re
 import shutil
 import sqlite3
 import time
+
+from app.connect.lineup import Book  # (a book's cues indexed once: the line-up's index, one class for both)
 
 TAG = "surasura::audio-added"
 BY = "add-audio"
@@ -72,53 +73,6 @@ def _form(sentence_value, word):
         if lineup.clean(form) and lineup.clean(form) in want:
             return form
     return None
-
-
-class Book:
-    """A book's line-up cues (`lineup.cues`) indexed once for `place` (AUDIO-WASTE: three passes over every cue for
-    each card were most of the plan's wait): each text's cues, the texts joined (a cue's text holds no separator: only
-    letters and digits, `lineup.clean`) with each one's start, and the cues of MIN_CHARS or longer by their first
-    MIN_CHARS characters. Built in one pass over the cues; then a card costs a dict look, one or two `str.find` over
-    the joined text (C speed) and a look a MIN_CHARS window of its sentence — never a Python pass over the cues."""
-
-    def __init__(self, found):
-        from app.connect import lineup
-        self.found, self.n = list(found), lineup.MIN_CHARS
-        self.by_text, self.by_head, self.starts, texts, at = {}, {}, [], [], 0
-        for k, cue in enumerate(self.found):
-            text = cue.text or ""
-            self.by_text.setdefault(text, []).append(k)
-            if len(text) >= self.n:
-                self.by_head.setdefault(text[:self.n], []).append(k)
-            self.starts.append(at)
-            texts.append(text)
-            at += len(text) + 1
-        self.joined = "\n".join(texts)
-
-    def __len__(self):
-        return len(self.found)
-
-    def holders(self, want):
-        """The cues whose text holds `want` (never empty, no separator) — the first's index and whether a second
-        exists: (k, more) or None."""
-        pos = self.joined.find(want)
-        if pos < 0:
-            return None
-        k = bisect.bisect_right(self.starts, pos) - 1
-        nxt = self.starts[k + 1] if k + 1 < len(self.starts) else len(self.joined)
-        return k, self.joined.find(want, nxt) >= 0
-
-    def inside(self, want):
-        """The cues of MIN_CHARS or longer whose text sits inside `want` (each cue of a head `want` holds looked at
-        once) -> {cue index}."""
-        n, seen, out = self.n, set(), set()
-        for head in {want[i:i + n] for i in range(len(want) - n + 1)}:
-            for k in self.by_head.get(head, ()):
-                if k not in seen:
-                    seen.add(k)
-                    if self.found[k].text in want:
-                        out.add(k)
-        return out
 
 
 def place(sentence, form, found):

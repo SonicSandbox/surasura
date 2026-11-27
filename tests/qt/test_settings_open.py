@@ -293,6 +293,7 @@ def test_the_window_warms_settings_icons_a_few_a_turn_and_stops_once_the_page_is
     assert wait_until(lambda: len(sp._PIXMAPS) >= 2 * len(catalog.SECTIONS), 20)
     assert turns, "spread over the window's turns, never one stretch"
     monkeypatch.setattr(sp, "_PIXMAPS", {})
+    monkeypatch.setattr(shell, "SETTINGS_WARM_MS", 10 ** 6)     # (were it to draw, all of it in this call)
     win.settings_page = object()                                # made meanwhile: it draws what it needs itself
     shell.ShellWindow._warm_icons(win, None)
     assert sp._PIXMAPS == {}
@@ -399,7 +400,8 @@ def test_a_slice_that_builds_only_rows_below_the_reveal_lays_nothing_out_itself(
     assert len(below) >= 5 and above, (len(below), len(above))  # (how many: as fast as the machine builds rows)
     assert sum(entry["settles"] for entry in below) == 0, [entry["settles"] for entry in below]
     assert all(entry["aims"] == 0 for entry in below if not entry["off"]), [(e["aims"], e["off"]) for e in below]
-    assert all(entry["settles"] + entry["aims"] >= 1 for entry in above)    # (laid out at once: the reveal kept)
+    assert all(entry["settles"] >= 1 for entry in above), [entry["settles"] for entry in above]   # (laid out at once:
+                                                                # the reveal kept in place in the slice's own turn)
     QApplication.processEvents()
     assert _at_third(page, revealed)                            # kept in place all the same
     page.close()
@@ -496,3 +498,24 @@ def test_a_sections_rows_are_its_rows_in_order_looked_up_not_walked(monkeypatch)
     monkeypatch.setattr(catalog, "ROWS", tuple(r for r in rows if r is not moved) + (moved._replace(section="junban"),))
     assert moved.id not in {row.id for row in catalog.rows("app")}
     assert catalog.rows("junban")[-1].id == moved.id
+
+
+def test_a_reveal_off_its_third_while_the_build_goes_on_is_told_apart_from_one_at_it(qapp):
+    # `_off_aim`, read from the page as the loop last laid it out: a slice that built rows only below the reveal aims it
+    # again only when it isn't where `_aim` puts it (a row above re-wrapped by a read's answer moved it a few pixels)
+    page, _calls = _page()
+    page.reveal("anki")
+    assert wait_until(lambda: page._section_built("anki"), 20)
+    assert wait_until(lambda: page.built, 20)
+    QApplication.processEvents()
+    view = page.row(catalog.rows("anki")[0].id)
+    page._revealed = view                                       # (as while the build went on)
+    bar = page.scroll.verticalScrollBar()
+    end = round(page._y_in_body(view) - page.scroll.viewport().height() / 3)
+    assert 40 < end < bar.maximum() - 40
+    page._scroll_to(end)
+    assert not page._off_aim()
+    page._scroll_to(end - 40)
+    assert page._off_aim()
+    page._revealed = None
+    page.close()

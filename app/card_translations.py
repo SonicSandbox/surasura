@@ -277,46 +277,11 @@ def cards(anki, language="ja", deck=None, limit=LIMIT, around=AROUND, only=None,
 
 # --- the lines around a card's sentence ------------------------------------------------------------------------- #
 def _outcomes(ledger_path, ids, language="ja"):
-    """{note id: (item id, line start s, sentence)} from Connect's ledger (this language's jobs: item ids are the
-    language's store's), read only; {} when there's none. The item is the one whose line the card was cut from: the
-    job's own, or (Kantan-SD 6, *Card sentences: Best*) the other episode its pick names for the word (`from`)."""
-    if not ledger_path or not os.path.isfile(ledger_path) or not ids:
-        return {}
-    conn = sqlite3.connect(pathlib.Path(ledger_path).as_uri() + "?mode=ro", uri=True, timeout=2.0,
-                           isolation_level=None)
-    try:
-        conn.execute("PRAGMA query_only=1")
-        picks = "j.picked" if "picked" in {r[1] for r in conn.execute("PRAGMA table_info(jobs)")} else "NULL"
-        ids, out, cut = sorted(set(ids)), {}, {}
-        for at in range(0, len(ids), 500):
-            part = ids[at:at + 500]
-            for note, item, start, sentence, word, reading, job, picked in conn.execute(
-                    f"SELECT o.note_id, j.item_id, o.line_start, o.sentence, o.word, o.reading, j.id, {picks} "
-                    "FROM outcomes o JOIN jobs j ON j.id = o.job_id WHERE o.outcome = 'made' AND j.language = ? AND "
-                    f"o.note_id IN ({','.join('?' * len(part))})", [language] + part):
-                if job not in cut:
-                    cut[job] = _cut_from(picked)
-                out[int(note)] = (cut[job].get((word, reading), item), start, sentence)
-        return out
-    except sqlite3.Error:
-        return {}
-    finally:
-        conn.close()
-
-
-def _cut_from(picked):
-    """{(word, reading): item id} of a job's words cut from another episode's line (its pick's `from`, the JSON text
-    the ledger keeps); {} for none, or a pick that can't be read."""
-    import json
-    try:
-        words = (json.loads(picked) or {}).get("words") or () if picked else ()
-    except (TypeError, ValueError, AttributeError):
-        return {}
-    out = {}
-    for w in words:
-        if isinstance(w, dict) and isinstance(w.get("from"), int) and not isinstance(w.get("from"), bool):
-            out[(w.get("word"), w.get("reading"))] = w["from"]
-    return out
+    """{note id: (item id, line start s, sentence)} from Connect's ledger (`ledger.note_lines`, the one reader of a
+    card's line), read only; {} when there's none."""
+    from app.connect import ledger
+    return {n: (item, start, sentence) for n, (item, start, _end, sentence)
+            in ledger.note_lines(ledger_path, ids, language).items()}
 
 
 def _files(language, data_dir, items):

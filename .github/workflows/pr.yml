@@ -121,6 +121,14 @@ jobs:
           TEMP: ${{ runner.temp }}
         shell: bash
         run: python -m pytest modules/junban/tests -v -ra -p no:cacheprovider
+      - name: Ukai
+        if: ${{ !cancelled() }}
+        env:
+          PYTHONIOENCODING: utf-8
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        shell: bash
+        run: python -m pytest modules/ukai/tests -v -ra -p no:cacheprovider
       - name: YouTube transcripts
         if: ${{ !cancelled() }}      # runs after a red Junban too: both results show
         env:

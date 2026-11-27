@@ -30,7 +30,7 @@ The routes themselves are the journey's registry (`app/services/journey_door.py`
 `start(routes)` from the window after its first frame (an earlier window's one-time pages swept), `stop()` at quit
 (this door's pages removed).
 
-**Ukai's caller class** (鵜飼 Ukai, the browser extension: TheForge `Projects/Houseki/Ukai/SPEC.md` §6 U-S0, its
+**Ukai's caller class** (鵜 Ukai, the browser extension: TheForge `Projects/Houseki/Ukai/SPEC.md` §6 U-S0, its
 checks adapted from #474's `online_receiver`): the extension can't be handed a token through a page, and it
 calls a fixed address, so it has a listener of its own on the same door (`Extension`), with its own rules:
 - **127.0.0.1:EXT_PORT** (27631, its CONTRACT.md), or the next EXT_PORTS_MORE when it's taken (Ukai says hello on
@@ -80,6 +80,16 @@ EXT_CHUNK = 64 * 1024           # a streamed body is read and written this much 
 EXT_DRAIN = 1024 * 1024         # a refused body this small is read and dropped before the answer
 EXT_TIMEOUT = 15.0              # a socket silent this long ends (a 40 MB clip on loopback takes well under a second)
 NOT_UKAI = "only Surasura's browser extension, on this computer"
+
+
+def ukai_on():
+    """Is Ukai's half on: the switch (EXTENSION_ON) and its module here (`modules/ukai`, CLAUDE.md §2)? The one rule
+    the window (Settings' row) and Connect (`online.is_online`: a Netflix item handed to Ukai) both read."""
+    import importlib.util
+    try:
+        return EXTENSION_ON and importlib.util.find_spec("modules.ukai") is not None
+    except (ImportError, ValueError):
+        return False
 
 
 class RouteError(Exception):
@@ -277,6 +287,22 @@ class Call:
         if not isinstance(body, dict):
             raise BodyError(400, "the body must be a JSON object")
         return body
+
+    def skip(self, limit=None):
+        """The body read and dropped (≤ EXT_MAX_STREAM, EXT_CHUNK at a time) -> its size: a route that refuses a large
+        body after a look (a clip for a job that no longer waits) still answers one Ukai can read (unread, Windows
+        resets the socket before the answer). Raises BodyError."""
+        length = left = self._length(EXT_MAX_STREAM if limit is None else limit)
+        while left:
+            try:
+                chunk = self._read(min(EXT_CHUNK, left))
+            except OSError:
+                chunk = b""
+            if not chunk:
+                self._handler.close_connection = True
+                raise BodyError(400, "the body ended before its Content-Length")
+            left -= len(chunk)
+        return length
 
     def save(self, path, limit=None):
         """The body streamed to `path` (≤ EXT_MAX_STREAM, EXT_CHUNK at a time) -> its size. Written to a `.part` beside

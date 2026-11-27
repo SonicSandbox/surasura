@@ -162,7 +162,7 @@ SECTION_WHY = {
     "backfill": "Adds to your Anki cards how each word is usually used (パターン), two more sentences from your own "
                 "content (例文), and the furigana and pitch a card is missing. Restore puts every card back",
 }
-ROW_TAGS = {"practice_ai": PRACTICE_NAME, "hato": "hato"}       # a row's tool, small beside its plain name
+ROW_TAGS = {"practice_ai": PRACTICE_NAME, "hato": "hato", "ai_audio": "Beta"}       # a row's tool, small beside its plain name
 NEEDS_ANKI = "Needs Anki open and connected"
 NEEDS_MINER = "Needs Anki Miner (free)"
 CARDS_WHY = "Cards for episodes at the top of Current, made by themselves."   # (before Anki Miner's found)
@@ -177,6 +177,7 @@ GROUPS = {
     "loop": "Your daily loop", "from_library": "Cards from your library",
     "in_anki": "Cards already in Anki", "anki": "Anki", "names": "Names", "words_phrases": "Words and phrases",
     "houseki": "Houseki tools", "not_on_list": "Cards not on your list", "beta": "Beta",
+    "card_sound": "Card sound",
 }
 
 # --- the doors (a window, or an action, a row opens) ---------------------------------------------------------------- #
@@ -675,10 +676,11 @@ ROWS = {
                           "Fewer: a quieter PC while cards are made. Automatic: from this PC, fewer on battery",
                           "How many clips Anki Miner cuts at the same time. Anki Miner's own setting stays as it is",
                           "clips cut parallel ffmpeg workers cpu fans laptop desktop load"),
-    # Iro-AA (PROVISIONAL words): the AI voice's beta
-    "ai_audio": ("AI audio for cards without audio", "A local AI voice reads sentences on cards without audio.",
-                 "Try the AI voice (beta) for cards without sentence audio",
-                 "ai audio voice tts beta irodori sentence"),
+    # Iro-AA, moved to *Card sound* by VOICE-SETUP (PROVISIONAL words): the AI voice, still a beta
+    "ai_audio": ("AI voice", "A voice made on this computer reads a card's sentence when no real sound is found for it. "
+                 "Nothing is sent anywhere.",
+                 "Use the AI voice (beta) for cards with no real sound",
+                 "ai audio voice tts beta irodori sentence card sound made ahead test pack"),
     "telemetry_enabled": ("Anonymous usage counts", "No words, files or content — ever",
                           "Send anonymous usage counts", "telemetry anonymous usage"),
     # a9.1: the one way to the logs (the bar's *Open the logs folder* went; Send report carries them), beside the

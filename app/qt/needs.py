@@ -256,8 +256,9 @@ ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway",
            "undo_swap", "leave_swap", "leave_swap_wait",                                 # Kantan-SL
            "undo_swap_same", "leave_swap_same",                                          # FS-2
            "undo_swap_deleted",                                                          # FS-2 2
-           "more_cards", "keep_small")                                                   # ONB-4
-PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "generate_again",
+           "more_cards", "keep_small",                                                   # ONB-4
+           "voice_not_now")                                                              # VOICE-SETUP
+PRESSED = ANSWERS + ("voice_setup", "keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs", "generate_again",
                      "pick_audiobook",
                      "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
                      "make_from_audio", "find_with_hato", "find_with_hato_zh",     # Michi-NS: each a long ask
@@ -266,7 +267,8 @@ PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "sa
                      "dw_known", "dw_ignore", "dw_bad", "dw_forget",    # Kyou-DW: a line's own answer (Parsing
                      "dw_word_wrong", "dw_only_line")                  # mistake only asks its follow-up: Kyou-DW 3)
 # Kyou-DW: the cards whose line stands behind a ? beside the title (the Qt guide: no visible line under a title)
-ABOUT_KINDS = frozenset((service.DELETED, service.OLD_DELETES, service.MORE_CARDS))     # (ONB-4's too)
+ABOUT_KINDS = frozenset((service.DELETED, service.OLD_DELETES, service.MORE_CARDS,      # (ONB-4's too,
+                         service.VOICE_SETUP))                                           # ... VOICE-SETUP's)
 
 
 class NeedsCards(QWidget):
@@ -633,6 +635,16 @@ def _ai_audio_on(settings, language):
         return False
 
 
+def _voice_offered(language):
+    """(A worker.) VOICE-SETUP: whether *Some cards need the AI voice* may show — the module here, a Japanese library,
+    the voice not installed (`modules.irodori.installed`: a file look). The module absent or failing: never."""
+    try:
+        from modules import irodori
+        return language in irodori.LANGUAGES and not irodori.installed()
+    except Exception:
+        return False
+
+
 def _find_miner(settings):
     """(A worker.) Row 13: whether setup's *Make cards* can be offered — Anki Miner as the one look finds it
     (`services.tools_found`, B2-7)."""
@@ -889,6 +901,7 @@ class NeedsYou(QObject):
         self.connect_line = None
         self.backlog = None                      # ONB-4: the bar's *Anki · N waiting* (the status service's count)
         self.more_open = False                   # ... and whether its card may show (offered, unanswered: the gather's)
+        self.ai_waiting = None                   # VOICE-SETUP: Card sound's count of cards waiting for the AI voice
         self._miner = None                       # Michi-U: the Anki Miner the last gather knew of (the feed's `miner`)
         self.gathers = 0                         # entries worked out (tests: N9)
         self.gone_folders = None                 # T6: the looks' gone rows (None: no look has said yet)
@@ -990,6 +1003,7 @@ class NeedsYou(QObject):
         """The shell showed another language's library (`library_switched`): its cards are that library's from here."""
         self.language = getattr(self.win, "language", None) or self.language
         self.backlog = None                      # ONB-4: the left language's count; the bar's next tick says this one's
+        self.ai_waiting = None                   # VOICE-SETUP: the same (Card sound counts this library's again)
 
     def view_in(self, view):
         old, self.view = self.view, view
@@ -1035,6 +1049,13 @@ class NeedsYou(QObject):
         that card may show (`more_open`: offered and unanswered, as the last gather read them), never at every count."""
         was, self.backlog = self.backlog, n if isinstance(n, int) else None
         if self.more_open and _low(was) != _low(self.backlog):
+            self.refresh()
+
+    def ai_waiting_in(self, n):
+        """VOICE-SETUP: Card sound's count of this library's cards that wait for the AI voice (no real sound to cut
+        from: `sound_source.tally`'s "ai", AUDIO-FILL's gather) — gathered again only when it comes, goes or crosses 0."""
+        was, self.ai_waiting = self.ai_waiting, n if isinstance(n, int) else None
+        if bool(was) != bool(self.ai_waiting) or (was != self.ai_waiting and self.ai_waiting):
             self.refresh()
 
     def _miner_now(self):
@@ -1136,6 +1157,7 @@ class NeedsYou(QObject):
         gone_judged = gone_folders if self._gone_judged else None     # never pruned by a summary that judged none
         asking = frozenset(self._dw_asking)
         waiting = self.backlog
+        ai_waiting = self.ai_waiting
         log_path = getattr(getattr(self.win.services, "controller", None), "log_path", None)
         generate_log = log_path() if callable(log_path) else None      # Kantan-B1: a failed Generate's hover
 
@@ -1173,7 +1195,8 @@ class NeedsYou(QObject):
                                   strays=service.deck_strays(lang, settings),      # Michi-DK: outside its deck
                                   generate_log=generate_log,                  # Kantan-B1: its path, in the hover
                                   asking=asking,                              # Kyou-DW 3: Parsing mistake's ask
-                                  waiting=waiting)                            # ONB-4: Ready for more?
+                                  waiting=waiting,                            # ONB-4: Ready for more?
+                                  ai_waiting=ai_waiting if ai_waiting and _voice_offered(lang) else None)
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
 
@@ -2525,6 +2548,28 @@ class NeedsYou(QObject):
             self._say(strings.NEEDS_KEPT_SMALL)
             self.refresh()
         self._press("keep_small", entry, service.answer, self.language, service.answer_keys(entry), then=done)
+
+    # VOICE-SETUP (PROVISIONAL): *Some cards need the AI voice: set it up*
+    def _do_voice_setup(self, entry, _line):
+        """*Set it up*: the AI voice's own guide (the private module's `qt_setup.open_guide`), its *Not now* this
+        card's. The card stays until the voice is installed (then the gather leaves it out) or *Not now*."""
+        try:
+            from modules.irodori import qt_setup
+        except ImportError:
+            return
+        lang = self.language
+
+        def not_now():
+            service.answer(lang, [service.VOICE_SETUP])
+            self.refresh()
+        qt_setup.open_guide(self.win, waiting=(entry.data or {}).get("n"), not_now=not_now)
+
+    def _do_voice_not_now(self, entry, _line):
+        """*Not now*: answered for good (Settings › Anki & mining › *Card sound* has the voice any time)."""
+        def done(_n):
+            self._say(strings.NEEDS_VOICE_NOT_NOW)
+            self.refresh()
+        self._press("voice_not_now", entry, service.answer, self.language, [service.VOICE_SETUP], then=done)
 
     # Known from Anki's question (#43)
     def _do_mark_known(self, entry, _line):

@@ -154,12 +154,13 @@ SWAPPED = "swapped"                   # Kantan-SL (PROVISIONAL): Swap made a car
 SWAP_WAITS = "swap-waits"             # Kantan-SL (PROVISIONAL): a swap's word has no other line yet — said once
 MORE_CARDS = "more-cards"             # ONB-4 (PROVISIONAL): a small start's cards nearly studied — *Ready for more?*, once
 MORE_AT = 10                    # new cards waiting in Anki (the bar's *Anki · N waiting*) at most: "nearly studied"
+VOICE_SETUP = "voice-setup"           # VOICE-SETUP (PROVISIONAL): cards first wait for the AI voice — *set it up*, once
 FOLDER_MIN = 10                 # gone files (of two shows or more) before a folder is one card
 LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
          FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND, AUDIOBOOK_TRANSCRIPT, SETTINGS_FOLDER,
          BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS, DECK_STRAYS, SHELVED, TIDIED, DELETED, OLD_DELETES,
-         SWAPPED, SWAP_WAITS, MORE_CARDS)
+         SWAPPED, SWAP_WAITS, MORE_CARDS, VOICE_SETUP)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
 WIRED_LATER = frozenset(("make_cards", "try_again", "change_video"))   # (K1's *Start fresh*: `SourceLooks.fresh`)
@@ -295,6 +296,12 @@ STRINGS = {
     # ONB-4 (PROVISIONAL): a small start's one-time *Ready for more?*
     "more_title": "Your first {n} episodes' cards are nearly studied. Ready for more?",
     "more_title_one": "Your first episode's cards are nearly studied. Ready for more?",
+    # VOICE-SETUP (PROVISIONAL words, Sonic § 108): cards first wait for the AI voice
+    "voice_title": "Some cards need the AI voice: set it up",
+    "voice_say": "{n} of your cards have no real sound to cut from. The AI voice can read their sentences, made on this "
+                 "computer.",
+    "voice_say_one": "1 of your cards has no real sound to cut from. The AI voice can read its sentence, made on this "
+                     "computer.",
     "more_say": "Next {to} episodes makes cards for your next {to} episodes by themselves, up to {cap} waiting. Keep "
                 "it small keeps {n} at a time. Either way this isn't asked again: Settings › Anki & mining changes "
                 "it any time.",
@@ -398,7 +405,7 @@ REASONS = {ASK: "reason_ask", FOLDER_GONE: "reason_folder", OFFLINE: "reason_off
 REASON_AT = 3                       # cards of one reason that bring its line (the bulk answer's own: two shows)
 # the cards whose own two answers both end them: no ⋯ (its *Not now* would say the same as their own)
 NO_LATER = frozenset((FIRST_CARDS, KNOWN_OFFER, BACKLOG_SHOWS, MINER_UPDATE,   # (Michi-U: the rows' tip points here)
-                      DECK_STRAYS, MORE_CARDS))
+                      DECK_STRAYS, MORE_CARDS, VOICE_SETUP))
 
 
 # --- small pieces ---------------------------------------------------------------------------------------------------- #
@@ -462,7 +469,7 @@ def item_key(item_id):
 def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(), asks=(), answered=frozenset(),
             mine_line=20, offers=frozenset(), cards_on=False, miner_found=True, gone_folders=(), settled=False,
             hidden=frozenset(), emptied=None, settings_folders=(), backlog=None, miner_update=None, no_subs=None,
-            generate_log=None, strays=None, asking=frozenset(), waiting=None):
+            generate_log=None, strays=None, asking=frozenset(), waiting=None, ai_waiting=None):
     """The page's entries in order (see the module's doc). `view`: the reader's `View` (None: no library); `failures`:
     `status` Entries (text, at, seen); `connect`: one language's Connect record (`read_connect`; None: Connect off);
     `seen` / `answered`: `read_seen` / `read_answered`; `offline_roots`: `find_offline`'s Roots; `asks`: `asks_of`'s
@@ -485,7 +492,9 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     `asking` (Kyou-DW 3): the deleted cards whose *Parsing mistake* was pressed (note ids; the card's own key for
     *All parsing mistakes*), each asked its follow-up (`_deleted_entries`); `waiting` (ONB-4): the new cards waiting in
     Anki, the bar's *Anki · N waiting* (`status.anki_backlog`; None: no backlog saved) — a small start's one-time
-    *Ready for more?* (`_more_entry`) once they are nearly studied."""
+    *Ready for more?* (`_more_entry`) once they are nearly studied; `ai_waiting` (VOICE-SETUP): the cards that wait
+    for the AI voice while it isn't set up (Card sound's count, `sound_source.tally`'s "ai", handed in by the window
+    only then; None: nothing known) — the one-time *Some cards need the AI voice* (`_voice_entry`)."""
     seen, answered, hidden = frozenset(seen or ()), frozenset(answered or ()), frozenset(hidden or ())
     rows = tuple(view.rows) if view is not None and view.mode == "store" else ()
     by_id = {e.id: (r, e) for r in rows for e in r.episodes}
@@ -542,6 +551,9 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
         MORE_CARDS not in answered else None
     if more is not None:
         out.append(more)
+    voice = _voice_entry(ai_waiting, seen) if VOICE_SETUP not in answered else None
+    if voice is not None:
+        out.append(voice)
     offer = (connect or {}).get("known_offer")
     if offer:
         out.append(_known_entry(offer, seen))
@@ -1205,6 +1217,19 @@ def _more_entry(view, waiting, seen):
     return Entry(key=MORE_CARDS, kind=MORE_CARDS, title=title, lines=(), actions=("more_cards", "keep_small"),
                  unseen=MORE_CARDS not in seen, say=STRINGS["more_say"].format(to=to, cap=cap, n=line),
                  data={"n": line, "to": to, "cap": cap})
+
+
+def _voice_entry(ai_waiting, seen):
+    """VOICE-SETUP's one line (PROVISIONAL; Sonic § 108): *Some cards need the AI voice: set it up* — while `ai_waiting`
+    cards have no real sound to cut from and the AI voice isn't set up (the window hands the count in only then) and
+    it isn't answered (the caller's check). *Set it up* opens the voice's own guide; *Not now* answers it for good
+    (Settings › Anki & mining › *Card sound* has it any time) -> Entry or None."""
+    if not isinstance(ai_waiting, int) or ai_waiting <= 0:
+        return None
+    return Entry(key=VOICE_SETUP, kind=VOICE_SETUP, title=STRINGS["voice_title"], lines=(),
+                 actions=("voice_setup", "voice_not_now"), unseen=VOICE_SETUP not in seen,
+                 say=STRINGS["voice_say_one"] if ai_waiting == 1 else STRINGS["voice_say"].format(n=ai_waiting),
+                 data={"n": ai_waiting})
 
 
 def _line_has_cards(rows, line):

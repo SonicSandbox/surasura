@@ -207,6 +207,10 @@ DEFAULT_SETTINGS = {
     # relevant go to the shelf (suspended) only on a big gap (a quarter of it). Your own new cards count too (B3-2 A). Never in a
     # signature.
     "connect_backlog_cap": 300,
+    # Card sound's due window (VOICE-SETUP + AUDIO-FILL, 3.0.21; Sonic § 106 1, PROVISIONAL words): the AI voice makes a
+    # card's sentence audio only for cards due within this many days (*Made ahead for* 1 · 3 · 7); real sound never
+    # waits for it. Never in a signature.
+    "card_sound_days": 3,
     # *Mine only episodes I've pre-studied* (PRESTUDIED-MINE, 3.0.20, Sonic § 101 2; PROVISIONAL words): on — an
     # episode Connect would mine on its own waits until the journey marks it pre-studied (the library store's J-STORE
     # mark), a press (*Mine now*) still the yes; off (the default) — as before. One switch for every language, read

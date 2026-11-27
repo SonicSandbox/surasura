@@ -1462,6 +1462,25 @@ class EscapeRouter(QObject):
         return True
 
 
+def settings_attaches():
+    """The packages that fill Settings' slots, each with the rows whose slots it fills (`SettingsPage.attach_later`:
+    run just before the first row of those rows' sections is built) -> [(attach, rows)], in this order: Connect's three
+    rows, the placing rules, the store's lines and *Set up again*, *Library folders* (SRC W1b), *Your settings* (a6),
+    the AI voice's beta row (Iro-AA, when its module is here). A test runs each on a page and holds it to its rows."""
+    from app.qt import settings_connect, settings_io, settings_rules, settings_sources, settings_store
+    attaches = [(settings_connect.attach, ("connect_enabled", "anki_miner", "new_cards_a_day")),
+                (settings_rules.attach, (settings_rules.ROW_ID,)),
+                (settings_store.attach, settings_store.LINES + ("keep_watched", "new_cards_from", "set_up_again")),
+                (settings_sources.attach, (settings_sources.ROW_ID, settings_sources.FRESH_ID)),
+                (settings_io.attach, (settings_io.ROW_ID,))]
+    try:
+        from modules.irodori import qt_settings
+        attaches.append((qt_settings.attach, (qt_settings.ROW_ID,)))
+    except ImportError:
+        pass
+    return attaches
+
+
 class AppFilter(QObject):
     """The app's one event filter (a9.1): the tooltip bubble's (`tooltip.Tooltips`), then Esc and Back's
     (`EscapeRouter`) — the order they ran in as two filters (the one installed last runs first). Every event in the
@@ -1953,7 +1972,8 @@ class ShellWindow(QMainWindow):
 
     def mount_settings(self):
         """The Settings page in its tab (once): the page, then the rows other packages fill — Connect's three, the
-        placing rules, the store's two lines and *Set up again* (`settings_store`). -> the page."""
+        placing rules, the store's two lines and *Set up again* (`settings_store`), … (`settings_attaches`) — each
+        attached just before the first row of its sections is built (`attach_later`). -> the page."""
         if self.settings_page is not None:
             return self.settings_page
         window_idle.slice_ran()                 # the sliced build begins here: its imports and frame are its first slice
@@ -1964,19 +1984,8 @@ class ShellWindow(QMainWindow):
         page = settings_page.SettingsPage(self, language, parent=holder)
         holder.layout().insertWidget(0, page, 1)          # above the bottom edge every page carries
         self.settings_page = page
-        attaches = [settings_connect.attach, settings_rules.attach, settings_store.attach,
-                    settings_sources.attach,                           # --- SRC W1b: *Library folders*
-                    settings_io.attach]                                # --- a6: *Your settings*
-        try:                                                           # --- Iro-AA: the AI voice's beta row
-            from modules.irodori import qt_settings
-            attaches.append(qt_settings.attach)
-        except ImportError:
-            pass
-        for attach in attaches:
-            try:
-                attach(page)
-            except Exception as e:                        # one package's rows never keep the page from opening
-                applog.log("shell", f"settings rows not attached ({attach.__module__}): {e!r}")
+        for attach, rows in settings_attaches():          # each just before its sections' first row (SETTINGS-OPEN)
+            page.attach_later(attach, rows)
         return page
 
     def open_setting(self, target):

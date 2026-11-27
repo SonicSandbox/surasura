@@ -346,11 +346,18 @@ def test_a_runs_span_on_one_language_opens_the_others_store_as_its_own(made):
     # handle, nor have the zh mode checked through it
     ja_data, ja_user = roots("ja")
     zh_data, zh_user = roots("zh")
-    migrated("ja").close()
+    window = migrated("ja")
+    try:
+        window.set_watched([window.ids("now")[0]], True)          # the ja store's marks differ from the zh one's
+    finally:
+        window.close()
     migrated("zh").close()
+    zh_marks = ls.read_watched_marks("zh", zh_data)
+    assert zh_marks != ls.read_watched_marks("ja", ja_data)
     made["opens"].clear()
     with ls.held(role="analyzer"):
         ja = ls.open_store("ja", ja_data, ja_user, role="analyzer")
+        assert ls.read_watched_marks("zh", zh_data) == zh_marks, "the zh marks, never read through the ja handle"
         zh = ls.open_store("zh", zh_data, zh_user, role="reader")
         assert ja is not None and zh is not None and zh is not ja
         assert (ja.language, zh.language) == ("ja", "zh")

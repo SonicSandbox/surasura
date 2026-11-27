@@ -57,6 +57,7 @@ from app.services import window_idle
 SAVE_S = 30.0                 # answers moving: written at most this often (the studied words: whenever they change)
 RETRY_S = 5.0                 # the token store couldn't be read (locked, busy): the round is tried again this much later
 CACHE_VERSION = 1
+_NONE = frozenset()          # (an item in no row: nothing to add, no set made for it)
 
 
 def cache_path(language):
@@ -519,7 +520,7 @@ class Chips:
                 if i in out and w not in self._made.get(i, ()):
                     left, done = out[i]
                     out[i] = (left + dl, done + dd)
-                touched |= self._rows_of.get(i, ())
+                touched |= self._rows_of.get(i, _NONE)
             for key in touched - full_rows:
                 if key in out and w not in self._rows.get(key, ()):
                     left, done = out[key]

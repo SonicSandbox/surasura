@@ -513,7 +513,10 @@ NOT_SHOWN = {
     "junban_order": "retired by the mining model (Kantan-MO): the list's *Study order*; read when it isn't saved",
     "index_pool_workers": "speed only: every file's tokens are the same either way",
     "koe_port": "settings.json only: the speech helper's port",
-    "irodori_voice": "settings.json only: the AI voice's pack (one ships; Sonic's own voice later is a second pack)",
+    "irodori_voice": "settings.json only: the AI voice's listening rounds' pack (the cards' voice: irodori_card_voice)",
+    "irodori_card_voice": "settings.json only until the AI voice's own setup: the cards' voice — by the line, a woman's, "
+                          "a man's, or one pack's id",
+    "irodori_default_voice": "settings.json only: the cards' voice when a line has no cue (a woman's)",
     "junban_show_tags": "settings.json only: Junban's show labels, off for a positions-only run",
     "junban_replan_preview": "2.x's preview: 3.0 writes the plan always",
     "junban_replan_language": "2.x's preview: 3.0 writes the plan always",

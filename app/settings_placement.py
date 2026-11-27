@@ -112,6 +112,7 @@ PLACED = {
                                             # file (3.0 writes the plan always), which no output and no signature holds
     "junban_word_fields": "neither", "junban_write_freqsort": "neither", "junban_write_frequency": "neither",
     "enable_irodori": "neither", "irodori_voice": "neither",      # Iro-AA: the AI voice's beta writes Anki, no run
+    "irodori_card_voice": "neither", "irodori_default_voice": "neither",       # Iro-P: which voice reads a card's line
 }
 # Which optional module a setting belongs to: without the module (a checkout without modules/) it doesn't exist.
 OWNERS = (("junban_", "modules.junban"), ("enable_junban", "modules.junban"), ("koe_", "modules.koe"),

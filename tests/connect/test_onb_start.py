@@ -59,6 +59,30 @@ def test_full_start_logs_the_top_twenty_as_make_cards_did():
         top20 = library.mine_line(s)
     ids = SW.start_cards("ja", {"connect_enabled": True}, "full", c.dirs("ja")[0])
     assert ids == top20 and len(ids) == 20 and _line("ja") == 20
+    assert needs.MORE_CARDS not in needs.read_offers("ja"), "ONB-4: a full start is never asked *Ready for more?*"
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_only_a_small_start_offers_ready_for_more_once(lang):
+    # why: ONB-4's one-time card belongs to the test drive alone; the offer is kept (never pruned) until answered
+    c.library(lang, extra=20)
+    needs.offer(lang, needs.FIRST_CARDS)
+    _consume(lang)
+    SW.start_cards(lang, {"connect_enabled": True}, "small", c.dirs(lang)[0])
+    assert needs.MORE_CARDS in needs.read_offers(lang) and needs.MORE_CARDS not in needs.read_answered(lang)
+
+
+def test_a_small_start_whose_offer_cant_be_written_still_starts(monkeypatch):
+    # why: the seen file held by another program must never take the start's cards away — the offer is the extra
+    c.library("ja", extra=20)
+    needs.offer("ja", needs.FIRST_CARDS)
+    _consume("ja")
+    real = needs.offer
+    monkeypatch.setattr(needs, "offer", lambda lang, key=needs.FIRST_CARDS: (_ for _ in ()).throw(
+        PermissionError("held")) if key == needs.MORE_CARDS else real(lang, key))
+    ids = SW.start_cards("ja", {"connect_enabled": True}, "small", c.dirs("ja")[0])
+    assert len(ids) == 3 and _line("ja") == 3
+    assert needs.MORE_CARDS not in needs.read_offers("ja")
 
 
 def test_the_items_each_start_covers_come_from_connects_own_rule():

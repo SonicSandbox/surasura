@@ -321,16 +321,12 @@ class BackfillWindow(windows.SecondaryWindow):
         self.btn_fill = self._button(S.BF_FILL, S.BF_FILL_TIP, self.on_fill, kind="primary")
         actions.addWidget(self.btn_fill)
         self.body.addLayout(actions)
-        self.ai_audio = None                 # Iro-AA: the AI voice's beta, its own button (absent or off: none)
-        try:
-            from modules.irodori import qt_backfill as ai_audio
-        except ImportError:
-            ai_audio = None
-        if ai_audio is not None:
-            try:                             # its button never keeps Backfill's window from opening
-                self.ai_audio = ai_audio.attach(self, actions)
-            except Exception as e:
-                print(f"Backfill: the AI audio button wasn't added: {e!r}")
+        # AUDIO-FILL (3.0.21, Sonic § 106 decision 10; PROVISIONAL words): Backfill fills the text fields; sentence
+        # sound is Card sound's one press now (its AI button retired): a line says where, while Connect is on
+        self.sound_line = None
+        if self._saved().get("connect_enabled"):
+            self.sound_line = self._label(S.BF_SOUND_LINE, tip=S.BF_SOUND_TIP)
+            self.body.addWidget(self.sound_line)
         self.resize(round(780 * f), round(660 * f))
 
     # --- settings ---------------------------------------------------------------------------------------------- #

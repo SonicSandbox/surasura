@@ -564,8 +564,8 @@ class Live(QObject):
         self._checking = False
         self._level = {"busy": False, "again": False, "asked": 0, "stale": False}
         self._heard = None                # BRIDGE-2: the library bridge heard (the window's shown library's) ...
-        self._moved = QTimer(self)        # ... and its views while Settings shows: one read once a command's views
-        self._moved.setSingleShot(True)   # end (a move: its expectation, then its commit), the reader's window for them
+        self._moved = QTimer(self)        # ... and its views while Settings shows: one read `URGENT_S` after the first
+        self._moved.setSingleShot(True)   # (a move's expectation, then its commit: the reader's window for a command)
         from app.services.library_reader import URGENT_S
         self._moved.setInterval(int(URGENT_S * 1000))
         self._moved.timeout.connect(lambda: self._library_moved(None, settled=True))
@@ -952,20 +952,22 @@ class Live(QObject):
             heard.library_changed.connect(self._library_moved)
 
     def _library_moved(self, _view, settled=False):
-        """The library moved (the reader's view): while Settings shows, its numbers read again once the views stop
-        for `URGENT_S` (a learner's command's views: a move's expectation and its commit, one read); out of sight,
-        only marked stale — read once when Settings shows next (never a read per move it can't be seen)."""
+        """The library moved (the reader's view): while Settings shows, its numbers read again `URGENT_S` after the
+        first view (a learner's command's views — a move's expectation and its commit — one read; a stream of views, an
+        import's, one a second at most, never held off while it lasts); out of sight, only marked stale — read once
+        when Settings shows next (never a read per move it can't be seen)."""
         if not (self._alive() and self.page.isVisible()):
             self._level["stale"] = True
         elif settled:
             self._read_level()
-        else:
+        elif not self._moved.isActive():
             self._moved.start()
 
     def _read_level(self):
         """The level (S2) and every band's numbers, read on a worker — one at a time, once more if asked meanwhile."""
         level = self._level
         level["stale"] = False
+        self._moved.stop()                                 # (a read now covers every view before it)
         if level["busy"]:
             level["again"] = True
             return

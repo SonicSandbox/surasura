@@ -98,7 +98,23 @@ def test_a_move_while_settings_is_hidden_reads_nothing_until_settings_shows_then
     assert settled(reads, page) == before + 1                        # shown again with nothing moved: no read
 
 
-def test_after_a_language_switch_a_move_with_settings_open_reads_the_new_librarys_numbers(world, monkeypatch):
+def test_a_move_seen_open_then_settings_hidden_and_shown_before_its_read_reads_once(world, monkeypatch):
+    # review (state, time): the command's window still running when Settings hides and shows again — the show's read
+    # covers the move; the window's own read never comes after it
+    reads = count_reads(monkeypatch)
+    seed, win, writer = world(coalesce=True)    # (the window's reader: a move, one view)
+    page = open_settings(win)
+    before = settled(reads, page)
+    views = views_of(win)
+    a_move(win)
+    assert wait_until(lambda: views, 10) and page.live._moved.isActive()
+    win.show_tab("current")
+    assert wait_until(lambda: len(views) >= 2, 10)                   # the commit's view, out of sight: stale
+    win.show_tab("settings")
+    assert settled(reads, page) == before + 1
+
+
+def test_after_a_language_switch_a_move_with_settings_open_is_heard_through_the_new_bridge(world, monkeypatch):
     # a switch makes the window a new library bridge and stops the old (`_show_switched`): Settings follows it
     reads = count_reads(monkeypatch)
     seed, win, writer = world(coalesce=True)    # (the window's reader: a move, one view)

@@ -364,13 +364,25 @@ def test_the_readout_is_read_again_when_a_level_key_or_the_library_changes(qapp,
     page.hide()                                              # out of sight: a move only marks the numbers stale
     shell.library_bridge.library_changed.emit(object())
     shell.library_bridge.library_changed.emit(object())
-    settle()
-    assert reads() == 4
+    settle(lambda: reads() != 4, 1.5)                        # (past the command's window: still nothing)
+    assert reads() == 4 and page.live._level["stale"]
     page.show()                                              # shown again: read once
     assert wait_until(lambda: reads() == 5)
     settle()
     assert reads() == 5
 
+
+
+def test_a_stream_of_library_views_reads_the_level_once_a_second_never_held_off_while_it_lasts(qapp, fakes):
+    # review (time): an import commits batch after batch, a few views a second; a timer restarted at every view
+    # would never fire while it lasts — the numbers frozen for the whole import
+    page, store, shell = make(fakes)
+    reads = lambda: fakes.names().count("read_level")      # noqa: E731
+    assert wait_until(lambda: reads() == 1)
+    for _ in range(8):                                       # 8 views 0.3 s apart: 2.4 s of a stream
+        shell.library_bridge.library_changed.emit(object())
+        settle(timeout=0.3)
+    assert 2 <= reads() - 1 <= 3                             # one read a second while it lasts (never 0, never 8)
 
 # --- Connection (S6), the Connections rows ------------------------------------------------------------------------ #
 def test_check_refreshes_the_status_and_shows_ankis_word_beside_the_emerald(qapp, fakes):

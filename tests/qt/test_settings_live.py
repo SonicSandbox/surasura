@@ -21,7 +21,7 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
 from app import exports
-from app.qt import motion, strings, style, windows
+from app.qt import bridge, motion, strings, style, windows
 from app.qt import press as qpress
 from app.qt import settings_controls as sc
 from app.qt import settings_live as live
@@ -157,6 +157,7 @@ class Shell:
 
     def __init__(self, services, text_size=True):
         self.services = services
+        self.library_bridge = bridge.Bridge()       # the library shown's bridge (the shell's; its views reach Live)
         self.bar_line = Bar()
         self.sizes = []
         if text_size:
@@ -353,10 +354,22 @@ def test_the_readout_is_read_again_when_a_level_key_or_the_library_changes(qapp,
     store.outside({"telemetry_enabled": False})              # not a level key: no read
     settle()
     assert reads() == 2
-    page.bridge.library_changed.emit(object())
+    page.bridge.library_changed.emit(object())               # the page's own bridge carries no view: not heard
+    settle()
+    assert reads() == 2
+    shell.library_bridge.library_changed.emit(object())      # BRIDGE-2: the library shown's bridge is
     assert wait_until(lambda: reads() == 3)
     page.bridge.indexed.emit("ja")
     assert wait_until(lambda: reads() == 4)
+    page.hide()                                              # out of sight: a move only marks the numbers stale
+    shell.library_bridge.library_changed.emit(object())
+    shell.library_bridge.library_changed.emit(object())
+    settle()
+    assert reads() == 4
+    page.show()                                              # shown again: read once
+    assert wait_until(lambda: reads() == 5)
+    settle()
+    assert reads() == 5
 
 
 # --- Connection (S6), the Connections rows ------------------------------------------------------------------------ #

@@ -36,7 +36,7 @@ help line.
 import os
 import time
 
-from PyQt6.QtCore import QEvent, QObject, QPoint, QRectF, Qt
+from PyQt6.QtCore import QEvent, QObject, QPoint, QRectF, Qt, QTimer
 from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit, QVBoxLayout
 
@@ -562,7 +562,13 @@ class Live(QObject):
         self.asking = None                # *Restart now to apply?* while it is open (text size)
         self._exporting = None            # the export row running (one at a time)
         self._checking = False
-        self._level = {"busy": False, "again": False, "asked": 0}
+        self._level = {"busy": False, "again": False, "asked": 0, "stale": False}
+        self._heard = None                # BRIDGE-2: the library bridge heard (the window's shown library's) ...
+        self._moved = QTimer(self)        # ... and its views while Settings shows: one read once a command's views
+        self._moved.setSingleShot(True)   # end (a move: its expectation, then its commit), the reader's window for them
+        from app.services.library_reader import URGENT_S
+        self._moved.setInterval(int(URGENT_S * 1000))
+        self._moved.timeout.connect(lambda: self._library_moved(None, settled=True))
         self._format = None               # the format last chosen (the pop opens on it)
         self._copies = {}                 # A6: an AI app -> its Copy presses (the latest one sets the name back)
         self._finding = None              # *Find hato…*'s press while it goes (Michi-HD)
@@ -574,9 +580,12 @@ class Live(QObject):
         b.settings_written.connect(self._written)
         b.status_changed.connect(self._status)
         b.automation_changed.connect(self._automation)
-        b.library_changed.connect(lambda _view: self._read_level())
         b.indexed.connect(lambda _language: self._read_level())
         b.update_changed.connect(lambda _state: self._read_skipped())
+        self._hear()
+        switched = getattr(self.shell, "library_switched", None)
+        if switched is not None:                    # BRIDGE-2: a language switch's new bridge (`_show_switched`)
+            switched.connect(self._hear)
         page.installEventFilter(self)               # Kantan-B2: Piyo's last round read again as Settings shows
         page.takes["text_size"] = self._text_size
         page.takes["app_motion"] = self._motion
@@ -894,6 +903,8 @@ class Live(QObject):
         if kind == QEvent.Type.Show and obj is self.page:
             self._read_piyo()
             self._read_hato_update()
+            if self._level["stale"]:
+                self._read_level()                       # BRIDGE-2: the library moved while Settings was out of sight
         elif kind == QEvent.Type.WindowActivate and self._alive() and self.page.isVisible():
             self._read_piyo()
         return False
@@ -925,9 +936,36 @@ class Live(QObject):
             line.show()
 
     # --- the level ------------------------------------------------------------------------------------------------- #
+    def _hear(self):
+        """BRIDGE-2: follow the views of the library the window shows now (`shell.library_bridge`; a language switch
+        makes another and the old one goes silent) — the page's own bridge is the main one, which carries no view."""
+        heard = getattr(self.shell, "library_bridge", None)
+        if heard is self._heard:
+            return
+        old, self._heard = self._heard, heard
+        if old is not None:
+            try:
+                old.library_changed.disconnect(self._library_moved)
+            except (TypeError, RuntimeError):               # already gone (deleteLater) or never connected
+                pass
+        if heard is not None:
+            heard.library_changed.connect(self._library_moved)
+
+    def _library_moved(self, _view, settled=False):
+        """The library moved (the reader's view): while Settings shows, its numbers read again once the views stop
+        for `URGENT_S` (a learner's command's views: a move's expectation and its commit, one read); out of sight,
+        only marked stale — read once when Settings shows next (never a read per move it can't be seen)."""
+        if not (self._alive() and self.page.isVisible()):
+            self._level["stale"] = True
+        elif settled:
+            self._read_level()
+        else:
+            self._moved.start()
+
     def _read_level(self):
         """The level (S2) and every band's numbers, read on a worker — one at a time, once more if asked meanwhile."""
         level = self._level
+        level["stale"] = False
         if level["busy"]:
             level["again"] = True
             return

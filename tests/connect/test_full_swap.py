@@ -707,7 +707,7 @@ def test_the_runner_hands_a_rewritten_card_to_the_record_and_to_backfill(ledger,
     monkeypatch.setattr(runner, "_through", lambda *a: None)
     monkeypatch.setattr(runner, "_blocked", lambda *a, **k: None)
     monkeypatch.setattr(runner, "_circle_paused", lambda *a: False)
-    monkeypatch.setattr(runner, "_queue_ai_audio", lambda *a: None)
+    monkeypatch.setattr(runner, "_queue_sound", lambda *a: None)
     monkeypatch.setattr(ledger, "undo_record", lambda jid: [900])
     runner._record_made(S(), ledger, lang, job, True)
     runner._fill(S(), ledger, lang, job)

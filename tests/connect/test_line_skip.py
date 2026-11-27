@@ -167,7 +167,8 @@ def test_the_pick_verbs_run_file_names_the_copy_only_for_3_13(tmp_path, monkeypa
 def test_a_book_word_lined_up_with_its_audiobook_carries_no_skip(monkeypatch):
     # its sentence is cut at its own cue (`lineup.split`: line_expansion [0, 0]): a skip would name no merged line
     from app.connect import lineup
-    cue = SimpleCue(start=3.0, end=5.0, audio="a.m4b", subtitle="a.srt")
+    cue = SimpleCue(start=3.0, end=5.0, audio="a.m4b", subtitle="a.srt", text=lineup.clean("図書館の鍵を忘れちゃった"),
+                    unit=None)                  # (a cue as `lineup.cues` makes one: `split` indexes them, BOOK-ONCE)
     monkeypatch.setattr(lineup, "usable", lambda state: True)
     monkeypatch.setattr(lineup, "cues", lambda state: [cue])
     monkeypatch.setattr(lineup, "place", lambda *a: cue)

@@ -159,6 +159,10 @@ SCHEMA_VERSION = 33
 # Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.
 _NAMES_SHARES = 1
 
+# The form of each counted file's share of the songs a Generate leaves out (the `songs` table, meta songs_counted,
+# Store.keep_song_counts): a change here, or to how a share is counted, makes every share counted again.
+_SONG_SHARES = 1
+
 
 # --------------------------------------------------------------------------- #
 # Keys, paths, signatures
@@ -392,6 +396,19 @@ def _read_texts(blob, numbers=None):
 # --------------------------------------------------------------------------- #
 # Schema
 # --------------------------------------------------------------------------- #
+# What the songs a Generate leaves out count in each counted file (RARITY-SONGS: `Store.keep_song_counts`), so the
+# store's counts are the list's while *Count song lyrics* is off. A store made before it gets the table at its next
+# open (`_add_counted`): nothing in it moves, and no version.
+_SONGS_TABLE = """
+CREATE TABLE IF NOT EXISTS songs (      -- one counted file's share of the songs left out, as of its stamp
+    path TEXT PRIMARY KEY, mtime REAL, size INTEGER,
+    tag TEXT,                  -- json [the sentence numbers left out, what the name tables made of the file]
+    total INTEGER,             -- their tokens, as the aggregate counts them
+    counts BLOB,               -- zlib(json [[lemma, reading, n], ...]) — their words
+    bound BLOB,                -- zlib(json [[lemma, reading, n], ...]) — their one-kanji words' uses as pieces
+    phrases BLOB               -- zlib(json [{phrase index: uses}, {"lemma|reading": uses given to a phrase}])
+);
+"""
 # IF NOT EXISTS on every object, kept as a second guard. Two processes can both read a stale `user_version` (the
 # background indexer and a Generate run race routinely) and both decide the schema is missing; what keeps them apart is
 # the write lock: _ensure_schema builds inside BEGIN IMMEDIATE and looks at the version again inside it, so the second
@@ -428,7 +445,7 @@ CREATE TABLE IF NOT EXISTS bound (      -- maintained rollup of the files' `boun
     PRIMARY KEY (lemma, reading)
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
-"""
+""" + _SONGS_TABLE
 
 
 def _statements(script):
@@ -445,7 +462,8 @@ def _statements(script):
 
 
 _HEAD_INDEX = "CREATE INDEX IF NOT EXISTS files_head ON files(path, mtime, size, total, counted, aside)"
-_REBUILD = [f"DROP TABLE IF EXISTS {t}" for t in ("files", "types", "aggregate", "bound", "meta")] + _statements(_SCHEMA)
+_REBUILD = ([f"DROP TABLE IF EXISTS {t}" for t in ("files", "types", "aggregate", "bound", "meta", "songs")]
+            + _statements(_SCHEMA))
 
 
 def _schema_ready(conn):
@@ -514,7 +532,10 @@ def _add_counted(conn):
 
     def no_head():                  # (reconcile's covering index, G2: gone with a files table made again by hand)
         return conn.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='files_head'").fetchone() is None
-    if not missing() and not no_head():
+
+    def no_songs():                 # (the songs' shares, RARITY-SONGS: a store made before them)
+        return conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='songs'").fetchone() is None
+    if not missing() and not no_head() and not no_songs():
         return
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -522,6 +543,8 @@ def _add_counted(conn):
             conn.execute(f"ALTER TABLE files ADD COLUMN {name} {kind}")
         if no_head():
             conn.execute(_HEAD_INDEX)
+        if no_songs():
+            conn.execute(_SONGS_TABLE.strip())
         conn.commit()
     except sqlite3.OperationalError as e:
         conn.rollback()
@@ -1160,6 +1183,9 @@ class Store:
         self._words_read = None     # (names_words' stored text, the names in it): names_words
         self._adjust = None         # (meta names_adjust as stored, parsed): `_names_entry`
         self.switches = None        # the name switches (`_library_switches`) a process without the run's settings reads
+        self.songs_out = None       # are the songs out of the counts: a run's answer (True / False); None reads Settings
+        self._songs_read = None     # (meta songs_counted as stored, parsed): `_songs_share`
+        self._songs_state_now = None    # the state a run's `keep_song_counts` kept its shares under (no settings read again)
         self._types = {}            # type id -> (lemma, reading, surface, orth): the vocabulary rows read so far
 
     def close(self):
@@ -1470,6 +1496,144 @@ class Store:
         except Exception:
             self.conn.rollback()
             raise
+
+    # -- the songs a run leaves out, out of the store's counts too (RARITY-SONGS) -- #
+    def keep_song_counts(self, songs, settings=None):
+        """Keep what the songs a run leaves out (`songs`: analyzer.song_sentences' {path: [sentence number, ...]})
+        count in each counted file — their words, tokens, one-kanji pieces and set phrases, read as `file_tokens` reads
+        them (the name tables applied) and counted as the aggregate counts them (a token with target-language
+        characters) — so `word_counts`, `bound_counts`, `phrase_table` and `phrase_sums` count what the list counts
+        while *Count song lyrics* is off: the Rarity readout, Automatic rarity and Generate's floor are one recipe again.
+        A file's share is kept (the `songs` table) under its (mtime, size), its numbers and what the name tables make of
+        its names (`_names_read_in`, asked again only when what the tables join moved), so a Generate reads again only
+        a file whose songs or reading moved, and their sum (meta songs_counted) moves by those files alone. All of it is
+        counted again when the tokenizer, a name switch, the phrase data or the engine changed. One transaction:
+        rolled back on a failure (a store locked by the indexer) and raised. `settings`: the run's one read."""
+        from app import analyzer
+        state = self._songs_state_now = self._songs_state(settings)
+        names = _digest(_names_reads(self.names_tables())) if self.language == "ja" else None
+        try:
+            held_sum = json.loads(self.get_meta("songs_counted") or "{}")
+        except ValueError:
+            held_sum = {}
+        same_state = held_sum.get("state") == state
+        held = {}
+        if same_state:
+            held = {path: (mtime, size, tag) for path, mtime, size, tag in
+                    self.conn.execute("SELECT path, mtime, size, tag FROM songs")}
+        wanted = {_norm(path): sorted(numbers) for path, numbers in songs.items() if numbers}
+        rows, keys = {}, list(wanted)
+        for at in range(0, len(keys), 500):
+            batch = keys[at:at + 500]
+            for path, mtime, size, blob in self.conn.execute(
+                    f"SELECT path, mtime, size, names FROM files WHERE counted = 1 AND path IN "
+                    f"({','.join('?' * len(batch))})", batch):
+                rows[path] = (mtime, size, blob)
+        names_moved = held_sum.get("names") != names
+        reads = switches = None
+        if self.language == "ja":
+            reads, switches = _names_reads(self.names_tables()), _library_switches(self.language)
+        found = None
+        if self.language == "ja" and phrase_rows_on(self.language, settings):
+            from app import phrases
+            found = phrases.load()
+        has_lang = analyzer.has_target_language
+        write, plus = [], []
+        for path, (mtime, size, blob) in rows.items():
+            entry = held.get(path)
+            if entry is not None and not names_moved and entry[:2] == (mtime, size) \
+                    and json.loads(entry[2])[0] == wanted[path]:
+                continue                                # read as it was: its share stands
+            read_in = _names_read_in(blob, reads, switches) if reads is not None and blob else None
+            tag = json.dumps([wanted[path], read_in], ensure_ascii=False, separators=(",", ":"))
+            if entry is not None and entry[:2] == (mtime, size) and entry[2] == tag:
+                continue                                # the tables moved, but not what they make of this file
+            sentences = self.file_tokens(path)
+            sung = [sentences[n] for n in wanted[path] if n < len(sentences)]
+            counts, total, pieces = Counter(), 0, Counter()
+            for text, tokens in sung:
+                for lemma, reading, surface, *_rest in tokens:
+                    if has_lang(lemma, self.language) or has_lang(surface, self.language):
+                        counts[(lemma, reading)] += 1
+                        total += 1
+                if self.language == "ja":
+                    for i in analyzer.bound_uses(text, tokens):
+                        pieces[(tokens[i][0], tokens[i][1])] += 1
+            uses, taken = phrases.tally(sung, found) if found is not None else ({}, {})
+            share = ([[l, r, n] for (l, r), n in counts.items()], total, [[l, r, n] for (l, r), n in pieces.items()],
+                     [{str(k): v[0] for k, v in uses.items()}, taken])
+            write.append((path, mtime, size, tag, total, _encode_counts(share[0]), _encode_counts(share[2]),
+                          _encode_counts(share[3])))
+            plus.append(share)
+        gone = [path for path in held if path not in rows]
+        replaced = [w[0] for w in write if w[0] in held]
+        if same_state and not write and not gone and not names_moved:
+            return                                      # nothing moved since the last Generate: nothing written
+        own = not self.conn.in_transaction
+        try:
+            if own:
+                self.conn.execute("BEGIN IMMEDIATE")
+            if same_state:
+                kept = _SongSum(held_sum)
+                for path in gone + replaced:            # their old shares come off (O(what moved), never a re-sum)
+                    row = self.conn.execute("SELECT total, counts, bound, phrases FROM songs WHERE path=?",
+                                            (path,)).fetchone()
+                    if row is not None:
+                        kept.add(_song_share(row), -1)
+                self.conn.executemany("DELETE FROM songs WHERE path=?", [(path,) for path in gone])
+            else:
+                kept = _SongSum({})
+                self.conn.execute("DELETE FROM songs")
+            self.conn.executemany("INSERT OR REPLACE INTO songs(path, mtime, size, tag, total, counts, bound, phrases) "
+                                  "VALUES(?,?,?,?,?,?,?,?)", write)
+            for share in plus:
+                kept.add(share, 1)
+            value = json.dumps(kept.value(state, names), ensure_ascii=False, separators=(",", ":"))
+            self.conn.execute("INSERT INTO meta(key, value) VALUES('songs_counted', ?) ON CONFLICT(key) DO UPDATE "
+                              "SET value=?", (value, value))
+            if own:
+                self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def _songs_state(self, settings=None):
+        """What every song share is counted under: the share's form, the schema, the engine, the tokenizer's identity
+        and, Japanese, the name switches, the phrase data and its switch (`settings`: a run's one read)."""
+        from app import analyzer
+        state = [_SONG_SHARES, SCHEMA_VERSION, analyzer.ENGINE_REVISION, self.get_meta("build_sig")]
+        if self.language == "ja":
+            from app import phrase_data, phrases
+            state += [list(_library_switches(self.language)), phrase_data.REVISION, phrases.MATCHER_VERSION,
+                      phrase_rows_on(self.language, settings)]
+        return state
+
+    def _songs_share(self):
+        """What the songs the last Generate left out count in the files still counted at its stamps (`_SongSum`), or
+        None: the songs are counted (Settings' *Count song lyrics* on, or the run said so: `songs_out`), none were
+        kept, or they were kept under another tokenizer, name switch, phrase data or engine (`_songs_state`). A file
+        changed, set aside or gone since keeps its songs in the counts until the next Generate keeps it again."""
+        try:
+            out = self.songs_out if self.songs_out is not None else not songs_counted()
+            if not out:
+                return None
+            raw = self.get_meta("songs_counted")
+            if not raw:
+                return None
+            if self._songs_read is None or self._songs_read[0] != raw:
+                self._songs_read = (raw, json.loads(raw))
+            held = self._songs_read[1]
+            state = self._songs_state_now if self.songs_out is not None else None
+            if held.get("state") != (state or self._songs_state()):
+                return None
+            share = _SongSum(held)
+            for row in self.conn.execute(
+                    "SELECT s.total, s.counts, s.bound, s.phrases FROM songs s LEFT JOIN files f ON f.path = s.path "
+                    "WHERE f.path IS NULL OR f.counted != 1 OR f.mtime IS NOT s.mtime OR f.size IS NOT s.size"):
+                share.add(_song_share(row), -1)
+            return share
+        except Exception:
+            return None
 
     # -- the library's name tables (app/names.py) ---------------------------- #
     def names_tables(self):
@@ -2283,9 +2447,26 @@ class Store:
         if self.language != "ja" or not phrase_rows_on(self.language):
             return None
         try:
-            return json.loads(self.get_meta("phrases") or "null")
+            table = json.loads(self.get_meta("phrases") or "null")
         except Exception:
             return None
+        songs = self._songs_share()
+        if table and songs is not None and (songs.uses or songs.taken):   # the songs a Generate leaves out
+            from app import phrases
+            found = phrases.load()
+            rows = table.get("rows") or {}
+            for index, n in songs.uses.items():
+                phrase = found.entry(int(index)) if found is not None else None
+                row = rows.get(phrase.word + "|" + phrase.reading) if phrase is not None else None
+                if row is not None:
+                    row[0] -= n
+            table["rows"] = {name: row for name, row in rows.items() if row[0] > 0}
+            taken = table.get("taken") or {}
+            for name, n in songs.taken.items():
+                if name in taken:
+                    taken[name] -= n
+            table["taken"] = {name: n for name, n in taken.items() if n > 0}
+        return table
 
     def phrase_tallies(self):
         """{path: ({phrase index: [uses, [spellings]]}, {"lemma|reading": uses given to a phrase})} — each counted
@@ -2345,7 +2526,15 @@ class Store:
                     uses[int(index)] += n
                     held = spellings.setdefault(int(index), [])
                     held.extend(x for x in spelled if x not in held)
-            return (uses, spellings) if seen == len(counted) else None
+            if seen != len(counted):
+                return None
+            songs = self._songs_share()
+            if songs is not None:                       # the songs a Generate leaves out (`keep_song_counts`)
+                for index, n in songs.uses.items():
+                    if int(index) in uses:
+                        uses[int(index)] -= n
+                uses = Counter({index: n for index, n in uses.items() if n > 0})
+            return uses, spellings
         except Exception:
             return None
         finally:
@@ -2393,6 +2582,11 @@ class Store:
         rows = self.conn.execute("SELECT lemma, reading, count FROM aggregate").fetchall()
         counts = {(lemma, reading): n for lemma, reading, n in rows}
         adjust, total_adjust = self._names_adjustment()
+        songs = self._songs_share()
+        if songs is not None:                           # the songs a Generate leaves out (`keep_song_counts`)
+            adjust = Counter(adjust)
+            adjust.subtract(songs.counts)
+            total_adjust -= songs.total
         if adjust:
             for key, delta in adjust.items():
                 counts[key] = counts.get(key, 0) + delta
@@ -2409,6 +2603,14 @@ class Store:
         bound = {(lemma, reading): n for lemma, reading, n in rows}
         for key, delta in self._names_bound().items():
             bound[key] = bound.get(key, 0) + delta
+        songs = self._songs_share()
+        if songs is not None:                           # the songs a Generate leaves out (`keep_song_counts`)
+            for key, n in songs.bound.items():
+                left = bound.get(key, 0) - n
+                if left > 0:
+                    bound[key] = left
+                else:
+                    bound.pop(key, None)
         return bound
 
     def unknown_frequencies(self, known_tuples=None, known_lemmas=None, ignore_set=None,
@@ -2540,6 +2742,56 @@ def phrase_rows_on(language, settings=None):
         return bool(settings_manager.loaded(settings)["logic"].get("phrase_rows", True))
     except Exception:
         return False
+
+
+def songs_counted(settings=None):
+    """Settings -> *Count song lyrics (OP / ED)* (logic.count_song_lyrics, off by default) — read fresh, as
+    `phrase_rows_on` is: the Rarity readout sees a change as the next Generate will (`settings`: a run's one read)."""
+    try:
+        from app import settings_manager
+        return bool(settings_manager.loaded(settings)["logic"].get("count_song_lyrics", False))
+    except Exception:
+        return False
+
+
+def _song_share(row):
+    """One `songs` row's share (total, counts, bound, phrases columns) in `_SongSum.add`'s shape."""
+    total, counts, bound, phrases = row
+    phrases = _decode_counts(phrases) or [{}, {}]
+    return _decode_counts(counts) or [], total or 0, _decode_counts(bound) or [], phrases
+
+
+class _SongSum:
+    """What the songs left out count, summed over the counted files' shares (meta songs_counted): `counts` and
+    `bound` {(lemma, reading): n}, `total`, the set phrases' `uses` {phrase index (text): n} and `taken`
+    {"lemma|reading": n}. `add(share, sign)` adds (1) or takes off (-1) one file's share
+    ([[lemma, reading, n], ...], total, [[lemma, reading, n], ...], [uses, taken])."""
+
+    def __init__(self, held):
+        self.counts = Counter({(l, r): n for l, r, n in held.get("counts", ())})
+        self.bound = Counter({(l, r): n for l, r, n in held.get("bound", ())})
+        self.total = int(held.get("total", 0))
+        self.uses = Counter(held.get("uses") or {})
+        self.taken = Counter(held.get("taken") or {})
+
+    def add(self, share, sign):
+        counts, total, bound, (uses, taken) = share
+        for lemma, reading, n in counts:
+            self.counts[(lemma, reading)] += sign * n
+        for lemma, reading, n in bound:
+            self.bound[(lemma, reading)] += sign * n
+        self.total += sign * total
+        for index, n in uses.items():
+            self.uses[index] += sign * n
+        for name, n in taken.items():
+            self.taken[name] += sign * n
+
+    def value(self, state, names):
+        """The sum as meta songs_counted keeps it (what nets to nothing left out)."""
+        return {"state": state, "names": names, "total": self.total,
+                "counts": [[l, r, n] for (l, r), n in self.counts.items() if n],
+                "bound": [[l, r, n] for (l, r), n in self.bound.items() if n],
+                "uses": {k: n for k, n in self.uses.items() if n}, "taken": {k: n for k, n in self.taken.items() if n}}
 
 
 def read_names_tables(language):

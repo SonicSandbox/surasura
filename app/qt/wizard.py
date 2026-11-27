@@ -4487,10 +4487,13 @@ class SetupWizard(QWidget):
         seq, self._offering = self._offer_seq, True
 
         def offered(_yes):
+            self.alive(self._cards_offered)(seq)          # (first: a Needs you that can't redraw never holds it)
             needs = getattr(shell, "needs_you", None)
-            if needs is not None and not sip.isdeleted(needs):
-                needs.refresh()
-            self.alive(self._cards_offered)(seq)
+            try:
+                if needs is not None and not sip.isdeleted(needs):
+                    needs.refresh()
+            except Exception as e:
+                applog.log("wizard", f"needs you after sorting: {e}")
         offer = getattr(self.api, "sorted_offer", None)
         services = getattr(shell, "services", None)
         writer, chores = getattr(services, "writer", None), getattr(services, "chores", None)
@@ -4502,7 +4505,10 @@ class SetupWizard(QWidget):
             while writer is not None and writer.pending() and time.monotonic() < end:
                 time.sleep(0.05)
             if chores is not None:
-                chores.index(force=True)                  # (returns at once: one check, one indexer at a time)
+                try:
+                    chores.index(force=True)              # (returns at once: one check, one indexer at a time)
+                except Exception as e:                    # (no count now: D1's line is still looked for)
+                    applog.log("wizard", f"the indexer after sorting: {e}")
             return offer(language, ids) if callable(offer) else False
 
         def failed(info):

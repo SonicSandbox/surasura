@@ -17,6 +17,7 @@ import pytest
 pytest.importorskip("PyQt6")
 from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QWidget
 
 from app import settings_manager
 from app.qt import strings
@@ -237,6 +238,45 @@ def test_a_cards_line_check_that_raises_still_lets_your_start_be_decided(make, q
     assert wait_until(lambda: not wiz._start_pending())
     assert api.calls[-2:] == [("sorted_offer", "ja"), ("start_offered", "ja")]
 
+
+
+def test_an_indexer_that_cannot_be_asked_still_lets_the_cards_line_be_looked_for(make):
+    # why: the sort's end asks the window's indexer first (*Your list*'s numbers); an indexer that raises (its child
+    # can't start) must not skip D1's check — the line would never be written and *Your start* never offered
+    api = HeldStart(offered=False)
+    wiz, shell, api, settings, _m = make(api=api, data={"connect_enabled": True})
+    asked = []
+
+    def index(force=False):
+        asked.append(force)
+        raise OSError("the indexer's child could not start")
+    shell.services.chores = types.SimpleNamespace(index=index)
+    go_to(wiz, "level")
+    assert wait_until(lambda: not wiz._start_pending())
+    assert wiz.shown() == W.ORDER                                  # (no line yet: no *Your start*)
+    wiz._offer_cards([1])
+    assert wait_until(lambda: wiz.shown()[-1] == "start")
+    assert asked == [True] and ("sorted_offer", "ja") in api.calls
+
+
+class BrokenNeedsYou(QWidget):
+    """A Needs you that can't redraw (its read raises)."""
+
+    def refresh(self):
+        raise OSError("the needs-you file is held by another program")
+
+
+def test_a_needs_you_that_cannot_redraw_still_lets_your_start_be_decided(make):
+    # why: the sort's end redraws Needs you with D1's new line; a redraw that raises must not leave *Your start*
+    # undecided for good (Generate would wait on it) nor stop the window (the harness fails a raising slot)
+    api = HeldStart(offered=False)
+    wiz, shell, api, settings, _m = make(api=api, data={"connect_enabled": True})
+    shell.needs_you = BrokenNeedsYou(shell)
+    go_to(wiz, "level")
+    assert wait_until(lambda: not wiz._start_pending())
+    wiz._offer_cards([1])
+    assert wait_until(lambda: wiz.shown()[-1] == "start")
+    assert wait_until(lambda: not wiz._start_pending())
 
 def test_another_language_drops_the_offer_until_its_own_line_is_read(make):
     # why: the offer is one language's line — Back to page 1 and another language must not reach *Your start* on it

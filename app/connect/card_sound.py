@@ -563,7 +563,7 @@ def _cut_book(settings, language):
         from app.cli.verbs import _anki_miner_setup
         from app.connect import add_audio, anki_miner
         os.makedirs(run_dir, exist_ok=True)
-        setup = _anki_miner_setup(settings, lang, run_dir)
+        setup = _anki_miner_setup(settings, lang, run_dir, held=_HELD.setdefault(lang, {}))   # AM-START 2: the press's
         if setup is None:
             return {}
         return add_audio.cut(anki_miner.find(settings), lang, setup[1], can, run_dir)

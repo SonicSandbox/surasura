@@ -1603,9 +1603,11 @@ class Store:
         from app import analyzer
         state = [_SONG_SHARES, SCHEMA_VERSION, analyzer.ENGINE_REVISION, self.get_meta("build_sig")]
         if self.language == "ja":
-            from app import phrase_data, phrases
-            state += [list(_library_switches(self.language)), phrase_data.REVISION, phrases.MATCHER_VERSION,
-                      phrase_rows_on(self.language, settings)]
+            on = phrase_rows_on(self.language, settings)
+            state += [list(_library_switches(self.language)), on]
+            if on:                                      # (off: the phrase data is never read, as the run reads none)
+                from app import phrase_data, phrases
+                state += [phrase_data.REVISION, phrases.MATCHER_VERSION]
         return state
 
     def _songs_share(self):

@@ -921,8 +921,8 @@ def _line_of(text, needle):
 def test_the_changed_tests_are_by_function_never_the_whole_file(tmp_path, monkeypatch):
     """Edited, added or decorated tests; tests that use a changed helper (also through another helper), helper class,
     fixture or constant of their file, or a function the branch changed in the app; every test of a class whose own
-    fixture changed — and nothing else of the file (a helper class's changed method counts as the class: `.count` on
-    a list is not `_Shelf.count`)."""
+    fixture changed — and nothing else of the file (a helper class's changed method counts for a test that calls it
+    and reaches the class: `.count` on a list is not `_Shelf.count`)."""
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_shelf.py").write_text(_TESTS_FILE, encoding="utf-8")
     (tmp_path / "app").mkdir()
@@ -960,6 +960,98 @@ def test_a_test_file_that_doesnt_parse_goes_whole(tmp_path, monkeypatch):
     monkeypatch.setattr(run_tests, "_changed_test_files", lambda root, base: ["tests/test_half.py"])
     assert run_tests._changed_tests(str(tmp_path), "base") == (["tests/test_half.py"],
                                                                ["tests/test_half.py: doesn't parse, run whole"])
+
+
+# A changed fake picks only the tests that call what changed (TOOLS-321): train 90's one-line change to
+# FakeSettings.set (a new keys= parameter) took every test of tests/qt/test_wizard.py — they all build the fake through
+# one helper — and the app's changed tidy.synced matched FakeApi's own self.synced: 638 tests, 540 of them x20.
+_FAKES_FILE = """from app.connect import clips
+
+
+class FakeSettings:
+    def __init__(self, data):
+        self.data = dict(data)
+        self.calls = []
+
+    def set(self, changes, keys=()):
+        self.calls.append(dict(changes))
+
+
+class FakeApi:
+    def __init__(self):
+        self.synced = []
+
+
+def make(data=None):
+    seen = set()
+    return FakeSettings(data or {"deck": "日本語::文"}), FakeApi(), seen
+
+
+def test_reads_the_deck():
+    settings, _api, _seen = make()
+    assert settings.data["deck"] == "日本語::文"
+
+
+def test_saves_the_deck():
+    settings, _api, _seen = make()
+    settings.set({"deck": "中文::句"})
+    assert settings.calls == [{"deck": "中文::句"}]
+
+
+def test_a_set_of_words_is_no_call_of_the_fake():
+    assert {"雨", "雪"} == set(["雪", "雨"])
+
+
+def test_cuts_a_clip():
+    assert clips.cut is not None
+"""
+
+
+def test_a_changed_fake_method_picks_its_callers_never_every_test_that_builds_the_fake(tmp_path, monkeypatch):
+    """FakeSettings.set changed: the test that calls settings.set (reaching the fake through make) is picked; the test
+    that only builds it, and the one that calls the builtin set(), are not. tidy.synced changed in the app: FakeApi's
+    own self.synced is no call of it (the file never imports tidy). clips.cut changed: the file imports clips, so its
+    caller is picked."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_wizard_fakes.py").write_text(_FAKES_FILE, encoding="utf-8")
+    (tmp_path / "app" / "connect").mkdir(parents=True)
+    (tmp_path / "app" / "connect" / "tidy.py").write_text("def synced(note):\n    return note\n", encoding="utf-8")
+    (tmp_path / "app" / "connect" / "clips.py").write_text("def cut(path):\n    return path\n", encoding="utf-8")
+    t = _FAKES_FILE
+    monkeypatch.setattr(run_tests, "_changed_lines", lambda root, base: {
+        "tests/test_wizard_fakes.py": {_line_of(t, "    def set(self, changes, keys=()):")},
+        "app/connect/tidy.py": {2}, "app/connect/clips.py": {2}})
+    monkeypatch.setattr(run_tests, "_changed_test_files", lambda root, base: ["tests/test_wizard_fakes.py"])
+    ids, notes = run_tests._changed_tests(str(tmp_path), "base")
+    assert ids == ["tests/test_wizard_fakes.py::test_saves_the_deck", "tests/test_wizard_fakes.py::test_cuts_a_clip"]
+    assert notes == []
+
+
+def test_a_changed_app_method_with_a_common_name_counts_only_beside_its_class(tmp_path, monkeypatch):
+    """SettingsService.set changed in the app: `set` is too common to tell (COMMON), so only a test that names the
+    class and calls .set is picked — never every test that calls some .set or the builtin set(). A changed
+    __init__ is the class being built: every test that names it."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_settings_calls.py").write_text(
+        "from app.services.settings import SettingsService\n\n\n"
+        "def test_saves_through_the_service(tmp_path):\n"
+        "    SettingsService(tmp_path).set({'deck': '日本語::文'})\n\n\n"
+        "def test_a_flag_is_set_elsewhere():\n"
+        "    import threading\n    e = threading.Event()\n    e.set()\n    assert e.is_set() and set('雨') == {'雨'}\n\n\n"
+        "def test_only_reads_the_service(tmp_path):\n"
+        "    assert SettingsService(tmp_path).get() is not None\n", encoding="utf-8")
+    (tmp_path / "app" / "services").mkdir(parents=True)
+    service = ("class SettingsService:\n    def __init__(self, root):\n        self.root = root\n\n"
+               "    def get(self):\n        return {}\n\n    def set(self, changes):\n        return changes\n")
+    (tmp_path / "app" / "services" / "settings.py").write_text(service, encoding="utf-8")
+    monkeypatch.setattr(run_tests, "_changed_test_files", lambda root, base: ["tests/test_settings_calls.py"])
+    monkeypatch.setattr(run_tests, "_changed_lines", lambda root, base: {"app/services/settings.py": {9}})
+    assert run_tests._changed_tests(str(tmp_path), "base")[0] == [
+        "tests/test_settings_calls.py::test_saves_through_the_service"]
+    monkeypatch.setattr(run_tests, "_changed_lines", lambda root, base: {"app/services/settings.py": {3}})
+    assert run_tests._changed_tests(str(tmp_path), "base")[0] == [
+        "tests/test_settings_calls.py::test_saves_through_the_service",
+        "tests/test_settings_calls.py::test_only_reads_the_service"]
 
 
 def _git(root, *args):

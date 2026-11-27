@@ -639,6 +639,7 @@ def _defs(source):
                 names.add(n.id)
             elif isinstance(n, ast.Attribute):
                 names.add(n.attr)
+                names.add("." + n.attr)                     # (a method's call, told from a bare name: x.set, not set())
             elif isinstance(n, ast.arg):
                 names.add(n.arg)                            # (a fixture is asked for by its parameter's name)
         return names
@@ -680,10 +681,47 @@ def _touched(defs, changed):
     return hit
 
 
+def _called_by(p, names, pairs, app=False):
+    """Record how code calls the changed definition `p` (a path from _defs) — never by its class's name when one
+    method changed (a fake's one changed method is not every use of the fake: TOOLS-321; trains 90 and 92's changed
+    fakes took 638 and 99 tests): a dunder method by its class (it is built); a test file's helper method as the pair
+    (class, ".method"): a call of the method by a test that reaches the class (see _reach), so `.count` on a list is
+    not `_Shelf.count`; an app method by its name, or, too common to tell (COMMON: `set`, `get`), as the pair; a
+    function, fixture, constant or a class's own lines by the name."""
+    name = p[-1]
+    if len(p) == 2 and name.startswith("__"):
+        names.add(p[0])
+    elif len(p) == 2 and (not app or name in COMMON):
+        pairs.add((p[0], "." + name))                       # (called as x.set(...): never the builtin set())
+    elif not name.startswith("__"):
+        names.add(name)
+
+
+def _reach(defs, owners):
+    """{class: the names that reach it in a test file}: the class and every helper or fixture that uses one of them
+    (a fixture that builds the fake), by the name a test uses it by."""
+    out = {}
+    for owner in owners:
+        reach, grew = {owner}, True
+        while grew:
+            grew = False
+            for p, _s, _e, used in defs:
+                if not _is_test(p) and p[-1] not in reach and used & reach:
+                    reach.add(p[-1])
+                    grew = True
+        out[owner] = reach
+    return out
+
+
+def _calls(used, names, pairs, reach):
+    """True when code using `used` calls a changed definition (see _called_by)."""
+    return bool(used & names) or any(m in used and used & reach.get(o, {o}) for o, m in pairs)
+
+
 def _changed_tests(project_root, base):
     """The tests changed since BASE (see above), as pytest node ids in path order -> (node ids, notes)."""
     lines = _changed_lines(project_root, base)
-    app_names = set()
+    app_names, app_pairs, app_funcs = set(), set(), {}
     for path, changed in lines.items():                       # what the branch changed in the app's code
         if not path.endswith(".py") or _is_test_file(path) or not os.path.isfile(os.path.join(project_root, path)):
             continue
@@ -691,7 +729,15 @@ def _changed_tests(project_root, base):
             defs = _defs(_read_source(project_root, path))
         except SyntaxError:
             continue
-        app_names.update(p[-1] for p in _touched(defs, changed) if not p[-1].startswith("__"))
+        classes = {q[0] for q, _s, _e, _u in defs if len(q) == 2}
+        for p in _touched(defs, changed):
+            if len(p) == 1 and p[0] not in classes:
+                # (A module's function or constant counts only where its module is imported: a fake's attribute of
+                # the same name — FakeApi's self.synced beside tidy.synced, train 90 — never calls it.)
+                if not p[0].startswith("__"):
+                    app_funcs.setdefault(path, set()).add(p[0])
+            else:
+                _called_by(p, app_names, app_pairs, app=True)
     ids, notes = [], []
     for path in _changed_test_files(project_root, base):
         try:
@@ -701,17 +747,34 @@ def _changed_tests(project_root, base):
             notes.append(f"{path}: doesn't parse, run whole")
             continue
         touched = _touched(defs, lines.get(path, set()))
-        names = {p[0] for p in touched if not _is_test(p)} | app_names   # (a helper class's method: the class)
+        names, pairs = set(app_names), set(app_pairs)
+        text = _read_source(project_root, path).decode("utf-8-sig", "replace")
+        for module, funcs in app_funcs.items():
+            if _imports(text, module):
+                names |= funcs
+        for p in touched:
+            if not _is_test(p):
+                _called_by(p, names, pairs)
+        reach = _reach(defs, {o for o, _m in pairs})
+        marked = {p for p in touched if not _is_test(p)}
+        # (A class with methods is reached through them: its own entry's names are every method's too, so one
+        # method's call of a changed name would mark the whole class and every test that builds it.)
+        classes_of = {p[0] for p, _s, _e, _u in defs if len(p) == 2}
         grew = True
-        while grew:                                           # a helper that uses a changed name has changed too
+        while grew:                                           # a helper that calls a changed definition has changed too
             grew = False
             for p, _s, _e, used in defs:
-                if not _is_test(p) and p[0] not in names and used & names:
-                    names.add(p[0])
+                if len(p) == 1 and p[0] in classes_of:
+                    continue
+                if not _is_test(p) and p not in marked and _calls(used, names, pairs, reach):
+                    marked.add(p)
+                    _called_by(p, names, pairs)
+                    reach.update((o, r) for o, r in _reach(defs, {o for o, _m in pairs}).items() if o not in reach)
                     grew = True
         classes = {p[0] for p in touched if p[0].startswith("Test") and not _is_test(p)}   # a test class's own
         # lines or one of its fixtures / helper methods: every test of the class
-        picked = [p for p, _s, _e, used in defs if _is_test(p) and (p in touched or used & names or p[0] in classes)]
+        picked = [p for p, _s, _e, used in defs
+                  if _is_test(p) and (p in touched or _calls(used, names, pairs, reach) or p[0] in classes)]
         if not picked:
             notes.append(f"{path}: no test changed (its changed lines are outside every test and helper)")
         ids.extend(path + "".join("::" + part for part in p) for p in dict.fromkeys(picked))

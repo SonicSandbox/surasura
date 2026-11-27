@@ -757,17 +757,19 @@ def test_place_by_the_books_index_answers_as_the_three_passes_ja_and_zh(language
         found += [lineup.Cue(path + ".m4b", path, a, z, lineup.clean(t)) for a, z, t in lineup.srt_cues(path)]
     found.insert(3, lineup.Cue("a.m4b", "a.srt", 0.0, 1.0, ""))         # a cue with no letters (♪ only)
     found += [c._replace(start=c.start + 600) for c in found[4:6]]     # two lines said again later in the book
+    found += [found[6]._replace(start=900.0, text=found[6].text * 2),     # a line said twice in one cue
+              found[7]._replace(start=901.0, text=found[7].text[:lineup.MIN_CHARS])]   # a cue of MIN_CHARS exactly
     texts = [c.text for c in found if c.text]
     assert len(texts) > 8 and len(set(texts)) < len(texts)            # real lines, some said twice
     other = _other_lines(language)
     sentences = texts + [a + b for a, b in zip(texts, texts[1:])] + \
         [a + b + c for a, b, c in zip(texts, texts[1:], texts[2:])] + \
-        [t[1:-1] for t in texts] + [t[:4] for t in texts] + [t + "です" for t in texts] + list(other) + ["", "。"]
+        [t[1:-1] for t in texts] + [t[:4] for t in texts] + [t + "です" for t in texts] + list(other) + ["", "。"] +         [a + b[:lineup.MIN_CHARS] for a, b in zip(texts, texts[1:])]
     book = add_audio.Book(found)
     checked = 0
     for s in sentences:
         clean = lineup.clean(s)
-        for form in (None, clean[:2], clean[-3:-1], "存在しない"):
+        for form in (None, clean[:2], clean[-3:-1], "存在しない", "「" + clean[:2] + "」"):
             want = _place_before(s, form, found)
             assert add_audio.place(s, form, book) == want, (s, form)
             assert add_audio.place(s, form, found) == want, (s, form)

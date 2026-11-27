@@ -1141,7 +1141,8 @@ class WalkFile:
 # The store
 # --------------------------------------------------------------------------- #
 READINGS_CHUNK = 500               # lemmas per query of `Store.readings` (SQLite's own limit is 32766)
-HOLDING_CHUNK = 500                # paths per query of `Store.holding`
+HOLDING_FIRST = 8                  # paths in `Store.holding`'s first query, doubled each query up to HOLDING_CHUNK
+HOLDING_CHUNK = 500                # paths per query of `Store.holding`, at most
 HOLDING_SET_AT = 16                # words asked at once from which `Store.holding` reads a file's counts into a set
 
 
@@ -1205,10 +1206,11 @@ class Store:
         each key or run's first `most` files only (a common word is in nearly every file; a run's words may stand
         apart in a file, 手 … を … 出す, so a caller looks again without `most` for what those didn't give). The counts
         are the tokenizer's words, before the name tables: a name they join (app/names.py) is found as its parts.
-        AUDIO-WASTE: the blobs are read HOLDING_CHUNK paths a query, and with HOLDING_SET_AT words or more asked, a
-        file's counts are read once into its keys and lemmas (one look a word, not one search of the blob a word: 145 s
-        for 1,000 words over 20,000 files) — the same answer as the byte search, which stays for few words and for a
-        blob or word JSON writes with an escape (a backslash: then a quote in it isn't the key's own)."""
+        AUDIO-WASTE: the blobs are read a query per HOLDING_FIRST paths, doubled up to HOLDING_CHUNK, and with
+        HOLDING_SET_AT keys and runs or more asked, a file's counts are read once into its keys and lemmas (a look a
+        word, not a search of the blob a word: that was 145 s for 1,000 words over 20,000 files) — the same answer as
+        the byte search, which stays for few words, for a blob or word JSON writes with an escape (a backslash: then a
+        quote in it isn't a key's own) and for a blob not in the writer's shape."""
         wanted = [[json.dumps(make_key(lemma, reading), ensure_ascii=False).encode("utf-8")] for lemma, reading in keys]
         looks = [[(True, make_key(lemma, reading))] for lemma, reading in keys]
         wanted += [[json.dumps(lemma, ensure_ascii=False)[:-1].encode("utf-8") + b"|" for lemma in run]
@@ -1217,16 +1219,20 @@ class Store:
         plain = [all(b"\\" not in p for p in parts) and all(whole or "|" not in s for whole, s in look)
                  for parts, look in zip(wanted, looks)]
         by_set = len(wanted) >= HOLDING_SET_AT
+        by_lemma = any(not whole for look in looks for whole, _s in look)
+        paths = list(paths)
         found = [0] * len(wanted)
-        out = []
-        for at in range(0, len(paths), HOLDING_CHUNK):
-            batch = paths[at:at + HOLDING_CHUNK]
+        open_ = len(wanted) if most is None or most > 0 else 0     # (keys and runs still under `most`)
+        out, at, size = [], 0, HOLDING_FIRST
+        while at < len(paths):
+            batch = paths[at:at + size]
+            at, size = at + len(batch), min(size * 2, HOLDING_CHUNK)    # (a `most` caller stopping early reads few)
             normed = [_norm(p) for p in batch]
             names = list(dict.fromkeys(normed))
             blobs = dict(self.conn.execute(
                 f"SELECT path, counts FROM files WHERE path IN ({','.join('?' * len(names))})", names))
             for path, name in zip(batch, normed):
-                if most is not None and all(n >= most for n in found):
+                if most is not None and open_ <= 0:
                     return out
                 blob = blobs.get(name)
                 try:
@@ -1236,13 +1242,16 @@ class Store:
                 counts = lemmas = None
                 if by_set and text and b"\\" not in text:
                     try:
-                        counts = json.loads(text)
-                    except ValueError:
+                        counts = json.loads(text.decode("utf-8"))
+                    except (ValueError, RecursionError):
                         counts = None
-                    if isinstance(counts, dict):
-                        lemmas = {k.partition("|")[0] for k in counts}
+                    # (only the writer's own shape, {"lemma|reading": n}: a key without a bar or a value that
+                    # isn't a count is searched byte by byte, as before)
+                    if not isinstance(counts, dict) or not all(
+                            "|" in k and type(n) is int for k, n in counts.items()):
+                        counts = None
                     else:
-                        counts = None
+                        lemmas = {k.partition("|")[0] for k in counts} if by_lemma else ()
                 hit = False
                 for n, parts in enumerate(wanted):
                     if most is not None and found[n] >= most:
@@ -1254,6 +1263,8 @@ class Store:
                     if held:
                         found[n] += 1
                         hit = True
+                        if most is not None and found[n] == most:
+                            open_ -= 1
                 if hit:
                     out.append(path)
         return out

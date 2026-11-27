@@ -80,13 +80,16 @@ def test_holding_answers_as_the_byte_search_for_many_and_few_words_ja_and_zh(tmp
             dict(keys=words[:40] + [("存在しない語彙", "ゾンザイシナイ")], runs=[[w] for w in lemmas[-30:]]),
             dict(keys=[(w[0], w[1] + "x") for w in words[:30]]),                       # a lemma held, not that key
         ]
-        for chunk in (1, 2, ti.HOLDING_CHUNK):
+        for first, chunk in ((1, 1), (1, 2), (2, 3), (ti.HOLDING_FIRST, ti.HOLDING_CHUNK)):
+            monkeypatch.setattr(ti, "HOLDING_FIRST", first)              # (growing reads: 1, 2, 2 ... / 2, 3, 3 ...)
             monkeypatch.setattr(ti, "HOLDING_CHUNK", chunk)
-            for case in cases:
-                for most in (None, 1, 2):
+            for case in cases + [dict()]:
+                for most in (None, 0, 1, 2):
                     got = store.holding(asked, most=most, **case)
                     assert got == _reference(store, asked, most=most, **case), (chunk, most, case)
         assert store.holding([], runs=[[w] for w in lemmas]) == []
+        many = dict(runs=[[w] for w in lemmas[::5]])                    # any iterable of paths, as before
+        assert store.holding(iter(asked), **many) == _reference(store, asked, **many)
     finally:
         store.close()
 
@@ -103,10 +106,13 @@ def test_a_blob_or_word_json_escapes_falls_back_to_the_byte_search_and_answers_t
         clean = {"棒|線|ボウ": 1, "棒|ボウ": 2, "普通|フツウ": 1}
         store.conn.execute("UPDATE files SET counts = ? WHERE path = ?",
                            (ti._encode_counts(clean), ti._norm(paths[1])))
+        odd2 = zlib.compress(json.dumps({"abc": 1, "x|y": "ab|c", "p|q": {"a|b": 1}, "普通|フツウ": 2},
+                                        ensure_ascii=False).encode("utf-8"))      # not the writer's shape
+        store.conn.execute("UPDATE files SET counts = ? WHERE path = ?", (odd2, ti._norm(paths[2])))
         store.conn.commit()
-        lemmas = ['言"う', "円\\記号", "タブ\tの", "棒", "棒|線", "普通", '"', "う", "言", ""] + \
+        lemmas = ["abc", "ab", "a", "x", "p", '言"う', "円\\記号", "タブ\tの", "棒", "棒|線", "普通", '"', "う", "言", ""] + \
             [w[0] for w in _words(store)][:30]
-        keys = [('言"う', "イウ"), ("円\\記号", "エン"), ("棒|線", "ボウ"), ("棒", "線|ボウ"), ("普通", "フツウ"),
+        keys = [("a", "b"), ("x", "y"), ('言"う', "イウ"), ("円\\記号", "エン"), ("棒|線", "ボウ"), ("棒", "線|ボウ"), ("普通", "フツウ"),
                 ('"', "キゴウ")]
         for case in (dict(runs=[[w] for w in lemmas]), dict(keys=keys, runs=[[w] for w in lemmas]),
                      dict(runs=[["棒", "普通"], ['言"う', "普通"]] + [[w] for w in lemmas])):
@@ -117,9 +123,10 @@ def test_a_blob_or_word_json_escapes_falls_back_to_the_byte_search_and_answers_t
 
 
 def test_holding_reads_the_blobs_a_query_per_chunk_never_one_per_file(tmp_path, monkeypatch):
-    """Red before AUDIO-WASTE: one SELECT a file. Now one a HOLDING_CHUNK paths."""
+    """Red before AUDIO-WASTE: one SELECT a file. Now one a HOLDING_CHUNK paths (HOLDING_FIRST the first)."""
     store, paths = _store(tmp_path, "ja", JA)
     try:
+        monkeypatch.setattr(ti, "HOLDING_FIRST", 3)
         monkeypatch.setattr(ti, "HOLDING_CHUNK", 3)
         said = []
         lemmas = sorted({w[0] for w in _words(store)})
@@ -146,4 +153,21 @@ def test_many_words_read_each_file_once_not_once_a_word(tmp_path, monkeypatch):
         assert got == _reference(store, paths, runs=[[w] for w in lemmas]) == paths
         assert len(loads) == len(paths)
     finally:
+        store.close()
+
+
+def test_a_caller_stopping_at_most_reads_few_blobs_not_a_whole_chunk(tmp_path):
+    """`most` 1 for one word every file holds: the answer is the first file, and the reads stop at the first query
+    (HOLDING_FIRST paths), never HOLDING_CHUNK blobs for one file."""
+    store, paths = _store(tmp_path, "ja", JA)
+    try:
+        common = sorted(set.intersection(*[{k.split("|")[0] for k in json.loads(zlib.decompress(b))}
+                                           for (b,) in store.conn.execute("SELECT counts FROM files")]))
+        assert common                                                   # (a word every file holds: は, の …)
+        said = []
+        store.conn.set_trace_callback(lambda sql: said.append(sql) if "FROM files" in sql else None)
+        assert store.holding(paths * 10, runs=[[common[0]]], most=1) == paths[:1]
+        assert len(said) == 1 and said[0].count("', '") + 1 <= ti.HOLDING_FIRST     # (one query, its few paths)
+    finally:
+        store.conn.set_trace_callback(None)
         store.close()

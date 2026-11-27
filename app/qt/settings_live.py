@@ -899,8 +899,8 @@ class Live(QObject):
             return
         keys = set(keys)
         from app.services import automation
-        if automation.moves_level(keys) or {"exclude_single", "logic.phrase_rows", "logic.ignore_names"} & keys:
-            self._read_level()                # (+ what the band previews read beyond the chip: BRIDGE-2 ignore_names)
+        if automation.moves_level(keys) or "exclude_single" in keys:
+            self._read_level()
         if "skipped_version" in keys:
             self._read_skipped()
         self._paint_level()                   # the page put the settings' band back: Automatic's shown again (S2)

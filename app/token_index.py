@@ -1143,7 +1143,7 @@ class WalkFile:
 READINGS_CHUNK = 500               # lemmas per query of `Store.readings` (SQLite's own limit is 32766)
 HOLDING_FIRST = 8                  # paths in `Store.holding`'s first query, doubled each query up to HOLDING_CHUNK
 HOLDING_CHUNK = 500                # paths per query of `Store.holding`, at most
-HOLDING_SET_AT = 16                # words asked at once from which `Store.holding` reads a file's counts into a set
+HOLDING_SET_AT = 40                # words asked at once from which `Store.holding` reads a file's counts into a set
 
 
 class Store:
@@ -1219,6 +1219,14 @@ class Store:
         plain = [all(b"\\" not in p for p in parts) and all(whole or "|" not in s for whole, s in look)
                  for parts, look in zip(wanted, looks)]
         by_set = len(wanted) >= HOLDING_SET_AT
+        # the set read's one-word looks, by what they look for (each file's own words met by one intersection);
+        # every other look (a several-word run, one JSON escapes) is asked one by one
+        one_key, one_lemma, by_each = {}, {}, []
+        for n, look in enumerate(looks):
+            if plain[n] and len(look) == 1:
+                (one_key if look[0][0] else one_lemma).setdefault(look[0][1], []).append(n)
+            else:
+                by_each.append(n)
         by_lemma = any(not whole for look in looks for whole, _s in look)
         paths = list(paths)
         found = [0] * len(wanted)
@@ -1253,18 +1261,26 @@ class Store:
                     else:
                         lemmas = {k.partition("|")[0] for k in counts} if by_lemma else ()
                 hit = False
-                for n, parts in enumerate(wanted):
+                if counts is None:
+                    held_now = [n for n, parts in enumerate(wanted)
+                                if (most is None or found[n] < most) and all(p in text for p in parts)]
+                else:
+                    held_now = [n for s in one_key.keys() & counts.keys() for n in one_key[s]]
+                    held_now += [n for s in one_lemma.keys() & lemmas for n in one_lemma[s]]
+                    for n in by_each:
+                        if plain[n]:
+                            held = all((s in counts) if whole else (s in lemmas) for whole, s in looks[n])
+                        else:
+                            held = all(p in text for p in wanted[n])
+                        if held:
+                            held_now.append(n)
+                for n in held_now:
                     if most is not None and found[n] >= most:
                         continue
-                    if counts is not None and plain[n]:
-                        held = all((s in counts) if whole else (s in lemmas) for whole, s in looks[n])
-                    else:
-                        held = all(p in text for p in parts)
-                    if held:
-                        found[n] += 1
-                        hit = True
-                        if most is not None and found[n] == most:
-                            open_ -= 1
+                    found[n] += 1
+                    hit = True
+                    if most is not None and found[n] == most:
+                        open_ -= 1
                 if hit:
                     out.append(path)
         return out

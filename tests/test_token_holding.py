@@ -75,6 +75,7 @@ def test_holding_answers_as_the_byte_search_for_many_and_few_words_ja_and_zh(tmp
         cases = [
             dict(keys=words[::7]),
             dict(runs=[[w] for w in lemmas[::5]]),
+            dict(runs=[[w] for w in lemmas[::9]] * 2, keys=words[::13] * 2),        # a word asked twice
             dict(runs=[[w] for w in lemmas[:3]]),                                      # few: the byte search
             dict(runs=[lemmas[i:i + 3] for i in range(0, len(lemmas), 11)] + [["存在しない語彙"]]),
             dict(keys=words[:40] + [("存在しない語彙", "ゾンザイシナイ")], runs=[[w] for w in lemmas[-30:]]),
@@ -98,7 +99,7 @@ def test_a_blob_or_word_json_escapes_falls_back_to_the_byte_search_and_answers_t
     """A key holding a quote, a backslash or a tab (JSON writes each with a backslash: a quote in the blob is then
     not only a key's own) — that file is searched byte by byte, and a word with one is too; a lemma with a bar is
     searched as the byte search finds it (`"a|` also starts the key a|b|…). Each answer the reference's."""
-    store, paths = _store(tmp_path, "ja", JA[:3])
+    store, paths = _store(tmp_path, "ja", JA[:5])
     try:
         odd = {'言"う|イウ': 1, '"|キゴウ': 1, "円\\記号|エン": 2, "タブ\tの|タブ": 1, "棒|線|ボウ": 1, "普通|フツウ": 3}
         store.conn.execute("UPDATE files SET counts = ? WHERE path = ?",
@@ -111,7 +112,7 @@ def test_a_blob_or_word_json_escapes_falls_back_to_the_byte_search_and_answers_t
         store.conn.execute("UPDATE files SET counts = ? WHERE path = ?", (odd2, ti._norm(paths[2])))
         store.conn.commit()
         lemmas = ["abc", "ab", "a", "x", "p", '言"う', "円\\記号", "タブ\tの", "棒", "棒|線", "普通", '"', "う", "言", ""] + \
-            [w[0] for w in _words(store)][:30]
+            [w[0] for w in _words(store)][:40]
         keys = [("a", "b"), ("x", "y"), ('言"う', "イウ"), ("円\\記号", "エン"), ("棒|線", "ボウ"), ("棒", "線|ボウ"), ("普通", "フツウ"),
                 ('"', "キゴウ")]
         for case in (dict(runs=[[w] for w in lemmas]), dict(keys=keys, runs=[[w] for w in lemmas]),

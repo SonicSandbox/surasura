@@ -196,11 +196,11 @@ class PhraseSet:
             # 'look smug' in どうやって: the tagger reads どやる as どう + やる). None in a grammar expression (`_inside`).
             # 582 of the 13,217 hold one.
             by_key = {entry.key: index for index, entry in enumerate(self.entries)}    # as the trie: the last wins
-            entries = self.entries
-            self._nests = [frozenset() if entry.grammar else frozenset(
+            entries, none = self.entries, frozenset()      # one empty set for the 12,635 that hold none
+            self._nests = [none if entry.grammar else frozenset(
                 inner for a in range(len(entry.key)) for b in range(a + 1, len(entry.key) + (a > 0))
                 for inner in (by_key.get(entry.key[a:b]),)
-                if inner is not None and entries[inner].reading[:-1] in entry.reading) for entry in entries]
+                if inner is not None and entries[inner].reading[:-1] in entry.reading) or none for entry in entries]
             self._trie, self.firsts = trie, frozenset(trie)
         return self._trie
 

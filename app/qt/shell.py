@@ -30,6 +30,13 @@ import threading
 import time
 import traceback
 
+# Run as `python -m app.qt.shell`, the window is the ONE imported module's: this file's body run as `__main__` was a
+# second copy beside the `app.qt.shell` that needs.py, settings_sources.py and the wizard import, with a Connect feed
+# of its own (`_CONNECT_FEEDS`: the window's one feed) (ENTRY-ONCE, 3.0.21; analyzer.py's entry). Before the body.
+if __name__ == "__main__":
+    from app.qt import shell as _one
+    sys.exit(_one.main())
+
 from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (QFontMetrics, QFontMetricsF, QGuiApplication, QIcon, QKeySequence,
@@ -156,6 +163,8 @@ class Services:
         self.replan_heard = []                  # finish-pending: told each line the host says (its worker) — the
         #                                         window's drag controller's: a press waiting for its re-order ends
         #                                         with some
+        self.words_heard = []                   # BRIDGE-2: told (language) each time a word list's write lands (any
+        #                                         thread: `_words_marked`) — Settings' level numbers read again
         self.language = self.settings.get().get("target_language") or "ja"
         self.closing = threading.Event()  # set at quit: a Generate still waiting for `results` starts nothing
         self.quit_hook = None             # the window's: the update hands over (called on a worker)
@@ -357,14 +366,15 @@ class Services:
                 numbers.idle(NUMBERS_WAIT_S)        # (a worker: the card asked again after this sees them out)
             except Exception as e:
                 applog.log("shell", f"the numbers after a mark: {e!r}")
-        if language != self.language:
-            return                                  # (another language's lists: its next Generate reads them)
-        automation = self.automation
-        if automation is not None and hasattr(automation, "known_changed"):
-            automation.known_changed()
-        words_marked = getattr(self.replan, "words_marked", None)
-        if words_marked is not None:
-            words_marked()
+        if language == self.language:               # (another language's lists: its next Generate reads them)
+            automation = self.automation
+            if automation is not None and hasattr(automation, "known_changed"):
+                automation.known_changed()
+            words_marked = getattr(self.replan, "words_marked", None)
+            if words_marked is not None:
+                words_marked()
+        for heard in list(self.words_heard):         # BRIDGE-2: Settings' level numbers (Known, Ignore, Still learning),
+            heard(language)                          # told last: the known count asked again above lands beside this
 
     def _stone_marked(self, language):
         """(The writer's thread.) A watched mark, or its undo, that moved nothing that counts: the journey keeper's
@@ -1455,6 +1465,25 @@ class EscapeRouter(QObject):
         return True
 
 
+def settings_attaches():
+    """The packages that fill Settings' slots, each with the rows whose slots it fills (`SettingsPage.attach_later`:
+    run just before the first row of those rows' sections is built) -> [(attach, rows)], in this order: Connect's three
+    rows, the placing rules, the store's lines and *Set up again*, *Library folders* (SRC W1b), *Your settings* (a6),
+    the AI voice's beta row (Iro-AA, when its module is here). A test runs each on a page and holds it to its rows."""
+    from app.qt import settings_connect, settings_io, settings_rules, settings_sources, settings_store
+    attaches = [(settings_connect.attach, ("connect_enabled", "anki_miner", "new_cards_a_day")),
+                (settings_rules.attach, (settings_rules.ROW_ID,)),
+                (settings_store.attach, settings_store.LINES + ("keep_watched", "new_cards_from", "set_up_again")),
+                (settings_sources.attach, (settings_sources.ROW_ID, settings_sources.FRESH_ID)),
+                (settings_io.attach, (settings_io.ROW_ID,))]
+    try:
+        from modules.irodori import qt_settings
+        attaches.append((qt_settings.attach, (qt_settings.ROW_ID,)))
+    except ImportError:
+        pass
+    return attaches
+
+
 class AppFilter(QObject):
     """The app's one event filter (a9.1): the tooltip bubble's (`tooltip.Tooltips`), then Esc and Back's
     (`EscapeRouter`) — the order they ran in as two filters (the one installed last runs first). Every event in the
@@ -1627,6 +1656,9 @@ class ShellWindow(QMainWindow):
         # the services, through the bridge
         self.bridge = bridge.Bridge(services.settings, services.registry, services.status, parent=self)
         self.bridge.status_changed.connect(self.show_status)
+        words_heard = getattr(services, "words_heard", None)           # BRIDGE-2: a word list's write, as a signal
+        if words_heard is not None:                                    # (a test's stand-in services may have none)
+            words_heard.append(self.bridge.tell_words)
         self._jobs = ()                                   # the registry's newest snapshot (E20: what the close waits for)
         self._quit = None                                 # None · "waiting" (E20: an Anki write ends first) · "ready"
         self.restart_asked = False                        # *Restart now* (text size): main starts the program again
@@ -1946,7 +1978,8 @@ class ShellWindow(QMainWindow):
 
     def mount_settings(self):
         """The Settings page in its tab (once): the page, then the rows other packages fill — Connect's three, the
-        placing rules, the store's two lines and *Set up again* (`settings_store`). -> the page."""
+        placing rules, the store's two lines and *Set up again* (`settings_store`), … (`settings_attaches`) — each
+        attached just before the first row of its sections is built (`attach_later`). -> the page."""
         if self.settings_page is not None:
             return self.settings_page
         window_idle.slice_ran()                 # the sliced build begins here: its imports and frame are its first slice
@@ -1957,19 +1990,8 @@ class ShellWindow(QMainWindow):
         page = settings_page.SettingsPage(self, language, parent=holder)
         holder.layout().insertWidget(0, page, 1)          # above the bottom edge every page carries
         self.settings_page = page
-        attaches = [settings_connect.attach, settings_rules.attach, settings_store.attach,
-                    settings_sources.attach,                           # --- SRC W1b: *Library folders*
-                    settings_io.attach]                                # --- a6: *Your settings*
-        try:                                                           # --- Iro-AA: the AI voice's beta row
-            from modules.irodori import qt_settings
-            attaches.append(qt_settings.attach)
-        except ImportError:
-            pass
-        for attach in attaches:
-            try:
-                attach(page)
-            except Exception as e:                        # one package's rows never keep the page from opening
-                applog.log("shell", f"settings rows not attached ({attach.__module__}): {e!r}")
+        for attach, rows in settings_attaches():          # each just before its sections' first row (SETTINGS-OPEN)
+            page.attach_later(attach, rows)
         return page
 
     def open_setting(self, target):
@@ -5273,7 +5295,3 @@ def quiet_exit(workers_ms=QUIT_WORKERS_MS, join_s=QUIT_THREAD_JOIN_S, gone=()):
             thread.join(join_s)
             ended = ended and not thread.is_alive()
     return ended
-
-
-if __name__ == "__main__":
-    sys.exit(main())

@@ -736,10 +736,16 @@ def _in_sentence(raw, word, tokenize):
     return None
 
 
+# Names what `card_word_in_sentence` finds, in the known words' per-term cache key (`analyzer.load_known_words`, G8):
+# bump it with any change to what it places, or a kana card's known word read before is kept.
+KANA_CARD_RULE = 1
+
+
 def card_word_in_sentence(word, raw_sentence, tokenize):
     """The token a card written in kana alone IS in its own sentence, read as Generate reads that sentence — the one
-    rule for a kana card's word (Kyou-KN, 2026-11-20): Junban's known test (`reposition.is_known_word`) and the ✓
-    chip's count (`services/card_chip`) both read it here. Alone, kana is the tagger's guess (まく is 膜); in 水をまく
+    rule for a kana card's word (Kyou-KN, 2026-11-20): Junban's known test (`reposition.is_known_word`), the ✓
+    chip's count (`services/card_chip`) and the known words every run reads (`analyzer.load_known_words`, KANA-KNOWN)
+    all read it here. Alone, kana is the tagger's guess (まく is 膜); in 水をまく
     the card is 撒く, in 泥まみれ 泥塗れ. -> the analyzer's `(lemma, reading, surface, orth)`, or None: no tokenizer,
     a word not in kana alone or of one kana, no sentence that places it (`_word_in_sentence`), or a card the dictionary
     keeps apart from the sentence's word (`word_of_its_own`: ことに read 事 + に) — each then read as itself."""

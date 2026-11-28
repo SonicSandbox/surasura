@@ -250,7 +250,12 @@ ENSURE_AUDIO_EXAMPLE = False
 #     next open). 3.0.21.
 # 55: a use of a longer set phrase is a use of each shorter one inside it (phrases.PhraseSet._inside: 身に余る光栄 counts
 #     for 身に余る; MATCHER_VERSION 7), a word living only inside a phrase given once however many stand over it.
-ENGINE_REVISION = 55
+# 56: a studied card written in kana alone is known as the word its own sentence shows it to be (KANA-KNOWN; the rule
+#     Junban and the ✓ chip read, anki_match.card_word_in_sentence): a かなう card in 兄にかないません knows 敵う, never
+#     the 適う its letters read alone — the sync keeps those cards' sentences beside KnownWord.json
+#     (token_index.KANA_SENTENCES_FILE; anki_sync READING_VERSION 3 reads the cards studied before once), and
+#     load_known_words reads them. No tokenizing changed: SCHEMA_VERSION stays 33. 3.0.22.
+ENGINE_REVISION = 56
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -3541,7 +3546,7 @@ def load_known_words(json_path, tokenizer, terms=None):
     
     # In the file's own encoding (path_utils.read_text): saved with a BOM (Notepad's "UTF-8 with
     # BOM") or as UTF-16, json.load refused it and Generate stopped. The tokenizer says the language.
-    from app import token_index
+    from app import anki_match, token_index
     language = "ja" if isinstance(tokenizer, JapaneseTokenizer) else "zh"
     signature = token_index.known_signature(json_path)
     data = json.loads(read_text(json_path, language))
@@ -3562,6 +3567,13 @@ def load_known_words(json_path, tokenizer, terms=None):
     # field synced from Anki: もう遅い気がする) marks the set phrases in it known too, as it marks its words — found
     # by Generate's own finder (`PhraseSet.find`, its rules), never a second one. Off, nothing is added (the
     # known-words cache is keyed on the switch, the phrases and the finder: token_index).
+    # A studied card written in kana alone counts for the word its own sentence shows it to be (KANA-KNOWN, decision
+    # KANA-CARD-KNOWN): the one rule Junban's known test and the ✓ chip read (`anki_match.card_word_in_sentence`), over
+    # the sentences the known-words sync keeps beside this file (`token_index.kana_sentences`). Each sentence that
+    # places the term counts that word (its lemma and reading) and the term itself — never what its letters read
+    # alone (かなう alone is 適う; in 兄にかないません 敵う): homophones stay apart. A sentence that places none, or
+    # none at all, reads the term as itself, as before. Japanese only.
+    said_by = token_index.kana_sentences(json_path) if language == "ja" else {}
     phrase_set = None
     if isinstance(tokenizer, JapaneseTokenizer) and LOGIC.get("phrase_rows", True):
         try:
@@ -3589,51 +3601,66 @@ def load_known_words(json_path, tokenizer, terms=None):
                 term = _known_term(term)     # a gloss cut off; a sentence kept whole
             
             asked = term                    # (the term as the file gives it: the key, whatever it is read as)
+            said_as = unicodedata.normalize("NFKC", term).strip() if said_by and isinstance(term, str) else ""
+            said = said_by.get(said_as) if said_as else None
+            if said:                        # (its sentences decide it too: they key it, with the rule's version)
+                asked = "\x00".join((term, f"kana-card-{anki_match.KANA_CARD_RULE}") + said)
             held = (met.get(asked) or before.get(asked)) if asked else None
             if term and held is None:
                 # Normalize using the same tokenizer: what this term gives, apart (the cache's)
                 known_tuples, known_lemmas = held = set(), set()
-                try:
-                    # A known joined word marks its pieces known too, as it did before words kept their
-                    # affixes: 時間 is known only through the user's 時間帯 (Patterns_Quality_Spec §6.2a).
-                    pieces = [] if isinstance(tokenizer, JapaneseTokenizer) else None
-                    sentences = ()
-                    if pieces is None:
-                        tokens = tokenizer.tokenize(term)
-                    else:
-                        sentences = list(tokenizer.tokenize_sentences(term, pieces))
-                        tokens = [token for _, s_tokens in sentences for token in s_tokens]
-                    term = zh_script.convert(term, script)
+                placed = []
+                for sentence in said or ():
+                    try:                    # the card as the side file spells it (NFKC: as the sync read it)
+                        placed.append(anki_match.card_word_in_sentence(said_as, sentence, tokenizer.tokenize))
+                    except Exception:       # a sentence the tagger can't read places nothing; the others still do
+                        placed.append(None)
+                for token in placed:
+                    if token is not None:
+                        known_tuples.add((token[0], token[1]))
+                        known_lemmas.update((token[0], term))
+                if not placed or None in placed:   # a sentence that places none reads the term as itself
+                    try:
+                        # A known joined word marks its pieces known too, as it did before words kept their
+                        # affixes: 時間 is known only through the user's 時間帯 (Patterns_Quality_Spec §6.2a).
+                        pieces = [] if isinstance(tokenizer, JapaneseTokenizer) else None
+                        sentences = ()
+                        if pieces is None:
+                            tokens = tokenizer.tokenize(term)
+                        else:
+                            sentences = list(tokenizer.tokenize_sentences(term, pieces))
+                            tokens = [token for _, s_tokens in sentences for token in s_tokens]
+                        term = zh_script.convert(term, script)
 
-                    # 0. Trust the explicit dictForm as a lemma (catches cases where tokenizer normalizes "その" -> "其の")
-                    known_lemmas.add(term)
-
-                    # 1. Add individual tokens
-                    for lemma, reading, _, _ in tokens:
-                        known_tuples.add((lemma, reading))
-                        known_lemmas.add(lemma)
-                    for lemma, reading in pieces or ():
-                        known_tuples.add((lemma, reading))
-                        known_lemmas.add(lemma)
-
-                    # 2. Heuristic: If multiple tokens, add the combined form too.
-                    # This fixes issues like "まで" (which tokenizer might split as "Ma"+"De" in isolation, 
-                    # but find as "Made" particle in context).
-                    if len(tokens) > 1:
-                        full_reading = "".join([t[1] for t in tokens if t[1]]) # Concat readings
-                        known_tuples.add((term, full_reading))
+                        # 0. Trust the explicit dictForm as a lemma (catches cases where tokenizer normalizes "その" -> "其の")
                         known_lemmas.add(term)
-                        if phrase_set is not None and phrase_set.of_word("".join(t[0] for t in tokens)) is not None:
-                            known_lemmas.add("".join(t[0] for t in tokens))
-                    # 3. The set phrases in each of its sentences, as Generate finds them there (above).
-                    if phrase_set is not None:
-                        for s_text, s_tokens in sentences:
-                            for _, _, index in phrase_set.find(s_tokens, s_text):
-                                known_lemmas.add(phrase_set.entry(index).word)
 
-                except Exception:
-                    # Fallback if tokenization fails
-                    pass
+                        # 1. Add individual tokens
+                        for lemma, reading, _, _ in tokens:
+                            known_tuples.add((lemma, reading))
+                            known_lemmas.add(lemma)
+                        for lemma, reading in pieces or ():
+                            known_tuples.add((lemma, reading))
+                            known_lemmas.add(lemma)
+
+                        # 2. Heuristic: If multiple tokens, add the combined form too.
+                        # This fixes issues like "まで" (which tokenizer might split as "Ma"+"De" in isolation, 
+                        # but find as "Made" particle in context).
+                        if len(tokens) > 1:
+                            full_reading = "".join([t[1] for t in tokens if t[1]]) # Concat readings
+                            known_tuples.add((term, full_reading))
+                            known_lemmas.add(term)
+                            if phrase_set is not None and phrase_set.of_word("".join(t[0] for t in tokens)) is not None:
+                                known_lemmas.add("".join(t[0] for t in tokens))
+                        # 3. The set phrases in each of its sentences, as Generate finds them there (above).
+                        if phrase_set is not None:
+                            for s_text, s_tokens in sentences:
+                                for _, _, index in phrase_set.find(s_tokens, s_text):
+                                    known_lemmas.add(phrase_set.entry(index).word)
+
+                    except Exception:
+                        # Fallback if tokenization fails
+                        pass
                 
             if held is not None:
                 met[asked] = held

@@ -4207,9 +4207,9 @@ class Steps:
             item = store.item(job["item_id"]) or {}
             made = library.made_words_all(store)
         lemmas = file_words.get(os.path.basename(item.get("rel_path") or "")) or ()
-        if job.get("source") == level.BEST:
+        if job.get("source") in (level.BEST, level.TOP_UP):
             # Kantan-SD: a Best job is placed by its own words, never by the other new words of the episode it borrows
-            # a sentence from (often one you've watched)
+            # a sentence from (often one you've watched); TOP-UP: a mined episode's top-up by the new words it names
             lemmas = {key[0] for key in job.get("words") or ()}
         best = min((place(lemma, None) for lemma in lemmas if lemma not in made), default=OFF_LIST)
         return None if best >= OFF_LIST else best

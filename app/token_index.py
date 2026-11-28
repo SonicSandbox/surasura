@@ -1540,18 +1540,24 @@ class Store:
     def keep_song_counts(self, songs, settings=None, key=None):
         """`_count_songs` (below), but when `key` — analyzer.song_sentences' fingerprint of `songs`: every work's kept
         answer under its digest of its files' stamps — is the one the last count kept its shares for, under the same
-        state and name tables, the shares stand as they are and nothing is read (WARM-BACK: the check read every song
-        file's row, its names and its tag — 11,440 files, ~0.6 s a Generate at lib20k). A file counted then and not
-        now is still taken off at the read (`_songs_share`). The mark goes before any count that may write, so it
-        never names shares it didn't see."""
+        state and name tables, and the song files counted now are the ones holding a share (none set aside, brought
+        back or left unreadable since), the shares stand as they are: no song file's names or tag is read (WARM-BACK:
+        the check read every song file's row, its names and its tag — 11,440 files, ~0.6 s a Generate at lib20k). The
+        mark goes before any count that may write, so it never names shares it didn't see."""
         mark = None
         if key is not None:
             state = self._songs_state(settings)
             names = _digest(_names_reads(self.names_tables())) if self.language == "ja" else None
             mark = json.dumps([key, state, names], ensure_ascii=False, separators=(",", ":"))
             if self.get_meta("songs_key") == mark:
-                self._songs_state_now = state
-                return
+                paths, counted = [_norm(path) for path, numbers in songs.items() if numbers], set()
+                for at in range(0, len(paths), 500):
+                    batch = paths[at:at + 500]
+                    counted.update(path for (path,) in self.conn.execute(
+                        f"SELECT path FROM files WHERE counted = 1 AND path IN ({','.join('?' * len(batch))})", batch))
+                if counted == {path for (path,) in self.conn.execute("SELECT path FROM songs")}:
+                    self._songs_state_now = state
+                    return
         if self.get_meta("songs_key") is not None:
             self._mark_songs(None)
         self._count_songs(songs, settings)

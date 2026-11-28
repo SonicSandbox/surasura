@@ -144,6 +144,7 @@ def test_the_same_fingerprint_reads_nothing_and_the_counts_stay_the_lists(tmp_pa
         songs, key = _songs(store, data_dir, paths, language)
         assert key is not None and songs and all(songs.values())
         store.keep_song_counts(songs, key=key)
+        assert store.get_meta("songs_key") is not None and not store.conn.in_transaction, "the mark committed"
         again, key2 = _songs(store, data_dir, paths, language)
         assert (again, key2) == (songs, key)
         with _Checks() as checks:
@@ -257,5 +258,98 @@ def test_a_mark_that_cant_be_written_raises_nothing_and_the_next_count_checks_ag
             store.keep_song_counts(songs, key=key)
         assert checks.tags > 0
         assert store.get_meta("songs_key") is not None
+    finally:
+        store.close()
+
+
+class _CommitLocked:
+    """The store's connection, but its commit fails while the songs mark is pending (another program holds the lock
+    at that moment): what `_mark_songs` must roll back."""
+
+    def __init__(self, conn):
+        self._conn, self._pending = conn, False
+
+    def execute(self, sql, *args):
+        self._pending = self._pending or "songs_key" in sql
+        return self._conn.execute(sql, *args)
+
+    def commit(self):
+        if self._pending:
+            self._pending = False
+            raise ti.sqlite3.OperationalError("database is locked")
+        return self._conn.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+@pytest.mark.parametrize("at", ["the mark", "taking it away"])
+def test_a_mark_whose_commit_fails_is_rolled_back_never_left_open(tmp_path, at):
+    """The commit of the mark (or of its removal) fails: rolled back, no transaction left open on the run's
+    connection. A mark that failed is no mark (the next count checks every file); a removal that failed raises, so
+    the run counts its songs as before (the old mark is never trusted for the shares this count would write)."""
+    store, data_dir, paths = _library(tmp_path, "ja")
+    real = store.conn
+    try:
+        songs, key = _songs(store, data_dir, paths, "ja")
+        if at == "the mark":
+            store.conn = _CommitLocked(real)
+            store.keep_song_counts(songs, key=key)
+            store.conn = real
+            assert not real.in_transaction
+            assert store.get_meta("songs_key") is None
+        else:
+            store.keep_song_counts(songs, key=key)
+            fewer = {p: n for p, n in songs.items() if p != paths[0]}
+            store.conn = _CommitLocked(real)
+            with pytest.raises(ti.sqlite3.OperationalError):
+                store.keep_song_counts(fewer)
+            store.conn = real
+            assert not real.in_transaction
+            assert store.get_meta("songs_key") is not None, "rolled back: the shares it named untouched too"
+            store.songs_out = True
+            assert store.word_counts() == _list_counts(store, paths, songs, "ja")
+    finally:
+        store.conn = real
+        store.close()
+
+
+def test_an_episode_brought_back_from_aside_gets_its_share_with_the_same_fingerprint(tmp_path):
+    """An episode set aside (watched) is still its work's, so the fingerprint doesn't move when it is counted again
+    at the same stamp; it holds no share, so the count reads it and takes its songs off, as the full check did."""
+    store, data_dir, paths = _library(tmp_path, "ja")
+    try:
+        back = paths[1]
+        store.reconcile([p for p in paths if p != back], ti.make_tokenizer("ja", False, "asis"),
+                        build_signature=ti.build_signature("ja", False, "asis"), aside=[back])   # as a run lists it
+        assert store.conn.execute("SELECT counted, aside FROM files WHERE path = ?", (ti._norm(back),)).fetchone()             == (0, 1)
+        songs, key = _songs(store, data_dir, paths, "ja")       # the run's songs: counted and aside alike
+        store.keep_song_counts(songs, key=key)
+        assert ti._norm(back) not in {p for (p,) in store.conn.execute("SELECT path FROM songs")}
+        ti.reconcile_language("ja", paths, path=store.path)
+        songs2, key2 = _songs(store, data_dir, paths, "ja")
+        assert key2 == key, "the same stamps: the same fingerprint"
+        with _Checks() as checks:
+            store.keep_song_counts(songs2, key=key2)
+        assert checks.read == [ti._norm(back)]
+        store.songs_out = True
+        assert store.word_counts() == _list_counts(store, paths, songs2, "ja")
+    finally:
+        store.close()
+
+
+def test_a_file_whose_row_couldnt_be_read_is_tried_again_at_every_count(tmp_path):
+    """A counted file whose row couldn't be read holds no share (its songs count); the next count with the same
+    fingerprint tries it again, as the full check did — never left out for good by the mark."""
+    store, data_dir, paths = _library(tmp_path, "ja")
+    try:
+        songs, key = _songs(store, data_dir, paths, "ja")
+        broken = paths[2]
+        store.conn.execute("UPDATE files SET texts = x'00' WHERE path = ?", (ti._norm(broken),))
+        store.conn.commit()
+        store.keep_song_counts(songs, key=key)
+        with _Checks() as checks:
+            store.keep_song_counts(songs, key=key)
+        assert checks.read == [ti._norm(broken)]
     finally:
         store.close()

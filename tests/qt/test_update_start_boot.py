@@ -1,15 +1,16 @@
-"""UPDATE-START (3.0.21, PROVISIONAL): the window boots at the first screen's cache, whatever its numbers wait on.
+"""UPDATE-START (3.0.21, PROVISIONAL): the window is open at the first screen's cache, whatever its numbers wait on.
 
 Every start used to boot only after the numbers' first answer and the library reader's first full read: the cached
 first screen was shown at once, but built *loading*, so it never counted (`ShellWindow.show_library`). On a laptop an
 ordinary start booted 6-8 s after the process began, and the first start after an update — the plan another engine
-wrote, its staleness answered first — up to ~20 s; until then nothing in the background started. Now the cached first
-screen boots the window at its paint (its numbers faded until the fresh answer lands), and the one press that needs
+wrote, its staleness answered first — up to ~20 s. Now the window is open — its log's *booted* — at the cached first
+screen's paint (its numbers faded until the fresh answer lands); the background still waits for the list from disk, so
+nothing races the first view with numbers (OPEN-RACE), and that moment is logged too. The one press that needs
 what the cache doesn't hold — a title's last ✓ Done, whose rule reads Goal, New arrivals and Finished — marks the file
 at once, says *updating your library…*, and is asked again on the first view from disk (`DragMoves._from_disk`).
 
-What a wrong answer would cost a learner: a window that looks open but starts nothing for many seconds after every
-update; or, the other way, a last Done on the cache that offers *finished with it?* for a title that should have
+What a wrong answer would cost a learner: a start report that says the window took 20 s to open when it was open at
+once; the covers' scan, Anki and the indexer racing the first numbers on a busy laptop; or a last Done on the cache that offers *finished with it?* for a title that should have
 finished or joined its next part by itself — or that is dropped.
 
 The boot half runs a real `library_store` (a migrated library of real Japanese and Chinese show names, tests/Test
@@ -81,8 +82,7 @@ def _last_window(make):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_start_whose_numbers_are_slow_still_boots_at_the_cached_screens_paint(language, library, held, gated,
-                                                                                lines):
+def test_a_start_whose_numbers_are_slow_is_open_at_the_cached_screens_paint(language, library, held, gated, lines):
     _last_window(library)
     held.clear()                                            # this start's numbers: slow (the update's stale plan)
     numbers, reader = library()
@@ -95,17 +95,21 @@ def test_a_start_whose_numbers_are_slow_still_boots_at_the_cached_screens_paint(
     gated.services.library = _Reader(first)
     gated.win.start_duties()
     gated.win.show_library(first)
-    assert wait_until(lambda: gated.services.boot.is_set()), "booted at the cache's paint, its numbers still out"
+    opened = [m for a, m in lines if a == "shell" and m.startswith("booted")]
+    assert len(opened) == 1 and opened[0].startswith("booted at the first screen's cache") and \
+        "after the process began" in opened[0], "open at the cache's paint, its numbers still out"
     assert numbers.wait_first(0) is False and reader.view().cached, "(nothing from disk yet: the numbers held)"
-    assert wait_until(lambda: set(_started(gated)) == set(STARTED)), "the background goes after the boot as before"
-    assert len([m for a, m in lines if a == "shell" and m.startswith("booted")]) == 1
+    wait_until(lambda: False, 0.3)
+    assert _started(gated) == [] and not gated.services.boot.is_set(), \
+        "the background waits for the list from disk: nothing races the first view with numbers"
     held.set()
     assert _wait(lambda: not reader.view().cached, 30), numbers.why()
     gated.win.show_library(reader.view())
-    assert any(a == "shell" and m.startswith("the list from disk drawn") for a, m in lines), \
-        "the list from disk, after a boot at the cache, still says when it came (a Send report reads it)"
+    assert wait_until(lambda: set(_started(gated)) == set(STARTED)), "then the background goes, once"
+    assert [m for a, m in lines if a == "shell" and m.startswith("the list from disk drawn, the background goes")], \
+        "the list from disk says when it came (a Send report reads it)"
     gated.win.show_library(reader.view())
-    assert len([m for a, m in lines if m.startswith("the list from disk drawn")]) == 1, "said once"
+    assert len([m for a, m in lines if a == "shell" and ("booted" in m or "the background goes" in m)]) == 2
 
 
 def test_a_view_still_loading_with_no_cache_is_still_no_boot(gated, lines):
@@ -215,3 +219,41 @@ def test_a_file_unwatched_again_before_the_list_is_read_finishes_nothing(world, 
     wait_until(lambda: False, 0.3)
     assert [c[0] for c in calls(writer)] == ["set_watched"]
 
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_title_still_arriving_is_offered_from_disk_on_the_marks_own_toast_its_undo_kept(world, language):
+    """From disk the title is still arriving (its newest file came in on its own two days ago): today's offer, on the
+    mark's own toast as a Done from disk shows it, so the toast's Undo still takes back the learner's ✓."""
+    import time
+    from tests.qt.test_l63_finishing import _stamp
+    from app.services import view_rows
+    settings_manager.save_keys({"target_language": language})
+    seed, win, writer = world(language=language)
+    row = _all_but_one(seed, win, 4)
+    stamp = time.time()
+    seed.library.commit(items=[{"id": e.id, "added_at": _stamp(stamp - 30 * 86400)} for e in row.episodes[:-1]] +
+                        [{"id": row.episodes[-1].id, "added_at": _stamp(stamp - 2 * 86400)}])
+    assert wait_until(lambda: view_rows.still_arriving(rows_of(win)[4].episodes), 3)
+    row = rows_of(win)[4]
+    _cached(win)
+    win.moves.done(row, row.episodes[-1])
+    win.show_library(win.moves.reader.view())
+    assert wait_until(lambda: win.toasts.card.base == strings.DONE_ALL.format(n=len(row.episodes)), 3)
+    assert [c[0] for c in calls(writer)] == ["set_watched"], "offered, never finished by itself"
+    win.toasts.card.buttons[0].click()                                  # the toast's Undo
+    assert wait_until(lambda: "set_watched" in [c.op for c in writer.undone], 3), "its Undo takes back the ✓"
+
+
+def test_the_cache_shown_before_the_first_frame_is_open_at_that_frame(gated, lines):
+    """The reader's cache can land before the window's first frame: open (*booted*) at that frame, once; the
+    background still waits for the list from disk."""
+    from tests.qt.test_boot_first import _settle, _view
+    cached = _view(loading=True)._replace(cached=True)
+    gated.services.library = _Reader(cached)
+    gated.win.show_library(cached)
+    assert not [m for a, m in lines if m.startswith("booted")], "(no frame yet)"
+    gated.win.start_duties()                                    # the first frame's call (`_arm_boot`)
+    _settle()
+    assert len([m for a, m in lines if m.startswith("booted at the first screen's cache")]) == 1
+    assert _started(gated) == [] and not gated.services.boot.is_set()

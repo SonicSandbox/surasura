@@ -3064,7 +3064,7 @@ class Numbers:
         them). `_stale`'s reasons before the check keep their order. -> True when it answered; False (a plan this
         engine follows, an unreadable header, no counts table or another run's, no store): the whole read, as before."""
         from app import analyzer, library_store, plan_engine
-        header = plan_engine.read_header(path, formats=plan_engine.FORMATS)
+        header = plan_engine.read_header(path, formats=plan_engine.FORMATS, whole=False)   # (its first line alone)
         if header is None or header.get("language") != self.language:
             return False
         light = plan_engine.Plan(header, [], [], [], [], None)

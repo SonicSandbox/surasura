@@ -80,6 +80,35 @@ def test_an_ordinary_start_still_follows_the_order(generated, monkeypatch):
     assert seen == {"load": 1, "inputs": 1}
 
 
+def test_an_ordinary_start_decompresses_the_plan_once(generated, monkeypatch):
+    # the header asked first reads the first line alone: the whole plan is decompressed once, by the whole read
+    # (read through for its CRC as well, the start's numbers paid the plan's decompression twice: ~40 ms at 20,000
+    # files on a desktop, several times that on a laptop)
+    asked = []
+    real = plan_engine.read_header
+
+    def header(path, formats=None, whole=True):
+        asked.append(whole)
+        return real(path, formats=formats, whole=whole)
+    monkeypatch.setattr(plan_engine, "read_header", header)
+    seen = _reads(monkeypatch)
+    numbers = _numbers(generated)
+    numbers._load()
+    assert numbers.why() is None and seen["load"] == 1 and asked == [False]
+
+
+def test_the_first_line_alone_answers_a_plan_whose_end_is_cut_off(generated, tmp_path):
+    # what the numbers ask (`whole=False`) reads no further than the first line; the analyzer's whole read still
+    # refuses the damaged file
+    path = _numbers(generated)._plan_path()
+    data = open(path, "rb").read()
+    cut = str(tmp_path / "cut.json.gz")
+    open(cut, "wb").write(data[:len(data) // 2])
+    whole = plan_engine.read_header(path)
+    assert plan_engine.read_header(cut, whole=False) == whole and whole["language"] == generated
+    assert plan_engine.read_header(cut) is None
+
+
 def test_after_an_update_the_numbers_answer_from_the_plans_first_line(generated, monkeypatch):
     before = _numbers(generated)
     before._load()

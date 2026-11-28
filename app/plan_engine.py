@@ -207,19 +207,22 @@ def _spell_table(rows):
     return spell
 
 
-def read_header(path, formats=None):
+def read_header(path, formats=None, whole=True):
     """The plan file's header (its first line), or None when there is no readable plan of this format (`formats`: of
-    one of these — the window's numbers ask `FORMATS`, a plan an older format wrote too: UPDATE-START). The whole
+    one of these — the window's numbers ask `FORMATS`, a plan an older format wrote too: UPDATE-START). `whole`: the
     stream is read through, so a damaged file (the gzip CRC, a cut-off end) is None too: what the analyzer asks
     before it reuses a run (E1.1 01 §7, E1.2-1; 2.x only with the preview on), cheaper than `load` (nothing past the
-    first line is decoded)."""
+    first line is decoded). `whole=False`: the first line alone (the window's numbers: whatever the header says, the
+    whole read follows or a Generate is asked; never the plan decompressed twice at a start)."""
     try:
         with open(path, "rb") as f:
-            data = f.read()
-        stream = gzip.GzipFile(fileobj=io.BytesIO(data))
-        first = stream.readline()
-        while stream.read(1 << 20):
-            pass
+            if whole:
+                stream = gzip.GzipFile(fileobj=io.BytesIO(f.read()))
+                first = stream.readline()
+                while stream.read(1 << 20):
+                    pass
+            else:
+                first = gzip.GzipFile(fileobj=f).readline()
         header = json.loads(first)
     except (OSError, EOFError, zlib.error, ValueError):
         return None

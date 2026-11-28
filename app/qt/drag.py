@@ -2929,7 +2929,8 @@ class DragController(QObject):
         and, when no file of the row is left unwatched, L6.3's rule (`when_done`): it finishes by itself or joins its
         next part (`_by_itself`), or the finish toast offers it (A2 #2), or nothing (a split's part, hato's mix). `ep`
         None: Up Next's ✓ Done with every file already watched — nothing to mark, the same rule (G3.2; where nothing is
-        offered, the bar says why)."""
+        offered, the bar says why). On the first screen's cache the rule waits for the list from disk (UPDATE-START:
+        `_from_cache`, `_from_disk`)."""
         if self.refused() is not None:
             return
         title = row.title
@@ -2992,7 +2993,8 @@ class DragController(QObject):
         command (one ticket, one Undo), then: when no file of the row is left unwatched, L6.3's rule (`when_done`) — it
         finishes by itself or joins its next part (`_by_itself`), or the finish toast offers it (A2 #2); a group's show
         all watched by these marks offers that show's finish (LM11b G5, `show_finished`); W-1's first mark that moves
-        the list, its hint once per library (`left_text`); else the toast `text`."""
+        the list, its hint once per library (`left_text`); else the toast `text`. On the first screen's cache: the mark
+        now (*· updating your library…*), the rule on the list from disk (UPDATE-START: `_from_cache`, `_from_disk`)."""
         ids = [e.id for e in eps]
         marked = set(ids)
         on = dict.fromkeys(ids, True)                # a8: painted as it is handed over
@@ -3002,9 +3004,18 @@ class DragController(QObject):
         left = [e for e in view_rows.to_finish(row.episodes) if not e.watched and e.id not in marked]
         view = self.page.view_model
         if not left and self._from_cache(view, row):  # UPDATE-START: the mark now, the rule once the list is read
-            ticket = Ticket(strings.DONE_UPDATING.format(text=text), (row.key,), tuple(ids))
-            if self._give(ticket, mark, marks=on) is not None:
-                self._fresh_asking[row.key] = ticket
+            keep = getattr(view, "keep_watched", False)     # (W-1's first mark: its words and buttons here too)
+            hint = self._unseen(HINT_LEFT) if any(view_rows.mark_moves_list(row.tier, e, keep) for e in eps) else None
+            ticket = Ticket(strings.DONE_UPDATING.format(text=left_text if hint is not None else text), (row.key,),
+                            tuple(ids))
+            if self._give(ticket, mark, toast=False, marks=on) is None:
+                return
+            self._fresh_asking[row.key] = ticket
+            if hint is not None:
+                self._seen(hint)
+            self._toast(ticket, buttons=[(strings.DONE_KEEP, strings.DONE_KEEP_TIP,
+                                          lambda: self.win.open_setting("keep_watched")),
+                                         (strings.DONE_OK, strings.DONE_OK_TIP, lambda: None)] if hint else ())
             return
         verdict = None if left else when_done(view, row, pending=bool(self.tickets))   # L6.3: the one rule
         if verdict is not None and verdict[0] != "offer":
@@ -3201,8 +3212,13 @@ class DragController(QObject):
                 self._by_itself(row, verdict)
             elif verdict is not None:
                 self._ask_again(view, row, verdict)
-                self.win.toasts.show(offer_text(verdict, row), buttons=[
-                    (strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP, lambda r=row: self.to_finished(r))])
+                buttons = [(strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP,
+                            lambda r=row: self.to_finished(r))]
+                if ticket is None:                   # (Up Next's ✓ Done: nothing marked, no Undo)
+                    self.win.toasts.show(offer_text(verdict, row), buttons=buttons)
+                else:                                # the mark's own toast, its Undo kept (as `_marked`'s offer)
+                    ticket.text = offer_text(verdict, row)
+                    self._toast(ticket, buttons=buttons)
             else:
                 self.say(strings.WELL_UNLIT_SPLIT)   # (`_from_cache`: never hato's mix)
 

@@ -203,12 +203,15 @@ def test_a_file_unwatched_again_before_the_list_is_read_finishes_nothing(world, 
     seed, win, writer = world(language=language)
     row = _all_but_one(seed, win, 4)
     _cached(win)
+    writer.stuck = True                                                 # (the mark held: the unwatch comes first)
     win.moves.done(row, row.episodes[-1])
     first = row.episodes[0].id
     seed.library.commit(items=[{"id": first, "watched": 0}])
-    assert wait_until(lambda: not next(e for r in win.moves.reader.view().rows for e in r.episodes
-                                       if e.id == first).watched, 3)
+    assert wait_until(lambda: any(e.id == first and not e.watched
+                                  for r in win.moves.reader.view().rows for e in r.episodes), 3)
     win.show_library(win.moves.reader.view())
+    assert wait_until(lambda: win.moves._fresh_asking == {}, 3), "asked on the list from disk, and let go"
+    writer.free()
     wait_until(lambda: False, 0.3)
-    assert [c[0] for c in calls(writer)] == ["set_watched"] and win.moves._fresh_asking == {}
+    assert [c[0] for c in calls(writer)] == ["set_watched"]
 

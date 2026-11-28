@@ -1565,6 +1565,8 @@ def pick(args):
         info, profile, mapping = setup
         named = info.get("features") or []
         out["anki_miner"] = {"app": info.get("app"), "features": named, "profile": profile}
+        if not book:                    # a subtitle's words as its lines read once the profile's filter cleaned them
+            chosen["words"][:] = runfile.through_filter(chosen["words"], runfile.read_line_filter(run_dir))
         for word in chosen["words"]:
             word["sent"] = runfile.entries(word, named)         # the names the run file carries (Z-2: one a word)
         if not chosen["words"]:

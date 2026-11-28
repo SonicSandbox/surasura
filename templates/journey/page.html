@@ -1577,7 +1577,7 @@ async function pickLine(k) {                            // ⇄ for a carded word
   const src = srcOf(id, ln[1]);
   const a = await doorCall(route, { word: w[0], line_id: lineId(ln, src), item: lineItem(src), line: ln[0], at: Date.now() });
   const far = a && a.video === false ? " Its video isn't on this computer: Needs you will ask where it is." : "";   // PROVISIONAL
-  if (a && a.ok) toast((route === "swap/queue" ? (a.same ? `⇄ Queued: ${w[0]}'s card gets this line.` : `⇄ Queued: Swap makes ${w[0]}'s new card from this line.`) : `Asked: Connect makes ${w[0]}'s card from this line, first in your order.`) + far);
+  if (a && a.ok) toast((route === "swap/queue" || a.swapped ? (a.same ? `⇄ Queued: ${w[0]}'s card gets this line.` : `⇄ Queued: Swap makes ${w[0]}'s new card from this line.`) : `Asked: Connect makes ${w[0]}'s card from this line, first in your order.`) + far);
   else if (a && a.kind === "not_yet") { D.routes = (D.routes || []).filter((r) => r !== route); drawPart("acts"); }
   else toast(a && a.error || "Surasura is closed: this needs Surasura open (nothing kept).");
 }

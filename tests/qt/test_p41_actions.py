@@ -757,7 +757,9 @@ def test_row28_the_menu_offers_mine_now_exactly_where_the_pills_rule_does(act):
                                                                                "ep-change-video"]   # Kantan-B5
     assert _mine_now(win.items.episode_entries(row, _ep(not_timed))) == []
     # Kantan-B2: a file in Anki offers *Mine again* and its words, never *Mine now*
-    assert [e.name for e in win.mine.episode_entries(row, in_anki)] == ["ep-mine-again", "ep-unmined-words"]
+    # (TOP-UP: *Mine the new words* first)
+    assert [e.name for e in win.mine.episode_entries(row, in_anki)] == ["ep-top-up", "ep-mine-again",
+                                                                        "ep-unmined-words"]
     for ep in (in_anki, mining, _ep(None)):
         if ep is not in_anki:
             assert win.mine.episode_entries(row, ep) == [], ep.status

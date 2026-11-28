@@ -1051,6 +1051,17 @@ class Ledger:
             f"SELECT o.word, o.reading FROM outcomes o JOIN jobs j ON j.id = o.job_id WHERE j.language = ? AND "
             f"j.item_id = ? AND o.outcome NOT IN ({marks})", (language, item_id) + _NOT_MADE)}
 
+    def declined_all(self, language):
+        """`declined` for every item of the language in one read -> {item id: {(word, reading)}} (TOP-UP: a word
+        Anki Miner turned down for an episode is never named in its top-up again)."""
+        marks = ",".join("?" * len(_NOT_MADE))
+        out = {}
+        for item_id, w, r in self.conn.execute(
+                f"SELECT j.item_id, o.word, o.reading FROM outcomes o JOIN jobs j ON j.id = o.job_id WHERE "
+                f"j.language = ? AND o.outcome NOT IN ({marks})", (language,) + _NOT_MADE):
+            out.setdefault(item_id, set()).add((w, r))
+        return out
+
     def declined_outcomes(self, language, item_id):
         """{(word, reading): outcome} of `declined`'s words, the newest answer each (Kantan-MA: said with the word)."""
         marks = ",".join("?" * len(_NOT_MADE))

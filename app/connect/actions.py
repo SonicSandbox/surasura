@@ -108,7 +108,8 @@ def top_up(language, item_ids, path=None, read_list=None, open_store=None):
     could be read (no ledger, no list of this language, no store). Each mined item (`level.mined_items`) gets a
     `level` job of source `level.TOP_UP_PRESS` naming the same words the automatic top-up names (`level.new_words`, one
     rule): its file's listed words no card holds and Connect never made — a word made from any episode or show, a
-    deleted card's too, is never named (*Mine again* remakes a deleted card) — read against the whole list, carrying the
+    deleted card's too, is never named (*Mine again* remakes a deleted card), nor one Anki Miner turned down for that
+    episode (`Ledger.declined_all`: so a second press says *Nothing new*) — read against the whole list, carrying the
     press's time, so it goes first and past the cap as any press (`runner.held_by_cap`); a top-up already waiting
     gains the words and the time; an episode with another job open is left to it. The job's pick skips a word any card
     holds by then (the carded set): never a second card, never an existing card touched. The caller kicks Connect.
@@ -132,13 +133,15 @@ def top_up(language, item_ids, path=None, read_list=None, open_store=None):
     with store, book.Ledger(path) as ledger:
         made = library.made_words_all(store)
         mined = level.mined_items(store, language, ledger)
+        declined = ledger.declined_all(language)
         store_id = library.store_id(store)
         asked_at = book.stamp()
         with ledger.transaction():
             for item_id in dict.fromkeys(item_ids):
                 if item_id not in mined:
                     continue                # its first mining reads the list as it is (*Mine now*)
-                words = level.new_words(store.item(item_id), file_words or {}, by_lemma, made)
+                words = level.new_words(store.item(item_id), file_words or {}, by_lemma, made,
+                                        declined.get(item_id, ()))
                 if words and ledger.queue_level(language, item_id, words, source=level.TOP_UP_PRESS, store_id=store_id,
                                                 asked_at=asked_at) is not None:
                     queued.append(item_id)

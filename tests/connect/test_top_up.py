@@ -240,6 +240,35 @@ def test_the_press_with_nothing_left_to_card_queues_nothing_and_no_list_is_no_pr
     assert _level_jobs() == []
 
 
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_word_anki_miner_turned_down_for_the_episode_is_never_named_again_by_a_raise_or_the_press(lang):
+    # why: the DevTest drill (TOP-UP c) — Anki Miner answered *duplicate* (a card of the learner's own holds it) and
+    # *no definition* for some of an episode's words; the pick never sends them again (`Ledger.declined`), so naming
+    # them queued a job that makes nothing: a second press said it was mining instead of *Nothing new*, and every raise
+    # queued one for each mined episode with such a word. A word only not tried yet (`not_attempted`) is still named
+    before, raised, added = _lists(lang)
+    (a, fa), _b, (d, fd) = _line(lang)
+    _mine(lang, d)
+    files = {fa: [w for w, _r in added], fd: [w for w, _r in added]}
+    with Ledger() as ledger, ledger.transaction():
+        jid = ledger.queue(lang, a, "user", None)
+        ledger.record_outcomes(jid, 1, [
+            {"word": added[0][0], "reading": added[0][1], "outcome": "duplicate"},
+            {"word": added[1][0], "reading": added[1][1], "outcome": "no_definition"},
+            {"word": added[2][0], "reading": added[2][1], "outcome": "not_attempted"}])
+        ledger.set_state(jid, "done")
+    assert _check(lang, before, "run-1", files)["first"] is True
+    assert _check(lang, raised, "run-2", files)["queued"] == [a, d]
+    ja, jd = sorted(_level_jobs(lang), key=lambda j: j["id"])
+    assert ja["words"] == [added[2]], "only the word not tried yet: never the two it turned down"
+    assert jd["words"] == sorted(added), "another episode's answers are its own"
+    with Ledger() as ledger, ledger.transaction():
+        for job in (ja, jd):
+            ledger.set_state(job["id"], "done")
+        ledger.record_outcomes(ja["id"], 1, [{"word": added[2][0], "reading": added[2][1], "outcome": "not_found"}])
+    assert actions.top_up(lang, [a], read_list=_read(raised, files)) == [], "the press again: *Nothing new*"
+
+
 def test_the_press_joins_a_waiting_top_up_and_the_inbox_never_un_asks_it():
     # why: the raise queued a top-up still waiting at the cap; your press makes it go now (one job, its words and the
     # press's time) — and with no ask of the store's behind it, the inbox's undo pass must never drop it

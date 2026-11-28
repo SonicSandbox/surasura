@@ -3601,19 +3601,20 @@ def load_known_words(json_path, tokenizer, terms=None):
                 term = _known_term(term)     # a gloss cut off; a sentence kept whole
             
             asked = term                    # (the term as the file gives it: the key, whatever it is read as)
-            said = said_by.get(unicodedata.normalize("NFKC", term).strip()) if said_by and isinstance(term, str) \
-                else None
+            said_as = unicodedata.normalize("NFKC", term).strip() if said_by and isinstance(term, str) else ""
+            said = said_by.get(said_as) if said_as else None
             if said:                        # (its sentences decide it too: they key it, with the rule's version)
                 asked = "\x00".join((term, f"kana-card-{anki_match.KANA_CARD_RULE}") + said)
             held = (met.get(asked) or before.get(asked)) if asked else None
             if term and held is None:
                 # Normalize using the same tokenizer: what this term gives, apart (the cache's)
                 known_tuples, known_lemmas = held = set(), set()
-                try:
-                    placed = [anki_match.card_word_in_sentence(term, sentence, tokenizer.tokenize)
-                              for sentence in said] if said else ()
-                except Exception:
-                    placed = ()             # (read as itself, below)
+                placed = []
+                for sentence in said or ():
+                    try:                    # the card as the side file spells it (NFKC: as the sync read it)
+                        placed.append(anki_match.card_word_in_sentence(said_as, sentence, tokenizer.tokenize))
+                    except Exception:       # a sentence the tagger can't read places nothing; the others still do
+                        placed.append(None)
                 for token in placed:
                     if token is not None:
                         known_tuples.add((token[0], token[1]))

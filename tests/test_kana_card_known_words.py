@@ -153,6 +153,20 @@ def test_a_damaged_note_in_the_kana_cards_file_is_skipped_and_the_rest_still_rea
     assert "敵う" in analyzer.load_known_words(path, tok)[1]
 
 
+def test_a_sentence_the_tagger_cant_read_places_nothing_and_the_cards_other_sentences_still_count(tok):
+    """A field holding half an emoji (a lone surrogate, which JSON keeps) makes the tagger raise. That one sentence
+    places nothing — the card is then read as itself too, as for any sentence that places none — but the other card's
+    sentence still makes 敵う known (the review: one raising sentence threw every sentence's word away)."""
+    broken = "\ud83d" + KANAU
+    with pytest.raises(UnicodeEncodeError):
+        anki_match.card_word_in_sentence("かなう", broken, tok.tokenize)
+    path = _known_file(["かなう"])
+    with open(ti.kana_sentences_path(path), "w", encoding="utf-8") as f:     # escaped, as JSON keeps one: \ud83d
+        json.dump({"version": 1, "notes": {"1": ["かなう", broken], "2": ["かなう", KANAU]}}, f)
+    tuples, lemmas = analyzer.load_known_words(path, tok)
+    assert "敵う" in lemmas and any(lemma == "敵う" for lemma, _ in tuples)
+
+
 # --------------------------------------------------------------------------- #
 # The sync keeps the sentences (anki_sync._keep_sentences)
 # --------------------------------------------------------------------------- #
@@ -215,6 +229,42 @@ def test_an_edited_cards_sentence_is_read_again_and_a_card_no_longer_in_kana_dro
     fake.edit(kanau, [("Expression", "敵う"), ("Sentence", KANAU)])
     _sync(fake)
     assert _kept() == {}, "written in kanji now: its own lemma, no sentence needed"
+
+
+def test_a_delta_that_cant_read_the_kana_cards_file_writes_nothing_over_it_and_the_next_sync_reads_in_full():
+    """The file there but unreadable at a delta (a moment's lock, a damage the state's signature already holds): the
+    delta's words are still added, the file is never written over with this delta's cards alone (the others' sentences
+    would be lost for good: a delta never reads them again), and the next sync is a full one, which keeps them all."""
+    fake, kanau = _collection()
+    _sync(fake)
+    side = os.path.join(get_user_files_path("ja"), ti.KANA_SENTENCES_FILE)
+    with open(side, "w", encoding="utf-8") as f:
+        f.write('{"version": 1, "notes": {"' + str(kanau) + '": ["かなう", ')   # cut short
+    state_path = os.path.join(get_user_files_path("ja"), "anki_sync_state.json")
+    state = json.load(open(state_path, encoding="utf-8"))
+    state["known_sig"] = ti.known_signature(os.path.join(get_user_files_path("ja"), "KnownWord.json"))
+    json.dump(state, open(state_path, "w", encoding="utf-8"))
+    damaged = open(side, "rb").read()
+    maku = fake.add("", fields=[("Expression", "まく"), ("Sentence", MAKU)])
+    delta = _sync(fake)
+    assert delta.mode == "delta" and delta.error is None and delta.added == 1, "the new word is still known"
+    assert open(side, "rb").read() == damaged, "never written over with this delta's card alone"
+    full = _sync(fake)
+    assert full.mode == "full" and full.error is None
+    assert _kept() == {str(kanau): ["かなう", KANAU], str(maku): ["まく", MAKU]}
+    assert _sync(fake).mode == "delta"
+
+
+def test_the_first_kana_card_a_delta_brings_starts_the_file_and_the_next_sync_stays_a_delta():
+    """No file yet (every card so far written in kanji) is not an unreadable one: the delta starts it, and the state
+    stays a delta's — never a full read of every card for a file that simply wasn't there."""
+    fake = FakeCollection()
+    fake.add("", fields=[("Expression", "冒険"), ("Sentence", "冒険の<b>準備</b>をする。")])
+    assert _sync(fake).mode == "full" and _kept() is None
+    kanau = fake.add("", fields=[("Expression", "かなう"), ("Sentence", KANAU)])
+    delta = _sync(fake)
+    assert delta.mode == "delta" and delta.added == 1 and _kept() == {str(kanau): ["かなう", KANAU]}
+    assert _sync(fake).mode == "delta"
 
 
 def test_replace_keeps_only_the_sentences_of_the_cards_it_read():

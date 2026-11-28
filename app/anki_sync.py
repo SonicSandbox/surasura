@@ -839,10 +839,11 @@ def _sync(language, url, decks, fields, include_suspended, full, settings=None, 
 
     result.added = len(new_entries)
     result.total_known = len(file.keys())
-    _keep_sentences(language, notes, fields)       # before the state: its known_sig signs the sentences too
+    # Before the state: its known_sig signs the sentences too. Unreadable in a delta: the next sync reads in full.
+    kept = _keep_sentences(language, notes, fields, full=full)
     _save_state(language, {
         "url": url, "decks": decks, "fields": fields, "include_suspended": include_suspended,
-        "reading": READING_VERSION,
+        "reading": READING_VERSION if kept else None,
         "note_ids": sorted(note_ids),                       # N, not a union (spec gotcha 8)
         "known_sig": known_signature(known_path),           # AFTER our own write (gotcha 7)
         "last_sync": now, "last_added": result.added,
@@ -956,16 +957,21 @@ def _note_sentence(note, word, language):
     return raw if isinstance(raw, str) and raw.strip() else ""
 
 
-def _keep_sentences(language, notes, fields, fresh=False):
+def _keep_sentences(language, notes, fields, fresh=False, full=True):
     """Keep each studied note's word and raw sentence, for a Japanese card written in kana alone (`_note_sentence`),
     in KANA_SENTENCES_FILE beside KnownWord.json — the known words read its word there (KANA-KNOWN,
     `analyzer.load_known_words`), as Junban and the ✓ chip do; KnownWord.json stays append-only. A note read again (an
     edit) is kept as it reads now, or dropped once it is no such card; one not read stays. `fresh` (Replace): only the
-    notes read now. Written only when it changed (atomic), under the caller's known-words lock; raises OSError."""
+    notes read now. Written only when it changed (atomic), under the caller's known-words lock; raises OSError.
+    -> False when a delta (`full` False) finds the file there but unreadable: nothing written over the other cards'
+    sentences — the caller makes the next sync a full one, which reads them all again."""
     if language != "ja":
-        return
+        return True
     path = kana_sentences_path(_known_path(language))
-    kept = {} if fresh else kana_sentence_notes(_known_path(language))
+    try:
+        kept = {} if fresh else kana_sentence_notes(_known_path(language), strict=not full)
+    except ValueError:
+        return False
     before = dict(kept)
     for note in notes or ():
         if note.get("noteId") is None:
@@ -978,6 +984,7 @@ def _keep_sentences(language, notes, fields, fresh=False):
             kept.pop(str(note["noteId"]), None)
     if kept != before or (fresh and os.path.exists(path) and not kept):
         _atomic_write_json(path, {"version": 1, "notes": kept}, indent=None)
+    return True
 
 
 def _backlog_entry(note, fields, language):

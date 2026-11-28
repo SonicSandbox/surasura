@@ -3432,16 +3432,23 @@ def kana_sentences_path(known_path):
     return os.path.join(os.path.dirname(known_path), KANA_SENTENCES_FILE)
 
 
-def kana_sentence_notes(known_path):
+def kana_sentence_notes(known_path, strict=False):
     """{note id: [word, raw sentence]} kept beside `known_path` (`KANA_SENTENCES_FILE`); {} when there is none or it
-    can't be read (the terms then read as themselves, as before)."""
+    can't be read (the terms then read as themselves, as before). `strict` (the sync's delta, which writes the rest
+    back): a file that is there but can't be read raises ValueError instead — never {} written over it."""
     from app.path_utils import read_text
     try:
         data = json.loads(read_text(kana_sentences_path(known_path), "ja"))
         notes = data.get("notes") if isinstance(data, dict) else None
-    except (OSError, ValueError, UnicodeDecodeError):
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:      # (UnicodeDecodeError is a ValueError)
+        if strict:
+            raise ValueError(f"{KANA_SENTENCES_FILE} can't be read: {e}") from e
         return {}
     if not isinstance(notes, dict):
+        if strict:
+            raise ValueError(f"{KANA_SENTENCES_FILE} holds no notes")
         return {}
     return {str(nid): [pair[0], pair[1]] for nid, pair in notes.items()
             if isinstance(pair, list) and len(pair) == 2 and all(isinstance(p, str) and p for p in pair)}

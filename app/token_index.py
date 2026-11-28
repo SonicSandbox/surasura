@@ -169,7 +169,7 @@ _SONG_SHARES = 1
 _SONG_BATCH = 500
 # A phrase re-find of this many files or more reads only the sentences that can hold a phrase (`_PhraseGate`); fewer
 # are read whole (the gate's numpy and its vocabulary read would cost them more than it saves).
-_PHRASE_GATE_FILES = 64
+_PHRASE_GATE_FILES = 500             # (the gate's start, ~0.3-0.5 s, is the old read of ~150 files)
 _PHRASE_BATCH = 500                 # (the files it reads a query, their runs looked for at once)
 
 

@@ -2791,19 +2791,35 @@ def to_cache(view, rows=CACHE_ROWS):
             "badges": dict(view.badges), "keep_watched": bool(view.keep_watched)}                # W-1
 
 
+def _cached_left(status, elsewhere):
+    """(status, elsewhere) as the first frame shows them (CARD-LEFT, the lead's call on P3): a ✓ is painted from the
+    cache only when its answer is the (left, done) pair only this version writes, or none yet (its own cards, the
+    same in both versions). A cache from before held the old total there (every word with a card, a bare number): no
+    ✓ until the count lands, never that total as cards left."""
+    st = Status(*status[:4]) if status else None                  # R47: never a cached Stop
+    if elsewhere is None:
+        return st, None
+    if isinstance(elsewhere, list) and len(elsewhere) == 2:       # (JSON wrote the pair as a list)
+        return st, tuple(elsewhere)
+    return (None if st is not None and st.kind == "in_anki" else st), None
+
+
+def _episode_from(ep):
+    st, away = _cached_left(ep.status, ep.elsewhere)
+    return ep._replace(status=st, elsewhere=away, mark=Mark(*ep.mark) if ep.mark else None,
+                       show_key=tuple(ep.show_key) if ep.show_key else None,      # (JSON wrote it as a list)
+                       ask=tuple(ep.ask) if ep.ask else None)                     # row 55 (the same)
+
+
 def _row_from(data):
     r = Row(*data)
     if not isinstance(r.n_top, int) or isinstance(r.n_top, bool):   # 3.0.1 item 12: an older cache's `string` lands
         r = r._replace(n_top=None)                                  # there — its count unknown
-    st = Status(*r.status[:4]) if r.status else None             # R47: never a cached Stop
+    st, away = _cached_left(r.status, r.elsewhere)
     mk = Mark(*r.mark) if r.mark else None
-    eps = tuple(ep._replace(status=Status(*ep.status[:4]) if ep.status else None,
-                            mark=Mark(*ep.mark) if ep.mark else None,
-                            show_key=tuple(ep.show_key) if ep.show_key else None,     # (JSON wrote it as a list)
-                            ask=tuple(ep.ask) if ep.ask else None)                    # row 55 (the same)
-                for ep in (Episode(*e) for e in r.episodes))
+    eps = tuple(_episode_from(Episode(*e)) for e in r.episodes)
     chips = tuple(Chip(*c) for c in r.chips)
-    r = r._replace(status=st, mark=mk, episodes=eps, chips=chips,
+    r = r._replace(status=st, elsewhere=away, mark=mk, episodes=eps, chips=chips,
                    new_faded=bool(r.new_faded),                    # U-1 (U-A4): a cache from before held None there
                    cover=CoverRef(*r.cover) if r.cover else None,                  # W3.2 Q6
                    works=tuple(r.works or ()),                                     # LM11b G1

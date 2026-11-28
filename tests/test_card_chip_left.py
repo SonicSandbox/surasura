@@ -328,3 +328,45 @@ def test_a_store_built_again_counts_nothing_as_left_until_its_known_words_are_no
         assert again.answers()[1] == lib.expected(1, studied, known) == (2, 4)
     finally:
         again.close()
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_first_screens_cache_from_before_the_update_paints_no_old_number_but_its_titles_at_once(language):
+    """The lead's call on P3: the first-screen cache is kept for its speed, but the ✓ is painted from it only when its
+    answer is the (left, done) pair only this version writes. A cache from before holds the old total (every word of
+    it with a card, a bare number, *✓ 1,831*): its first frame shows the titles at once and no ✓ until the count
+    lands — never the old total read as cards left. A cache this version wrote paints its ✓ as it was."""
+    import json as _json
+    from tests.test_view_rows_card_chip import CARDS, _three_shows, WORKS
+    WORKS.clear()
+    try:
+        elsewhere = {1: (20, 11), 2: (5, 4), 3: (0, 2), (1, 2, 3): (25, 15), 4: (1, 5), 5: (2, 1), (4, 5): (3, 6),
+                     6: (0, 10)}
+        view = vr.build(_three_shows(language), WORKS, {"mine_line": 20}, cards=CARDS, elsewhere=elsewhere,
+                        language=language)
+        data = _json.loads(_json.dumps(vr.to_cache(view)))
+        new = vr.from_cache(data, language=language)
+        assert new.rows[0].episodes[0].status.label == "20" and new.rows[1].status.label == "3", \
+            "this version's cache: its ✓ painted at once"
+        ri, ei = vr.Row._fields.index("elsewhere"), vr.Episode._fields.index("elsewhere")
+        rs, es = vr.Row._fields.index("status"), vr.Episode._fields.index("status")
+        for r in data["rows"]:                  # what the version before wrote: a bare total and its ✓ label
+            total = sum(CARDS[e[vr.Episode._fields.index("id")]] for e in r[vr.Row._fields.index("episodes")]) + 1800
+            r[ri] = total - 9
+            if r[rs]:
+                r[rs][1] = f"{total:,}"
+            for e in r[vr.Row._fields.index("episodes")]:
+                e[ei] = 1822
+                if e[es]:
+                    e[es][1] = "1,831"
+        old = vr.from_cache(data, language=language)
+        assert old is not None and [r.title for r in old.rows] == [r.title for r in view.rows], "titles at once"
+        assert [r.cover for r in old.rows] == [r.cover for r in view.rows]
+        for r in old.rows:
+            assert r.status is None or r.status.kind != "in_anki", r.status
+            assert r.elsewhere is None
+            for e in r.episodes:
+                assert e.status is None or e.status.kind != "in_anki", e.status
+                assert e.elsewhere is None
+    finally:
+        WORKS.clear()

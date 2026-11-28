@@ -150,6 +150,7 @@ def test_the_same_fingerprint_reads_nothing_and_the_counts_stay_the_lists(tmp_pa
         with _Checks() as checks:
             store.keep_song_counts(again, key=key2)
         assert checks.tags == 0 and checks.read == []
+        assert store._songs_state_now == store._songs_state(), "the state the shares stand under, for the read"
         store.songs_out = True
         assert store.word_counts() == _list_counts(store, paths, songs, language)
     finally:

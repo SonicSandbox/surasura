@@ -17,6 +17,7 @@ Against the fake Anki Miner (its call log counts the starts); Anki is closed (a 
 import json
 import os
 import shutil
+import time
 
 import pytest
 
@@ -161,6 +162,89 @@ def test_add_sound_starts_only_the_export_before_its_cut_once_the_answers_are_ke
     assert miner.commands() == ["version", "profiles", "settings-export", "settings-export"]
     assert dict(seen[1].fields) == dict(seen[0].fields), "the same fields as a press that reads all three"
     assert not os.listdir(os.path.join(verbs._connect_folder(), "add-audio")), "each press's run folder removed"
+
+
+# --- Card sound's audiobook step (AM-START 2) ------------------------------------------------------------------ #
+@pytest.fixture
+def press(miner, monkeypatch, tmp_path):
+    """*Add sound*'s press as `card_sound.act` makes it: `_mapping` (the press's set, `_HELD`), then the audiobook
+    cards' cut (`_cut_book`) in the same run folder. The cut itself is a stand-in, so the starts counted are the
+    look-ups alone; -> the profile each cut was handed."""
+    from app.connect import add_audio, card_sound
+    monkeypatch.setattr(card_sound, "_HELD", {})                # (a process's set: none held before the test)
+    cut_with = []
+    monkeypatch.setattr(add_audio, "cut", lambda miner_path, l, profile, can, run_dir: cut_with.append(profile) or {})
+
+    def go(lang, settings=None):
+        s = settings or _settings(miner, lang)
+        run_dir, mapping = card_sound._mapping(s, lang)
+        card_sound._cut_book(s, lang)(lang, {101: object()}, run_dir)
+        shutil.rmtree(run_dir, ignore_errors=True)
+        return mapping
+    go.cut_with = cut_with
+    return go
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_card_sounds_audiobook_step_starts_nothing_after_its_press_read_anki_miner(miner, press, lang):
+    # why: *Add sound*'s audiobook cards (`card_sound._cut_book`, train 98) set Anki Miner up again with no set of their
+    # own: `version` + `profiles` + `settings-export` (~3.6 s) right after the press's own `_mapping` had read all three.
+    # The cut now takes the press's set (`_HELD`, 15 min, Anki Miner's files' stamp checked): nothing started
+    mapping = press(lang)
+    assert miner.commands() == ["version", "profiles", "settings-export"], "the press's own read, the cut none"
+    assert mapping is not None and press.cut_with == ["p-surasura"], "the profile the press read"
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_card_sounds_press_after_setups_look_starts_only_its_export(miner, press, lang):
+    # why: setup's look (or Settings' open, a Connect run) kept the pair: the press starts the export alone
+    _look(miner, lang)
+    press(lang)
+    assert miner.commands() == ["version", "profiles", "check", "settings-export"]
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_card_sounds_audiobook_step_reads_again_when_anki_miners_profiles_changed_meanwhile(miner, press, monkeypatch,
+                                                                                           lang):
+    # why: never a stale answer — the learner edits Anki Miner's profiles in its window between the press's read and
+    # the cut (Connect's own renamed, another made): its files' stamp moved, so the cut reads all three again and hands
+    # Anki Miner the profile it now names
+    from app.connect import card_sound
+    real_cut_book = card_sound._cut_book
+
+    def switched_first(settings, language):
+        cut = real_cut_book(settings, language)
+
+        def go(l, can, run_dir):
+            miner.plan(app="3.7.0", features=FEATURES_37 + ["transcribe", "inspect", "tracks"],
+                       profiles=[{"id": "default", "name": "Default", "active": True},
+                                 {"id": "p-other", "name": "Other"}],
+                       export=dict(LAPIS_EXPORT, app_version="3.7.0"))
+            _home(profiles=("default", "p-other"))
+            return cut(l, can, run_dir)
+        return go
+    monkeypatch.setattr(card_sound, "_cut_book", switched_first)
+    press(lang)
+    assert miner.commands() == ["version", "profiles", "settings-export"] * 2
+    assert press.cut_with == ["default"], "the profile Anki Miner names now (Connect's own gone: its active one)"
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_a_set_another_thread_fills_while_a_set_up_starts_is_never_half_read(miner, monkeypatch, lang):
+    # why: the press's set (`card_sound._HELD`) is shared by the window's press — its line-up read and now its audiobook
+    # cut — and Connect's automatic pass on another thread. Found empty, then filled by the other thread while this one
+    # stamps Anki Miner's files, it was read half: no time with a set (`TypeError`). One look at it now: read afresh
+    held, real_stamp = {}, anki_miner.stamp
+
+    def stamp_while_the_other_fills(path):
+        got = real_stamp(path)
+        held.update(set=("info", "p-surasura", None, {}), stamp=got, at=time.monotonic())
+        return got
+    monkeypatch.setattr(anki_miner, "stamp", stamp_while_the_other_fills)
+    got = verbs._anki_miner_setup(_settings(miner, lang), lang, os.path.join(os.environ["ANKI_MINER_HOME"], "r"),
+                                  held=held)
+    assert got is not None and got[1] == "p-surasura"
+    assert miner.commands() == ["version", "profiles", "settings-export"], "read afresh, never the half-seen set"
 
 
 # --- *Finish its setup* ---------------------------------------------------------------------------------------- #

@@ -213,7 +213,7 @@ def test_a_watched_episode_leaves_the_counts_exactly_and_un_marking_gives_the_li
     # ...and the episode's uses as the token store's tokenizer counts them, for every word it counts as the list does
     # (the rest are set phrases and the names the library's tables join, which it reads alone)
     plain = [key for key, n in listed.items() if total[key] == n]
-    assert len(plain) >= 0.9 * len(listed), len(plain)
+    assert len(plain) >= 0.85 * len(listed), len(plain)    # 0.85: the phrases inside phrases are rows too (ENGINE 55)
     assert {key: episode_uses[key] for key in plain} == {key: uses["A1"][key] for key in plain}
     after = _token_store(root, language)
     assert after[:2] == [5, 1] and after[2:] == tokens[2:], "set aside: the name tables are what they were"

@@ -207,8 +207,9 @@ def _spell_table(rows):
     return spell
 
 
-def read_header(path):
-    """The plan file's header (its first line), or None when there is no readable plan of this format. The whole
+def read_header(path, formats=None):
+    """The plan file's header (its first line), or None when there is no readable plan of this format (`formats`: of
+    one of these — the window's numbers ask `FORMATS`, a plan an older format wrote too: UPDATE-START). The whole
     stream is read through, so a damaged file (the gzip CRC, a cut-off end) is None too: what the analyzer asks
     before it reuses a run (E1.1 01 §7, E1.2-1; 2.x only with the preview on), cheaper than `load` (nothing past the
     first line is decoded)."""
@@ -222,7 +223,7 @@ def read_header(path):
         header = json.loads(first)
     except (OSError, EOFError, zlib.error, ValueError):
         return None
-    if not isinstance(header, dict) or header.get("format") != FORMAT:
+    if not isinstance(header, dict) or header.get("format") not in (formats or (FORMAT,)):
         return None
     return header
 

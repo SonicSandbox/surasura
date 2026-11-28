@@ -3011,6 +3011,8 @@ class Numbers:
             self._set(None, {}, "no plan: Generate first", None)
             return
         key = (st.st_mtime_ns, st.st_size)
+        if self._check is not None and self._stale_from_header(path, key):
+            return                                  # UPDATE-START: an update's plan, answered from its first line
         try:
             plan = plan_engine.load(path, pools=False)
         except plan_engine.PlanError as e:
@@ -3053,7 +3055,41 @@ class Numbers:
         self.renumbered += 1
         self._set(eng, self._figures(eng, counts), None, key)
 
-    def _stale(self, plan, store, ids, order):
+    def _stale_from_header(self, path, key):
+        """UPDATE-START (3.0.21): a plan another engine or plan format wrote — every update's, at the first start after
+        it — answered from the plan's first line and the counts table beside it (`plan_engine.read_header`,
+        `read_counts`): the whole read's verdict and figures (% known from the plan's counts, *N new* the last shown,
+        faded), never the whole plan read nor the check's inputs worked out (`plan_inputs`: every file of the library
+        stat'd) for what the header says (at 20,000 files ~1.3 s of the start's numbers, and the first list waits for
+        them). `_stale`'s reasons before the check keep their order. -> True when it answered; False (a plan this
+        engine follows, an unreadable header, no counts table or another run's, no store): the whole read, as before."""
+        from app import analyzer, library_store, plan_engine
+        header = plan_engine.read_header(path, formats=plan_engine.FORMATS)
+        if header is None or header.get("language") != self.language:
+            return False
+        light = plan_engine.Plan(header, [], [], [], [], None)
+        verdict = plan_engine.check(light, self.language, analyzer.engine_id(), None, None)
+        if verdict is None or verdict[0] != "generate-first" or verdict[1] not in ("format", "engine"):
+            return False                            # (header-only: nothing past the engine's line is asked)
+        table = plan_engine.read_counts(os.path.join(os.path.dirname(path), plan_engine.COUNTS_FILE),
+                                        header.get("run_signature"))
+        store = self._store() if table is not None else None
+        if store is None:
+            return False
+        self._data_dir = getattr(store, "data_dir", None)
+        self.worker.put(self._read_growth)          # (as the whole read: after this load, never before its figures)
+        by_key = store.item_keys()
+        ids = [by_key.get(library_store.path_key(table.files[f][0])) for f in range(len(table.files))]
+        counts = {}
+        for f, item in enumerate(ids):
+            if item is not None:
+                total, baseline = table.per_file.prog(f)
+                counts[item] = (baseline, total, None)
+        why = self._stale(light, store, ids, self._order(store), check=lambda _plan, _store: verdict[1])
+        self._set(None, self._kept(counts), why, key)
+        return True
+
+    def _stale(self, plan, store, ids, order, check=None):
         aside = _plan_engine().stands_aside(plan)
         if aside and not all(r in _plan_engine().NUMBERS_EXACT for r in _plan_engine().aside_reasons(plan)):
             return f"stands aside: {aside}"                               # (i+1 alone: *N new* follows it, row 36)
@@ -3063,9 +3099,10 @@ class Numbers:
         held = {i for i in ids if i is not None}
         if any(item not in held for item, _tier in order):
             return "stale: files came in since the last Generate"
-        if self._check is not None:
+        check = self._check if check is None else check
+        if check is not None:
             try:
-                why = self._check(plan, store)
+                why = check(plan, store)
             except Exception as e:
                 why = f"the check failed: {e!r}"
             if why:

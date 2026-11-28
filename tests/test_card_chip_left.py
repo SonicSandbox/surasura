@@ -259,6 +259,15 @@ def test_each_generate_and_each_indexer_run_ask_the_counter_to_read_the_known_wo
                                   _known_moved=told.append)
     Services._generate_ended(ended, None, "current")
     assert told == [language]
+    read = []                                   # the chip's read failing never stops the numbers' (their own steps)
+
+    def broken(_language):
+        raise RuntimeError("the counter's store is busy")
+    numbers = types.SimpleNamespace(resync=lambda: read.append("resync"), read_growth=lambda: read.append("growth"))
+    Services._generate_ended(types.SimpleNamespace(closing=threading.Event(), gentle=None, language=language,
+                                                   writer=types.SimpleNamespace(numbers=numbers),
+                                                   _known_moved=broken), None, "current")
+    assert read == ["resync", "growth"]
     got = []
     chips = types.SimpleNamespace(language="zh", known_moved=lambda: got.append("zh"))
     services = types.SimpleNamespace(library=types.SimpleNamespace(language="zh", chips=chips))

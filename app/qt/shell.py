@@ -261,7 +261,6 @@ class Services:
             return
         if getattr(self.gentle, "gentle", False):
             self._wake_connect()          # Haya-LD: its next step waited for this Generate (GENERATE_FIRST)
-        self._known_moved(self.language)  # CARD-LEFT: a Generate normalizes the known words: the ✓ reads them again
         numbers = getattr(self.writer, "numbers", None)
         steps = (getattr(numbers, "resync", None),) if outcome == "current" else ()
         # Kura-GS2: its snapshots are written after its plan (a move between read them early), by a run whose report
@@ -272,6 +271,10 @@ class Services:
                     step()
                 except Exception as e:
                     applog.log("shell", f"the numbers after a Generate: {e!r}")
+        try:                              # CARD-LEFT: a Generate normalizes the known words: the ✓ reads them again
+            self._known_moved(self.language)    # (its own step, after the numbers': never in their way)
+        except Exception as e:
+            applog.log("shell", f"the card chip after a Generate: {e!r}")
 
     @staticmethod
     def _wake_connect():

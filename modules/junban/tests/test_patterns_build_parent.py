@@ -9,11 +9,13 @@ import os
 import subprocess
 import sys
 import textwrap
+import threading
 
 import pytest
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-GONE_WITHIN_S = 1.0
+GONE_WITHIN_S = 5.0                                     # ends in ~0.3 s here; room for a loaded machine
+LINE_WITHIN_S = 60.0
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="the worker's handle is waited on: Windows only")
 
@@ -25,18 +27,23 @@ def _ends_with_the_build(script, root):
     env = dict(os.environ, PYTHONPATH=PROJECT_ROOT, SURASURA_TEST_ROOT=str(root), PYTHONIOENCODING="utf-8")
     parent = subprocess.Popen([sys.executable, "-c", script], cwd=PROJECT_ROOT, env=env, stdin=subprocess.DEVNULL,
                               stdout=subprocess.PIPE, text=True)
+    got = []
     try:
-        pid = int(parent.stdout.readline())
-        worker = _winapi.OpenProcess(_winapi.SYNCHRONIZE | 0x0001, False, pid)      # | PROCESS_TERMINATE
+        reader = threading.Thread(target=lambda: got.append(parent.stdout.readline()), daemon=True)
+        reader.start()
+        reader.join(LINE_WITHIN_S)                      # a stalled build fails the test instead of hanging it
+        assert got and got[0].strip(), f"no worker pid from the build in {LINE_WITHIN_S} s"
+        worker = _winapi.OpenProcess(_winapi.SYNCHRONIZE | 0x0001, False, int(got[0]))     # | PROCESS_TERMINATE
     finally:
         parent.kill()
         parent.wait()
     try:
-        ended = _winapi.WaitForSingleObject(worker, int(GONE_WITHIN_S * 1000)) == _winapi.WAIT_OBJECT_0
-        if not ended:
-            _winapi.TerminateProcess(worker, 1)
-        return ended
+        return _winapi.WaitForSingleObject(worker, int(GONE_WITHIN_S * 1000)) == _winapi.WAIT_OBJECT_0
     finally:
+        try:
+            _winapi.TerminateProcess(worker, 1)
+        except OSError:                                 # ended already
+            pass
         _winapi.CloseHandle(worker)
 
 

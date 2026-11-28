@@ -143,6 +143,51 @@ def icon_pixmap(name, colour, size_name, dpr=None):
     return _PIXMAPS[key]
 
 
+_ORDER = {}                     # (section id -> its place, row id -> (its place, under More options, its index)), made once
+_ORDER_OF = [None]              # the ROWS it was made from (made again if a test swaps ROWS, as `catalog.rows`)
+
+
+def _place(row):
+    if _ORDER_OF[0] is not catalog.ROWS:
+        _ORDER.clear()
+        _ORDER.update({section.id: i for i, section in enumerate(catalog.SECTIONS)})
+        _ORDER.update({r.id: (_ORDER[r.section], bool(r.adv), i) for i, r in enumerate(catalog.ROWS)})
+        _ORDER_OF[0] = catalog.ROWS
+    return _ORDER[row.id]
+
+
+def _above(row, widget):
+    """Whether `row`, built, stands above `widget` (a row's view, else a slab) on the page: an earlier section, or in
+    the same one an earlier row of its part (a section's own rows first, its *More options* under them). A row built
+    inside or under a slab never moves the slab's top."""
+    place = _place(row)
+    other = getattr(widget, "row", None)
+    if other is not None:
+        return place < _place(other)
+    section = getattr(widget, "section", None)
+    return section is not None and place[0] < _ORDER[section.id]
+
+
+def warm_icons():
+    """(The GUI thread, the window's idle after its start: SETTINGS-OPEN 2.) What the page's first open draws, one
+    piece a step: QIcon's enums made (its first look-up makes all of them, 150 theme icons among them), then every
+    section's nav icon unlit and lit, its head's, *More options*' two and the search's (`icon_pixmap` keeps each) — ~100
+    ms of the click's frame at the first open. -> the steps, each a call of a few ms."""
+    def enums():
+        QIcon.__dict__                          # (sip: the type's lazy attributes at once, its enums among them)
+
+    def drawn(name, colour, size_name):
+        return lambda: icon_pixmap(name, colour, size_name)
+    steps = [enums]
+    for section in catalog.SECTIONS:
+        steps += [drawn(section.icon, theme.SETTINGS_TEXT["nav-unlit"], "settings-nav-icon"),
+                  drawn(section.icon, theme.SETTINGS_TEXT["nav-lit"], "settings-nav-icon"),
+                  drawn(section.icon, "accent", "settings-head-icon")]
+    steps += [drawn(name, theme.SETTINGS_TEXT["more"], "settings-more-icon") for name in ("chev", "chev-open")]
+    steps.append(drawn("search", theme.SETTINGS_TEXT["placeholder"], "settings-search-icon"))
+    return steps
+
+
 def _show(widget, shows):
     """`widget` shown or hidden — only when that changes. A widget made into a shown slab is hidden-but-not-yet-shown
     until the layout's queued show reaches it: it is hidden explicitly here, or that show would bring a row back whose
@@ -860,6 +905,7 @@ class SettingsPage(QWidget):
         self.built_order = []                 # the sections in the order their first row was built
         self.built = False
         self._attaches = []                   # [(attach, its sections)] not run yet (`attach_later`), in their order
+        self._held = []                       # the page's reads held until its first build turn is over, else None
         self.last_toast = None                # (message, undo) of the last *Saved* / reset toast (EZ2-9)
         self._build_frame()
         order = {section.id: i for i, section in enumerate(catalog.SECTIONS)}      # built in the page's order (the
@@ -871,7 +917,7 @@ class SettingsPage(QWidget):
         if self._found is None:
             QTimer.singleShot(0, self._look)
         if not _WARMED:
-            bridge.run_in_worker(_warm, then=_warmed, failed=_warm_failed)
+            self.after_first_build(lambda: bridge.run_in_worker(_warm, then=_warmed, failed=_warm_failed))
         QTimer.singleShot(0, self._slice)
 
     # --- the frame: the nav and the search, at once -------------------------------------------------------------- #
@@ -1025,7 +1071,10 @@ class SettingsPage(QWidget):
 
     def _look(self):
         """The optional modules and the Speech reveal gate, looked for on a worker (a file look); the doors' modules
-        with them (`windows._FOUND`)."""
+        with them (`windows._FOUND`) — after the first build turn (`after_first_build`)."""
+        self.after_first_build(self._look_now)
+
+    def _look_now(self):
         wanted = sorted({op.module for op in windows.OPENERS if op.module} - set(windows._FOUND) - windows._LOOKING)
         windows._LOOKING.update(wanted)
         bridge.run_in_worker(_look_for, wanted, self._settings(), then=self._looked,
@@ -1059,6 +1108,31 @@ class SettingsPage(QWidget):
         """The row's widget (`RowView`: its `label`, `help`, `slot`, `controls`, `doors`), or None until built."""
         return self.rows.get(row_id)
 
+    def after_first_build(self, read):
+        """`read()` — a call that hands work to a worker (the page's first reads, a row's look) — made in the turn
+        after the page's first build turn (the section a Settings link opened, built whole; else the first slice), or
+        at once after it (SETTINGS-OPEN 2: at the page's making, its reads, `_warm` and the modules' looks ran on
+        workers beside that turn and took Python's lock from it). In the order given; one that fails is logged."""
+        if self._held is None:
+            read()
+        else:
+            self._held.append(read)
+
+    def _first_build_over(self):
+        """The first build turn is over: the held reads go in the next turn (the turn's paint first)."""
+        held, self._held = self._held, None
+        if held:
+            QTimer.singleShot(0, lambda: self._run_held(held))
+
+    def _run_held(self, held):
+        if not _alive(self):
+            return
+        for read in held:
+            try:
+                read()
+            except Exception as e:                  # one read never keeps the others from going
+                applog.log("settings", f"a first read not started: {e!r}")
+
     def attach_later(self, attach, rows):
         """`attach(page)` — a package filling the slots of `rows` (`custom_row`) — run just before the first row of
         those rows' sections is built, or at once when one is built already (SETTINGS-OPEN: at the mount the six took
@@ -1089,27 +1163,38 @@ class SettingsPage(QWidget):
         t0 = time.perf_counter()
         if self._slice_end is not None:
             self.between_ms.append((t0 - self._slice_end) * 1000)   # the loop's own turn between: layout, paint
-        with self._keeping(self._anchor_for_build(), fallback=False):
+        anchor = self._anchor_for_build()
+        above = []                            # a row built above `anchor` (only then can it have moved)
+        nothing = self.nothing.isHidden()
+        with self._keeping(anchor, fallback=False, moved=lambda: bool(above) or self.nothing.isHidden() != nothing):
             settings, ctx = self._settings(), self._ctx()
             matches = self._matches(settings, ctx)
-            shown = False
+            touched = []                      # the sections this slice built rows in, in order
             openers = {op.name: op for op in windows.OPENERS}
             while self._queue and (time.perf_counter() - t0) * 1000 < BUILD_MS:
                 if not _WARMED and _WARM_ROWS(self._queue[0][1]):
                     break                     # its module is still being imported on the worker: never raced here
                 index, row = self._queue.pop(0)
-                if self._build_guarded(index, row, settings):                # shown in the slice that built it
-                    self._show_section(row.section, settings, ctx, matches, openers, tint=False)
-                    shown = True
-            if shown:
+                if self._build_guarded(index, row, settings):
+                    if anchor is not None and not above and _above(row, anchor):
+                        above.append(row.id)
+                    if row.section not in touched:
+                        touched.append(row.section)
+            for section_id in touched:        # shown in the slice that built them: each section once, not per row
+                self._show_section(section_id, settings, ctx, matches, openers, tint=False)
+            if touched:
                 self._tint()
             self._show_nothing(matches)
-        self._aim()
+        if above or self._off_aim() or not self._queue:
+            self._aim()                       # (rows only below a reveal already at its third: it stands there; the
+                                              # last slice aims once, its own rows laid out first)
         self._slice_end = time.perf_counter()
         self.slice_ms.append((self._slice_end - t0) * 1000)
         if self._reveal_wanted is not None and self._section_built(catalog.locate(self._reveal_wanted)[0]):
             target, self._reveal_wanted = self._reveal_wanted, None
             self.reveal(target)
+        if self._held is not None and self._reveal_wanted is None:
+            self._first_build_over()          # (a section still wanted: `_build_wanted` ends the first turn)
         if self._queue:
             QTimer.singleShot(0 if _WARMED or not _WARM_ROWS(self._queue[0][1]) else WARM_WAIT_MS, self._slice)
             return
@@ -1157,6 +1242,17 @@ class SettingsPage(QWidget):
         end = max(0, min(bar.maximum(), round(self._y_in_body(widget) - self.scroll.viewport().height() / 3)))
         if bar.value() != end:
             self._scroll_to(end)
+
+    def _off_aim(self):
+        """Whether a reveal made while the build goes on is not yet where `_aim` puts it, read from the page as the loop
+        last laid it out (no settle): a reveal clamped by a short page is aimed again once the rows below it are laid
+        out (the next slice reads the grown range; the build's last slice aims in any case)."""
+        widget = self._revealed
+        if widget is None or not _alive(widget) or not widget.isVisible():
+            return False
+        bar = self.scroll.verticalScrollBar()
+        end = max(0, min(bar.maximum(), round(self._y_in_body(widget) - self.scroll.viewport().height() / 3)))
+        return bar.value() != end
 
     def _scroll_to(self, value):
         """The page's own scroll (a glide, a reveal's aim, the never-moves correction): never lets a reveal go."""
@@ -2008,13 +2104,29 @@ class SettingsPage(QWidget):
         reveal made — never left to the slices, which build a row or two a turn with the loop's layout and paint
         between. A slice that got there first has made it already."""
         target = self._reveal_wanted
-        if not _alive(self) or target is None:
+        if not _alive(self):
             return
-        located = catalog.locate(target)
-        self._finish_build_of(located[0])
-        if self._reveal_wanted == target and self._section_built(located[0]):
-            self._reveal_wanted = None
-            self.reveal(target)
+        if target is not None:
+            located = catalog.locate(target)
+            self._finish_build_of(located[0])
+            if self._reveal_wanted == target and self._section_built(located[0]):
+                self._reveal_wanted = None
+                self.reveal(target)
+        if self._held is not None:
+            self._first_build_over()
+
+    def revealed_section(self):
+        """The section a reveal made while the page builds brought (or is bringing) into view, else None (the page
+        opened at its top)."""
+        if self._reveal_wanted is not None:
+            located = catalog.locate(self._reveal_wanted)
+            return located[0] if located else None
+        widget = self._revealed
+        row = getattr(widget, "row", None)
+        if row is not None:
+            return row.section
+        section = getattr(widget, "section", None)
+        return getattr(section, "id", None)
 
     def _first_shown_row(self, section_id):
         for row in catalog.rows(section_id):
@@ -2094,11 +2206,13 @@ class SettingsPage(QWidget):
             yield
 
     @contextmanager
-    def _keeping(self, anchor=None, fallback=True, stable=False):
+    def _keeping(self, anchor=None, fallback=True, stable=False, moved=None):
         """Whatever runs inside shows or hides rows; `anchor` (else, with `fallback`, the first row in view) keeps its y
         in the viewport: the layout settled and the scroll bar corrected in the same turn. `stable` (`hold`): settled
         again until the anchor stops moving (a help line re-wrapped after the first pass: FX-connect), at most
-        `SETTLE_MORE` more passes."""
+        `SETTLE_MORE` more passes. `moved()` False (a slice that built rows only below the anchor): nothing above it
+        changed, so nothing is settled here — the loop lays the page out in its own turn (SETTINGS-OPEN 2: a settle a
+        slice, the whole page laid out ten passes deep, while a reveal's row stood in view)."""
         if not self._in_view(anchor):
             anchor = self._top_widget() if fallback else None
         vp, bar = self.scroll.viewport(), self.scroll.verticalScrollBar()
@@ -2106,6 +2220,8 @@ class SettingsPage(QWidget):
         try:
             yield
         finally:
+            if y0 is not None and moved is not None and not moved():
+                y0 = None                     # (nothing above the anchor changed: it stands where it was)
             if y0 is not None:                # nothing in view to keep: the loop lays out in its own turn
                 self._settle()
                 if stable and _alive(anchor):

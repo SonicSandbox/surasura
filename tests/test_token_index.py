@@ -1133,7 +1133,7 @@ def test_kept_file_moved_to_a_new_folder_keeps_its_row_when_nothing_else_leaves(
 def test_chinese_preview_never_applies_the_japanese_one_kanji_rule(tmp_path, monkeypatch):
     """The one-character rule is Japanese only (analyzer.single_kind reads Japanese one-kanji words), so a
     Chinese Rarity preview keeps every word even with Settings' one-kanji switch on; Japanese still applies it."""
-    monkeypatch.setattr(ti, "singles_rule", lambda: True)
+    monkeypatch.setattr(ti, "singles_rule", lambda settings=None: True)
     uf = tmp_path / "User Files" / "zh"
     uf.mkdir(parents=True)
     (uf / "KnownWord.json").write_text(json.dumps({"words": []}), encoding="utf-8")

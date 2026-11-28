@@ -1465,6 +1465,20 @@ class EscapeRouter(QObject):
         return True
 
 
+SETTINGS_WARM_MS = 3            # a turn's share of Settings' icons drawn ahead (`ShellWindow._warm_icons`), at most
+
+
+def _import_settings():
+    """(A worker, once the window has booted.) What Settings' first open imports — the page, the packages that fill
+    its slots (`settings_attaches`) — and what its rows read first (`settings_page._warm`), done ahead. No Qt enum is
+    made here: `test_settings_open` imports them on a thread of a fresh process and fails on one."""
+    from app.qt import settings_page
+    settings_attaches()
+    if not settings_page._WARMED:
+        settings_page._warm()
+        settings_page._warmed()
+
+
 def settings_attaches():
     """The packages that fill Settings' slots, each with the rows whose slots it fills (`SettingsPage.attach_later`:
     run just before the first row of those rows' sections is built) -> [(attach, rows)], in this order: Connect's three
@@ -4565,9 +4579,39 @@ class ShellWindow(QMainWindow):
         qcovers.release(self._stones_hold)
         if self._framed:
             self._when_booted(self.scan_covers)
+            if self.boot_gate:
+                self._when_booted(self._warm_settings)         # SETTINGS-OPEN 2: Settings' first open made lighter
         else:
             self.scan_covers()
         self._start_looks()                                    # --- SRC W1b: the first look after start (full)
+
+    def _warm_settings(self):
+        """SETTINGS-OPEN 2: Settings' first open made lighter once the window has booted — its modules imported on a
+        worker (`_import_settings`: 60–240 ms of the click's stretch), then the icons its frame draws, a few between
+        the window's own turns (`settings_page.warm_icons`: ~100 ms of the frame). Nothing once Settings is made."""
+        if self.settings_page is None:
+            bridge.run_in_worker(_import_settings, then=lambda _none: self._warm_icons(None),
+                                 failed=lambda info: applog.log("shell", f"Settings not warmed: {info[1]}"))
+
+    def _warm_icons(self, steps):
+        """Settings' icons drawn, at most SETTINGS_WARM_MS a turn (the GUI thread's step), until they are or the
+        page is made (it draws what is left itself)."""
+        if self.settings_page is not None:
+            return
+        try:
+            if steps is None:
+                from app.qt import settings_page
+                steps = settings_page.warm_icons()
+            t0 = time.perf_counter()
+            while steps:                                      # (one a turn at least: always on its way)
+                steps.pop(0)()
+                if (time.perf_counter() - t0) * 1000 >= SETTINGS_WARM_MS:
+                    break
+        except Exception as e:                                # a warm-up never troubles the window: the page draws
+            applog.log("shell", f"Settings' icons not warmed: {e!r}")
+            return
+        if steps:
+            QTimer.singleShot(0, lambda: self._warm_icons(steps))
 
     def scan_covers(self, progress=None, then=None):
         """W3.2 Q6: the library's covers from disk (`covers.start_scan`), on a thread of its own — after the first

@@ -927,7 +927,16 @@ def _init_worker(language, reinforce=False, kind="library"):
     """One tagger per worker process, made once (spawned on Windows, so nothing is inherited) — and the
     counting for the language: fugashi and this module's rules for Japanese; jieba and patterns_zh's for
     Chinese (`reinforce` is retired and ignored, as by the analyzer). `kind` says what a document is
-    (`_count_file`)."""
+    (`_count_file`). A worker never outlives the build: it watches the build's process and ends with it, as the
+    indexer's do (`token_index._pool_start`; a killed build leaves the pool's queue open and a worker would wait on it)."""
+    import multiprocessing
+    import threading
+    parent = multiprocessing.parent_process()
+    if parent is not None:
+        def watch():
+            parent.join()
+            os._exit(1)
+        threading.Thread(target=watch, name="patterns-parent-watch", daemon=True).start()
     from app import analyzer
     boundaries = analyzer.LOGIC.get("sentence_boundaries", {})
     if language == "zh":

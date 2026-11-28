@@ -1,8 +1,9 @@
 """Booted first, on every PC (Haya-LD, 3.0.18, 2026-11-20): the window opens fully before the background starts,
 the same on every machine.
 
-The window is *booted* when Current's list, filled from what is on disk (a view that isn't the cached first screen),
-has been drawn and its event loop has gone idle once after it — or `gentle.BOOT_MAX_S` after its first frame. Until
+The window is *booted* when Current's list — the first screen's cache (UPDATE-START, 3.0.21:
+tests/qt/test_update_start_boot.py), or else the list filled from what is on disk — has been drawn and its event loop
+has gone idle once after it — or `gentle.BOOT_MAX_S` after its first frame. Until
 then `Services.start` — the Anki look and Connect's kick, the known-words sync, the journey check, the update check,
 the chores (the indexer, the store's helper) — waits; then it starts once, and the scheduler hears it (`booted`).
 
@@ -88,13 +89,13 @@ def _settle(ms=300):
 
 
 def test_nothing_in_the_background_starts_before_the_list_from_disk_is_drawn(gated, lines):
-    gated.services.library = _Reader(_view(loading=True))       # only the cached first screen so far
+    gated.services.library = _Reader(_view(loading=True))       # nothing drawn yet: no cache, nothing from disk
     gated.win.start_duties()
     _settle()
     assert _started(gated) == [] and not gated.services.boot.is_set()
     gated.win.show_library(_view(loading=True))
     _settle()
-    assert _started(gated) == [], "the cached first screen is no boot: its list isn't from disk yet"
+    assert _started(gated) == [], "a view still loading (no cache to show, nothing from disk yet) is no boot"
     gated.win.show_library(_view(loading=False))
     assert wait_until(lambda: set(_started(gated)) == set(STARTED))
     assert gated.services.boot.is_set()

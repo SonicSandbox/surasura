@@ -1301,6 +1301,8 @@ class DragController(QObject):
         self.tickets = []                            # commands given, not settled yet (oldest first)
         self._airing_asking = {}                     # alpha 9 M1: work_id -> row key offered *Still asking AniList*
         self._airing_again = False                   # ... its `_again` on its way
+        self._fresh_asking = {}                      # UPDATE-START: row key -> (its mark's ticket, the ids it marked):
+        #                                              a last Done on the first screen's cache, asked again from disk
         self.saving_keys = frozenset()
         self.toasted = None                          # the ticket whose toast shows
         self.toast_for = ()                          # round 8 row 45: the tickets the shown toast stands for …
@@ -1421,7 +1423,7 @@ class DragController(QObject):
     def view_in(self, view):
         """-> the view to show now, or None (held): every view while a drag runs (E6); while the window's own order is
         ahead of the store, a view of the same rows in that order (its numbers fresh), else held until it settles."""
-        if self._airing_asking:
+        if self._airing_asking or self._fresh_asking:
             self._answered(view)                     # (a view held, shown later as the window's own: its answer too)
         if self._own:
             return view
@@ -2522,6 +2524,7 @@ class DragController(QObject):
             self.undo(ticket.follows)                # a choice the setting made: its drop's Undo takes both (AD-6)
             return
         _tell(ticket, "undone")
+        self._fresh_let_go(lambda t: t is ticket)    # UPDATE-START: a mark undone finishes nothing later
         back = {i: not on for i, on in ticket.marks.items()} if ticket.marks else None   # a8: its stones, turned back
         if ticket.change is not None:
             self._anki_drop(lambda t: t is ticket or t.follows is ticket)     # (a drop's choice with it)
@@ -2568,6 +2571,8 @@ class DragController(QObject):
                 self.undo(drop)
                 return
             self._undo_pressed()
+            if change is not None:
+                self._fresh_let_go(lambda t: t.change is change)
             label = Ticket(None)                     # finish-pending: its undo waits for Anki if its change did (`_undone`)
             marks, key = self._marks_of.get(change, (None, None)) if change is not None else (None, None)
             if marks:                                # a8: a Done's undo, the next the writer takes: its stones now
@@ -2628,6 +2633,7 @@ class DragController(QObject):
         mark = self._anki_of.pop(change, None) if change is not None else None    # (an undo that undid nothing)
         if change is not None:
             self._marks_of.pop(change, None)
+            self._fresh_let_go(lambda t: t.change is change)     # UPDATE-START: a cache's Done mark undone
         if isinstance(label, Ticket):
             self._marks_landed(label)                # a8: its stones stand until the views have them
             _tell(label, "undone")
@@ -2929,6 +2935,10 @@ class DragController(QObject):
         title = row.title
         if ep is None:
             view = self.page.view_model
+            if self._from_cache(view, row):
+                self._fresh_asking[row.key] = (None, ())
+                self.say(strings.DONE_UPDATING_ALONE.format(title=title))
+                return
             verdict = when_done(view, row, pending=bool(self.tickets))   # L6.3: the one rule
             if verdict is not None and verdict[0] != "offer":
                 self._by_itself(row, verdict)
@@ -2991,6 +3001,11 @@ class DragController(QObject):
             return self.writer.set_watched(ids, True, label=t)
         left = [e for e in view_rows.to_finish(row.episodes) if not e.watched and e.id not in marked]
         view = self.page.view_model
+        if not left and self._from_cache(view, row):  # UPDATE-START: the mark now, the rule once the list is read
+            ticket = Ticket(strings.DONE_UPDATING.format(text=text), (row.key,), tuple(ids))
+            if self._give(ticket, mark, marks=on) is not None:
+                self._fresh_asking[row.key] = (ticket, tuple(ids))
+            return
         verdict = None if left else when_done(view, row, pending=bool(self.tickets))   # L6.3: the one rule
         if verdict is not None and verdict[0] != "offer":
             if self._give(Ticket(text, (row.key,), tuple(ids)), mark, toast=False, marks=on) is None:
@@ -3116,8 +3131,10 @@ class DragController(QObject):
         """Alpha 9 (M1; the window's thread, each view of the reader's): when a show offered *Still asking AniList* has
         an answer in `view` — or none any more — L6.3's one rule is asked again just after it shows (`_again`)."""
         answers = getattr(view, "airing", None) or {}
-        if not self._airing_again and any(not (isinstance(answers.get(w), dict) and
-                                               answers[w].get("status") == airing.PENDING) for w in self._airing_asking):
+        fresh = bool(self._fresh_asking) and not getattr(view, "cached", False)    # UPDATE-START: the list from disk
+        if not self._airing_again and (fresh or any(not (isinstance(answers.get(w), dict) and
+                                                         answers[w].get("status") == airing.PENDING)
+                                                    for w in self._airing_asking)):
             self._airing_again = True
             QTimer.singleShot(0, self._again)
 
@@ -3134,6 +3151,8 @@ class DragController(QObject):
         view = self.page.view_model
         if view is None or getattr(view, "cached", False):
             return
+        if self._fresh_asking:
+            self._from_disk(view)
         answers = getattr(view, "airing", None) or {}
         busy = self.running is not None or bool(self.blocked) or bool(self.tickets) or not self.writer.can_write()
         for work_id, key in list(self._airing_asking.items()):
@@ -3148,6 +3167,48 @@ class DragController(QObject):
             verdict = when_done(view, row)           # L6.3: the one rule
             if verdict is not None and verdict[0] != "offer":
                 self._by_itself(row, verdict)
+
+    def _from_cache(self, view, row):
+        """UPDATE-START (3.0.21): whether `row`'s last Done waits for the list from disk — the window shows the first
+        screen's cache (it boots the window at once), which holds Current alone: Goal, New arrivals and Finished aren't
+        read yet, so L6.3's rule can't tell a finish from a join or an ask (`when_done` would offer). A group (always
+        offered) and hato's mix (never finishes) answer the same either way: not held."""
+        return bool(getattr(view, "cached", False)) and finishes(row) and not getattr(row, "group", False)
+
+    def _fresh_let_go(self, undone):
+        """UPDATE-START: the last Dones asked again from disk whose mark `undone(ticket)` — let go."""
+        if self._fresh_asking:
+            self._fresh_asking = {k: v for k, v in self._fresh_asking.items() if v[0] is None or not undone(v[0])}
+
+    def _from_disk(self, view):
+        """UPDATE-START: each last Done pressed on the first screen's cache, its rule asked now on the first view from
+        disk (`_again`) — as the press itself would have asked it there: its own marks counted watched, the other
+        commands still on their way as `pending`. It finishes by itself or joins (`_by_itself`), or the finish toast
+        offers it, or the bar says why nothing is offered. Let go, silently: its mark undone, the row gone from
+        Current, or a file of it unwatched again. Kept for a later view while a drag runs or the store can't take a
+        move (its mark's own write on its way holds nothing: the press never waited for it either)."""
+        if self.running is not None or self.blocked or not self.writer.can_write():
+            return
+        asked, self._fresh_asking = self._fresh_asking, {}
+        rows_ = {r.key: r for r in view.rows}
+        for key, (ticket, ids) in asked.items():
+            row = rows_.get(key)
+            if row is None or (ticket is not None and ticket.undo_asked):
+                continue
+            marked = set(ids)
+            if any(not e.watched and e.id not in marked for e in view_rows.to_finish(row.episodes)):
+                continue
+            row = row._replace(episodes=tuple(e._replace(watched=True) if e.id in marked else e
+                                              for e in row.episodes)) if marked else row
+            verdict = when_done(view, row, pending=any(t is not ticket for t in self.tickets))
+            if verdict is not None and verdict[0] != "offer":
+                self._by_itself(row, verdict)
+            elif verdict is not None:
+                self._ask_again(view, row, verdict)
+                self.win.toasts.show(offer_text(verdict, row), buttons=[
+                    (strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP, lambda r=row: self.to_finished(r))])
+            else:
+                self.say(strings.WELL_UNLIT_SPLIT)   # (`_from_cache`: never hato's mix)
 
     def finish_show(self, row, show, ids):
         """LM11b G5: *Move {show} to Finished* (the Done's toast) — the finish of that show's episodes in the group alone
@@ -3423,6 +3484,7 @@ class DragController(QObject):
         self._settle.stop()
         self._unanswered.stop()
         self._airing_asking.clear()                  # (alpha 9 M1: nothing asked again past it)
+        self._fresh_asking.clear()
         self.expect_marks, self._mark_undos = {}, []
         self._anki_let_go()
         self._filter(False)

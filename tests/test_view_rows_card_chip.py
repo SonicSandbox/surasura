@@ -1,6 +1,7 @@
-"""The ✓ chip's rows (Michi-CK2): an episode in Anki says how many of its words have a card — its own and those carded
-elsewhere (`view_rows.build(elsewhere=)`, the counter's answers) — and its hover says which: *9 from this episode ·
-22 from other episodes and shows* (PROVISIONAL words). The reader asks the counter of its mined episodes and builds
+"""The ✓ chip's rows (Michi-CK2): an episode in Anki shows the cards made from it, and its hover says how many more
+of its words have a card made elsewhere (`view_rows.build(elsewhere=)`, the counter's answers): *9 from this
+episode · 22 from other episodes and shows* (PROVISIONAL words). Mattias, 2026-11-28: the chip once counted both —
+a show's ✓ 444 (17 its own, 427 elsewhere) read as 444 new cards from it. The reader asks the counter of its mined episodes and builds
 its answers in; the word card hands Anki's studied cards on (never a second read of Anki).
 
 Why these matter: the chip must never redraw what didn't move (a Connect batch moves a few counts: only those rows are
@@ -44,22 +45,22 @@ CARDS = {1: 9, 2: 4, 3: 2, 4: 5, 5: 1, 6: 3}
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])
-def test_the_check_counts_every_word_with_a_card_and_its_hover_says_where_each_was_made(language):
-    """Ep 1: 9 cards of its own, 22 more of its words carded elsewhere — ✓ 31, *9 from this episode · 22 from other
+def test_the_check_counts_its_own_cards_and_its_hover_says_how_many_more_were_made_elsewhere(language):
+    """Ep 1: 9 cards of its own, 22 more of its words carded elsewhere — ✓ 9, *9 from this episode · 22 from other
     episodes and shows*. The show's row counts its words once (its own answer, never the sum of its episodes')."""
     elsewhere = {1: 22, 2: 5, 3: 0, (1, 2, 3): 25, 4: 1, 5: 2, (4, 5): 3, 6: 7}
     view = vr.build(_three_shows(language), WORKS, {}, cards=CARDS, elsewhere=elsewhere, language=language)
     row = view.rows[0]
     ep1 = row.episodes[0]
-    assert ep1.status.kind == "in_anki" and ep1.status.label == "31"
+    assert ep1.status.kind == "in_anki" and ep1.status.label == "9"
     assert ep1.status.tip == "9 from this episode · 22 from other episodes and shows"
     assert row.episodes[2].status.label == "2"
     assert row.episodes[2].status.tip == "2 from this episode · 0 from other episodes and shows"
-    assert row.status.label == str(15 + 25), "its words once: its own answer, not 22 + 5 + 0"
+    assert row.status.label == "15", "its own cards: never what was carded elsewhere"
     assert row.status.tip == "15 from its 3 episodes · 25 from other episodes and shows"
-    assert view.rows[2].status.label == "10", "a one-file row: its file's answer"
+    assert view.rows[2].status.label == "3", "a one-file row: its file's own cards"
     assert view.rows[2].status.tip == "3 from this episode · 7 from other episodes and shows"
-    assert vr.spoken(ep1.status) == "31 in Anki"
+    assert vr.spoken(ep1.status) == "9 in Anki"
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])
@@ -73,7 +74,8 @@ def test_not_counted_yet_reads_as_before_and_an_episode_not_in_anki_has_no_count
     assert before.status.tip == vr.STRINGS["tip_in_anki_k"].format(k=3, n=15)
     some = vr.build(items, WORKS, {}, cards={1: 9}, elsewhere={1: 22, 2: 6, (1, 2, 3): 40},
                     language=language).rows[0]
-    assert some.episodes[0].status.label == "31"
+    assert some.episodes[0].status.label == "9"
+    assert some.episodes[0].status.tip == "9 from this episode · 22 from other episodes and shows"
     assert some.episodes[1].elsewhere is None and some.episodes[1].status.kind != "in_anki"
     plain = vr.build(items, WORKS, {}, cards={1: 9}, language=language).rows[0]
     assert some.status == plain.status, "a row not all in Anki reads as before"
@@ -94,7 +96,7 @@ def test_a_batch_that_moves_one_count_rebuilds_only_that_row(language):
     moved = {**first, 4: 2, (4, 5): 4}                         # a batch carded one more of show 2's words
     two = vr.build(items, WORKS, {}, numbers=(1, {}), cards=cards, elsewhere=moved, cache=cache, language=language)
     assert two.rows[0] is one.rows[0] and two.rows[2] is one.rows[2]
-    assert two.rows[1] is not one.rows[1] and two.rows[1].status.label == str(6 + 4)
+    assert two.rows[1] is not one.rows[1] and two.rows[1].status.tip == "6 from its 2 episodes · 4 from other episodes and shows"
     assert two.finished[0].rows[0] is one.finished[0].rows[0], "Finished's rows kept: their answers didn't move"
     again = vr.build(items, WORKS, {}, numbers=(1, {}), cards=cards, elsewhere=dict(moved), cache=cache,
                      language=language)
@@ -121,7 +123,7 @@ def test_finisheds_section_is_kept_while_its_own_counts_read_the_same_and_built_
     assert two.finished is one.finished, "Finished kept whole"
     three = build({**base, 6: 8, 7: 9, (7, 8): 10})             # one of Finished's own moved
     assert three.finished is not two.finished
-    assert three.finished[0].rows[0].status.label == str(4 + 10)
+    assert three.finished[0].rows[0].status.tip == "4 from its 2 episodes · 10 from other episodes and shows"
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])
@@ -133,10 +135,11 @@ def test_the_count_survives_the_first_screens_cache_and_a_drop_reading_the_top_a
     elsewhere = {1: 22, 2: 5, 3: 0, (1, 2, 3): 25, 4: 1, 5: 2, (4, 5): 3, 6: 7}
     view = vr.build(items, WORKS, {"mine_line": 20}, cards=CARDS, elsewhere=elsewhere, language=language)
     back = vr.from_cache(json.loads(json.dumps(vr.to_cache(view))))
-    assert back.rows[0].episodes[0].status.label == "31" and back.rows[0].status.label == "40"
+    assert back.rows[0].episodes[0].status.label == "9" and back.rows[0].status.label == "15"
+    assert back.rows[0].status.tip == "15 from its 3 episodes · 25 from other episodes and shows"
     rows, changed = vr.topped(view.rows, 2)
     assert changed, "the line moved: rows read again"
-    assert rows[0].episodes[0].status.label == "31" and rows[0].status.label == "40"
+    assert rows[0].episodes[0].status.label == "9" and rows[0].status.label == "15"
     assert rows[0].status.tip == "15 from its 3 episodes · 25 from other episodes and shows"
 
 
@@ -217,9 +220,9 @@ def test_the_reader_asks_its_mined_episodes_and_rebuilds_only_the_rows_whose_ans
                     assert (v is None) == (not e.cards), i
         before = views[-1]
         counter.on_change({item: 20})
-        assert _wait(lambda: _episode(views[-1], item).status.label == "23")
+        assert _wait(lambda: _episode(views[-1], item).status.tip == "3 from this episode · 20 from other episodes and shows")
         after = views[-1]
-        assert _episode(after, item).status.tip == "3 from this episode · 20 from other episodes and shows"
+        assert _episode(after, item).status.label == "3", "the chip: its own cards"
         kept = [a is b for a, b in zip(before.rows, after.rows) if a.key != row.key]
         assert kept and all(kept), "only the row whose answer moved is built again"
     finally:
@@ -248,7 +251,7 @@ def test_the_readers_first_build_reads_the_last_answers_on_disk(language):
     reader.start()
     try:
         assert _wait(lambda: views and views[-1].state == "full")
-        assert _episode(views[-1], item).status.label == "32"
+        assert _episode(views[-1], item).status.tip == "2 from this episode · 30 from other episodes and shows"
         assert len(counter.asks) >= 1
     finally:
         reader.stop()

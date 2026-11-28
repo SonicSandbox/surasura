@@ -1,6 +1,7 @@
-"""The ✓ chip's count (Michi-CK2; Sonic's ruling 2, 2026-11-17, on the lead's route 2026-11-18): an episode in Anki
-shows how many of its words have a card — wherever the card was made: from this episode, another episode or show, or
-by hand in Anki. Its hover: *9 from this episode · 22 from other episodes and shows*. A row of several files counts
+"""The ✓ chip's hover count (Michi-CK2; Sonic's ruling 2, 2026-11-17, on the lead's route 2026-11-18): how many of an
+episode's words have a card made elsewhere — another episode or show, or by hand in Anki. Its hover: *9 from this
+episode · 22 from other episodes and shows*; the chip itself shows the 9 (Mattias, 2026-11-28: ✓ 444 for a show with
+17 cards of its own read as 444 new cards from it). A row of several files counts
 its words once (`view_rows`). Qt-free (`tests/test_import_guard.py`); the rows say what this counts.
 
 - **Only mined files are counted** (the chip shows only on a row in Anki): each one's words from the token store's

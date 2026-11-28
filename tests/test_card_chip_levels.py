@@ -125,7 +125,7 @@ def test_the_hover_says_at_your_level_and_below_it_only_when_some_are_below(_wor
                ("level", 3): (2, 2), ("level", (1, 2, 3)): (30, 21)}
     row = vr.build(items, WORKS, {}, cards=cards, elsewhere=answers, language=language).rows[0]
     e11, e12, e13 = row.episodes
-    assert e11.status.label == "56"
+    assert e11.status.label == "34", "the chip: its own cards"
     assert e11.status.tip == "34 from this episode, 16 at your level and 18 below it · 22 from other episodes and shows"
     assert e12.status.tip == "12 from this episode · 3 from other episodes and shows", "none below: as before"
     assert e13.status.tip == "5 from this episode · 1 from other episodes and shows", "2 + 2 isn't its 5: not split"

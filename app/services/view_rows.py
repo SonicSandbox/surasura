@@ -937,8 +937,8 @@ def status_of(eps, word, line_n, elsewhere=None, level=None):
     on-disk mark beside it when something isn't there. `line_n` None: Connect is off — no top, so no *Waiting* (row 13:
     nothing mines by itself) and no "top" in the tips. An episode in the top that Connect won't mine by itself (`own`,
     Michi-EO's BY_YOU) is *Mine* (*Mine rest*), never *Waiting*. `elsewhere` (Michi-CK2): how many of their words
-    have a card not made from them — *N in Anki* then counts every word of theirs with a card (its own and these),
-    its hover says which; None: its own cards alone. `level` (lean A): (at your level, below it) of its own cards —
+    have a card not made from them — *N in Anki* still counts its own cards, and its hover says how many more were
+    made elsewhere; None: its own cards alone, today's hover. `level` (lean A): (at your level, below it) of its own cards —
     said in the hover while some are below and the two make its own count."""
     n = len(eps)
     mined = [e for e in eps if e.cards or e.mined]
@@ -967,8 +967,9 @@ def status_of(eps, word, line_n, elsewhere=None, level=None):
     elif not unmined:                                              # every item mined (or its cards deleted)
         label = STRINGS["in_anki"].format(n=cards)      # mined = its cards are there, so cards > 0 (B-13, IK-27)
         tip = STRINGS["tip_in_anki"].format(n=cards) if n == 1 else STRINGS["tip_in_anki_k"].format(k=k, n=cards)
-        if elsewhere is not None:                       # Michi-CK2: every word of it with a card, wherever made
-            label = STRINGS["in_anki"].format(n=cards + elsewhere)
+        if elsewhere is not None:                       # Michi-CK2: the hover says how many of its words have a card
+            # made elsewhere; the chip itself counts the cards made from it (Mattias, 2026-11-28: a show's ✓ 444 —
+            # 17 its own, 427 elsewhere — read as 444 new cards from it)
             split = level is not None and level[1] > 0 and level[0] + level[1] == cards
             lv = "_lv" if split else ""
             at, below = level if split else (0, 0)

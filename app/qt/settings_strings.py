@@ -366,9 +366,9 @@ ROWS = {
     # Michi-T1 (Sonic 2026-11-17; PROVISIONAL: label and line for Sonic); its ? line says what it does and when
     # (POLISH-321, 3.0.21; PROVISIONAL)
     "connect_spot_every_episode": ("Check every episode’s audio first",
-                                   "Before an episode’s cards, Surasura checks its audio says its subtitles’ "
-                                   "lines: every episode, not one a release. Slower; turn it on when a release "
-                                   "mixes dubs or languages",
+                                   "Before making an episode’s cards, Surasura checks that its audio matches its "
+                                   "subtitles, for every episode rather than once per release. It’s slower; turn it "
+                                   "on when a release mixes dubs or languages.",
                                    "Surasura listens to a few lines of one episode of each release while it mines, "
                                    "and holds the release if its audio doesn’t say its subtitles’ lines (a dub, "
                                    "another language). On: every episode is listened to before its cards are "

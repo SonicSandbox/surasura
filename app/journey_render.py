@@ -728,6 +728,31 @@ def open_library(language, data_dir=None, user_files_dir=None):
         return None
 
 
+def open_library_look(language, data_dir=None, user_files_dir=None):
+    """(`open_library`'s handle, the marks a render without the store's facts is signed with), from the one open's own
+    look (ONE-READ 4: `analyzer.journey_marks` opened the store again to tell them apart): None — no ready store (none
+    at all, JSON mode, damaged, made by a newer Surasura), the report as before; `library_store.UNREAD` — a store
+    there that can't be read now (busy past the wait, an error), never signed as current. With a handle, the second
+    is UNREAD too: the caller's read through it is what failed. Never raises; the caller closes the handle."""
+    try:
+        from app import library_store
+    except Exception:
+        return None, None
+    try:
+        from app.path_utils import get_data_path, get_user_files_path
+        if not library_store.STORE_LIVE:
+            return None, None
+        store, (mode, reason) = library_store.open_store_mode(
+            language, data_dir or get_data_path(language), user_files_dir or get_user_files_path(language),
+            role="analyzer", busy_wait=0.5)
+    except Exception:
+        return None, library_store.UNREAD           # (never signed current: the next press draws it again)
+    if store is not None:
+        return store, library_store.UNREAD
+    unread = mode == "read-only" and (reason == "busy" or str(reason).startswith("io"))
+    return None, library_store.UNREAD if unread else None
+
+
 def store_facts(language, data_dir=None, user_files_dir=None, library=None):
     """The episodes' facts from the library store, read in one go through its readers (`read_feed`, `scheduled_ids`,
     `cards_of`, and — once their lanes land — `prestudied_marks`, `growth_of`), or None with no ready store (the page

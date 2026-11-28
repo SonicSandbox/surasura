@@ -225,7 +225,84 @@ def word_requests(words, features=(), book=False, app=None):
     return out
 
 
-_CLOZE = re.compile(r"\{\{(c\d+::)", re.IGNORECASE)
+EXPORT = "settings-export.json"     # the profile's settings export in a job's run folder (`verbs._anki_miner_setup`)
+# what a card front may hold where its line's spelling holds a character the profile's filter takes out: the same
+# character, or the long-vowel mark the tagger reads a wave dash as (`analyzer.tagger_text`: ぐぐ～っと is ぐぐーっと)
+_FRONT_FOR_CUT = "ー〜～~"
+
+
+def line_filter(export):
+    """The subtitle filter Anki Miner cleans every line with before it looks for a word (its profile's *Remove
+    speaker names, sound effects and music notes*: `use_subtitle_regex_filter` and `subtitle_regex_filter`, read from
+    the settings `export`), compiled — or None: the filter is off, its pattern empty or invalid, or it replaces what it
+    matches with text (`subtitle_regex_replacement`: a cut can't be read off a line it rewrites, so nothing is
+    guessed)."""
+    settings = export.get("settings") if isinstance(export, dict) else None
+    if not isinstance(settings, dict) or settings.get("use_subtitle_regex_filter") is not True:
+        return None
+    pattern = settings.get("subtitle_regex_filter")
+    if not isinstance(pattern, str) or not pattern or settings.get("subtitle_regex_replacement") not in (None, ""):
+        return None
+    try:
+        return re.compile(pattern)
+    except re.error:
+        return None
+
+
+def read_line_filter(run_dir):
+    """`line_filter` of the settings export in `run_dir` (`EXPORT`), or None when there is none to read."""
+    try:
+        with open(os.path.join(run_dir, EXPORT), encoding="utf-8") as f:
+            return line_filter(json.load(f))
+    except (OSError, ValueError):
+        return None
+
+
+def through_filter(words, pattern):
+    """Picked words (pick's shape) as Anki Miner will find them on their lines once its subtitle filter (`pattern`,
+    `line_filter`'s; None: as they are) has cleaned the lines: a word whose spelling on its line (`surface`) holds
+    characters the filter takes out goes without them — its spelling, its card front (`sent`) and its front's reading
+    (`front_reading`) — so Anki Miner finds the word its line now says. A tester's ぐぐ～っと (Overlord III 11): the
+    filter takes the ～ out (`(?<!\\d)[～〜]+`), the line reads ぐぐっと, and ぐぐーっと, sent as it was, was not found (no
+    card: the swap waited for another sentence). A front or reading is cut only where it lines up with the spelling
+    character for character (`_FRONT_FOR_CUT`); else it goes as it was. Surasura's own word (`word`, `reading`) is
+    never changed: the outcome is still that word's."""
+    if pattern is None:
+        return list(words)
+    return [_through(word, pattern) for word in words]
+
+
+def _through(word, pattern):
+    line, surface = word.get("line_text"), word.get("surface")
+    if not isinstance(line, str) or not isinstance(surface, str) or not surface:
+        return word
+    at = line.find(surface)
+    if at < 0:
+        return word
+    gone = set()
+    for match in pattern.finditer(line):
+        gone.update(range(match.start(), match.end()))
+    cut = {i - at for i in gone if at <= i < at + len(surface)}
+    if not cut:
+        return word
+    kept = "".join(c for i, c in enumerate(surface) if i not in cut)
+    if not kept.strip():
+        return word                     # the filter takes the whole word out: nothing on the line to find
+    out = dict(word, surface=kept)
+
+    def drop(text):
+        if not isinstance(text, str) or len(text) != len(surface) or any(
+                text[i] != surface[i] and text[i] not in _FRONT_FOR_CUT for i in cut):
+            return text
+        return "".join(c for i, c in enumerate(text) if i not in cut)
+    if isinstance(word.get("sent"), list):
+        out["sent"] = [drop(name) for name in word["sent"]]
+    if word.get("front_reading"):
+        out["front_reading"] = drop(word["front_reading"])
+    return out
+
+
+_CLOZE =re.compile(r"\{\{(c\d+::)", re.IGNORECASE)
 
 
 def no_cloze(text):

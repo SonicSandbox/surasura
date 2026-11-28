@@ -1431,6 +1431,10 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
     asks, named = features(info), info.get("features")
     if language == "zh" and (version_tuple(info.get("app")) or (0, 0, 0)) < ZH_FROM:
         raise AnkiMinerError("setup", ZH_UPDATE, verdict=info)     # nothing sent: the language waits for the update
+    if reading is None:                 # a subtitle's words as its lines read once the profile's filter cleaned them
+        cleaned = runfile.read_line_filter(run_dir)
+        words = runfile.through_filter(words, cleaned)
+        more = [dict(extra, words=runfile.through_filter(extra["words"], cleaned)) for extra in more or ()]
     if "Z-1" not in asks:
         write_whitelist(language, [name for word in list(words) + [w for extra in more or () for w in extra["words"]]
                                    for name in runfile.entries(word, named)])
@@ -1572,6 +1576,7 @@ def render_line(path, language, job, video, subtitle, words, mapping, profile_na
     if language == "zh" and (version_tuple(info.get("app")) or (0, 0, 0)) < ZH_FROM:
         raise AnkiMinerError("setup", ZH_UPDATE, verdict=info)
     run_id = f"{job}-{attempt}"
+    words = runfile.through_filter(words, runfile.read_line_filter(run_dir))     # as `_mine_held`
     episode = runfile.episode(run_id, video, subtitle, runfile.word_requests(words, named, app=info.get("app")),
                               tags=runfile.job_tag(job), subtitle_offset=subtitle_offset, audio=is_audio(video),
                               features=named, language=language)

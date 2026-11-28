@@ -68,18 +68,21 @@ def _kept(store):
     return out + [store.get_meta("phrases")]
 
 
-def _refind(store, monkeypatch, tag, gate_from):
+def _refind(store, monkeypatch, tag, gate_from, places=None):
     """Search every file's phrases again from a fresh process's state (no vocabulary read yet), as new phrase data does
     (its revision moved), the gate used from `gate_from` files on -> the sentences `phrases.tally` was given, a list
-    a file."""
+    a file (`places`, a list: receives the places it was given with them, a file's list or None)."""
     monkeypatch.setattr(phrase_data, "REVISION", f"{phrase_data.REVISION}-{tag}")
     monkeypatch.setattr(ti, "_PHRASE_GATE_FILES", gate_from, raising=False)
     store._types.clear()
     given, real = [], phrases.tally
     # (the words given, each token as a list: the gate hands the vocabulary's own tuples, file_tokens new lists)
-    monkeypatch.setattr(phrases, "tally", lambda sentences, found, matches=None, places=None:
-                        given.append([[text, [list(token) for token in tokens]] for text, tokens in sentences])
-                        or real(sentences, found, matches, places))
+    def spy(sentences, found, matches=None, at=None):
+        given.append([[text, [list(token) for token in tokens]] for text, tokens in sentences])
+        if places is not None:
+            places.append(at)
+        return real(sentences, found, matches, at)
+    monkeypatch.setattr(phrases, "tally", spy)
     store._update_phrases(True)
     monkeypatch.setattr(phrases, "tally", real)
     return given
@@ -142,16 +145,25 @@ def test_a_sentence_a_name_join_changes_is_searched_in_its_joined_words(library,
                 tables[span[5]][span[6]] = [1.0, span[6], "", span[6]]
         store.set_meta("names_tables", json.dumps(tables, ensure_ascii=False))
         store._names = None
-        joined = set()
+        joined, read_in = {}, {}
+        reads, switches = ti._names_reads(tables), ti._library_switches("ja")
         for path, names, texts, ids in store.conn.execute(
                 f"SELECT path, names, texts, ids FROM files WHERE {ti._EVIDENCE}").fetchall():
-            store._named(store._stored(texts, ids), names, joined)
-        assert joined, "the tables join some sentence's pieces"
+            store._named(store._stored(texts, ids), names, joined.setdefault(path, set()))
+            read_in[path] = ti._names_read_in(names, reads, switches)
+        assert any(joined.values()), "the tables join some sentence's pieces"
+        assert any(read_in.values()), "and they read some file's names"
         _refind(store, monkeypatch, "whole", 10 ** 9)
         before = _kept(store)
-        gated = _refind(store, monkeypatch, "gated", 1)
-        assert gated == _expected(_can_hold(store)), "each sentence a span stands in given in its joined words"
+        places = []
+        gated = _refind(store, monkeypatch, "gated", 1, places)
+        held = _can_hold(store)
+        assert gated == _expected(held), "each sentence a span stands in given in its joined words"
         assert _kept(store) == before
+        for (path, (_sentences, numbers)), given in zip(held.items(), places):
+            assert {numbers[j] for j, at in enumerate(given) if at is None} == joined[path] & set(numbers),                 "find walks a sentence a join changed whole (its words moved), every other at its runs"
+        kept = json.loads(store.get_meta("phrase_matches"))["files"]
+        assert {path: met[4] for path, met in kept.items()} == read_in, "what the tables make of each file's names"
     finally:
         store.close()
 
@@ -310,15 +322,30 @@ def _counted_again(store, songs, whole=False):
     return asked
 
 
+def _phrases_moved(store, monkeypatch, change):
+    """A new matcher (the same matches), or new phrase data: the phrase the songs use most taken out (every match
+    after it renumbered) -> the songs' phrase uses before."""
+    uses = json.loads(store.get_meta("songs_counted"))["uses"]
+    if change == "matcher":
+        monkeypatch.setattr(phrases, "MATCHER_VERSION", phrases.MATCHER_VERSION + 1)
+    else:
+        full, most = phrases.load(), int(max(uses, key=uses.get))
+        fewer = phrases.PhraseSet([entry for k, entry in enumerate(full.entries) if k != most])
+        monkeypatch.setattr(phrase_data, "REVISION", f"{phrase_data.REVISION}-fewer")
+        monkeypatch.setattr(phrases, "load", lambda: fewer)
+    return uses
+
+
+@pytest.mark.parametrize("change", ["matcher", "phrase data"])
 def test_after_a_matcher_change_the_songs_count_again_only_their_lines_holding_a_match_and_keep_the_same(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, change):
     # why: a new matcher made the first Generate count every song line again (~27 s on a 20,000-file library) though
     # it moves only the songs' set phrases — their words, tokens and one-kanji pieces stand — and a line holding none
     # of the re-find's matches gives a phrase nothing; the songs table and its sum must be what counting all gives
     store, songs = _songs_library(tmp_path)
     try:
-        monkeypatch.setattr(phrases, "MATCHER_VERSION", phrases.MATCHER_VERSION + 1)
-        store._update_phrases(True)                     # the index's re-find under the new matcher
+        uses = _phrases_moved(store, monkeypatch, change)
+        store._update_phrases(True)                     # the index's re-find under the new matcher / data
         other = _copy(store, tmp_path, "whole.db")
         try:
             _counted_again(other, songs, whole=True)
@@ -335,6 +362,7 @@ def test_after_a_matcher_change_the_songs_count_again_only_their_lines_holding_a
         assert all(only for _p, _n, only in asked), "their phrases alone"
         assert _songs_kept(store) == want, "the songs table and the sum byte for byte"
         assert json.loads(want[1])["uses"], "the songs' phrases are counted"
+        assert (json.loads(want[1])["uses"] == uses) == (change == "matcher"), "new data moves the songs' phrases"
     finally:
         store.close()
 
@@ -346,10 +374,13 @@ def test_after_a_matcher_change_a_file_the_phrases_only_count_cant_take_is_count
     # since its songs were kept must be counted as before — every line — and the sum still be what counting all gives
     store, songs = _songs_library(tmp_path)
     try:
-        monkeypatch.setattr(phrases, "MATCHER_VERSION", phrases.MATCHER_VERSION + 1)
-        store._update_phrases(True)
         sung = sorted(ti._norm(p) for p, n in songs.items() if n)
         one = sung[1]
+        _phrases_moved(store, monkeypatch, "phrase data")
+        if damage == "changed":                         # the episode changed since its songs were kept: its stamp
+            store.conn.execute("UPDATE files SET mtime = mtime + 5 WHERE path = ?", (one,))
+            store.conn.commit()
+        store._update_phrases(True)                     # (the index's re-find: the changed file's matches current)
         if damage == "matches":                         # its kept matches count one sentence more than it holds
             kept = json.loads(store.get_meta("phrase_matches"))
             kept["files"][one][2] += 1
@@ -358,8 +389,6 @@ def test_after_a_matcher_change_a_file_the_phrases_only_count_cant_take_is_count
             top = store.conn.execute("SELECT max(id) FROM types").fetchone()[0]
             store.conn.execute("INSERT INTO types(id, lemma, reading, surface, orth) VALUES(?, ?, ?, ?, ?)",
                                (top + 2, "欠", "ケツ", "欠", "欠"))
-        else:                                           # the episode changed since its songs were kept: its stamp
-            store.conn.execute("UPDATE files SET mtime = mtime + 5 WHERE path = ?", (one,))
         store.conn.commit()
         other = _copy(store, tmp_path, "whole.db")
         try:

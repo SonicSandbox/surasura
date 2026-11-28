@@ -554,6 +554,17 @@ MINE_AGAIN_TIP = ("Make this episode's cards again: the words whose cards you de
                   "still there stay as they are\n• The show's earlier episodes never mined are queued too"
                   "\n• Undo takes the ask back")
 MINE_AGAIN_ASKED = "{label}: mined again next · only the cards that aren't in Anki now"
+# TOP-UP (3.0.21, Sonic § 114 B; every word PROVISIONAL): a mined episode's ⋯ and its show's ⋯ — the words that joined
+# the list since it was mined, the same ones Connect tops up by itself (`connect.actions.top_up`)
+TOP_UP = "Mine the new words"
+TOP_UP_TIP = ("Make cards for its words that joined your list since it was mined\n• Only words with no card yet: "
+              "a card you deleted stays deleted (Mine again brings those back)\n• Its cards in Anki stay as they are")
+TOP_UP_SHOW_TIP = ("Make cards for the words that joined your list since its episodes were mined\n• Only words with "
+                   "no card yet: a card you deleted stays deleted\n• Their cards in Anki stay as they are")
+TOP_UP_ASKED = {True: "{label}: its new words' cards come next",
+                False: "{n} episodes: their new words' cards come next"}
+TOP_UP_NOTHING = "Nothing new to mine: every word of it on your list has a card, or had one"
+TOP_UP_FAILED = "Its new words couldn't be asked for: {why}"
 UNMINED_ENTRY = "Words it won't mine again…"
 UNMINED_ENTRY_TIP = "This episode's words with no card: deleted, or ones it couldn't make"
 # Kantan-MA (a tester's report 2026-11-21: *Mine again* made no card and said nothing; PROVISIONAL words): the words of

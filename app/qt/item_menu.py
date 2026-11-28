@@ -15,6 +15,8 @@ A3 `split`, 06 E4, E22).
 - *Never read this folder* › the row's folder and each one above it inside its source folder, deepest first (K6:
   asked on the looks' worker, added once it answers; none for a row from no folder being read): `Writer.skip_folder`
   with Undo;
+- each `row_hooks` entry (TOP-UP: Connect's *Mine the new words*, `mine_actions.MineActions.row_entries`) — callables
+  `(row) -> [Entry]`, asked as the menu opens, named `HOOKED`…; an entry's `payload`, a callable, runs when picked;
 - *Open its folder* (`windows.open_url`, N3; looked for on a worker);
 - *Same show as…* › the other shows the view holds, one entry each (Current's in order, Goal's, Finished's, New
   arrivals'; at most `SAME_SHOW_MAX` from each), each asking first (`confirm.ask`, Cancel the default: "Make <B> part of
@@ -98,6 +100,7 @@ JOIN_EDGE = 0.25                                    # a part's top and bottom 25
 JOIN_REST_MS = 500                                  # the hold before *Join as one show* / *Drop to group* shows
 
 Entry = namedtuple("Entry", "name label tip ok children checked payload writes", defaults=(None, None, None, False))
+HOOKED = "row-"                                     # TOP-UP: a row hook's entry names (`row_hooks`): its payload runs
 #   writes: a hook's entry that asks the store for a write — greyed by the menu, with the store's reason, while the
 #   store is read-only (`_refused_tip`: one rule, the menu's)
 Part = namedtuple("Part", "key piece_id ids numbers tier place title")
@@ -356,6 +359,7 @@ class ItemActions(QObject):
         self.lst.split_requested.connect(self.split)
         self.lst.episode_menu_requested.connect(self.episode_menu)       # --- row 28
         self.episode_hooks = []                      # row 28: (row, ep) -> [Entry], asked as an episode's ⋯ opens
+        self.row_hooks = []                          # TOP-UP: (row) -> [Entry], asked as a show's ⋯ opens
         win.moves.joins = self
         self.cover_entries = None                    # Q6: (row) -> [(label, tip, enabled, callback)] (*Change cover…*)
         try:
@@ -511,6 +515,7 @@ class ItemActions(QObject):
                 for label, tip, ok, cb in covers]))
         if row.work_id is not None and book_row(row):           # Kura-AB5 (Sonic's yes): a book's own name
             out.append(entry("rename-book"))
+        out += self._row_hooked(row, reason)
         out.append(entry("folder", writes=False))
         out.append(entry("remove"))
         return out
@@ -718,6 +723,8 @@ class ItemActions(QObject):
             self.ask_same_show(row, payload)
         elif name == "join-show" and payload is not None:   # Kura-HJ: the same merge, no question (its toast's Undo)
             self.same_show(row, payload)
+        elif name.startswith(HOOKED) and callable(payload):     # TOP-UP: a row hook's entry
+            payload()
 
     # --- row 28: an episode's own ⋯ ---------------------------------------------------------------------------- #
     def episode_entries(self, row, ep):
@@ -759,6 +766,17 @@ class ItemActions(QObject):
                         for e in hook(row, ep) or ()]
             except Exception as e:                   # an optional module's entry never takes the menu down
                 print(f"Episode menu: an entry couldn't be made ({e})")
+        return out
+
+    def _row_hooked(self, row, reason):
+        """TOP-UP: each row hook's entries (named `HOOKED`…), as `_episode_hooked`'s."""
+        out = []
+        for hook in list(self.row_hooks):
+            try:
+                out += [e._replace(ok=False, tip=reason) if e.writes and reason is not None else e
+                        for e in hook(row) or ()]
+            except Exception as e:                   # an optional module's entry never takes the menu down
+                print(f"Row menu: an entry couldn't be made ({e})")
         return out
 
     def episode_menu(self, row, ep, at):

@@ -47,8 +47,9 @@ def test_a_watched_mined_episode_gets_no_level_job_and_its_new_word_goes_to_the_
     with c.store() as s:
         level.check(s, "ja", BEFORE, "run-1", files)
         out = level.check(s, "ja", RAISED, "run-2", files)
-    # Kantan-MO (F1): a raise mines no episode again — watched or not, the new words join the study order
-    assert out["queued"] == [] and _level_jobs() == []
+    # TOP-UP (Sonic § 114): the raise tops up the mined episodes still ahead — never the watched one
+    assert out["queued"] == [b]
+    assert [(j["item_id"], j["words"]) for j in _level_jobs()] == [(b, [("眼鏡", "メガネ")])]
 
 
 def test_wants_is_the_one_rule_for_watched_and_taken_out_items():

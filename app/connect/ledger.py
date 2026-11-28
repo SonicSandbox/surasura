@@ -688,12 +688,13 @@ class Ledger:
         return self.conn.execute("SELECT 1 FROM jobs WHERE language = ? AND item_id = ? AND state = ? LIMIT 1",
                                  (language, item_id, DONE)).fetchone() is not None
 
-    def queue_level(self, language, item_id, words, source="level", store_id=None):
+    def queue_level(self, language, item_id, words, source="level", store_id=None, asked_at=None):
         """A `queued` job of kind `level` for an item already mined, naming only `words` ((word, reading) pairs) ->
         its id. A level job still waiting gains the words (-> its id). Another open job of the item -> None: a first
         mining not started picks from the list as it is now, so the new words are its already. Kantan-SD: a Best
         sentence's job (`level.BEST`) and a raise's never share one (each keeps its own rules: the watched drop, the
-        unlisted word) -> None."""
+        unlisted word) -> None. TOP-UP (3.0.21): `asked_at` — *Mine the new words*' press time (`stamp`): the job goes
+        first and past the cap as an ask does (`runner.held_by_cap`); a waiting job it joins gains it and `source`."""
         words = sorted({(str(w), str(r)) for w, r in words or ()})
         if not words:
             return None
@@ -708,12 +709,23 @@ class Ledger:
             merged = sorted(set(_words(had)) | set(words))
             self.conn.execute("UPDATE jobs SET words = ?, updated_at = ? WHERE id = ?",
                               (json.dumps(merged, ensure_ascii=False), now, job_id))
+            if asked_at or was == "level":  # the press's job now (its source: the inbox never un-asks it); a raise's
+                # job from before 3.0.18 (`runner.LEVEL_DROPPED`'s) joined by a top-up is the top-up's, never dropped
+                self.conn.execute("UPDATE jobs SET asked_at = COALESCE(?, asked_at), source = ? WHERE id = ?",
+                                  (asked_at, source, job_id))
             return job_id
         cur = self.conn.execute("INSERT INTO jobs (language, item_id, state, source, event_id, created_at, updated_at, "
-                                "kind, words, store_id) VALUES (?, ?, 'queued', ?, NULL, ?, ?, ?, ?, ?)",
+                                "kind, words, store_id, asked_at) VALUES (?, ?, 'queued', ?, NULL, ?, ?, ?, ?, ?, ?)",
                                 (language, item_id, source, now, now, LEVEL, json.dumps(words, ensure_ascii=False),
-                                 store_id))
+                                 store_id, asked_at))
         return cur.lastrowid
+
+    def mined_items(self, language):
+        """TOP-UP: every item a first mining finished (`mined`, one read for all): a `done` job of any kind but a level
+        top-up's or a swap's (those make no receipt)."""
+        return {row[0] for row in self.conn.execute(
+            "SELECT DISTINCT item_id FROM jobs WHERE language = ? AND state = ? AND kind NOT IN (?, ?)",
+            (language, DONE, LEVEL, SWAP))}
 
     def recorded_list(self, language):
         """(the run signature of the list Connect last looked at, its keys as a set of (word, reading)), or
@@ -1038,6 +1050,17 @@ class Ledger:
         return {(w, r) for w, r in self.conn.execute(
             f"SELECT o.word, o.reading FROM outcomes o JOIN jobs j ON j.id = o.job_id WHERE j.language = ? AND "
             f"j.item_id = ? AND o.outcome NOT IN ({marks})", (language, item_id) + _NOT_MADE)}
+
+    def declined_all(self, language):
+        """`declined` for every item of the language in one read -> {item id: {(word, reading)}} (TOP-UP: a word
+        Anki Miner turned down for an episode is never named in its top-up again)."""
+        marks = ",".join("?" * len(_NOT_MADE))
+        out = {}
+        for item_id, w, r in self.conn.execute(
+                f"SELECT j.item_id, o.word, o.reading FROM outcomes o JOIN jobs j ON j.id = o.job_id WHERE "
+                f"j.language = ? AND o.outcome NOT IN ({marks})", (language,) + _NOT_MADE):
+            out.setdefault(item_id, set()).add((w, r))
+        return out
 
     def declined_outcomes(self, language, item_id):
         """{(word, reading): outcome} of `declined`'s words, the newest answer each (Kantan-MA: said with the word)."""

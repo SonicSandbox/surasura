@@ -1,11 +1,14 @@
-"""The level raise (P2.2 row 2.2.6; HC-N38 / N53; P1.5 06-edges E23) — since the mining model (Kantan-MO, 3.0.18;
-ADVERSARY.md F1) a raise **mines no episode again**: its newly listed words join the study order, and Connect cards
-them as it meets them in the episodes ahead. Sonic: a move to Rare must not mine a lot again. What each test holds:
+"""The level raise (P2.2 row 2.2.6; HC-N38 / N53; P1.5 06-edges E23) — since TOP-UP (3.0.21, Sonic § 114) a raise
+**tops up the episodes already mined**: each mined episode ahead gets a `level` job naming only its newly listed words
+(`level.TOP_UP`), under the cap's window (Kantan-MO's F1, a move to Rare must not mine a lot at once, is the cap's
+now: `test_top_up.py`). What each test holds:
 
-  * a raise queues no job, whatever was mined; it counts its newly listed words and owes the deck a re-sort;
+  * a raise queues one job per mined episode ahead with only its new words, never one for an unmined episode; it
+    counts its newly listed words and owes the deck a re-sort; a lowered level mines nothing;
   * the first look records the list and mines nothing; a look at the same list does nothing; a batch in flight makes
     the look wait instead of losing the list's record;
-  * a level job queued before the update keeps its pick's rule while under way: only its words (`restrict`).
+  * new files marked by their run go first, as `NEW_FILES`; a mark is taken once, by any look;
+  * a level job keeps its pick's rule while under way: only its words (`restrict`).
 
 The suite's real subtitles in a store built from folders; the words are real Japanese lemmas of those files' kind;
 the list itself is handed in (no Generate), and the CLI test writes a last Generate's files by hand.
@@ -49,15 +52,21 @@ def _level_jobs():
         return [ledger.job_by_id(j["id"]) for j in ledger.jobs("ja") if j["kind"] == LEVEL]
 
 
-def test_a_raise_counts_its_new_words_and_mines_no_episode_again():
-    # why: F1 — before 3.0.18 a raise queued one Anki Miner job per already-mined episode (the top 20, then the rest
-    # of Current and Goal): hundreds on a big library for one move of the slider
+def test_a_raise_tops_up_each_mined_episode_with_only_its_new_words():
+    # why: TOP-UP (Sonic § 114) — from 3.0.18 to 3.0.20 a raise mined no episode again, so a word met only in mined
+    # episodes was never carded. Each mined episode now gets its newly listed words, never one it was mined with (散歩),
+    # and an episode not mined yet gets none (b: its first mining reads the list as it is)
     (a, fa), (b, fb), (d, fd) = _line()
     _mine(a, d)
     files = {fa: ["眼鏡", "散歩"], fb: ["老婆", "冒険"], fd: ["眼鏡", "駐車場", "老婆"]}
     assert _check(BEFORE, "run-1", files)["first"] is True          # the first look records, mines nothing
+    assert _level_jobs() == []
     out = _check(RAISED, "run-2", files)
-    assert out["new"] == 3 and out["queued"] == [] and _level_jobs() == []
+    assert out["new"] == 3 and out["queued"] == [a, d], "soonest first"
+    jobs = {j["item_id"]: j for j in _level_jobs()}
+    assert set(jobs) == {a, d} and {j["source"] for j in jobs.values()} == {level.TOP_UP}
+    assert jobs[a]["words"] == [("眼鏡", "メガネ")]
+    assert jobs[d]["words"] == sorted([("眼鏡", "メガネ"), ("駐車場", "チュウシャジョウ"), ("老婆", "ロウバ")])
     with Ledger() as ledger:
         assert ledger.recorded_list("ja") == ("run-2", RAISED)
         assert ledger.resort_owed("ja"), "a moved list owes a re-sort"
@@ -74,7 +83,8 @@ def test_the_same_list_again_does_nothing_and_a_lowered_level_mines_nothing():
     with Ledger() as ledger:
         assert ledger.resort_owed("ja"), "words that left go to the back: a re-sort is owed"
     out = _check(RAISED, "run-3", files)                            # raised again: those words are new again
-    assert out["new"] == 3 and out["queued"] == [] and _level_jobs() == []
+    assert out["new"] == 3 and out["queued"] == [a]
+    assert [j["words"] for j in _level_jobs()] == [sorted([("眼鏡", "メガネ"), ("老婆", "ロウバ")])]
 
 
 def test_switched_on_again_the_next_look_is_a_first_look():
@@ -100,7 +110,8 @@ def test_a_batch_in_flight_makes_the_look_wait_and_the_raise_is_not_lost():
     with Ledger() as ledger:
         ledger.conn.execute("UPDATE jobs SET state = 'done' WHERE id = ?", (job,))
     out = _check(RAISED, "run-2", files)
-    assert out["new"] == 3 and out["queued"] == [] and _level_jobs() == []
+    assert out["new"] == 3 and out["queued"] == [a], "the raise kept for the look after the batch"
+    assert [j["words"] for j in _level_jobs()] == [[("眼鏡", "メガネ")]]
 
 
 def test_no_list_of_this_language_is_no_look():
@@ -182,16 +193,21 @@ def test_a_look_that_fails_never_stops_the_run(monkeypatch):
     assert code == 0 and "the ledger is locked" in line["languages"]["ja"]["level"]["error"], line
 
 
-def test_connect_looks_once_a_run_and_queues_no_level_job():
+def test_connect_looks_once_a_run_and_tops_up_the_mined_episode():
     (a, fa), _b, _d = _line()
     _mine(a)
     _last_generate(BEFORE, "run-1", {fa: ["眼鏡"]})
     code, line = h.call("connect", "--consume-only")
     assert code == 0 and line["languages"]["ja"]["level"]["first"] is True, line
+    assert _level_jobs() == []
     _last_generate(RAISED, "run-2", {fa: ["眼鏡"]})
     code, line = h.call("connect", "--consume-only")
-    assert code == 0 and line["languages"]["ja"]["level"]["queued"] == [], line
-    assert line["languages"]["ja"]["level"]["new"] == 3 and _level_jobs() == []
+    assert code == 0 and line["languages"]["ja"]["level"]["queued"] == [a], line
+    assert line["languages"]["ja"]["level"]["new"] == 3
+    assert [(j["source"], j["words"]) for j in _level_jobs()] == [(level.TOP_UP, [("眼鏡", "メガネ")])]
+    code, line = h.call("connect", "--consume-only")                # the same run: looked at once
+    assert code == 0 and not (line["languages"]["ja"]["level"] or {}).get("queued"), line
+    assert len(_level_jobs()) == 1
 
 
 def test_a_results_folder_without_its_list_is_no_look():
@@ -209,10 +225,10 @@ def test_a_results_folder_without_its_list_is_no_look():
         assert ledger.recorded_list("ja") == (None, None)
 
 
-def test_new_files_mined_before_connects_own_generate_get_their_new_words_and_nothing_else():
-    # why: the one level job left (P4.1 C5, kept by Kantan-MO): a new episode placed on top is mined before its
-    # Generate from the re-plan's list; the Generate then lists words only it brought. Those episodes alone — mined
-    # since Connect's own Generate after new files marked the run — get them; an episode mined earlier gets nothing
+def test_new_files_mined_before_connects_own_generate_go_first_as_new_files_and_the_mark_is_taken_once():
+    # why: P4.1 C5 — a new episode placed on top is mined before its Generate from the re-plan's list; the Generate
+    # then lists words only it brought. Those episodes (mined since Connect's own Generate after new files marked the
+    # run) get them first, as `NEW_FILES`; since TOP-UP an episode mined earlier gets its new words too, as a top-up
     (a, fa), (b, fb), (d, fd) = _line()
     _mine(a, d)
     files = {fa: ["眼鏡"], fb: ["老婆"], fd: ["眼鏡", "駐車場"]}
@@ -222,12 +238,13 @@ def test_new_files_mined_before_connects_own_generate_get_their_new_words_and_no
         ledger.conn.execute("UPDATE jobs SET state = 'done' WHERE id = ?", (job,))
         ledger.mark_new_files("ja", "2000-01-01T00:00:00Z")
     out = _check(RAISED, "run-2", files)
-    assert out["queued"] == [d], "only the episode this run mined"
-    (made,) = _level_jobs()
-    assert made["source"] == level.NEW_FILES
-    assert made["words"] == sorted([("眼鏡", "メガネ"), ("駐車場", "チュウシャジョウ")])
-    out = _check(RAISED | {("約束", "ヤクソク")}, "run-3", dict(files, **{fd: ["約束"]}))
-    assert out["queued"] == [] and out["new"] == 1, "the mark is taken once: a later raise mines nothing"
+    assert out["queued"] == [d, a], "the episode this run mined first, then the one mined earlier"
+    jobs = {j["item_id"]: j for j in _level_jobs()}
+    assert jobs[d]["source"] == level.NEW_FILES and jobs[a]["source"] == level.TOP_UP
+    assert jobs[d]["words"] == sorted([("眼鏡", "メガネ"), ("駐車場", "チュウシャジョウ")])
+    assert jobs[a]["words"] == [("眼鏡", "メガネ")]
+    with Ledger() as ledger, ledger.transaction():
+        assert ledger.take_new_files("ja") is None, "the mark is taken once"
 
 
 def _mined_this_run(*item_ids):
@@ -310,8 +327,9 @@ def test_a_new_files_mark_left_before_connect_was_switched_off_never_mines_after
         for item_id in (a, b):
             job = ledger.queue("ja", item_id, "user", None)
             ledger.conn.execute("UPDATE jobs SET state = 'done' WHERE id = ?", (job,))
-    out = _check(RAISED, "run-3", files)                 # then a raise
-    assert out["new"] == 3 and out["queued"] == [] and _level_jobs() == []
+    out = _check(RAISED, "run-3", files)                 # then a raise: every mined episode's top-up, in the
+    assert out["new"] == 3 and out["queued"] == [a, b, d]    # line's order; none a new-files job by the old mark
+    assert {j["source"] for j in _level_jobs()} == {level.TOP_UP}
 
 
 def test_a_new_files_mark_a_look_at_the_same_list_leaves_gives_only_that_runs_episodes():
@@ -328,7 +346,9 @@ def test_a_new_files_mark_a_look_at_the_same_list_leaves_gives_only_that_runs_ep
             job = ledger.queue("ja", item_id, "user", None)
             ledger.conn.execute("UPDATE jobs SET state = 'done' WHERE id = ?", (job,))
     out = _check(RAISED, "run-2", files)
-    assert out["queued"] == [d], "only the new-files run's own episode"
+    assert out["queued"] == [d, a, b], "the new-files run's own episode first, then the top-ups"
+    assert {j["item_id"] for j in _level_jobs() if j["source"] == level.NEW_FILES} == {d}, \
+        "only the new-files run's own episode is a new-files job"
 
 
 def test_a_mark_left_by_an_older_ledger_is_dropped_never_read_as_every_episode_since():
@@ -341,7 +361,8 @@ def test_a_mark_left_by_an_older_ledger_is_dropped_never_read_as_every_episode_s
     with Ledger() as ledger, ledger.transaction():
         ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('new_files:ja', '2000-01-01T00:00:00Z')")
     out = _check(RAISED, "run-2", files)
-    assert out["new"] == 3 and out["queued"] == [] and _level_jobs() == []
+    assert out["new"] == 3 and out["queued"] == [a, b, d], "the line's order: none put first by the old mark"
+    assert {j["source"] for j in _level_jobs()} == {level.TOP_UP}
     with Ledger() as ledger, ledger.transaction():
         assert ledger.take_new_files("ja") is None, "taken"
         for old in ("2000-01-01T00:00:00Z", "7", '{"7": 1}'):
@@ -375,4 +396,6 @@ def test_a_new_files_mark_left_before_connects_first_look_is_taken_by_that_look(
     _mined_this_run(d)
     assert _check(BEFORE, "run-1", files)["first"] is True
     out = _check(RAISED, "run-2", files)
-    assert out["new"] == 3 and out["queued"] == [] and _level_jobs() == []
+    assert out["new"] == 3 and out["queued"] == [d]
+    assert [(j["source"], j["words"]) for j in _level_jobs()] == [
+        (level.TOP_UP, sorted([("眼鏡", "メガネ"), ("駐車場", "チュウシャジョウ")]))], "the mark taken by the first look"

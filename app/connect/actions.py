@@ -102,6 +102,52 @@ def check_again(language, item_id, path=None):
     return True
 
 
+def top_up(language, item_ids, path=None, read_list=None, open_store=None):
+    """TOP-UP (3.0.21, Sonic § 114 B; PROVISIONAL words): *Mine the new words* on mined episodes (an episode's ⋯, or
+    its show's: every mined episode of it) -> [the item ids queued]; [] when none has a word left to card, or nothing
+    could be read (no ledger, no list of this language, no store). Each mined item (`level.mined_items`) gets a
+    `level` job of source `level.TOP_UP_PRESS` naming the same words the automatic top-up names (`level.new_words`, one
+    rule): its file's listed words no card holds and Connect never made — a word made from any episode or show, a
+    deleted card's too, is never named (*Mine again* remakes a deleted card), nor one Anki Miner turned down for that
+    episode (`Ledger.declined_all`: so a second press says *Nothing new*) — read against the whole list, carrying the
+    press's time, so it goes first and past the cap as any press (`runner.held_by_cap`); a top-up already waiting
+    gains the words and the time; an episode with another job open is left to it. The job's pick skips a word any card
+    holds by then (the carded set): never a second card, never an existing card touched. The caller kicks Connect.
+    `read_list` / `open_store` (tests): the list as `connect_verbs._read_list` and the store as `library.open_store`."""
+    from app.connect import level, library
+    path = path or book.path()
+    if not os.path.exists(path):
+        return []
+    if read_list is None:
+        from app.cli import connect_verbs
+        read_list = connect_verbs._read_list
+    read = read_list(language)
+    if not read:
+        return []
+    _signature, listed, file_words = read
+    by_lemma = level._by_lemma({(str(w), str(r)) for w, r in listed or ()})
+    store = (open_store or library.open_store)(language)
+    if store is None:
+        return []
+    queued = []
+    with store, book.Ledger(path) as ledger:
+        made = library.made_words_all(store)
+        mined = level.mined_items(store, language, ledger)
+        declined = ledger.declined_all(language)
+        store_id = library.store_id(store)
+        asked_at = book.stamp()
+        with ledger.transaction():
+            for item_id in dict.fromkeys(item_ids):
+                if item_id not in mined:
+                    continue                # its first mining reads the list as it is (*Mine now*)
+                words = level.new_words(store.item(item_id), file_words or {}, by_lemma, made,
+                                        declined.get(item_id, ()))
+                if words and ledger.queue_level(language, item_id, words, source=level.TOP_UP_PRESS, store_id=store_id,
+                                                asked_at=asked_at) is not None:
+                    queued.append(item_id)
+    return queued
+
+
 SKIPPED_ON, SKIPPED_OWES = "on", "owes"   # Michi-RM3 review r2 N1: what a skip did, for the bar's words
 
 

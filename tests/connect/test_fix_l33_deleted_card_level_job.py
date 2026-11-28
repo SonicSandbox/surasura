@@ -1,6 +1,6 @@
 """A card deleted in Anki (P2.4 row 2.4.14, L3.3 wiring): the runner's `Steps.notes_gone` tells the store, and the
 store keeps the made word but takes the deleted note id out of it; a later level raise that lists the same word for
-the same episode still queues no job for it (G1.3-4: a word Connect made is never made again automatically, even
+the same episode never names it (G1.3-4: a word Connect made is never made again automatically, even
 when its card was deleted). What a wrong answer would cost: a deleted card whose note id stays in the store (the word
 reads "in Anki" forever), or a deleted card's word made again without the learner asking (a second card the learner
 never wanted)."""
@@ -54,14 +54,15 @@ def test_a_deleted_card_is_named_gone_and_its_made_word_row_keeps_no_note_id():
 
 
 def test_a_level_raise_after_a_deleted_card_does_not_make_its_word_again():
-    # The raise lists 眼鏡 as new for the mined episode; with the card deleted it is never made again — and since the
-    # mining model (Kantan-MO, F1) a raise queues no job at all: its words join the study order
+    # The raise lists 眼鏡 as new for the mined episode; with the card deleted it is never made again — TOP-UP's job
+    # (Sonic § 114) names only 老婆, the episode's other new word
     a, fa, _gone = _made_then_deleted()
     _check(BEFORE, "run-1", {fa: ["眼鏡", "老婆"]})
     _check(RAISED, "run-2", {fa: ["眼鏡", "老婆"]})
     with Ledger() as ledger:
         jobs = [ledger.job_by_id(j["id"]) for j in ledger.jobs("ja") if j["kind"] == LEVEL]
-    assert jobs == [], "G1.3-4: a word made once is never made again, even when its card was deleted"
+    assert [(j["item_id"], j["words"]) for j in jobs] == [(a, [("老婆", "ロウバ")])], \
+        "G1.3-4: a word made once is never made again, even when its card was deleted"
 
 
 def test_a_tier_count_leaves_away_and_gone_items_out():

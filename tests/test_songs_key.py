@@ -70,16 +70,18 @@ class _Checks:
         self.tags, self.read = 0, []
 
     def __enter__(self):
-        real_tag, real_some = ti._tag_numbers, ti.Store.some_tokens
+        # the song lines' reader, by the name it has (`some_tokens`; `_song_shares` since RARITY-SONGS 2): `asked` first
+        reader = "some_tokens" if hasattr(ti.Store, "some_tokens") else "_song_shares"
+        real_tag, real_some = ti._tag_numbers, getattr(ti.Store, reader)
 
         def tag(value):
             self.tags += 1
             return real_tag(value)
 
-        def some(store, asked):
+        def some(store, asked, *args, **kwargs):
             self.read.extend(ti._norm(p) for p in asked)
-            return real_some(store, asked)
-        self._patches = [patch.object(ti, "_tag_numbers", tag), patch.object(ti.Store, "some_tokens", some)]
+            return real_some(store, asked, *args, **kwargs)
+        self._patches = [patch.object(ti, "_tag_numbers", tag), patch.object(ti.Store, reader, some)]
         for p in self._patches:
             p.start()
         return self

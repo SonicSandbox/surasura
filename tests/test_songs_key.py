@@ -145,6 +145,8 @@ def test_the_same_fingerprint_reads_nothing_and_the_counts_stay_the_lists(tmp_pa
         assert key is not None and songs and all(songs.values())
         store.keep_song_counts(songs, key=key)
         assert store.get_meta("songs_key") is not None and not store.conn.in_transaction, "the mark committed"
+        store.close()
+        store = ti.open_store(language, str(tmp_path / "store.db"))    # the next Generate's own connection
         again, key2 = _songs(store, data_dir, paths, language)
         assert (again, key2) == (songs, key)
         with _Checks() as checks:
@@ -352,5 +354,26 @@ def test_a_file_whose_row_couldnt_be_read_is_tried_again_at_every_count(tmp_path
         with _Checks() as checks:
             store.keep_song_counts(songs, key=key)
         assert checks.read == [ti._norm(broken)]
+    finally:
+        store.close()
+
+
+def test_an_episode_set_aside_after_the_mark_has_its_share_taken_away(tmp_path):
+    """Set aside at the same stamp (watched), the fingerprint stays; the count sees a song file with a share that no
+    longer counts and takes the share away, as the full check did — the songs table holds the counted files' alone."""
+    store, data_dir, paths = _library(tmp_path, "ja")
+    try:
+        songs, key = _songs(store, data_dir, paths, "ja")
+        store.keep_song_counts(songs, key=key)
+        gone = paths[3]
+        store.reconcile([p for p in paths if p != gone], ti.make_tokenizer("ja", False, "asis"),
+                        build_signature=ti.build_signature("ja", False, "asis"), aside=[gone])
+        songs2, key2 = _songs(store, data_dir, paths, "ja")
+        assert key2 == key
+        store.keep_song_counts(songs2, key=key2)
+        held = {p for (p,) in store.conn.execute("SELECT path FROM songs")}
+        assert held == {ti._norm(p) for p in paths if p != gone and songs.get(p)}
+        store.songs_out = True
+        assert store.word_counts() == _list_counts(store, [p for p in paths if p != gone], songs2, "ja")
     finally:
         store.close()

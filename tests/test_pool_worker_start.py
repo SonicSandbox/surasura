@@ -163,39 +163,51 @@ def test_any_failure_of_the_start_is_logged_and_exits_1(tmp_path):
 
 
 # A pool's parent as the indexer starts it (its initializer, its initargs): one task run, so the worker's start has
-# finished, its pid printed, then it waits.
+# finished. A started Pool worker closes its own copy of the pool's pipe, so a parent's end alone reaches it as EOF; it
+# waits for ever when another process still holds a copy — a sibling caught in its start, the parent having copied the
+# pipe into it already (the box above). That sibling is stood in for: a process holding a copy. Prints both pids.
 _INDEXER_PARENT = textwrap.dedent("""
-    import multiprocessing, os, threading
+    import _winapi, multiprocessing, os, subprocess, sys, threading
+    from multiprocessing import reduction
     from app import analyzer, token_index
     context = multiprocessing.get_context("spawn")
     pool = context.Pool(1, initializer=token_index._pool_start, initargs=("ja", False, "asis", dict(analyzer.LOGIC)))
-    print(pool.apply(os.getpid), flush=True)
+    worker = pool.apply(os.getpid)
+    sibling = subprocess.Popen([sys.executable, "-c", "import threading; threading.Event().wait()"])
+    into = _winapi.OpenProcess(_winapi.PROCESS_DUP_HANDLE, False, sibling.pid)
+    reduction.duplicate(pool._inqueue._writer._handle, into)
+    print(worker, sibling.pid, flush=True)
     threading.Event().wait()
 """)
 
 
 def ends_with_its_parent(script, root, seconds):
-    """Start `script` (a pool's parent that prints its worker's pid), stop it, -> whether the worker ended within
-    `seconds` after. A worker still running then is stopped here (its pid is this test's own grandchild)."""
+    """Start `script` (a pool's parent that prints its worker's pid, and its stand-in sibling's), stop it, -> whether
+    the worker ended within `seconds` after. The worker if still running, and the sibling, are stopped here (by pid:
+    this test's own grandchildren)."""
     import _winapi
     parent = subprocess.Popen([sys.executable, "-c", script], cwd=PROJECT_ROOT, env=_env(root),
                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True)
+    held = []
     try:
-        pid = int(parent.stdout.readline())
-        worker = _winapi.OpenProcess(_winapi.SYNCHRONIZE | 0x0001, False, pid)      # | PROCESS_TERMINATE
+        for pid in parent.stdout.readline().split():
+            held.append(_winapi.OpenProcess(_winapi.SYNCHRONIZE | 0x0001, False, int(pid)))    # | PROCESS_TERMINATE
     finally:
         parent.kill()
         parent.wait()
     try:
-        ended = _winapi.WaitForSingleObject(worker, int(seconds * 1000)) == _winapi.WAIT_OBJECT_0
-        if not ended:
-            _winapi.TerminateProcess(worker, 1)
-        return ended
+        assert held, "the parent printed no worker"
+        return _winapi.WaitForSingleObject(held[0], int(seconds * 1000)) == _winapi.WAIT_OBJECT_0
     finally:
-        _winapi.CloseHandle(worker)
+        for handle in held:
+            try:
+                _winapi.TerminateProcess(handle, 1)
+            except OSError:                     # ended already
+                pass
+            _winapi.CloseHandle(handle)
 
 
 def test_an_indexer_worker_that_has_started_ends_with_its_parent(tmp_path):
     # After its start the worker's own watch ends it (`token_index._pool_start`): the indexer stopped, the pool's pipe
-    # still open in the worker, it would otherwise wait on it for ever.
+    # still open in a sibling, it would otherwise wait on it for ever.
     assert ends_with_its_parent(_INDEXER_PARENT, tmp_path, GONE_WITHIN_S)

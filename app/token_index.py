@@ -167,6 +167,10 @@ _NAMES_SHARES = 1
 _SONG_SHARES = 1
 # The files whose song lines a first count holds at once (`keep_song_counts`: one batch counted, then let go).
 _SONG_BATCH = 500
+# A phrase re-find of this many files or more reads only the sentences that can hold a phrase (`_PhraseGate`); fewer
+# are read whole (the gate's numpy and its vocabulary read would cost them more than it saves).
+_PHRASE_GATE_FILES = 64
+_PHRASE_BATCH = 500                 # (the files it reads a query, their runs looked for at once)
 
 
 # --------------------------------------------------------------------------- #
@@ -2469,7 +2473,8 @@ class Store:
         while the file reads the same: its (mtime, size), and what the name tables make of its name candidates
         (`_names_read_in`, looked at again only when what the tables join changed — not as their evidence grows) — so
         a change re-reads only the files it touched; all of them again when the phrase data, the tokenizer's identity
-        or the switches change. Each file's matches are kept too, for Generate (`phrase_matches`): a counted file's and a
+        or the switches change — then only the sentences that can hold a phrase are read (`_PhraseGate`, from
+        `_PHRASE_GATE_FILES` files: PHRASE-REFIND). Each file's matches are kept too, for Generate (`phrase_matches`): a counted file's and a
         set-aside one's (Finished: the finished walk's example sentences, found once here, never searched for at every
         Generate — DSA-PHRASE), each with what the name tables made of its words (its fifth number). The table counts
         counted files only (a kept file is never Generate's to read). After the reconcile's own transaction: it reads
@@ -2499,7 +2504,7 @@ class Store:
             except ValueError:
                 pass
             switches = _library_switches(self.language)
-            files, matches = {}, {}
+            files, matches, looked = {}, {}, []
             for path, mtime, size, blob, flag in self.conn.execute(
                     f"SELECT path, mtime, size, names, {_STATE} FROM files WHERE {_EVIDENCE}").fetchall():
                 entry, met = held.get(path), held_matches.get(path)
@@ -2508,10 +2513,19 @@ class Store:
                         and (flag != COUNTED or (entry is not None and entry[:2] == [mtime, size])))
                 if same and names_moved:
                     same = met[4:5] == [_names_read_in(blob, reads, switches)]
+                looked.append((path, mtime, size, blob, flag, entry, met, same))
+            # (many files to search again — new phrase data, a new matcher: only the sentences that can hold a phrase)
+            gate = (_phrase_gate(self, found)
+                    if sum(not row[-1] for row in looked) >= _PHRASE_GATE_FILES else None)
+            reading = self._phrase_lines([row[0] for row in looked if not row[-1]], gate)
+            for path, mtime, size, blob, flag, entry, met, same in looked:
                 if not same:
-                    sentences, flat, read_now = self.file_tokens(path), [], _names_read_in(blob, reads, switches)
+                    count, sentences, numbers = next(reading)
+                    flat, read_now = [], _names_read_in(blob, reads, switches)
                     entry = [mtime, size, read_now, *phrases.tally(sentences, found, flat)]
-                    met = [mtime, size, len(sentences), flat, read_now]
+                    if numbers is not None:
+                        flat[::4] = [numbers[k] for k in flat[::4]]     # (each match's sentence, by its number)
+                    met = [mtime, size, count, flat, read_now]
                 if flag == COUNTED:
                     files[path] = entry
                 matches[path] = met
@@ -2529,6 +2543,25 @@ class Store:
                               json.dumps(value, ensure_ascii=False, separators=(",", ":")))
         except Exception as e:
             print(f"Warning: could not count the set phrases for the Rarity slider: {e}")
+
+    def _phrase_lines(self, paths, gate):
+        """(the file's sentence count, its sentences read as `file_tokens` reads them, their numbers in the file) for
+        each of `paths`, in turn, for `_update_phrases`: with `gate`, only those that can hold a set phrase
+        (`_PhraseGate.lines`, `_PHRASE_BATCH` files a query); with none, or a row the gate can't read so, every one
+        (numbers None)."""
+        step = _PHRASE_BATCH if gate is not None else 1
+        for at in range(0, len(paths), step):
+            batch, got = paths[at:at + step], {}
+            if gate is not None:
+                rows = self.conn.execute(f"SELECT path, names, texts, ids FROM files WHERE path IN "
+                                         f"({','.join('?' * len(batch))})", batch).fetchall()
+                got = dict(zip([row[0] for row in rows], gate.lines(self, [row[1:] for row in rows])))
+            for path in batch:
+                lines = got.get(path)
+                if lines is None:
+                    sentences = self.file_tokens(path)
+                    lines = len(sentences), sentences, None
+                yield lines
 
     def phrase_matches(self, paths):
         """{path: (its sentences, [sentence, start, end, index, ...])} — the set phrases the last index found in each
@@ -3055,6 +3088,134 @@ def _library_switches(language):
                      for key in ("names_recurring", "names_kanji", "names_work_terms"))
     except Exception:
         return (False, False, False)
+
+
+def _phrase_gate(store, phrase_set):
+    """A `_PhraseGate` over `store`'s vocabulary, or None when the vocabulary has a gap (a row gone: the store is
+    damaged, and each file is read whole, as before)."""
+    low, top, count = store.conn.execute("SELECT min(id), max(id), count(*) FROM types").fetchone()
+    if not count or top - low + 1 != count:
+        return None
+    return _PhraseGate(store, phrase_set, low, top)
+
+
+class _PhraseGate:
+    """Which of a file's sentences can hold a set phrase, judged on its type ids (PHRASE-REFIND): `PhraseSet.find`
+    walks its trie lemma by lemma, so a match is its phrase's whole lemma run in a row, and a sentence holding no
+    phrase's run holds no match. Each lemma a phrase holds gets a code (1 up; 0 for every other lemma), each run of
+    codes one number (c0·K^(L-1) + … + c(L-1), K the codes' count + 1, wrapping at 2^64: two runs may share a number —
+    a sentence is then read for nothing, never missed), grown a word a step from each place a phrase can start while
+    some phrase starts with it. A sentence a name span stands in is read too (a join makes its words anew). The whole
+    vocabulary is read once (a re-find this big reads nearly every type: `Store._types`)."""
+
+    def __init__(self, store, phrase_set, low, top):
+        np = self.np = _np()
+        codes, firsts, runs, starts = {}, set(), {}, {}
+        for entry in phrase_set.entries:
+            firsts.add(entry.key[0])
+            for lemma in entry.key:
+                codes.setdefault(lemma, len(codes) + 1)
+        k, wrap = len(codes) + 1, (1 << 64) - 1
+        for entry in phrase_set.entries:
+            number = 0
+            for length, lemma in enumerate(entry.key, 1):
+                number = (number * k + codes[lemma]) & wrap
+                starts.setdefault(length, set()).add(number)    # (each run a phrase starts with)
+            runs.setdefault(len(entry.key), set()).add(number)
+        self.runs, self.starts = ({length: np.array(sorted(held), np.uint64) for length, held in table.items()}
+                                  for table in (runs, starts))
+        self.k, self.longest, self.low, self.top = np.uint64(k), max(runs), low, top
+        self.code, self.first = np.zeros(top + 1, np.uint64), np.zeros(top + 1, bool)
+        types = store._types
+        for i, *token in store.conn.execute("SELECT id, lemma, reading, surface, orth FROM types"):
+            types[i] = token = tuple(token)
+            at = codes.get(token[0])
+            if at is not None:
+                self.code[i], self.first[i] = at, token[0] in firsts
+
+    def lines(self, store, rows):
+        """For each row (names, texts, ids) of a batch: (the file's sentence count, the sentences that can hold a
+        phrase — [text, tokens], read as `file_tokens` reads them, the name tables applied — their numbers,
+        ascending), or None when the row doesn't read as `file_tokens` would read it (the caller reads it whole). The
+        runs are looked for once over the batch's ids (a run across two files' ends only reads a sentence for
+        nothing)."""
+        np, held = self.np, []
+        for _names, _texts, ids_blob in rows:
+            got = _ids_bytes(ids_blob) if ids_blob else None
+            if got is not None:
+                n, raw = got
+                values = np.frombuffer(raw, "<i4")
+                ids = values[n + 2:]
+                if (values[1] != 0 or values[n + 1] != len(ids)
+                        or (ids.size and (ids.min() < self.low or ids.max() > self.top))):
+                    got = None
+                else:
+                    got = (n, values[1:n + 2], ids)
+            held.append(got)
+        found = self._runs([got for got in held if got is not None])
+        out, types = [], store._types
+        for (names_blob, texts_blob, _ids), got in zip(rows, held):
+            if got is None:
+                out.append(None)
+                continue
+            n, starts, ids = got
+            spans, switches = store._name_spans(names_blob)
+            numbers = sorted(found.get(id(got), set()).union(span[0] for span in spans if span[0] < n))
+            texts = _read_texts(texts_blob, numbers + [n - 1, n]) if texts_blob else None
+            if texts is None or n in texts or (n and n - 1 not in texts):
+                out.append(None)                        # (its texts don't count its sentences: read whole)
+                continue
+            bounds = starts.tolist()
+            try:
+                lines = [[texts[k], [list(types[i]) for i in ids[bounds[k]:bounds[k + 1]].tolist()]] for k in numbers]
+            except KeyError:
+                out.append(None)
+                continue
+            if spans:
+                from app import names
+                place = {k: j for j, k in enumerate(numbers)}
+                names.apply_spans(lines, [[place[span[0]]] + list(span[1:]) for span in spans if span[0] in place],
+                                  store._names, *switches)
+            out.append((n, lines, numbers))
+        return out
+
+    def _runs(self, read):
+        """{id(a file's entry): the numbers of its sentences holding a phrase's whole run} for `read`'s files ((n,
+        starts, ids) each), looked for over all their ids at once."""
+        np = self.np
+        if not read:
+            return {}
+        ids = np.concatenate([got[2] for got in read])
+        tokens_at = np.concatenate(([0], np.cumsum([got[2].size for got in read])))   # each file's first token
+        lines_at = np.concatenate(([0], np.cumsum([got[0] for got in read])))          # each file's first sentence
+        firsts = np.concatenate([got[1][:-1].astype(np.int64) + offset                  # every sentence's first token
+                                 for got, offset in zip(read, tokens_at[:-1].tolist())])
+        code, size, hits = self.code[ids], ids.size, []
+        at = np.flatnonzero(self.first[ids])            # each place a phrase can start, its run grown a word a step
+        number = code[at]
+        for length in range(1, self.longest + 1):
+            if length > 1:
+                keep = at < size - (length - 1)
+                at, number = at[keep], number[keep] * self.k + code[at[keep] + (length - 1)]
+                keep = self._among(self.starts[length], number)  # (a run no phrase starts with goes no further)
+                at, number = at[keep], number[keep]
+            if not at.size:
+                break
+            runs = self.runs.get(length)
+            if runs is not None:
+                hits.append(at[self._among(runs, number)])
+        found = {}
+        if hits:
+            line = np.unique(np.searchsorted(firsts, np.concatenate(hits), "right") - 1)
+            file = np.searchsorted(lines_at, line, "right") - 1
+            for f, k in zip(file.tolist(), (line - lines_at[file]).tolist()):
+                found.setdefault(id(read[f]), set()).add(k)
+        return found
+
+    def _among(self, held, numbers):
+        """Which of `numbers` are in `held` (sorted): a binary search each, in numpy."""
+        place = self.np.minimum(self.np.searchsorted(held, numbers), len(held) - 1)
+        return held[place] == numbers
 
 
 def _holds_a_term(spelling, terms):

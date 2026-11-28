@@ -234,7 +234,10 @@ class PhraseSet:
         for i in list(compress(range(n), map(firsts.__contains__, lemmas))):   # where a phrase can start (in C)
             if i < after:
                 continue                    # inside the phrase just found
-            hit = self._longest(trie[lemmas[i]], tokens, lemmas, i, n, text, n)
+            node = trie[lemmas[i]]
+            if _END not in node and (i + 1 == n or lemmas[i + 1] not in node):
+                continue                    # no phrase goes on with the next word (`_longest` would say None)
+            hit = self._longest(node, tokens, lemmas, i, n, text, n)
             if hit is not None:
                 end, index = hit
                 found.append((i, end, index))

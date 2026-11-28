@@ -363,9 +363,12 @@ ROWS = {
                       "A card you delete in Anki is never made again by itself. These are its words: allow one again "
                       "and the next episode that has it makes its card", "deleted cards words mine again allow "
                       "never made again record reset"),
-    # Michi-T1 (Sonic 2026-11-17; PROVISIONAL: label and line for Sonic)
+    # Michi-T1 (Sonic 2026-11-17; PROVISIONAL: label and line for Sonic); its ? line says what it does and when
+    # (POLISH-321, 3.0.21; PROVISIONAL)
     "connect_spot_every_episode": ("Check every episode’s audio first",
-                                   "Slower: Surasura listens to each episode before its cards, not once a release",
+                                   "Before an episode’s cards, Surasura checks its audio says its subtitles’ "
+                                   "lines: every episode, not one a release. Slower; turn it on when a release "
+                                   "mixes dubs or languages",
                                    "Surasura listens to a few lines of one episode of each release while it mines, "
                                    "and holds the release if its audio doesn’t say its subtitles’ lines (a dub, "
                                    "another language). On: every episode is listened to before its cards are "

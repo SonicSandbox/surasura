@@ -100,7 +100,11 @@ body.focus .hd { opacity:.35; } body.focus .hd:hover { opacity:1; }
 .rd { display:flex; align-items:flex-end; gap:12px; margin:2px 0 14px; min-height:34px; }
 .kana { font:400 19px var(--f-ja); color:var(--ink-meta); position:relative; display:inline-block; }
 .kana .alt { color:var(--ink-faint); font-size:14px; margin-left:8px; }
+/* the pitch graph over its kana (POLISH-321): each mora in a slot of the graph's own step (MORA_W), so each point sits
+   over its kana whatever the font's kana widths; the reading a step lower in Japanese, so the graph clears the word */
 .pitch { position:absolute; left:0; bottom:100%; height:14px; overflow:visible; }
+.kana .mo { display:inline-block; text-align:center; } .kana { white-space:nowrap; }
+body:not(.zh) .rd { margin-top:12px; }
 .nop { font-size:11.5px; color:var(--ink-faint); }
 .tones { font-size:12px; color:var(--ink-dim); display:inline-flex; align-items:center; gap:4px; }
 .tones b { width:7px; height:7px; border-radius:50%; display:inline-block; }
@@ -905,14 +909,19 @@ function applyLook() {
 /* ---- drawing: the word (see → understand → hear → decide) ---- */
 function kana(s) { return LANG === "ja" ? String(s || "").replace(/[\u30a1-\u30f6]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60)) : String(s || ""); }
 function morae(s) { const out = []; for (const c of s) { if (/[ゃゅょぁぃぅぇぉゎャュョァィゥェォヮ]/.test(c) && out.length) out[out.length - 1] += c; else out.push(c); } return out; }
+const MORA_W = [19, 27];                               // a mora's slot: one kana, or a kana + its small ゃゅょ (px)
+function moraW(m) { return MORA_W[m.length > 1 ? 1 : 0]; }
+function moraeHtml(s) { return morae(s).map((m) => `<span class="mo" style="width:${moraW(m)}px">${esc(m)}</span>`).join(""); }
 function pitchSvg(pitch, reading) {
   const m = morae(kana(reading)); if (!m.length) return "";
+  const x = [0]; m.forEach((mo) => x.push(x[x.length - 1] + moraW(mo)));         // each slot's left edge, then the end
+  const mid = (j) => j < m.length ? x[j] + moraW(m[j]) / 2 : x[m.length] + MORA_W[0] / 2, w = x[m.length] + MORA_W[0];
   const n = parseInt(String(pitch).replace(/^k:/, "").split(",")[0], 10); if (isNaN(n)) return "";
   const hi = m.map((_, j) => n === 0 ? j > 0 : (n === 1 ? j === 0 : (j > 0 && j < n)));
   hi.push(n === 0);                                    // the particle after it
   const col = n === 0 ? "heiban" : n === 1 ? "atamadaka" : n === m.length ? "odaka" : "nakadaka";
-  const pts = hi.map((h, j) => `${j * 19 + 9.5},${h ? 2 : 12}`);
-  return `<svg class="pitch" width="${m.length * 19 + 4}" viewBox="0 0 ${m.length * 19 + 4} 14" aria-label="pitch ${n}"><polyline points="${pts.slice(0, m.length).join(" ")}" fill="none" stroke="var(--${col})" stroke-width="1.6"/><line x1="${(m.length - 1) * 19 + 9.5}" y1="${hi[m.length - 1] ? 2 : 12}" x2="${m.length * 19 + 9.5}" y2="${hi[m.length] ? 2 : 12}" stroke="var(--${col})" stroke-width="1.2" stroke-dasharray="2 2"/><circle cx="${m.length * 19 + 9.5}" cy="${hi[m.length] ? 2 : 12}" r="2.4" fill="none" stroke="var(--${col})" stroke-width="1.2"/></svg>`;
+  const pts = hi.map((h, j) => `${mid(j)},${h ? 2 : 12}`);
+  return `<svg class="pitch" width="${w}" viewBox="0 0 ${w} 14" aria-label="pitch ${n}"><polyline points="${pts.slice(0, m.length).join(" ")}" fill="none" stroke="var(--${col})" stroke-width="1.6"/><line x1="${mid(m.length - 1)}" y1="${hi[m.length - 1] ? 2 : 12}" x2="${mid(m.length)}" y2="${hi[m.length] ? 2 : 12}" stroke="var(--${col})" stroke-width="1.2" stroke-dasharray="2 2"/><circle cx="${mid(m.length)}" cy="${hi[m.length] ? 2 : 12}" r="2.4" fill="none" stroke="var(--${col})" stroke-width="1.2"/></svg>`;
 }
 function readingHtml(w) {
   const r = w[2] || "", k = w[3] || "", showPitch = SET.pitch !== "hidden" || S.pitchShown;
@@ -926,7 +935,7 @@ function readingHtml(w) {
   let graph = "";
   if (showPitch) graph = w[8] == null ? "" : pitchSvg(w[8], k || r);
   const none = showPitch && w[8] == null ? `<span class="nop">No pitch data for this word</span>` : "";
-  return `<span class="kana jp">${graph}${esc(base)}${alt}</span>${none}`;
+  return `<span class="kana jp">${graph}${moraeHtml(base)}${alt}</span>${none}`;
 }
 function marksHtml(m) {
   return (m & 1 ? `<span class="mk p" data-tip="✦ High leverage: it unlocks many lines soon">✦</span>` : "") +
@@ -1294,7 +1303,7 @@ function drawSetRow(k) {                                // the settings sheet: o
 }
 function openKeys(arm) {
   const rows = ACTIONS.filter(([a]) => (a !== "pick" || SWAP_SHOWN) && (a !== "lookup" || lookOn())).map(([a, t]) => `<div class="krow"><span class="kn">${esc(t)}</span><button class="kc ${arm === a ? "arm" : ""}" data-bind="${a}" aria-label="Move ${esc(t)}" data-tip="Click, then press the new key">${esc(arm === a ? "…" : (keyOf(a) || "not set"))}</button></div>`).join("");
-  sheet("keys-sheet", `<h3>Keys</h3><h5>Left hand</h5>${rows}<h5>Right hand</h5><ul><li>↓ / Space next word · ↑ the word before · ← → lines · Enter ▶ the line</li><li>PgUp / PgDn (‹ ›) episodes · / search · ⌫ back after a jump · Esc close</li><li>Shift is never taken: it is Yomitan's.</li></ul><div class="counts">Preset: <span class="seg"><button data-preset="qwerty">QWERTY</button><button data-preset="dvorak">Dvorak</button></span></div>`);
+  sheet("keys-sheet", `<h3>Keys</h3><h5>Left hand</h5>${rows}<h5>Right hand</h5><ul><li>↓ / Space next word · ↑ the word before · ← → lines · Enter ▶ the line</li><li>PgUp / PgDn (‹ ›) episodes · / search · ⌫ back after a jump · Esc close</li><li>Shift is left free for Yomitan.</li></ul><div class="counts">Preset: <span class="seg"><button data-preset="qwerty">QWERTY</button><button data-preset="dvorak">Dvorak</button></span></div>`);
 }
 let ARM = null;
 function bindKey(action, key) {                        // a moved key trades places with the action that had it

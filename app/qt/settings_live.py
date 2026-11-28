@@ -98,7 +98,8 @@ def read_previews(settings, language):
     store = token_index.open_store(language)
     try:
         freqs = token_index.preview_frequencies(store, language, get_user_files_path(language),
-                                                effective(language, settings.get("zh_script", "asis")))
+                                                effective(language, settings.get("zh_script", "asis")),
+                                                settings)       # (its one read, never settings.json again)
         if freqs is None:
             return None
         return word_selection.band_previews(
@@ -613,7 +614,7 @@ class Live(QObject):
         self.asking = None                # *Restart now to apply?* while it is open (text size)
         self._exporting = None            # the export row running (one at a time)
         self._checking = False
-        self._level = {"busy": False, "again": False, "asked": 0, "stale": False}
+        self._level = {"busy": False, "again": False, "asked": 0, "stale": False, "held": False}
         controller = getattr(self.services, "controller", None)   # BRIDGE-2: the Generate state heard last (its end
         self._generating = controller.state() if hasattr(controller, "state") else None   # moves the level)
         self._moved = QTimer(self)        # BRIDGE-2: what moves the level, heard while Settings shows: one read
@@ -654,7 +655,8 @@ class Live(QObject):
         return _alive(self.page)
 
     def _run(self, fn, *args, then=None, failed=None):
-        """`fn(*args)` on a worker; `then(answer)` on the GUI thread while the page lives."""
+        """`fn(*args)` on a worker; `then(answer)` on the GUI thread while the page lives — sent after the page's first
+        build turn (`SettingsPage.after_first_build`: at once after it)."""
         def done(answer):
             if then is not None and self._alive():
                 then(answer)
@@ -663,7 +665,11 @@ class Live(QObject):
             applog.log("settings", f"{getattr(fn, '__name__', 'a read')}: {info[1]}")
             if failed is not None and self._alive():
                 failed(info)
-        return bridge.run_in_worker(fn, *args, then=done, failed=fault)
+        after = getattr(self.page, "after_first_build", None)
+        if after is None:
+            bridge.run_in_worker(fn, *args, then=done, failed=fault)
+        else:
+            after(lambda: bridge.run_in_worker(fn, *args, then=done, failed=fault))
 
     def _press(self, row_id, part, fn, *args, then=None, failed=None, busy=None, key=None):
         """Round 8 row 45: `row_id`'s button pressed — its arc turns, painted before `fn` goes to the worker (as `_run`
@@ -714,8 +720,8 @@ class Live(QObject):
     # --- a row built: its live parts ------------------------------------------------------------------------------- #
     def _built(self, row_id):
         row = catalog.ROW[row_id]
-        if row_id in LEVEL_ROWS and not self._level["asked"]:
-            self._read_level()            # SETTINGS-OPEN: the level's first read waits for a row that shows it
+        if row_id in LEVEL_ROWS and not self._level["asked"] and not self._level["held"]:
+            self._first_level_read()      # SETTINGS-OPEN: the level's first read waits for a row that shows it
         if row_id in SETUP:
             door = sc.Door(S.CHANGE, tooltip=row.tip, name=f"{row.label}: {S.CHANGE}")
             door.clicked.connect(lambda _c=False, t=row.target: self.page.reveal(t))
@@ -1019,6 +1025,27 @@ class Live(QObject):
             line.show()
 
     # --- the level ------------------------------------------------------------------------------------------------- #
+    def _first_level_read(self):
+        """The level's first read: at once — unless the page is still building, the reference tables aren't decoded yet
+        (`token_index.preview_prepared`: Settings opened in the window's first seconds, before the chores' warm-up)
+        and the page was opened at a section that shows no level row: then at the build's end (SETTINGS-OPEN 2: the
+        read's decode held Python's lock 160–270 ms in one go, a stall of the build's slices)."""
+        page = self.page
+        from app import token_index
+        level_sections = {catalog.ROW[row_id].section for row_id in LEVEL_ROWS}
+        if (page.built or token_index.preview_prepared(page.language)
+                or page.revealed_section() in level_sections | {None}):
+            self._read_level()
+            return
+        self._level["held"] = True
+        page.ready.connect(self._level_after_build)
+
+    def _level_after_build(self):
+        self.page.ready.disconnect(self._level_after_build)
+        self._level["held"] = False
+        if not self._level["asked"]:
+            self._read_level()
+
     def _level_moved(self, settled=False, now=False):
         """BRIDGE-2: something the level's numbers are read from moved — the token store (the indexer), the word lists
         (`_words_marked`, a sync's new known words), the band a Generate remembers (`_generated`), the language. They

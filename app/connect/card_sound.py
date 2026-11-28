@@ -35,7 +35,6 @@ import logging
 import os
 import re
 import time
-import uuid
 
 from app.connect import sentence_audio as sa
 
@@ -172,8 +171,8 @@ def _held_over(records, held):
 
 
 # --- the run's own record -------------------------------------------------------------------------------------- #
-def _new_run():
-    return f"{time.time_ns()}-{uuid.uuid4().hex[:8]}"
+def _new_run(ledger):
+    return sa.new_id(ledger, RUN)                 # (past the newest run's: `last_run` takes the newest)
 
 
 def _save_run(ledger, rid, rec):
@@ -392,7 +391,7 @@ def run(anki, ledger, language, mapping, steps, settings=None, deck=None, ai=Non
            "not_cut": {}, "ai_report": None, "kinds": {n: _kind(s) for n, s in planned.items() if n not in held}}
     if not field or not planned:
         return out
-    rid, records = _new_run(), []
+    rid, records = _new_run(ledger), []
     rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "language": language, "records": records,
            "counts": {}, "state": sa.WRITING}
     keep_dir = keep_dir or _keep_dir()
@@ -525,7 +524,7 @@ def remove_ai_audio(anki, ledger, language, field, deck=None, confirm=False, mar
     found = ai_cards(anki, ledger, field, deck)
     if not confirm:
         return {"cards": len(found)}
-    rid, records = _new_run(), []
+    rid, records = _new_run(ledger), []
     rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "language": language, "records": records,
            "counts": {}, "state": sa.WRITING, "kind": "remove-ai"}
     removed, flipped = [], 0
@@ -563,7 +562,7 @@ def _cut_book(settings, language):
         from app.cli.verbs import _anki_miner_setup
         from app.connect import add_audio, anki_miner
         os.makedirs(run_dir, exist_ok=True)
-        setup = _anki_miner_setup(settings, lang, run_dir)
+        setup = _anki_miner_setup(settings, lang, run_dir, held=_HELD.setdefault(lang, {}))   # AM-START 2: the press's
         if setup is None:
             return {}
         return add_audio.cut(anki_miner.find(settings), lang, setup[1], can, run_dir)

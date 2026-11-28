@@ -15,9 +15,11 @@ that form only: そういうことだ, 何にする and だけじゃない are o
 only before a word of its own (ああいう人, ああいうの), never inflected: ああ言って is the words 'say so'
 (`before_a_noun`) — and one JMdict says is usually written in kana (そういった, どういう) only as written in kana:
 with the verb's kanji, そう言ったのは is 'that he said so'. At each place in a sentence the longest phrase wins and the
-search goes on after it (no overlaps). A phrase whose words stand on both sides of a comma or any other mark the
+search goes on after it. A phrase whose words stand on both sides of a comma or any other mark the
 tokenizer dropped (気が、付いた), or that ends in another form than its own, is no phrase there: the next shorter one at
-that place is tried instead.
+that place is tried instead. A use of a longer phrase is a use of each shorter one the dictionary writes inside it too
+(身に余る光栄 of 身に余る, 腑に落ちない of 腑に落ちる): found inside the match the same way, so matches may overlap — never
+inside a grammar expression, whose words are its own (として is no use of とする).
 
 Each word of a phrase has a role: grammar (a particle, an ending, a prefix or suffix, an auxiliary verb after て), a
 light verb or adjective (する, なる, ある, いる, できる, ない, いい), or a real word — and a real word that lives only
@@ -66,8 +68,9 @@ TE_AUXILIARIES = frozenset(("居る", "有る", "仕舞う", "置く"))
 # every file's phrases again (token_index.Store._update_phrases), as it does for new phrase data, and reads the known
 # words again (a known sentence's phrases are known: analyzer.load_known_words, Store._known_key). 6: a phrase ending
 # in a form of its own is that form whatever its last word (`fixed_form`: ごめんなさい, 何にせよ, だけでなく), and
-# `spellings` writes such a match as it is and keeps the voicing the text gives its last word (いつもどおり).
-MATCHER_VERSION = 6
+# `spellings` writes such a match as it is and keeps the voicing the text gives its last word (いつもどおり). 7: a match
+# is also a use of each shorter phrase inside it (`_inside`: 身に余る光栄 of 身に余る), listed after it.
+MATCHER_VERSION = 7
 
 # Phrase.prenoun: a pre-noun adjectival JMdict says is usually written in kana (its "uk" on every sense).
 KANA_ONLY = 2
@@ -162,7 +165,8 @@ class PhraseSet:
         readings run together, `prenoun` (0, 1 or 2) and `grammar` (0 or 1) to 0 — or Phrase tuples."""
         self.entries = []
         self._by_word = {}
-        self._trie = self.firsts = self._fixed = None   # made on the first search (Generate mostly reads the store's)
+        # made on the first search (Generate mostly reads the store's matches)
+        self._trie = self.firsts = self._fixed = self._nests = None
         same = {}                           # one string per lemma, reading and roles, however many phrases hold it
         for entry in entries:
             if not isinstance(entry, Phrase):
@@ -186,6 +190,17 @@ class PhraseSet:
                     node = node.setdefault(lemma, {})
                 node[_END] = index
             self._fixed = [fixed_form(entry) for entry in self.entries]
+            # The shorter phrases inside each one (`_inside`), as the dictionary writes them: another phrase's words
+            # in a row in its words, said in it too — the shorter one's reading, its last kana aside (a form of its
+            # own there), in the longer one's (身に余る in 身に余る光栄, 痛い目に遭う in 痛い目に遭わせる; never どやる
+            # 'look smug' in どうやって: the tagger reads どやる as どう + やる). None in a grammar expression (`_inside`).
+            # 582 of the 13,217 hold one.
+            by_key = {entry.key: index for index, entry in enumerate(self.entries)}    # as the trie: the last wins
+            entries, none = self.entries, frozenset()      # one empty set for the 12,635 that hold none
+            self._nests = [none if entry.grammar else frozenset(
+                inner for a in range(len(entry.key)) for b in range(a + 1, len(entry.key) + (a > 0))
+                for inner in (by_key.get(entry.key[a:b]),)
+                if inner is not None and entries[inner].reading[:-1] in entry.reading) or none for entry in entries]
             self._trie, self.firsts = trie, frozenset(trie)
         return self._trie
 
@@ -206,43 +221,79 @@ class PhraseSet:
         ends in another form than the phrase's own (`fixed_form`), a pre-noun adjectival standing before no noun or
         written with a kanji where it is usually written in kana (`before_a_noun`), or a match whose surfaces are
         not one run of `text` (it stood across a mark the tokenizer dropped), is none, and the next shorter phrase at
-        that place is tried. Most sentences hold no phrase's first word and are passed over in C."""
+        that place is tried. Most sentences hold no phrase's first word and are passed over in C.
+
+        A match also gives a use to each shorter phrase standing inside it (`_inside`: 身に余る光栄 is a use of 身に余る
+        too), listed right after it — so matches may overlap, an inner one always within the match it was found in."""
         trie = self._trie if self._trie is not None else self._search()
         lemmas = [token[0] for token in tokens]
         firsts = self.firsts
         if firsts.isdisjoint(lemmas):
             return []
-        found, n, after, fixed, entries = [], len(lemmas), 0, self._fixed, self.entries
+        found, n, after, nests = [], len(lemmas), 0, self._nests
         for i in list(compress(range(n), map(firsts.__contains__, lemmas))):   # where a phrase can start (in C)
             if i < after:
                 continue                    # inside the phrase just found
-            node, ends, j = trie[lemmas[i]], [], i + 1
-            while True:
-                index = node.get(_END)
-                if index is not None:
-                    ends.append((j, index))
-                if j == n:
-                    break
-                node = node.get(lemmas[j])
-                if node is None:
-                    break
-                j += 1
-            for end, index in reversed(ends):
-                entry = entries[index]
-                last = tokens[end - 1]
-                if fixed[index] and own_form(entry, last[3]) and not ends_as(entry, last[2]):
-                    continue                # そういうことだ is not そういうことなら, だけじゃない not だけでなく
-                if (entry.prenoun or entry.grammar == AS_WRITTEN) and not before_a_noun(entry, tokens, i, end, text):
-                    continue                # ああ言って is not ああいう, と言った not という
-                if entry.grammar and end < n and lemmas[end] in TE_AUXILIARIES and entry.key[-1] == "て":
-                    continue                # 本体についている is not について
-                if entry.grammar and i and entry.key[0] == "様" and lemmas[i - 1] == "の":
-                    continue                # 口のようにして is the simile のように, not ようにする
-                if "".join(token[2] for token in tokens[i:end]) in text:
-                    found.append((i, end, index))
-                    after = end
-                    break
+            hit = self._longest(trie[lemmas[i]], tokens, lemmas, i, n, text, n)
+            if hit is not None:
+                end, index = hit
+                found.append((i, end, index))
+                after = end
+                if nests[index]:
+                    self._inside(tokens, lemmas, i, end, index, text, found)
         return found
+
+    def _longest(self, node, tokens, lemmas, i, limit, text, n, among=None):
+        """(end, index) — the longest phrase standing at `i` (`node`: the trie under its first lemma) that ends by
+        `limit`, one of `among` when given (the phrases inside a longer one: `_nests`); None when none stands there
+        (find's checks)."""
+        ends, j = [], i + 1
+        while True:
+            index = node.get(_END)
+            if index is not None and (among is None or index in among):
+                ends.append((j, index))
+            if j == limit:
+                break
+            node = node.get(lemmas[j])
+            if node is None:
+                break
+            j += 1
+        fixed, entries = self._fixed, self.entries
+        for end, index in reversed(ends):
+            entry = entries[index]
+            last = tokens[end - 1]
+            if fixed[index] and own_form(entry, last[3]) and not ends_as(entry, last[2]):
+                continue                # そういうことだ is not そういうことなら, だけじゃない not だけでなく
+            if (entry.prenoun or entry.grammar == AS_WRITTEN) and not before_a_noun(entry, tokens, i, end, text):
+                continue                # ああ言って is not ああいう, と言った not という
+            if entry.grammar and end < n and lemmas[end] in TE_AUXILIARIES and entry.key[-1] == "て":
+                continue                # 本体についている is not について
+            if entry.grammar and i and entry.key[0] == "様" and lemmas[i - 1] == "の":
+                continue                # 口のようにして is the simile のように, not ようにする
+            if "".join(token[2] for token in tokens[i:end]) in text:
+                return end, index
+        return None
+
+    def _inside(self, tokens, lemmas, start, end, index, text, found):
+        """Add to `found` the shorter phrases standing inside the match `tokens[start:end]` of phrase `index` — those
+        the dictionary writes inside it (`_nests`), the longest at each place (the same checks as `find`'s), but for
+        one inside an inner phrase found already (that one's own, in turn) — and those inside each of them: a use of
+        the longer phrase is a use of each (身に余る光栄 of 身に余る, 痛い目に遭わせる of 痛い目に遭う, 痛い目 and 目に遭う,
+        場合による of による). Two inside one may overlap (どうもありがとうございます: どうもありがとう and
+        ありがとうございます). A grammar expression gives none (`Phrase.grammar`: every word in it is the expression's
+        there — として is never a use of とする)."""
+        trie, nests, n = self._trie, self._nests, len(lemmas)
+        among, reach = nests[index], start          # reach: where the inner phrases found so far end
+        for p in range(start, end):
+            node = trie.get(lemmas[p])
+            hit = None if node is None else self._longest(node, tokens, lemmas, p, end, text, n, among)
+            if hit is None or hit[0] <= reach:
+                continue                # none here, or inside one found already (its own walk)
+            inner_end, inner = hit
+            found.append((p, inner_end, inner))
+            if nests[inner]:
+                self._inside(tokens, lemmas, p, inner_end, inner, text, found)
+            reach = inner_end
 
 
 def waiting(phrase, known, offered=None):
@@ -296,9 +347,11 @@ def tally(sentences, phrase_set, matches=None):
     """What one file's sentences hold of the phrases: ({index: [uses, [spellings]]}, {"lemma|reading": the uses its
     words that live only inside a phrase give that phrase}). The token store keeps one per file; `table` sums them.
     `matches`, a list, also receives every match, four numbers each — sentence, start, end, index — what Generate
-    reads instead of finding the phrases again (`Store.phrase_matches`)."""
+    reads instead of finding the phrases again (`Store.phrase_matches`). A word living only inside a phrase gives its
+    use once, however many phrases stand over it (a phrase inside another: `PhraseSet.find`)."""
     uses, taken = {}, {}
     for number, (text, tokens) in enumerate(sentences):
+        given = None                    # the token positions given already in this sentence
         for start, end, index in phrase_set.find(tokens, text):
             if matches is not None:
                 matches += (number, start, end, index)
@@ -311,6 +364,11 @@ def tally(sentences, phrase_set, matches=None):
                 if spelled not in entry[1]:
                     entry[1].append(spelled)
             for k in bound_at(phrase):
+                if given is None:
+                    given = set()
+                elif start + k in given:
+                    continue
+                given.add(start + k)
                 name = f"{tokens[start + k][0]}|{tokens[start + k][1]}"
                 taken[name] = taken.get(name, 0) + 1
     return uses, taken

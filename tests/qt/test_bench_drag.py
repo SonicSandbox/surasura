@@ -274,8 +274,8 @@ def test_the_cover_scan_flag_answers_idle_as_the_real_writer_and_off_the_scan_st
     feed = opener.handle().read_feed()                                    # as the window's scan reads its titles
     works = covers.works_from(feed["items"], feed["works"])
     seen, real = [], covers._scan_one
-    monkeypatch.setattr(covers, "_scan_one", lambda language, data_dir, work, writer: seen.append(work.id) or
-                        real(language, data_dir, work, writer))
+    monkeypatch.setattr(covers, "_scan_one", lambda language, data_dir, work, writer, *rest: seen.append(work.id) or
+                        real(language, data_dir, work, writer, *rest))
     assert covers.scan("ja", works, on, data_dir=str(tmp_path)) == 0      # no picture beside any file here
     assert sorted(seen) == sorted(w.id for w in works) and len(seen) == len(TITLES)
 

@@ -776,9 +776,18 @@ def option_tips(row, settings):
     return tips
 
 
+_BY_SECTION = [None, {}]           # [the ROWS it was made from, section id -> its rows]: made once (a test swaps ROWS)
+
+
 def rows(section_id):
-    """The rows of a section, in order."""
-    return [row for row in ROWS if row.section == section_id]
+    """The rows of a section, in order (a tuple: one look-up, never a walk of all of ROWS — the page asks it three times
+    a section each time it shows one: SETTINGS-OPEN 2)."""
+    if _BY_SECTION[0] is not ROWS:
+        index = {}
+        for row in ROWS:
+            index.setdefault(row.section, []).append(row)
+        _BY_SECTION[:] = [ROWS, {section: tuple(of) for section, of in index.items()}]
+    return _BY_SECTION[1].get(section_id, ())
 
 
 def visible(row, settings, language, ctx=frozenset()):

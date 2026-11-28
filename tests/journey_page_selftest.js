@@ -688,6 +688,13 @@
           J.pickLine(0); await settle();
           const pc = CALLS.slice(n0).find(([, rt]) => rt === "swap/queue" || rt === "card/make");
           ok("…and ⇄ sends that same id", pc && pc[2].line_id === call[2].line_id, pc && pc[2].line_id);
+          // SWAP-TIME: with it the line's item and text, so the door finds a line the page gave no time (its video not
+          // found, or the audio switch off) in its subtitle
+          ok("…and the line's item and text", pc && pc[2].line === ln0[0] && pc[2].item === J.lineItem(J.srcOf(J.curWordId(), ln0[1])) && (m ? String(pc[2].item) === m[1] : true), pc && [pc[2].item, pc[2].line]);
+          window.__J_DOOR_HOOK = (rt) => (rt === "swap/queue" || rt === "card/make" ? { ok: true, queued: true, asked: true, video: false } : null);
+          J.pickLine(0); await settle();
+          window.__J_DOOR_HOOK = null;
+          ok("⇄ / Add now on a line whose video isn't here: queued, and Needs you will ask where it is", /isn't on this computer: Needs you will ask where it is/.test($("#toast").textContent), $("#toast").textContent);
         }
       }
       if (MODE === "on") {                              // FS-2: ⇄'s toast follows the answer's `same` (*Swap gives*)

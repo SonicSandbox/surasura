@@ -837,11 +837,15 @@ const FLAGGED = new Set();                             // line ids, Send report'
 const FWAIT = new Map();
 /* A line's id, one format everywhere: the simple Swap's `<item id>:<start ms>` (connect/swap.py `line_id`), from the
    line's own source (its store item, SHAPE 1.1's `item`; a v1 page: its episode's store id) and start. A line without
-   both (a book's, a file the store doesn't hold) gets the page's own key, `p<hash of its text and source>`: ⚑ keys it;
-   Swap and the clip refuse it. */
+   both (a book's, a file the store doesn't hold, a subtitle line given no time: its video not found, or the audio
+   switch off) gets the page's own key, `p<hash of its text and source>`: ⚑ keys it; the clip refuses it; ⇄ and Add now
+   send its item and text too, and the door finds a subtitle's line in its file (SWAP-TIME). */
+function lineItem(src) {
+  const e = src && src[2] >= 0 ? EPS[src[2]] : null;
+  return src && src.length > 5 ? src[5] : e ? e[0] : null;
+}
 function lineId(ln, src) {
-  const e = src && src[2] >= 0 ? EPS[src[2]] : null, at = ln[2];
-  const item = src && src.length > 5 ? src[5] : e ? e[0] : null;
+  const at = ln[2], item = lineItem(src);
   if (item != null && typeof at === "number" && isFinite(at)) return `${item}:${Math.round(at * 1000)}`;
   let h = 0x811c9dc5;
   const s = ln[0] + "\u0001" + (src ? src[0] : "");
@@ -1562,8 +1566,9 @@ async function pickLine(k) {                            // ⇄ for a carded word
   if (!built(route)) return;
   if (!live()) { toast("Surasura is closed: this needs Surasura open (nothing kept)."); return; }
   const src = srcOf(id, ln[1]);
-  const a = await doorCall(route, { word: w[0], line_id: lineId(ln, src), at: Date.now() });
-  if (a && a.ok) toast(route === "swap/queue" ? (a.same ? `⇄ Queued: ${w[0]}'s card gets this line.` : `⇄ Queued: Swap makes ${w[0]}'s new card from this line.`) : `Asked: Connect makes ${w[0]}'s card from this line, first in your order.`);
+  const a = await doorCall(route, { word: w[0], line_id: lineId(ln, src), item: lineItem(src), line: ln[0], at: Date.now() });
+  const far = a && a.video === false ? " Its video isn't on this computer: Needs you will ask where it is." : "";   // PROVISIONAL
+  if (a && a.ok) toast((route === "swap/queue" ? (a.same ? `⇄ Queued: ${w[0]}'s card gets this line.` : `⇄ Queued: Swap makes ${w[0]}'s new card from this line.`) : `Asked: Connect makes ${w[0]}'s card from this line, first in your order.`) + far);
   else if (a && a.kind === "not_yet") { D.routes = (D.routes || []).filter((r) => r !== route); drawPart("acts"); }
   else toast(a && a.error || "Surasura is closed: this needs Surasura open (nothing kept).");
 }
@@ -1619,7 +1624,7 @@ function afterFirstWord() {
 }
 window.__J = { S, page, rail: () => rail, TIMES, D, HS, MARK, MWAIT, PRE, FLAGGED, QUEUE: () => QUEUE, SET, SET_WAIT, SETTINGS, KEYS: () => KEYS, ACTIONS, PRESETS,
   RC, go, step, epStep, markWord, pickLine, selLine, srcOf, shownLines, drawPart, drawDesk, redrawMarks, prestudied, setSetting, setFilter, setOrder, toggleFocus, toggleList, search, jumpTo, hello, readState, flushQueue, drawWord,
-  openSettings, openKeys, openFlag, flagLine, closeLayer, doAction, curWordId, wordNow, seq, loadEp, epReady, blob, blobNow, kanjiTip, lineId, stoneSvg, setDoor, mediaUrl,
+  openSettings, openKeys, openFlag, flagLine, closeLayer, doAction, curWordId, wordNow, seq, loadEp, epReady, blob, blobNow, kanjiTip, lineId, lineItem, stoneSvg, setDoor, mediaUrl,
   CHUNKS, SIDX, buildSearch, tipText, nextEp, listScrolled, D14_MS, SWAP_SHOWN };
 start();
 </script>

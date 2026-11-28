@@ -148,6 +148,24 @@ def test_the_last_done_on_the_cache_marks_at_once_and_finishes_once_the_list_is_
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_the_list_read_before_the_marks_write_lands_still_finishes_it(world, language):
+    """The store still busy with the mark when the list from disk arrives (it shows the file unwatched): asked as the
+    press would have been — its own mark counted watched, its own write no other command on its way — so it finishes."""
+    settings_manager.save_keys({"target_language": language})
+    seed, win, writer = world(language=language)
+    row = _all_but_one(seed, win, 4)
+    _cached(win)
+    writer.stuck = True
+    win.moves.done(row, row.episodes[-1])
+    assert win.moves.tickets, "(the mark still on its way)"
+    fresh = win.moves.reader.view()
+    assert not fresh.cached and not next(r for r in fresh.rows if r.key == row.key).episodes[-1].watched
+    win.show_library(fresh)
+    assert wait_until(lambda: [c[0] for c in calls(writer)] == ["set_watched", "set_tier"], 3)
+    writer.free()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_up_next_done_on_the_cache_with_every_file_watched_waits_then_finishes(world, language):
     settings_manager.save_keys({"target_language": language})      # the window's language is its library's (P0)
     seed, win, writer = world(language=language)

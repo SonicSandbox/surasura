@@ -1301,8 +1301,8 @@ class DragController(QObject):
         self.tickets = []                            # commands given, not settled yet (oldest first)
         self._airing_asking = {}                     # alpha 9 M1: work_id -> row key offered *Still asking AniList*
         self._airing_again = False                   # ... its `_again` on its way
-        self._fresh_asking = {}                      # UPDATE-START: row key -> (its mark's ticket, the ids it marked):
-        #                                              a last Done on the first screen's cache, asked again from disk
+        self._fresh_asking = {}                      # UPDATE-START: row key -> its mark's ticket (None: nothing to
+        #                                              mark): a last Done on the first screen's cache, asked from disk
         self.saving_keys = frozenset()
         self.toasted = None                          # the ticket whose toast shows
         self.toast_for = ()                          # round 8 row 45: the tickets the shown toast stands for …
@@ -2936,7 +2936,7 @@ class DragController(QObject):
         if ep is None:
             view = self.page.view_model
             if self._from_cache(view, row):
-                self._fresh_asking[row.key] = (None, ())
+                self._fresh_asking[row.key] = None
                 self.say(strings.DONE_UPDATING_ALONE.format(title=title))
                 return
             verdict = when_done(view, row, pending=bool(self.tickets))   # L6.3: the one rule
@@ -3004,7 +3004,7 @@ class DragController(QObject):
         if not left and self._from_cache(view, row):  # UPDATE-START: the mark now, the rule once the list is read
             ticket = Ticket(strings.DONE_UPDATING.format(text=text), (row.key,), tuple(ids))
             if self._give(ticket, mark, marks=on) is not None:
-                self._fresh_asking[row.key] = (ticket, tuple(ids))
+                self._fresh_asking[row.key] = ticket
             return
         verdict = None if left else when_done(view, row, pending=bool(self.tickets))   # L6.3: the one rule
         if verdict is not None and verdict[0] != "offer":
@@ -3178,28 +3178,24 @@ class DragController(QObject):
     def _fresh_let_go(self, undone):
         """UPDATE-START: the last Dones asked again from disk whose mark `undone(ticket)` — let go."""
         if self._fresh_asking:
-            self._fresh_asking = {k: v for k, v in self._fresh_asking.items() if v[0] is None or not undone(v[0])}
+            self._fresh_asking = {k: t for k, t in self._fresh_asking.items() if t is None or not undone(t)}
 
     def _from_disk(self, view):
         """UPDATE-START: each last Done pressed on the first screen's cache, its rule asked now on the first view from
-        disk (`_again`) — as the press itself would have asked it there: its own marks counted watched, the other
-        commands still on their way as `pending`. It finishes by itself or joins (`_by_itself`), or the finish toast
-        offers it, or the bar says why nothing is offered. Let go, silently: its mark undone, the row gone from
-        Current, or a file of it unwatched again. Kept for a later view while a drag runs or the store can't take a
-        move (its mark's own write on its way holds nothing: the press never waited for it either)."""
+        disk (`_again`) — as the press itself would have asked it there: the view holds its mark (painted ahead until
+        the store has it, a8), the other commands still on their way are `pending`. It finishes by itself or joins
+        (`_by_itself`), or the finish toast offers it, or the bar says why nothing is offered. Let go, silently: the
+        row gone from Current or a file of it unwatched again (its mark undone: `_fresh_let_go` at the Undo). Kept for
+        a later view while a drag runs or the store can't take a move (its mark's own write on its way holds nothing:
+        the press never waited for it either)."""
         if self.running is not None or self.blocked or not self.writer.can_write():
             return
         asked, self._fresh_asking = self._fresh_asking, {}
         rows_ = {r.key: r for r in view.rows}
-        for key, (ticket, ids) in asked.items():
+        for key, ticket in asked.items():
             row = rows_.get(key)
-            if row is None or (ticket is not None and ticket.undo_asked):
+            if row is None or any(not e.watched for e in view_rows.to_finish(row.episodes)):
                 continue
-            marked = set(ids)
-            if any(not e.watched and e.id not in marked for e in view_rows.to_finish(row.episodes)):
-                continue
-            row = row._replace(episodes=tuple(e._replace(watched=True) if e.id in marked else e
-                                              for e in row.episodes)) if marked else row
             verdict = when_done(view, row, pending=any(t is not ticket for t in self.tickets))
             if verdict is not None and verdict[0] != "offer":
                 self._by_itself(row, verdict)

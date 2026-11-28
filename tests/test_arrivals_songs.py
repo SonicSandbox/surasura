@@ -229,3 +229,66 @@ def test_an_episode_the_store_already_holds_is_read_as_it_is_now(tmp_path):
         assert read[-1][1] and read[-2][1], "the lines said at its end stay"
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("language, show", [("ja", JA_SHOW), ("zh", ZH_SHOW)])
+def test_a_works_stored_episodes_read_again_run_the_song_rule_once_for_the_work(tmp_path, language, show):
+    """Every episode of a show the store holds, answered again (the view built again after a known-words change
+    re-asks each New arrivals row): the rule runs once for the work, not once per episode over every other episode
+    (episodes² before ARRIVALS-SONGS) — each answer still the one the rule gives that arrival beside the others."""
+    store, data_dir, paths, _arrival = _library(tmp_path, language, show, "none")
+    ti.reconcile_language(language, paths, path=store.path)          # every episode in the store
+    try:
+        view = _view(language, store, data_dir)
+        from app import song_lines
+        calls = []
+        real = song_lines.left_out
+
+        def counting(files):
+            files = list(files)
+            calls.append(len(files))
+            return real(files)
+        fresh = {p: list(view.tokenizer.tokenize_sentences(analyzer.extract_text(p, language))) for p in paths}
+        with patch.object(song_lines, "left_out", side_effect=counting):
+            reads = {p: _read(view, p, data_dir) for p in paths}
+        assert calls == [len(paths)], "one run of the rule over the work, for all its arrivals"
+        lines = store.file_lines(paths)
+        for p in paths:
+            expected = analyzer.songs_left_out([(o, lines[o]) for o in paths if o != p]
+                                               + [(p, song_lines.file_lines(fresh[p]))])[p]
+            emptied = {no for no, (_s, t) in enumerate(reads[p]) if not t} - \
+                      {no for no, (_s, t) in enumerate(fresh[p]) if not t}
+            assert expected and emptied == expected, os.path.basename(p)
+    finally:
+        store.close()
+
+
+def test_an_episode_stored_without_its_opening_is_read_with_it(tmp_path):
+    """The store holds ep04 as it was before its opening was put back (its ♪ lines cut): read again, the arrival is
+    the file as it is now — the work's kept answer (made over the stored lines) is never its answer, and its opening
+    is found beside the other episodes as the next Generate will find it."""
+    store, data_dir, paths, arrival = _library(tmp_path, "ja", JA_SHOW, "Hoshi Matsuri - 04.ja.srt")
+    store.close()
+    with open(arrival, encoding="utf-8") as f:
+        whole = f.read()
+    with open(arrival, "w", encoding="utf-8") as f:
+        f.write("\n\n".join(b for b in whole.strip().split("\n\n") if "♪" not in b) + "\n")
+    ti.reconcile_language("ja", paths, path=str(tmp_path / "store.db"))          # ep04 in the store with no opening
+    with open(arrival, "w", encoding="utf-8") as f:
+        f.write(whole)
+    store = ti.open_store("ja", str(tmp_path / "store.db"))
+    try:
+        view = _view("ja", store, data_dir)
+        for p in paths:
+            if p != arrival:
+                _read(view, p, data_dir)                # the stored episodes first: the work's answer is kept
+        read = _read(view, arrival, data_dir)
+        fresh = list(view.tokenizer.tokenize_sentences(analyzer.extract_text(arrival, "ja")))
+        from app import song_lines
+        lines = store.file_lines(paths)
+        expected = analyzer.songs_left_out([(p, lines[p]) for p in paths if p != arrival]
+                                           + [(arrival, song_lines.file_lines(fresh))])[arrival]
+        emptied = {no for no, (_s, t) in enumerate(read) if not t} - {no for no, (_s, t) in enumerate(fresh) if not t}
+        assert sum(1 for _s, _t in fresh if "♪" in _s) >= 6 and expected and emptied == expected
+    finally:
+        store.close()

@@ -58,8 +58,8 @@ def _tallied(monkeypatch):
     """The files `phrases.tally` reads (each one a file searched for its phrases), by their first sentence."""
     read = []
     real = phrases.tally
-    monkeypatch.setattr(phrases, "tally", lambda sentences, found, matches=None:
-                        read.append(sentences[0][0] if sentences else "") or real(sentences, found, matches))
+    monkeypatch.setattr(phrases, "tally", lambda sentences, found, matches=None, places=None:
+                        read.append(sentences[0][0] if sentences else "") or real(sentences, found, matches, places))
     return read
 
 
@@ -160,9 +160,9 @@ _c = {"find": 0, "masked": 0}
 _find, _sentences = _ph.PhraseSet.find, _ti.WalkFile.sentences
 
 
-def _counted_find(self, tokens, text):
+def _counted_find(self, tokens, text, places=None):
     _c["find"] += 1
-    return _find(self, tokens, text)
+    return _find(self, tokens, text, places)
 
 
 def _counted_sentences(self, mask):

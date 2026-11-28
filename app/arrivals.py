@@ -829,8 +829,9 @@ def songs_out(view, path, sentences, song_marks=()):
     song line's with no words — found by the one rule over the arrival (its lines: `song_lines.file_lines`, `song_marks`
     the .ass captions' `extract_text` gave) and, for a file in the library's data folder, its work's other episodes the
     store holds (`View.works`; their lines read from the store — opened to read only when the view holds none — and
-    kept for the view's life, the last HELD_WORKS works). A spoken file only; never fatal: a failure reads the songs as
-    counted, as a Generate whose rule fails does."""
+    kept for the view's life, the last HELD_WORKS works, with the rule's answer over the work's stored lines: a stored
+    episode read as it is stored takes its answer from there). A spoken file only; never fatal: a failure reads the
+    songs as counted, as a Generate whose rule fails does."""
     if not getattr(view, "songs", False):
         return sentences
     try:
@@ -843,16 +844,15 @@ def songs_out(view, path, sentences, song_marks=()):
         data_dir = token_index._norm(get_data_path(view.language))
         work = os.path.normcase(analyzer._series_name(me, data_dir)) if me.startswith(data_dir + os.sep) else None
         others = [p for p in view.works.get(work, ()) if p != me] if work is not None else []
-        held = {}
+        held, got = {}, None
         if others:
             kept = view.__dict__.setdefault("held", {})
-            held = kept.get(work)
-            if held is None:
+            got = kept.get(work)
+            if got is None:
                 store = view.store if view.store is not None else token_index.open_reader(view.language)
                 if store is None:
                     print(f"arrivals: the token store can't be read; {os.path.basename(path)}'s songs found alone",
                           file=sys.stderr)
-                    held = {}
                 else:
                     try:
                         held = store.file_lines(view.works[work])
@@ -861,9 +861,18 @@ def songs_out(view, path, sentences, song_marks=()):
                             store.close()
                     while len(kept) >= HELD_WORKS:
                         kept.pop(next(iter(kept)))
-                    kept[work] = held
-        out = analyzer.songs_left_out([(p, held.get(p)) for p in others]
-                                      + [(me, song_lines.file_lines(sentences, song_marks))]).get(me)
+                    got = kept[work] = [held, None]     # the work's lines, and its answer once one is asked
+            else:
+                held = got[0]
+        lines = song_lines.file_lines(sentences, song_marks)
+        if got is not None and held.get(me) == lines:
+            # A stored episode read as the store holds it: the rule beside the others is the rule over the work's
+            # stored lines, run once for the work and kept (a re-asked show is the rule's run once, not episodes²)
+            if got[1] is None:
+                got[1] = analyzer.songs_left_out([(p, held.get(p)) for p in view.works[work]])
+            out = got[1].get(me)
+        else:
+            out = analyzer.songs_left_out([(p, held.get(p)) for p in others] + [(me, lines)]).get(me)
     except Exception as e:                          # the estimate counts the songs, as before
         print(f"arrivals: the songs of {os.path.basename(path)} couldn't be found ({e}); counted", file=sys.stderr)
         return sentences

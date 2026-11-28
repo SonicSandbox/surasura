@@ -505,6 +505,31 @@ def test_two_titles_beside_its_video_are_the_learners_split_and_none_takes_it(la
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("order", ORDERS)
+def test_a_title_holding_hatos_folder_key_and_another_id_keeps_its_episode_in_both_orders(language, order):
+    """hato's series folder is named like one of the learner's shows (its folder key) and that show carries an AniList
+    id; the videos beside the drop's video are another show's, with another id. Two ids say two shows: the drop
+    stays with the folder's show whichever order hato and the disk sync meet in (never crossed by the video)."""
+    store = _arrivals_on(migrated(language))
+    data_dir, _u = roots(language)
+    share = _share()
+    w = names(language)
+    beside = _season_show(store, data_dir, share, language, w[90], (5, 6))
+    folders = _show(store, data_dir, w[91])
+    with store._writing():
+        store.conn.execute("UPDATE works SET anilist_id = ? WHERE id = ?", (ANILIST, folders))
+        store.conn.execute("UPDATE works SET anilist_id = ? WHERE id = ?", (ANILIST + 1, beside))
+    path = touch(data_dir, f"{ls.HATO_FOLDER}/{w[91]}/{_episode_name(language, w[90], 7)}.srt", f"{w[91]} 7\n")
+    if order == "sync_first":
+        assert store.sync_disk()["added"]
+    store.register(path, _unmatched(language, share, w[90], 7))
+    item = store.conn.execute("SELECT id FROM items WHERE rel_key = ?",
+                              (ls.path_key(ls.library_rel(data_dir, path)),)).fetchone()[0]
+    assert _work(store, item) == folders
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_record_that_names_its_show_still_decides_by_its_show(language):
     """The record's own show comes first (K81): hato's record naming another of the learner's shows lands there, even
     with its video beside this show's videos."""
@@ -580,16 +605,17 @@ def test_a_season_title_already_split_off_joins_its_show_once_and_one_undo_bring
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_the_heal_leaves_the_learners_answers_and_two_shows_alone(language, monkeypatch):
-    """Never a split title the learner named, one he kept apart from the show, nor one holding two shows' episodes
-    (its videos sit beside two titles: *Join with…* stays his); a split title of one show beside them heals. Each case
+    """Never a split title the learner named or gave his cover, one he kept apart from the show, nor one holding two
+    shows' episodes (its videos sit beside two titles: *Join with…* stays his); a split title of one show beside them
+    heals. Each case
     in its own season folder (hato's drops of one season folder are one folder key)."""
     store = _arrivals_on(migrated(language))
     data_dir, _u = roots(language)
     w = names(language)
-    shares = [_share(f"share{n}") for n in range(5)]
-    seasons = ["Season 02", "Season 03", "Season 04", "Season 04", "Season 05"]
+    shares = [_share(f"share{n}") for n in range(6)]
+    seasons = ["Season 02", "Season 03", "Season 04", "Season 04", "Season 05", "Season 06"]
     shows = [_season_show(store, data_dir, shares[n], language, w[90 + n], (5, 6), n=n, season=seasons[n])
-             for n in range(5)]
+             for n in range(6)]
 
     def split(n):
         items = _split_before_the_fix(store, data_dir, language, shares[n], w[90 + n], (7,), monkeypatch, n=n,
@@ -605,6 +631,9 @@ def test_the_heal_leaves_the_learners_answers_and_two_shows_alone(language, monk
         extra = _season_drop(store, data_dir, "handoff_first", language, shares[3], w[93], 7, n=3, season=seasons[3])
     assert _work(store, extra) == mixed, "two shows' drops in one title"
     healed = split(4)
+    covered = split(5)
+    with store._writing():                                   # his own cover on it
+        store.conn.execute("UPDATE works SET cover_source = 'user' WHERE id = ?", (covered,))
     _heal_mark(store)
     assert store.join_hato_by_video() is not None
     titles = _titles(store)
@@ -612,6 +641,7 @@ def test_the_heal_leaves_the_learners_answers_and_two_shows_alone(language, monk
     assert _count(store, apart) == 1 and _count(store, shows[1]) == 2, "kept apart by him"
     assert _count(store, mixed) == 2, "two shows' episodes: as it stands"
     assert _count(store, healed) == 0 and _count(store, shows[4]) == 3, "the one beside them heals"
+    assert _count(store, covered) == 1, "his cover: his title"
     assert pieces_ok(store) is None
     store.close()
 

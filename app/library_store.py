@@ -3478,8 +3478,8 @@ class Store:
                     continue
                 keep = found.pop()
                 k = self._work_row(keep)                    # (gone: merged away earlier in this pass)
-                if k is None or keep == wid or self._grouped_together([keep, wid]) or tuple(sorted((keep, wid))) in apart or \
-                        self._titles_apart([keep, wid]) or \
+                if k is None or keep == wid or self._grouped_together([keep, wid]) or \
+                        tuple(sorted((keep, wid))) in apart or self._titles_apart([keep, wid]) or \
                         _media_family(self.media_type(keep)[0]) != _media_family(self.media_type(wid)[0]):
                     continue                                # the learner's own answer, or two shows: as it stands
                 if change is None:

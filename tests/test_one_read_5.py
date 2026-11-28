@@ -229,5 +229,7 @@ def test_the_runs_names_tables_are_let_go_when_it_ends(monkeypatch):
         raising()
     assert not names._library["pinned"], "let go on a raise too"
     assert names.library_tables() is tables
-    names.let_go_library_tables()                       # none pinned: nothing changes
-    assert names.library_tables() is tables
+    names._library.update(stamp=("db", "wal"))         # as a look that read them keeps its stamp
+    before = dict(names._library)
+    names.let_go_library_tables()                       # none pinned: nothing changes, the stamp kept (no re-read)
+    assert names._library == before

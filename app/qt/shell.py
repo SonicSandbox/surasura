@@ -2056,7 +2056,7 @@ class ShellWindow(QMainWindow):
             star.view_shown(view, self.services.library)
         if not getattr(view, "loading", False) and not self.services.boot.is_set():
             self._boot_after_idle()                 # Haya-LD: Current's list from disk drawn: booted at the next idle
-        elif getattr(view, "cached", False) and not self.services.boot.is_set() and not self._open_said:
+        elif getattr(view, "cached", False) and not self._open_said:
             self._cache_shown = True                # UPDATE-START: the first screen's cache shown: the window is open
             if self._framed:
                 self._say_open()

@@ -144,7 +144,7 @@ class _Writer:
 def test_the_covers_scan_counts_each_title_and_ends_on_the_whole(monkeypatch, tmp_path):
     looked = []
     monkeypatch.setattr(disk, "_my_turn", lambda _writer, _cancel: True)
-    monkeypatch.setattr(disk, "_scan_one", lambda _lang, _data, work, _writer: looked.append(work) or work == "b")
+    monkeypatch.setattr(disk, "_scan_one", lambda _lang, _data, work, *_rest: looked.append(work) or work == "b")
     heard = []
     found = disk.scan("ja", iter(["a", "b", "c"]), _Writer(), data_dir=str(tmp_path),
                       progress=lambda d, t: heard.append((d, t)))

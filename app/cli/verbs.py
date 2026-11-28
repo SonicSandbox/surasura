@@ -1326,10 +1326,11 @@ def _anki_miner_setup(loaded, lang, run_dir, held=None):
     if miner is None:
         return None
     export_path = os.path.join(run_dir, "settings-export.json")
-    read_at = (held or {}).get("at")
+    was = dict(held) if held else {}    # one look at the set: a press and Connect's pass share Card sound's (AM-START 2)
+    read_at = was.get("at")
     now = anki_miner.stamp(miner) if held is not None else None    # taken before the reads: a save meanwhile shows
-    kept = (held.get("set") if held and time.monotonic() - read_at < SETUP_FOR_S and now is not None
-            and held.get("stamp") == now else None)
+    kept = (was.get("set") if was and time.monotonic() - read_at < SETUP_FOR_S and now is not None
+            and was.get("stamp") == now else None)
     # DSA-CONNECT 2: a run's first look (its set never filled; a failure's drop took the kept answers too) may take
     # Anki Miner's `version` and `profiles` from the run before (`anki_miner.kept_look_ups`): one start, the export
     looked = anki_miner.kept_look_ups(miner, now) if held is not None and not held else None

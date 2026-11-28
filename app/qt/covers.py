@@ -380,8 +380,7 @@ def _scan_library(opener, language, writer, cancel, data_dir, work_ids=None, pro
 def _scan_works(h, language, writer, cancel, data_dir, work_ids=None, progress=None):
     from app.services import covers as disk
     if work_ids is None:
-        feed = h.read_feed()
-        works = disk.works_from(feed["items"], feed["works"], disk.originals(h))     # Hon a6: beside the originals too
+        works = disk.works_all(h)                       # Hon a6: beside the originals too (only the columns it reads)
     else:
         works = disk.works_for(h, work_ids)                                         # Hon a7: those titles only
     return disk.scan(language, works, writer, cancel=cancel.is_set, data_dir=data_dir, progress=progress)

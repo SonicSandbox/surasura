@@ -17,6 +17,7 @@ import subprocess
 import sys
 
 import pytest
+from unittest.mock import patch
 
 from app import analyzer
 from tests import plan_file_cases as cases
@@ -133,3 +134,15 @@ def test_the_record_of_every_counted_file_is_its_plan_line(tmp_path, name):
     words = [k for k, key in enumerate(plan["keys"]) if not key[2]]
     assert [uses[k] for k in words] == [plan["keys"][k][4] for k in words]
     assert sum(line["tokens"] for line in lines) == plan["header"]["total_tokens"]
+
+
+def test_a_word_inside_two_phrases_is_recorded_once_as_generate_counts_it(tmp_path):
+    """間 'a pause' lives only inside あっという間 'in an instant', and あっという間に holds あっという間: both stand over
+    the one 間 of each line of pauses_sample.srt, which also says 間 on its own. Its use there is given to the phrases
+    once (ENGINE 55) — in the record as in the Generate — so the record is still the file's plan line."""
+    with open(os.path.join(cases.RES, "ja", "pauses_sample.srt"), encoding="utf-8") as f:
+        text = f.read()
+    library = ("ja", lambda: [("now", "pauses_sample.srt", text)], False, ["--min-freq", "1"])
+    # As an edge case: no known words (the test list knows 間), so each use of it is counted or given.
+    with patch.dict(cases.ALL_CASES, {"pauses-ja": library}), patch.dict(cases.EDGE_CASES, {"pauses-ja": library}),             patch.dict(LIBRARIES, {"pauses-ja": ("pauses-ja", {}, [])}):
+        test_the_record_of_every_counted_file_is_its_plan_line(tmp_path, "pauses-ja")

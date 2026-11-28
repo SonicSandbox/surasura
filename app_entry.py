@@ -121,7 +121,7 @@ def run():
     args = [arg for arg in sys.argv[1:] if arg != "--headless"]
     command = args[0] if args else "window"
     if command == "--multiprocessing-fork":         # a frozen run's pool worker (freeze_support): no command of its own
-        return main()
+        return _pool_worker()
     _run.update(command=command, started=time.monotonic())
     code = 0
     try:
@@ -135,6 +135,21 @@ def run():
         raise
     finally:
         _log_end(code)
+
+
+def _pool_worker():
+    """A frozen run's pool worker (`--multiprocessing-fork`: the indexer's pool, a Generate's cores). Its start fails
+    when the process that started it has gone meanwhile (the window's quit stops the indexer while its pool starts:
+    the parent's pipe can't be copied, WinError 5, or read): logged, exit 1. Left to the windowed bootloader, the
+    exception showed *Unhandled exception in script* and the worker waited on that box, holding the program folder
+    (POOL-ORPHAN, 3.0.21). A worker's own end (multiprocessing's sys.exit) passes as it is."""
+    try:
+        return main()
+    except SystemExit:
+        raise
+    except BaseException as e:
+        log_error(f"A pool worker's start failed ({e!r}): exit 1")
+        sys.exit(1)
 
 
 def main():

@@ -211,7 +211,8 @@ WATCHED = "you've watched it: its new words go to the episodes ahead of you"
 NOT_PRESTUDIED = "Waiting until you pre-study it in the journey (Mine only episodes I’ve pre-studied is on)."
 # Kantan-MO (the mining model, F1): a level raise mines no episode again — a level job queued before the update and not
 # started yet is dropped (one under way finishes, by its own words)
-LEVEL_DROPPED = "a level raise mines no episode again: its new words join your study order"
+# TOP-UP (3.0.21): a raise's job from before 3.0.18 (source `level`), not started — the top-up's jobs replace it
+LEVEL_DROPPED = "a level job from before 3.0.18: Connect now tops up a mined episode's new words by itself"
 # The cap's window (Kantan-MO): a card's place in the study order — yours and a pinned show's first, a word off the
 # list after every word on it
 FRONT = -1
@@ -4207,9 +4208,9 @@ class Steps:
             item = store.item(job["item_id"]) or {}
             made = library.made_words_all(store)
         lemmas = file_words.get(os.path.basename(item.get("rel_path") or "")) or ()
-        if job.get("source") == level.BEST:
+        if job.get("source") in (level.BEST,) + level.TOP_UPS:
             # Kantan-SD: a Best job is placed by its own words, never by the other new words of the episode it borrows
-            # a sentence from (often one you've watched)
+            # a sentence from (often one you've watched); TOP-UP: a mined episode's top-up by the new words it names
             lemmas = {key[0] for key in job.get("words") or ()}
         best = min((place(lemma, None) for lemma in lemmas if lemma not in made), default=OFF_LIST)
         return None if best >= OFF_LIST else best

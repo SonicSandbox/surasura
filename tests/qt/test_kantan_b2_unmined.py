@@ -41,10 +41,11 @@ def test_a_mined_episodes_menu_offers_mine_again_and_its_words_and_mine_again_as
     ep = ep._replace(status=view_rows.Status(kind, "2", "", "ok"), cards=2 if kind == "in_anki" else 0,
                      deleted=kind == "deleted", mining=False)
     entries = win.mine.episode_entries(row, ep)
-    assert [e.name for e in entries] == ["ep-mine-again", "ep-unmined-words"]
-    assert entries[0].label == strings.MINE_AGAIN and entries[0].tip == strings.MINE_AGAIN_TIP and entries[0].writes
-    assert entries[1].label == strings.UNMINED_ENTRY and entries[1].tip
-    entries[0].payload()
+    # (TOP-UP, 3.0.21: *Mine the new words* first, beside it — tests/qt/test_top_up_press.py)
+    assert [e.name for e in entries] == ["ep-top-up", "ep-mine-again", "ep-unmined-words"]
+    assert entries[1].label == strings.MINE_AGAIN and entries[1].tip == strings.MINE_AGAIN_TIP and entries[1].writes
+    assert entries[2].label == strings.UNMINED_ENTRY and entries[2].tip
+    entries[1].payload()
     settle(50)
     assert asks(writer) and asks(writer)[-1][1] == [ep.id]
     assert win.toasts.card.base == strings.MINE_AGAIN_ASKED.format(label=ep.label)
@@ -62,7 +63,7 @@ def test_with_connect_off_mine_again_says_why_and_asks_nothing(act):
     _seed, win, writer = act(connect_off=feed.OFF_CONNECT)
     row, ep = _row_ep(win)
     ep = ep._replace(status=view_rows.Status("deleted", "", "", "faint"), deleted=True, mining=False)
-    entry = win.mine.episode_entries(row, ep)[0]
+    entry = win.mine.episode_entries(row, ep)[1]
     assert entry.tip == strings.ROWS_ACTION_OFF.format(tip=strings.MINE_AGAIN_TIP, why=feed.OFF_CONNECT)
     entry.payload()
     settle(50)

@@ -157,7 +157,8 @@ def test_the_menu_lists_the_moves_then_study_type_split_join_folder_and_remove_l
     a, _b = split_parts(win)
     row = rows_of(win)[a]
     assert names(win.items.entries(row)) == ["watched-all", "pin", "type", "split", "join", "same-show", "cover",
-                                                 "folder", "remove"]     # W3.2 L3; LM11b G3: same-show; a7
+                                                 "row-top-up", "folder", "remove"]   # W3.2 L3; LM11b G3: same-show; a7
+    # (TOP-UP: Connect's *Mine the new words*, a row hook, while an episode of the show is mined)
     m = win.items.menu(row, win.mapToGlobal(QPoint(300, 300)))
     acts = m.actions()
     texts = [x.text() for x in acts]

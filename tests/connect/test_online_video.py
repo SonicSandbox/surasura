@@ -287,7 +287,8 @@ def test_online_of_reads_the_link_and_names_from_the_item(monkeypatch):
     monkeypatch.setattr(play, "online_link", lambda language, rel, record=None: (LINK, None))
     item = {"source_type": "youtube", "rel_path": "Processed/日本語の練習/会話 第1話 [dQw4w9WgXcQ].txt"}
     assert online.of("ja", item) == {"site": "youtube", "url": LINK,
-                                     "names": ["日本語の練習", "会話 第1話 [dQw4w9WgXcQ]"], "captions": None}
+                                     "names": ["日本語の練習", "会話 第1話 [dQw4w9WgXcQ]"], "captions": None,
+                                     "rel": "Processed/日本語の練習/会話 第1話 [dQw4w9WgXcQ].txt"}
     assert online.of("ja", {"source_type": "subtitle", "rel_path": "Library/Show/01.srt"}) is None
     assert online.of("ja", {"source_type": "youtube", "rel_path": "会話 [dQw4w9WgXcQ].txt"})["names"] == \
         ["会話 [dQw4w9WgXcQ]", "会話 [dQw4w9WgXcQ]"]
@@ -759,3 +760,75 @@ def test_the_model_speech_ready_set_is_the_one_that_listens(fake_miner):
     anki_miner._SPEECH[key] = (True, time.monotonic(), "large-v3")
     assert anki_miner.listens_large(*key, export)
     assert not anki_miner.listens_large(*key, {"settings": {"asr_model": "small"}}), "the export says small"
+
+
+# --- the transcription becomes the library's transcript (Mattias: "it wants words that aren't even in the video") -- #
+WHISPER = ("1\n00:00:01,200 --> 00:00:03,900\n今から皆さんに難しい質問をします\n\n"
+           "2\n00:01:05,000 --> 00:01:08,500\n<i>英語学習</i>を続ける方法です\n\n")
+
+
+def _library_transcript(tmp_path, monkeypatch, kind, timed=True):
+    from app import path_utils
+    monkeypatch.setattr(path_utils, "get_data_path", lambda language: str(tmp_path / "data"))
+    rel = "Processed/ユートのチャンネル - 誰から何も言われずに [pitFobM6z80].txt"
+    full = tmp_path / "data" / rel
+    full.parent.mkdir(parents=True)
+    body = "[00:00:00] 今から皆さんにめちゃくちゃ難しい質問し\n[00:00:02] ます" if timed else "今から皆さんにめちゃくちゃ 難しい質問し"
+    full.write_text("\n".join(["誰から何も言われずに1人で英語学習継続できるようになる方法", "ユートのチャンネル | 2024-05-01 | 41:12",
+                               f"Captions: Japanese ({kind})", LINK, "", "-" * 60, body]) + "\n", encoding="utf-8")
+    side = full.with_name(full.stem + ".surasura.json")
+    side.write_text(json.dumps({"video_id": "pitFobM6z80", "url": LINK, "title": "誰から",
+                                "cues": [["今から皆さんにめちゃくちゃ難しい質問し", 0]]}, ensure_ascii=False), encoding="utf-8")
+    srt = tmp_path / "fetch" / "pitFobM6z80.srt"
+    srt.parent.mkdir()
+    srt.write_text(WHISPER, encoding="utf-8")
+    return rel, full, side, str(srt)
+
+
+@pytest.mark.parametrize("timed", (True, False))
+def test_the_transcription_writes_over_a_transcript_youtubes_recognizer_made(tmp_path, monkeypatch, timed):
+    """The words Generate counts, % known and *open its moment* come from what the video really says: the transcript
+    takes the transcription's lines (in its own form), its header says so, its sidecar's times follow — and the old
+    one is in the trash. A transcribed transcript is asked for a transcription again at its next mining."""
+    from app import analyzer
+    rel, full, side, srt = _library_transcript(tmp_path, monkeypatch, "native auto", timed)
+    assert online.keep_transcript("ja", rel, srt) is True
+    text = full.read_text(encoding="utf-8")
+    lines = text.split("\n")
+    assert lines[2] == "Captions: Japanese (transcribed)" and lines[0].startswith("誰から") and lines[3] == LINK
+    assert analyzer.caption_kind(text) == analyzer.TRANSCRIBED
+    body = analyzer.transcript_body(text)
+    if timed:
+        assert body == "[00:00:01] 今から皆さんに難しい質問をします\n[00:01:05] 英語学習を続ける方法です\n"
+    else:
+        assert body == "今から皆さんに難しい質問をします 英語学習を続ける方法です\n"
+    assert "めちゃくちゃ" not in text, "YouTube's recognizer's words are gone"
+    cues = json.loads(side.read_text(encoding="utf-8"))["cues"]
+    assert [c[1] for c in cues] == [1, 65]
+    assert os.listdir(tmp_path / "data" / ".trash"), "the old transcript kept in the trash"
+    assert online.subtitle_source({"captions": analyzer.caption_kind(text)}) == "transcribe"
+    assert online.keep_transcript("ja", rel, srt) is False, "never transcribed twice"
+
+
+def test_a_persons_captions_or_a_path_outside_the_data_folder_are_never_written(tmp_path, monkeypatch):
+    rel, full, _side, srt = _library_transcript(tmp_path, monkeypatch, "manual")
+    before = full.read_bytes()
+    assert online.keep_transcript("ja", rel, srt) is False and full.read_bytes() == before
+    assert online.keep_transcript("ja", "../outside.txt", srt) is False
+    assert online.keep_transcript("ja", rel, str(tmp_path / "no.srt")) is False and full.read_bytes() == before
+
+
+def test_steps_download_writes_the_transcription_over_the_transcript_only_when_it_asked_for_one(steps, fake_miner,
+                                                                                                monkeypatch):
+    kept = []
+    monkeypatch.setattr(online, "keep_transcript", lambda lang, rel, subtitle: kept.append((rel, subtitle)) or True)
+    fake_miner.plan(app="3.11.0", features=["fetch"], fetch={}, speech=HAS_MODEL)
+    steps.download("ja", JOB, dict(WEB, captions="native auto", rel="Processed/x [dQw4w9WgXcQ].txt"))
+    assert [r for r, _s in kept] == ["Processed/x [dQw4w9WgXcQ].txt"] and kept[0][1].endswith(".srt")
+    steps.drop_online(JOB)
+    steps.download("ja", JOB, dict(WEB, captions="manual", rel="Processed/x [dQw4w9WgXcQ].txt"))
+    assert len(kept) == 1, "a person's captions: nothing written"
+    steps.drop_online(JOB)
+    fake_miner.plan(app="3.11.0", features=["fetch"], fetch={}, speech=NO_MODEL)
+    steps.download("ja", JOB, dict(WEB, captions="native auto", rel="Processed/x [dQw4w9WgXcQ].txt"))
+    assert len(kept) == 1, "no speech model: YouTube's captions, its transcript as it was"

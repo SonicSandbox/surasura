@@ -611,7 +611,10 @@ def test_the_caption_kind_a_transcript_names():
     assert analyzer.caption_kind(_transcript("auto-translated", "")) == "auto-translated"
     assert analyzer.caption_kind(_transcript("manual", "こんにちは\n")) == "manual"
     assert analyzer.caption_kind("Captions: ja (native auto)\n今日は晴れ。\n") is None, "no header: a line of text"
-    assert analyzer.AUTO_CAPTIONS == {"native auto", "auto-translated"}
+    # "transcribed": Connect's, Anki Miner's whisper over YouTube's captions (`connect.online.keep_transcript`) — no
+    # person wrote it either, so a name it misspells never tells the library what a story's words are
+    assert analyzer.AUTO_CAPTIONS == {"native auto", "auto-translated", analyzer.TRANSCRIBED}
+    assert analyzer.caption_kind(_transcript("transcribed", "こんにちは\n")) == analyzer.TRANSCRIBED
 
 
 def test_extract_text_reports_the_caption_kind_and_changes_nothing(tmp_path):

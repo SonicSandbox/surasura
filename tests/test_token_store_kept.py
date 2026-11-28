@@ -207,6 +207,33 @@ def test_a_reconcile_with_nothing_changed_tokenizes_and_writes_nothing(language)
     store.close()
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_scratch_index_with_nothing_kept_never_makes_the_data_folder(language, tmp_path, monkeypatch):
+    """The kept text's file, and the folder it sits in, are made only when something is kept: an index into a store of
+    its own (a scratch one, a check's) with nothing to keep, or a look at where the kept text would sit
+    (library_move lists it), makes nothing in the data folders. Run with no test root, that folder is the user's real
+    local data folder: a parsing check indexing a show into a scratch store made its `libraries` there. Then a file
+    kept makes its folder and file as before."""
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setenv("SURASURA_TEST_ROOT", str(root))
+    show = tmp_path / "show"
+    show.mkdir()
+    paths = [shutil.copy2(os.path.join(REPO, *source.split("/")), str(show)) for source in SOURCES[language][:2]]
+    ti.reconcile_language(language, paths, path=str(tmp_path / "scratch.db"))
+    data_dir, _u = roots(language)
+    kept_db = ti.kept_text_path(language, data_dir)
+    assert os.listdir(str(root)) == [], "nothing made in the data folders"
+    assert not os.path.exists(os.path.dirname(kept_db))
+    a, b, *_rest = _files(language)
+    store = ti.open_store(language, str(tmp_path / "own.db"))
+    try:
+        store.reconcile([a], ti.make_tokenizer(language), ti.build_signature(language), kept=[b])
+    finally:
+        store.close()
+    assert os.path.exists(kept_db), "a kept file makes the kept text, its folder too"
+
+
 # --------------------------------------------------------------------------- #
 # 2.2.2: the kept text, the re-key, the indexer's two lists
 # --------------------------------------------------------------------------- #
@@ -295,6 +322,7 @@ def test_a_damaged_kept_text_file_is_set_aside_once_never_fatal(language, capsys
     a, finished, *_rest = _files(language)
     store = ti.open_store(language)
     kept_db = _kept_text(store).path
+    os.makedirs(os.path.dirname(kept_db), exist_ok=True)     # (a damaged file sits in a folder that is there)
     with open(kept_db, "wb") as f:
         f.write(b"\x00garbage" * 512)
     store.reconcile([a], ti.make_tokenizer(language), kept=[finished])
@@ -312,6 +340,7 @@ def test_two_damaged_kept_text_files_in_one_second_are_both_set_aside(language, 
     a, finished, *_rest = _files(language)
     store = ti.open_store(language)
     kept_db = _kept_text(store).path
+    os.makedirs(os.path.dirname(kept_db), exist_ok=True)     # (a damaged file sits in a folder that is there)
     with patch.object(ti.time, "strftime", return_value="20261011-120000"):
         for garbage in (b"\x00first" * 512, b"\x00second" * 512):
             with open(kept_db, "wb") as f:
@@ -336,6 +365,7 @@ def test_a_damaged_kept_text_file_that_cant_be_moved_is_never_said_set_aside(lan
     store.reconcile([a], ti.make_tokenizer(language))
     before = (store.counted_files(), store.kept_files(), store.word_counts())
     kept_db = _kept_text(store).path
+    os.makedirs(os.path.dirname(kept_db), exist_ok=True)     # (a damaged file sits in a folder that is there)
     with open(kept_db, "wb") as f:
         f.write(b"\x00garbage" * 512)
     real = os.replace
@@ -1227,6 +1257,7 @@ def test_a_damaged_kept_text_file_takes_its_wal_and_shm_sidecars_aside_with_it(l
     try:
         kept = _kept_text(store)
         kept_db = kept.path
+        os.makedirs(os.path.dirname(kept_db), exist_ok=True)     # (a damaged file sits in a folder that is there)
         with open(kept_db, "wb") as f:
             f.write(b"\x00garbage" * 512)
         with open(kept_db + "-wal", "wb") as f:

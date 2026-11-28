@@ -335,14 +335,15 @@ def test_a_books_chapters_never_lose_a_repeated_passage(tmp_path):
     assert len(analyzer.song_sentences(spoken, data_dir, None, tokenizer, "ja")) == 4
 
 
-def _indexed_show(tmp_path):
-    """星祭り's episodes in a library's work folder, indexed into a store of their own -> (found files, data dir, db)."""
-    data_dir = tmp_path / "data" / "ja"
+def _indexed_show(tmp_path, language="ja"):
+    """A show's episodes (星祭り's, or the Chinese one's) in a library's work folder, indexed into a store of their own
+    -> (found files, data dir, db)."""
+    data_dir = tmp_path / "data" / language
     work = data_dir / "HighPriority" / "Hoshi Matsuri"
-    shutil.copytree(JA_SHOW, work)
+    shutil.copytree(JA_SHOW if language == "ja" else ZH_SHOW, work)
     paths = sorted(str(work / name) for name in os.listdir(work))
     db = str(tmp_path / "store.db")
-    ti.reconcile_language("ja", paths, path=db)
+    ti.reconcile_language(language, paths, path=db)
     return [(p, "high", 10, "subtitle") for p in paths], str(data_dir), db
 
 
@@ -383,6 +384,28 @@ def test_a_changed_episode_or_a_new_rule_finds_the_songs_again(tmp_path):
             again = analyzer.song_sentences(found, data_dir, store, None, "ja")
             assert rule.called
         assert again[third] == first[third], "the new line sits after the ending: the numbers before it hold"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_an_engine_bump_alone_keeps_every_works_songs_a_new_tokenizer_finds_them_again(tmp_path, language):
+    """The kept answer depends on the rule, the store's lines and the files' stamps — not on the engine's number: an
+    ENGINE_REVISION bump for any other reason (a phrase rule, a count) reads no work's lines again, the same numbers.
+    A new tokenizer identity (build_sig: the sentences may split anew at the same stamps) finds them again."""
+    found, data_dir, db = _indexed_show(tmp_path, language)
+    store = ti.open_store(language, db)
+    try:
+        first = analyzer.song_sentences(found, data_dir, store, None, language)
+        assert first and all(first.values())
+        with patch.object(analyzer, "ENGINE_REVISION", analyzer.ENGINE_REVISION + 1),                 patch("app.song_lines.left_out", side_effect=AssertionError("read again for the engine's number")):
+            stats = {}
+            assert analyzer.song_sentences(found, data_dir, store, None, language, stats) == first
+            assert stats == {"read": 0, "kept": 1}
+        store.set_meta("build_sig", "another tokenizer")
+        with patch("app.song_lines.left_out", wraps=song_lines.left_out) as rule:
+            assert analyzer.song_sentences(found, data_dir, store, None, language) == first
+            assert rule.called
     finally:
         store.close()
 

@@ -1991,9 +1991,11 @@ class Store:
     def set_known_terms(self, script, terms, suffix=None):
         self._put_meta((("known_terms", self._known_terms_value(script, terms, suffix)),))
 
-    def set_cached_known(self, signature, known_tuples, known_lemmas, suffix=None, terms=None, script="asis"):
+    def set_cached_known(self, signature, known_tuples, known_lemmas, suffix=None, terms=None, script="asis",
+                         ignored=None):
         """Keep a normalization for `signature` — and, given `terms`, the per-term cache with it, in the same
-        transaction (one commit a miss; `suffix`: the miss's own `known_suffix`)."""
+        transaction (one commit a miss; `suffix`: the miss's own `known_suffix`). `ignored`: (the file's own
+        `known_signature`, its IGNORED dictForms) from the miss's one parse, kept beside them (`cached_ignored`)."""
         if suffix is None:
             suffix = self.known_suffix()
         rows = [("known_sig", self._known_key(signature, suffix)),
@@ -2001,7 +2003,33 @@ class Store:
                 ("known_lemmas", json.dumps(list(known_lemmas), ensure_ascii=False))]
         if terms is not None:
             rows.append(("known_terms", self._known_terms_value(script, terms, suffix)))
+        if ignored is not None:
+            rows.append(self._ignored_row(ignored))
         self._put_meta(rows)
+
+    @staticmethod
+    def _ignored_row(ignored):
+        return "known_ignored", json.dumps([ignored[0], list(ignored[1])], ensure_ascii=False)
+
+    def set_cached_ignored(self, ignored):
+        """Keep (the file's `known_signature`, its IGNORED dictForms) alone: a cache hit whose store had no row yet (a
+        store from before it) writes it once, from the ignore set's one parse, so the next hit parses none."""
+        self._put_meta((self._ignored_row(ignored),))
+
+    def cached_ignored(self, file_signature):
+        """KnownWord.json's IGNORED dictForms as the last miss parsed them (`set_cached_known(ignored=)`), while the file
+        is the one it parsed (`file_signature`: its `known_signature` now) — so a Generate whose known words hit their
+        cache parses the file for none of them (ONE-READ 4) — else None (another file, a store from before the row)."""
+        try:
+            raw = self.get_meta("known_ignored")
+            if not raw:
+                return None
+            signature, entries = json.loads(raw)
+        except Exception:
+            return None
+        if signature != file_signature or not isinstance(entries, list):
+            return None
+        return [str(e) for e in entries]
 
     def _put_meta(self, rows):
         """`rows` ((key, value)s) into meta in one transaction."""
@@ -3115,12 +3143,21 @@ def _ignored_of(data):
             if isinstance(e, dict) and e.get("knownStatus") == "IGNORED" and str(e.get("dictForm") or "").strip()]
 
 
-def keep_ignored_entries(path, language, signature, data):
+def keep_ignored_entries(path, language, signature, data=None, entries=None):
     """`_ignored_file_entries`' answer kept from a parse a caller already made of the KnownWord.json at `path`
     (`analyzer.load_known_words`: a Generate whose known words missed their cache parses the file once for both,
     ONE-READ 3), under `signature` — its `known_signature`, taken before that read (a write in between is read
-    again at the next ask)."""
-    _IGNORED_ENTRIES[path] = ((language, signature), _ignored_of(data))
+    again at the next ask). `entries`: the IGNORED dictForms themselves, as the token store kept them
+    (`Store.cached_ignored`: a known cache's hit, ONE-READ 4), instead of `data`."""
+    _IGNORED_ENTRIES[path] = ((language, signature), _ignored_of(data) if entries is None else list(entries))
+
+
+def kept_ignored_entries(path, language):
+    """(signature, IGNORED dictForms) kept for the KnownWord.json at `path` (`keep_ignored_entries`), or None."""
+    kept = _IGNORED_ENTRIES.get(path)
+    if kept is None or kept[0][0] != language:
+        return None
+    return kept[0][1], kept[1]
 
 
 _IGNORED_ENTRIES = {}   # KnownWord.json's path -> (its signature, its IGNORED dictForms), for ignored_entries

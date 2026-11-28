@@ -197,6 +197,14 @@ class Services:
     # --- W3.5: the dashboard's duties --------------------------------------------------------------------------- #
     SESSION_LOOK_EVERY = 60.0     # seconds between two of the session's looks at a focus (the Tk CONNECT_LOOK_EVERY)
 
+    def _known_moved(self, language):
+        """(The indexer's or a Generate's thread.) Either normalizes KnownWord.json again when a sync moved it: the ✓
+        chip's counter of the library open (its language's) reads the token store's known words again (CARD-LEFT)."""
+        library = getattr(self, "library", None)
+        chips = getattr(library, "chips", None)
+        if chips is not None and getattr(chips, "language", None) == language:
+            chips.known_moved()
+
     def has_duties(self):
         return None not in (self.controller, self.updates, self.automation, self.chores)
 
@@ -217,6 +225,7 @@ class Services:
             self.automation = automation_module.Automation(self.registry, self.controller, self.settings,
                                                            self.language, index=lambda: chores.index(force=True))
             chores.on_indexed(lambda _language: self.automation.recheck())     # IK-10: asked again after the indexer
+            chores.on_indexed(self._known_moved)                                 # CARD-LEFT: the ✓'s known words
         if self.replan is None:
             from app.services import replan_host as replan_module
             self.replan = replan_module.Replan(self.registry, self.controller, self.settings, self.language,
@@ -262,6 +271,10 @@ class Services:
                     step()
                 except Exception as e:
                     applog.log("shell", f"the numbers after a Generate: {e!r}")
+        try:                              # CARD-LEFT: a Generate normalizes the known words: the ✓ reads them again
+            self._known_moved(self.language)    # (its own step, after the numbers': never in their way)
+        except Exception as e:
+            applog.log("shell", f"the card chip after a Generate: {e!r}")
 
     @staticmethod
     def _wake_connect():
@@ -1880,6 +1893,7 @@ class ShellWindow(QMainWindow):
         # Haya-LD: the boot's watch (`_arm_boot`): the duties start, and background work goes, only once it booted
         self.boot_gate = not os.environ.get("SURASURA_NO_UI_TIMERS")
         self._after_boot, self._boot_armed, self._boot_view_seen, self._framed = [], False, False, False
+        self._cache_shown = self._open_said = False   # UPDATE-START: the first screen's cache shown; *booted* said
         self.bridge.quit_asked.connect(self._quit_for_update)
         services.quit_hook = self.bridge.ask_quit
         self._session_lines = bridge.Relay(self)          # Q4-16: the session's look's lines (*Opening Anki…*), the bar
@@ -2069,6 +2083,10 @@ class ShellWindow(QMainWindow):
             star.view_shown(view, self.services.library)
         if not getattr(view, "loading", False) and not self.services.boot.is_set():
             self._boot_after_idle()                 # Haya-LD: Current's list from disk drawn: booted at the next idle
+        elif getattr(view, "cached", False) and not self._open_said:
+            self._cache_shown = True                # UPDATE-START: the first screen's cache shown: the window is open
+            if self._framed:
+                self._say_open()
 
     def _show_dock(self, view):
         """The Goal dock takes the reader's `view.goal`, repainted only when it changed; shown while there is a Goal and
@@ -3011,7 +3029,8 @@ class ShellWindow(QMainWindow):
     # --- Haya-LD: booted first, on every PC (2026-11-20): the window opens fully before the background starts ---- #
     def _arm_boot(self):
         """(The first frame's.) The boot's watch: a list from disk already shown (or no library to show) -> booted at
-        the loop's next idle; else at the first such view (`show_library`); booted all the same BOOT_MAX_S on. Off
+        the loop's next idle; else at the first such view (`show_library`); booted all the same BOOT_MAX_S on. The
+        first screen's cache already shown: the window is open now (`_say_open`). Off
         under SURASURA_NO_UI_TIMERS (`boot_gate`): booted at once, as the duties started before."""
         self._framed = True
         if not self.boot_gate:
@@ -3020,6 +3039,8 @@ class ShellWindow(QMainWindow):
         from PyQt6.QtCore import QTimer
         from app.services import gentle as gentle_module
         QTimer.singleShot(int(gentle_module.BOOT_MAX_S * 1000), lambda: self._booted_now(late=True))
+        if self._cache_shown and not self._boot_view_seen:
+            self._say_open()
         if self._boot_view_seen or self.services.library is None:
             self._boot_after_idle()
 
@@ -3056,8 +3077,11 @@ class ShellWindow(QMainWindow):
             return
         if self.boot_gate:
             age = hud._process_age_ms()
-            applog.log("shell", ("booted (its limit passed: the list from disk wasn't drawn)" if late else "booted")
-                       + (f" {age / 1000:.2f} s after the process began" if age is not None else ""))
+            said = ("booted (its limit passed: the list from disk wasn't drawn)" if late else "booted")
+            if self._open_said:                     # UPDATE-START: open since the cache; the background goes now
+                said = ("the background goes: its limit passed (the list from disk wasn't drawn)" if late else
+                        "the list from disk drawn, the background goes:")
+            applog.log("shell", said + (f" {age / 1000:.2f} s after the process began" if age is not None else ""))
         services.booted()
         waiting, self._after_boot = self._after_boot, []
         for call in waiting:
@@ -3065,6 +3089,20 @@ class ShellWindow(QMainWindow):
                 call()
             except Exception as e:
                 applog.log("shell", f"after the boot: {e!r}")
+
+    def _say_open(self):
+        """UPDATE-START (3.0.21, PROVISIONAL): the first screen's cache is painted — the window is open (every press
+        acts on it; a title's last Done waits for the list from disk itself, `DragMoves._from_cache`): said in the log
+        as *booted*, with the time since the process began (what a start report reads). Nothing else starts: the
+        background waits for the list from disk (`_booted_now`), so nothing races the first view with numbers
+        (OPEN-RACE). Once."""
+        if self._open_said or self.services.boot.is_set():
+            return
+        self._open_said = True
+        if self.boot_gate:
+            age = hud._process_age_ms()
+            applog.log("shell", "booted at the first screen's cache"
+                       + (f" {age / 1000:.2f} s after the process began" if age is not None else ""))
 
     def _when_booted(self, call):
         """`call()` now when the window booted, else as it boots (the window's thread)."""

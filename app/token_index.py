@@ -1661,13 +1661,13 @@ class Store:
                 state += [phrase_data.REVISION, phrases.MATCHER_VERSION]
         return state
 
-    def _songs_share(self):
+    def _songs_share(self, settings=None):
         """What the songs the last Generate left out count in the files still counted at its stamps (`_SongSum`), or
         None: the songs are counted (Settings' *Count song lyrics* on, or the run said so: `songs_out`), none were
         kept, or they were kept under another tokenizer, name switch, phrase data or engine (`_songs_state`). A file
         changed, set aside or gone since keeps its songs in the counts until the next Generate keeps it again."""
         try:
-            out = self.songs_out if self.songs_out is not None else not songs_counted()
+            out = self.songs_out if self.songs_out is not None else not songs_counted(settings)
             if not out:
                 return None
             # the store as of this read: another connection's commit moves data_version, this one's total_changes
@@ -1688,7 +1688,7 @@ class Store:
             if share is None:
                 return None
             state = self._songs_state_now if self.songs_out is not None else None
-            if held.get("state") != (state or self._songs_state()):
+            if held.get("state") != (state or self._songs_state(settings)):
                 return None
             return share
         except Exception:
@@ -2528,16 +2528,16 @@ class Store:
         except Exception:
             return {}
 
-    def phrase_table(self):
+    def phrase_table(self, settings=None):
         """The phrase table the last index counted ({"rows", "taken"}, `_update_phrases`), or None — none with the
-        switch off, for Chinese, or before the first index."""
-        if self.language != "ja" or not phrase_rows_on(self.language):
+        switch off, for Chinese, or before the first index. `settings`: the caller's read (`phrase_rows_on`)."""
+        if self.language != "ja" or not phrase_rows_on(self.language, settings):
             return None
         try:
             table = json.loads(self.get_meta("phrases") or "null")
         except Exception:
             return None
-        songs = self._songs_share()
+        songs = self._songs_share(settings)
         if table and songs is not None and (songs.uses or songs.taken):   # the songs a Generate leaves out
             from app import phrases
             found = phrases.load()
@@ -2663,13 +2663,14 @@ class Store:
         return out
 
     # -- read layer (known/ignore filter WITHOUT re-tokenizing) -------------- #
-    def word_counts(self):
+    def word_counts(self, settings=None):
         """({(lemma, reading): uses}, total tokens) — the aggregate as a run counts the library. Japanese: with the
-        name tables' joins, so these counts are the list's (a joined name counts once, its pieces no more there)."""
+        name tables' joins, so these counts are the list's (a joined name counts once, its pieces no more there).
+        `settings`: the caller's read (the songs' switches: `_songs_share`)."""
         rows = self.conn.execute("SELECT lemma, reading, count FROM aggregate").fetchall()
         counts = {(lemma, reading): n for lemma, reading, n in rows}
         adjust, total_adjust = self._names_adjustment()
-        songs = self._songs_share()
+        songs = self._songs_share(settings)
         if songs is not None:                           # the songs a Generate leaves out (`keep_song_counts`)
             adjust = Counter(adjust)
             adjust.subtract(songs.counts)
@@ -2682,15 +2683,15 @@ class Store:
                 del counts[key]
         return counts, self.total_tokens() + total_adjust
 
-    def bound_counts(self):
+    def bound_counts(self, settings=None):
         """{(lemma, reading): uses} — how often each one-kanji word stands as a piece of something else (年 in 三年,
         斬 in 斬魄刀: analyzer.bound_uses), counted as `word_counts` counts: with the name tables' joins. A one-kanji
-        list word's uses on the list are its count less these."""
+        list word's uses on the list are its count less these. `settings`: as `word_counts`'."""
         rows = self.conn.execute("SELECT lemma, reading, count FROM bound").fetchall()
         bound = {(lemma, reading): n for lemma, reading, n in rows}
         for key, delta in self._names_bound().items():
             bound[key] = bound.get(key, 0) + delta
-        songs = self._songs_share()
+        songs = self._songs_share(settings)
         if songs is not None:                           # the songs a Generate leaves out (`keep_song_counts`)
             for key, n in songs.bound.items():
                 left = bound.get(key, 0) - n
@@ -2701,14 +2702,14 @@ class Store:
         return bound
 
     def unknown_frequencies(self, known_tuples=None, known_lemmas=None, ignore_set=None,
-                            skip_singles=False):
+                            skip_singles=False, settings=None):
         """Project the aggregate into the *learnable unknown* distribution (`unknown_distribution`), the set
         phrases' rows included when the switch is on (`phrase_table`), the one-kanji list words by their uses where
-        they stand on their own (`bound_counts`)."""
-        counts, total = self.word_counts()
+        they stand on their own (`bound_counts`). `settings`: the caller's read (`settings_manager.loaded`)."""
+        counts, total = self.word_counts(settings)
         return unknown_distribution(counts, total, known_tuples, known_lemmas, ignore_set, skip_singles,
-                                    self.language, self.phrase_table(),
-                                    self.bound_counts() if skip_singles and self.language == "ja" else None)
+                                    self.language, self.phrase_table(settings),
+                                    self.bound_counts(settings) if skip_singles and self.language == "ja" else None)
 
 
 def unknown_distribution(counts, total_tokens, known_tuples=None, known_lemmas=None, ignore_set=None,
@@ -3024,7 +3025,7 @@ def known_signature(known_path, script="asis"):
 # --------------------------------------------------------------------------- #
 # The Rarity slider's distribution — one recipe for the dashboard and the analyzer
 # --------------------------------------------------------------------------- #
-def preview_frequencies(store, language, user_files_dir, script="asis"):
+def preview_frequencies(store, language, user_files_dir, script="asis", settings=None):
     """The unknown-word distribution behind the Rarity slider's numbers. ONE recipe, shared: the
     dashboard's preview reads it, and the analyzer's automatic rarity decides from it, so the band the
     dashboard shows is the band Generate uses. Neither side keeps its own copy.
@@ -3034,23 +3035,31 @@ def preview_frequencies(store, language, user_files_dir, script="asis"):
     approximation; the three lists are their plain lines (the analyzer's own ignore set also reads a
     hiragana line through the tokenizer, する -> 為る, and still decides the list itself — this one
     only the band); Japanese one-character words count as the list counts them, by Settings' "List one-kanji
-    words only when they're dictionary words" (`singles_rule`). None for an empty store."""
+    words only when they're dictionary words" (`singles_rule`). None for an empty store. `settings`: the caller's read
+    (`settings_manager.loaded`: the Settings page's level read hands its own), read for every switch here instead of
+    settings.json (SETTINGS-OPEN 2: four reads of the file a preview, each one parsed)."""
     if not store.has_tokens():
         return None
-    return store.unknown_frequencies(**preview_lists(store, language, user_files_dir, script))
+    out = store.unknown_frequencies(**preview_lists(store, language, user_files_dir, script, settings),
+                                    settings=settings)
+    _PREPARED.add(language)                     # (its tables decoded: `preview_prepared`)
+    return out
 
 
-def preview_lists(store, language, user_files_dir, script="asis"):
+def preview_lists(store, language, user_files_dir, script="asis", settings=None):
     """The learner's lists as `preview_frequencies` counts by them: {known_tuples, known_lemmas, ignore_set,
-    skip_singles} — `unknown_frequencies`' (and `unknown_distribution`'s) keyword arguments."""
-    cached = store.get_cached_known(known_signature(os.path.join(user_files_dir, "KnownWord.json"), script))
+    skip_singles} — `unknown_frequencies`' (and `unknown_distribution`'s) keyword arguments. `settings`: as
+    `preview_frequencies`'."""
+    signature = known_signature(os.path.join(user_files_dir, "KnownWord.json"), script)
+    suffix = store.known_suffix(settings) if signature and settings is not None else None
+    cached = store.get_cached_known(signature, suffix)
     if cached is not None:
         known_tuples, known_lemmas = cached
     else:
         known_tuples, known_lemmas = None, preview_known_approx(user_files_dir, language, script)
     return {"known_tuples": known_tuples, "known_lemmas": known_lemmas,
-            "ignore_set": preview_ignore_set(user_files_dir, language, script, store),
-            "skip_singles": language == "ja" and singles_rule()}
+            "ignore_set": preview_ignore_set(user_files_dir, language, script, store, settings),
+            "skip_singles": language == "ja" and singles_rule(settings)}
 
 
 def prepare_preview(language, user_files_dir):
@@ -3065,29 +3074,42 @@ def prepare_preview(language, user_files_dir):
             from app import analyzer
             analyzer.compound_parts()
             analyzer.single_kind(("手", "テ"))      # a one-kanji word: its table is read on the first one asked
+            _PREPARED.add(language)
         _ignored_file_entries(user_files_dir, language)
     except Exception:
         pass
 
 
-def singles_rule():
+_PREPARED = set()                   # the languages whose preview tables this process has decoded
+
+
+def preview_prepared(language):
+    """Whether a preview read now decodes nothing first: `prepare_preview` or a preview read has run in this process
+    (Chinese has no table to decode). Before that, a read's first step is json.loads of the reference tables — C calls
+    that hold Python's lock 50–110 ms each, so the window's thread waits on them (SETTINGS-OPEN 2: the Settings
+    page's level read, asked while the page builds, then waits for its build's end)."""
+    return language != "ja" or language in _PREPARED
+
+
+def singles_rule(settings=None):
     """Settings -> "List one-kanji words only when they're dictionary words" (exclude_single, on by default): the
     analyzer's rule for Japanese one-character words (analyzer § One-character words) — off lists every one. Read
     fresh, as the build signature's switches are: the dashboard's slider must see a change as the next Generate
-    will."""
+    will (`settings`: the caller's fresh read, `settings_manager.loaded`)."""
     try:
         from app import settings_manager
-        return bool(settings_manager.load_settings().get("exclude_single", True))
+        return bool(settings_manager.loaded(settings).get("exclude_single", True))
     except Exception:
         return True
 
 
-def preview_ignore_set(user_files_dir, language, script="asis", store=None):
+def preview_ignore_set(user_files_dir, language, script="asis", store=None, settings=None):
     """The ignore / blacklist / graduated words as preview_frequencies reads them — cheap plain-text
     reads, each file in its own encoding, in the library's Chinese script like the analyzer reads them
     (stdlib only, so the conversion is safe in the GUI process; the tables load only if a script is
     chosen) — and KnownWord.json's IGNORED entries and, with Ignore names on, the library's names (`ignored_entries`),
-    as the analyzer ignores them. `store`: the caller's open token store, read for the names (`ignored_names`)."""
+    as the analyzer ignores them. `store`: the caller's open token store, read for the names (`ignored_names`);
+    `settings`: the caller's read, for Ignore names."""
     from app.path_utils import read_text
     from app.zh_script import convert
     ignore = set()
@@ -3099,7 +3121,7 @@ def preview_ignore_set(user_files_dir, language, script="asis", store=None):
                     ignore.add(convert(s, script))
         except Exception:
             pass
-    ignore.update(convert(term, script) for term in ignored_entries(user_files_dir, language, store=store))
+    ignore.update(convert(term, script) for term in ignored_entries(user_files_dir, language, settings, store))
     return ignore
 
 

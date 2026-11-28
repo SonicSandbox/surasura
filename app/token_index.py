@@ -167,6 +167,10 @@ _NAMES_SHARES = 1
 _SONG_SHARES = 1
 # The files whose song lines a first count holds at once (`keep_song_counts`: one batch counted, then let go).
 _SONG_BATCH = 500
+# A phrase re-find of this many files or more reads only the sentences that can hold a phrase (`_PhraseGate`); fewer
+# are read whole (the gate's numpy and its vocabulary read would cost them more than it saves).
+_PHRASE_GATE_FILES = 500             # (the gate's start, ~0.3-0.5 s, is the old read of ~150 files)
+_PHRASE_BATCH = 500                 # (the files it reads a query, their runs looked for at once)
 
 
 # --------------------------------------------------------------------------- #
@@ -1386,7 +1390,7 @@ class Store:
             out.setdefault(p, {})
         return out
 
-    def _song_shares(self, asked, found, met, lang, ones):
+    def _song_shares(self, asked, found, met, lang, ones, phrases_only=False, names_of=None):
         """{path: share} — what the song lines of `asked` ({path: sentence numbers, ascending}) count, in
         `_SongSum.add`'s shape: their words, tokens, one-kanji pieces and set phrases, read as `file_tokens` reads them
         (the name tables applied) and counted as the aggregate counts them (a token with target-language characters).
@@ -1395,7 +1399,10 @@ class Store:
         counted?}; `ones`, the types written as one kanji or more rarely: the caller's, across batches), its tokens made
         only where a one-kanji piece or a phrase's word can stand. The phrases: those the last index found in the file (`met`, `phrase_matches`) when they fit it, else
         searched for (`found`; None: none counted). One query a batch of files. A file the store doesn't hold, or whose
-        row can't be read, is missing: the caller reads `file_tokens`."""
+        row can't be read, is missing: the caller reads `file_tokens`. `phrases_only`: the set phrases alone are
+        counted (the words, tokens and pieces left empty), and a file whose kept matches don't fit it is missing too —
+        the caller asked for the lines holding a match only (`keep_song_counts` after a matcher change). `names_of`, a dict:
+        receives the names column's spans of each file it has a key for, decoded once (`_names_read_in` reads them)."""
         from app import analyzer
         has_lang, language = analyzer.has_target_language, self.language
         keys = {_norm(p): p for p in asked}
@@ -1413,18 +1420,24 @@ class Store:
                 values = _from_int32s(raw)
                 if values[1] != 0 or values[n + 1] != len(values) - n - 2:
                     continue
+                flat = met.get(path)
+                if phrases_only and (flat is None or flat[0] != n):
+                    continue                            # (kept matches that don't fit: the caller reads it whole)
                 numbers = [k for k in numbers if k in texts and k < n]
                 rows = [values[n + 2 + values[k + 1]:n + 2 + values[k + 2]].tolist() for k in numbers]
                 ids = set(chain.from_iterable(rows))
                 types = self._tokens_of(ids)
                 try:
-                    for i in ids.difference(lang):      # each type asked once
+                    for i in (() if phrases_only else ids.difference(lang)):    # each type asked once
                         lemma, _reading, surface, _orth = types[i]
                         lang[i] = has_lang(lemma, language) or has_lang(surface, language)
                         if len(lemma) == 1 and lemma >= "\u3400":
                             ones.add(i)                 # (bound_uses' own first test: a word written as one kanji)
                     lines = [[texts[k], row, None] for k, row in zip(numbers, rows)]
-                    spans, switches = self._name_spans(names_blob, numbers)
+                    listed = None
+                    if names_of is not None and keys[path] in names_of and names_blob:
+                        listed = names_of[keys[path]] = _name_list(names_blob)
+                    spans, switches = self._name_spans(names_blob, numbers, listed)
                     if spans:                           # the lines a table joins: their own tokens, joined
                         from app import names
                         spanned = sorted({span[0] for span in spans})
@@ -1435,10 +1448,9 @@ class Store:
                                           *switches, joined=hit)
                         for j in hit:
                             lines[spanned[j]][2] = small[j][1]
-                    flat = met.get(path)
                     out[keys[path]] = _sung_share(lines, types, lang, ones, found,
                                                   flat[1] if flat is not None and flat[0] == n else None, numbers,
-                                                  language)
+                                                  language, not phrases_only)
                 except (KeyError, IndexError):
                     continue                            # (a vocabulary row gone, kept matches past a line: damaged)
         return out
@@ -1452,17 +1464,18 @@ class Store:
             names.apply_spans(sentences, spans, self._names, *switches, joined=joined)
         return sentences
 
-    def _name_spans(self, names_blob, numbers=None):
+    def _name_spans(self, names_blob, numbers=None, listed=None):
         """(the name spans `_named` applies to a file's sentences, the switches they are applied under) — none when the
         switches are off or there are no tables. `numbers`: only the spans in those sentences of the file, each
-        span's sentence its place among them (a span joins inside its own sentence: `_song_shares`)."""
+        span's sentence its place among them (a span joins inside its own sentence: `_song_shares`). `listed`: the
+        blob's spans when the caller has decoded them already (`_name_list`)."""
         switches = self.switches if self.switches is not None else _library_switches(self.language)
         spans = []
         if names_blob and any(switches):
             if self._names is None:
                 self._names = self.names_tables() or {}
             if self._names:
-                spans = _decode_counts(names_blob).get("s", [])
+                spans = _name_list(names_blob) if listed is None else listed
                 if spans and numbers is not None:
                     at = {n: k for k, n in enumerate(numbers)}
                     spans = [[at[span[0]]] + list(span[1:]) for span in spans if span[0] in at]
@@ -1595,8 +1608,19 @@ class Store:
         if not isinstance(held_sum, dict):
             held_sum = {}                               # (not a sum this code wrote: counted again)
         same_state = held_sum.get("state") == state
+        found = None
+        if self.language == "ja" and phrase_rows_on(self.language, settings):
+            from app import phrases
+            found = phrases.load()
+        # The phrase data or the matcher alone moved (the state's last two, `_songs_state`): each file's words, tokens
+        # and one-kanji pieces stand as counted and only its set phrases are counted again — from the song lines that
+        # hold one of the file's kept matches (the phrase re-find's): any other line gives a phrase nothing
+        # (PHRASE-REFIND). A vocabulary with a gap (a damaged store) counts every share again, as before.
+        last = held_sum.get("state")
+        rephrase = (found is not None and not same_state and isinstance(last, list) and len(last) == len(state)
+                    and last[:-2] == state[:-2] and _types_whole(self) is not None)
         held = {}
-        if same_state:
+        if same_state or rephrase:
             held = {path: (mtime, size, tag) for path, mtime, size, tag in
                     self.conn.execute("SELECT path, mtime, size, tag FROM songs")}
         wanted = {_norm(path): sorted(numbers) for path, numbers in songs.items() if numbers}
@@ -1608,29 +1632,46 @@ class Store:
                     f"({','.join('?' * len(batch))})", batch):
                 rows[path] = (mtime, size, blob)
         names_moved = held_sum.get("names") != names
-        found = None
-        if self.language == "ja" and phrase_rows_on(self.language, settings):
-            from app import phrases
-            found = phrases.load()
-        to_read = []
+        to_read = []                                    # (path, mtime, size, its tag or None: made as it is read, stands)
         for path, (mtime, size, blob) in rows.items():
-            entry = held.get(path)
-            if entry is not None and not names_moved and entry[:2] == (mtime, size) \
-                    and _tag_numbers(entry[2]) == wanted[path]:
-                continue                                # read as it was: its share stands
-            read_in = _names_read_in(blob, reads, switches) if reads is not None and blob else None
-            tag = json.dumps([wanted[path], read_in], ensure_ascii=False, separators=(",", ":"))
-            if entry is not None and entry[:2] == (mtime, size) and entry[2] == tag:
-                continue                                # the tables moved, but not what they make of this file
-            to_read.append((path, mtime, size, tag))
+            entry, tag = held.get(path), None
+            if entry is not None and entry[:2] == (mtime, size):
+                if not names_moved and _tag_numbers(entry[2]) == wanted[path]:
+                    tag = entry[2]                      # read as it was: its share stands
+                else:
+                    read_in = _names_read_in(blob, reads, switches) if reads is not None and blob else None
+                    tag = json.dumps([wanted[path], read_in], ensure_ascii=False, separators=(",", ":"))
+                if tag == entry[2]:                     # (or the tables moved, but not what they make of this file)
+                    if rephrase:
+                        to_read.append((path, mtime, size, tag, True))
+                    continue
+            to_read.append((path, mtime, size, tag, False))
         # The set phrases the last index found, when there are files to read (a first count reads the library's
         # songs: one read of the kept matches, never a search of every song line).
         met = self.phrase_matches([path for path, *_rest in to_read]) if found is not None and to_read else {}
         write, fresh, lang, ones = [], _SongSum({}), {}, set()
+        restated, uses = [], _SongSum({})                # (rephrase: the rows whose phrases alone move; every phrase use)
+        named = reads is not None and any(switches)
         for at in range(0, len(to_read), _SONG_BATCH):  # a batch at a time: a library's song lines never held at once
             batch = to_read[at:at + _SONG_BATCH]
-            shares = self._song_shares({path: wanted[path] for path, *_rest in batch}, found, met, lang, ones)
-            for path, mtime, size, tag in batch:
+            again, whole = {}, {}
+            for path, _mtime, _size, _tag, stands in batch:
+                flat = met.get(path) if stands else None
+                if flat is not None:                    # its phrases alone: the song lines holding a kept match
+                    matched = set(flat[1][::4])
+                    again[path] = [k for k in wanted[path] if k in matched]
+                else:
+                    whole[path] = wanted[path]
+            phrased = self._song_shares(again, found, met, lang, ones, phrases_only=True) if again else {}
+            whole.update({path: wanted[path] for path in again if path not in phrased})
+            names_of = {path: None for path, _mtime, _size, tag, _stands in batch if tag is None} if named else None
+            shares = self._song_shares(whole, found, met, lang, ones, names_of=names_of) if whole else {}
+            for path, mtime, size, tag, _stands in batch:
+                share = phrased.get(path)
+                if share is not None:                   # its words as counted: its row's phrases alone rewritten
+                    restated.append((_encode_counts(share[3]), path))
+                    uses.add(share, 1)
+                    continue
                 share = shares.get(path)
                 if share is None:
                     sentences = self.file_tokens(path)
@@ -1639,9 +1680,16 @@ class Store:
                     share = _sung_share([[text, None, tokens] for text, tokens in
                                          (sentences[n] for n in wanted[path] if n < len(sentences))],
                                         {}, lang, ones, found, None, None, self.language)
+                if tag is None:                         # (its names decoded once: `_song_shares`' read of them)
+                    blob = rows[path][2]
+                    read_in = (_names_read_in(blob, reads, switches, (names_of or {}).get(path))
+                               if reads is not None and blob else None)
+                    tag = json.dumps([wanted[path], read_in], ensure_ascii=False, separators=(",", ":"))
                 write.append((path, mtime, size, tag, share[1], _encode_counts(share[0]), _encode_counts(share[2]),
                               _encode_counts(share[3])))
                 fresh.add(share, 1)
+                if rephrase:
+                    uses.add(([], 0, [], share[3]), 1)
         gone = [path for path in held if path not in rows]
         replaced = [w[0] for w in write if w[0] in held]
         if same_state and not write and not gone and not names_moved:
@@ -1650,7 +1698,7 @@ class Store:
         try:
             if own:
                 self.conn.execute("BEGIN IMMEDIATE")
-            if same_state:
+            if same_state or rephrase:
                 kept = _SongSum(held_sum)
                 for path in gone + replaced:            # their old shares come off (O(what moved), never a re-sum)
                     row = self.conn.execute("SELECT total, counts, bound, phrases FROM songs WHERE path=?",
@@ -1663,7 +1711,10 @@ class Store:
                 self.conn.execute("DELETE FROM songs")
             self.conn.executemany("INSERT OR REPLACE INTO songs(path, mtime, size, tag, total, counts, bound, phrases) "
                                   "VALUES(?,?,?,?,?,?,?,?)", write)
+            self.conn.executemany("UPDATE songs SET phrases=? WHERE path=?", restated)
             kept.merge(fresh)
+            if rephrase:                                # every file's phrases counted again: their sum made anew, in
+                kept.uses, kept.taken = uses.uses, uses.taken   # the files' order (as a count of every share sums them)
             value = json.dumps(kept.value(state, names), ensure_ascii=False, separators=(",", ":"))
             self.conn.execute("INSERT INTO meta(key, value) VALUES('songs_counted', ?) ON CONFLICT(key) DO UPDATE "
                               "SET value=?", (value, value))
@@ -2469,7 +2520,8 @@ class Store:
         while the file reads the same: its (mtime, size), and what the name tables make of its name candidates
         (`_names_read_in`, looked at again only when what the tables join changed — not as their evidence grows) — so
         a change re-reads only the files it touched; all of them again when the phrase data, the tokenizer's identity
-        or the switches change. Each file's matches are kept too, for Generate (`phrase_matches`): a counted file's and a
+        or the switches change — then only the sentences that can hold a phrase are read (`_PhraseGate`, from
+        `_PHRASE_GATE_FILES` files: PHRASE-REFIND). Each file's matches are kept too, for Generate (`phrase_matches`): a counted file's and a
         set-aside one's (Finished: the finished walk's example sentences, found once here, never searched for at every
         Generate — DSA-PHRASE), each with what the name tables made of its words (its fifth number). The table counts
         counted files only (a kept file is never Generate's to read). After the reconcile's own transaction: it reads
@@ -2499,19 +2551,32 @@ class Store:
             except ValueError:
                 pass
             switches = _library_switches(self.language)
-            files, matches = {}, {}
+            files, matches, looked = {}, {}, []
             for path, mtime, size, blob, flag in self.conn.execute(
                     f"SELECT path, mtime, size, names, {_STATE} FROM files WHERE {_EVIDENCE}").fetchall():
                 entry, met = held.get(path), held_matches.get(path)
                 # (a file moved to Finished keeps its matches: only a counted file needs its tally)
                 same = (met is not None and met[:2] == [mtime, size]
                         and (flag != COUNTED or (entry is not None and entry[:2] == [mtime, size])))
+                read_in = None                  # (what the tables make of its names, once a file: `_names_read_in`)
                 if same and names_moved:
-                    same = met[4:5] == [_names_read_in(blob, reads, switches)]
+                    read_in = _names_read_in(blob, reads, switches)
+                    same = met[4:5] == [read_in]
+                looked.append((path, mtime, size, blob, flag, entry, met, read_in, same))
+            # (many files to search again — new phrase data, a new matcher: only the sentences that can hold a phrase)
+            gate = (_phrase_gate(self, found)
+                    if sum(not row[-1] for row in looked) >= _PHRASE_GATE_FILES else None)
+            reading = self._phrase_lines([row[0] for row in looked if not row[-1]], gate, any(switches))
+            for path, mtime, size, blob, flag, entry, met, read_now, same in looked:
                 if not same:
-                    sentences, flat, read_now = self.file_tokens(path), [], _names_read_in(blob, reads, switches)
-                    entry = [mtime, size, read_now, *phrases.tally(sentences, found, flat)]
-                    met = [mtime, size, len(sentences), flat, read_now]
+                    count, sentences, numbers, places, listed = next(reading)
+                    flat = []
+                    if read_now is None:
+                        read_now = _names_read_in(blob, reads, switches, listed)
+                    entry = [mtime, size, read_now, *phrases.tally(sentences, found, flat, places)]
+                    if numbers is not None:
+                        flat[::4] = [numbers[k] for k in flat[::4]]     # (each match's sentence, by its number)
+                    met = [mtime, size, count, flat, read_now]
                 if flag == COUNTED:
                     files[path] = entry
                 matches[path] = met
@@ -2529,6 +2594,29 @@ class Store:
                               json.dumps(value, ensure_ascii=False, separators=(",", ":")))
         except Exception as e:
             print(f"Warning: could not count the set phrases for the Rarity slider: {e}")
+
+    def _phrase_lines(self, paths, gate, named=True):
+        """(the file's sentence count, its sentences read as `file_tokens` reads them, their numbers in the file, the
+        places a phrase can start in each (`phrases.tally`'s), its name spans or None) for each of `paths`, in turn,
+        for `_update_phrases`: with `gate`, only those that can hold a set phrase (`_PhraseGate.lines`,
+        `_PHRASE_BATCH` files a query), the names column decoded once (`named`: a name switch is on) and handed back
+        for `_names_read_in`; with none, or a row the gate can't read so, every one (numbers, places, spans None)."""
+        step = _PHRASE_BATCH if gate is not None else 1
+        for at in range(0, len(paths), step):
+            batch, got, listed = paths[at:at + step], {}, {}
+            if gate is not None:
+                rows = self.conn.execute(f"SELECT path, names, texts, ids FROM files WHERE path IN "
+                                         f"({','.join('?' * len(batch))})", batch).fetchall()
+                listed = {row[0]: _name_list(row[1]) if named and row[1] else None for row in rows}
+                got = dict(zip([row[0] for row in rows],
+                               gate.lines(self, [row[1:] + (listed[row[0]],) for row in rows])))
+            for path in batch:
+                lines = got.get(path)
+                if lines is None:
+                    sentences = self.file_tokens(path)
+                    yield len(sentences), sentences, None, None, None
+                else:
+                    yield (*lines, listed[path])
 
     def phrase_matches(self, paths):
         """{path: (its sentences, [sentence, start, end, index, ...])} — the set phrases the last index found in each
@@ -2884,18 +2972,20 @@ def _song_share(row):
     return _decode_counts(counts) or [], total or 0, _decode_counts(bound) or [], phrases
 
 
-def _sung_share(lines, types, lang, ones, found, flat, numbers, language):
+def _sung_share(lines, types, lang, ones, found, flat, numbers, language, words=True):
     """One file's song lines counted (`Store._song_shares`): `lines` [[text, type ids, tokens or None], ...] — a line
     with tokens (the name tables joined some of it, or the file read whole) counted token by token, every other by its
     type ids (`types` {id: token}, `lang` {id: counted?}, `ones` the ids written as one kanji). `flat`: the file's kept
     phrase matches ([sentence, start, end, index, ...], `numbers` the lines' sentence numbers), else they are searched
-    for (`found`; None: none).
+    for (`found`; None: none). `words` False: the phrases alone (the rest left empty).
     -> ([[lemma, reading, n], ...], tokens, [[lemma, reading, n], ...] one-kanji pieces, [{index: uses}, taken]) —
     each list in the order a walk of the lines meets it (the bytes `keep_song_counts` has always kept)."""
     from app import analyzer
     has_lang = analyzer.has_target_language
     counts, total, pieces = Counter(), 0, Counter()
-    if all(line[2] is None for line in lines):
+    if not words:
+        pass
+    elif all(line[2] is None for line in lines):
         met = Counter(chain.from_iterable(line[1] for line in lines))   # every line's type ids, counted in C
         for i, n in met.items():
             if lang[i]:
@@ -2913,7 +3003,7 @@ def _sung_share(lines, types, lang, ones, found, flat, numbers, language):
                     if has_lang(lemma, language) or has_lang(surface, language):
                         counts[(lemma, reading)] += 1
                         total += 1
-    if language == "ja":
+    if language == "ja" and words:
         for text, row, tokens in lines:
             if tokens is None:
                 if ones.isdisjoint(row):
@@ -3057,6 +3147,154 @@ def _library_switches(language):
         return (False, False, False)
 
 
+def _types_whole(store):
+    """(the lowest type id, the highest) of `store`'s vocabulary, or None when it is empty or has a gap (a row gone:
+    the store is damaged)."""
+    low, top, count = store.conn.execute("SELECT min(id), max(id), count(*) FROM types").fetchone()
+    if not count or top - low + 1 != count:
+        return None
+    return low, top
+
+
+def _phrase_gate(store, phrase_set):
+    """A `_PhraseGate` over `store`'s vocabulary, or None when the vocabulary has a gap (each file is read whole, as
+    before)."""
+    whole = _types_whole(store)
+    return _PhraseGate(store, phrase_set, *whole) if whole is not None else None
+
+
+class _PhraseGate:
+    """Which of a file's sentences can hold a set phrase, judged on its type ids (PHRASE-REFIND): `PhraseSet.find`
+    walks its trie lemma by lemma, so a match is its phrase's whole lemma run in a row, and a sentence holding no
+    phrase's run holds no match. Each lemma a phrase holds gets a code (1 up; 0 for every other lemma), each run of
+    codes one number (c0·K^(L-1) + … + c(L-1), K the codes' count + 1, wrapping at 2^64: two runs may share a number —
+    a sentence is then read for nothing, never missed), grown a word a step from each place a phrase can start while
+    some phrase starts with it. A sentence a name span stands in is read too (a join makes its words anew). The whole
+    vocabulary is read once (a re-find this big reads nearly every type: `Store._types`)."""
+
+    def __init__(self, store, phrase_set, low, top):
+        np = self.np = _np()
+        codes, firsts, runs, starts = {}, set(), {}, {}
+        for entry in phrase_set.entries:
+            firsts.add(entry.key[0])
+            for lemma in entry.key:
+                codes.setdefault(lemma, len(codes) + 1)
+        k, wrap = len(codes) + 1, (1 << 64) - 1
+        for entry in phrase_set.entries:
+            number = 0
+            for length, lemma in enumerate(entry.key, 1):
+                number = (number * k + codes[lemma]) & wrap
+                starts.setdefault(length, set()).add(number)    # (each run a phrase starts with)
+            runs.setdefault(len(entry.key), set()).add(number)
+        self.runs, self.starts = ({length: np.array(sorted(held), np.uint64) for length, held in table.items()}
+                                  for table in (runs, starts))
+        self.k, self.longest, self.low, self.top = np.uint64(k), max(runs), low, top
+        self.code, self.first = np.zeros(top + 1, np.uint64), np.zeros(top + 1, bool)
+        types = store._types
+        for i, *token in store.conn.execute("SELECT id, lemma, reading, surface, orth FROM types"):
+            types[i] = token = tuple(token)
+            at = codes.get(token[0])
+            if at is not None:
+                self.code[i], self.first[i] = at, token[0] in firsts
+
+    def lines(self, store, rows):
+        """For each row (names, texts, ids, its name spans decoded or None) of a batch: (the file's sentence count,
+        the sentences that can hold a phrase — [text, tokens], read as `file_tokens` reads them, the name tables
+        applied — their numbers, ascending, and each one's places a phrase's whole run starts at, `PhraseSet.find`'s
+        `places`: None for a sentence a table joined, its words made anew), or None when the row doesn't read as
+        `file_tokens` would read it (the caller reads it whole). The runs are looked for once over the batch's ids (a
+        run across two files' ends only reads a sentence for nothing)."""
+        np, held = self.np, []
+        for _names, _texts, ids_blob, _listed in rows:
+            got = _ids_bytes(ids_blob) if ids_blob else None
+            if got is not None:
+                n, raw = got
+                values = np.frombuffer(raw, "<i4")
+                ids = values[n + 2:]
+                if (values[1] != 0 or values[n + 1] != len(ids)
+                        or (ids.size and (ids.min() < self.low or ids.max() > self.top))):
+                    got = None
+                else:
+                    got = (n, values[1:n + 2], ids)
+            held.append(got)
+        found = self._runs([got for got in held if got is not None])
+        out, types = [], store._types
+        for (names_blob, texts_blob, _ids, listed), got in zip(rows, held):
+            if got is None:
+                out.append(None)
+                continue
+            n, starts, ids = got
+            spans, switches = store._name_spans(names_blob, listed=listed)
+            at = found.get(id(got), {})
+            numbers = sorted(set(at).union(span[0] for span in spans if span[0] < n))
+            texts = _read_texts(texts_blob, numbers + [n - 1, n]) if texts_blob else None
+            if texts is None or n in texts or (n and n - 1 not in texts):
+                out.append(None)                        # (its texts don't count its sentences: read whole)
+                continue
+            # the kept sentences' ids taken out in one gather, each token the vocabulary's own tuple (read only here:
+            # a name join puts a new token in the sentence's list, never changes one)
+            first = starts[numbers].astype(np.int64)
+            lengths = starts[[k + 1 for k in numbers]].astype(np.int64) - first
+            cuts = np.concatenate(([0], np.cumsum(lengths)))
+            try:
+                tokens = list(map(types.__getitem__,
+                                  ids[np.repeat(first - cuts[:-1], lengths) + np.arange(cuts[-1])].tolist()))
+                cuts = cuts.tolist()
+                lines = [[texts[k], tokens[cuts[j]:cuts[j + 1]]] for j, k in enumerate(numbers)]
+            except KeyError:
+                out.append(None)
+                continue
+            places = [at.get(k, ()) for k in numbers]  # (a sentence read for its names alone: no run, none)
+            if spans:
+                from app import names
+                place, joined = {k: j for j, k in enumerate(numbers)}, set()
+                names.apply_spans(lines, [[place[span[0]]] + list(span[1:]) for span in spans if span[0] in place],
+                                  store._names, *switches, joined=joined)
+                for j in joined:
+                    places[j] = None
+            out.append((n, lines, numbers, places))
+        return out
+
+    def _runs(self, read):
+        """{id(a file's entry): {the number of a sentence holding a phrase's whole run: the places in it such runs
+        start at, ascending}} for `read`'s files ((n, starts, ids) each), looked for over all their ids at once."""
+        np = self.np
+        if not read:
+            return {}
+        ids = np.concatenate([got[2] for got in read])
+        tokens_at = np.concatenate(([0], np.cumsum([got[2].size for got in read])))   # each file's first token
+        lines_at = np.concatenate(([0], np.cumsum([got[0] for got in read])))          # each file's first sentence
+        firsts = np.concatenate([got[1][:-1].astype(np.int64) + offset                  # every sentence's first token
+                                 for got, offset in zip(read, tokens_at[:-1].tolist())])
+        code, size, hits = self.code[ids], ids.size, []
+        at = np.flatnonzero(self.first[ids])            # each place a phrase can start, its run grown a word a step
+        number = code[at]
+        for length in range(1, self.longest + 1):
+            if length > 1:
+                keep = at < size - (length - 1)
+                at, number = at[keep], number[keep] * self.k + code[at[keep] + (length - 1)]
+                keep = self._among(self.starts[length], number)  # (a run no phrase starts with goes no further)
+                at, number = at[keep], number[keep]
+            if not at.size:
+                break
+            runs = self.runs.get(length)
+            if runs is not None:
+                hits.append(at[self._among(runs, number)])
+        found = {}
+        if hits:
+            place = np.unique(np.concatenate(hits))     # (ascending: sentence by sentence, each one's in order)
+            line = np.searchsorted(firsts, place, "right") - 1
+            file = np.searchsorted(lines_at, line, "right") - 1
+            for f, k, i in zip(file.tolist(), (line - lines_at[file]).tolist(), (place - firsts[line]).tolist()):
+                found.setdefault(id(read[f]), {}).setdefault(k, []).append(i)
+        return found
+
+    def _among(self, held, numbers):
+        """Which of `numbers` are in `held` (sorted): a binary search each, in numpy."""
+        place = self.np.minimum(self.np.searchsorted(held, numbers), len(held) - 1)
+        return held[place] == numbers
+
+
 def _holds_a_term(spelling, terms):
     """Does a recorded run of one-kanji tokens (`spelling`) hold a stretch the terms table (`terms`) names? Any stretch
     of 2+ of its pieces may be one, once other names have taken theirs."""
@@ -3072,15 +3310,21 @@ def _names_reads(tables):
             for kind, table in (tables or {}).items() if kind in ("k", "j", "w") and isinstance(table, dict)}
 
 
-def _names_read_in(blob, reads, switches):
+def _names_read_in(blob, reads, switches, spans=None):
     """What the name tables (`_names_reads`) make of one file's recorded name candidates (its `names` column), as a
     short digest — each one a table holds, a term inside a run of one-kanji words included, with the word it becomes:
-    the file's cached words read differently only when this does. "" when none is held."""
+    the file's cached words read differently only when this does. "" when none is held. `spans`: the column's spans
+    when the caller has decoded them already (`_name_list`: one decode a file)."""
     recurring, kanji, terms = switches
     if not blob or not (recurring or kanji or terms):
         return ""
-    held = _names_held(_decode_counts(blob).get("s", []), reads, switches)
+    held = _names_held(_name_list(blob) if spans is None else spans, reads, switches)
     return _digest(held) if held else ""
+
+
+def _name_list(blob):
+    """A file's `names` column -> its recorded name spans (its record's "s"), [] when none."""
+    return _decode_counts(blob).get("s", []) if blob else []
 
 
 def _names_held(spans, reads, switches):

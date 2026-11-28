@@ -215,7 +215,7 @@ class PhraseSet:
         """The index of the phrase whose list row is `word` (its lemmas joined: 気が付く), or None."""
         return self._by_word.get(word)
 
-    def find(self, tokens, text):
+    def find(self, tokens, text, places=None):
         """[(start, end, index)] — the phrases in one sentence: `tokens` are the analyzer's (lemma, reading, surface,
         orth), `text` the sentence they were read from. Longest first at each place, then on after it; a match that
         ends in another form than the phrase's own (`fixed_form`), a pre-noun adjectival standing before no noun or
@@ -224,17 +224,30 @@ class PhraseSet:
         that place is tried. Most sentences hold no phrase's first word and are passed over in C.
 
         A match also gives a use to each shorter phrase standing inside it (`_inside`: 身に余る光栄 is a use of 身に余る
-        too), listed right after it — so matches may overlap, an inner one always within the match it was found in."""
+        too), listed right after it — so matches may overlap, an inner one always within the match it was found in.
+
+        `places` (ascending): the only places a phrase can start, when the caller knows them — the token store's gate
+        gives the places a phrase's whole run of lemmas starts (a match is one: `_longest` ends only on a trie's end);
+        a place more is only tried for nothing, one left out a match missed."""
         trie = self._trie if self._trie is not None else self._search()
+        if places is not None and not places:
+            return []
         lemmas = [token[0] for token in tokens]
         firsts = self.firsts
-        if firsts.isdisjoint(lemmas):
-            return []
+        if places is None:
+            if firsts.isdisjoint(lemmas):
+                return []
+            places = list(compress(range(len(lemmas)), map(firsts.__contains__, lemmas)))   # (in C)
         found, n, after, nests = [], len(lemmas), 0, self._nests
-        for i in list(compress(range(n), map(firsts.__contains__, lemmas))):   # where a phrase can start (in C)
+        for i in places:                    # where a phrase can start
             if i < after:
                 continue                    # inside the phrase just found
-            hit = self._longest(trie[lemmas[i]], tokens, lemmas, i, n, text, n)
+            node = trie.get(lemmas[i])
+            if node is None:
+                continue
+            if _END not in node and (i + 1 == n or lemmas[i + 1] not in node):
+                continue                    # no phrase goes on with the next word (`_longest` would say None)
+            hit = self._longest(node, tokens, lemmas, i, n, text, n)
             if hit is not None:
                 end, index = hit
                 found.append((i, end, index))
@@ -343,16 +356,17 @@ def _voiced_as(base, surface):
     return base
 
 
-def tally(sentences, phrase_set, matches=None):
+def tally(sentences, phrase_set, matches=None, places=None):
     """What one file's sentences hold of the phrases: ({index: [uses, [spellings]]}, {"lemma|reading": the uses its
     words that live only inside a phrase give that phrase}). The token store keeps one per file; `table` sums them.
     `matches`, a list, also receives every match, four numbers each — sentence, start, end, index — what Generate
     reads instead of finding the phrases again (`Store.phrase_matches`). A word living only inside a phrase gives its
-    use once, however many phrases stand over it (a phrase inside another: `PhraseSet.find`)."""
+    use once, however many phrases stand over it (a phrase inside another: `PhraseSet.find`). `places`: each
+    sentence's places a phrase can start (`find`'s), or None for a sentence — or for all — to look everywhere."""
     uses, taken = {}, {}
     for number, (text, tokens) in enumerate(sentences):
         given = None                    # the token positions given already in this sentence
-        for start, end, index in phrase_set.find(tokens, text):
+        for start, end, index in phrase_set.find(tokens, text, places[number] if places is not None else None):
             if matches is not None:
                 matches += (number, start, end, index)
             phrase = phrase_set.entry(index)

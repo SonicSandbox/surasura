@@ -11,7 +11,9 @@ their words anew). What it keeps is byte for byte what reading every sentence ke
 import json
 import os
 import shutil
+from collections import Counter
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -74,8 +76,10 @@ def _refind(store, monkeypatch, tag, gate_from):
     monkeypatch.setattr(ti, "_PHRASE_GATE_FILES", gate_from, raising=False)
     store._types.clear()
     given, real = [], phrases.tally
-    monkeypatch.setattr(phrases, "tally", lambda sentences, found, matches=None:
-                        given.append(sentences) or real(sentences, found, matches))
+    # (the words given, each token as a list: the gate hands the vocabulary's own tuples, file_tokens new lists)
+    monkeypatch.setattr(phrases, "tally", lambda sentences, found, matches=None, places=None:
+                        given.append([[text, [list(token) for token in tokens]] for text, tokens in sentences])
+                        or real(sentences, found, matches, places))
     store._update_phrases(True)
     monkeypatch.setattr(phrases, "tally", real)
     return given
@@ -243,3 +247,196 @@ def test_find_passes_over_a_place_no_phrase_goes_on_from_and_still_meets_a_phras
     assert found("気が重い。でも車に気をつけて。") == [("気を付ける", "気をつけ")]
     assert found("それは本当") == [("本当", "本当")], "a one-word phrase, the sentence's last word"
     assert found("元気") == [] and found("気") == [], "a first word at the end, no phrase of it alone"
+
+
+# -- PHRASE-REFIND b: the songs' phrases after a matcher change, each file's names decoded once, find at the runs ---- #
+SONGS_SHOW = os.path.join(RESOURCES, "ja", "songs_show")
+
+
+def _songs_library(tmp_path):
+    """songs_show's episodes (the same opening and ending sung in each) in a work folder, indexed into a store of
+    their own and their songs kept, as a Generate keeps them -> (store, the songs: {path: sentence numbers})."""
+    analyzer.SANITIZE_JA = True
+    data_dir = tmp_path / "data" / "ja"
+    work = data_dir / "HighPriority" / "songs_show"
+    shutil.copytree(SONGS_SHOW, work)
+    paths = sorted(str(work / name) for name in os.listdir(work))
+    db = str(tmp_path / "store.db")
+    ti.reconcile_language("ja", paths, path=db)
+    store = ti.open_store("ja", db)
+    songs = analyzer.song_sentences([(p, "high", 10, "subtitle") for p in paths], str(data_dir), store, None, "ja")
+    store.keep_song_counts(songs)
+    return store, songs
+
+
+def _songs_kept(store):
+    """The songs table, every column of every row, and the sum (meta songs_counted), as stored."""
+    return ([tuple(row) for row in store.conn.execute(
+        "SELECT path, mtime, size, tag, total, counts, bound, phrases FROM songs ORDER BY path")],
+        store.get_meta("songs_counted"))
+
+
+def _sum_counts(value):
+    """meta songs_counted, its words and pieces as sets of rows (a share taken off and put back may move their order;
+    never their counts)."""
+    held = json.loads(value)
+    return {key: (sorted(map(tuple, rows)) if key in ("counts", "bound") else rows) for key, rows in held.items()}
+
+
+def _copy(store, tmp_path, name):
+    """Another store over a copy of `store`'s database as it is now."""
+    import sqlite3
+    path = str(tmp_path / name)
+    other = sqlite3.connect(path)
+    store.conn.backup(other)
+    other.close()
+    return ti.open_store("ja", path)
+
+
+def _counted_again(store, songs, whole=False):
+    """`keep_song_counts` after the change -> what it asked `_song_shares` for: [(path, sentence numbers, phrases
+    only?)] — `whole`: every share counted again whole, as before (the vocabulary taken for a damaged one)."""
+    asked, real = [], ti.Store._song_shares
+
+    def spy(self, wanted, *args, **kw):
+        asked.extend((ti._norm(p), list(n), kw.get("phrases_only", False)) for p, n in wanted.items())
+        return real(self, wanted, *args, **kw)
+    with patch.object(ti.Store, "_song_shares", spy):
+        if whole:
+            with patch.object(ti, "_types_whole", lambda _store: None):
+                store.keep_song_counts(songs)
+        else:
+            store.keep_song_counts(songs)
+    return asked
+
+
+def test_after_a_matcher_change_the_songs_count_again_only_their_lines_holding_a_match_and_keep_the_same(
+        tmp_path, monkeypatch):
+    # why: a new matcher made the first Generate count every song line again (~27 s on a 20,000-file library) though
+    # it moves only the songs' set phrases — their words, tokens and one-kanji pieces stand — and a line holding none
+    # of the re-find's matches gives a phrase nothing; the songs table and its sum must be what counting all gives
+    store, songs = _songs_library(tmp_path)
+    try:
+        monkeypatch.setattr(phrases, "MATCHER_VERSION", phrases.MATCHER_VERSION + 1)
+        store._update_phrases(True)                     # the index's re-find under the new matcher
+        other = _copy(store, tmp_path, "whole.db")
+        try:
+            _counted_again(other, songs, whole=True)
+            want = _songs_kept(other)
+        finally:
+            other.close()
+        met = store.phrase_matches(list(songs))
+        holding = {ti._norm(p): sorted(set(n) & set(met[p][1][::4])) for p, n in songs.items() if n}
+        assert 0 < sum(map(len, holding.values())) < sum(len(n) for n in songs.values()), \
+            "the songs hold set phrases, and lines that hold none"
+        with patch.object(ti.Store, "file_tokens", side_effect=AssertionError("a whole file read")):
+            asked = _counted_again(store, songs)
+        assert {p: n for p, n, _only in asked} == holding, "only the song lines holding a kept match"
+        assert all(only for _p, _n, only in asked), "their phrases alone"
+        assert _songs_kept(store) == want, "the songs table and the sum byte for byte"
+        assert json.loads(want[1])["uses"], "the songs' phrases are counted"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("damage", ["matches", "vocabulary", "changed"])
+def test_after_a_matcher_change_a_file_the_phrases_only_count_cant_take_is_counted_whole(tmp_path, monkeypatch,
+                                                                                        damage):
+    # why: a file whose kept matches don't fit its words (damaged), a vocabulary with a gap, or an episode changed
+    # since its songs were kept must be counted as before — every line — and the sum still be what counting all gives
+    store, songs = _songs_library(tmp_path)
+    try:
+        monkeypatch.setattr(phrases, "MATCHER_VERSION", phrases.MATCHER_VERSION + 1)
+        store._update_phrases(True)
+        sung = sorted(ti._norm(p) for p, n in songs.items() if n)
+        one = sung[1]
+        if damage == "matches":                         # its kept matches count one sentence more than it holds
+            kept = json.loads(store.get_meta("phrase_matches"))
+            kept["files"][one][2] += 1
+            store.set_meta("phrase_matches", json.dumps(kept, ensure_ascii=False))
+        elif damage == "vocabulary":                    # a row past the last but one: the ids no longer run unbroken
+            top = store.conn.execute("SELECT max(id) FROM types").fetchone()[0]
+            store.conn.execute("INSERT INTO types(id, lemma, reading, surface, orth) VALUES(?, ?, ?, ?, ?)",
+                               (top + 2, "欠", "ケツ", "欠", "欠"))
+        else:                                           # the episode changed since its songs were kept: its stamp
+            store.conn.execute("UPDATE files SET mtime = mtime + 5 WHERE path = ?", (one,))
+        store.conn.commit()
+        other = _copy(store, tmp_path, "whole.db")
+        try:
+            _counted_again(other, songs, whole=True)
+            want = _songs_kept(other)
+        finally:
+            other.close()
+        asked = _counted_again(store, songs)
+        whole = {p: n for p, n, only in asked if not only}
+        numbers = {ti._norm(p): sorted(n) for p, n in songs.items() if n}
+        if damage == "vocabulary":
+            assert whole == numbers, "every file, every line"
+        else:
+            assert whole == {one: numbers[one]}, "that file alone, every song line"
+            assert sorted(p for p, _n, only in asked if only and p != one) == [p for p in sung if p != one],                 "the rest: their phrases alone"
+        got = _songs_kept(store)
+        assert got[0] == want[0], "the songs table byte for byte"
+        assert _sum_counts(got[1]) == _sum_counts(want[1]), "the sum: the same counts"
+    finally:
+        store.close()
+
+
+def test_a_refind_and_a_first_song_count_decode_each_files_names_once(library, monkeypatch, tmp_path):
+    # why: the re-find decoded a re-read file's recorded names twice (to search it, and to say what the tables make of
+    # them), the first song count twice too (its tag, its lines' joins) — one decode gives both
+    real, decoded = ti._decode_counts, []
+
+    def counting(blob):
+        if blob:
+            decoded.append(bytes(blob))
+        return real(blob)
+    monkeypatch.setattr(ti, "_decode_counts", counting)
+    store = _index(library)
+    try:
+        held = [bytes(b) for (b,) in store.conn.execute(f"SELECT names FROM files WHERE {ti._EVIDENCE}") if b]
+        assert held, "the files record name candidates"
+        decoded.clear()
+        _refind(store, monkeypatch, "gated", 1)
+        assert Counter(b for b in decoded if b in set(held)) == Counter(held), "each file's names once"
+    finally:
+        store.close()
+    store, songs = _songs_library(tmp_path)
+    try:
+        store.conn.execute("DELETE FROM songs")
+        store.conn.commit()
+        store.set_meta("songs_counted", "{}")
+        names = {p: bytes(b) for p, b in store.conn.execute("SELECT path, names FROM files") if b}
+        sung = [names[ti._norm(p)] for p, n in songs.items() if n and ti._norm(p) in names]
+        assert sung, "the song files record name candidates"
+        decoded.clear()
+        store.keep_song_counts(songs)
+        assert Counter(b for b in decoded if b in set(sung)) == Counter(sung), "each song file's names once"
+    finally:
+        store.close()
+
+
+def test_a_gated_refind_tries_a_phrase_only_where_a_whole_run_of_its_words_starts(library, monkeypatch):
+    # why: find tried every place a phrase's first word stands (に, と … open many), walking on wherever a second word
+    # went on; the gate already knows where a phrase's whole lemma run starts, and a match starts nowhere else — the
+    # kept tallies and matches stay byte for byte
+    for switch in ("names_recurring", "names_kanji", "names_work_terms"):
+        monkeypatch.setitem(analyzer.LOGIC, switch, False)  # (no join: each sentence's words are its ids')
+    store = _index(library)
+    try:
+        _refind(store, monkeypatch, "whole", 10 ** 9)
+        before = _kept(store)
+        keys = {entry.key for entry in phrases.load().entries}
+        longest = max(map(len, keys))
+        tried, real = [], phrases.PhraseSet._longest
+
+        def spy(self, node, tokens, lemmas, i, limit, text, n, among=None):
+            if among is None:
+                tried.append(any(tuple(lemmas[i:i + k]) in keys for k in range(1, longest + 1)))
+            return real(self, node, tokens, lemmas, i, limit, text, n, among)
+        monkeypatch.setattr(phrases.PhraseSet, "_longest", spy)
+        _refind(store, monkeypatch, "gated", 1)
+        assert tried and all(tried), "each place tried starts a phrase's whole run"
+        assert _kept(store) == before
+    finally:
+        store.close()

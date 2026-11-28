@@ -131,9 +131,9 @@ def test_an_episode_changed_or_set_aside_counts_its_songs_again_until_the_next_g
         read = []
         real = ti.Store._song_shares
 
-        def counting(self, asked, *args):
+        def counting(self, asked, *args, **kw):
             read.extend(asked)
-            return real(self, asked, *args)
+            return real(self, asked, *args, **kw)
         with patch.object(ti.Store, "_song_shares", counting), \
                 patch.object(ti.Store, "file_tokens", side_effect=AssertionError("a whole file read")):
             store.keep_song_counts(songs)
@@ -470,9 +470,9 @@ def test_a_first_count_holds_one_batch_of_files_song_lines_at_a_time(tmp_path):
         calls = []
         real = ti.Store._song_shares
 
-        def counting(self, asked, *args):
+        def counting(self, asked, *args, **kw):
             calls.append(len(asked))
-            return real(self, asked, *args)
+            return real(self, asked, *args, **kw)
         with patch.object(ti, "_SONG_BATCH", 1), patch.object(ti.Store, "_song_shares", counting):
             store.keep_song_counts(songs)
         assert calls == [1] * len(paths)
@@ -546,9 +546,9 @@ def test_when_the_name_tables_moved_only_a_file_they_read_otherwise_is_read_agai
         read = []
         some = ti.Store._song_shares
 
-        def counting(self, asked, *args):
+        def counting(self, asked, *args, **kw):
             read.extend(asked)
-            return some(self, asked, *args)
+            return some(self, asked, *args, **kw)
         with patch.object(ti.Store, "_song_shares", counting):
             store.keep_song_counts(songs)
         assert read == [target], "only the file the tables read otherwise"

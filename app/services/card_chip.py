@@ -1,7 +1,12 @@
-"""The ✓ chip's count (Michi-CK2; Sonic's ruling 2, 2026-11-17, on the lead's route 2026-11-18): an episode in Anki
-shows how many of its words have a card — wherever the card was made: from this episode, another episode or show, or
-by hand in Anki. Its hover: *9 from this episode · 22 from other episodes and shows*. A row of several files counts
-its words once (`view_rows`). Qt-free (`tests/test_import_guard.py`); the rows say what this counts.
+"""The ✓ chip's count (CARD-LEFT, 3.0.21; Sonic § 113, 2026-11-27, after his ruling 2 of 2026-11-17): an episode in
+Anki shows how many of the cards that hold its words are **still left to study** — a card made from this episode,
+another episode or show, or by hand in Anki — and the number falls as the learner learns them; none left, the ✓ alone.
+A card is left until its word counts as known by Surasura's own known rule: the token store's known normalization of
+KnownWord.json (`Store` meta `known_lemmas`, written by Generate and the indexer: its KNOWN and carded entries, the set
+the list's % known reads), so suspended cards and *Count as known in Anki* follow it as the known-words sync writes
+them; a new card (the backlog), one still learning and one Connect just made are left. The record stays in the hover:
+the cards made from it, its words on cards in all, how many of those are known (`view_rows`). A row of several files
+counts its words once. Qt-free (`tests/test_import_guard.py`); the rows say what this counts.
 
 - **Only mined files are counted** (the chip shows only on a row in Anki): each one's words from the token store's
   per-file counts (`token_index` `files.counts`: every lemma, known words too — a studied card's word is a known word,
@@ -18,6 +23,10 @@ its words once (`view_rows`). Qt-free (`tests/test_import_guard.py`); the rows s
   `anki_match.card_word_in_sentence` — a まく card in 水をまく counts for 撒く; read once per card and sentence on this
   worker, kept on disk as `reads`, so the tagger loads only for a card not read before). A kana card with no sentence
   that places it counts by its letters alone, as before.
+- **The known words:** read from the counter's own token store connection at each round — one meta read while
+  `known_sig` stands; moved (a sync, then Generate or the indexer normalized it), every word that turned known or not
+  steps through the index (its files, the made sets holding it), never a full recount. `known_moved()` asks a round
+  (the window's: after each indexer run and each new set of numbers).
 - **On disk** (`card_chip_<lang>.json`, the local data folder): the studied words Anki last said and the last
   answers — Anki closed at the window's open, the chip keeps its count (PROVISIONAL: never jumps to 0), and the
   reader's first build after the first screen reads the last answers until this one answers. Written only when the
@@ -25,8 +34,9 @@ its words once (`view_rows`). Qt-free (`tests/test_import_guard.py`); the rows s
   session can't count yet — its file's counts not in the token store, as after an update builds the store again —
   keeps its last answer until it is read, never its own cards alone, and is asked again at the reader's next build
   (Kura-CC, 3.0.18: the count changed meaning across a restart).
-- **Answers:** {item_id: other} for an episode and {(item ids…): other} for a row of several — *other* is how many of
-  its words have a card not made from it (its own cards are the row's count already). Beside them, {("level", key):
+- **Answers:** {item_id: (left, done)} for an episode and {(item ids…): (left, done)} for a row of several — of its
+  words that have a card (the words it made cards for, and every word of its files carded anywhere), how many aren't
+  known yet and how many are. Beside them, {("level", key):
   (at, below)}: of the cards Connect made from it, how many words were on the list (*at your level*) and how many
   were i+1 words below it (Sonic's lean A, 2026-11-18: *Only i+1* makes both; the hover says so honestly) — from the
   job's pick (`ledger.listed_of`), only where every made word says which. Handed on (`on_change`) only
@@ -47,6 +57,7 @@ from app.services import window_idle
 SAVE_S = 30.0                 # answers moving: written at most this often (the studied words: whenever they change)
 RETRY_S = 5.0                 # the token store couldn't be read (locked, busy): the round is tried again this much later
 CACHE_VERSION = 1
+_NONE = frozenset()          # (an item in no row: nothing to add, no set made for it)
 
 
 def cache_path(language):
@@ -73,6 +84,16 @@ def _backlog_stamp(language):
     except OSError:
         return None
     return st.st_size, st.st_mtime_ns
+
+
+def _store_known(store, last):
+    """The token store's known normalization ((its `known_sig`, its known lemmas)), or None while `known_sig` is still
+    `last` (one meta read). The set Generate and the indexer last wrote from KnownWord.json (`Store.set_cached_known`):
+    the list's own known rule, never a second reading of the file."""
+    sig = store.get_meta("known_sig")
+    if sig == last:
+        return None
+    return sig, json.loads(store.get_meta("known_lemmas") or "[]")
 
 
 def _listed_words(language, ids):
@@ -115,7 +136,8 @@ class Chips:
       or row it hasn't counted yet this session (Kura-CC); `answers()`; `close()`."""
 
     def __init__(self, language, on_change=None, worker=None, open_tokens=None, data_dir=None, read_made=None,
-                 read_backlog=None, backlog_stamp=None, cache_file=None, clock=None, read_listed=None, tokenize=None):
+                 read_backlog=None, backlog_stamp=None, cache_file=None, clock=None, read_listed=None, tokenize=None,
+                 read_known=None):
         from app.services.automation import Worker
         self.language = language
         self.on_change = on_change
@@ -129,6 +151,7 @@ class Chips:
         self._cache_file = cache_file
         self._clock = clock or time.monotonic
         self._tokenize = tokenize                  # Kyou-KN: the analyzer's, made on this worker when a kana card asks
+        self._read_known = read_known or _store_known      # CARD-LEFT: (store, last sig) -> (sig, lemmas) | None
         self._lock = threading.Lock()
         self._asks = {}                    # item_id -> its newest ask (rel_path, disk, cards)
         self._row_asks = set()             # the rows of several files asked
@@ -154,7 +177,9 @@ class Chips:
         self._backlog_said = frozenset()   # the backlog's kana cards' (word, sentence)
         self._backlog = set()              # ints
         self._backlog_at = None
-        self._out = {}                     # item_id / row key -> other
+        self._out = {}                     # item_id / row key -> (left, done): its carded words not known / known
+        self._known = frozenset()          # the ints of the words Surasura counts known (the token store's)
+        self._known_sig = None             # the store's `known_sig` they were read at
         self._level = {}                   # item_id -> (at your level, below it) of the cards it made (lean A)
         self._tokens = None
         self._dirty_at = None              # when the answers on disk fell behind
@@ -179,14 +204,14 @@ class Chips:
         got = self._read_cache()
         out = {}
         for k, n in (got.get("items") or {}).items():
-            try:
-                out[int(k)] = int(n)
-            except (TypeError, ValueError):
+            try:                                       # (CARD-LEFT) a bare number: a cache from before, another
+                out[int(k)] = (int(n[0]), int(n[1]))   # count (every word with a card) — never handed on
+            except (TypeError, ValueError, IndexError, KeyError):
                 continue
         for k, n in (got.get("rows") or {}).items():
             try:
-                out[tuple(int(x) for x in k.split(","))] = int(n)
-            except (TypeError, ValueError):
+                out[tuple(int(x) for x in k.split(","))] = (int(n[0]), int(n[1]))
+            except (TypeError, ValueError, IndexError, KeyError):
                 continue
         for k, n in (got.get("levels") or {}).items():
             try:
@@ -213,6 +238,13 @@ class Chips:
             if fresh:
                 self._row_asks |= fresh
                 self._owed = True
+        self._kick()
+
+    def known_moved(self):
+        """(Any thread.) The known words may have moved (an indexer run, a Generate's new numbers): a round reads the
+        token store's `known_sig` (one meta read) and steps through only the words that turned known or not."""
+        with self._lock:
+            self._owed = True
         self._kick()
 
     def forget(self, ids, rows=()):
@@ -291,6 +323,7 @@ class Chips:
         self._rows, self._rows_of, self._ref, self._out, self._level = {}, {}, {}, {}, {}
         self._studied, self._backlog, self._backlog_at = set(), set(), None
         self._backlog_said = frozenset()
+        self._known, self._known_sig = frozenset(), None
         if self._studied_words is not None:
             with self._lock:
                 if self._studied_new is None:
@@ -384,6 +417,8 @@ class Chips:
                 new = {self._int(w) for w in {w for w in words if isinstance(w, str)} | self._read_in(pairs)}
                 swap(self._backlog, new)
                 self._backlog = new
+        known_before = self._known
+        known_flips = self._known_read()                # CARD-LEFT: the words that turned known or not
         # files that left (no longer mined, or no longer asked) — read or not: its made words held all the same
         for item_id in [i for i in {*self._looked, *self._files, *self._made} if i not in asks]:
             full_rows |= self._drop(item_id, ref)
@@ -401,7 +436,9 @@ class Chips:
             self._failed = True                        # (review L-S1) the ledger busy: its split read again later
         for item_id in reread:
             window_idle.pause()                        # (Up next 3: a young window stretch waited out, file by file)
-            words = self._file_words(asks[item_id][0])
+            # (CARD-LEFT) the store not normalized the known words yet (built again by an update: the indexer writes the
+            # files' counts first, then them): no count yet — its last stands — never every carded word called left
+            words = None if self._known_sig is None else self._file_words(asks[item_id][0])
             self._unindex(item_id, self._files.pop(item_id, None))
             if words is None:
                 self._out.pop(item_id, None)
@@ -460,30 +497,49 @@ class Chips:
                 full_rows.add(key)
         for i in full:
             full_rows |= self._rows_of.get(i, set())
-        # the cards that came or went: one step each through the index (never a full recount)
+        # the cards that came or went, the words that turned known or not: one step each through the index (never a
+        # full recount). A word of its files carded elsewhere is left while it has a card and isn't known; a word it
+        # made a card for (its made set: always carded) is left while it isn't known
         out = self._out
         with self._lock:
             seed = self._seed
         counted = []                                           # let go of their seed once the round is through
-        for w, d in flips.items():
-            if not d:
+        on, known = self._ref, self._known
+        for w in {w for w, d in flips.items() if d} | known_flips:
+            d = flips.get(w, 0)
+            on_now, k_now, k_was = w in on, w in known, w in known_before
+            on_was = on_now != bool(d)
+            dl = (on_now and not k_now) - (on_was and not k_was)
+            dd = (on_now and k_now) - (on_was and k_was)
+            if not (dl or dd):
                 continue
             touched = set()
             for i in self._inv.get(w, ()):
-                if i not in full and w not in self._made.get(i, ()):
-                    out[i] = out.get(i, 0) + d
-                touched |= self._rows_of.get(i, set())
+                if i in full:                                  # counted whole below, its rows too
+                    continue
+                if i in out and w not in self._made.get(i, ()):
+                    left, done = out[i]
+                    out[i] = (left + dl, done + dd)
+                touched |= self._rows_of.get(i, _NONE)
             for key in touched - full_rows:
-                if w not in self._rows.get(key, ()):
-                    out[key] = out.get(key, 0) + d
-        on = self._ref
+                if key in out and w not in self._rows.get(key, ()):
+                    left, done = out[key]
+                    out[key] = (left + dl, done + dd)
+        if known_flips:                                        # its own cards' words, through each made set
+            for made_of in (self._made, self._rows):
+                for key, mine in made_of.items():
+                    if key in full or key in full_rows or key not in out:
+                        continue
+                    for w in mine & known_flips:
+                        s = 1 if w in known else -1
+                        left, done = out[key]
+                        out[key] = (left - s, done + s)
         for i in full:
             words = self._files.get(i)
             if words is None:                                  # made words, no count of its file: no answer
                 out.pop(i, None)
                 continue
-            mine = self._made.get(i, frozenset())
-            out[i] = sum(1 for w in words if w in on and w not in mine)
+            out[i] = self._left(words, self._made.get(i, frozenset()))
             counted.append(i)                                  # counted this session: the last session's let go
         for key in full_rows:
             if key not in rows:
@@ -495,8 +551,7 @@ class Chips:
             if not have or (len(have) < len(key) and key in seed):
                 out.pop(key, None)                             # (a file not read yet: the last count stands)
                 continue
-            words = set().union(*have)
-            out[key] = sum(1 for w in words if w in on and w not in mine)
+            out[key] = self._left(set().union(*have), mine)
             counted.append(key)
         with self._lock:
             for k in counted:                                  # (review: a round that fails before here keeps them)
@@ -511,6 +566,47 @@ class Chips:
             self._hand()
         if self._failed:
             self._again_later()
+
+    def _left(self, words, mine):
+        """(left, done) of a file's (or a row's) words and its made set, counted whole: each carded word once."""
+        on, known = self._ref, self._known
+        left = done = 0
+        for w in words:
+            if w in on and w not in mine:
+                if w in known:
+                    done += 1
+                else:
+                    left += 1
+        for w in mine:
+            if w in known:
+                done += 1
+            else:
+                left += 1
+        return left, done
+
+    def _known_read(self):
+        """(The worker.) The token store's known words read again when its `known_sig` moved -> the ints that turned
+        known or not (empty: unchanged, or not readable now — then the round is tried again later)."""
+        store = self._token_store()
+        if store is None:
+            return frozenset()
+        try:
+            got = self._read_known(store, self._known_sig)
+        except Exception:
+            self._failed = True                        # busy, locked: opened afresh and tried again later
+            self._tokens = None
+            try:
+                store.close()
+            except Exception:
+                pass
+            return frozenset()
+        if got is None:
+            return frozenset()
+        sig, lemmas = got
+        new = frozenset(self._int(str(w)) for w in lemmas)
+        flips = new ^ self._known
+        self._known, self._known_sig = new, sig
+        return flips
 
     def _again_later(self):
         """(Review H-F4) The token store couldn't be read this round: one more round `RETRY_S` later — never waiting for
@@ -667,8 +763,8 @@ class Chips:
                   "studied_said": [list(pair) for pair in sorted(self._studied_said)],
                   "reads": [[w, s, self._reads[(w, s)]] for w, s in sorted(self._studied_said | self._backlog_said)
                             if (w, s) in self._reads],
-                  "items": {str(k): n for k, n in handed.items() if not isinstance(k, tuple)},
-                  "rows": {",".join(map(str, k)): n for k, n in handed.items()
+                  "items": {str(k): list(n) for k, n in handed.items() if not isinstance(k, tuple)},
+                  "rows": {",".join(map(str, k)): list(n) for k, n in handed.items()
                            if isinstance(k, tuple) and k[:1] != ("level",)},
                   "levels": {(str(k[1]) if not isinstance(k[1], tuple) else ",".join(map(str, k[1]))): list(n)
                              for k, n in handed.items() if isinstance(k, tuple) and k[:1] == ("level",)}}

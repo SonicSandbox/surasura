@@ -1403,8 +1403,9 @@ class RowDelegate(QStyledItemDelegate):
         mining's icon; nothing else, so 0 for every other status."""
         if status is None:
             return 0
-        if status.kind == "in_anki":
-            return round(2 + rl("anki-icon") + 5 + TEXT.metrics("status-pill", 700).horizontalAdvance(status.label) + 2)
+        if status.kind == "in_anki":             # (CARD-LEFT: none left to study, the ✓ alone)
+            return round(2 + rl("anki-icon") + 2 + (5 + TEXT.metrics("status-pill", 700).horizontalAdvance(status.label)
+                                                     if status.label else 0))
         if status.kind == "mining":
             return round(rl("icon-w") * fz())
         return 0
@@ -2361,10 +2362,12 @@ class RowDelegate(QStyledItemDelegate):
         if status is None or not r.width():
             return
         side = rl("anki-icon")
-        if status.kind == "in_anki":
-            icon(p, "anki", QRectF(r.left() + 2, mid - side / 2, side, side), c("ok"), width=1.3)
-            TEXT.draw(p, r.left() + 2 + side + 5, mid, status.label, "status-pill", r.width(), c("ok"), weight=700,
-                      dpr=dpr, elide=False)
+        if status.kind == "in_anki":                 # CARD-LEFT: none left to study — the ✓ alone
+            icon(p, "anki" if status.label else "check", QRectF(r.left() + 2, mid - side / 2, side, side), c("ok"),
+                 width=1.3)
+            if status.label:
+                TEXT.draw(p, r.left() + 2 + side + 5, mid, status.label, "status-pill", r.width(), c("ok"), weight=700,
+                          dpr=dpr, elide=False)
         elif status.kind == "mining":
             icon(p, "mining", QRectF(r.center().x() - side / 2, mid - side / 2, side, side), c("accent"))
 

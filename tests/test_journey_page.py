@@ -131,6 +131,14 @@ def test_the_page_writes_only_the_settings_keys_of_spec_1_4():
                     "journey_sentence_size", "theme", "journey_keys", "journey_first_meeting"}, keys
 
 
+def test_the_keys_sheet_says_shift_is_left_free_for_yomitan_in_plain_words():
+    # (a tester on 3.0.20) "Shift is never taken: it is Yomitan's." read like stray text in the keys sheet: it says
+    # plainly that the page leaves Shift free for Yomitan (the selftest still checks no key is bound to Shift)
+    page = _read(PAGE)
+    assert "Shift is left free for Yomitan" in page
+    assert "Shift is never taken" not in page
+
+
 def test_the_render_inlines_only_the_chosen_rail():
     parts = fx.build("ja", 12)
     tiny = fx.assemble(parts, rail_css=".tiny{}", rail_js=_read(TINY_RAIL))
@@ -262,6 +270,70 @@ def test_a_long_name_cuts_in_its_own_box_at_every_width_and_scale(tmp_path, lang
                 misses.append(f"episode {i}: the title's tip stays after the focus leaves it")
         errs = e.errors()
     assert not errs, errs
+    assert not misses, "\n".join(misses[:40]) + f"\n({len(misses)} in all)"
+
+
+PITCH_EPS = 6         # the fixture's first episodes: every word with a pitch on them (yōon, っ, long readings)
+PITCH_SIZES = [(1366, 768, 1.0), (1280, 720, 1.5), (390, 844, 3.0)]
+PITCH_HIDDEN_THEN_F = """(() => { const J = window.__J; J.setSetting('pitch', 'hidden');
+  const k = document.querySelector('[data-r="reading"] .mo'), r = document.createRange();
+  let top = null; if (k) { r.selectNodeContents(k); top = r.getBoundingClientRect().top; }
+  const hidden = !document.querySelector('[data-r="reading"] svg.pitch');
+  J.doAction('pitch'); const m = window.__pitch(); J.setSetting('pitch', 'shown'); return [top, hidden, m]; })()"""
+
+
+@needs_edge
+def test_the_pitch_graph_sits_on_its_kana_with_room_under_the_word_at_every_size(tmp_path):
+    # (a tester on 3.0.20) the pitch graph ran into the big word above it and drifted off its kana: it stepped a fixed
+    # 19 px a mora while the reading's font set each kana at 12-17 px (a ゃゅょ pair at ~25), so by いっしょうけんめい's
+    # last mora a point stood 24 px right of its kana, and the graph's top sat 4 px inside the word's box. Measured in
+    # headless Edge (journey_page_pitch.js), as positions: every point stands over its own kana (the text's box in its slot), the graph clears
+    # the word and sits on its reading, and the reading stays where it is when F shows a hidden graph (no jump) — at
+    # three screens, each word size, pitch shown and hidden-then-F
+    from journey_page_edge import Edge
+    path = os.path.join(str(tmp_path), "pitch-ja.html")
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(fx.assemble(fx.build("ja", 40), extra_js=_read(os.path.join(HERE, "journey_page_pitch.js"))))
+    misses, seen, yoon = [], 0, 0
+    with Edge() as e:
+        assert e.open("file:///" + path.replace("\\", "/"), seconds=60), e.errors()
+        for width, height, scale in PITCH_SIZES:
+            e.call("Emulation.setDeviceMetricsOverride", width=width, height=height, deviceScaleFactor=scale, mobile=False)
+            for size in ("s", "m", "l"):
+                for ep in range(PITCH_EPS):
+                    e.evaluate(f"(async () => {{ const J = window.__J; J.setSetting('word_size', '{size}'); "
+                               f"J.setSetting('pitch', 'shown'); J.go({ep}, 0); await J.loadEp({ep}); return 1; }})()")
+                    for wi in range(e.evaluate(f"(window.__J.seq({ep}) || []).length")):
+                        has, m = e.evaluate(f"(() => {{ const J = window.__J; J.go({ep}, {wi}); J.drawWord(); "
+                                            f"const w = J.wordNow(J.curWordId()); "
+                                            f"return [w[8] != null && !!(w[3] || w[2]), window.__pitch()]; }})()")
+                        if not m:
+                            if has:                                   # a pitch and a reading: its graph
+                                misses.append(f"{width}x{height} @{int(scale * 100)} %, size {size}, episode {ep} "
+                                              f"word {wi}: no graph")
+                            continue
+                        where = f"{width}x{height} @{int(scale * 100)} %, size {size}, {m['text']}"
+                        seen += 1
+                        yoon += any(len(mo["ch"]) > 1 for mo in m["morae"])
+                        assert len(m["pts"]) == len(m["morae"]), where
+                        for (x, _y), mo in zip(m["pts"], m["morae"]):
+                            ink = (mo["inkL"] + mo["inkR"]) / 2
+                            if not mo["inkL"] <= x <= mo["inkR"] or abs(x - ink) > 3:
+                                misses.append(f"{where}: the point over {mo['ch']} at {x:.1f}, "
+                                              f"its kana {mo['inkL']:.1f}-{mo['inkR']:.1f}")
+                        room = m["svg"]["top"] - m["word"]["bottom"]
+                        if room < 4:
+                            misses.append(f"{where}: the graph's top {room:.1f} px under the word")
+                        sit = m["morae"][0]["top"] - m["svg"]["bottom"]
+                        if not -2 <= sit <= 6:
+                            misses.append(f"{where}: the graph {sit:.1f} px over its reading")
+                        top, hidden, again = e.evaluate(PITCH_HIDDEN_THEN_F)
+                        if not hidden or top is None or abs(top - m["morae"][0]["top"]) > 0.5 or not again or again["pts"] != m["pts"]:
+                            misses.append(f"{where}: hidden then F moves the reading or its graph "
+                                          f"({top} vs {m['morae'][0]['top']})")
+        errs = e.errors()
+    assert not errs, errs
+    assert seen >= 30 and yoon, (seen, yoon)              # the fixture's pitch words reached the page, ゃゅょ ones too
     assert not misses, "\n".join(misses[:40]) + f"\n({len(misses)} in all)"
 
 

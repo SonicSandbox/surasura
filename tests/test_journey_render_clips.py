@@ -113,4 +113,10 @@ def test_the_journey_gives_an_mkv_line_its_play_and_its_times_and_a_line_with_no
     by_play = {row[3]: (t, s, e) for t, row, s, e in lines}
     assert by_play[f"0/{SHOW} - 01.mkv"] == (text, start, end)          # the page cuts it: clip/cut, its line id
     assert by_play[""][1:] == (None, None)                              # no video beside it: no ▶, no times
+    # SWAP-TIME (3.0.21), deliberately unchanged: the render still gives such a line no time (nothing added to its
+    # build; ▶ has nothing to play). Swap no longer needs one: ⇄ and Add now send the line's item (its source row's,
+    # from the store — these facts hold no such file) and text, and the door finds its time in its subtitle at the
+    # press (`door_routes._line_id`; the whole flow: tests/connect/test_swap_time.py). The line keeps its episode
+    no_video = [row for _t, row, _s, _e in lines if row[3] == ""]
+    assert no_video and all(row[1] == "subtitle" and row[2] >= 0 for row in no_video), no_video
     assert len(out.head["dirs"]) == 1 and out.head["dirs"][0].startswith("file:///")

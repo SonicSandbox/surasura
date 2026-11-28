@@ -193,3 +193,22 @@ def test_a_done_on_the_cache_whose_mark_is_undone_first_is_let_go(world, languag
     wait_until(lambda: False, 0.3)
     assert "set_tier" not in [c[0] for c in calls(writer)], "an undone mark finishes nothing later"
     assert win.moves._fresh_asking == {}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_file_unwatched_again_before_the_list_is_read_finishes_nothing(world, language):
+    """Another file of the title marked not watched meanwhile (another window, an older Undo): the view from disk
+    shows a file still to watch, so nothing finishes by itself."""
+    settings_manager.save_keys({"target_language": language})
+    seed, win, writer = world(language=language)
+    row = _all_but_one(seed, win, 4)
+    _cached(win)
+    win.moves.done(row, row.episodes[-1])
+    first = row.episodes[0].id
+    seed.library.commit(items=[{"id": first, "watched": 0}])
+    assert wait_until(lambda: not next(e for r in win.moves.reader.view().rows for e in r.episodes
+                                       if e.id == first).watched, 3)
+    win.show_library(win.moves.reader.view())
+    wait_until(lambda: False, 0.3)
+    assert [c[0] for c in calls(writer)] == ["set_watched"] and win.moves._fresh_asking == {}
+

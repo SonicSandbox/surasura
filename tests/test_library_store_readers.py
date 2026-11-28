@@ -175,18 +175,17 @@ def test_the_japanese_snapshot_still_matches_expected_output_through_the_store(e
 # --- #2 No usable manifest; the zero-rows rule -------------------------------------------------------- #
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_without_a_usable_manifest_generate_stays_on_the_folders_until_the_first_build(env, language):
-    """No manifest: Generate can't build (the Content Manager's `--from-folders` build does, §6.8), so it scans
-    the folders as 2.4 did; after that build the list comes from the store, every language the same."""
+def test_without_a_manifest_generate_builds_the_store_from_the_folders(env, language):
+    """No manifest: the folders are the library, so Generate builds the store from them (`--from-folders`, as the
+    window's first build does; ONE-READ 5: an empty store left behind was never built), and the list comes from the
+    store: the same files the folder scan found, every language the same. A manifest that can't be read still waits
+    (test_one_read_5)."""
     _library(language, manifest=False)
     folder_scan = [p for p, *_ in analyzer.resolve_found_files(language, verbose=False)]
     _run(env, language)
-    assert analyzer.read_library_schedule(language) == (None, None), "no store is ready: JSON mode"
-    assert ls.check_mode(language, _dirs(language)[0])[0] == "json"
-
-    assert ls.maintain(language, *_dirs(language), from_folders=True) == ls.EXIT_DONE
     schedule, _v = analyzer.read_library_schedule(language)
-    assert schedule is not None
+    assert schedule is not None, "the store is ready after the first Generate"
+    assert ls.check_mode(language, _dirs(language)[0])[0] != "json"
     from_store = [p for p, *_ in analyzer.resolve_found_files(language, verbose=False)]
     assert sorted(map(os.path.normpath, from_store)) == sorted(map(os.path.normpath, folder_scan))
 

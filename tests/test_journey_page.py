@@ -393,17 +393,20 @@ def test_the_end_cards_pre_studied_chip_fits_its_words_on_one_line_at_every_widt
                             for ch in m:
                                 seen += 1
                                 texts.add(ch["text"])
+                                cls = set(ch["cls"].split())   # the state set reached the chip drawn
+                                if ("on" in cls) != on or (wait and wait not in cls) or (not wait and cls & {"wait", "queued"}):
+                                    misses.append(f"{where}: the chip drawn as '{ch['cls']}'")
                                 (cl, ct, cr, cb), (sl, st, sr, sb), (tl, tt, tr, tb) = ch["chip"], ch["svg"], ch["txt"]
                                 if ch["lines"] != 1:
                                     misses.append(f"{where}: '{ch['text']}' on {ch['lines']} lines")
-                                if not (cl < sl and sr <= tl and tr < cr and ct <= tt and tb <= cb and ct <= st and sb <= cb + 2):
+                                if not (cl < sl and sr <= tl and tr < cr and ct <= tt and tb <= cb and ct <= st and sb <= cb):
                                     misses.append(f"{where}: '{ch['text']}' outside its pill: chip {ch['chip']}, "
                                                   f"stone {ch['svg']}, words {ch['txt']}")
                                 if not 14 <= sr - sl <= 24:
                                     misses.append(f"{where}: the stone {sr - sl:.1f} px wide")
                                 if ch["over"] > 0:
                                     misses.append(f"{where}: the pill's contents overflow it by {ch['over']} px")
-                                if not ch["card"][0] <= cl and cr <= ch["card"][1]:
+                                if not (ch["card"][0] <= cl and cr <= ch["card"][1]):
                                     misses.append(f"{where}: the pill {ch['chip']} outside its card {ch['card']}")
         errs = e.errors()
     assert not errs, errs

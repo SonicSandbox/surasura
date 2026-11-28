@@ -143,6 +143,16 @@ def test_an_unreadable_kana_cards_file_reads_every_term_as_itself(tok):
     assert analyzer.load_known_words(path, tok) == bare
 
 
+def test_a_damaged_note_in_the_kana_cards_file_is_skipped_and_the_rest_still_read(tok):
+    """One note cut short or not a pair (a hand edit, a damaged write) never stops the known words: it is skipped."""
+    path = _known_file(["かなう"])
+    with open(ti.kana_sentences_path(path), "w", encoding="utf-8") as f:
+        json.dump({"version": 1, "notes": {"1": ["かなう", KANAU], "2": 5, "3": ["まく"], "4": ["", ""]}}, f,
+                  ensure_ascii=False)
+    assert ti.kana_sentence_notes(path) == {"1": ["かなう", KANAU]}
+    assert "敵う" in analyzer.load_known_words(path, tok)[1]
+
+
 # --------------------------------------------------------------------------- #
 # The sync keeps the sentences (anki_sync._keep_sentences)
 # --------------------------------------------------------------------------- #

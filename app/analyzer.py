@@ -5396,7 +5396,12 @@ def prepare_library(language, data_dir=None, user_files_dir=None):
     data_dir = data_dir or get_data_path(language)
     user_files_dir = user_files_dir or get_user_files_path(language)
     try:
-        ls.maintain(language, data_dir, user_files_dir, export=False)
+        # No manifest at all (a fresh language, the folders are the library): built from the tiers' folders, as the
+        # window builds a fresh language (`chores._fresh`) — here also over the empty tables an earlier run's helper
+        # wrote and stopped at, a store that never read as ready and that nothing built afterwards (ONE-READ 5). A
+        # manifest there, even one that can't be read, still waits for its own build or the Content Manager.
+        fresh = not os.path.exists(ls.manifest_path(user_files_dir))
+        ls.maintain(language, data_dir, user_files_dir, from_folders=fresh, export=False)
         store = ls.open_store(language, data_dir, user_files_dir, role="analyzer")
         if store is None:
             mode, reason = ls.check_mode(language, data_dir)
@@ -6634,16 +6639,21 @@ def _one_library_handle(run):
     """Run `run` inside one library-store span (`library_store.held(role="analyzer")`, ONE-READ 4): the run's opens on
     its own thread — `prepare_library`, the indexer's lists, `record_analysed`, the "In Anki" fingerprint, the journey's
     render — are one handle, closed when the run ends (each opened its own: ~15 ms an open). The store's helper
-    (`maintain`) and a thread the run starts (Connect's dates read ahead) keep their own."""
+    (`maintain`) and a thread the run starts (Connect's dates read ahead) keep their own. The names tables the run
+    pinned (ONE-READ 5) are let go at its end: a later reader in this process looks for newer ones after
+    `names.REFRESH`, as before."""
     import functools
 
     @functools.wraps(run)
     def wrapper(*args, **kwargs):
-        ls = _library_store()
-        if ls is None:
-            return run(*args, **kwargs)
-        with ls.held(role="analyzer"):
-            return run(*args, **kwargs)
+        try:
+            ls = _library_store()
+            if ls is None:
+                return run(*args, **kwargs)
+            with ls.held(role="analyzer"):
+                return run(*args, **kwargs)
+        finally:
+            names.let_go_library_tables()   # the run's names tables (ONE-READ 5): kept, looked for again as before
     return wrapper
 
 
@@ -6973,9 +6983,11 @@ def main():
     if language == 'ja':
         # Without the store (locked, damaged) the run still reads with the tables the last index computed when the
         # store's file can be read, so its words are the ones the Rarity slider counted; else names split, as they
-        # do before a first index.
+        # do before a first index. Pinned for the run (ONE-READ 5): its one reconcile is done, so these are the tables
+        # its every word is read with — the 30 s re-look (`names.REFRESH`) opened the token store's file again in a
+        # long run (lib20k, at the ignore set's kana lines). Let go when the run ends (`_one_library_handle`).
         names.use_library_tables(_store.names_tables() if _store is not None
-                                 else _token_index.read_names_tables(language))
+                                 else _token_index.read_names_tables(language), pin=True)
 
     # A show's opening and ending songs out of the counts (§ Songs out of the counts): their sentences read as no words
     # (`_sentences_of`), in their place — a sentence's number is the plan's and the re-pick's. The set-aside files

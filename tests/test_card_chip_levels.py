@@ -116,21 +116,24 @@ def _works():
 
 @pytest.mark.parametrize("wid,language", [(1, "ja"), (2, "zh")])
 def test_the_hover_says_at_your_level_and_below_it_only_when_some_are_below(_works, wid, language):
-    """34 cards made from Ep 11, 16 on the list and 18 below it: *34 from this episode, 16 at your level and 18 below
-    it · 22 from other episodes and shows*; the show's row says its own. All on the list, or a split that isn't its
-    count: the plain hover."""
+    """34 cards made from Ep 11, 16 on the list and 18 below it: *… · 34 made from this episode, 16 at your level and
+    18 below it* (CARD-LEFT: after the cards left and the record); the show's row says its own. All on the list, or a
+    split that isn't its count: the plain hover."""
     items = items_of([("now", wid, 1, eps(WORKS[wid]["title"], 11, 13), {})])
     cards = {1: 34, 2: 12, 3: 5}
-    answers = {1: 22, 2: 3, 3: 1, (1, 2, 3): 25, ("level", 1): (16, 18), ("level", 2): (12, 0),
+    answers = {1: (40, 16), 2: (10, 5), 3: (6, 0), (1, 2, 3): (60, 16), ("level", 1): (16, 18), ("level", 2): (12, 0),
                ("level", 3): (2, 2), ("level", (1, 2, 3)): (30, 21)}
     row = vr.build(items, WORKS, {}, cards=cards, elsewhere=answers, language=language).rows[0]
     e11, e12, e13 = row.episodes
-    assert e11.status.label == "56"
-    assert e11.status.tip == "34 from this episode, 16 at your level and 18 below it · 22 from other episodes and shows"
-    assert e12.status.tip == "12 from this episode · 3 from other episodes and shows", "none below: as before"
-    assert e13.status.tip == "5 from this episode · 1 from other episodes and shows", "2 + 2 isn't its 5: not split"
-    assert row.status.tip == ("51 from its 3 episodes, 30 at your level and 21 below it · 25 from other episodes and "
-                              "shows")
+    assert e11.status.label == "40"
+    assert e11.status.tip == ("40 cards left to study · 56 of its words have cards, 16 known · 34 made from this "
+                              "episode, 16 at your level and 18 below it")
+    assert e12.status.tip == ("10 cards left to study · 15 of its words have cards, 5 known · 12 made from this "
+                              "episode"), "none below: as before"
+    assert e13.status.tip == ("6 cards left to study · 6 of its words have cards, 0 known · 5 made from this "
+                              "episode"), "2 + 2 isn't its 5: not split"
+    assert row.status.tip == ("60 cards left to study · 76 of its words have cards, 16 known · 51 made from its 3 "
+                              "episodes, 30 at your level and 21 below it")
     cache = vr.RowCache()
     one = vr.build(items, WORKS, {}, numbers=(1, {}), cards=cards, elsewhere=answers, cache=cache, language=language)
     two = vr.build(items, WORKS, {}, numbers=(1, {}), cards=cards, cache=cache, language=language,

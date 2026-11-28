@@ -1085,15 +1085,14 @@ def _write_journey(language, app_mode=False, open_browser=True, tagger=None, pla
             language = settings_manager.loaded(settings).get("target_language", "ja")
         except Exception:
             language = "ja"
-    library = journey_render.open_library(language)     # one open a render: the facts and the ▶'s rows (ONE-READ 3)
+    # one open a render: the facts and the ▶'s rows (ONE-READ 3), and what its look found when it found none
+    library, without = journey_render.open_library_look(language)
     handed = library if library is not None else False  # (none found: no reader opens a second one)
     try:
         facts = journey_render.store_facts(language, library=handed)
-        if facts is not None:
-            marks = facts.marks
-        else:                                   # no store, or one that couldn't be read: never signed with stones
-            from app import analyzer, library_store   # (here only: a run's analyzer is __main__, not loaded twice)
-            marks = None if analyzer.journey_marks(language) is None else library_store.UNREAD
+        # no store, or one that couldn't be read: never signed with stones — told apart by the open's own look, never
+        # a second open (ONE-READ 4: `analyzer.journey_marks` looked again)
+        marks = facts.marks if facts is not None else without
         out = journey_render.render(language, rows=rows, priority=priority, facts=facts or False,
                                     tagger=tagger if language == "ja" else None, plan=plan, known=known,
                                     settings=settings, store=store, library=handed)

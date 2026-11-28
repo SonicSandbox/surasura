@@ -427,3 +427,31 @@ def test_a_ledger_from_before_the_ruling_gains_the_record_of_what_a_press_took(l
 def test_hello_lists_both_routes_so_the_page_shows_swap_and_add_now():
     routes = journey_door.hello({"lang": "ja"}, journey_door.App())["routes"]
     assert {"swap/queue", "card/make"} <= set(routes)
+
+
+@pytest.mark.parametrize("route", ["swap/queue", "card/make"])
+def test_a_new_ask_starts_connect_and_a_second_press_starts_nothing(ledger, route, monkeypatch):
+    # why: `make_card`'s wake only ends a running Connect's pause; with Connect exited (no job left), a journey ⇄ said
+    # *Queued* and nothing came until something else started Connect (Mattias, 2026-11-28: ぐぐっと's swap sat asked)
+    from app.connect import kick
+    lang, (word, _old, other) = "ja", CASES["ja"]
+    item = _library(lang)
+    if route == "swap/queue":
+        _connects_card(ledger, lang, item)
+    started = []
+    monkeypatch.setattr(kick, "kick", lambda settings, videos=False: started.append(dict(settings)))
+    got = _press(route, lang, word, _line(lang, item, other)[0])
+    assert not got["already"] and len(started) == 1 and started[0].get("connect_enabled") is True
+    _press(route, lang, word, _line(lang, item, other)[0])
+    assert len(started) == 1, "a second press answers the open ask: nothing more to start"
+
+
+def test_a_refused_press_starts_no_connect(ledger, monkeypatch):
+    from app.connect import kick
+    lang, (word, old, _other) = "ja", CASES["ja"]
+    item = _library(lang)
+    _connects_card(ledger, lang, item)
+    started = []
+    monkeypatch.setattr(kick, "kick", lambda settings, videos=False: started.append(settings))
+    assert _refused("swap/queue", lang, word, _line(lang, item, old)[0]).message == door_routes.SAME
+    assert started == [] and _asks(ledger) == []

@@ -3357,13 +3357,15 @@ def blank_songs(sentences, numbers):
     return sentences
 
 
-def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None):
+def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None, fingerprint=None):
     """{path: [sentence number, …] (sorted)} of every spoken file's song lines in a run's `found_files` ([(path, label,
     weight, source type)]), each work on its own (§ above) — as kept, so a kept work makes no set a file (G9). With
     the store, a work's answer is kept (`Store.keep_songs`) under a digest of its files' stamps and the rule's version,
     so a Generate after nothing changed in a work reads only its stamps; without the store, each file is read and
     tokenized here. `stats`, a dict, receives "read" (the works whose
-    lines were read) and "kept" (the works whose kept answer was used)."""
+    lines were read) and "kept" (the works whose kept answer was used). `fingerprint`, a list, receives one
+    fingerprint of the answer when every work's is under its digest (the same fingerprint, the same numbers in the
+    same files at the same stamps: what `Store.keep_song_counts` checks before it reads a song file), else None."""
     works = {}
     for file_path, _label, _weight, source_type in found_files:
         if source_type in _SPOKEN:
@@ -3413,11 +3415,10 @@ def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None
             keep[work] = [digest, found]
     if stats is not None:
         stats.update(read=read, kept=used)
-        # "key": every work's answer under its digest -> one fingerprint of `out` (the same key, the same numbers in
-        # the same files at the same stamps), what Store.keep_song_counts checks before it reads a song file's row
-        stats["key"] = (hashlib.sha1(json.dumps(sorted((work, held[0]) for work, held in keep.items()),
-                                                ensure_ascii=False).encode("utf-8")).hexdigest()
-                        if works and len(keep) == len(works) else None)
+    if fingerprint is not None:
+        fingerprint.append(hashlib.sha1(json.dumps(sorted((work, held[0]) for work, held in keep.items()),
+                                                   ensure_ascii=False).encode("utf-8")).hexdigest()
+                           if works and len(keep) == len(works) else None)
     if store is not None and keep != kept:
         try:
             store.keep_songs(keep)
@@ -6999,11 +7000,11 @@ def main():
     # (watched, Finished) are their works' episodes too, and the example sentences read them.
     _songs = {}
     if not LOGIC.get("count_song_lyrics", False):
-        _songs_t0, _songs_stats = time.perf_counter(), {}
+        _songs_t0, _songs_stats, _songs_key = time.perf_counter(), {}, []
         try:
             _songs = song_sentences(list(found_files) + [(a.path, None, None, a.source_type)
                                                          for a in aside_files(language, _library["schedule"])],
-                                    data_dir, _store, tokenizer, language, _songs_stats)
+                                    data_dir, _store, tokenizer, language, _songs_stats, _songs_key)
         except Exception as e:                    # never a Generate lost to it: the songs counted, as before
             print(f"Warning: the songs couldn't be found ({e}); this run counts them.")
         else:
@@ -7011,7 +7012,7 @@ def main():
             # file's share of them kept beside them (Store.keep_song_counts), read again only where its songs moved.
             if _store is not None:
                 try:
-                    _store.keep_song_counts(_songs, settings=_settings, key=_songs_stats.get("key"))
+                    _store.keep_song_counts(_songs, settings=_settings, key=_songs_key[0] if _songs_key else None)
                     _store.songs_out = True
                 except Exception as e:            # the store's counts hold the songs this run, as before
                     print(f"Warning: the songs couldn't be taken out of the token store's counts ({e}).")

@@ -3,7 +3,7 @@
 `Store.keep_song_counts` takes the songs a run leaves out off the token store's counts (RARITY-SONGS). With nothing
 changed it still read every song file's row, its names and its tag to find that out: 11,440 files and ~0.6 s at a
 20k library, every Generate. `analyzer.song_sentences` already proves each work's answer by a digest of its files'
-stamps, so when every work's answer came under its digest it gives one fingerprint of the songs (`stats["key"]`), and
+stamps, so when every work's answer came under its digest it gives one fingerprint of the songs (`fingerprint=`), and
 a count under the fingerprint, state and name tables the last count kept its shares for reads nothing.
 
 Real data: the made-up shows of tests/Test Resources/<lang>/songs_* (星祭り's four episodes, 星星节's three), as
@@ -46,9 +46,9 @@ def _found(paths, kind="subtitle"):
 
 def _songs(store, data_dir, paths, language):
     """What a Generate does before its floor: the songs found and their fingerprint."""
-    stats = {}
-    songs = analyzer.song_sentences(_found(paths), data_dir, store, None, language, stats)
-    return songs, stats["key"]
+    key = []
+    songs = analyzer.song_sentences(_found(paths), data_dir, store, None, language, fingerprint=key)
+    return songs, key[0]
 
 
 def _list_counts(store, paths, songs, language):
@@ -229,9 +229,10 @@ def test_no_spoken_file_no_store_or_a_work_not_kept_gives_no_fingerprint(tmp_pat
     try:
         for found, with_store in ((_found(paths, "ebook"), store), (_found(paths), None),
                                   (_found(paths + [os.path.join(data_dir, "HighPriority", "x", "gone.srt")]), store)):
-            stats = {}
-            analyzer.song_sentences(found, data_dir, with_store, analyzer.JapaneseTokenizer(), "ja", stats)
-            assert stats["key"] is None
+            key, stats = [], {}
+            analyzer.song_sentences(found, data_dir, with_store, analyzer.JapaneseTokenizer(), "ja", stats, key)
+            assert key == [None]
+            assert set(stats) == {"read", "kept"}, "the stats as they were"
     finally:
         store.close()
 

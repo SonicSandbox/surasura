@@ -265,8 +265,9 @@ def files(language, rel_paths, memo=None, explain=False, cut_kinds=(), library=N
     **What the store knows, in one open** (`_rows`): each source's item, its title's type and every pairing row it has,
     and the library's sources. **The gate:** each folder a source's file could be in (`_places`: the copy's, the
     original's, a named or moved video's, an audiobook's) is listed once — the listings `_find` reuses — and only a
-    source with a `PLAYABLE` file in one of them goes on; a source with no pairing row also when Connect's index holds a
-    playable file (`_index_playable`: a video only the index knows). A book or a text never goes on (its ▶ opens the
+    source with a `PLAYABLE` file in one of them goes on; a source whose pairing rows name no video (no row, or only an
+    origin: `_names_media`) also when Connect's index holds a playable file (`_index_playable`: a video only the index
+    knows). A book or a text never goes on (its ▶ opens the
     book). **The lookup**, for those alone and only when the memo can't answer: the record `pairing_of` picks
     (`_pairings`) and `_find`, the window's ▶'s own lookup — except an audiobook's (its record's `files`: one plays,
     several don't). The render's worker; never writes; one source's fault is its None alone.
@@ -303,7 +304,7 @@ def files(language, rel_paths, memo=None, explain=False, cut_kinds=(), library=N
     asks = {}
     for rel, places in gated.items():
         if any(_holds_playable(p, listings, playable, kinds) for p in places) or \
-                (not known.get(rel, _UNKNOWN)[3] and _index_playable(language, stamps, kinds)):
+                (not _names_media(known.get(rel, _UNKNOWN)[3]) and _index_playable(language, stamps, kinds)):
             asks[rel] = places
         elif explain:
             out[rel] = _named_beside(rel, places, listings)
@@ -491,6 +492,13 @@ def _named_beside(rel, places, listings):
                     if found:
                         return os.path.join(folder, found)
     return None
+
+
+def _names_media(rows):
+    """Does any of a source's pairing rows (`_rows`: (origin, video_path, audiobook files) as SQLite read them) name
+    its media? A row with only an origin (a subtitle read in place from a folder with no video beside it) names none:
+    such a source may still play a video only Connect's index knows, as a copy with no row may (`files`' gate)."""
+    return any(video or files for _origin, video, files in (rows or ()))
 
 
 def _index_playable(language, stamps, kinds=PLAYABLE):

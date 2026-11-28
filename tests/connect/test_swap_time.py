@@ -192,3 +192,21 @@ def test_only_a_line_with_no_time_in_any_file_is_refused_as_having_none(tmp_path
         got = _post(opened, "swap/queue", lang, dict(body, word=word, at=1))
         assert (got.get("kind"), got.get("error")) == (kind, words), (body, got)
     assert not ledger.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'swaps'").fetchone() or         not swap._rows(ledger, "1 = 1")
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_store_busy_while_an_untimed_line_is_found_says_press_again_never_gone(tmp_path, ledger, lang, opened,
+                                                                                  monkeypatch):
+    # why: edge case — the line's subtitle is found through the library store; a store busy with another save just
+    # now is no line gone (J-FIX's rule, `_watch`): the learner presses again, nothing is asked
+    word, _old, other = CASES[lang]
+    item, rel, abs_path = _library(lang, video=True)
+    text, at, src = _page_line(tmp_path, lang, word, rel, abs_path, _cue(lang, other).text)
+
+    def busy(self, language, job):
+        raise runner.Wait(runner.LIBRARY_BUSY)
+    monkeypatch.setattr(runner.Steps, "subtitle", busy)
+    got = _post(opened, "swap/queue", lang, _page_body(word, text, at, src))
+    assert (got.get("kind"), got.get("error")) == ("busy", door_routes.BUSY), got
+    assert not ledger.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'swaps'").fetchone() or \
+        not swap._rows(ledger, "1 = 1")

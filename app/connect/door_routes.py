@@ -75,7 +75,7 @@ def card_route(body, app):
 
 def _ask(body, journey):
     from app import door, settings_manager
-    from app.connect import deleted, ledger as ledger_mod, runner, sentences, swap
+    from app.connect import runner, swap
     lang, word, line_id = body.get("lang"), body.get("word"), body.get("line_id")
     word = word.strip() if isinstance(word, str) else ""
     if lang not in LANGS or not word or len(word) > WORD_MAX:
@@ -96,14 +96,24 @@ def _ask(body, journey):
     picked = _line(steps, lang, line_id, word)
     if picked is None:
         raise door.RouteError(GONE, "gone")
+    got = _asked(lang, word, line_id, picked, journey)
+    if got["state"] == swap.DROPPED:
+        raise door.RouteError((IGNORED if got["why"] == "ignored" else KNOWN).format(word), got["why"] or "refused")
+    got["video"] = _video_here(steps, lang, picked[0])     # (the ledger closed: the video look may list folders)
+    return got
+
+
+def _asked(lang, word, line_id, picked, journey):
+    """The ask recorded through Swap's one maker -> `make_card`'s answer, or the word's ask still open (`new` False)."""
+    from app import door
+    from app.connect import deleted, ledger as ledger_mod, sentences, swap
     try:
         with ledger_mod.Ledger() as ledger:
             swap.ensure(ledger)
             open_ = swap._rows(ledger, "language = ? AND word = ? AND state IN (?, ?, ?)",
                                (lang, word, swap.ASKED, swap.QUEUED, swap.WAITS))
             if open_:
-                return {"id": open_[-1]["id"], "state": open_[-1]["state"], "new": False,
-                        "video": _video_here(steps, lang, picked[0])}
+                return {"id": open_[-1]["id"], "state": open_[-1]["state"], "new": False}
             notes = deleted._newer_cards(ledger.conn, lang, {word}).get(word) or set()
             old_note = max(notes) if notes else None
             if not journey and old_note is not None:
@@ -112,16 +122,12 @@ def _ask(body, journey):
                 lines = swap._old_lines(ledger, {"old_note": old_note})
                 if lines and sentences.same_line(picked[1], lines):
                     raise door.RouteError(SAME, "refused")
-            got = swap.make_card(lang, word, old_note=old_note, line_id=line_id, ledger=ledger,
-                                 by=swap.BY_JOURNEY if journey else swap.BY_ADD_NOW)
+            return swap.make_card(lang, word, old_note=old_note, line_id=line_id, ledger=ledger,
+                                  by=swap.BY_JOURNEY if journey else swap.BY_ADD_NOW)
     except door.RouteError:
         raise
     except (ledger_mod.TooNew, OSError, sqlite3.Error) as e:
         raise door.RouteError(NOT_SAVED.format(e), "refused")
-    if got["state"] == swap.DROPPED:
-        raise door.RouteError((IGNORED if got["why"] == "ignored" else KNOWN).format(word), got["why"] or "refused")
-    got["video"] = _video_here(steps, lang, picked[0])
-    return got
 
 
 def _line_id(steps, lang, item, text, settings):

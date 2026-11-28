@@ -211,7 +211,8 @@ WATCHED = "you've watched it: its new words go to the episodes ahead of you"
 NOT_PRESTUDIED = "Waiting until you pre-study it in the journey (Mine only episodes I’ve pre-studied is on)."
 # Kantan-MO (the mining model, F1): a level raise mines no episode again — a level job queued before the update and not
 # started yet is dropped (one under way finishes, by its own words)
-LEVEL_DROPPED = "a level raise mines no episode again: its new words join your study order"
+# TOP-UP (3.0.21): a raise's job from before 3.0.18 (source `level`), not started — the top-up's jobs replace it
+LEVEL_DROPPED = "a level job from before 3.0.18: Connect now tops up a mined episode's new words by itself"
 # The cap's window (Kantan-MO): a card's place in the study order — yours and a pinned show's first, a word off the
 # list after every word on it
 FRONT = -1

@@ -106,8 +106,9 @@ def top_up(language, item_ids, path=None, read_list=None, open_store=None):
     """TOP-UP (3.0.21, Sonic § 114 B; PROVISIONAL words): *Mine the new words* on mined episodes (an episode's ⋯, or
     its show's: every mined episode of it) -> [the item ids queued]; [] when none has a word left to card, or nothing
     could be read (no ledger, no list of this language, no store). Each mined item (`level.mined_items`) gets a
-    `level` job of source `level.TOP_UP` naming every listed word of its file no card Connect made holds
-    (`level.new_words`: a word made from any episode or show, a deleted card's too, is never named) — carrying the
+    `level` job of source `level.TOP_UP` naming the same words the automatic top-up names (`level.new_words`, one
+    rule): its file's listed words no card holds and Connect never made — a word made from any episode or show, a
+    deleted card's too, is never named (*Mine again* remakes a deleted card) — read against the whole list, carrying the
     press's time, so it goes first and past the cap as any press (`runner.held_by_cap`); a top-up already waiting
     gains the words and the time; an episode with another job open is left to it. The job's pick skips a word any card
     holds by then (the carded set): never a second card, never an existing card touched. The caller kicks Connect.

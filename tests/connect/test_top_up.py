@@ -11,8 +11,8 @@ mining hundreds of episodes past the cap, a word never carded):
     holds — never an unmined, watched or taken-out episode — ja and zh;
   * the job is the cap's (no ask) and *Mine only pre-studied*'s, kept by the runner and the inbox, placed in the cap's
     window by its own words;
-  * the press names every listed word of the episode no card holds, carries its time (first, past the cap), joins a
-    waiting top-up, and the inbox never un-asks it;
+  * the press names the same words by the same rule (no card holds them, Connect never made them; read against the
+    whole list), carries its time (first, past the cap), joins a waiting top-up, and the inbox never un-asks it;
   * the whole flow: an episode mined → the list grows → Connect's own look → the runner makes cards for only the new
     words, the old cards untouched, no word carded twice.
 
@@ -204,9 +204,10 @@ def _read(listed, files):
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
-def test_the_press_names_every_listed_word_of_the_episode_no_card_holds_and_goes_first(lang):
-    # why: B — "the press does the same at once": every listed word of its file no card Connect made holds (not only
-    # one raise's), carrying the press's time (first, past the cap); an episode never mined is *Mine now*'s
+def test_the_press_names_the_words_no_card_holds_and_connect_never_made_and_goes_first(lang):
+    # why: B — "the press does the same at once": the automatic top-up's rule, read against the whole list (an
+    # episode whose words joined in 3.0.18–3.0.20 had no top-up queued), carrying the press's time (first, past the
+    # cap); a word Connect made is never named; an episode never mined is *Mine now*'s
     before, raised, added = _lists(lang)
     (a, fa), (b, fb), _d = _line(lang)
     _mine(lang, a)
@@ -314,3 +315,8 @@ def test_the_whole_flow_mine_then_widen_the_rarity_then_only_the_new_words_get_c
     assert all(after[n] == note for n, note in notes_before.items()), "the first cards untouched"
     (job,) = _level_jobs()
     assert job["state"] == "done" and job["source"] == level.TOP_UP, job
+    # the row's numbers move as it lands: its new words recorded for the episode (the store's made words — the
+    # row's card count, `cards_of`, and the ✓ chip's cards left read them; a level batch moves the store's version
+    # so the window reads them again: test_fix_l33_level_batch_moves_state), no receipt written again
+    assert [(i, sorted(m), receipt) for i, m, receipt in steps.records] == [
+        (a, sorted([added[0][0], added[1][0]]), False)]

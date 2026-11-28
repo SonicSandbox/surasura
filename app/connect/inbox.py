@@ -17,8 +17,9 @@
   `left_mine_line`.
 - **What drops one:** an item that left the top 20 (or was removed or finished) before its mining started. A job
   carrying an ask is never dropped for leaving the top 20 or for being finished (*Mine it too* asks on a finished
-  item) — only when its item is removed or its ask undone; a level job is no longer kept anywhere (Kantan-MO: a raise
-  mines nothing again; the runner drops one not started, `runner.LEVEL_DROPPED`).
+  item) — only when its item is removed or its ask undone. A level job is kept out of the line only when it is a
+  new-files run's, a Best sentence's or a top-up (TOP-UP, 3.0.21: a mined episode's new words, past the top 20 too;
+  `keeps`); a raise's from before 3.0.18 is dropped by the runner, not started (`runner.LEVEL_DROPPED`).
 - **Asks** (P4.1 row 4.1.3, C2 / C3): every look reads the store's asks (`mine_asked`) no receipt answers
   (`library.asked`): one no job holds yet → a job of kind `asked` (by `user`), or the item's open job carries it and
   goes first (*Mine now*); an ask made before the asks watermark (`asks_from:<lang>`, set at every off → on by

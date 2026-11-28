@@ -17,9 +17,11 @@ none again (the newly listed words joined the study order only, so a word met on
 a tester's Dungeon Meshi episodes at 15–42 *new* each, 2026-11-28). The window is what keeps a move to Rare from
 mining a lot at once: past it the jobs wait until you study (`Your N cards are waiting`).
 
-**The press** (`actions.top_up`, *Mine the new words* on a mined episode's ⋯ and its show's): the same job at once —
-its words every listed word of the episode no card holds (`new_words`, not only this raise's), carrying the press's
-time, so it goes first and past the cap as any press does (Sonic's M-3 A).
+**The press** (`actions.top_up`, *Mine the new words* on a mined episode's ⋯ and its show's): the same rule at once —
+`new_words`, the episode's listed words no card holds and Connect never made (a card you deleted is never remade:
+*Mine again* does that), read against the whole list rather than one raise's new words, so an episode whose words
+joined while no top-up was queued (3.0.18–3.0.20 recorded those raises) is reached too. One rule, two triggers; the
+job carries the press's time, so it goes first and past the cap as any press does (Sonic's M-3 A).
 
 Lowering the level mines nothing (N38: the words that left keep their cards). Either way the deck is re-sorted
 (`resort_due`, paid by the runner's ordering step, P2.4): the list's words moved.
@@ -47,8 +49,8 @@ NEW_FILES = "new-files"
 # Kantan-SD: a level job for a word whose best sentence is in this episode (the sentence dial's Best, `runner._best`)
 # — kept by the runner, watched or finished too (the context you remember is why it was chosen)
 BEST = "best-sentence"
-# TOP-UP (3.0.21, Sonic § 114): an episode already mined, its newly listed words (a raise, new content, a re-Generate)
-# or — with the press's time — every listed word of it no card holds (*Mine the new words*)
+# TOP-UP (3.0.21, Sonic § 114): an episode already mined, its newly listed words no card holds (a raise, new content,
+# a re-Generate) — with the press's time: *Mine the new words*
 TOP_UP = "top-up"
 KEPT = (NEW_FILES, BEST, TOP_UP)
 

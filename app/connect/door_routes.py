@@ -63,14 +63,14 @@ def swap_route(body, app):
         same = swap.in_place_on(settings_manager.load_settings())
     except Exception:
         same = False
-    return {"queued": True, "id": got["id"], "already": not got["new"], "same": same, "video": got["video"]}
+    return {"queued": True, "id": got["id"], "already": not got["new"], "same": same, "video": got.get("video")}
 
 
 def card_route(body, app):
     """`card/make` {lang, word, line_id, item, line} -> {asked: True, id, already, video}: *Add now*, a card for a word
     with none from the line pressed (Swap's `make_card`, by `BY_ADD_NOW`)."""
     got = _ask(body, journey=False)
-    return {"asked": True, "id": got["id"], "already": not got["new"], "video": got["video"]}
+    return {"asked": True, "id": got["id"], "already": not got["new"], "video": got.get("video")}
 
 
 def _ask(body, journey):

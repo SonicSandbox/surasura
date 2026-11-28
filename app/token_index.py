@@ -3411,7 +3411,49 @@ def known_signature(known_path, script="asis"):
         sig = [False, None, None]   # missing / deleted
     if script in ("s", "t"):
         sig.append(f"script={script}")
+    # The studied kana cards' sentences beside it (KANA-KNOWN) decide how those terms read: folded in only while the
+    # file is there, so a folder without it signs as before (no re-normalizing on upgrade, I2).
+    try:
+        st = os.stat(kana_sentences_path(known_path))
+        sig.append(["kana", st.st_mtime, st.st_size])
+    except OSError:
+        pass
     return json.dumps(sig)
+
+
+# A studied Japanese card written in kana alone counts for the word its own sentence shows it to be (KANA-KNOWN; the
+# rule: `anki_match.card_word_in_sentence`, Junban's and the ✓ chip's). The known-words sync keeps each such card's
+# word and raw sentence here, beside KnownWord.json — {"version": 1, "notes": {note id: [word, sentence]}} — so
+# KnownWord.json itself stays append-only (anki_sync D2/I3); `analyzer.load_known_words` reads it.
+KANA_SENTENCES_FILE = "anki_kana_sentences.json"
+
+
+def kana_sentences_path(known_path):
+    return os.path.join(os.path.dirname(known_path), KANA_SENTENCES_FILE)
+
+
+def kana_sentence_notes(known_path):
+    """{note id: [word, raw sentence]} kept beside `known_path` (`KANA_SENTENCES_FILE`); {} when there is none or it
+    can't be read (the terms then read as themselves, as before)."""
+    from app.path_utils import read_text
+    try:
+        data = json.loads(read_text(kana_sentences_path(known_path), "ja"))
+        notes = data.get("notes") if isinstance(data, dict) else None
+    except (OSError, ValueError, UnicodeDecodeError):
+        return {}
+    if not isinstance(notes, dict):
+        return {}
+    return {str(nid): [pair[0], pair[1]] for nid, pair in notes.items()
+            if isinstance(pair, list) and len(pair) == 2 and all(isinstance(p, str) and p for p in pair)}
+
+
+def kana_sentences(known_path):
+    """{word (NFKC, stripped): its studied cards' sentences, sorted, each once} from `kana_sentence_notes`."""
+    import unicodedata
+    by_word = {}
+    for word, sentence in kana_sentence_notes(known_path).values():
+        by_word.setdefault(unicodedata.normalize("NFKC", word).strip(), set()).add(sentence)
+    return {word: tuple(sorted(said)) for word, said in by_word.items()}
 
 
 # --------------------------------------------------------------------------- #

@@ -39,7 +39,7 @@ from app import anki_connect
 from app.anki_connect import AnkiError
 from app.anki_utils import clean_field_html
 from app.path_utils import decode_text, get_user_files_path, read_text
-from app.token_index import known_signature
+from app.token_index import kana_sentence_notes, kana_sentences_path, known_signature
 from app.unicode_ranges import HAN, KANA
 
 KNOWN_FILE = "KnownWord.json"
@@ -48,8 +48,10 @@ STATE_VERSION = 1
 # Bump when a studied note's words would now be read differently: a state saved under another reading makes the next
 # sync a full one, once (append-only: what was read before stays known). 2: a word field holding a sentence is read
 # whole, as "Also read" reads one (`anki_match.holds_sentence`; was its first clause: でも、そんな気がする -> でも).
-# Japanese only: Chinese read every line whole already.
-READING_VERSION = 2
+# Japanese only: Chinese read every line whole already. 3: a card written in kana alone keeps its sentence beside
+# KnownWord.json (`_keep_sentences`, KANA-KNOWN: the known words read its word there), so the cards studied before are
+# read once more for theirs.
+READING_VERSION = 3
 SOURCE = "AnkiConnect"
 # The source of the words GraduatedList.txt held, merged once into KnownWord.json (app/graduated_merge.py): Replace
 # keeps them.
@@ -837,6 +839,7 @@ def _sync(language, url, decks, fields, include_suspended, full, settings=None, 
 
     result.added = len(new_entries)
     result.total_known = len(file.keys())
+    _keep_sentences(language, notes, fields)       # before the state: its known_sig signs the sentences too
     _save_state(language, {
         "url": url, "decks": decks, "fields": fields, "include_suspended": include_suspended,
         "reading": READING_VERSION,
@@ -951,6 +954,30 @@ def _note_sentence(note, word, language):
     value = note_fields.get(SENTENCE_FIELD)
     raw = value.get("value", "") if isinstance(value, dict) else ""
     return raw if isinstance(raw, str) and raw.strip() else ""
+
+
+def _keep_sentences(language, notes, fields, fresh=False):
+    """Keep each studied note's word and raw sentence, for a Japanese card written in kana alone (`_note_sentence`),
+    in KANA_SENTENCES_FILE beside KnownWord.json — the known words read its word there (KANA-KNOWN,
+    `analyzer.load_known_words`), as Junban and the ✓ chip do; KnownWord.json stays append-only. A note read again (an
+    edit) is kept as it reads now, or dropped once it is no such card; one not read stays. `fresh` (Replace): only the
+    notes read now. Written only when it changed (atomic), under the caller's known-words lock; raises OSError."""
+    if language != "ja":
+        return
+    path = kana_sentences_path(_known_path(language))
+    kept = {} if fresh else kana_sentence_notes(_known_path(language))
+    before = dict(kept)
+    for note in notes or ():
+        if note.get("noteId") is None:
+            continue
+        word = _note_word(note, fields, language)
+        sentence = _note_sentence(note, word, language) if word else ""
+        if sentence:
+            kept[str(note["noteId"])] = [word, sentence]
+        else:
+            kept.pop(str(note["noteId"]), None)
+    if kept != before or (fresh and os.path.exists(path) and not kept):
+        _atomic_write_json(path, {"version": 1, "notes": kept}, indent=None)
 
 
 def _backlog_entry(note, fields, language):
@@ -1357,7 +1384,7 @@ def replace(language, url, decks, fields, include_suspended=False, dry_run=False
             return refused
         try:
             return _replace_held(language, result, known_path, words, url, decks, fields, include_suspended,
-                                 note_ids, now, expect, newest)
+                                 note_ids, now, expect, newest, notes)
         finally:
             if held is not None:
                 held.release()
@@ -1375,7 +1402,7 @@ def _count_replacement(result, path, language, words, newest=None):
 
 
 def _replace_held(language, result, known_path, words, url, decks, fields, include_suspended, note_ids, now,
-                  expect=None, newest=None):
+                  expect=None, newest=None, notes=()):
     """`replace`'s write, holding KnownWord.json's lock: the numbers checked against the confirmed ones, the backup,
     then the write."""
     refusal = known_file_refusal(language)                # changed since the dry run: still never written over
@@ -1394,6 +1421,7 @@ def _replace_held(language, result, known_path, words, url, decks, fields, inclu
         return result
     try:
         _atomic_write_json(known_path, _fresh_file(words))
+        _keep_sentences(language, notes, fields, fresh=True)       # a clean slate: only the cards read now
         state = load_state(language)
         state.update({
             "url": url, "decks": decks, "fields": fields, "include_suspended": include_suspended,

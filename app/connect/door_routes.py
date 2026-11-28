@@ -100,7 +100,20 @@ def _ask(body, journey):
     if got["state"] == swap.DROPPED:
         raise door.RouteError((IGNORED if got["why"] == "ignored" else KNOWN).format(word), got["why"] or "refused")
     got["video"] = _video_here(steps, lang, picked[0])     # (the ledger closed: the video look may list folders)
+    if got.get("new"):
+        _start_connect(settings)
     return got
+
+
+def _start_connect(settings):
+    """A new ask starts Connect when it isn't running (`kick.kick`: Connect on, not paused, no update staged, one
+    instance). `make_card`'s wake only ends a running Connect's pause: one that had exited (no job left) read the ask
+    only at the next thing that started it — a journey ⇄ said *Queued* and nothing came. Never raises."""
+    try:
+        from app.connect import kick
+        kick.kick(settings)
+    except Exception:
+        log.info("Door: Connect wasn't started for the ask (its next start reads it)", exc_info=True)
 
 
 def _asked(lang, word, line_id, picked, journey):

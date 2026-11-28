@@ -1,0 +1,93 @@
+{
+  "version": "3.0.21",
+  "date": "2026-11-28",
+  "items": [
+    {
+      "id": "add-sound",
+      "kind": "new",
+      "for": ["anki", "miner"],
+      "text": "Add sound: cards without sentence audio get their own line's sound, with one press and one Undo.",
+      "where": "settings:card_sound_add"
+    },
+    {
+      "id": "ai-voice",
+      "kind": "new",
+      "for": ["ja", "anki"],
+      "text": "The AI voice (beta) reads cards with no real sound. Needs you's Set it up guides you through it.",
+      "where": "settings:ai_audio"
+    },
+    {
+      "id": "top-up",
+      "kind": "new",
+      "for": ["anki", "miner"],
+      "text": "Episodes already mined get their new words: by themselves, or with Mine the new words on ⋯.",
+      "where": "tab:current"
+    },
+    {
+      "id": "start-at-once",
+      "kind": "tweak",
+      "for": ["everyone"],
+      "text": "The window opens at once at your last screen, even right after an update."
+    },
+    {
+      "id": "cards-left",
+      "kind": "tweak",
+      "for": ["anki"],
+      "text": "The green card number counts the cards still left to study (✓ when none are left)."
+    },
+    {
+      "id": "swap-every-line",
+      "kind": "tweak",
+      "for": ["anki", "miner", "shows"],
+      "text": "⇄ and Add now work on every subtitle line; without its video, the swap waits in Needs you."
+    },
+    {
+      "id": "phrases-inner",
+      "kind": "tweak",
+      "for": ["ja"],
+      "text": "Words: a set phrase inside a longer one counts too (いい加減, にしても, 気が付く)."
+    },
+    {
+      "id": "words-tsukareta",
+      "kind": "fix",
+      "for": ["ja"],
+      "text": "Words: a plain-kana つかれた is 疲れる, be tired, no longer 突く."
+    },
+    {
+      "id": "no-leftover-worker",
+      "kind": "fix",
+      "for": ["everyone"],
+      "text": "Quitting right after an update no longer leaves a background worker running."
+    },
+    {
+      "id": "pitch-on-kana",
+      "kind": "fix",
+      "for": ["ja"],
+      "text": "The pitch accent sits on its kana at every size."
+    },
+    {
+      "id": "songs-rarity",
+      "kind": "fix",
+      "for": ["shows"],
+      "text": "A show's songs are left out of the rarity numbers too, as they are of your list."
+    },
+    {
+      "id": "hato-show",
+      "kind": "fix",
+      "for": ["hato"],
+      "text": "A hato episode with no show joins the show whose videos sit beside it."
+    },
+    {
+      "id": "levels-refresh",
+      "kind": "fix",
+      "for": ["everyone"],
+      "text": "Settings' level numbers update by themselves after a sync, a mark or a Generate."
+    },
+    {
+      "id": "anki-miner-once",
+      "kind": "fix",
+      "for": ["miner"],
+      "text": "Anki Miner starts once, not three times, when Settings › Anki & mining opens."
+    }
+  ]
+}

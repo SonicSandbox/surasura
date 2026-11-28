@@ -147,6 +147,22 @@ def _by_id(notes):
     return {int(n["noteId"]): n for n in notes or () if isinstance(n, dict) and n.get("noteId")}
 
 
+def new_id(ledger, prefix=RECORD):
+    """A new id under the ledger meta's `prefix`, `<ns>-<8 hex>`, its ns past the newest one's there (one read, by the
+    key's index; a call's record takes it under the write lock, so no other call writes between). They are read in id
+    order (Card sound's `ai_held` and `last_run`, `pending`): two in one step of the clock (Windows': up to ~16 ms), or after
+    it stepped back, got one ns and their random tails ordered them — a real clip written after an AI one read as
+    written before it (FLAKES-1127)."""
+    ns = time.time_ns()
+    row = ledger.conn.execute("SELECT key FROM meta WHERE key > ? AND key < ? ORDER BY key DESC LIMIT 1",
+                              (prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1))).fetchone()
+    try:
+        ns = max(ns, int(row[0][len(prefix):].split("-")[0]) + 1) if row else ns
+    except ValueError:
+        pass                                               # (an id not of this shape: the clock's alone)
+    return f"{ns}-{uuid.uuid4().hex[:8]}"
+
+
 def _write_record(ledger, rid, record, new=False):
     """A call's record: its first write a plain INSERT (an id met twice raises, never overwrites an Undo: r2 N2). An
     older record written again (an Undo) inside the fold drops it (FOLD: the next look reads every record again)."""
@@ -219,7 +235,7 @@ def fill(anki, ledger, clips, field=FIELD, tag=TAG, by="connect", texts=None, ve
         if not todo:
             return {"id": None, "filled": [], "skipped": skipped}
         named = {} if texts else {n: clip_name(p) for n, p in todo.items()}
-        rid = f"{time.time_ns()}-{uuid.uuid4().hex[:8]}"
+        rid = new_id(ledger)
         rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "field": _field_of(field, min(todo)),
                "tag": tag, "by": by, "notes": {str(n): todo[n] if texts else sound(named[n][0]) for n in todo},
                "media": sorted({v[0] for v in named.values()}), "state": WRITING}
@@ -313,7 +329,7 @@ def replace(anki, ledger, note_id, new, was, media=None, keep_dir=None, tag=None
                 return {"id": None, "filled": [], "skipped": {n: CHANGED}}
         stored_new = {name: path for name, path in (media or {}).items() if os.path.isfile(path)}
         gone = [m for f in new for m in media_in(was[f]) if m not in {x for v in new.values() for x in media_in(v)}]
-        rid = f"{time.time_ns()}-{uuid.uuid4().hex[:8]}"
+        rid = new_id(ledger)
         kept = _keep(anki, gone, os.path.join(keep_dir, rid)) if keep_dir and gone else {}
         had = any(str(t).lower() == str(tag or "").lower() for t in note.get("tags") or ())
         on = {str(t).lower() for t in note.get("tags") or ()}

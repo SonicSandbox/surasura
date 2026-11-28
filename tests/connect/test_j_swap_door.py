@@ -4,8 +4,8 @@ What each test holds still:
 - **one maker:** both presses ask Swap's `make_card` with the line the learner pressed (`by` journey / add now), and
   Connect's look makes the card from that line — Swap's own pick is never asked;
 - **the line pressed or nothing:** a line with no item / time, one not in its file now, or the old card's own line is
-  refused in words, nothing asked; Connect off, a Known or Ignored word, *Add now* on a word Connect has a card for:
-  refused, nothing asked; a second press while the first is open answers the first (never a second card);
+  refused in words, nothing asked; Connect off, a Known or Ignored word: refused, nothing asked; *Add now* on a word
+  Connect has a card for is ⇄ of that card; a second press while the first is open answers the first (never a second card);
 - **one out, one in** (the lead's ruling, PROVISIONAL — OPEN-FOR-SONIC § 72 a): a journey ⇄ suspends the old card
   once its new card is made (never at the press: a word still waiting keeps its old card in reviews), through the
   shelf's writer, and tags it; it never flags it. Its Undo takes back the new card and the tag and puts back only what
@@ -139,12 +139,28 @@ def test_add_now_asks_a_card_for_a_word_with_none_from_the_line_pressed_and_tidy
     assert tidy.asked_for(ledger, lang, [951]) == {951}             # pinned: an ordinary tidy never takes it (D3)
 
 
-def test_add_now_on_a_word_connect_has_a_card_for_is_refused_and_asks_nothing(ledger):
-    lang, (word, _old, other) = "ja", CASES["ja"]
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_add_now_on_a_word_connect_has_a_card_for_is_a_swap_of_that_card(ledger, lang):
+    # why: the page shows Add now when its in-Anki mark misses the card (a kana card ぐぐっ, the list's ぐぐっと); a
+    # refusal naming ⇄ left the learner no press that works — the press swaps the card Connect made instead
+    word, _old, other = CASES[lang]
     item = _library(lang)
     _connects_card(ledger, lang, item)
-    e = _refused("card/make", lang, word, _line(lang, item, other)[0])
-    assert e.message == door_routes.HAS_CARD and _asks(ledger) == []
+    line_id, _text = _line(lang, item, other)
+    got = _press("card/make", lang, word, line_id)
+    assert got["asked"] and got["swapped"] and not got["already"]
+    row = _row(ledger, got["id"])
+    assert row["by"] == swap.BY_JOURNEY and row["old_note"] is not None and row["line_id"] == line_id
+    again = _press("card/make", lang, word, line_id)
+    assert again["already"] and again["id"] == got["id"], "a second press answers the open ask"
+
+
+def test_add_now_on_a_word_connect_has_a_card_for_still_refuses_the_old_cards_own_line(ledger):
+    lang, (word, old, _other) = "ja", CASES["ja"]
+    item = _library(lang)
+    _connects_card(ledger, lang, item)
+    e = _refused("card/make", lang, word, _line(lang, item, old)[0])
+    assert e.message == door_routes.SAME and _asks(ledger) == []
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
@@ -411,3 +427,31 @@ def test_a_ledger_from_before_the_ruling_gains_the_record_of_what_a_press_took(l
 def test_hello_lists_both_routes_so_the_page_shows_swap_and_add_now():
     routes = journey_door.hello({"lang": "ja"}, journey_door.App())["routes"]
     assert {"swap/queue", "card/make"} <= set(routes)
+
+
+@pytest.mark.parametrize("route", ["swap/queue", "card/make"])
+def test_a_new_ask_starts_connect_and_a_second_press_starts_nothing(ledger, route, monkeypatch):
+    # why: `make_card`'s wake only ends a running Connect's pause; with Connect exited (no job left), a journey ⇄ said
+    # *Queued* and nothing came until something else started Connect (Mattias, 2026-11-28: ぐぐっと's swap sat asked)
+    from app.connect import kick
+    lang, (word, _old, other) = "ja", CASES["ja"]
+    item = _library(lang)
+    if route == "swap/queue":
+        _connects_card(ledger, lang, item)
+    started = []
+    monkeypatch.setattr(kick, "kick", lambda settings, videos=False: started.append(dict(settings)))
+    got = _press(route, lang, word, _line(lang, item, other)[0])
+    assert not got["already"] and len(started) == 1 and started[0].get("connect_enabled") is True
+    _press(route, lang, word, _line(lang, item, other)[0])
+    assert len(started) == 1, "a second press answers the open ask: nothing more to start"
+
+
+def test_a_refused_press_starts_no_connect(ledger, monkeypatch):
+    from app.connect import kick
+    lang, (word, old, _other) = "ja", CASES["ja"]
+    item = _library(lang)
+    _connects_card(ledger, lang, item)
+    started = []
+    monkeypatch.setattr(kick, "kick", lambda settings, videos=False: started.append(settings))
+    assert _refused("swap/queue", lang, word, _line(lang, item, old)[0]).message == door_routes.SAME
+    assert started == [] and _asks(ledger) == []

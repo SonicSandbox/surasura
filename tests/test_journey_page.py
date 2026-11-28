@@ -337,6 +337,84 @@ def test_the_pitch_graph_sits_on_its_kana_with_room_under_the_word_at_every_size
     assert not misses, "\n".join(misses[:40]) + f"\n({len(misses)} in all)"
 
 
+CHIP_SIZES = [(1366, 768, 1.0), (1024, 640, 1.5), (683, 384, 2.0)]   # wide, between the breakpoints, narrow (1366 at 200 %)
+CHIP_MEASURE = """(() => {
+  const out = [];
+  for (const chip of document.querySelectorAll('#stage .prechip')) {
+    const c = chip.getBoundingClientRect(), card = chip.closest('.end').getBoundingClientRect();
+    const svg = chip.querySelector('svg').getBoundingClientRect();
+    const t = [...chip.childNodes].find((n) => n.nodeType === 3), r = document.createRange();
+    r.selectNodeContents(t);
+    const lines = new Set([...r.getClientRects()].map((x) => Math.round(x.top))).size, tb = r.getBoundingClientRect();
+    out.push({ text: t.textContent, cls: chip.className, lines, chip: [c.left, c.top, c.right, c.bottom],
+               card: [card.left, card.right], svg: [svg.left, svg.top, svg.right, svg.bottom],
+               txt: [tb.left, tb.top, tb.right, tb.bottom], over: chip.scrollWidth - chip.clientWidth });
+  }
+  return out; })()"""
+
+
+@needs_edge
+def test_the_end_cards_pre_studied_chip_fits_its_words_on_one_line_at_every_width_and_state(tmp_path):
+    # (a tester on 3.0.21) the end card's chip read "Pre- / studied · / un-mark" on three lines, spilling out of its
+    # pill: its stone's SVG had no size inside the chip (only `.st svg` is 20 px), so it grew and the words were
+    # squeezed into what was left. Measured in headless Edge, as positions: the chip's words on one line, inside the
+    # pill, right of a 20 px stone; nothing overflows the pill and the pill stays inside its card — at three widths,
+    # the word view's end card and the list's, every stone (rock, mined, nothing new, cut) × on / off × the ⧗ and the
+    # spinner of a waiting press
+    from journey_page_edge import Edge
+    path = os.path.join(str(tmp_path), "chip-ja.html")
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(fx.assemble(fx.build("ja", 40)))
+    misses, seen, texts = [], 0, set()
+    with Edge() as e:
+        assert e.open("file:///" + path.replace("\\", "/"), seconds=60), e.errors()
+        # one episode of each stone the fixture has: rock (no cards), raw (mined), nothing (nothing new), cut (finished)
+        eps = e.evaluate("""(() => { const J = window.__J, EPS = J.page.head.eps, got = {};
+          for (let i = 0; i < EPS.length; i++) if (EPS[i][0] != null && !(EPS[i][9] in got)) got[EPS[i][9]] = i;
+          return got; })()""")
+        assert {"rock", "raw", "nothing", "cut"} <= set(eps), eps
+        for width, height, scale in CHIP_SIZES:
+            e.call("Emulation.setDeviceMetricsOverride", width=width, height=height, deviceScaleFactor=scale, mobile=False)
+            for stone, ep in sorted(eps.items()):
+                for on in ((True,) if stone == "cut" else (True, False)):   # a finished one shows its chip only on
+                    for wait in ("", "wait", "queued"):
+                        for view in ("word", "list"):
+                            m = e.evaluate(f"""(async () => {{ const J = window.__J; await J.loadEp({ep});
+                              if (J.S.list !== ({'true' if view == 'list' else 'false'})) J.toggleList();
+                              J.go({ep}, (J.seq({ep}) || []).length); J.drawWord();
+                              J.PRE.set({ep}, {{ on: {'true' if on else 'false'}, by: '{'end' if on else 'off'}',
+                                               wait: '{wait}' || undefined }});
+                              J.drawWord(); return {CHIP_MEASURE}; }})()""")
+                            where = f"{width}x{height} @{int(scale * 100)} %, {stone}, {'on' if on else 'off'}, " \
+                                    f"wait '{wait}', {view} view"
+                            if not m:
+                                misses.append(f"{where}: no chip")
+                                continue
+                            for ch in m:
+                                seen += 1
+                                texts.add(ch["text"])
+                                cls = set(ch["cls"].split())   # the state set reached the chip drawn
+                                if ("on" in cls) != on or (wait and wait not in cls) or (not wait and cls & {"wait", "queued"}):
+                                    misses.append(f"{where}: the chip drawn as '{ch['cls']}'")
+                                (cl, ct, cr, cb), (sl, st, sr, sb), (tl, tt, tr, tb) = ch["chip"], ch["svg"], ch["txt"]
+                                if ch["lines"] != 1:
+                                    misses.append(f"{where}: '{ch['text']}' on {ch['lines']} lines")
+                                if not (cl < sl and sr <= tl and tr < cr and ct <= tt and tb <= cb and ct <= st and sb <= cb):
+                                    misses.append(f"{where}: '{ch['text']}' outside its pill: chip {ch['chip']}, "
+                                                  f"stone {ch['svg']}, words {ch['txt']}")
+                                if not 14 <= sr - sl <= 24:
+                                    misses.append(f"{where}: the stone {sr - sl:.1f} px wide")
+                                if ch["over"] > 0:
+                                    misses.append(f"{where}: the pill's contents overflow it by {ch['over']} px")
+                                if not (ch["card"][0] <= cl and cr <= ch["card"][1]):
+                                    misses.append(f"{where}: the pill {ch['chip']} outside its card {ch['card']}")
+        errs = e.errors()
+    assert not errs, errs
+    assert texts == {"Pre-studied · un-mark", "Not pre-studied · mark it"}, texts
+    assert seen >= 3 * (3 * 2 + 1) * 3 * 2, seen
+    assert not misses, "\n".join(misses[:40]) + f"\n({len(misses)} in all)"
+
+
 def test_a_hand_edited_first_meeting_switch_reaches_the_page_as_shown():
     # settings.json edited by hand ("false", 0): J-SET's reader takes it as no switch, the default (Shown); the page
     # reads the head's value only when it is a switch (the Edge case below with a "false" head)

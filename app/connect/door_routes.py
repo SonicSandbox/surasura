@@ -17,8 +17,8 @@ only). Each answer says whether the line's episode has its video on this compute
 kept all the same, Connect's job for it waits on *No video*, and Needs you's *Find video* asks where it is.
 
 Both refuse in plain words, nothing recorded, when: Connect is off (no one would make it), the line has no time in
-any file (a book's or a text's line, or the page's key with no item), the line isn't in its file now, it is the old card's own line, the word is Known or Ignored now (Swap's own rule), or (*Add now*) Connect has a
-card for the word already. The library store busy with another save just now is told apart from a line gone (`busy`:
+any file (a book's or a text's line, or the page's key with no item), the line isn't in its file now, it is the old card's own line, the word is Known or Ignored now (Swap's own rule). *Add now* on a word Connect has a
+card for already is ⇄ (`card_route`: the page's in-Anki mark missed the card). The library store busy with another save just now is told apart from a line gone (`busy`:
 press again; `_line`). A second press for a word whose ask is still open answers that ask (`already`), never a
 second card. Not queued on the page (SPEC §3.5: an action that needs the app), so `at` is not read.
 
@@ -44,7 +44,6 @@ NO_LINE = "Surasura can't make a card from that line (it has no time in its file
 GONE = "Surasura can't find that line in its file now: the journey may be older than your library."
 BUSY = "Surasura's library is busy just now: press again in a moment."
 SAME = "That's the line your card already has: pick another one."
-HAS_CARD = "This word has a card already: ⇄ gives it another sentence."
 KNOWN = "「{}」 is known now: no card is made."
 IGNORED = "「{}」 is on your Ignore list: no card is made."
 NOT_READ = "Surasura couldn't read that."
@@ -67,10 +66,21 @@ def swap_route(body, app):
 
 
 def card_route(body, app):
-    """`card/make` {lang, word, line_id, item, line} -> {asked: True, id, already, video}: *Add now*, a card for a word
-    with none from the line pressed (Swap's `make_card`, by `BY_ADD_NOW`)."""
+    """`card/make` {lang, word, line_id, item, line} -> {asked: True, id, already, video, swapped}: *Add now*, a card
+    for a word with none from the line pressed (Swap's `make_card`, by `BY_ADD_NOW`). A word Connect has a card for
+    already (the page didn't know: a kana card ぐぐっ the list reads as ぐぐっと) is ⇄ instead (`swapped`): its card
+    gets this line, never a refusal naming a ⇄ the page doesn't show."""
     got = _ask(body, journey=False)
-    return {"asked": True, "id": got["id"], "already": not got["new"], "video": got.get("video")}
+    out = {"asked": True, "id": got["id"], "already": not got["new"], "video": got.get("video"),
+           "swapped": bool(got.get("swapped"))}
+    if out["swapped"]:                          # the toast says ⇄'s words, *Swap gives* as ⇄'s own answer says it
+        from app import settings_manager
+        from app.connect import swap
+        try:
+            out["same"] = swap.in_place_on(settings_manager.load_settings())
+        except Exception:
+            out["same"] = False
+    return out
 
 
 def _ask(body, journey):
@@ -100,7 +110,20 @@ def _ask(body, journey):
     if got["state"] == swap.DROPPED:
         raise door.RouteError((IGNORED if got["why"] == "ignored" else KNOWN).format(word), got["why"] or "refused")
     got["video"] = _video_here(steps, lang, picked[0])     # (the ledger closed: the video look may list folders)
+    if got.get("new"):
+        _start_connect(settings)
     return got
+
+
+def _start_connect(settings):
+    """A new ask starts Connect when it isn't running (`kick.kick`: Connect on, not paused, no update staged, one
+    instance). `make_card`'s wake only ends a running Connect's pause: one that had exited (no job left) read the ask
+    only at the next thing that started it — a journey ⇄ said *Queued* and nothing came. Never raises."""
+    try:
+        from app.connect import kick
+        kick.kick(settings)
+    except Exception:
+        log.info("Door: Connect wasn't started for the ask (its next start reads it)", exc_info=True)
 
 
 def _asked(lang, word, line_id, picked, journey):
@@ -116,14 +139,16 @@ def _asked(lang, word, line_id, picked, journey):
                 return {"id": open_[-1]["id"], "state": open_[-1]["state"], "new": False}
             notes = deleted._newer_cards(ledger.conn, lang, {word}).get(word) or set()
             old_note = max(notes) if notes else None
-            if not journey and old_note is not None:
-                raise door.RouteError(HAS_CARD, "refused")
+            swapped = not journey and old_note is not None
+            if swapped:
+                journey = True                  # *Add now* on a word with Connect's card: the press is ⇄ (`card_route`)
             if old_note is not None:
                 lines = swap._old_lines(ledger, {"old_note": old_note})
                 if lines and sentences.same_line(picked[1], lines):
                     raise door.RouteError(SAME, "refused")
-            return swap.make_card(lang, word, old_note=old_note, line_id=line_id, ledger=ledger,
-                                  by=swap.BY_JOURNEY if journey else swap.BY_ADD_NOW)
+            got = swap.make_card(lang, word, old_note=old_note, line_id=line_id, ledger=ledger,
+                                 by=swap.BY_JOURNEY if journey else swap.BY_ADD_NOW)
+            return dict(got, swapped=True) if swapped else got
     except door.RouteError:
         raise
     except (ledger_mod.TooNew, OSError, sqlite3.Error) as e:

@@ -97,7 +97,7 @@ def _pick(menu, label):
 def _top_ups(language):
     with Ledger() as ledger:
         return [ledger.job_by_id(j["id"]) for j in ledger.jobs(language)
-                if j["kind"] == LEVEL and j["source"] == level.TOP_UP]
+                if j["kind"] == LEVEL and j["source"] == level.TOP_UP_PRESS]
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])

@@ -138,6 +138,8 @@ def test_a_mined_episode_past_the_top_20_is_topped_up_after_the_line():
     files = {fa: [added[0][0]], fb: [added[1][0]]}
     _check("ja", before, "run-1", files)
     assert _check("ja", raised, "run-2", files)["queued"] == [a, b]
+    assert sorted((j["item_id"], j["source"], j["words"]) for j in _level_jobs()) == sorted(
+        [(a, level.TOP_UP, [added[0]]), (b, level.TOP_UP, [added[1]])]), "each its own new words, never the other's"
 
 
 def test_the_same_list_again_and_a_lowered_level_queue_nothing():
@@ -168,7 +170,7 @@ def test_the_cap_the_prestudied_switch_the_runner_and_the_inbox_treat_a_top_up_a
     job = {"kind": LEVEL, "source": level.TOP_UP, "words": [("眼鏡", "メガネ")]}
     assert runner.held_by_cap(job.get("asked_at")), "no ask: the cap's window holds it"
     assert runner.held_by_prestudy(job), "Connect's own pick: held until its episode is pre-studied"
-    assert level.TOP_UP in level.KEPT and "level" not in level.KEPT
+    assert set(level.TOP_UPS) <= set(level.KEPT) and "level" not in level.KEPT
     assert inbox.keeps(job) and inbox.keeps(job, "left_mine_line")
     assert not inbox.keeps(job, "finished") and not inbox.keeps(job, "removed")
     pressed = dict(job, asked_at="2026-11-28T09:00:00.000000Z")
@@ -208,18 +210,22 @@ def test_the_press_names_the_words_no_card_holds_and_connect_never_made_and_goes
     # why: B — "the press does the same at once": the automatic top-up's rule, read against the whole list (an
     # episode whose words joined in 3.0.18–3.0.20 had no top-up queued), carrying the press's time (first, past the
     # cap); a word Connect made is never named; an episode never mined is *Mine now*'s
+    from app.connect.ledger import stamp, stamp_key
     before, raised, added = _lists(lang)
-    (a, fa), (b, fb), _d = _line(lang)
+    (a, fa), (b, fb), (d, _fd) = _line(lang)
     _mine(lang, a)
     old = sorted(before)
     _made(lang, a, old[0][0])                       # its first mining carded one word
-    files = {fa: [old[0][0], old[1][0], added[0][0]], fb: [added[1][0]]}
+    _made(lang, d, added[2][0])                     # ... and another episode's mining another
+    files = {fa: [old[0][0], old[1][0], added[0][0], added[2][0]], fb: [added[1][0]]}
     with Ledger():
         pass                                        # (the ledger exists, as once Connect ran)
+    pressed = stamp()
     assert actions.top_up(lang, [a, b, a], read_list=_read(raised, files)) == [a]
     (job,) = _level_jobs(lang)
-    assert job["source"] == level.TOP_UP and job["asked_at"]
-    assert job["words"] == sorted([old[1], added[0]]), "every listed word no card holds, never the carded one"
+    assert job["source"] == level.TOP_UP_PRESS and stamp_key(job["asked_at"]) >= stamp_key(pressed), "the press's time"
+    assert job["words"] == sorted([old[1], added[0]]), \
+        "the listed words no card holds: never the one it carded, nor one carded from another episode"
 
 
 def test_the_press_with_nothing_left_to_card_queues_nothing_and_no_list_is_no_press():
@@ -251,6 +257,40 @@ def test_the_press_joins_a_waiting_top_up_and_the_inbox_never_un_asks_it():
         dropped = []
         inbox._asks(s, "ja", ledger, {}, [], dropped, [], {})
     assert dropped == [] and _level_jobs()[0]["state"] == "queued"
+    assert _level_jobs()[0]["asked_at"] == job["asked_at"], "the press's time kept: never un-asked"
+
+
+def test_a_mine_again_undone_puts_a_waiting_automatic_top_up_back_in_its_place():
+    # why: *Mine again* (a store ask) moves the episode's open job first — a waiting automatic top-up — and undone,
+    # the inbox takes the ask back: the top-up waits for the cap again, never stuck first (only the press's own is kept)
+    before, raised, added = _lists("ja")
+    (a, fa), _b, _d = _line()
+    _mine("ja", a)
+    _check("ja", before, "run-1", {fa: [added[0][0]]})
+    _check("ja", raised, "run-2", {fa: [added[0][0]]})
+    (waiting,) = _level_jobs()
+    with Ledger() as ledger, ledger.transaction():
+        assert ledger.ask("ja", a, "2026-11-28T01:00:00Z", store_id="s") == ("moved", waiting["id"])
+    with c.store() as s, Ledger() as ledger, ledger.transaction():
+        dropped = []
+        inbox._asks(s, "ja", ledger, {}, [], dropped, [], {})       # the store holds no ask for it any more
+    (job,) = _level_jobs()
+    assert dropped == [] and job["state"] == "queued" and job["asked_at"] is None
+    assert job["source"] == level.TOP_UP
+
+
+def test_a_raise_job_from_before_3_0_18_joined_by_a_top_up_becomes_the_top_up():
+    # why: a level job of the old source (`level`) still waiting is dropped by the runner (`LEVEL_DROPPED`): a top-up
+    # joining it must not lose its words with it
+    before, raised, added = _lists("ja")
+    (a, fa), _b, _d = _line()
+    _mine("ja", a)
+    with Ledger() as ledger, ledger.transaction():
+        ledger.queue_level("ja", a, [added[1]], store_id="s")      # (the default source: a 3.0.17 raise's)
+    _check("ja", before, "run-1", {fa: [added[0][0]]})
+    assert _check("ja", raised, "run-2", {fa: [added[0][0]]})["queued"] == [a]
+    (job,) = _level_jobs()
+    assert job["source"] == level.TOP_UP and job["words"] == sorted(added[:2]) and job["asked_at"] is None
 
 
 def test_a_new_files_job_the_press_joins_becomes_the_press_job():
@@ -263,7 +303,7 @@ def test_a_new_files_job_the_press_joins_becomes_the_press_job():
         ledger.queue_level("ja", a, [added[0]], source=level.NEW_FILES, store_id="s")
     assert actions.top_up("ja", [a], read_list=_read(raised, {fa: [added[1][0]]})) == [a]
     (job,) = _level_jobs()
-    assert job["source"] == level.TOP_UP and job["asked_at"] and job["words"] == sorted(added[:2])
+    assert job["source"] == level.TOP_UP_PRESS and job["asked_at"] and job["words"] == sorted(added[:2])
 
 
 # --- the whole flow --------------------------------------------------------------------------------------------- #

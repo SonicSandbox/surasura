@@ -709,8 +709,10 @@ class Ledger:
             merged = sorted(set(_words(had)) | set(words))
             self.conn.execute("UPDATE jobs SET words = ?, updated_at = ? WHERE id = ?",
                               (json.dumps(merged, ensure_ascii=False), now, job_id))
-            if asked_at:                    # the press's job now (its source: the inbox never un-asks it)
-                self.conn.execute("UPDATE jobs SET asked_at = ?, source = ? WHERE id = ?", (asked_at, source, job_id))
+            if asked_at or was == "level":  # the press's job now (its source: the inbox never un-asks it); a raise's
+                # job from before 3.0.18 (`runner.LEVEL_DROPPED`'s) joined by a top-up is the top-up's, never dropped
+                self.conn.execute("UPDATE jobs SET asked_at = COALESCE(?, asked_at), source = ? WHERE id = ?",
+                                  (asked_at, source, job_id))
             return job_id
         cur = self.conn.execute("INSERT INTO jobs (language, item_id, state, source, event_id, created_at, updated_at, "
                                 "kind, words, store_id, asked_at) VALUES (?, ?, 'queued', ?, NULL, ?, ?, ?, ?, ?, ?)",

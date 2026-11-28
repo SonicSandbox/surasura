@@ -498,7 +498,8 @@ class MineActions(QObject):
                 self.settle(ids, why=strings.TOP_UP_NOTHING)
                 self.win.say(strings.TOP_UP_NOTHING)
                 return
-            self.settle([i for i in ids if i not in set(queued)])
+            took = set(queued)
+            self.settle([i for i in ids if i not in took])
             self.win.say(strings.TOP_UP_ASKED[len(queued) == 1].format(label=labels.get(queued[0], ""),
                                                                        n=len(queued)))
             self._told("saved", list(queued), n)     # the feed looked at now; the press ends with its status

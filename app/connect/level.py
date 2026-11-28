@@ -52,7 +52,11 @@ BEST = "best-sentence"
 # TOP-UP (3.0.21, Sonic § 114): an episode already mined, its newly listed words no card holds (a raise, new content,
 # a re-Generate) — with the press's time: *Mine the new words*
 TOP_UP = "top-up"
-KEPT = (NEW_FILES, BEST, TOP_UP)
+# ... and the press's own (`actions.top_up`): its `asked_at` is the press's, never a store ask the inbox would undo —
+# so a *Mine again* undone on an episode whose automatic top-up it moved first puts that one back in its place
+TOP_UP_PRESS = "top-up-press"
+TOP_UPS = (TOP_UP, TOP_UP_PRESS)
+KEPT = (NEW_FILES, BEST) + TOP_UPS
 
 
 def check(store, language, listed, signature, file_words, ledger=None):
@@ -106,7 +110,8 @@ def new_words(item, file_words, by_lemma, made):
     that the list names (`by_lemma`: the keys looked at), none Connect ever made (`made`: any episode, any show, a
     deleted card's too) -> {(word, reading)}. Words any card holds are the pick's to skip (its carded set)."""
     lemmas = set(file_words.get(os.path.basename((item or {}).get("rel_path") or "")) or ())
-    return {key for lemma in lemmas if lemma not in made for key in by_lemma.get(lemma, ())}
+    small, big = (lemmas, by_lemma) if len(lemmas) <= len(by_lemma) else (by_lemma, lemmas)    # the smaller walked
+    return {key for lemma in small if lemma in big and lemma not in made for key in by_lemma[lemma]}
 
 
 def mined_items(store, language, ledger):
@@ -120,9 +125,11 @@ def mined_items(store, language, ledger):
 def _queue(store, language, ledger, new, file_words, marked):
     """The raise's jobs (inside the caller's transaction) -> [item ids queued], soonest first: the new files marked
     (`NEW_FILES`), then every other mined episode ahead of you (`TOP_UP`). One walk of the order, one read of the
-    receipts and of the made words; an item read only when it was mined."""
+    receipts and of the made words; an item read only when it was mined (one primary-key read each: ~300 on a
+    library with 300 mined, once per new list)."""
     by_lemma = _by_lemma(new)
     made = library.made_words_all(store)
+    store_id = library.store_id(store)
     marked = list(dict.fromkeys(marked or ()))
     first = set(marked)
     mined = mined_items(store, language, ledger)
@@ -133,8 +140,7 @@ def _queue(store, language, ledger, new, file_words, marked):
             continue                        # taken out of the learning order (D14), or watched (#49): no level job
         words = new_words(item, file_words, by_lemma, made)
         source = NEW_FILES if item_id in first else TOP_UP
-        if words and ledger.queue_level(language, item_id, words, source=source,
-                                        store_id=library.store_id(store)) is not None:
+        if words and ledger.queue_level(language, item_id, words, source=source, store_id=store_id) is not None:
             queued.append(item_id)
     return queued
 

@@ -64,7 +64,7 @@ def keeps(job, event=None, current=None):
         if job.get("source") == level.BEST:
             return event != "removed"       # Kantan-SD: a Best word's episode, finished or not (its context)
         # new files, and TOP-UP's (3.0.21: a mined episode's new words — past the top 20 too, soonest first)
-        return job.get("source") in (level.NEW_FILES, level.TOP_UP) and event not in ("removed", "finished")
+        return job.get("source") in (level.NEW_FILES,) + level.TOP_UPS and event not in ("removed", "finished")
     if job.get("kind") == SHOW:
         return event not in ("removed", "finished") and current is not False
     return False
@@ -242,9 +242,9 @@ def _asks(store, language, ledger, found, queued, dropped, asked, shows=None):
 
 def _pressed_top_up(job):
     """TOP-UP: *Mine the new words*' job — its `asked_at` the press's time (`actions.top_up`), no ask of the store's
-    to undo."""
+    to undo (an automatic top-up a store ask moved first is undone as any job: its own source, `level.TOP_UP`)."""
     from app.connect import level
-    return job.get("kind") == LEVEL and job.get("source") == level.TOP_UP
+    return job.get("kind") == LEVEL and job.get("source") == level.TOP_UP_PRESS
 
 
 def pending(store):

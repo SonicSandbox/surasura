@@ -106,7 +106,7 @@ def top_up(language, item_ids, path=None, read_list=None, open_store=None):
     """TOP-UP (3.0.21, Sonic § 114 B; PROVISIONAL words): *Mine the new words* on mined episodes (an episode's ⋯, or
     its show's: every mined episode of it) -> [the item ids queued]; [] when none has a word left to card, or nothing
     could be read (no ledger, no list of this language, no store). Each mined item (`level.mined_items`) gets a
-    `level` job of source `level.TOP_UP` naming the same words the automatic top-up names (`level.new_words`, one
+    `level` job of source `level.TOP_UP_PRESS` naming the same words the automatic top-up names (`level.new_words`, one
     rule): its file's listed words no card holds and Connect never made — a word made from any episode or show, a
     deleted card's too, is never named (*Mine again* remakes a deleted card) — read against the whole list, carrying the
     press's time, so it goes first and past the cap as any press (`runner.held_by_cap`); a top-up already waiting
@@ -139,7 +139,7 @@ def top_up(language, item_ids, path=None, read_list=None, open_store=None):
                 if item_id not in mined:
                     continue                # its first mining reads the list as it is (*Mine now*)
                 words = level.new_words(store.item(item_id), file_words or {}, by_lemma, made)
-                if words and ledger.queue_level(language, item_id, words, source=level.TOP_UP, store_id=store_id,
+                if words and ledger.queue_level(language, item_id, words, source=level.TOP_UP_PRESS, store_id=store_id,
                                                 asked_at=asked_at) is not None:
                     queued.append(item_id)
     return queued

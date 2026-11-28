@@ -719,11 +719,15 @@ def test_with_automatic_off_the_signature_has_no_band_part(samples_env):
 def test_turning_automatic_off_forgets_its_band(samples_env):
     # Why: a band remembered from before Automatic was switched off would come back months later when it's switched
     # on again; switched off, the next run forgets it, so switching on starts from today's rule.
+    # The switch is a real one (on, then off): an unchanged library and settings are the "nothing changed" skip, which
+    # never reaches the forget (ONE-READ 5: the store is ready from the first Generate, so no state moves between runs).
     root = samples_env
-    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM)
-    _run_samples(root)
+    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM, auto=True)
+    _run_samples(root)                                          # Automatic on
     ls, data_dir, user_files = _with_library_store(root)
-    assert ls.record_auto_band("ja", data_dir, user_files, "rare", 40)
+    ls.record_auto_band("ja", data_dir, user_files, "rare", 40)
+    assert ls.read_auto_band("ja", data_dir) is not None
+    _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM)
     _run_samples(root)                                          # Automatic off
     assert ls.read_auto_band("ja", data_dir) is None
 

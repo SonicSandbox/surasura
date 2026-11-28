@@ -10,6 +10,7 @@ was cut on tokens the list never counts. Now each counted file's share of the so
 Real data: the made-up shows of tests/Test Resources/<lang>/songs_* (星祭り's four episodes: an opening in ♪ and an
 ending with no mark; 星星节's three Chinese episodes), Generated for real.
 """
+import json
 import os
 import re
 import shutil
@@ -128,12 +129,12 @@ def test_an_episode_changed_or_set_aside_counts_its_songs_again_until_the_next_g
         want, total, _pieces = _list_counts(store, paths, {p: n for p, n in songs.items() if p != changed}, "ja")
         assert store.word_counts() == ({k: c for k, c in want.items() if c > 0}, total)
         read = []
-        real = ti.Store.some_tokens
+        real = ti.Store._song_shares
 
-        def counting(self, asked):
+        def counting(self, asked, *args):
             read.extend(asked)
-            return real(self, asked)
-        with patch.object(ti.Store, "some_tokens", counting), \
+            return real(self, asked, *args)
+        with patch.object(ti.Store, "_song_shares", counting), \
                 patch.object(ti.Store, "file_tokens", side_effect=AssertionError("a whole file read")):
             store.keep_song_counts(songs)
         assert [ti._norm(p) for p in read] == [ti._norm(changed)], "only the changed episode is read again"
@@ -160,14 +161,22 @@ def test_a_generate_after_nothing_changed_reads_no_file_and_writes_nothing(tmp_p
         store.close()
 
 
-def test_a_share_kept_under_another_engine_or_switch_is_never_taken_off(tmp_path):
-    """Counted under another engine (a build since), the share is no answer: the songs count until a Generate keeps
-    them again under this one."""
+def test_a_share_kept_under_another_engine_still_counts_another_switch_or_form_never_does(tmp_path):
+    """The share is the store's own counting of the song lines (its tokens, name tables and phrase data, each with its
+    own version in the state): an ENGINE_REVISION bump for another rule leaves it the answer — the first Generate
+    after it counts no song line again. Another name switch, or another share form, is no answer: the songs count
+    until a Generate keeps them again."""
     store, data_dir, paths = _library(tmp_path, "ja", JA_SHOW)
     try:
         whole = store.word_counts()
         _kept(store, data_dir, paths, "ja")
+        out = store.word_counts()
+        assert out != whole
         with patch.object(analyzer, "ENGINE_REVISION", analyzer.ENGINE_REVISION + 1):
+            assert store.word_counts() == out
+            with patch.object(ti.Store, "_song_shares", side_effect=AssertionError("counted again")):
+                store.keep_song_counts(analyzer.song_sentences(_found(paths), data_dir, store, None, "ja"))
+        with patch.object(ti, "_SONG_SHARES", ti._SONG_SHARES + 1):
             assert store.word_counts() == whole
         with patch.dict(analyzer.LOGIC, {"names_recurring": not analyzer.LOGIC.get("names_recurring", True)}):
             store.songs_out = False
@@ -262,16 +271,42 @@ def test_a_store_made_before_the_songs_table_gains_it_at_open_with_no_file_read_
         store.close()
 
 
-def test_some_tokens_gives_each_asked_sentence_as_file_tokens_gives_it_the_names_joined_too(tmp_path):
-    """The share reads only the song lines (`Store.some_tokens`: their texts and tokens sliced out, their name spans
-    alone applied), never the whole file for them — so each asked sentence must be `file_tokens`' own, a name the
-    tables join (メロンベンチ, 焔魄陣) joined in it too; a number past the end, a file not held, nothing asked: none."""
+def _share_read_whole(store, path, numbers, found):
+    """A file's share as the first count made it before it was streamed (RARITY-SONGS): `file_tokens`' sentences of
+    `numbers`, every token asked, the phrases searched for — the answer `Store._song_shares` must give to the byte."""
+    from app import phrases
+    sentences = store.file_tokens(path)
+    sung = [sentences[n] for n in numbers if n < len(sentences)]
+    counts, total, pieces = Counter(), 0, Counter()
+    for text, tokens in sung:
+        for lemma, reading, surface, *_rest in tokens:
+            if analyzer.has_target_language(lemma, store.language) or analyzer.has_target_language(surface,
+                                                                                                    store.language):
+                counts[(lemma, reading)] += 1
+                total += 1
+        if store.language == "ja":
+            for i in analyzer.bound_uses(text, tokens):
+                pieces[(tokens[i][0], tokens[i][1])] += 1
+    uses, taken = phrases.tally(sung, found) if found is not None else ({}, {})
+    return ([[l, r, n] for (l, r), n in counts.items()], total, [[l, r, n] for (l, r), n in pieces.items()],
+            [{str(k): v[0] for k, v in uses.items()}, taken])
+
+
+def test_each_files_share_is_the_one_its_whole_sentences_give_the_names_joined_and_the_phrases_kept_or_searched(
+        tmp_path):
+    """The first count reads only the song lines (their texts and type ids sliced out, their name spans alone
+    applied), counts a line the names leave be by its type ids and takes the phrases the last index found — so each
+    file's share must be, list for list and in the same order, the one its whole cached sentences give: a name the
+    tables join (メロンベンチ, 焔魄陣) joined, the phrases the same kept or searched for; a number past the end, a
+    file not held, nothing asked: none."""
+    from app import phrases
     from tests.test_names import HOMURA, JIN, PARK, SHOP, STATION, _library as names_library
     store, paths = names_library(tmp_path / "lib", {"station.txt": STATION, "shop.txt": SHOP, "park.txt": PARK,
                                                     "a.txt": HOMURA, "b.txt": JIN})
+    show, _data_dir, show_paths = _library(tmp_path / "show", "ja", JA_SHOW)
     try:
+        found = phrases.load()
         assert store.names_tables(), "the made-up library has name tables"
-        whole = {p: store.file_tokens(p) for p in paths}
         joined = set()
         for p in paths:
             truth = set()
@@ -280,19 +315,169 @@ def test_some_tokens_gives_each_asked_sentence_as_file_tokens_gives_it_the_names
                          store.conn.execute("SELECT names FROM files WHERE path=?", (ti._norm(p),)).fetchone()[0], truth)
             joined |= {(p, n) for n in truth}
         assert joined, "some sentence is joined"
-        # every other sentence, the joined ones among them, and one past the end
-        asked = {p: sorted({n for n in range(len(whole[p])) if n % 2} | {n for q, n in joined if q == p}
-                           | {len(whole[p]) + 3}) for p in paths}
-        some = store.some_tokens(dict(asked, **{str(tmp_path / "no such file.txt"): [0]}))
-        assert set(some) == set(paths)
-        for p in paths:
-            numbers, sentences = some[p]
-            assert numbers == [n for n in asked[p] if n < len(whole[p])]
-            assert sentences == [whole[p][n] for n in numbers], p
-        for p in paths:                                 # a sentence asked alone sits first: its own spans, never 0's
-            assert store.some_tokens({p: [1]})[p] == ([1], [whole[p][1]]), p
-        assert store.some_tokens({paths[0]: []}) == {paths[0]: ([], [])}
-        assert store.some_tokens({}) == {}
+        for lib, files, asked in (
+                # every other sentence, the joined ones among them, and one past the end
+                (store, paths, {p: sorted({n for n in range(len(store.file_tokens(p))) if n % 2}
+                                          | {n for q, n in joined if q == p} | {len(store.file_tokens(p)) + 3})
+                                for p in paths}),
+                (store, paths, {p: [1] for p in paths}),       # a sentence asked alone: its own spans, never 0's
+                (show, show_paths, {p: list(range(len(show.file_tokens(p)))) for p in show_paths})):
+            met = lib.phrase_matches([ti._norm(p) for p in files])
+            assert len(met) == len(files), "the index kept every file's phrases"
+            for kept in (met, {}):                      # the index's phrases, or none kept: searched for
+                got = lib._song_shares(dict(asked, **{str(tmp_path / "no such file.txt"): [0]}), found,
+                                       {ti._norm(p): m for p, m in kept.items()}, {}, set())
+                assert set(got) == set(files)
+                for p in files:
+                    assert got[p] == _share_read_whole(lib, p, asked[p], found), p
+            assert lib._song_shares(asked, None, met, {}, set())[files[0]][3] == [{}, {}], "phrases off: none"
+        uses = [show._song_shares({p: list(range(30))}, found, {}, {}, set())[p][3][0] for p in show_paths]
+        assert any(uses), "the show's songs hold set phrases"
+        assert store._song_shares({paths[0]: []}, found, {}, {}, set())[paths[0]] == ([], 0, [], [{}, {}])
+        assert store._song_shares({}, found, {}, {}, set()) == {}
+    finally:
+        store.close()
+        show.close()
+
+
+def test_a_word_whose_lemma_is_latin_counts_by_its_kana_surface_as_the_list_counts_it(tmp_path):
+    """Unidic writes some loanwords' lemma in Latin letters (エイズ -> ＡＩＤＳ, ユニセフ -> ＵＮＩＣＥＦ): the aggregate
+    counts such a token by its surface. The first count asks each type's language once (`lang`), and must ask its
+    surface too — else a song's エイズ stays in the store's counts while the list leaves it out. CRLF lines, and an
+    empty file beside them, as a learner's folder has."""
+    from app import phrases
+    work = tmp_path / "data" / "ja" / "HighPriority" / "Kokuren"
+    work.mkdir(parents=True)
+    song = work / "song.txt"
+    song.write_bytes("エイズのない世界へ。\r\nユニセフの歌を歌おう。\r\nユネスコの空に届け。\r\n".encode("utf-8"))
+    (work / "empty.txt").write_bytes(b"")
+    db = str(tmp_path / "store.db")
+    ti.reconcile_language("ja", [str(song), str(work / "empty.txt")], path=db)
+    store = ti.open_store("ja", db)
+    try:
+        lemmas = {t[0] for _text, tokens in store.file_tokens(str(song)) for t in tokens}
+        assert {"ＡＩＤＳ", "ＵＮＩＣＥＦ"} <= lemmas, "the tokenizer's lemmas are Latin for these"
+        found = phrases.load()
+        asked = {str(song): [0, 1, 2]}
+        for met in ({}, store.phrase_matches([ti._norm(str(song))])):
+            got = store._song_shares(asked, found, {ti._norm(k): v for k, v in met.items()}, {}, set())
+            assert got[str(song)] == _share_read_whole(store, str(song), [0, 1, 2], found)
+            counted = {lemma for lemma, _reading, _n in got[str(song)][0]}
+            assert {"ＡＩＤＳ", "ＵＮＩＣＥＦ"} <= counted, "counted by its kana surface"
+    finally:
+        store.close()
+
+
+def test_a_sung_line_whose_only_one_character_word_is_a_kanji_piece_still_counts_the_piece(tmp_path):
+    """The first count runs `bound_uses` only on a line holding a word written as one kanji (`ones`: one character at
+    or past U+3400, bound_uses' own first test). A line of numbers and pieces alone — ３年, 十年 — has no kana of one
+    character beside them, so only that test lets its 年 be counted as the piece the whole read counts."""
+    from app import phrases
+    work = tmp_path / "data" / "ja" / "HighPriority" / "Nikki"
+    work.mkdir(parents=True)
+    song = work / "song.txt"
+    song.write_text("３年\n十年\n", encoding="utf-8")
+    db = str(tmp_path / "store.db")
+    ti.reconcile_language("ja", [str(song)], path=db)
+    store = ti.open_store("ja", db)
+    try:
+        found = phrases.load()
+        whole = _share_read_whole(store, str(song), [0, 1], found)
+        assert ["年", "ネン", 2] in whole[2], "the whole read counts 年 twice as a piece"
+        assert store._song_shares({str(song): [0, 1]}, found, {}, {}, set())[str(song)] == whole
+    finally:
+        store.close()
+
+
+def test_kept_phrase_matches_that_dont_fit_the_tokens_are_searched_again_never_raised(tmp_path):
+    """A damaged store's kept phrase matches (every start past its line's end, the file's stamp and sentence count
+    still current) are no answer: the file is read whole and its phrases searched for, the same share as an undamaged
+    store's — never an IndexError that rolls back the whole count. あっという間 and お世話になる hold a word that lives
+    only inside them (their `taken`), the word the count looks up at the match's place."""
+    stores = []
+    for side in ("whole", "damaged"):
+        work = tmp_path / side / "data" / "ja" / "HighPriority" / "Natsu"
+        work.mkdir(parents=True)
+        song = work / "song.ja.srt"
+        song.write_text(LINES_SRT, encoding="utf-8")
+        db = str(tmp_path / side / "store.db")
+        ti.reconcile_language("ja", [str(song)], path=db)
+        stores.append((ti.open_store("ja", db), str(song)))
+    try:
+        (whole, path), (damaged, damaged_path) = stores
+        kept = json.loads(damaged.get_meta("phrase_matches"))
+        flat = kept["files"][ti._norm(damaged_path)][3]
+        assert flat, "the index kept the file's phrase matches"
+        for at in range(0, len(flat), 4):
+            flat[at + 1] += 10 ** 6
+        damaged.set_meta("phrase_matches", json.dumps(kept, ensure_ascii=False))
+        for store, p in stores:
+            store.keep_song_counts({p: list(range(len(store.file_tokens(p))))})
+        table = lambda s: list(s.conn.execute("SELECT tag, total, counts, bound, phrases FROM songs"))
+        assert table(whole) and table(damaged) == table(whole)
+        assert json.loads(whole.get_meta("songs_counted"))["taken"], "the phrases took their words"
+    finally:
+        for store, _p in stores:
+            store.close()
+
+
+LINES_SRT = (
+    "1\n00:00:01,000 --> 00:00:03,000\nあっという間に夏が過ぎた\n\n"
+    "2\n00:00:04,000 --> 00:00:06,000\n本当にお世話になりました\n\n"
+    "3\n00:00:07,000 --> 00:00:09,000\nあっという間の夢だった\n\n")
+
+
+def test_a_first_count_takes_the_phrases_the_index_found_and_asks_each_types_language_once(tmp_path):
+    """A first count (every song line of a library: the first Generate after an update) searches no song line for
+    its phrases — the index found them (`phrase_matches`) — and asks a word's language once a type, never once a
+    token; the share the same as when each line is searched and each token asked."""
+    store, data_dir, paths = _library(tmp_path, "ja", JA_SHOW)
+    try:
+        songs = analyzer.song_sentences(_found(paths), data_dir, store, None, "ja")
+        tokens = sum(len(store.file_tokens(p)[n][1]) for p in paths for n in songs[p])
+        asked = []
+        real = analyzer.has_target_language
+
+        def counting(text, language="ja"):
+            asked.append(text)
+            return real(text, language)
+        with patch("app.phrases.PhraseSet.find", side_effect=AssertionError("a song line searched again")), \
+                patch.object(analyzer, "has_target_language", counting):
+            store.keep_song_counts(songs)
+        assert asked and len(asked) < tokens, "each type's language asked once, not each token's"
+        mine = store.get_meta("songs_counted")
+        store.conn.execute("DELETE FROM songs")
+        store.conn.execute("DELETE FROM meta WHERE key = 'songs_counted'")
+        store.conn.commit()
+        with patch.object(ti.Store, "phrase_matches", return_value={}):
+            store.keep_song_counts(songs)               # none kept: every song line searched
+        assert store.get_meta("songs_counted") == mine
+    finally:
+        store.close()
+
+
+def test_a_first_count_holds_one_batch_of_files_song_lines_at_a_time(tmp_path):
+    """The first count reads and counts a batch of files at a time and lets it go (a 20k library's song lines held at
+    once were ~2 GB): with a batch of one file, each read asks one file — the shares and their sum as one batch's."""
+    store, data_dir, paths = _library(tmp_path, "ja", JA_SHOW)
+    try:
+        songs = analyzer.song_sentences(_found(paths), data_dir, store, None, "ja")
+        store.keep_song_counts(songs)
+        whole = (store.get_meta("songs_counted"), store.conn.execute("SELECT * FROM songs ORDER BY path").fetchall())
+        store.conn.execute("DELETE FROM songs")
+        store.conn.execute("DELETE FROM meta WHERE key = 'songs_counted'")
+        store.conn.commit()
+        calls = []
+        real = ti.Store._song_shares
+
+        def counting(self, asked, *args):
+            calls.append(len(asked))
+            return real(self, asked, *args)
+        with patch.object(ti, "_SONG_BATCH", 1), patch.object(ti.Store, "_song_shares", counting):
+            store.keep_song_counts(songs)
+        assert calls == [1] * len(paths)
+        assert (store.get_meta("songs_counted"),
+                store.conn.execute("SELECT * FROM songs ORDER BY path").fetchall()) == whole
     finally:
         store.close()
 
@@ -359,12 +544,12 @@ def test_when_the_name_tables_moved_only_a_file_they_read_otherwise_is_read_agai
         store.conn.execute("UPDATE songs SET tag=? WHERE path=?", (json.dumps(tag), target))
         store.conn.commit()
         read = []
-        some = ti.Store.some_tokens
+        some = ti.Store._song_shares
 
-        def counting(self, asked):
+        def counting(self, asked, *args):
             read.extend(asked)
-            return some(self, asked)
-        with patch.object(ti.Store, "some_tokens", counting):
+            return some(self, asked, *args)
+        with patch.object(ti.Store, "_song_shares", counting):
             store.keep_song_counts(songs)
         assert read == [target], "only the file the tables read otherwise"
         assert json.loads(store.conn.execute("SELECT tag FROM songs WHERE path=?", (target,)).fetchone()[0])[1] == real

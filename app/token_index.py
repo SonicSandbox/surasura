@@ -161,7 +161,9 @@ SCHEMA_VERSION = 33
 _NAMES_SHARES = 1
 
 # The form of each counted file's share of the songs a Generate leaves out (the `songs` table, meta songs_counted,
-# Store.keep_song_counts): a change here, or to how a share is counted, makes every share counted again.
+# Store.keep_song_counts): a change here, or to how a share is counted, makes every share counted again. The engine's
+# number doesn't (`_songs_state`): a change to the counting the share mirrors — the store's `bound` pieces, its
+# language test — moves SCHEMA_VERSION, the phrases MATCHER_VERSION; one to the share's own walk moves this.
 _SONG_SHARES = 1
 # The files whose song lines a first count holds at once (`keep_song_counts`: one batch counted, then let go).
 _SONG_BATCH = 500
@@ -1579,7 +1581,7 @@ class Store:
         A file's share is kept (the `songs` table) under its (mtime, size), its numbers and what the name tables make of
         its names (`_names_read_in`, asked again only when what the tables join moved), so a Generate reads again only
         a file whose songs or reading moved, and their sum (meta songs_counted) moves by those files alone. All of it is
-        counted again when the tokenizer, a name switch, the phrase data or the engine changed. One transaction:
+        counted again when the tokenizer, a name switch, the phrase data or the schema changed. One transaction:
         rolled back on a failure (a store locked by the indexer) and raised. `settings`: the run's one read."""
         state = self._songs_state_now = self._songs_state(settings)
         reads = switches = names = None
@@ -1673,10 +1675,11 @@ class Store:
             raise
 
     def _songs_state(self, settings=None):
-        """What every song share is counted under: the share's form, the schema, the engine, the tokenizer's identity
-        and, Japanese, the name switches, the phrase data and its switch (`settings`: a run's one read)."""
-        from app import analyzer
-        state = [_SONG_SHARES, SCHEMA_VERSION, analyzer.ENGINE_REVISION, self.get_meta("build_sig")]
+        """What every song share is counted under: the share's form, the schema, the tokenizer's identity and,
+        Japanese, the name switches, the phrase data and its switch (`settings`: a run's one read) — never
+        ENGINE_REVISION: a share is the store's own counting of the lines (its tokens, `bound` pieces and language test,
+        which SCHEMA_VERSION moves with), so a bump for another rule counts no song line again (RARITY-SONGS 2)."""
+        state = [_SONG_SHARES, SCHEMA_VERSION, self.get_meta("build_sig")]
         if self.language == "ja":
             on = phrase_rows_on(self.language, settings)
             state += [list(_library_switches(self.language)), on]
@@ -1688,7 +1691,7 @@ class Store:
     def _songs_share(self):
         """What the songs the last Generate left out count in the files still counted at its stamps (`_SongSum`), or
         None: the songs are counted (Settings' *Count song lyrics* on, or the run said so: `songs_out`), none were
-        kept, or they were kept under another tokenizer, name switch, phrase data or engine (`_songs_state`). A file
+        kept, or they were kept under another tokenizer, name switch, phrase data or schema (`_songs_state`). A file
         changed, set aside or gone since keeps its songs in the counts until the next Generate keeps it again."""
         try:
             out = self.songs_out if self.songs_out is not None else not songs_counted()

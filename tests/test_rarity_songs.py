@@ -161,14 +161,22 @@ def test_a_generate_after_nothing_changed_reads_no_file_and_writes_nothing(tmp_p
         store.close()
 
 
-def test_a_share_kept_under_another_engine_or_switch_is_never_taken_off(tmp_path):
-    """Counted under another engine (a build since), the share is no answer: the songs count until a Generate keeps
-    them again under this one."""
+def test_a_share_kept_under_another_engine_still_counts_another_switch_or_form_never_does(tmp_path):
+    """The share is the store's own counting of the song lines (its tokens, name tables and phrase data, each with its
+    own version in the state): an ENGINE_REVISION bump for another rule leaves it the answer — the first Generate
+    after it counts no song line again. Another name switch, or another share form, is no answer: the songs count
+    until a Generate keeps them again."""
     store, data_dir, paths = _library(tmp_path, "ja", JA_SHOW)
     try:
         whole = store.word_counts()
         _kept(store, data_dir, paths, "ja")
+        out = store.word_counts()
+        assert out != whole
         with patch.object(analyzer, "ENGINE_REVISION", analyzer.ENGINE_REVISION + 1):
+            assert store.word_counts() == out
+            with patch.object(ti.Store, "_song_shares", side_effect=AssertionError("counted again")):
+                store.keep_song_counts(analyzer.song_sentences(_found(paths), data_dir, store, None, "ja"))
+        with patch.object(ti, "_SONG_SHARES", ti._SONG_SHARES + 1):
             assert store.word_counts() == whole
         with patch.dict(analyzer.LOGIC, {"names_recurring": not analyzer.LOGIC.get("names_recurring", True)}):
             store.songs_out = False

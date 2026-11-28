@@ -62,15 +62,16 @@ class Lib:
         """The reader's asks for `items` in Anki (each with `cards` cards, else as many as it made)."""
         return {i: (self.rel[i], 1, cards if cards is not None else max(1, len(self.made.get(i, ())))) for i in items}
 
-    def expected(self, key, studied):
-        """The slow count: the words of `key` (an item, or a row's items: each word once) with a card anywhere, less
-        the ones it made itself."""
+    def expected(self, key, studied, known=()):
+        """The slow count (CARD-LEFT): (left, done) — the words of `key` (an item, or a row's items: each word once)
+        with a card anywhere and the ones it made itself, split by whether Surasura counts them known."""
         ids = key if isinstance(key, tuple) else (key,)
         words = set().union(*(self.words[i] for i in ids))
         own = set().union(*(self.made.get(i, set()) for i in ids))
         cards = self.backlog | set(studied) | set().union(*self.made.values()) if self.made else \
             self.backlog | set(studied)
-        return len({w for w in words if w in cards and w not in own})
+        carded = {w for w in words if w in cards} | own
+        return len(carded - set(known)), len(carded & set(known))
 
 
 def _tokenized(root, language):
@@ -87,6 +88,8 @@ def _tokenized(root, language):
     store = ti.open_store(language, path=db)
     try:
         store.reconcile(paths, ti.make_tokenizer(language), build_signature=ti.build_signature(language))
+        # (CARD-LEFT) and the known words normalized, as the indexer leaves every store: none known here
+        store.set_cached_known(ti.known_signature(os.path.join(root, "KnownWord.json")), set(), set(), suffix="")
     finally:
         store.close()
     return data, db
@@ -132,7 +135,7 @@ def test_card_chip_counts_every_word_of_an_episode_with_a_card_wherever_it_was_m
         answers = chips.answers()
         for item in (1, 2, 3, 4):
             assert answers[item] == lib.expected(item, studied), item
-        assert answers[1] > 0, "ep 1 holds words carded elsewhere"
+        assert answers[1][0] > 0, "ep 1 holds words carded elsewhere"
         assert got and got[-1] == answers
     finally:
         chips.close()
@@ -151,7 +154,7 @@ def test_card_chip_a_card_made_by_hand_in_anki_counts_once_anki_says_it_is_studi
         _settle(chips)
         after = chips.answers()
         for item in (1, 2, 3, 4):
-            assert after[item] == before[item] + (hand in lib.words[item]), item
+            assert after[item][0] == before[item][0] + (hand in lib.words[item]), item
             assert after[item] == lib.expected(item, {hand})
     finally:
         chips.close()
@@ -169,16 +172,16 @@ def test_card_chip_a_card_deleted_in_anki_leaves_the_count(lib):
         chips.studied(studied)
         chips.want(lib.ask([1, 2]))
         _settle(chips)
-        assert chips.answers()[1] == lib.expected(1, studied) == 2
+        assert chips.answers()[1] == lib.expected(1, studied) == (2, 0)
         chips.studied({other})                                 # the card of `word` deleted in Anki
         _settle(chips)
-        assert chips.answers()[1] == 1
+        assert chips.answers()[1] == (1, 0)
         studied = set()
         chips.studied({"∅"})                              # Anki's next read: `other`'s card deleted too
         lib.made = {2: set()}                                  # ... and its notes gone from Connect's record
         chips.want(lib.ask([2], cards=0) | {1: (lib.rel[1], 1, 1)})
         _settle(chips)
-        assert chips.answers()[1] == 0
+        assert chips.answers()[1] == (0, 0)
     finally:
         chips.close()
 
@@ -193,7 +196,7 @@ def test_card_chip_an_empty_answer_from_anki_keeps_the_last_studied_words(lib):
         chips.want(lib.ask([1]))
         _settle(chips)
         before = chips.answers()[1]
-        assert before == 5
+        assert before == (5, 0)
         chips.studied(set())
         _settle(chips)
         assert chips.answers()[1] == before
@@ -237,7 +240,7 @@ def test_card_chip_a_row_of_several_files_counts_each_word_once(lib):
         _settle(chips)
         answers = chips.answers()
         assert answers[(1, 2)] == lib.expected((1, 2), studied)
-        assert answers[(1, 2)] < answers[1] + answers[2], "a word in both episodes counts once on the row"
+        assert answers[(1, 2)][0] < answers[1][0] + answers[2][0], "a word in both episodes counts once on the row"
     finally:
         chips.close()
 
@@ -333,10 +336,10 @@ def test_card_chip_a_file_the_token_store_hasnt_counted_has_no_count_and_its_car
         chips.want(lib.ask([1, 9]))
         _settle(chips)
         answers = chips.answers()
-        assert 9 not in answers and answers[1] == 1, "the uncounted file's card counts on ep 1"
+        assert 9 not in answers and answers[1] == (1, 0), "the uncounted file's card counts on ep 1"
         chips.forget([9])
         _settle(chips)
-        assert chips.answers()[1] == 0
+        assert chips.answers()[1] == (0, 0)
     finally:
         chips.close()
 
@@ -396,7 +399,7 @@ def test_card_chip_a_token_store_busy_for_a_moment_is_read_again_by_itself(lib, 
         while chips.answers().get(1) is None and time.monotonic() < deadline:
             time.sleep(0.02)
         _settle(chips)
-        assert chips.answers().get(1) == 5 and len(opened) == 2
+        assert chips.answers().get(1) == (5, 0) and len(opened) == 2
     finally:
         chips.close()
 
@@ -462,7 +465,7 @@ def test_card_chip_a_token_store_rebuilt_by_an_update_keeps_the_last_count_then_
     answers = first.answers()
     first.close()
     assert first.idle(10)
-    assert answers[1] > 0 and answers[(1, 2)] > 0
+    assert answers[1][0] > 0 and answers[(1, 2)][0] > 0
     rows = _files_out(lib.db)                                  # the update: the store built again, nothing read yet
     got = []
     again = lib.chips(got)
@@ -482,7 +485,7 @@ def test_card_chip_a_token_store_rebuilt_by_an_update_keeps_the_last_count_then_
         now = again.answers()
         for key in (1, 2, 3, (1, 2)):
             assert now[key] == lib.expected(key, studied2), key
-        assert now[1] == answers[1] + 2
+        assert now[1][0] == answers[1][0] + 2
     finally:
         again.close()
 
@@ -499,11 +502,11 @@ def test_card_chip_a_file_counted_this_session_then_unread_is_never_given_last_s
     assert first.idle(10)
     again = lib.chips()
     try:
-        assert again.seeded()[1] == 6
+        assert again.seeded()[1] == (6, 0)
         again.studied(set(_pick(lib.words[1], 3, 36)))
         again.want(lib.ask([1]))
         _settle(again)
-        assert again.answers()[1] == 3                         # counted this session
+        assert again.answers()[1] == (3, 0)                    # counted this session
         lib.rel[1] = "HighPriority/星の工房/編集中.srt"           # its file changed: not counted yet
         again.want({1: (lib.rel[1], 2, 1)})
         _settle(again)

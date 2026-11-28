@@ -1145,6 +1145,13 @@ def use_library_tables(tables, pin=False):
     _library.update(tables=tables, at=time.monotonic(), pinned=pin, stamp=None)
 
 
+def let_go_library_tables():
+    """A pin let go (`use_library_tables(…, pin=True)`: a run's own tables, ONE-READ 5): the tables stay the ones
+    applied, and the store is looked at again after REFRESH, as for tables set unpinned. Nothing when none is pinned."""
+    if _library["pinned"]:
+        use_library_tables(_library["tables"])
+
+
 def forget_library_tables():
     """Back to reading the tables from the token store on next use."""
     _library.update(tables=None, at=None, pinned=False, stamp=None)

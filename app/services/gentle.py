@@ -6,7 +6,9 @@ once; New arrivals and the rest can wait, and which machines need it is told aut
 the window is *booted* when Current's list, filled from what is on disk (the library reader's first view that isn't
 the cached first screen), has been drawn and the window's event loop has gone idle once after it
 (`ShellWindow._boot_after_idle`: the dispatcher's `aboutToBlock`) — or BOOT_MAX_S after its first frame, whichever
-comes first. Until then nothing in the background starts: the window holds `Services.start` itself (the Anki look and
+comes first. (UPDATE-START, 3.0.21: the window counts as open — its log's *booted* — at the first screen's cache,
+painted at once; the background still waits for the list from disk, so nothing races the first view with numbers.)
+Until then nothing in the background starts: the window holds `Services.start` itself (the Anki look and
 Connect's kick, the known-words sync, the journey's Generate, the update check, the chores: the indexer, the store's
 helper, Koe; 順's catch-up) and this scheduler holds every automatic job and step (WINDOW_FIRST: an automatic Generate,
 New arrivals, covers…), from the moment the window's services are made (`shell.open_services`). `ready()` is the

@@ -239,3 +239,39 @@ def test_an_indexer_worker_that_has_started_ends_with_its_parent(tmp_path):
     # After its start the worker's own watch ends it (`token_index._pool_start`): the indexer stopped, the pool's pipe
     # still open in a sibling, it would otherwise wait on it for ever.
     assert ends_with_its_parent(_INDEXER_PARENT, tmp_path, GONE_WITHIN_S)
+
+
+# A window as far as its indexer sees it: `Chores._run_indexer` itself (the real start: below normal, no window, the
+# update's wait list), the indexer's command a child that runs until it is stopped. Prints the indexer's pid.
+_WINDOW = textwrap.dedent("""
+    import sys, threading, types
+    from app.services import chores
+    chores.indexer_command = lambda language: [sys.executable, "-c", "import threading; threading.Event().wait()"]
+    me = types.SimpleNamespace(_log_folder=None, _popen=None, _lock=threading.Lock(), _proc=None, _indexed=[],
+                               _not_busy=lambda: False, index=lambda **k: None)
+    job = types.SimpleNamespace(cancelled=False, finish=lambda **k: None,
+                                started_process=lambda pid: print(pid, flush=True))
+    threading.Thread(target=chores.Chores._run_indexer, args=(me, job, "ja"), daemon=True).start()
+    threading.Event().wait()
+""")
+
+
+def test_an_indexer_ends_with_a_window_killed_hard(tmp_path):
+    # A window that crashes or is ended in Task Manager never cancels its jobs: its indexer is bound to the window's
+    # kill-on-close job (`anki_miner._bind`), so the OS ends it — and the pool it started — with the window, instead
+    # of leaving it to hold the program folder.
+    import _winapi
+    window = _popen([sys.executable, "-c", _WINDOW], tmp_path, cwd=PROJECT_ROOT)
+    indexer = None
+    try:
+        indexer = _winapi.OpenProcess(_winapi.SYNCHRONIZE | 0x0001, False, int(_line(window)))   # | PROCESS_TERMINATE
+        _stop(window)                                   # killed hard: no quit, no cancel
+        assert _winapi.WaitForSingleObject(indexer, int(GONE_WITHIN_S * 1000)) == _winapi.WAIT_OBJECT_0
+    finally:
+        _stop(window)
+        if indexer is not None:
+            try:
+                _winapi.TerminateProcess(indexer, 1)
+            except OSError:                             # ended already
+                pass
+            _winapi.CloseHandle(indexer)

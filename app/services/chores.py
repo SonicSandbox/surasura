@@ -337,6 +337,8 @@ class Chores:
             proc = popen_below_normal(indexer_command(language), popen=self._popen, stdin=subprocess.DEVNULL,
                                       stdout=log if log is not None else subprocess.DEVNULL,
                                       stderr=subprocess.STDOUT, env=env, creationflags=flags)
+            from app.connect.anki_miner import _bind
+            _bind(proc)     # POOL-ORPHAN: ends with the window however it ends (a crash too), its pool with it
             with self._lock:
                 self._proc = proc
                 stop = job.cancelled

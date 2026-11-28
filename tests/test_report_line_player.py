@@ -214,6 +214,29 @@ def test_a_copy_with_no_record_is_looked_up_when_connects_index_holds_a_playable
     assert play.files("ja", [rel]) == {rel: None}
 
 
+def test_a_subtitle_read_in_place_whose_record_names_no_video_finds_one_only_connects_index_knows():
+    """A subtitle read in place from a folder with no video beside it has a pairing row naming only its origin; its
+    video lives in another of Connect's folders (a share). The gate lets it through as it does a copy with no row, so
+    the journey's line gets its file — and with it its times, which ⇄ needs (*it has no time in its file* before)."""
+    folder = _elsewhere("Subtitles", SHOW)
+    sub = _subtitle(os.path.join(folder, f"{SHOW} - 09.ja.srt"), 9)
+    rel = _read_in_place(folder)[os.path.abspath(sub)][1]
+    far = _stand_in(_elsewhere("Videos", SHOW, f"{SHOW} - 09.mp4"), b"\x00\x00\x00\x18ftypmp42")
+    from app.connect import videos
+    videos.Index("ja").refresh([], [_elsewhere("Videos")])                  # Connect's own refresh, saved
+    assert play.files("ja", [rel]) == {rel: far}
+
+
+def test_a_record_naming_its_media_is_never_sent_to_connects_index():
+    """`_names_media`: a row naming a video or an audiobook's files is the source's own answer (the gate then needs
+    that file's folder to hold it); a row with only an origin, or no row, names none."""
+    assert not play._names_media(())
+    assert not play._names_media(None)
+    assert not play._names_media([("D:/old/ep09.srt", None, None)])
+    assert play._names_media([("D:/old/ep09.srt", "D:/v/ep09.mkv", None)])
+    assert play._names_media([("D:/old/ep09.srt", None, '["D:/a/book.m4b"]')])
+
+
 def test_many_folders_are_listed_side_by_side_as_one_at_a_time_would(tmp_path):
     folders = []
     for n in range(40):

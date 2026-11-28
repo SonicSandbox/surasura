@@ -39,7 +39,8 @@ def library():
     for n, name in enumerate(FILES):
         shutil.copy(os.path.join(RESOURCES, "ja", name), (nested if n % 2 else high) / name)
     (high / "empty.txt").write_text("", encoding="utf-8")
-    (high / "crlf.txt").write_bytes("車に気をつけて。\r\nどうもありがとうございました！\r\n".encode("utf-8"))
+    (high / "crlf.txt").write_bytes("車に気をつけて。\r\nどうもありがとうございました！\r\n何があっても、ずっと一緒だよ。\r\n"
+                                    .encode("utf-8"))
     (root / "User Files" / "ja").mkdir(parents=True)
     (root / "User Files" / "ja" / "KnownWord.json").write_text('{"words": []}', encoding="utf-8")
     _phrases_on(root)
@@ -66,34 +67,38 @@ def _kept(store):
 
 
 def _refind(store, monkeypatch, tag, gate_from):
-    """Search every file's phrases again, as new phrase data does (its revision moved), the gate used from
-    `gate_from` files on -> the sentence count of each file `phrases.tally` was given."""
+    """Search every file's phrases again from a fresh process's state (no vocabulary read yet), as new phrase data does
+    (its revision moved), the gate used from `gate_from` files on -> the sentences `phrases.tally` was given, a list
+    a file."""
     monkeypatch.setattr(phrase_data, "REVISION", f"{phrase_data.REVISION}-{tag}")
     monkeypatch.setattr(ti, "_PHRASE_GATE_FILES", gate_from, raising=False)
+    store._types.clear()
     given, real = [], phrases.tally
     monkeypatch.setattr(phrases, "tally", lambda sentences, found, matches=None:
-                        given.append(len(sentences)) or real(sentences, found, matches))
+                        given.append(sentences) or real(sentences, found, matches))
     store._update_phrases(True)
     monkeypatch.setattr(phrases, "tally", real)
     return given
 
 
 def _can_hold(store):
-    """(every sentence of the store's files, those that can hold a set phrase): a phrase's whole lemma run in a row
-    in its words as `file_tokens` reads them, or a name span in it — worked out here word by word."""
-    found = phrases.load()
-    keys = {entry.key for entry in found.entries}
+    """{path: (its sentences as `file_tokens` reads them, the numbers of those that can hold a set phrase)}, in the
+    store's order: a phrase's whole lemma run in a row in its words, or a name span in it — worked out word by word."""
+    keys = {entry.key for entry in phrases.load().entries}
     longest = max(len(key) for key in keys)
-    total = held = 0
+    out = {}
     for path, names in store.conn.execute(f"SELECT path, names FROM files WHERE {ti._EVIDENCE}").fetchall():
         sentences = store.file_tokens(path)
         spans = {span[0] for span in store._name_spans(names)[0]}
-        total += len(sentences)
-        for number, (_text, tokens) in enumerate(sentences):
-            lemmas = [token[0] for token in tokens]
-            held += number in spans or any(tuple(lemmas[i:i + n]) in keys for i in range(len(lemmas))
-                                           for n in range(1, longest + 1))
-    return total, held
+        out[path] = sentences, [number for number, (_text, tokens) in enumerate(sentences)
+                                if number in spans or any(tuple([t[0] for t in tokens[i:i + n]]) in keys
+                                                          for i in range(len(tokens)) for n in range(1, longest + 1))]
+    return out
+
+
+def _expected(held):
+    """The sentences a gated re-find gives `phrases.tally`, a list a file: those that can hold a phrase."""
+    return [[sentences[k] for k in numbers] for sentences, numbers in held.values()]
 
 
 def test_a_big_refind_decodes_only_the_sentences_that_can_hold_a_phrase_and_keeps_the_same(library, monkeypatch):
@@ -105,13 +110,16 @@ def test_a_big_refind_decodes_only_the_sentences_that_can_hold_a_phrase_and_keep
         whole = _refind(store, monkeypatch, "whole", 10 ** 9)
         before = _kept(store)
         gated = _refind(store, monkeypatch, "gated", 1)
-        total, held = _can_hold(store)
-        assert sum(whole) == total, "read whole: every sentence"
-        assert 0 < held < total, "the files hold phrases, and sentences that can't hold one"
-        assert sum(gated) == held, "gated: only the sentences that can hold a phrase are decoded and searched"
-        assert len(gated) == len(whole) == store.conn.execute("SELECT count(*) FROM files").fetchone()[0]
+        held = _can_hold(store)
+        assert whole == [sentences for sentences, _numbers in held.values()], "read whole: every sentence"
+        total, can = sum(len(s) for s, _n in held.values()), sum(len(n) for _s, n in held.values())
+        assert 0 < can < total, "the files hold phrases, and sentences that can't hold one"
+        assert gated == _expected(held), "gated: only the sentences that can hold a phrase, read as file_tokens reads"
+        assert len(gated) == store.conn.execute("SELECT count(*) FROM files").fetchone()[0]
         assert _kept(store) == before, "the tallies, the matches and the table byte for byte"
-        assert json.loads(store.get_meta("phrases"))["rows"]["気を付ける|キヲツケル"][0] >= 2
+        rows = json.loads(store.get_meta("phrases"))["rows"]
+        assert rows["気を付ける|キヲツケル"][0] >= 2
+        assert [row[0] for row in rows.values() if "何があっても" in row[1]] == [1], "a run of five words"
     finally:
         store.close()
 
@@ -138,31 +146,38 @@ def test_a_sentence_a_name_join_changes_is_searched_in_its_joined_words(library,
         _refind(store, monkeypatch, "whole", 10 ** 9)
         before = _kept(store)
         gated = _refind(store, monkeypatch, "gated", 1)
-        total, held = _can_hold(store)
-        assert sum(gated) == held < total
+        assert gated == _expected(_can_hold(store)), "each sentence a span stands in given in its joined words"
         assert _kept(store) == before
     finally:
         store.close()
 
 
+def _texts(store, path, sentences):
+    """Make `path`'s kept texts those of `sentences` (a damaged row: they no longer count its sentences)."""
+    store.conn.execute("UPDATE files SET texts=? WHERE path=?", (ti._encode_texts(sentences), path))
+    store.conn.commit()
+
+
 def test_rows_the_gate_cant_read_are_read_whole_as_before(library, monkeypatch):
-    # why: a damaged row (its texts not counting its sentences, a vocabulary row gone) must give what a whole read gives
-    # it — `file_tokens` reads such a file as no sentence — never a match the whole read wouldn't keep
+    # why: a damaged row (its texts one sentence more or less than its words, a vocabulary row gone) must give what a
+    # whole read gives it — `file_tokens` reads such a file as no sentence — never a match the whole read wouldn't keep
     store = _index(library)
     try:
-        one, ids = store.conn.execute("SELECT path, ids FROM files WHERE path LIKE '%phrases_sample.srt'").fetchone()
-        (other_texts,) = store.conn.execute("SELECT texts FROM files WHERE path LIKE '%placed_episode.srt'").fetchone()
-        store.conn.execute("UPDATE files SET texts=? WHERE path=?", (other_texts, one))
-        store.conn.commit()
+        held = _can_hold(store)
+        more = next(path for path in held if path.endswith("phrases_sample.srt"))
+        fewer = next(path for path, (sentences, numbers) in held.items()   # its last sentence holds no phrase
+                     if len(sentences) > 2 and numbers and numbers[-1] < len(sentences) - 1)
+        _texts(store, more, held[more][0] + [["もう一行。", []]])
+        _texts(store, fewer, held[fewer][0][:-1])
         _refind(store, monkeypatch, "whole", 10 ** 9)
         before = _kept(store)
-        assert json.loads(store.get_meta("phrase_matches"))["files"][one][2:4] == [0, []], "read as no sentence"
+        kept = json.loads(store.get_meta("phrase_matches"))["files"]
+        assert kept[more][2:4] == kept[fewer][2:4] == [0, []], "read as no sentence"
         _refind(store, monkeypatch, "gated", 1)
-        assert _kept(store) == before, "the damaged file read whole, the rest gated"
-        used = ti._read_ids(ids)[1][0]
+        assert _kept(store) == before, "the damaged files read whole, the rest gated"
+        used = ti._read_ids(store.conn.execute("SELECT ids FROM files WHERE path=?", (more,)).fetchone()[0])[1][0]
         store.conn.execute("DELETE FROM types WHERE id=?", (used,))     # a gap in the vocabulary: no gate at all
         store.conn.commit()
-        store._types.clear()
         built = []
         real = ti._PhraseGate
         monkeypatch.setattr(ti, "_PhraseGate", lambda *a: built.append(1) or real(*a))
@@ -173,7 +188,6 @@ def test_rows_the_gate_cant_read_are_read_whole_as_before(library, monkeypatch):
     finally:
         store.close()
 
-
 def test_a_few_files_to_search_again_are_read_whole_without_the_gate(library, monkeypatch):
     # why: the gate's numpy and its read of the vocabulary cost more than they save on a few files (a new episode,
     # the watch's small updates): below `_PHRASE_GATE_FILES` files the re-find reads them as before
@@ -183,7 +197,7 @@ def test_a_few_files_to_search_again_are_read_whole_without_the_gate(library, mo
         real = ti._phrase_gate
         monkeypatch.setattr(ti, "_phrase_gate", lambda *a: built.append(1) or real(*a))
         whole = _refind(store, monkeypatch, "few", ti._PHRASE_GATE_FILES)
-        assert built == [] and sum(whole) == _can_hold(store)[0]
+        assert built == [] and whole == [sentences for sentences, _numbers in _can_hold(store).values()]
         _refind(store, monkeypatch, "many", len(whole))
         assert built == [1], "as many files as the threshold: the gate"
     finally:

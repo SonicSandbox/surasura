@@ -2893,6 +2893,7 @@ def _sung_share(lines, types, lang, ones, found, flat, numbers, language):
     if found is not None and flat is not None:
         from app import phrases
         place = {k: j for j, k in enumerate(numbers)}
+        given, line = set(), None                       # a sentence's word positions given already (`tally`'s)
         for at in range(0, len(flat), 4):
             j = place.get(flat[at])
             if j is None:
@@ -2900,7 +2901,12 @@ def _sung_share(lines, types, lang, ones, found, flat, numbers, language):
             start, index = flat[at + 1], flat[at + 3]
             uses[str(index)] = uses.get(str(index), 0) + 1
             _text, row, tokens = lines[j]
+            if j != line:
+                given, line = set(), j
             for k in phrases.bound_at(found.entry(index)):
+                if start + k in given:
+                    continue                            # a word under a phrase and the one inside it: one use
+                given.add(start + k)
                 token = tokens[start + k] if tokens is not None else types[row[start + k]]
                 name = f"{token[0]}|{token[1]}"
                 taken[name] = taken.get(name, 0) + 1

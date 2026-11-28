@@ -15,6 +15,7 @@ from tests/Test Resources/.
 
 import hashlib
 import json
+import os
 
 import pytest
 
@@ -319,4 +320,344 @@ def test_the_helpers_run_rejoins_them(language, monkeypatch):
     store = ls.open_store(language, data_dir, user_files_dir)
     assert [_work(store, i) for i in items] == [title, title]
     assert store.meta().get(ls.HATO_FOLDERS_JOINED)
+    store.close()
+
+
+# --------------------------------------------------------------------------- #
+# HATO-VIDEO-SHOW (a Send report of 2026-11-27): hato hands over an episode with no show — it joins the title whose
+# videos sit beside its video
+# --------------------------------------------------------------------------- #
+# The report's shape, never its names: the learner's show is a source folder on a share, `<show> (year) [tvdbid-n]/
+# Season 02/`, its subtitles copied into `Library/` with origin records naming each episode's video in that folder.
+# hato couldn't match the show, so it named its series folder after the video's parent folder (`Season 02`) and sent a
+# record with no `show` and no ids. Before the fix that drop became a title of its own, "Season 02" — and any other
+# show's unmatched episode in a `Season 02` folder landed in the same false title. What a wrong answer costs: one show
+# in two rows (Connect mining two titles), or two shows in one.
+SEASON = "Season 02"
+
+
+def _share(name="share"):
+    """The share the learner's shows come from: a folder beside the test's data folder (another "drive")."""
+    path = os.path.join(os.environ["SURASURA_TEST_ROOT"], "elsewhere", name)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _folder(show, n=0):
+    return f"{show} ({2021 + n}) [tvdbid-{388200 + n}]"
+
+
+def _episode_name(language, show, episode, n=0):
+    w = names(language)
+    return f"{show} ({2021 + n}) - S02E{episode:02d} - {w[100 + episode]} [WEBDL-1080p][AAC 2.0][x264]-WF.{language}"
+
+
+def _season_show(store, data_dir, share, language, show, episodes, n=0, season=SEASON):
+    """The learner's own show, as a source's look takes it in: each subtitle beside its video on the share, its copy
+    in `Library/<folder>/<season>/`, its origin record naming the video. -> its title."""
+    root = store.add_source(share)
+    found = []
+    for e in episodes:
+        name = _episode_name(language, show, e, n)
+        origin = os.path.join(share, _folder(show, n), season, name + ".srt")
+        os.makedirs(os.path.dirname(origin), exist_ok=True)
+        text = f"{names(language)[110 + e]}{show} {e}\n"
+        with open(origin, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        rel = f"{ls.CONTENT_FOLDER}/{_folder(show, n)}/{season}/{name}.srt"
+        touch(data_dir, rel, text)
+        st = os.stat(origin)
+        found.append({"origin": origin, "size": st.st_size, "mtime_ns": st.st_mtime_ns,
+                      "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "show": _folder(show, n), "rel": rel,
+                      "video_path": os.path.join(share, _folder(show, n), season, name + ".mkv"),
+                      "video_size": 1300000000 + e})
+    added = store.take_in(root, found).added
+    works = {_work(store, i) for i in added}
+    assert len(works) == 1, "one show, one title"
+    return works.pop()
+
+
+def _unmatched(language, share, show, episode, n=0, season=SEASON):
+    """hato's record when it couldn't match the show (an unresolved run, or a person's pick): no `show`, no AniList /
+    TMDB id; the video in the show's season folder, written with forward slashes (hato's own spelling)."""
+    name = _episode_name(language, show, episode, n)
+    video = os.path.join(share, _folder(show, n), season, name + ".mkv").replace("\\", "/")
+    key = "v1-" + hashlib.sha256(f"{video}|{episode}".encode("utf-8")).hexdigest()[:32]
+    return {"schema": 1, "content_key": key, "producer": "hato", "producer_version": "1.5.0", "language": language,
+            "video_path": video, "video_size": 1300000000 + episode, "verdict": "timed"}
+
+
+def _season_drop(store, data_dir, order, language, share, show, episode, n=0, season=SEASON):
+    """hato's copy in `HighPriority/Hato/<season>/` (its series folder named after the video's parent), met in either
+    order (the sync's row first, or the hand-off alone). -> the item id."""
+    path = touch(data_dir, f"{ls.HATO_FOLDER}/{season}/{_episode_name(language, show, episode, n)}.srt",
+                 f"{names(language)[120 + episode]}{show} {episode}\n")
+    if order == "sync_first":
+        assert store.sync_disk()["added"], "the sync made its row for hato's copy"
+    store.register(path, _unmatched(language, share, show, episode, n, season))
+    rel = ls.library_rel(data_dir, path)
+    return store.conn.execute("SELECT id FROM items WHERE rel_key = ?", (ls.path_key(rel),)).fetchone()[0]
+
+
+def _season_titles(store, season=SEASON):
+    """Titles holding an item and named by hato's season folder alone."""
+    held = {w for (w,) in store.conn.execute("SELECT DISTINCT work_id FROM items")}
+    return [t for wid, (t, _ts, _fk) in _titles(store).items() if wid in held and t == ls.folder_title(season)]
+
+
+def _count(store, work):
+    return store.conn.execute("SELECT COUNT(*) FROM items WHERE work_id = ?", (work,)).fetchone()[0]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("order", ORDERS)
+def test_an_unmatched_episode_joins_the_show_whose_videos_sit_beside_its_video(language, order):
+    """The report's case: the show holds E05 and E06, their videos in `<share>/<show>/Season 02/`; hato hands over E07
+    from `HighPriority/Hato/Season 02/` with no show and no id, its video in that same folder. The episode is the
+    show's — never a title "Season 02" — whether the disk sync saw the copy first or not; the hand-off alone makes no
+    stray title at the insert; the show's own names gain nothing of hato's folder."""
+    store = _arrivals_on(migrated(language))
+    data_dir, _u = roots(language)
+    share = _share()
+    show = names(language)[90]
+    title = _season_show(store, data_dir, share, language, show, (5, 6))
+    before = _titles(store)[title]
+    item = _season_drop(store, data_dir, order, language, share, show, 7)
+    assert _work(store, item) == title
+    assert _season_titles(store) == []
+    if order == "handoff_first":
+        assert [t for t, _ts, _fk in _titles(store).values() if t == ls.folder_title(SEASON)] == [], "none made"
+    assert _titles(store)[title] == before
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("order", ORDERS)
+def test_two_shows_unmatched_episodes_in_one_season_folder_each_join_their_own_show(language, order):
+    """Two shows hato couldn't match, both dropped into `HighPriority/Hato/Season 02/` (one folder key): each episode
+    joins the show its video sits beside — never one title for both."""
+    store = _arrivals_on(migrated(language))
+    data_dir, _u = roots(language)
+    share = _share()
+    w = names(language)
+    first = _season_show(store, data_dir, share, language, w[90], (5, 6), n=0)
+    second = _season_show(store, data_dir, share, language, w[91], (1, 2), n=1)
+    a = _season_drop(store, data_dir, order, language, share, w[90], 7, n=0)
+    b = _season_drop(store, data_dir, order, language, share, w[91], 3, n=1)
+    assert (_work(store, a), _work(store, b)) == (first, second)
+    assert _season_titles(store) == []
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("order", ORDERS)
+def test_an_unmatched_episode_with_no_show_beside_its_video_keeps_todays_title(language, order):
+    """Unchanged: no title has videos in that folder (a show new to the library) — the episode is a title of its own,
+    named by hato's folder as today, and the next episode of it joins that title."""
+    store = _arrivals_on(migrated(language))
+    data_dir, _u = roots(language)
+    share = _share()
+    show = names(language)[92]
+    one = _season_drop(store, data_dir, order, language, share, show, 1)
+    two = _season_drop(store, data_dir, order, language, share, show, 2)
+    assert _work(store, one) == _work(store, two)
+    assert _titles(store)[_work(store, one)][0] == ls.folder_title(SEASON)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("order", ORDERS)
+def test_a_new_shows_unmatched_episode_never_follows_the_show_beside_it_in_hatos_folder(language, order):
+    """hato's `Season 02` folder already holds one show's episode, now that show's; a show new to the library drops its
+    unmatched episode into the same folder. The files beside it in hato's folder are no evidence (one folder, several
+    shows): it is a title of its own, never the first show's."""
+    store = _arrivals_on(migrated(language))
+    data_dir, _u = roots(language)
+    share = _share()
+    w = names(language)
+    known = _season_show(store, data_dir, share, language, w[90], (5, 6))
+    joined = _season_drop(store, data_dir, order, language, share, w[90], 7)
+    new = _season_drop(store, data_dir, order, language, share, w[92], 1, n=2)
+    assert _work(store, joined) == known
+    assert _work(store, new) != known and _count(store, known) == 3
+    assert _titles(store)[_work(store, new)][0] == ls.folder_title(SEASON)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_titles_beside_its_video_are_the_learners_split_and_none_takes_it(language):
+    """The learner split the show's folder into two titles (*Not part of this title*): with two titles holding videos
+    there, the drop joins neither — today's title, and *Join with…* is the learner's."""
+    store = _arrivals_on(migrated(language))
+    data_dir, _u = roots(language)
+    share = _share()
+    w = names(language)
+    show = w[90]
+    title = _season_show(store, data_dir, share, language, show, (5, 6))
+    six = store.conn.execute("SELECT id FROM items WHERE work_id = ? ORDER BY id DESC LIMIT 1", (title,)).fetchone()[0]
+    store.split_work([six], w[96])
+    item = _season_drop(store, data_dir, "handoff_first", language, share, show, 7)
+    assert _work(store, item) not in (title, _work(store, six))
+    assert _titles(store)[_work(store, item)][0] == ls.folder_title(SEASON)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("order", ORDERS)
+def test_a_title_holding_hatos_folder_key_and_another_id_keeps_its_episode_in_both_orders(language, order):
+    """hato's series folder is named like one of the learner's shows (its folder key) and that show carries an AniList
+    id; the videos beside the drop's video are another show's, with another id. Two ids say two shows: the drop
+    stays with the folder's show whichever order hato and the disk sync meet in (never crossed by the video)."""
+    store = _arrivals_on(migrated(language))
+    data_dir, _u = roots(language)
+    share = _share()
+    w = names(language)
+    beside = _season_show(store, data_dir, share, language, w[90], (5, 6))
+    folders = _show(store, data_dir, w[91])
+    with store._writing():
+        store.conn.execute("UPDATE works SET anilist_id = ? WHERE id = ?", (ANILIST, folders))
+        store.conn.execute("UPDATE works SET anilist_id = ? WHERE id = ?", (ANILIST + 1, beside))
+    path = touch(data_dir, f"{ls.HATO_FOLDER}/{w[91]}/{_episode_name(language, w[90], 7)}.srt", f"{w[91]} 7\n")
+    if order == "sync_first":
+        assert store.sync_disk()["added"]
+    store.register(path, _unmatched(language, share, w[90], 7))
+    item = store.conn.execute("SELECT id FROM items WHERE rel_key = ?",
+                              (ls.path_key(ls.library_rel(data_dir, path)),)).fetchone()[0]
+    assert _work(store, item) == folders
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_record_that_names_its_show_still_decides_by_its_show(language):
+    """The record's own show comes first (K81): hato's record naming another of the learner's shows lands there, even
+    with its video beside this show's videos."""
+    store = _arrivals_on(migrated(language))
+    data_dir, _u = roots(language)
+    share = _share()
+    w = names(language)
+    beside = _season_show(store, data_dir, share, language, w[90], (5, 6))
+    named = _show(store, data_dir, w[91])
+    path = touch(data_dir, f"{ls.HATO_FOLDER}/{w[91]}/{_episode_name(language, w[90], 7)}.srt", f"{w[91]} 7\n")
+    record = _unmatched(language, share, w[90], 7)
+    record["show"] = {"title": w[91], "season": 1, "episode": 7, "movie": False}
+    store.register(path, record)
+    item = store.conn.execute("SELECT id FROM items WHERE rel_key = ?",
+                              (ls.path_key(ls.library_rel(data_dir, path)),)).fetchone()[0]
+    assert _work(store, item) == named != beside
+    store.close()
+
+
+# --- the one-time heal of titles 3.0.20 already split this way (Sonic ruled: the titles already split heal by
+# themselves; a heal is a title change with its Undo, never a file moved)
+def _heal_mark(store):
+    with store._writing():
+        store.conn.execute("DELETE FROM meta WHERE key = ?", (getattr(ls, "HATO_VIDEO_JOINED", "hato_video_joined"),))
+
+
+def _split_before_the_fix(store, data_dir, language, share, show, episodes, monkeypatch, n=0, season=SEASON):
+    """3.0.20's library: hato's unmatched episodes in a title "<season>" of their own beside the show (the video
+    folder's rule off), the heal's mark taken off (the test library's own run set it). -> the items."""
+    with monkeypatch.context() as patched:
+        patched.setattr(ls.Store, "_video_folder_work", lambda *a, **k: None, raising=False)
+        items = [_season_drop(store, data_dir, "handoff_first", language, share, show, e, n, season)
+                 for e in episodes]
+    _heal_mark(store)
+    split = {_work(store, i) for i in items}
+    assert len(split) == 1 and _titles(store)[next(iter(split))][0] == ls.folder_title(season), "the report's state"
+    return items
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_season_title_already_split_off_joins_its_show_once_and_one_undo_brings_it_back(language, monkeypatch):
+    """The report's library: "Season 02" (hato's E07) beside the show (E05, E06). The helper's one-time pass gives the
+    episode to the show — its name and names unchanged (nothing of "Season 02" added), no file moved, no place
+    changed; it runs once (a mark), the next unmatched episode joins the show by itself, and its one Undo puts the
+    old title back as it was."""
+    store = _arrivals_on(migrated(language))
+    data_dir, _u = roots(language)
+    share = _share()
+    show = names(language)[90]
+    title = _season_show(store, data_dir, share, language, show, (5, 6))
+    before = _titles(store)[title]
+    items = _split_before_the_fix(store, data_dir, language, share, show, (7,), monkeypatch)
+    old = _work(store, items[0])
+    rels = {i: store.item(i)["rel_path"] for i in items}
+    places = store.conn.execute("SELECT id, tier, ord FROM items ORDER BY id").fetchall()
+    change = store.join_hato_by_video()
+    assert change is not None
+    assert [_work(store, i) for i in items] == [title]
+    assert _titles(store)[title] == before
+    assert {i: store.item(i)["rel_path"] for i in items} == rels
+    assert os.path.isfile(os.path.join(data_dir, *rels[items[0]].split("/"))), "the store never moves a file"
+    assert store.conn.execute("SELECT id, tier, ord FROM items ORDER BY id").fetchall() == places
+    assert _season_titles(store) == [] and pieces_ok(store) is None
+    assert store.join_hato_by_video() is None, "once"
+    later = _season_drop(store, data_dir, "sync_first", language, share, show, 8)
+    assert _work(store, later) == title, "the next episode follows the show"
+    store.undo(change)
+    assert [_work(store, i) for i in items] == [old]
+    assert _titles(store)[old][0] == ls.folder_title(SEASON)
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_heal_leaves_the_learners_answers_and_two_shows_alone(language, monkeypatch):
+    """Never a split title the learner named or gave his cover, one he kept apart from the show, nor one holding two
+    shows' episodes (its videos sit beside two titles: *Join with…* stays his); a split title of one show beside them
+    heals. Each case
+    in its own season folder (hato's drops of one season folder are one folder key)."""
+    store = _arrivals_on(migrated(language))
+    data_dir, _u = roots(language)
+    w = names(language)
+    shares = [_share(f"share{n}") for n in range(6)]
+    seasons = ["Season 02", "Season 03", "Season 04", "Season 04", "Season 05", "Season 06"]
+    shows = [_season_show(store, data_dir, shares[n], language, w[90 + n], (5, 6), n=n, season=seasons[n])
+             for n in range(6)]
+
+    def split(n):
+        items = _split_before_the_fix(store, data_dir, language, shares[n], w[90 + n], (7,), monkeypatch, n=n,
+                                      season=seasons[n])
+        return _work(store, items[0])
+    named = split(0)
+    store.rename_work(named, w[98])
+    apart = split(1)
+    store.keep_apart([apart, shows[1]])
+    mixed = split(2)
+    with monkeypatch.context() as patched:                   # the other show's drop in the same `Season 04` folder
+        patched.setattr(ls.Store, "_video_folder_work", lambda *a, **k: None, raising=False)
+        extra = _season_drop(store, data_dir, "handoff_first", language, shares[3], w[93], 7, n=3, season=seasons[3])
+    assert _work(store, extra) == mixed, "two shows' drops in one title"
+    healed = split(4)
+    covered = split(5)
+    with store._writing():                                   # his own cover on it
+        store.conn.execute("UPDATE works SET cover_source = 'user' WHERE id = ?", (covered,))
+    _heal_mark(store)
+    assert store.join_hato_by_video() is not None
+    titles = _titles(store)
+    assert titles[named][0] == w[98] and _count(store, named) == 1, "his name: his title"
+    assert _count(store, apart) == 1 and _count(store, shows[1]) == 2, "kept apart by him"
+    assert _count(store, mixed) == 2, "two shows' episodes: as it stands"
+    assert _count(store, healed) == 0 and _count(store, shows[4]) == 3, "the one beside them heals"
+    assert _count(store, covered) == 1, "his cover: his title"
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_helpers_run_heals_them(language, monkeypatch):
+    """The heal is the helper's (`maintain`, after the other one-time joins): his library gets it at its first run."""
+    store = _arrivals_on(migrated(language))
+    data_dir, user_files_dir = roots(language)
+    share = _share()
+    show = names(language)[90]
+    title = _season_show(store, data_dir, share, language, show, (5, 6))
+    items = _split_before_the_fix(store, data_dir, language, share, show, (7,), monkeypatch)
+    store.close()
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert [_work(store, i) for i in items] == [title]
+    assert store.meta().get(ls.HATO_VIDEO_JOINED)
     store.close()

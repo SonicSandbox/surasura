@@ -843,6 +843,10 @@ DONE_ONE = "✓ {title} {ep} watched"
 DONE_MANY = "✓ {title}: {n} marked watched"        # a7: ⋯'s mark-many, one toast, one Undo
 DONE_MANY_LEFT = "✓ {title}: {n} marked watched — their words left your list."   # ... W-1's first mark (DONE_LEFT)
 DONE_UNDONE = "{title} {ep} marked not watched"
+# UPDATE-START (3.0.21, PROVISIONAL): a title's last Done on the first screen's cache — the mark saved at once; whether it
+# finishes, joins its next part or asks is told once your library is read (Goal, New arrivals and Finished aren't yet)
+DONE_UPDATING = "{text} · updating your library…"
+DONE_UPDATING_ALONE = "Updating your library… {title} follows once it's read"
 # --- W-1 (Sonic 2026-10-22, Q4): while *Keep studying watched episodes* is off — the first mark (once per library), the
 # un-mark
 DONE_LEFT = "✓ {ep} watched — its words left your list."

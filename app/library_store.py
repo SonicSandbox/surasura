@@ -480,6 +480,7 @@ ARRIVAL_ANCHOR_SQL = ("SELECT id, ord FROM items WHERE work_id = ? AND +tier = '
 SHOW_IN_CURRENT_SQL = "SELECT id FROM items WHERE work_id = ? AND +tier IN ('now', 'soon') LIMIT ?"
 PROCESSED_SPLIT = "processed_split"   # meta: 1 once the one-time split of a 3.0.10 "Processed" title ran (Kura-PR2)
 HATO_FOLDERS_JOINED = "hato_folders_joined"   # meta: 1 once 3.0.16's `Hato/<series>` titles joined their shows (Kura-HJ)
+HATO_VIDEO_JOINED = "hato_video_joined"   # meta: 1 once hato's no-show titles joined the show beside their videos
 BOOK_TITLES_UNTAGGED = "book_titles_untagged"   # meta: 1 once books' `<name> (n)` titles were named <name> (Kura-AB5)
 LISTED_STATS = 4                 # an Add's files in one folder from which it lists the folder once (`_listed_stats`)
 FEED_KEEP = 24 * 3600            # s: the feed's tombstones (`gone`) are kept a day (L2.2 04 §4.1)
@@ -531,7 +532,7 @@ INT_META = ("epoch", "state_version", "order_version", "availability_version", "
             "analysed_order_version", "planned_order_version", "planned_pins_version",
             "last_export_version", "copy_dirty", "log_seq", "mine_line", "arrivals_on", "soon_line",
             "feed_floor", "search_fold", "keep_watched", "shows_joined", "specials_joined", "side_by_side",
-            "processed_split", "hato_folders_joined", "book_titles_untagged")
+            "processed_split", "hato_folders_joined", "book_titles_untagged", "hato_video_joined")
 
 
 class StoreError(Exception):
@@ -2222,6 +2223,7 @@ class _Command:
         self.walked = {}      # Kyou-D: an Undo's rows put back -> (recorded tier, recorded changed_in) (`_keep_line`)
         self.reworked = set() # items whose work changed: their pieces are re-checked too
         self.show_names = {}  # Kura-NA: {rel key: the show as written} of a look's files whose folder name is its cut
+        self.video_works = {}  # HATO-VIDEO-SHOW: {rel key: the title beside its video} of hato's drops naming no show
         self.book_titles = {}  # Kura-AB5: {rel key: the book's name} of an EPUB's parts written to `<name> (n)/`
         self.hints = {}       # item_id -> the piece an undo puts it back in
         self.fed = set()      # items whose `feed_in` takes this version (L2.2 04 §4.1)
@@ -3477,6 +3479,61 @@ class Store:
                                                          "folder_key": key if self._key_free(key, wid) else None})
             return change
 
+    def join_hato_by_video(self):
+        """Once a store, in the helper's run (HATO-VIDEO-SHOW, a Send report of 2026-11-27; Sonic: the titles already
+        split heal by themselves): a title made before the video folder's rule (`_video_folder_work`) of hato's drops
+        whose records name no show — named by hato's series folder alone (`Season 02`) beside the show — joins the ONE
+        title its every drop's video sits beside, by `_merge_into` as `join_hato_folders` does (nobody's ask:
+        `users_first`), the show keeping its own names and folder key (hato's folder names never become the show's).
+        Only a title nobody named, all of whose items are hato's drops in its series folder, each handed over with a
+        video and no show; never one whose drops sit beside two titles (two shows in one title: *Join with…* stays the
+        learner's), nor across two ids, his group, *Keep apart* or another type. No item, order, piece, mark or file
+        touched: only which title the items are. ONE command, its Change undone by `undo` (the works' value check); the
+        mark (`meta.hato_video_joined`) is set in it. -> the Change, or None."""
+        if self._meta().get(HATO_VIDEO_JOINED):
+            return None
+        with self._command("join_hato_by_video", "sync") as cmd:
+            if self._meta().get(HATO_VIDEO_JOINED):           # another helper got there first
+                return None
+            self._set_meta({HATO_VIDEO_JOINED: 1})
+            lo = path_key(HATO_FOLDER) + "/"
+            apart = {tuple(sorted(p)) for p in json.loads(self._meta().get("kept_apart") or "[]")}
+            change, memo = None, {}
+            for (wid,) in self.conn.execute("SELECT DISTINCT i.work_id FROM items i JOIN works w ON w.id = i.work_id "
+                                            "WHERE i.rel_key > ? AND i.rel_key < ? AND w.title_by_user = 0 AND "
+                                            "w.folder_key IS NOT NULL ORDER BY i.work_id",
+                                            (lo, lo[:-1] + "0")).fetchall():
+                w = self._work_row(wid)
+                rows = self.conn.execute("SELECT id, rel_path FROM items WHERE work_id = ?", (wid,)).fetchall()
+                if w is None or w["media_type_by"] == "user" or w["cover_locked"] or w["cover_source"] == "user" or \
+                        not rows or not all(_in_hato(r) and folder_key_of(r) is not None for _i, r in rows):
+                    continue                                # (his type, his cover, his own files in it: his title)
+                found = set()
+                for item_id, rel in rows:
+                    records = [_json_dict(t) for (t,) in self.conn.execute(
+                        f"SELECT pairing FROM pairings p WHERE item_id = ? AND NOT {_ORIGIN_ROW}", (item_id,))]
+                    if not records or any(r is None or _show_title(r) for r in records):
+                        found = None                        # (a row never handed over, or a record naming its show)
+                        break
+                    found |= {self._video_folder_work(r, rel, memo) for r in records}
+                    if None in found or len(found) > 1:
+                        break                               # (no one title: the rest can't change that)
+                if not found or len(found) != 1 or None in found:
+                    continue
+                keep = found.pop()
+                k = self._work_row(keep)                    # (gone: merged away earlier in this pass)
+                if k is None or keep == wid or self._grouped_together([keep, wid]) or \
+                        tuple(sorted((keep, wid))) in apart or self._titles_apart([keep, wid]) or \
+                        _media_family(self.media_type(keep)[0]) != _media_family(self.media_type(wid)[0]):
+                    continue                                # the learner's own answer, or two shows: as it stands
+                if change is None:
+                    change = self._change(cmd, "join_hato_by_video")
+                    change.works = {"rows": [], "items": [], "fields": [], "created": []}
+                self._merge_into(cmd, change, keep, [wid], users_first=True)
+                self._carry_apart(keep, [wid])
+                self._set_work_fields(cmd, change, keep, {"titles": k["titles"], "folder_key": k["folder_key"]})
+            return change
+
     def untag_book_titles(self):
         """Kura-AB5 (11-20 report; Sonic's ruling), ONE time a library: a book's title that is its
         parts' folder's free name `<name> (n)` (`book_title`: `<name>` its EPUB's own) becomes `<name>` — only a title
@@ -4484,6 +4541,15 @@ class Store:
                     # (`_folder_work`, at the insert: the same show under another spelling, `_same_show_folder`; a new
                     # title named by it, the folder's name kept among its titles)
                     cmd.show_names[path_key(rel)] = _show_title(pairing)
+                elif fk is not None and _in_hato(rel) and self._work_by_record(pairing) is None:
+                    # HATO-VIDEO-SHOW: no show named (hato named its folder after the video's parent, `Season 02`) —
+                    # the title beside its video, at the insert (`_folder_work`: no title made for hato's folder)
+                    beside = self._video_folder_work(pairing, rel)
+                    held = self.conn.execute("SELECT id FROM works WHERE folder_key = ? ORDER BY id LIMIT 1",
+                                             (fk,)).fetchone()
+                    if beside is not None and held is not None and self._titles_apart([held[0], beside]):
+                        beside = None              # (two ids: as the sync's row first ends, `_hato_series_drop`)
+                    cmd.video_works[path_key(rel)] = beside
                 # Mado-Q: a playlist's video goes in its list's order among its title's videos of that list
                 spot = self._series_spot(pairing, ("arrivals",) if meta.get("arrivals_on") else CURRENT)
                 if spot is not None:
@@ -4769,15 +4835,22 @@ class Store:
         the title of the folder it sits in (`_specials_work`: `<show>/Extras` is `<show>`'s); else the one show folder's
         title of the same show (`_same_show_folder`: `Show` of `Show!`, 3.0.1 item 12); else a new work, titled by
         its folder below the tier folder (`folder_title`: `Show/S01` is `Show Season 1`, the path kept among its other
-        titles). A loose file's work is its show's, read from its name (`_stranded_work`)."""
+        titles). A loose file's work is its show's, read from its name (`_stranded_work`).
+
+        HATO-VIDEO-SHOW: a hato drop whose record names no show takes the title beside its video first (`register`
+        found it: `cmd.video_works`); and in hato's drop folder the files beside a new one never decide — hato names a
+        series folder after a video's parent when it can't match the show (`Season 02`), so one holds several shows."""
         fk = folder_key_of(rel)
+        hato = fk is not None and _in_hato(rel)
+        if hato and cmd.video_works.get(path_key(rel)) is not None:
+            return cmd.video_works[path_key(rel)]
         if cache is not None and fk is not None and fk in cache:
             return cache[fk]
         wid = None
         if fk is not None:
             row = self.conn.execute("SELECT id FROM works WHERE folder_key = ? ORDER BY id LIMIT 1", (fk,)).fetchone()
             wid = row[0] if row else None
-            if wid is None:
+            if wid is None and not hato:
                 folder = _rel_dir(_strip(rel))
                 base = path_key(folder) + "/"
                 row = self.conn.execute(
@@ -4975,6 +5048,42 @@ class Store:
                     return work
         return None
 
+    def _video_folder_work(self, record, rel, memo=None):
+        """HATO-VIDEO-SHOW (a Send report of 2026-11-27; Sonic's "one show, one title"): the title of hato's drop `rel`
+        whose record names no show — the ONE title whose items' records (an origin's, hato's) name a video in the same
+        folder as the record's `video_path` (`path_key` of the folder: either slash, the file system's case). The files
+        of the drop's own series folder (`Hato/<series>/`, itself among them) don't count: that folder is what is
+        being decided, and a title of its own drops beside the show still finds the show. A version's or a moved
+        origin's video is no item's. None when no video, none, or two (the learner's split: *Join with…* stays his).
+        One read of the records' videos (inside SQLite, narrowed to the folder by LIKE); Python reads only that
+        folder's rows; `memo` ({(folder, series folder): title}) keeps each folder's answer for a pass of many."""
+        video = record.get("video_path") if isinstance(record, dict) else None
+        if not isinstance(video, str) or not _in_hato(rel) or folder_key_of(rel) is None:
+            return None
+        folder = video.strip().replace("\\", "/").rpartition("/")[0]
+        if not folder:
+            return None
+        want = path_key(folder)
+        own = path_key("/".join(_strip(rel).split("/")[:HATO_FOLDER.count("/") + 2])) + "/"     # `hato/<series>/`
+        if memo is not None and (want, own) in memo:
+            return memo[want, own]
+        like =re.sub(r"([!%_])", r"!\1", folder) + "/%"
+        found = set()
+        for work, path, key in self.conn.execute(
+                f"SELECT i.work_id, v.path, i.rel_key FROM (SELECT p.item_id, CASE WHEN json_valid(p.pairing) THEN "
+                f"json_extract(p.pairing, '$.video_path') END AS path FROM pairings p WHERE NOT {_VERSION_ROW} AND "
+                f"NOT {_MOVED_ROW}) v JOIN items i ON i.id = v.item_id WHERE i.work_id IS NOT NULL AND "
+                f"replace(v.path, '\\', '/') LIKE ? ESCAPE '!'", (like,)):
+            if isinstance(path, str) and not key.startswith(own) and \
+                    path_key(path.strip().replace("\\", "/").rpartition("/")[0]) == want:
+                found.add(work)
+                if len(found) > 1:
+                    break
+        out = found.pop() if len(found) == 1 else None
+        if memo is not None:
+            memo[want, own] = out
+        return out
+
     def _title_scanned_drop(self, cmd, item_id, rel, record):
         """A loose drop the folder scan found before hato's hand-off (✅ L3.1 call b; the intent review #2) sits in a
         title of its own, named by its file (or the show read from it, SRC-11): on the first hand-off the record's title
@@ -5014,13 +5123,15 @@ class Store:
         as `register` places a new drop (both orders end alike) — before `_fill_work`, so the record's id lands on the
         show, never on that title. Only from the title of the drop's own folder key (never one the learner moved it
         into), nothing of the user's on it (his name, type or cover), and never across two ids. An emptied title goes in
-        the helper's run."""
-        cur = self.conn.execute("SELECT work_id FROM items WHERE id = ?", (item_id,)).fetchone()[0]
+        the helper's run. HATO-VIDEO-SHOW: a record naming no show — the title beside its video (`_video_folder_work`)."""
+        cur, rel = self.conn.execute("SELECT work_id, rel_path FROM items WHERE id = ?", (item_id,)).fetchone()
         w = self._work_row(cur) if cur is not None else None
         if w is None or w["folder_key"] != fk or w["title_by_user"] or w["media_type_by"] == "user" or \
                 w["cover_locked"] or w["cover_source"] == "user":
             return
         target = self._work_by_record(record)
+        if target is None and not _show_title(record):
+            target = self._video_folder_work(record, rel)
         if target is None or target == cur or self._titles_apart([cur, target]):
             return
         self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (target, item_id))
@@ -10016,6 +10127,10 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
             did = bool(store.join_hato_folders()) or did
         except Exception as exc:                # as above: the next run tries again
             _log(db_path, f"join_hato_folders failed: {type(exc).__name__}: {exc}")
+        try:
+            did = bool(store.join_hato_by_video()) or did
+        except Exception as exc:                # as above: the next run tries again
+            _log(db_path, f"join_hato_by_video failed: {type(exc).__name__}: {exc}")
         try:
             did = bool(store.untag_book_titles()) or did
         except Exception as exc:                # as above: the next run tries again

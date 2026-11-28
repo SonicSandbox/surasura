@@ -68,6 +68,25 @@ def test_a_store_left_empty_by_an_earlier_generate_is_built_at_the_next(language
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_folder_build_that_failed_is_never_walked_again_at_each_generate(language, monkeypatch):
+    # why (complexity): a failed build is recorded for this version (`_build`'s `failed`), so the next Generate reads
+    # the folders' fallback at once — never the whole library walked again, and failed again, at every Generate
+    data_dir, user_files_dir, _doc = library(language)
+
+    def broken(*a, **k):
+        raise RuntimeError("the build failed")
+    with monkeypatch.context() as m:
+        m.setattr(ls, "_migrate", broken)
+        assert analyzer.prepare_library(language, data_dir, user_files_dir)["schedule"] is None
+    assert ls.check_mode(language, data_dir) == ("json", "migration failed")
+    walks = []
+    real_walk = ls.walk_tree
+    monkeypatch.setattr(ls, "walk_tree", lambda *a, **k: walks.append(a) or real_walk(*a, **k))
+    assert analyzer.prepare_library(language, data_dir, user_files_dir)["schedule"] is None
+    assert walks == [], "no walk of the folders for a build already failed"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 @pytest.mark.parametrize("shape", ["damaged", "empty"])
 def test_a_manifest_that_cant_be_read_still_waits_for_the_content_manager(language, shape):
     # why: a manifest file there (2.x's, the learner's, an outside tool's) is never set aside nor replaced by the
@@ -189,15 +208,18 @@ def test_the_runs_names_tables_are_let_go_when_it_ends(monkeypatch):
     # tables for good; let go, they stay the ones applied and are looked for again after `names.REFRESH`, as before
     from app import names
     tables = {"k": {}, "j": {}, "w": {}, "stamp": "one-read-5"}
-    monkeypatch.setattr(analyzer, "_library_store", lambda: None)
+    with monkeypatch.context() as patched:              # no library store module: the plain run
+        patched.setattr(analyzer, "_library_store", lambda: None)
 
-    @analyzer._one_library_handle
-    def run():
-        names.use_library_tables(tables, pin=True)
-        assert names._library["pinned"]
-        return 7
-    assert run() == 7
-    assert not names._library["pinned"] and names.library_tables() is tables
+        @analyzer._one_library_handle
+        def run():
+            names.use_library_tables(tables, pin=True)
+            assert names._library["pinned"]
+            return 7
+        assert run() == 7
+        assert not names._library["pinned"] and names.library_tables() is tables
+
+    # the real store span: a run raising inside it
 
     @analyzer._one_library_handle
     def raising():
@@ -206,3 +228,6 @@ def test_the_runs_names_tables_are_let_go_when_it_ends(monkeypatch):
     with pytest.raises(RuntimeError):
         raising()
     assert not names._library["pinned"], "let go on a raise too"
+    assert names.library_tables() is tables
+    names.let_go_library_tables()                       # none pinned: nothing changes
+    assert names.library_tables() is tables

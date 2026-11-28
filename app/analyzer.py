@@ -5394,10 +5394,10 @@ def prepare_library(language, data_dir=None, user_files_dir=None):
     data_dir = data_dir or get_data_path(language)
     user_files_dir = user_files_dir or get_user_files_path(language)
     try:
-        # No manifest at all (a fresh language, the folders are the library): built from the tiers' folders, the
-        # window's own rule (`chores._fresh`). Without it the helper wrote the empty tables and stopped, a store that
-        # never read as ready and that nothing built afterwards (ONE-READ 5). A manifest there, even one that can't be
-        # read, still waits for its own build or the Content Manager (never set aside by a Generate).
+        # No manifest at all (a fresh language, the folders are the library): built from the tiers' folders, as the
+        # window builds a fresh language (`chores._fresh`) — here also over the empty tables an earlier run's helper
+        # wrote and stopped at, a store that never read as ready and that nothing built afterwards (ONE-READ 5). A
+        # manifest there, even one that can't be read, still waits for its own build or the Content Manager.
         fresh = not os.path.exists(ls.manifest_path(user_files_dir))
         ls.maintain(language, data_dir, user_files_dir, from_folders=fresh, export=False)
         store = ls.open_store(language, data_dir, user_files_dir, role="analyzer")
@@ -6638,7 +6638,8 @@ def _one_library_handle(run):
     its own thread — `prepare_library`, the indexer's lists, `record_analysed`, the "In Anki" fingerprint, the journey's
     render — are one handle, closed when the run ends (each opened its own: ~15 ms an open). The store's helper
     (`maintain`) and a thread the run starts (Connect's dates read ahead) keep their own. The names tables the run
-    pinned (ONE-READ 5) are let go at its end: a later reader in this process looks for newer ones again."""
+    pinned (ONE-READ 5) are let go at its end: a later reader in this process looks for newer ones after
+    `names.REFRESH`, as before."""
     import functools
 
     @functools.wraps(run)
@@ -6650,8 +6651,7 @@ def _one_library_handle(run):
             with ls.held(role="analyzer"):
                 return run(*args, **kwargs)
         finally:
-            if names._library["pinned"]:    # the run's names tables (ONE-READ 5): kept, looked for again as before
-                names.use_library_tables(names.library_tables())
+            names.let_go_library_tables()   # the run's names tables (ONE-READ 5): kept, looked for again as before
     return wrapper
 
 

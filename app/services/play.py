@@ -23,6 +23,7 @@ shows plays from — the same lookup, so the page and the window never disagree;
 file (its record's, whatever the transcript is called), one of several files from none (the transcript's times run
 across them all).
 """
+import contextlib
 import itertools
 import json
 import os
@@ -39,7 +40,8 @@ WHY = {
     "moved": "its {word} isn't where it was ({folder})",           # MV-2: it left its folder, the source still there
     "no-link": "its video's address wasn't kept",                 # an online video's: no id, no page (try a9.1)
 }
-SITES = {"youtube": "YouTube", "bilibili": "bilibili.tv"}      # an online item's `source_type` -> its site's name
+# an online item's `source_type` -> its site's name
+SITES = {"youtube": "YouTube", "bilibili": "bilibili.tv", "netflix": "Netflix", "disneyplus": "Disney+"}
 _UNLISTED = object()                # `runner.beside`'s answer for a folder that can't be listed
 
 
@@ -68,21 +70,27 @@ def pairing(language, item_id):
     return _pairings(language, [item_id])[item_id]
 
 
-def _pairings(language, ids, moved=None):
+def _pairings(language, ids, moved=None, handed=None):
     """{item_id: its record, as `pairing` says it} for every one of `ids`, read through one store open; `moved` (a
-    dict): each one's `connect.library.Moved` put in it (D5 / MV-2: a source folder's root, its marked videos)."""
+    dict): each one's `connect.library.Moved` put in it (D5 / MV-2: a source folder's root, its marked videos).
+    `handed`: the caller's open library store (the journey's render, ONE-READ 3), read through and left open."""
     from app import library_store, path_utils
     from app.connect import library
     data_dir = path_utils.get_data_path(language)
     try:
-        # the mode is probed once (R2-5): a store that turns read-only between two probes never reads as a 2.x library
-        mode = library_store.check_mode(language, data_dir, busy_wait=0.0)[0]
-        if mode != "store":
-            return dict.fromkeys(ids, None if mode == "read-only" else {})
-        store = library_store.open_store(language, data_dir, path_utils.get_user_files_path(language), role="reader")
-        if store is None:
-            return dict.fromkeys(ids)       # a store, not ready since the probe: can't be read just now
-        with store:
+        if handed is not None:
+            store = handed
+        else:
+            # the mode is probed once (R2-5): a store that turns read-only between two probes never reads as a 2.x
+            # library
+            mode = library_store.check_mode(language, data_dir, busy_wait=0.0)[0]
+            if mode != "store":
+                return dict.fromkeys(ids, None if mode == "read-only" else {})
+            store = library_store.open_store(language, data_dir, path_utils.get_user_files_path(language),
+                                             role="reader")
+            if store is None:
+                return dict.fromkeys(ids)       # a store, not ready since the probe: can't be read just now
+        with (contextlib.nullcontext() if handed is not None else store):
             records = {i: library.pairing_of(store, i) for i in ids}
             if moved is not None:
                 roots = {}                          # the sources read once for all of them
@@ -207,7 +215,8 @@ def online_link(language, rel_path, record=None):
                     pass
             held.append(got if isinstance(got, dict) else {})
         return held[0]
-    if path_utils._BILIBILI_ID_RE.search(stem) or str(record.get("content_key") or "").startswith("bilibili:"):
+    if (path_utils._BILIBILI_ID_RE.search(stem) or path_utils.SITE_ID_RE.search(stem)
+            or str(record.get("content_key") or "").startswith(("bilibili:", "netflix:", "disneyplus:"))):
         url = str(record.get("url") or side().get("url") or "").split("#", 1)[0]     # (yt-dlp's season fragment)
         return (url, None) if url.startswith(("https://", "http://")) else (None, WHY["no-link"])
     m = path_utils._YOUTUBE_ID_RE.search(stem)
@@ -248,7 +257,7 @@ PLAYABLE = (".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".oga", ".opus", ".flac", ".
 #   (Kiku-L). Not .mkv / .avi / .wmv / .ts / .flv, nor .mov (its codecs vary).
 
 
-def files(language, rel_paths, memo=None, explain=False, cut_kinds=()):
+def files(language, rel_paths, memo=None, explain=False, cut_kinds=(), library=None):
     """{rel path: the file its lines play from, or None} for the journey page's ▶ (Kiku-L): the report's render asks
     once for every timed source it shows — at a cost the render barely feels where nothing can play (most anime
     libraries) and only while something changed where it can.
@@ -256,8 +265,9 @@ def files(language, rel_paths, memo=None, explain=False, cut_kinds=()):
     **What the store knows, in one open** (`_rows`): each source's item, its title's type and every pairing row it has,
     and the library's sources. **The gate:** each folder a source's file could be in (`_places`: the copy's, the
     original's, a named or moved video's, an audiobook's) is listed once — the listings `_find` reuses — and only a
-    source with a `PLAYABLE` file in one of them goes on; a source with no pairing row also when Connect's index holds a
-    playable file (`_index_playable`: a video only the index knows). A book or a text never goes on (its ▶ opens the
+    source with a `PLAYABLE` file in one of them goes on; a source whose pairing rows name no video (no row, or only an
+    origin: `_names_media`) also when Connect's index holds a playable file (`_index_playable`: a video only the index
+    knows). A book or a text never goes on (its ▶ opens the
     book). **The lookup**, for those alone and only when the memo can't answer: the record `pairing_of` picks
     (`_pairings`) and `_find`, the window's ▶'s own lookup — except an audiobook's (its record's `files`: one plays,
     several don't). The render's worker; never writes; one source's fault is its None alone.
@@ -272,12 +282,16 @@ def files(language, rel_paths, memo=None, explain=False, cut_kinds=()):
     None — a hint from the listings already made, never a lookup.
 
     `cut_kinds` (the journey's render, J-CLIP: the one cutter's videos, `runner.VIDEO_EXTENSIONS`): files of these
-    kinds pass the gate too — the journey's ▶ cuts a line the browser can't play (`clips`); the old page asks none."""
+    kinds pass the gate too — the journey's ▶ cuts a line the browser can't play (`clips`); the old page asks none.
+
+    `library`: the render's open library store (ONE-READ 3: one open a render), read through and left open by `_rows`
+    and `_pairings`; False: the render's open found none (no store read, never a second open); None: each opens its
+    own."""
     from app import path_utils
     from app.services.view_rows import MEDIA_WORD
     rel_paths = list(dict.fromkeys(rel_paths))
     out = dict.fromkeys(rel_paths)
-    known, sources = _rows(language, rel_paths)
+    known, sources = _rows(language, rel_paths, library=library)
     data_dir = path_utils.get_data_path(language)
     listings, playable, digests, stamps, copies = {}, {}, {}, {}, {}
     kinds = PLAYABLE + tuple(cut_kinds)
@@ -290,7 +304,7 @@ def files(language, rel_paths, memo=None, explain=False, cut_kinds=()):
     asks = {}
     for rel, places in gated.items():
         if any(_holds_playable(p, listings, playable, kinds) for p in places) or \
-                (not known.get(rel, _UNKNOWN)[3] and _index_playable(language, stamps, kinds)):
+                (not _names_media(known.get(rel, _UNKNOWN)[3]) and _index_playable(language, stamps, kinds)):
             asks[rel] = places
         elif explain:
             out[rel] = _named_beside(rel, places, listings)
@@ -309,7 +323,7 @@ def files(language, rel_paths, memo=None, explain=False, cut_kinds=()):
         return out
     ids = sorted({known[r][0] for r in misses if r in known})
     moved = {}
-    records = _pairings(language, ids, moved) if ids else {}
+    records = _pairings(language, ids, moved, handed=library) if ids else {}
     find = _finder(language, listings)
     for rel, key in misses.items():
         item_id, media = known.get(rel, _UNKNOWN)[:2]
@@ -331,20 +345,28 @@ def files(language, rel_paths, memo=None, explain=False, cut_kinds=()):
 _UNKNOWN = (None, None, (), ())         # `_rows`' answer for a source the store doesn't hold (or no store)
 
 
-def _rows(language, rel_paths):
+def _rows(language, rel_paths, library=None):
     """({rel path: (item id, its title's type, its pairing rows as stored, each row's (origin, video_path, audiobook
     files as JSON) as SQLite reads them)}, the library's sources as one string) through one store open, 500 at a time; ({}, "") with no store or one that can't be read now (each
     source then looked at as a 2.x library's file). No record is picked here (`pairing_of` picks, for the few the
-    gate and the memo send on)."""
+    gate and the memo send on). `library`: the caller's open library store (the journey's render: its one open,
+    ONE-READ 3), read through and left open; False: the caller's open found none (({}, ""), never a second open);
+    None: opened here."""
     from app import library_store, path_utils
     data_dir = path_utils.get_data_path(language)
+    if library is False:
+        return {}, ""
     try:
-        if library_store.check_mode(language, data_dir, busy_wait=0.0)[0] != "store":
-            return {}, ""
-        store = library_store.open_store(language, data_dir, path_utils.get_user_files_path(language), role="reader")
-        if store is None:
-            return {}, ""
-        with store:
+        if library is not None:
+            store = library
+        else:
+            if library_store.check_mode(language, data_dir, busy_wait=0.0)[0] != "store":
+                return {}, ""
+            store = library_store.open_store(language, data_dir, path_utils.get_user_files_path(language),
+                                             role="reader")
+            if store is None:
+                return {}, ""
+        with (contextlib.nullcontext() if library is not None else store):
             ids = {rel: i for rel, i in zip(rel_paths, store.item_ids(rel_paths)) if i is not None}
             wanted = sorted(set(ids.values()))
             works, texts, fields = {}, {}, {}
@@ -470,6 +492,13 @@ def _named_beside(rel, places, listings):
                     if found:
                         return os.path.join(folder, found)
     return None
+
+
+def _names_media(rows):
+    """Does any of a source's pairing rows (`_rows`: (origin, video_path, audiobook files) as SQLite read them) name
+    its media? A row with only an origin (a subtitle read in place from a folder with no video beside it) names none:
+    such a source may still play a video only Connect's index knows, as a copy with no row may (`files`' gate)."""
+    return any(video or files for _origin, video, files in (rows or ()))
 
 
 def _index_playable(language, stamps, kinds=PLAYABLE):

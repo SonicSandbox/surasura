@@ -30,6 +30,13 @@ import threading
 import time
 import traceback
 
+# Run as `python -m app.qt.shell`, the window is the ONE imported module's: this file's body run as `__main__` was a
+# second copy beside the `app.qt.shell` that needs.py, settings_sources.py and the wizard import, with a Connect feed
+# of its own (`_CONNECT_FEEDS`: the window's one feed) (ENTRY-ONCE, 3.0.21; analyzer.py's entry). Before the body.
+if __name__ == "__main__":
+    from app.qt import shell as _one
+    sys.exit(_one.main())
+
 from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (QFontMetrics, QFontMetricsF, QGuiApplication, QIcon, QKeySequence,
@@ -156,6 +163,8 @@ class Services:
         self.replan_heard = []                  # finish-pending: told each line the host says (its worker) — the
         #                                         window's drag controller's: a press waiting for its re-order ends
         #                                         with some
+        self.words_heard = []                   # BRIDGE-2: told (language) each time a word list's write lands (any
+        #                                         thread: `_words_marked`) — Settings' level numbers read again
         self.language = self.settings.get().get("target_language") or "ja"
         self.closing = threading.Event()  # set at quit: a Generate still waiting for `results` starts nothing
         self.quit_hook = None             # the window's: the update hands over (called on a worker)
@@ -188,6 +197,14 @@ class Services:
     # --- W3.5: the dashboard's duties --------------------------------------------------------------------------- #
     SESSION_LOOK_EVERY = 60.0     # seconds between two of the session's looks at a focus (the Tk CONNECT_LOOK_EVERY)
 
+    def _known_moved(self, language):
+        """(The indexer's or a Generate's thread.) Either normalizes KnownWord.json again when a sync moved it: the ✓
+        chip's counter of the library open (its language's) reads the token store's known words again (CARD-LEFT)."""
+        library = getattr(self, "library", None)
+        chips = getattr(library, "chips", None)
+        if chips is not None and getattr(chips, "language", None) == language:
+            chips.known_moved()
+
     def has_duties(self):
         return None not in (self.controller, self.updates, self.automation, self.chores)
 
@@ -208,6 +225,7 @@ class Services:
             self.automation = automation_module.Automation(self.registry, self.controller, self.settings,
                                                            self.language, index=lambda: chores.index(force=True))
             chores.on_indexed(lambda _language: self.automation.recheck())     # IK-10: asked again after the indexer
+            chores.on_indexed(self._known_moved)                                 # CARD-LEFT: the ✓'s known words
         if self.replan is None:
             from app.services import replan_host as replan_module
             self.replan = replan_module.Replan(self.registry, self.controller, self.settings, self.language,
@@ -253,6 +271,10 @@ class Services:
                     step()
                 except Exception as e:
                     applog.log("shell", f"the numbers after a Generate: {e!r}")
+        try:                              # CARD-LEFT: a Generate normalizes the known words: the ✓ reads them again
+            self._known_moved(self.language)    # (its own step, after the numbers': never in their way)
+        except Exception as e:
+            applog.log("shell", f"the card chip after a Generate: {e!r}")
 
     @staticmethod
     def _wake_connect():
@@ -357,14 +379,15 @@ class Services:
                 numbers.idle(NUMBERS_WAIT_S)        # (a worker: the card asked again after this sees them out)
             except Exception as e:
                 applog.log("shell", f"the numbers after a mark: {e!r}")
-        if language != self.language:
-            return                                  # (another language's lists: its next Generate reads them)
-        automation = self.automation
-        if automation is not None and hasattr(automation, "known_changed"):
-            automation.known_changed()
-        words_marked = getattr(self.replan, "words_marked", None)
-        if words_marked is not None:
-            words_marked()
+        if language == self.language:               # (another language's lists: its next Generate reads them)
+            automation = self.automation
+            if automation is not None and hasattr(automation, "known_changed"):
+                automation.known_changed()
+            words_marked = getattr(self.replan, "words_marked", None)
+            if words_marked is not None:
+                words_marked()
+        for heard in list(self.words_heard):         # BRIDGE-2: Settings' level numbers (Known, Ignore, Still learning),
+            heard(language)                          # told last: the known count asked again above lands beside this
 
     def _stone_marked(self, language):
         """(The writer's thread.) A watched mark, or its undo, that moved nothing that counts: the journey keeper's
@@ -1455,6 +1478,39 @@ class EscapeRouter(QObject):
         return True
 
 
+SETTINGS_WARM_MS = 3            # a turn's share of Settings' icons drawn ahead (`ShellWindow._warm_icons`), at most
+
+
+def _import_settings():
+    """(A worker, once the window has booted.) What Settings' first open imports — the page, the packages that fill
+    its slots (`settings_attaches`) — and what its rows read first (`settings_page._warm`), done ahead. No Qt enum is
+    made here: `test_settings_open` imports them on a thread of a fresh process and fails on one."""
+    from app.qt import settings_page
+    settings_attaches()
+    if not settings_page._WARMED:
+        settings_page._warm()
+        settings_page._warmed()
+
+
+def settings_attaches():
+    """The packages that fill Settings' slots, each with the rows whose slots it fills (`SettingsPage.attach_later`:
+    run just before the first row of those rows' sections is built) -> [(attach, rows)], in this order: Connect's three
+    rows, the placing rules, the store's lines and *Set up again*, *Library folders* (SRC W1b), *Your settings* (a6),
+    the AI voice's beta row (Iro-AA, when its module is here). A test runs each on a page and holds it to its rows."""
+    from app.qt import settings_connect, settings_io, settings_rules, settings_sources, settings_store
+    attaches = [(settings_connect.attach, ("connect_enabled", "anki_miner", "new_cards_a_day")),
+                (settings_rules.attach, (settings_rules.ROW_ID,)),
+                (settings_store.attach, settings_store.LINES + ("keep_watched", "new_cards_from", "set_up_again")),
+                (settings_sources.attach, (settings_sources.ROW_ID, settings_sources.FRESH_ID)),
+                (settings_io.attach, (settings_io.ROW_ID,))]
+    try:
+        from modules.irodori import qt_settings
+        attaches.append((qt_settings.attach, (qt_settings.ROW_ID,)))
+    except ImportError:
+        pass
+    return attaches
+
+
 class AppFilter(QObject):
     """The app's one event filter (a9.1): the tooltip bubble's (`tooltip.Tooltips`), then Esc and Back's
     (`EscapeRouter`) — the order they ran in as two filters (the one installed last runs first). Every event in the
@@ -1627,6 +1683,9 @@ class ShellWindow(QMainWindow):
         # the services, through the bridge
         self.bridge = bridge.Bridge(services.settings, services.registry, services.status, parent=self)
         self.bridge.status_changed.connect(self.show_status)
+        words_heard = getattr(services, "words_heard", None)           # BRIDGE-2: a word list's write, as a signal
+        if words_heard is not None:                                    # (a test's stand-in services may have none)
+            words_heard.append(self.bridge.tell_words)
         self._jobs = ()                                   # the registry's newest snapshot (E20: what the close waits for)
         self._quit = None                                 # None · "waiting" (E20: an Anki write ends first) · "ready"
         self.restart_asked = False                        # *Restart now* (text size): main starts the program again
@@ -1834,6 +1893,7 @@ class ShellWindow(QMainWindow):
         # Haya-LD: the boot's watch (`_arm_boot`): the duties start, and background work goes, only once it booted
         self.boot_gate = not os.environ.get("SURASURA_NO_UI_TIMERS")
         self._after_boot, self._boot_armed, self._boot_view_seen, self._framed = [], False, False, False
+        self._cache_shown = self._open_said = False   # UPDATE-START: the first screen's cache shown; *booted* said
         self.bridge.quit_asked.connect(self._quit_for_update)
         services.quit_hook = self.bridge.ask_quit
         self._session_lines = bridge.Relay(self)          # Q4-16: the session's look's lines (*Opening Anki…*), the bar
@@ -1946,7 +2006,8 @@ class ShellWindow(QMainWindow):
 
     def mount_settings(self):
         """The Settings page in its tab (once): the page, then the rows other packages fill — Connect's three, the
-        placing rules, the store's two lines and *Set up again* (`settings_store`). -> the page."""
+        placing rules, the store's two lines and *Set up again* (`settings_store`), … (`settings_attaches`) — each
+        attached just before the first row of its sections is built (`attach_later`). -> the page."""
         if self.settings_page is not None:
             return self.settings_page
         window_idle.slice_ran()                 # the sliced build begins here: its imports and frame are its first slice
@@ -1957,19 +2018,8 @@ class ShellWindow(QMainWindow):
         page = settings_page.SettingsPage(self, language, parent=holder)
         holder.layout().insertWidget(0, page, 1)          # above the bottom edge every page carries
         self.settings_page = page
-        attaches = [settings_connect.attach, settings_rules.attach, settings_store.attach,
-                    settings_sources.attach,                           # --- SRC W1b: *Library folders*
-                    settings_io.attach]                                # --- a6: *Your settings*
-        try:                                                           # --- Iro-AA: the AI voice's beta row
-            from modules.irodori import qt_settings
-            attaches.append(qt_settings.attach)
-        except ImportError:
-            pass
-        for attach in attaches:
-            try:
-                attach(page)
-            except Exception as e:                        # one package's rows never keep the page from opening
-                applog.log("shell", f"settings rows not attached ({attach.__module__}): {e!r}")
+        for attach, rows in settings_attaches():          # each just before its sections' first row (SETTINGS-OPEN)
+            page.attach_later(attach, rows)
         return page
 
     def open_setting(self, target):
@@ -2033,6 +2083,10 @@ class ShellWindow(QMainWindow):
             star.view_shown(view, self.services.library)
         if not getattr(view, "loading", False) and not self.services.boot.is_set():
             self._boot_after_idle()                 # Haya-LD: Current's list from disk drawn: booted at the next idle
+        elif getattr(view, "cached", False) and not self._open_said:
+            self._cache_shown = True                # UPDATE-START: the first screen's cache shown: the window is open
+            if self._framed:
+                self._say_open()
 
     def _show_dock(self, view):
         """The Goal dock takes the reader's `view.goal`, repainted only when it changed; shown while there is a Goal and
@@ -2242,6 +2296,7 @@ class ShellWindow(QMainWindow):
                 page.language = self.language
         self.library_bridge = bridge.Bridge(library=reader, parent=self)
         self.library_bridge.library_changed.connect(self.show_library)
+        self.library_bridge.library_changed.connect(self.search.library_moved)     # (the old one's went with it)
         if writer is not None:
             from app.qt import drag
             self.moves = drag.DragController(self, writer, reader)
@@ -2974,7 +3029,8 @@ class ShellWindow(QMainWindow):
     # --- Haya-LD: booted first, on every PC (2026-11-20): the window opens fully before the background starts ---- #
     def _arm_boot(self):
         """(The first frame's.) The boot's watch: a list from disk already shown (or no library to show) -> booted at
-        the loop's next idle; else at the first such view (`show_library`); booted all the same BOOT_MAX_S on. Off
+        the loop's next idle; else at the first such view (`show_library`); booted all the same BOOT_MAX_S on. The
+        first screen's cache already shown: the window is open now (`_say_open`). Off
         under SURASURA_NO_UI_TIMERS (`boot_gate`): booted at once, as the duties started before."""
         self._framed = True
         if not self.boot_gate:
@@ -2983,6 +3039,8 @@ class ShellWindow(QMainWindow):
         from PyQt6.QtCore import QTimer
         from app.services import gentle as gentle_module
         QTimer.singleShot(int(gentle_module.BOOT_MAX_S * 1000), lambda: self._booted_now(late=True))
+        if self._cache_shown and not self._boot_view_seen:
+            self._say_open()
         if self._boot_view_seen or self.services.library is None:
             self._boot_after_idle()
 
@@ -3019,8 +3077,11 @@ class ShellWindow(QMainWindow):
             return
         if self.boot_gate:
             age = hud._process_age_ms()
-            applog.log("shell", ("booted (its limit passed: the list from disk wasn't drawn)" if late else "booted")
-                       + (f" {age / 1000:.2f} s after the process began" if age is not None else ""))
+            said = ("booted (its limit passed: the list from disk wasn't drawn)" if late else "booted")
+            if self._open_said:                     # UPDATE-START: open since the cache; the background goes now
+                said = ("the background goes: its limit passed (the list from disk wasn't drawn)" if late else
+                        "the list from disk drawn, the background goes:")
+            applog.log("shell", said + (f" {age / 1000:.2f} s after the process began" if age is not None else ""))
         services.booted()
         waiting, self._after_boot = self._after_boot, []
         for call in waiting:
@@ -3028,6 +3089,20 @@ class ShellWindow(QMainWindow):
                 call()
             except Exception as e:
                 applog.log("shell", f"after the boot: {e!r}")
+
+    def _say_open(self):
+        """UPDATE-START (3.0.21, PROVISIONAL): the first screen's cache is painted — the window is open (every press
+        acts on it; a title's last Done waits for the list from disk itself, `DragMoves._from_cache`): said in the log
+        as *booted*, with the time since the process began (what a start report reads). Nothing else starts: the
+        background waits for the list from disk (`_booted_now`), so nothing races the first view with numbers
+        (OPEN-RACE). Once."""
+        if self._open_said or self.services.boot.is_set():
+            return
+        self._open_said = True
+        if self.boot_gate:
+            age = hud._process_age_ms()
+            applog.log("shell", "booted at the first screen's cache"
+                       + (f" {age / 1000:.2f} s after the process began" if age is not None else ""))
 
     def _when_booted(self, call):
         """`call()` now when the window booted, else as it boots (the window's thread)."""
@@ -3609,17 +3684,33 @@ class ShellWindow(QMainWindow):
             log=lambda where, e: applog.log("door", f"{where}: {e!r}")))
 
     def ukai_extension(self):
-        """(The door's starting thread, only while `door.EXTENSION_ON`.) 鵜飼 Ukai's caller class (UKAI-S1): its
-        pairing (`app/services/ukai_pairing.py`, kept as `ukai_pairing` for Settings' *Forget Ukai*), whose Allow card
-        opens in this window through the bridge (`_ukai_allow`). No widget is touched here."""
+        """(The door's starting thread, only while `door.EXTENSION_ON`.) 鵜 Ukai's caller class (UKAI-S1): its
+        pairing (`app/services/ukai_pairing.py`, kept as `ukai_pairing` for Settings' row and *Forget Ukai*), whose
+        Allow card opens in this window through the bridge (`_ukai_allow`), and Ukai's module's routes (UKAI-S2,
+        `modules/ukai`: the subtitles in, through this window's writer as the YouTube downloader's transcripts go;
+        UKAI-S3: YouTube links, run on this window's thread through the bridge, `_ukai_youtube`) —
+        None without the module (nothing listens for Ukai: Surasura runs as before). No widget is touched here."""
+        try:
+            import modules.ukai as ukai
+        except ImportError:
+            return None
         from app.services import ukai_pairing
+        services = self.services
+        routes = ukai.routes(writer=lambda: getattr(services, "writer", None), settings=services.settings.get,
+                             youtube=self.bridge.run_ukai_youtube)
         self.bridge.ukai_asked.connect(self._ukai_allow, Qt.ConnectionType.QueuedConnection)
-        self.ukai_pairing = ukai_pairing.Pairing(ask=self.bridge.ask_ukai)
-        return self.ukai_pairing.extension()
+        self.bridge.ukai_youtube.connect(self._ukai_youtube, Qt.ConnectionType.QueuedConnection)
+        self.ukai_pairing = ukai_pairing.Pairing(ask=self.bridge.ask_ukai, changed=self.bridge.ukai_changed)
+        return self.ukai_pairing.extension(routes)
 
     def _ukai_allow(self, request):
         from app.qt import ukai_allow
         ukai_allow.ask(self, self.ukai_pairing, request)
+
+    def _ukai_youtube(self, job):
+        """Ukai's YouTube links (UKAI-S3), on this window's thread: the downloader runs them (`modules/ukai/qt_youtube`)."""
+        from modules.ukai import qt_youtube
+        qt_youtube.run(self, *job)
 
     # --- Kotoba-K: Known / Ignore on the word card ----------------------------------------------------------------- #
     def _card_mark(self, marks):
@@ -4526,9 +4617,39 @@ class ShellWindow(QMainWindow):
         qcovers.release(self._stones_hold)
         if self._framed:
             self._when_booted(self.scan_covers)
+            if self.boot_gate:
+                self._when_booted(self._warm_settings)         # SETTINGS-OPEN 2: Settings' first open made lighter
         else:
             self.scan_covers()
         self._start_looks()                                    # --- SRC W1b: the first look after start (full)
+
+    def _warm_settings(self):
+        """SETTINGS-OPEN 2: Settings' first open made lighter once the window has booted — its modules imported on a
+        worker (`_import_settings`: 60–240 ms of the click's stretch), then the icons its frame draws, a few between
+        the window's own turns (`settings_page.warm_icons`: ~100 ms of the frame). Nothing once Settings is made."""
+        if self.settings_page is None:
+            bridge.run_in_worker(_import_settings, then=lambda _none: self._warm_icons(None),
+                                 failed=lambda info: applog.log("shell", f"Settings not warmed: {info[1]}"))
+
+    def _warm_icons(self, steps):
+        """Settings' icons drawn, at most SETTINGS_WARM_MS a turn (the GUI thread's step), until they are or the
+        page is made (it draws what is left itself)."""
+        if self.settings_page is not None:
+            return
+        try:
+            if steps is None:
+                from app.qt import settings_page
+                steps = settings_page.warm_icons()
+            t0 = time.perf_counter()
+            while steps:                                      # (one a turn at least: always on its way)
+                steps.pop(0)()
+                if (time.perf_counter() - t0) * 1000 >= SETTINGS_WARM_MS:
+                    break
+        except Exception as e:                                # a warm-up never troubles the window: the page draws
+            applog.log("shell", f"Settings' icons not warmed: {e!r}")
+            return
+        if steps:
+            QTimer.singleShot(0, lambda: self._warm_icons(steps))
 
     def scan_covers(self, progress=None, then=None):
         """W3.2 Q6: the library's covers from disk (`covers.start_scan`), on a thread of its own — after the first
@@ -5120,7 +5241,7 @@ def start_door(window):
     global _door_starting
     try:
         from app.services import journey_door
-        if not journey_door.enabled():
+        if not journey_door.enabled():          # (Ukai's class too: one door, one switch to open it — UKAI-S2)
             return None
         routes = window.door_routes()
     except Exception as e:
@@ -5132,7 +5253,7 @@ def start_door(window):
             from app import door
             from app.path_utils import get_user_file
             extension = None
-            if door.EXTENSION_ON:               # 鵜飼 Ukai's class: off until Ukai 1.0 ships with it
+            if door.EXTENSION_ON:               # 鵜 Ukai's class: off until Ukai 1.0 ships with it
                 try:
                     extension = window.ukai_extension()
                 except Exception as e:          # (the journey's door opens all the same)
@@ -5256,7 +5377,3 @@ def quiet_exit(workers_ms=QUIT_WORKERS_MS, join_s=QUIT_THREAD_JOIN_S, gone=()):
             thread.join(join_s)
             ended = ended and not thread.is_alive()
     return ended
-
-
-if __name__ == "__main__":
-    sys.exit(main())

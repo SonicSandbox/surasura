@@ -20,9 +20,10 @@ from collections import namedtuple
 # `source` and `frequency_sort` are the fields those roles map to, or None. `own_deck` (Michi-DK): Anki Miner's own
 # deck when a run mines into Surasura's instead (`for_run`), else None. `quiet_mark` (BOOK-CARD): the profile's card
 # type is the audio card — the sentence card's mark a mine with no sound makes instead (`runfile.config`'s `quiet`),
-# or "" when the note type has none; None: any other card type, every mine keeps it.
-Mapping = namedtuple("Mapping", "deck note_type fields word sentence source frequency_sort own_deck quiet_mark",
-                     defaults=(None, None))
+# or "" when the note type has none; None: any other card type, every mine keeps it. `sound_mark` (AUDIO-FILL): the
+# audio card's own mark field beside it (Card sound turns a card's type to follow its sound: decision 4), else None.
+Mapping = namedtuple("Mapping", "deck note_type fields word sentence source frequency_sort own_deck quiet_mark "
+                     "sound_mark", defaults=(None, None, None))
 
 # BOOK-CARD (3.0.19; the lead's lean (a), PROVISIONAL until Sonic's § 96 — (b), the plain word card, would be ""): a
 # card mined from a book or a text with no audiobook lined up has no sentence audio, so under the learner's audio card
@@ -78,7 +79,8 @@ def from_export(export, language="ja", do=FINISH):
     if not fields.get("word"):
         raise NeedsYou("Anki Miner doesn't say which field holds the word. " + do)
     return Mapping(deck, note_type, fields, fields["word"], fields.get("sentence"), fields.get("source"),
-                   fields.get("frequency_sort"), quiet_mark=_quiet_mark(settings, fields))
+                   fields.get("frequency_sort"), quiet_mark=_quiet_mark(settings, fields),
+                   sound_mark=_sound_mark(settings, fields))
 
 
 def _quiet_mark(settings, mapped):
@@ -93,12 +95,31 @@ def _quiet_mark(settings, mapped):
     return mark if isinstance(mark, str) and mark.strip() and mark not in mapped.values() else ""
 
 
+def _sound_mark(settings, mapped):
+    """AUDIO-FILL: the audio card's own mark field while the profile's card type is the audio card (Anki Miner writes
+    its "x" there), or None — none either for a mark a mapped field fills."""
+    if settings.get("card_type") != AUDIO_CARD:
+        return None
+    marks = settings.get("card_type_marker_fields")
+    mark = marks.get(AUDIO_CARD) if isinstance(marks, dict) else None
+    return mark if isinstance(mark, str) and mark.strip() and mark not in mapped.values() else None
+
+
+def marks(mapping):
+    """(the sentence card's mark field, the audio card's) when the profile's card type is the audio card and both are
+    there — Card sound's decision 4 — else None."""
+    s_mark, a_mark = getattr(mapping, "quiet_mark", None), getattr(mapping, "sound_mark", None)
+    return (s_mark, a_mark) if s_mark and a_mark and s_mark != a_mark else None
+
+
 def with_note_fields(mapping, model_fields):
     """BOOK-CARD: `mapping` with its sentence card's mark none ("") when Anki's note type (`model_fields`) has no field
     for it — Anki Miner refuses a run whose card type's mark the note type lacks (its preflight asks for the field);
     `model_fields` None (not read): `mapping` as it is."""
     if mapping.quiet_mark and model_fields is not None and mapping.quiet_mark not in model_fields:
-        return mapping._replace(quiet_mark="")
+        mapping = mapping._replace(quiet_mark="")
+    if getattr(mapping, "sound_mark", None) and model_fields is not None and mapping.sound_mark not in model_fields:
+        mapping = mapping._replace(sound_mark=None)
     return mapping
 
 

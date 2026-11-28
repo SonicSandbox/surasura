@@ -67,14 +67,14 @@ CALL_SITES = {
     "app/services/moves.py": 1,
     "app/services/needs.py": 1,
     "app/services/settings_io.py": 1,
-    "app/services/ukai_pairing.py": 1,  # UKAI-S1: 鵜飼 Ukai's pairing file (PARTS: roaming, stays)
+    "app/services/ukai_pairing.py": 1,  # UKAI-S1: 鵜 Ukai's pairing file (PARTS: roaming, stays)
     "app/telemetry.py": 3,
     "app/youtube_hold.py": 1,         # Yt-B: YouTube's hold, the persistent folder
     "app/token_index.py": 1,
     "app/updater.py": 3,
-    "modules/irodori/make.py": 1,     # Iro-AA: the runs' Undo list (install: irodori-runs-*.json)
-    "modules/irodori/queue.py": 1,    # ... Connect's waiting list (install: irodori-queue-*.json)
+    "modules/irodori/hear.py": 1,     # Iro-P: one listen-back's clips (install: irodori-heard/, removed after)
     "modules/irodori/runtime.py": 1,  # ... the voice's runtime (local: irodori/, stays)
+    "modules/irodori/voice.py": 1,    # Iro-P: the learner's own voice packs (local: irodori-voices/, stays)
     "modules/junban/__init__.py": 1,
     "modules/junban/backlog_shows.py": 1,
     "modules/junban/patterns_build.py": 1,

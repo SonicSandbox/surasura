@@ -123,7 +123,8 @@ def test_the_journeys_swap_answer_says_which_kind_the_setting_asks_for(monkeypat
     from app.connect import door_routes
     monkeypatch.setattr(door_routes, "_ask", lambda body, journey: {"id": 3, "new": True})
     monkeypatch.setattr(settings_manager, "load_settings", lambda: {"swap_in_place": on})
-    assert door_routes.swap_route({"lang": "ja"}, None) == {"queued": True, "id": 3, "already": False, "same": on}
+    assert door_routes.swap_route({"lang": "ja"}, None) == {"queued": True, "id": 3, "already": False, "same": on,
+                                                             "video": None}   # (no video looked for: SWAP-TIME)
 
 
 def test_the_journey_page_words_its_swap_toast_by_the_answer():
@@ -228,7 +229,8 @@ def test_the_journeys_answer_says_queued_even_when_the_setting_cant_be_read(monk
     def broken():
         raise OSError("settings.json is locked")
     monkeypatch.setattr(settings_manager, "load_settings", broken)
-    assert door_routes.swap_route({"lang": "ja"}, None) == {"queued": True, "id": 3, "already": False, "same": False}
+    assert door_routes.swap_route({"lang": "ja"}, None) == {"queued": True, "id": 3, "already": False, "same": False,
+                                                             "video": None}   # (no video looked for: SWAP-TIME)
 
 
 def test_a_ledger_with_kind_but_not_kind_why_still_lists_its_swaps(tmp_path):

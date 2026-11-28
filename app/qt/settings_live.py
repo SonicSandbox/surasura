@@ -36,7 +36,7 @@ help line.
 import os
 import time
 
-from PyQt6.QtCore import QEvent, QObject, QPoint, QRectF, Qt
+from PyQt6.QtCore import QEvent, QObject, QPoint, QRectF, Qt, QTimer
 from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit, QVBoxLayout
 
@@ -49,6 +49,10 @@ from app.qt import settings_strings as S
 from app.services import settings as settings_service
 
 SETUP = ("setup_known", "setup_anki", "setup_mining", "setup_level", "setup_cards")
+# The rows that show the level read's answer (`read_level`: every band's numbers over the token store, 0.7 s of a
+# worker's Python cold): it is first asked when one of them is built, never at the page's making — opened at Anki &
+# mining, a read made then held Python's lock against every slice of the build for 1.3–2 s (SETTINGS-OPEN)
+LEVEL_ROWS = ("setup_level", "level")
 EXPORTS = {"export_frequency_list": "frequency_list", "export_reading_words": "reading_words",
            "export_sentence_list": "sentence_list"}
 COMING = {"jimaku": S.COMING_WITH_HATO, "anilist": S.COMING_LATER, "more_from_houseki": S.COMING_LATER}
@@ -94,7 +98,8 @@ def read_previews(settings, language):
     store = token_index.open_store(language)
     try:
         freqs = token_index.preview_frequencies(store, language, get_user_files_path(language),
-                                                effective(language, settings.get("zh_script", "asis")))
+                                                effective(language, settings.get("zh_script", "asis")),
+                                                settings)       # (its one read, never settings.json again)
         if freqs is None:
             return None
         return word_selection.band_previews(
@@ -159,6 +164,32 @@ def _nothing_new():
 
 
 PUT_BACK_KEY = "settings:connect_tidy:put-back"       # its own press: *Tidy now* working doesn't silence it
+
+
+def read_sound(language):
+    """(A worker.) AUDIO-FILL: *Add sound*'s count as Connect last kept it (`card_sound.counted`: one ledger row), or
+    None (none kept yet, Connect absent, a read that failed)."""
+    try:
+        from app.connect import card_sound
+        return card_sound.counted(language)
+    except Exception:
+        return None
+
+
+def sound_count_line(got):
+    """*Add sound*'s count beside its button, or "" (none kept yet: nothing shown)."""
+    if not got:
+        return ""
+    n = int(got.get("real") or 0)
+    return S.SOUND_COUNT_ONE if n == 1 else S.SOUND_COUNT.format(n=n) if n else S.SOUND_COUNT_NONE
+
+
+def sound_words(got):
+    """*Add sound*'s answer in plain words, where no toast can show it (a page with no window)."""
+    n = int(got.get("real") or 0)
+    if n:
+        return strings.NEEDS_SOUND_ADDED_ONE if n == 1 else strings.NEEDS_SOUND_ADDED.format(n=n)
+    return got.get("say") or strings.NEEDS_SOUND_NONE
 
 
 def tidy_line(past):
@@ -543,7 +574,28 @@ class CreditsCard(_Card):
         p.end()
 
 
+LEVEL_AFTER_MS = 500    # BRIDGE-2: the level read this long after the first news that moves it (a word's write is
+#                         two: the list's own and the known count read after it on the automation's worker)
+
+
 # --- the live rows ------------------------------------------------------------------------------------------------- #
+def _ukai_waits():
+    """(A worker.) How many lines wait for Ukai to record (`connect.browser.waiting_lines`: one listing, one file a
+    waiting job); 0 when none can be read."""
+    try:
+        from app.connect import browser
+        return browser.waiting_lines()
+    except Exception:
+        return 0
+
+
+def _let_go(signal, slot):
+    try:
+        signal.disconnect(slot)
+    except (TypeError, RuntimeError):                   # (already gone)
+        pass
+
+
 class Live(QObject):
     """The page's live rows. Made by `SettingsPage`; fills each slot as its row is built (`page.row_built`)."""
 
@@ -562,7 +614,13 @@ class Live(QObject):
         self.asking = None                # *Restart now to apply?* while it is open (text size)
         self._exporting = None            # the export row running (one at a time)
         self._checking = False
-        self._level = {"busy": False, "again": False, "asked": 0}
+        self._level = {"busy": False, "again": False, "asked": 0, "stale": False, "held": False}
+        controller = getattr(self.services, "controller", None)   # BRIDGE-2: the Generate state heard last (its end
+        self._generating = controller.state() if hasattr(controller, "state") else None   # moves the level)
+        self._moved = QTimer(self)        # BRIDGE-2: what moves the level, heard while Settings shows: one read
+        self._moved.setSingleShot(True)   # `LEVEL_AFTER_MS` after the first news (a write's news come in pairs)
+        self._moved.setInterval(LEVEL_AFTER_MS)
+        self._moved.timeout.connect(lambda: self._level_moved(settled=True))
         self._format = None               # the format last chosen (the pop opens on it)
         self._copies = {}                 # A6: an AI app -> its Copy presses (the latest one sets the name back)
         self._finding = None              # *Find hato…*'s press while it goes (Michi-HD)
@@ -574,14 +632,16 @@ class Live(QObject):
         b.settings_written.connect(self._written)
         b.status_changed.connect(self._status)
         b.automation_changed.connect(self._automation)
-        b.library_changed.connect(lambda _view: self._read_level())
-        b.indexed.connect(lambda _language: self._read_level())
+        b.indexed.connect(lambda _language: self._level_moved())            # new or changed files in the token store
+        b.words_marked.connect(self._words_marked)                          # BRIDGE-2: Known, Ignore, Still learning
+        b.generate_changed.connect(self._generated)                         # BRIDGE-2: a Generate's remembered band
         b.update_changed.connect(lambda _state: self._read_skipped())
         page.installEventFilter(self)               # Kantan-B2: Piyo's last round read again as Settings shows
         page.takes["text_size"] = self._text_size
         page.takes["app_motion"] = self._motion
         self._read_known()
-        self._read_level()
+        if any(row_id in page.rows for row_id in LEVEL_ROWS):
+            self._read_level()            # (else asked when the first row that shows it is built: `_built`)
         self._run(read_hato, then=self._hato)
         self._run(read_licence, then=self._show_licence)
         self._read_skipped()
@@ -595,7 +655,8 @@ class Live(QObject):
         return _alive(self.page)
 
     def _run(self, fn, *args, then=None, failed=None):
-        """`fn(*args)` on a worker; `then(answer)` on the GUI thread while the page lives."""
+        """`fn(*args)` on a worker; `then(answer)` on the GUI thread while the page lives — sent after the page's first
+        build turn (`SettingsPage.after_first_build`: at once after it)."""
         def done(answer):
             if then is not None and self._alive():
                 then(answer)
@@ -604,7 +665,11 @@ class Live(QObject):
             applog.log("settings", f"{getattr(fn, '__name__', 'a read')}: {info[1]}")
             if failed is not None and self._alive():
                 failed(info)
-        return bridge.run_in_worker(fn, *args, then=done, failed=fault)
+        after = getattr(self.page, "after_first_build", None)
+        if after is None:
+            bridge.run_in_worker(fn, *args, then=done, failed=fault)
+        else:
+            after(lambda: bridge.run_in_worker(fn, *args, then=done, failed=fault))
 
     def _press(self, row_id, part, fn, *args, then=None, failed=None, busy=None, key=None):
         """Round 8 row 45: `row_id`'s button pressed — its arc turns, painted before `fn` goes to the worker (as `_run`
@@ -655,6 +720,8 @@ class Live(QObject):
     # --- a row built: its live parts ------------------------------------------------------------------------------- #
     def _built(self, row_id):
         row = catalog.ROW[row_id]
+        if row_id in LEVEL_ROWS and not self._level["asked"] and not self._level["held"]:
+            self._first_level_read()      # SETTINGS-OPEN: the level's first read waits for a row that shows it
         if row_id in SETUP:
             door = sc.Door(S.CHANGE, tooltip=row.tip, name=f"{row.label}: {S.CHANGE}")
             door.clicked.connect(lambda _c=False, t=row.target: self.page.reveal(t))
@@ -696,6 +763,20 @@ class Live(QObject):
             self.parts[row_id] = {"mark": mark, "find": find, "tip": row.tip}
             if "hato" in self.facts:
                 self._hato(self.facts["hato"])
+        elif row_id == "ukai":                          # 鵜 Ukai (UKAI-S2, U9): paired or not, *Forget Ukai*
+            mark = sc.StatusMark(False, S.UKAI_NOT_PAIRED, tooltip=row.tip, name=S.ROW_TAGS["ukai"])
+            forget = qpress.room(sc.Door(S.FORGET_UKAI, tooltip=S.FORGET_UKAI_TIP, name=S.FORGET_UKAI))
+            forget.clicked.connect(lambda _c=False: self.forget_ukai())
+            forget.setVisible(False)                    # only while Ukai is paired
+            slot = self._slot(row_id).layout()
+            slot.addWidget(mark)
+            slot.addWidget(forget)
+            self.parts[row_id] = {"mark": mark, "forget": forget}
+            if getattr(self.shell, "bridge", None) is not None:     # paired or forgotten while Settings is open
+                signal, slot = self.shell.bridge.ukai_paired, self._ukai_changed
+                signal.connect(slot)
+                self.destroyed.connect(lambda _o=None: _let_go(signal, slot))  # (the window's bridge outlives a page)
+            self._read_ukai()
         elif row_id in COMING:
             hint = QLabel(COMING[row_id])
             hint.setObjectName("settingshint")
@@ -799,6 +880,22 @@ class Live(QObject):
             door.clicked.connect(lambda _c=False: self.remake_count())
             self._slot(row_id).layout().addWidget(door)
             self.parts[row_id] = {"remake": door}
+        elif row_id == "card_sound_add":                           # --- AUDIO-FILL: *Add sound* + its count
+            door = qpress.room(sc.Door(S.SOUND_ADD, tooltip=row.tip, name=row.label))
+            door.clicked.connect(lambda _c=False: self.add_sound())
+            count = QLabel()
+            count.setObjectName("settingshint")
+            count.setToolTip(S.SOUND_COUNT_TIP)
+            count.setVisible(False)                                 # until the count is read (on a worker)
+            self._slot(row_id).layout().addWidget(count)
+            self._slot(row_id).layout().addWidget(door)
+            self.parts[row_id] = {"add": door, "count": count}
+            self._read_sound()
+        elif row_id == "card_sound_remove_ai":                     # --- AUDIO-FILL: *Remove all AI audio…*
+            door = qpress.room(sc.Door(S.SOUND_REMOVE, tooltip=row.tip, name=row.label))
+            door.clicked.connect(lambda _c=False: self.remove_ai_count())
+            self._slot(row_id).layout().addWidget(door)
+            self.parts[row_id] = {"remove": door}
         elif row_id == "remove_downloaded_covers":                 # --- W3.2 L3
             door = qpress.room(sc.Door(S.COVERS_REMOVE, tooltip=row.tip, name=row.label))
             door.clicked.connect(lambda _c=False: self.remove_covers())
@@ -815,7 +912,7 @@ class Live(QObject):
             return
         keys = set(keys)
         from app.services import automation
-        if automation.moves_level(keys) or "exclude_single" in keys or "logic.phrase_rows" in keys:
+        if automation.moves_level(keys) or "exclude_single" in keys:
             self._read_level()
         if "skipped_version" in keys:
             self._read_skipped()
@@ -827,9 +924,10 @@ class Live(QObject):
     def _language(self, _language):
         self.facts.update(known=None, band=None, auto=False, previews=None)
         self._read_known()
-        self._read_level()
+        self._level_moved(now=True)
         self._read_piyo()
         self._read_tidies()
+        self._read_sound()
         self._paint_setup()
 
     def _status(self, snap):
@@ -848,7 +946,7 @@ class Live(QObject):
         known = getattr(state, "known", None)
         if known is not None and getattr(state, "language", None) == self.page.language and known != self.facts["known"]:
             self.facts["known"] = known
-            self._read_level()                            # new known words: the readout's numbers move
+            self._level_moved()                           # new known words: the readout's numbers move
             moved = True
         if moved:
             self._paint_anki()
@@ -894,6 +992,8 @@ class Live(QObject):
         if kind == QEvent.Type.Show and obj is self.page:
             self._read_piyo()
             self._read_hato_update()
+            if self._level["stale"]:
+                self._read_level()                       # BRIDGE-2: the library moved while Settings was out of sight
         elif kind == QEvent.Type.WindowActivate and self._alive() and self.page.isVisible():
             self._read_piyo()
         return False
@@ -925,9 +1025,57 @@ class Live(QObject):
             line.show()
 
     # --- the level ------------------------------------------------------------------------------------------------- #
+    def _first_level_read(self):
+        """The level's first read: at once — unless the page is still building, the reference tables aren't decoded yet
+        (`token_index.preview_prepared`: Settings opened in the window's first seconds, before the chores' warm-up)
+        and the page was opened at a section that shows no level row: then at the build's end (SETTINGS-OPEN 2: the
+        read's decode held Python's lock 160–270 ms in one go, a stall of the build's slices)."""
+        page = self.page
+        from app import token_index
+        level_sections = {catalog.ROW[row_id].section for row_id in LEVEL_ROWS}
+        if (page.built or token_index.preview_prepared(page.language)
+                or page.revealed_section() in level_sections | {None}):
+            self._read_level()
+            return
+        self._level["held"] = True
+        page.ready.connect(self._level_after_build)
+
+    def _level_after_build(self):
+        self.page.ready.disconnect(self._level_after_build)
+        self._level["held"] = False
+        if not self._level["asked"]:
+            self._read_level()
+
+    def _level_moved(self, settled=False, now=False):
+        """BRIDGE-2: something the level's numbers are read from moved — the token store (the indexer), the word lists
+        (`_words_marked`, a sync's new known words), the band a Generate remembers (`_generated`), the language. They
+        never read the library's order: a move is none of these. While Settings shows: read `LEVEL_AFTER_MS` after the
+        first news (`now`: at once), one read for news that come together, one at most per window through a stream;
+        out of sight: only marked stale — read once when Settings shows next."""
+        if not (self._alive() and self.page.isVisible()):
+            self._level["stale"] = True
+        elif settled or now:
+            self._read_level()
+        elif not self._moved.isActive():
+            self._moved.start()
+
+    def _words_marked(self, language):
+        if language == self.page.language:
+            self._level_moved()
+
+    def _generated(self, state):
+        """A Generate's end (the shell's own rule, `ShellWindow._show_generate`): the band it remembers for Automatic
+        (`record_auto_band`) may have moved."""
+        before, self._generating = self._generating, state
+        busy = ("queued", "running", "cancelling")
+        if before is not None and getattr(before, "state", None) in busy and getattr(state, "state", None) not in busy:
+            self._level_moved()
+
     def _read_level(self):
         """The level (S2) and every band's numbers, read on a worker — one at a time, once more if asked meanwhile."""
         level = self._level
+        level["stale"] = False
+        self._moved.stop()                                 # (a read now covers every view before it)
         if level["busy"]:
             level["again"] = True
             return
@@ -1083,6 +1231,44 @@ class Live(QObject):
             return
         self.facts["hato_update"] = tuple(answer) if answer else (None, None)
         self._hato(version)
+
+    def _ukai_changed(self, _none=None):
+        if self._alive():
+            self._read_ukai()
+
+    def _read_ukai(self):
+        """Ukai's pairing as the window keeps it (`ShellWindow.ukai_pairing`, built only while the door's Ukai class is
+        on), read on a worker (its first read is the file), painted on the row."""
+        pairing = getattr(self.shell, "ukai_pairing", None)
+        if "ukai" not in self.parts:
+            return
+        if pairing is None:
+            self._ukai(None)
+        else:
+            self._run(lambda: (pairing.paired(), _ukai_waits()), then=lambda got: self._ukai(*got))
+
+    def _ukai(self, paired, waits=0):
+        part = self.parts.get("ukai")
+        if part is None:
+            return
+        version = (paired or {}).get("version")
+        words = ((S.UKAI_PAIRED.format(version=version) if version else S.UKAI_PAIRED_PLAIN) if paired
+                 else S.UKAI_NOT_PAIRED)
+        if waits:                       # UKAI-S4: what waits for Ukai to record (Connect's Netflix / Disney+ jobs)
+            words = (S.UKAI_WAITS_ONE if waits == 1 else S.UKAI_WAITS).format(words=words, n=waits)
+        if part["mark"].value() != bool(paired) or part["mark"].words() != words:
+            part["mark"].set_value(bool(paired), words)
+        if part["forget"].isHidden() == bool(paired):
+            part["forget"].setVisible(bool(paired))
+
+    def forget_ukai(self):
+        """*Forget Ukai*: the pairing let go on a worker (`Pairing.forget`: the next call from Ukai is refused at once);
+        the bar says so — and says so when its file couldn't be removed (unpaired until Surasura closes)."""
+        pairing = getattr(self.shell, "ukai_pairing", None)
+        if pairing is None:
+            return
+        self._press("ukai", "forget", pairing.forget, then=lambda _answer: self.say(S.UKAI_FORGOTTEN, "ukai"),
+                    failed=lambda info: self.say(S.UKAI_FORGET_STUCK.format(why=info[1]), "ukai"))
 
     def find_hato(self):
         """*Find hato…*: hato's folder picked (the system's dialog; never while a press of it is live), `open_hato` on a
@@ -1448,6 +1634,107 @@ class Live(QObject):
     # --- Kyou-SH3 part 2: *Put back…* — the last 10 tidies (`tidy.past`), each with the Undo *Needs you* gives the
     # newest (`tidy.act_undo`: its rules hold for every one); one already put back, or whose copy is gone, is shown so
     # and can't be pressed; the press reads the list again on a worker, then the menu opens
+    # --- AUDIO-FILL (3.0.21; PROVISIONAL words): *Card sound*'s *Add sound* — real sound on every card that can get it
+    # now (`card_sound.press`, on a worker: the AI voice's cards stay Connect's quiet-PC pass), a toast with its Undo,
+    # the count read again after; *Remove all AI audio…* — the count first (`card_sound.press_remove`), then the sheet
+    # (No by default), the removal on a worker, a toast with its Undo (`press_undo`: the same run record)
+    def _read_sound(self):
+        if "count" not in self.parts.get("card_sound_add", {}):
+            return                                        # (its row not built yet: read when it is)
+        language = self.page.language
+        self._run(read_sound, language, then=lambda got, lang=language: self._sound(lang, got))
+
+    def _sound(self, language, got):
+        from PyQt6 import sip
+        count = self.parts.get("card_sound_add", {}).get("count")
+        if count is None or sip.isdeleted(count) or language != self.page.language:
+            return False
+        line = sound_count_line(got)
+        if count.text() != line or count.isVisible() != bool(line):
+            with self.page._keeping(self.page._last):
+                count.setText(line)
+                count.setVisible(bool(line))
+        return True
+
+    def _toast(self, got, language, row_id, back=None):
+        """A press's answer: the window's toast with its Undo (`needs.sound_added`; `back` its Undo's words), or its
+        words alone."""
+        from app.connect import card_sound
+        from app.qt import needs
+        if self.shell is None or not hasattr(self.shell, "toasts"):
+            return self.say(sound_words(got), row_id)
+        needs.sound_added(self.shell, got, lambda text: self.say(text, row_id), card_sound.press_undo, language,
+                          self._settings, failed=lambda info: self.say(S.SOUND_CANT.format(why=info[1]), row_id),
+                          back=back)
+        return None
+
+    def add_sound(self):
+        language = self.page.language
+        settings = dict(self._settings() or {})
+
+        def go():
+            from app.connect import card_sound
+            return card_sound.press(language, settings)
+
+        def done(got):
+            self._toast(got or {}, language, "card_sound_add")
+            self._read_sound()
+        return self._press("card_sound_add", "add", go, then=done,
+                           failed=lambda info: self.say(S.SOUND_CANT.format(why=info[1]), "card_sound_add"))
+
+    def remove_ai_count(self):
+        language = self.page.language
+        settings = dict(self._settings() or {})
+
+        def count():
+            from app.connect import card_sound
+            return card_sound.press_remove(language, settings)
+        return self._press("card_sound_remove_ai", "remove", count, then=lambda got: self._remove_ask(language, got),
+                           failed=lambda info: self.say(S.SOUND_CANT.format(why=info[1]), "card_sound_remove_ai"))
+
+    def _remove_ask(self, language, got):
+        got = got or {}
+        if language != self.page.language:
+            return None
+        if not got.get("ok"):
+            self.say(S.SOUND_CANT.format(why=got.get("say") or strings.NEEDS_SOUND_NONE), "card_sound_remove_ai")
+            return None
+        n = int(got.get("cards") or 0)
+        if not n:
+            self.say(S.SOUND_REMOVE_NONE, "card_sound_remove_ai")
+            return None
+        body = S.SOUND_REMOVE_BODY
+        if got.get("voice"):
+            body = f"{body}\n\n{S.SOUND_REMOVE_VOICE_ON}"
+        self.remove_card = confirm.ask(
+            self.page, S.SOUND_REMOVE_ASK_ONE if n == 1 else S.SOUND_REMOVE_ASK.format(n=n), body, S.SOUND_REMOVE_YES,
+            S.SOUND_REMOVE_YES_TIP, default_no=True, danger=True,
+            on_answer=lambda yes: yes and self.remove_ai_go(language))
+        return self.remove_card
+
+    def remove_ai_go(self, language):
+        """The sheet's yes for the language it counted (never the one shown now, if the learner switched)."""
+        settings = dict(self._settings() or {})
+
+        def go():
+            from app.connect import card_sound
+            return card_sound.press_remove(language, settings, confirm=True)
+
+        def done(got):
+            got = got or {}
+            n = int(got.get("removed") or 0)
+            if got.get("ok") and n:
+                line = S.SOUND_REMOVED_ONE if n == 1 else S.SOUND_REMOVED.format(n=n)
+            elif got.get("say"):
+                line = S.SOUND_CANT.format(why=got["say"])
+            else:
+                line = S.SOUND_REMOVE_NONE
+            self._toast({"id": got.get("id"), "ok": False, "say": line}, language, "card_sound_remove_ai",
+                        back=(S.SOUND_BACK, S.SOUND_BACK_KEPT))
+            self._read_sound()
+        return self._press("card_sound_remove_ai", "remove", go, then=done,
+                           failed=lambda info: self.say(S.SOUND_CANT.format(why=info[1]), "card_sound_remove_ai"))
+
     def _read_tidies(self):
         if "back" not in self.parts.get("connect_tidy", {}):
             return                                        # (its row not built yet: read when it is)

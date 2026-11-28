@@ -29,6 +29,8 @@ import shutil
 import sqlite3
 import time
 
+from app.connect.lineup import Book  # (a book's cues indexed once: the line-up's index, one class for both)
+
 TAG = "surasura::audio-added"
 BY = "add-audio"
 NO_LEDGER = "Connect hasn't made any cards yet, so there are none to add audio to."
@@ -78,21 +80,22 @@ def place(sentence, form, found):
     short line inside the sentence never wins over the sentence's own cue): the one cue that IS the sentence; else the
     one cue holding it whole (MIN_CHARS or longer); else, of the cues inside it (MIN_CHARS or longer each: the sentence
     said over several cues), the one holding `form` (any of them when `form` is None) — two answers at any step is no
-    answer (B-14), never a guess."""
+    answer (B-14), never a guess. `found`: the book's cues, or their `Book` (built once a book: a caller placing many
+    cards passes it)."""
     from app.connect import lineup
     want = lineup.clean(sentence)
     if not want:
         return None
-    exact = [c for c in found if c.text == want]
+    book = found if isinstance(found, Book) else Book(found)
+    exact = book.by_text.get(want)
     if exact:                                   # its words word for word (r3 S1: a longer line holding them elsewhere
-        return exact[0] if len(exact) == 1 else None      # is never this one's rival)
-    holders = [c for c in found if c.text and want in c.text] if len(want) >= lineup.MIN_CHARS else []
-    if holders:
-        return holders[0] if len(holders) == 1 else None
+        return book.found[exact[0]] if len(exact) == 1 else None      # is never this one's rival)
+    held = book.holders(want) if len(want) >= lineup.MIN_CHARS else None
+    if held is not None:
+        return None if held[1] else book.found[held[0]]
     hold = lineup.clean(form) if form else ""
-    hits = [c for c in found if c.text and len(c.text) >= lineup.MIN_CHARS and c.text in want and
-            (not hold or hold in c.text)]
-    return hits[0] if len(hits) == 1 else None
+    hits = [k for k in book.inside(want) if not hold or hold in book.found[k].text]
+    return book.found[hits[0]] if len(hits) == 1 else None
 
 
 def book_items(store, epub, earlier=True):
@@ -179,7 +182,7 @@ def plan(anki, steps, lang, epub, mapping):
     if not lined:
         return out
     out["lined"] = True
-    found = lineup.cues(lined["lineup"])
+    found = Book(lineup.cues(lined["lineup"]))      # (indexed once: `place` for every card)
     info = {int(n["noteId"]): n for n in anki.notes(sorted(notes)) or () if isinstance(n, dict) and n.get("noteId")}
     for note_id in sorted(notes):
         note = info.get(note_id)
@@ -386,7 +389,9 @@ def _add(settings, language, book, confirm, anki, ledger):
     steps = runner.Steps(settings)
     run_dir = os.path.join(_connect_folder(), "add-audio", f"{time.time_ns()}")
     try:
-        setup = _anki_miner_setup(settings, language, run_dir)
+        # AM-START: a run set of the press's own, so `version` and `profiles` come from the pair kept across runs and
+        # looks (`anki_miner.kept_look_ups`): one start, the export, where it started three before the first clip
+        setup = _anki_miner_setup(settings, language, run_dir, held={})
         if setup is None:
             return {"language": language, "skipped": NO_MINER}
         _version, profile, mapping = setup

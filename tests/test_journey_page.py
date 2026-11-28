@@ -131,6 +131,14 @@ def test_the_page_writes_only_the_settings_keys_of_spec_1_4():
                     "journey_sentence_size", "theme", "journey_keys", "journey_first_meeting"}, keys
 
 
+def test_the_keys_sheet_says_shift_is_left_free_for_yomitan_in_plain_words():
+    # (a tester on 3.0.20) "Shift is never taken: it is Yomitan's." read like stray text in the keys sheet: it says
+    # plainly that the page leaves Shift free for Yomitan (the selftest still checks no key is bound to Shift)
+    page = _read(PAGE)
+    assert "Shift is left free for Yomitan" in page
+    assert "Shift is never taken" not in page
+
+
 def test_the_render_inlines_only_the_chosen_rail():
     parts = fx.build("ja", 12)
     tiny = fx.assemble(parts, rail_css=".tiny{}", rail_js=_read(TINY_RAIL))
@@ -262,6 +270,148 @@ def test_a_long_name_cuts_in_its_own_box_at_every_width_and_scale(tmp_path, lang
                 misses.append(f"episode {i}: the title's tip stays after the focus leaves it")
         errs = e.errors()
     assert not errs, errs
+    assert not misses, "\n".join(misses[:40]) + f"\n({len(misses)} in all)"
+
+
+PITCH_EPS = 6         # the fixture's first episodes: every word with a pitch on them (yōon, っ, long readings)
+PITCH_SIZES = [(1366, 768, 1.0), (1280, 720, 1.5), (390, 844, 3.0)]
+PITCH_HIDDEN_THEN_F = """(() => { const J = window.__J; J.setSetting('pitch', 'hidden');
+  const k = document.querySelector('[data-r="reading"] .mo'), r = document.createRange();
+  let top = null; if (k) { r.selectNodeContents(k); top = r.getBoundingClientRect().top; }
+  const hidden = !document.querySelector('[data-r="reading"] svg.pitch');
+  J.doAction('pitch'); const m = window.__pitch(); J.setSetting('pitch', 'shown'); return [top, hidden, m]; })()"""
+
+
+@needs_edge
+def test_the_pitch_graph_sits_on_its_kana_with_room_under_the_word_at_every_size(tmp_path):
+    # (a tester on 3.0.20) the pitch graph ran into the big word above it and drifted off its kana: it stepped a fixed
+    # 19 px a mora while the reading's font set each kana at 12-17 px (a ゃゅょ pair at ~25), so by いっしょうけんめい's
+    # last mora a point stood 24 px right of its kana, and the graph's top sat 4 px inside the word's box. Measured in
+    # headless Edge (journey_page_pitch.js), as positions: every point stands over its own kana (the text's box in its slot), the graph clears
+    # the word and sits on its reading, and the reading stays where it is when F shows a hidden graph (no jump) — at
+    # three screens, each word size, pitch shown and hidden-then-F
+    from journey_page_edge import Edge
+    path = os.path.join(str(tmp_path), "pitch-ja.html")
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(fx.assemble(fx.build("ja", 40), extra_js=_read(os.path.join(HERE, "journey_page_pitch.js"))))
+    misses, seen, yoon = [], 0, 0
+    with Edge() as e:
+        assert e.open("file:///" + path.replace("\\", "/"), seconds=60), e.errors()
+        for width, height, scale in PITCH_SIZES:
+            e.call("Emulation.setDeviceMetricsOverride", width=width, height=height, deviceScaleFactor=scale, mobile=False)
+            for size in ("s", "m", "l"):
+                for ep in range(PITCH_EPS):
+                    e.evaluate(f"(async () => {{ const J = window.__J; J.setSetting('word_size', '{size}'); "
+                               f"J.setSetting('pitch', 'shown'); J.go({ep}, 0); await J.loadEp({ep}); return 1; }})()")
+                    for wi in range(e.evaluate(f"(window.__J.seq({ep}) || []).length")):
+                        has, m = e.evaluate(f"(() => {{ const J = window.__J; J.go({ep}, {wi}); J.drawWord(); "
+                                            f"const w = J.wordNow(J.curWordId()); "
+                                            f"return [w[8] != null && !!(w[3] || w[2]), window.__pitch()]; }})()")
+                        if not m:
+                            if has:                                   # a pitch and a reading: its graph
+                                misses.append(f"{width}x{height} @{int(scale * 100)} %, size {size}, episode {ep} "
+                                              f"word {wi}: no graph")
+                            continue
+                        where = f"{width}x{height} @{int(scale * 100)} %, size {size}, {m['text']}"
+                        seen += 1
+                        yoon += any(len(mo["ch"]) > 1 for mo in m["morae"])
+                        assert len(m["pts"]) == len(m["morae"]), where
+                        for (x, _y), mo in zip(m["pts"], m["morae"]):
+                            ink = (mo["inkL"] + mo["inkR"]) / 2
+                            if not mo["inkL"] <= x <= mo["inkR"] or abs(x - ink) > 3:
+                                misses.append(f"{where}: the point over {mo['ch']} at {x:.1f}, "
+                                              f"its kana {mo['inkL']:.1f}-{mo['inkR']:.1f}")
+                        room = m["svg"]["top"] - m["word"]["bottom"]
+                        if room < 4:
+                            misses.append(f"{where}: the graph's top {room:.1f} px under the word")
+                        sit = m["morae"][0]["top"] - m["svg"]["bottom"]
+                        if not -2 <= sit <= 6:
+                            misses.append(f"{where}: the graph {sit:.1f} px over its reading")
+                        top, hidden, again = e.evaluate(PITCH_HIDDEN_THEN_F)
+                        if not hidden or top is None or abs(top - m["morae"][0]["top"]) > 0.5 or not again or again["pts"] != m["pts"]:
+                            misses.append(f"{where}: hidden then F moves the reading or its graph "
+                                          f"({top} vs {m['morae'][0]['top']})")
+        errs = e.errors()
+    assert not errs, errs
+    assert seen >= 30 and yoon, (seen, yoon)              # the fixture's pitch words reached the page, ゃゅょ ones too
+    assert not misses, "\n".join(misses[:40]) + f"\n({len(misses)} in all)"
+
+
+CHIP_SIZES = [(1366, 768, 1.0), (1024, 640, 1.5), (683, 384, 2.0)]   # wide, between the breakpoints, narrow (1366 at 200 %)
+CHIP_MEASURE = """(() => {
+  const out = [];
+  for (const chip of document.querySelectorAll('#stage .prechip')) {
+    const c = chip.getBoundingClientRect(), card = chip.closest('.end').getBoundingClientRect();
+    const svg = chip.querySelector('svg').getBoundingClientRect();
+    const t = [...chip.childNodes].find((n) => n.nodeType === 3), r = document.createRange();
+    r.selectNodeContents(t);
+    const lines = new Set([...r.getClientRects()].map((x) => Math.round(x.top))).size, tb = r.getBoundingClientRect();
+    out.push({ text: t.textContent, cls: chip.className, lines, chip: [c.left, c.top, c.right, c.bottom],
+               card: [card.left, card.right], svg: [svg.left, svg.top, svg.right, svg.bottom],
+               txt: [tb.left, tb.top, tb.right, tb.bottom], over: chip.scrollWidth - chip.clientWidth });
+  }
+  return out; })()"""
+
+
+@needs_edge
+def test_the_end_cards_pre_studied_chip_fits_its_words_on_one_line_at_every_width_and_state(tmp_path):
+    # (a tester on 3.0.21) the end card's chip read "Pre- / studied · / un-mark" on three lines, spilling out of its
+    # pill: its stone's SVG had no size inside the chip (only `.st svg` is 20 px), so it grew and the words were
+    # squeezed into what was left. Measured in headless Edge, as positions: the chip's words on one line, inside the
+    # pill, right of a 20 px stone; nothing overflows the pill and the pill stays inside its card — at three widths,
+    # the word view's end card and the list's, every stone (rock, mined, nothing new, cut) × on / off × the ⧗ and the
+    # spinner of a waiting press
+    from journey_page_edge import Edge
+    path = os.path.join(str(tmp_path), "chip-ja.html")
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(fx.assemble(fx.build("ja", 40)))
+    misses, seen, texts = [], 0, set()
+    with Edge() as e:
+        assert e.open("file:///" + path.replace("\\", "/"), seconds=60), e.errors()
+        # one episode of each stone the fixture has: rock (no cards), raw (mined), nothing (nothing new), cut (finished)
+        eps = e.evaluate("""(() => { const J = window.__J, EPS = J.page.head.eps, got = {};
+          for (let i = 0; i < EPS.length; i++) if (EPS[i][0] != null && !(EPS[i][9] in got)) got[EPS[i][9]] = i;
+          return got; })()""")
+        assert {"rock", "raw", "nothing", "cut"} <= set(eps), eps
+        for width, height, scale in CHIP_SIZES:
+            e.call("Emulation.setDeviceMetricsOverride", width=width, height=height, deviceScaleFactor=scale, mobile=False)
+            for stone, ep in sorted(eps.items()):
+                for on in ((True,) if stone == "cut" else (True, False)):   # a finished one shows its chip only on
+                    for wait in ("", "wait", "queued"):
+                        for view in ("word", "list"):
+                            m = e.evaluate(f"""(async () => {{ const J = window.__J; await J.loadEp({ep});
+                              if (J.S.list !== ({'true' if view == 'list' else 'false'})) J.toggleList();
+                              J.go({ep}, (J.seq({ep}) || []).length); J.drawWord();
+                              J.PRE.set({ep}, {{ on: {'true' if on else 'false'}, by: '{'end' if on else 'off'}',
+                                               wait: '{wait}' || undefined }});
+                              J.drawWord(); return {CHIP_MEASURE}; }})()""")
+                            where = f"{width}x{height} @{int(scale * 100)} %, {stone}, {'on' if on else 'off'}, " \
+                                    f"wait '{wait}', {view} view"
+                            if not m:
+                                misses.append(f"{where}: no chip")
+                                continue
+                            for ch in m:
+                                seen += 1
+                                texts.add(ch["text"])
+                                cls = set(ch["cls"].split())   # the state set reached the chip drawn
+                                if ("on" in cls) != on or (wait and wait not in cls) or (not wait and cls & {"wait", "queued"}):
+                                    misses.append(f"{where}: the chip drawn as '{ch['cls']}'")
+                                (cl, ct, cr, cb), (sl, st, sr, sb), (tl, tt, tr, tb) = ch["chip"], ch["svg"], ch["txt"]
+                                if ch["lines"] != 1:
+                                    misses.append(f"{where}: '{ch['text']}' on {ch['lines']} lines")
+                                if not (cl < sl and sr <= tl and tr < cr and ct <= tt and tb <= cb and ct <= st and sb <= cb):
+                                    misses.append(f"{where}: '{ch['text']}' outside its pill: chip {ch['chip']}, "
+                                                  f"stone {ch['svg']}, words {ch['txt']}")
+                                if not 14 <= sr - sl <= 24:
+                                    misses.append(f"{where}: the stone {sr - sl:.1f} px wide")
+                                if ch["over"] > 0:
+                                    misses.append(f"{where}: the pill's contents overflow it by {ch['over']} px")
+                                if not (ch["card"][0] <= cl and cr <= ch["card"][1]):
+                                    misses.append(f"{where}: the pill {ch['chip']} outside its card {ch['card']}")
+        errs = e.errors()
+    assert not errs, errs
+    assert texts == {"Pre-studied · un-mark", "Not pre-studied · mark it"}, texts
+    assert seen >= 3 * (3 * 2 + 1) * 3 * 2, seen
     assert not misses, "\n".join(misses[:40]) + f"\n({len(misses)} in all)"
 
 

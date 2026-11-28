@@ -121,7 +121,7 @@ def run():
     args = [arg for arg in sys.argv[1:] if arg != "--headless"]
     command = args[0] if args else "window"
     if command == "--multiprocessing-fork":         # a frozen run's pool worker (freeze_support): no command of its own
-        return main()
+        return _pool_worker()
     _run.update(command=command, started=time.monotonic())
     code = 0
     try:
@@ -135,6 +135,47 @@ def run():
         raise
     finally:
         _log_end(code)
+
+
+def _pool_worker():
+    """A frozen run's pool worker (`--multiprocessing-fork`: the indexer's pool, a Generate's cores). Its start fails
+    when the process that started it has gone meanwhile (the window's quit stops the indexer while its pool starts:
+    the parent's pipe can't be copied, WinError 5, or read): logged, exit 1. Left to the windowed bootloader, the
+    exception showed *Unhandled exception in script* and the worker waited on that box, holding the program folder
+    (POOL-ORPHAN, 3.0.21). A worker's own end (multiprocessing's sys.exit) passes as it is, and so does a failure
+    while its parent still runs (a build that can't start its workers: the box says why, never a pool that starts a
+    new worker for each one that ended)."""
+    parent = next((arg.split("=", 1)[1] for arg in sys.argv[2:] if arg.startswith("parent_pid=")), None)
+    try:
+        return main()
+    except SystemExit:
+        raise
+    except BaseException as e:
+        if _running(parent):        # read before main(): spawn_main's prepare() hands sys.argv the parent's
+            raise
+        log_error(f"A pool worker's start failed, its parent gone ({e!r}): exit 1")
+        sys.exit(1)
+
+
+PARENT_SETTLE_S = 1.0
+
+
+def _running(pid):
+    """Is process `pid` (a worker's `parent_pid=`, as text) still running `PARENT_SETTLE_S` from now? Windows: its
+    handle not signalled by then (a parent being stopped has its handles gone a moment before it reads as ended: the
+    failure it caused can come first); a pid that can't be opened is gone. Unknown (no pid, another OS): False — the
+    worker ends."""
+    if sys.platform != "win32" or not (pid or "").isdigit():
+        return False
+    try:
+        import _winapi
+        handle = _winapi.OpenProcess(_winapi.SYNCHRONIZE, False, int(pid))
+    except OSError:
+        return False
+    try:
+        return _winapi.WaitForSingleObject(handle, int(PARENT_SETTLE_S * 1000)) == _winapi.WAIT_TIMEOUT
+    finally:
+        _winapi.CloseHandle(handle)
 
 
 def main():

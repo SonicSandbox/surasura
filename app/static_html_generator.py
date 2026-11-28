@@ -668,7 +668,7 @@ LINE_TIMES_MEMO = "line_times.json"     # results/: a playable line's times with
 TIMED_TYPES = ("subtitle", "audio")     # a source with timed lines: a subtitle; an audiobook's transcript (its item's)
 
 
-def _line_media(language, rel_paths, memo_path=None, explain=False, cut_kinds=()):
+def _line_media(language, rel_paths, memo_path=None, explain=False, cut_kinds=(), library=None):
     """({rel path: [where, why not]}, [folder URI, ...]) for the journey's ▶ (Kiku-L): the file `play.files` finds for
     each — when a browser plays it (`PLAYABLE`), `where` is "<its folder's place in the list>/<its name as it is>" (the
     page puts the URI together: a folder's URI once, a name never percent-encoded in the page — 20k sources were 2 MB
@@ -677,7 +677,8 @@ def _line_media(language, rel_paths, memo_path=None, explain=False, cut_kinds=()
     leaves the file). `explain`: the badge is shown, so a line with no ▶ says why (`play.files`' hint). `cut_kinds`:
     the journey's render (J-CLIP) — a file of these kinds (the one cutter's videos) is looked for and gets its `where` too,
     though no browser plays it: the page cuts its lines (`clip/cut`); this page asks none. Never raises: a lookup that
-    fails is no ▶, never a failed report; a memo that can't be read or written only costs time."""
+    fails is no ▶, never a failed report; a memo that can't be read or written only costs time. `library`: the render's
+    open library store (`journey_render.open_library`: one open a render, ONE-READ 3), handed to `play.files`."""
     if not rel_paths:
         return {}, []
     memo = {}
@@ -691,7 +692,8 @@ def _line_media(language, rel_paths, memo_path=None, explain=False, cut_kinds=()
     before = dict(memo)                         # (`play.files` replaces an entry, never changes one in place)
     try:
         from app.services import play
-        found = play.files(language, sorted(rel_paths), memo=memo, explain=explain, cut_kinds=cut_kinds)
+        found = play.files(language, sorted(rel_paths), memo=memo, explain=explain, cut_kinds=cut_kinds,
+                           library=library)
     except Exception as e:
         print(f"Warning: could not look for the lines' audio: {e}")
         return {}, []
@@ -1083,15 +1085,23 @@ def _write_journey(language, app_mode=False, open_browser=True, tagger=None, pla
             language = settings_manager.loaded(settings).get("target_language", "ja")
         except Exception:
             language = "ja"
-    facts = journey_render.store_facts(language)
-    if facts is not None:
-        marks = facts.marks
-    else:                                       # no store, or one that couldn't be read: never signed with stones
-        from app import analyzer, library_store   # (here only: a run's analyzer is __main__, not loaded twice)
-        marks = None if analyzer.journey_marks(language) is None else library_store.UNREAD
-    out = journey_render.render(language, rows=rows, priority=priority, facts=facts or False,
-                                tagger=tagger if language == "ja" else None, plan=plan, known=known,
-                                settings=settings, store=store)
+    # one open a render: the facts and the ▶'s rows (ONE-READ 3), and what its look found when it found none
+    library, without = journey_render.open_library_look(language)
+    handed = library if library is not None else False  # (none found: no reader opens a second one)
+    try:
+        facts = journey_render.store_facts(language, library=handed)
+        # no store, or one that couldn't be read: never signed with stones — told apart by the open's own look, never
+        # a second open (ONE-READ 4: `analyzer.journey_marks` looked again)
+        marks = facts.marks if facts is not None else without
+        out = journey_render.render(language, rows=rows, priority=priority, facts=facts or False,
+                                    tagger=tagger if language == "ja" else None, plan=plan, known=known,
+                                    settings=settings, store=store, library=handed)
+    finally:
+        if library is not None:
+            try:
+                library.close()
+            except Exception:
+                pass
     path = OUTPUT_FILE                          # the old page's file and name (as `open_report` and the window find it)
     journey_render.write_page(out, journey_template(), path)
     print(f"Journey written at: {path} ({out.head['counts']['eps']} episodes, {out.head['counts']['words']} words)")

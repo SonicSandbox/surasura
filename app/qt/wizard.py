@@ -188,13 +188,15 @@ QPushButton#wizlink[presses="end"]:focus, QPushButton#wizstar[presses="end"]:foc
 
 # --- the frame's parts -------------------------------------------------------------------------------------------------- #
 class StepList(QWidget):
-    """The steps, words only: the number (✓ once passed), the name; the iris vein beside the step you're on."""
+    """The steps, words only: the number (✓ once passed), the name; the iris vein beside the step you're on.
+    `ids` / `names`: another guide's own steps (VOICE-SETUP: the AI voice's four), setup's by default."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, ids=None, names=None):
         super().__init__(parent)
         self.setAccessibleName(S.STEPS_NAME)
         self.current, self.passed = 0, frozenset()
-        self.ids = ORDER                    # the steps shown (ONB-1: + *Your start* while the first cards wait)
+        self.names = names or S.STEPS
+        self.ids = tuple(ids or ORDER)      # the steps shown (ONB-1: + *Your start* while the first cards wait)
         self.warned = frozenset()           # ONB-2: steps with a decision waiting (a folder couldn't be read): amber
         self.paints = 0
 
@@ -205,9 +207,9 @@ class StepList(QWidget):
             return
         grew = ids != self.ids
         self.current, self.passed, self.ids, self.warned = current, passed, ids, warned
-        here = S.STEPS[ids[current]]
+        here = self.names[ids[current]]
         self.setAccessibleDescription(S.STEP_HERE_NAME.format(name=here) + "".join(
-            S.STEP_WARN_NAME.format(name=S.STEPS[pid]) for pid in ids if pid in warned))
+            S.STEP_WARN_NAME.format(name=self.names[pid]) for pid in ids if pid in warned))
         if grew:
             self.updateGeometry()
         self.update()
@@ -240,11 +242,11 @@ class StepList(QWidget):
             p.setFont(here_font if here else name_font)
             p.setPen(_c("ink") if here else _c("ink-dim"))
             p.drawText(QRectF(_px(60), y, self.width() - _px(64), h),
-                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, S.STEPS[pid])
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.names[pid])
             if pid in self.warned:                        # ONB-2: amber = a decision (Qt guide §3), Back shows why
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(_c("warn"))
-                p.drawEllipse(QPointF(_px(60) + QFontMetricsF(p.font()).horizontalAdvance(S.STEPS[pid]) + _px(9),
+                p.drawEllipse(QPointF(_px(60) + QFontMetricsF(p.font()).horizontalAdvance(self.names[pid]) + _px(9),
                                       y + h / 2), _px(3.5), _px(3.5))
         p.end()
 

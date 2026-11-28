@@ -1011,6 +1011,24 @@ def test_a_hato_show_wears_hatos_chip_and_says_its_episodes_cards_and_missing_vi
     assert (on_disk.source, on_disk.chip, on_disk.parts) == ("disk", "disk", (("Ep 1–2", "dim"),))
 
 
+def test_a_netflix_or_disney_episode_arrives_wearing_its_sites_chip_never_disk():
+    """鵜 Ukai's subtitles (`modules/ukai`, UKAI-S2; Netflix-X's bug): an episode sent from the browser is the site's
+    in New arrivals (*Netflix* / *Disney+*), never *disk* — it has no file on disk at all; one without the site's
+    `source_type` is the disk's as before."""
+    work(8, "雲の上の郵便屋さん", media="drama")
+    names = ["雲の上の郵便屋さん S01E01 [netflix-81234567].txt", "雲の上の郵便屋さん S01E02 [netflix-81234568].txt"]
+    netflix = items_of([("arrivals", 8, 8, names, {0: {"source_type": "netflix"}, 1: {"source_type": "netflix"}})])
+    a = vr.build(netflix, WORKS, {}).arrivals[0]
+    assert (a.source, a.chip, a.line) == ("netflix", "Netflix", "Ep 1–2")
+    work(9, "夜市の灯り", media="drama")
+    disney = items_of([("arrivals", 9, 9, ["夜市の灯り S01E04 [disneyplus-5f2c1e7a-6b9d].txt"],
+                        {0: {"source_type": "disneyplus"}})])
+    d = vr.build(disney, WORKS, {}).arrivals[0]
+    assert (d.source, d.chip) == ("disneyplus", "Disney+")
+    plain = items_of([("arrivals", 8, 8, eps("雲の上の郵便屋さん", 3, 3), {})])
+    assert vr.build(plain, WORKS, {}).arrivals[0].chip == "disk"
+
+
 def test_a_youtube_video_arrives_titled_by_itself_with_its_channel_and_a_channels_videos_by_the_channel():
     """The mock's video row: its own title, the channel on the line (per-channel rules read it); several videos of one
     channel arriving together read as the channel with *N videos*, as Current's rows do."""
@@ -1684,6 +1702,17 @@ def test_A4M1_3_an_audio_titles_parts_wait_quietly_like_a_book_with_audios_words
     assert all(e.text == "audio" for e in audio.episodes)
     anime = rows["星降る街の小さな工房"]
     assert anime.status.kind != "books" and not anime.episodes[0].text
+
+
+def test_a_netflix_episodes_play_opens_its_page_and_it_is_mined_as_any_episode():
+    """鵜 Ukai's subtitles (`modules/ukai`; #474, by mattias): a Netflix or Disney+ episode is an online item (▶
+    opens its page, `online`), never *No video*, so its row offers what any episode's does."""
+    work(8, "雲の上の郵便屋さん", media="drama")
+    names = ["雲の上の郵便屋さん S01E01 [netflix-81234567].txt", "雲の上の郵便屋さん S01E02 [netflix-81234568].txt"]
+    items = items_of([("now", 8, 80, names, {0: {"source_type": "netflix"}, 1: {"source_type": "netflix"}})])
+    show = vr.build(items, dict(WORKS), {"mine_line": 20}).rows[0]
+    assert all(e.online == "netflix" and not e.text for e in show.episodes)
+    assert show.status.kind in ("waiting", "mine")
 
 
 # --- a8: a stone's Done painted ahead of the store (`marked`, the window's `drag.DragController`) ----------------------- #

@@ -58,8 +58,8 @@ def _tallied(monkeypatch):
     """The files `phrases.tally` reads (each one a file searched for its phrases), by their first sentence."""
     read = []
     real = phrases.tally
-    monkeypatch.setattr(phrases, "tally", lambda sentences, found, matches=None:
-                        read.append(sentences[0][0] if sentences else "") or real(sentences, found, matches))
+    monkeypatch.setattr(phrases, "tally", lambda sentences, found, matches=None, places=None:
+                        read.append(sentences[0][0] if sentences else "") or real(sentences, found, matches, places))
     return read
 
 
@@ -79,7 +79,8 @@ def test_the_index_keeps_a_finished_files_phrases_and_counts_none_of_them(two_fi
         sentences, flat = found[aside]
         assert sentences == len(store.file_tokens(aside)) and flat and len(flat) % 4 == 0
         met = Counter(phrases.load().entry(index).word for index in flat[3::4])
-        assert met["気を付ける"] == 3 and met["気が付く"] == 2, "every use the file holds, as a search finds them"
+        # 気が付く: twice alone, once inside 気がつくと (ENGINE 55)
+        assert met["気を付ける"] == 3 and met["気が付く"] == 3, "every use the file holds, as a search finds them"
         assert store.phrase_table() == alone.phrase_table(), "the table counts counted files alone"
         assert store.phrase_tallies() == alone.phrase_tallies()
         assert store.phrase_sums() == alone.phrase_sums()
@@ -159,9 +160,9 @@ _c = {"find": 0, "masked": 0}
 _find, _sentences = _ph.PhraseSet.find, _ti.WalkFile.sentences
 
 
-def _counted_find(self, tokens, text):
+def _counted_find(self, tokens, text, places=None):
     _c["find"] += 1
-    return _find(self, tokens, text)
+    return _find(self, tokens, text, places)
 
 
 def _counted_sentences(self, mask):

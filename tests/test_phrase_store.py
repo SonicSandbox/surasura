@@ -76,8 +76,8 @@ def _words(listed):
 
 
 def test_the_store_counts_each_phrase_as_generate_lists_it(library):
-    """After an index: 気を付ける met 3 times (気をつけて folds into it), 気が付く twice (never across the comma), and
-    the uses 手っ取り and 眉根 give their phrases."""
+    """After an index: 気を付ける met 3 times (気をつけて folds into it), 気が付く 3 times (twice alone, once inside
+    気がつくと: ENGINE 55; never across the comma), and the uses 手っ取り and 眉根 give their phrases."""
     _switch(library, True)
     store = _reconcile(library)
     try:
@@ -85,7 +85,7 @@ def test_the_store_counts_each_phrase_as_generate_lists_it(library):
     finally:
         store.close()
     rows = table["rows"]
-    assert rows["気を付ける|キヲツケル"][0] == 3 and rows["気が付く|キガツク"][0] == 2
+    assert rows["気を付ける|キヲツケル"][0] == 3 and rows["気が付く|キガツク"][0] == 3
     assert {"気がつく", "気がつい", "気が付い"} <= set(rows["気が付く|キガツク"][1])
     assert table["taken"]["手っ取り|テットリ"] == 2 and table["taken"]["眉根|マユネ"] == 2
 
@@ -143,8 +143,8 @@ def test_a_changed_file_is_counted_again_and_new_data_counts_every_file_again(li
     store.close()
     read = []
     real = phrases.tally
-    monkeypatch.setattr(phrases, "tally", lambda sentences, found, matches=None:
-                        read.append(1) or real(sentences, found, matches))
+    monkeypatch.setattr(phrases, "tally", lambda sentences, found, matches=None, places=None:
+                        read.append(1) or real(sentences, found, matches, places))
     store = _reconcile(library)
     store.close()
     assert read == [], "nothing changed: no file read again"
@@ -203,8 +203,8 @@ def test_a_name_table_that_moves_rereads_only_the_files_whose_words_it_changes(l
         store._update_phrases(True)
         read = []
         real = phrases.tally
-        monkeypatch.setattr(phrases, "tally", lambda sentences, found, matches=None:
-                            read.append(1) or real(sentences, found, matches))
+        monkeypatch.setattr(phrases, "tally", lambda sentences, found, matches=None, places=None:
+                            read.append(1) or real(sentences, found, matches, places))
         grown = dict(NAMES, k={"ローゼマイン": [0.95, "ローゼマイン", "", "ローゼマイン"],
                                "ダームエル": [1.0, "ダームエル", "", "ダームエル"]}, stamp="b2")
         store.set_meta("names_tables", json.dumps(grown, ensure_ascii=False))
@@ -228,8 +228,8 @@ def test_a_file_whose_names_read_otherwise_is_counted_again_alone(library, monke
         monkeypatch.setattr(token_index, "_names_read_in", lambda blob, reads, switches: "x" if blob == moved else "")
         read = []
         real = phrases.tally
-        monkeypatch.setattr(phrases, "tally", lambda sentences, found, matches=None:
-                            read.append(sentences[0][0]) or real(sentences, found, matches))
+        monkeypatch.setattr(phrases, "tally", lambda sentences, found, matches=None, places=None:
+                            read.append(sentences[0][0]) or real(sentences, found, matches, places))
         store._update_phrases(True)
         assert read == ["車に気をつけて。"]
         assert store.phrase_table()["rows"]["気を付ける|キヲツケル"][0] == 4
@@ -248,13 +248,13 @@ def test_generate_reads_each_files_phrases_from_the_index_and_searches_a_file_th
         sentences, flat = store.phrase_matches([path])[path]
         assert sentences == len(store.file_tokens(path)) and len(flat) % 4 == 0
         met = Counter(phrases.load().entry(index).word for index in flat[3::4])
-        assert met["気を付ける"] == 3 and met["気が付く"] == 2, "the uses the table counts"
+        assert met["気を付ける"] == 3 and met["気が付く"] == 3, "the uses the table counts"
     finally:
         store.close()
     searched = []
     real_find = phrases.PhraseSet.find
     monkeypatch.setattr(phrases.PhraseSet, "find",
-                        lambda self, tokens, text: searched.append(text) or real_find(self, tokens, text))
+                        lambda self, tokens, text, places=None: searched.append(text) or real_find(self, tokens, text, places))
     listed = _generate(library)
     assert searched == [] and "気がつく" in listed, "every sentence's phrases came from the index"
     store = token_index.open_store("ja")

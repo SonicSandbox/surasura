@@ -463,16 +463,16 @@ def test_the_journey_is_signed_with_the_marks_of_the_read_it_was_drawn_from_and_
     from app import journey_render
     drawn_marks = [("HighPriority/ShowA/ShowA_ep01.srt", "HighPriority", 1, 1, "fShowA", None)]
     facts = journey_render.StoreFacts({}, {}, [], {}, {}, {}, "e1", frozenset(), drawn_marks)
-    other = [("HighPriority/ShowA/ShowA_ep02.srt", "HighPriority", 1, 1, "fShowA", None)]
     results, patches = _empty_results(tmp_path)
 
     def drawn(facts_read, marks_read):
-        with patches[0], patches[1], patches[2], patches[3],                 patch.object(journey_render, "store_facts", lambda _l: facts_read),                 patch.object(analyzer, "journey_marks", lambda _l: marks_read):
+        with patches[0], patches[1], patches[2], patches[3],                 patch.object(journey_render, "store_facts", lambda _l, library=None: facts_read),                 patch.object(journey_render, "open_library_look", lambda _l: (None, marks_read)):
             return gen.generate_static_html(open_browser=False, language="ja")
-    assert drawn(facts, other) == drawn_marks, "the marks of the read the page was drawn from"
-    assert drawn(facts._replace(marks=ls.UNREAD), other) == ls.UNREAD, "its marks unread: never signed current"
+    assert drawn(facts, ls.UNREAD) == drawn_marks, "the marks of the read the page was drawn from"
+    assert drawn(facts._replace(marks=ls.UNREAD), None) == ls.UNREAD, "its marks unread: never signed current"
     assert drawn(None, None) is None, "no store: no stones part"
-    assert drawn(None, other) == ls.UNREAD, "a store whose facts couldn't be read: never signed current"
+    # (the open's own look tells the two apart: ONE-READ 4 — `journey_marks` opened the store again for it)
+    assert drawn(None, ls.UNREAD) == ls.UNREAD, "a store whose facts couldn't be read: never signed current"
     args = analyzer.parse_analysis_args(["--language=ja", "--static", "--no-open"])
     assert analyzer.signed_render(args, ls.UNREAD, True) == ""
 

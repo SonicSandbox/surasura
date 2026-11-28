@@ -15,6 +15,8 @@ A3 `split`, 06 E4, E22).
 - *Never read this folder* › the row's folder and each one above it inside its source folder, deepest first (K6:
   asked on the looks' worker, added once it answers; none for a row from no folder being read): `Writer.skip_folder`
   with Undo;
+- each `row_hooks` entry (TOP-UP: Connect's *Mine the new words*, `mine_actions.MineActions.row_entries`) — callables
+  `(row) -> [Entry]`, asked as the menu opens, named `HOOKED`…; an entry's `payload`, a callable, runs when picked;
 - *Open its folder* (`windows.open_url`, N3; looked for on a worker);
 - *Same show as…* › the other shows the view holds, one entry each (Current's in order, Goal's, Finished's, New
   arrivals'; at most `SAME_SHOW_MAX` from each), each asking first (`confirm.ask`, Cancel the default: "Make <B> part of
@@ -98,6 +100,7 @@ JOIN_EDGE = 0.25                                    # a part's top and bottom 25
 JOIN_REST_MS = 500                                  # the hold before *Join as one show* / *Drop to group* shows
 
 Entry = namedtuple("Entry", "name label tip ok children checked payload writes", defaults=(None, None, None, False))
+HOOKED = "row-"                                     # TOP-UP: a row hook's entry names (`row_hooks`): its payload runs
 #   writes: a hook's entry that asks the store for a write — greyed by the menu, with the store's reason, while the
 #   store is read-only (`_refused_tip`: one rule, the menu's)
 Part = namedtuple("Part", "key piece_id ids numbers tier place title")
@@ -188,8 +191,8 @@ def unnamed(row):
 
 # --- K6 and Q7: *Never read this folder*, one rule for a list row's ⋯, New arrivals' ⋯ and Settings' *Skip a folder…* #
 def book_row(row):
-    """Kura-AB3 A2: does `row` hold a book's part (`Episode.text` "books": Z-9) — the only rows *Add the narrator's
-    voice…* is asked for (Up next at 20,000 files: an open of any other row starts no worker, makes no object)."""
+    """Kura-AB3 A2: does `row` hold a book's part (`Episode.text` "books": Z-9) — the only rows a book's own entries
+    are asked for (Up next at 20,000 files: an open of any other row starts no worker, makes no object)."""
     return any(getattr(e, "text", None) == "books" for e in getattr(row, "episodes", ()) or ())
 
 
@@ -356,6 +359,7 @@ class ItemActions(QObject):
         self.lst.split_requested.connect(self.split)
         self.lst.episode_menu_requested.connect(self.episode_menu)       # --- row 28
         self.episode_hooks = []                      # row 28: (row, ep) -> [Entry], asked as an episode's ⋯ opens
+        self.row_hooks = []                          # TOP-UP: (row) -> [Entry], asked as a show's ⋯ opens
         win.moves.joins = self
         self.cover_entries = None                    # Q6: (row) -> [(label, tip, enabled, callback)] (*Change cover…*)
         try:
@@ -370,15 +374,7 @@ class ItemActions(QObject):
         # --- end W3.2 L3
         self.last_menu = None
         self.question = None                         # *Remove…*'s confirmation while it is open
-        # Kura-AB3 A2: *Add the narrator's voice…* — Connect's offer, asked on a worker as ⋯ opens; its press (tests
-        # replace them)
-        self.add_audio_offer = _connect_call("add_audio_offer")
-        self.add_audio_book = _connect_call("add_audio_book")
-        self.add_audio_undo = _connect_call("add_audio_undo")
-        self.kick = _connect_call("kick", module="kick")
-        self._audio_ask = 0
-        self._audio_relay = None                     # made at the first ask, kept: an open makes no object (C4)
-        self._audio_running = set()                  # the books a press is adding to now (never offered meanwhile)
+        # (Kura-AB3 A2's *Add the narrator's voice…* retired into Card sound's *Add sound*: AUDIO-FILL, 3.0.21)
         # Kura-TX (the audit's ask 2): *Its audiobook…* on any book's row — its book and the library's lone audiobooks,
         # asked on a worker as ⋯ opens (tests replace the reader); its list is *Needs you*'s own picker
         self.read_audiobook = self._read_audiobook
@@ -519,6 +515,7 @@ class ItemActions(QObject):
                 for label, tip, ok, cb in covers]))
         if row.work_id is not None and book_row(row):           # Kura-AB5 (Sonic's yes): a book's own name
             out.append(entry("rename-book"))
+        out += self._row_hooked(row, reason)
         out.append(entry("folder", writes=False))
         out.append(entry("remove"))
         return out
@@ -664,7 +661,6 @@ class ItemActions(QObject):
         self.last_menu = m
         if not getattr(row, "group", False):         # (LM11b G3: a group's folders are several shows')
             self._offer_skip(row, m)                 # K6: *Never read this folder*, once the looks' worker answers
-            self._offer_add_audio(row, m)            # Kura-AB3 A2: once Connect answers
             self._offer_audiobook(row, m)            # Kura-TX: once the store answers
         m.popup(at)
         return m
@@ -727,6 +723,8 @@ class ItemActions(QObject):
             self.ask_same_show(row, payload)
         elif name == "join-show" and payload is not None:   # Kura-HJ: the same merge, no question (its toast's Undo)
             self.same_show(row, payload)
+        elif name.startswith(HOOKED) and callable(payload):     # TOP-UP: a row hook's entry
+            payload()
 
     # --- row 28: an episode's own ⋯ ---------------------------------------------------------------------------- #
     def episode_entries(self, row, ep):
@@ -768,6 +766,17 @@ class ItemActions(QObject):
                         for e in hook(row, ep) or ()]
             except Exception as e:                   # an optional module's entry never takes the menu down
                 print(f"Episode menu: an entry couldn't be made ({e})")
+        return out
+
+    def _row_hooked(self, row, reason):
+        """TOP-UP: each row hook's entries (named `HOOKED`…), as `_episode_hooked`'s."""
+        out = []
+        for hook in list(self.row_hooks):
+            try:
+                out += [e._replace(ok=False, tip=reason) if e.writes and reason is not None else e
+                        for e in hook(row) or ()]
+            except Exception as e:                   # an optional module's entry never takes the menu down
+                print(f"Row menu: an entry couldn't be made ({e})")
         return out
 
     def episode_menu(self, row, ep, at):
@@ -947,81 +956,6 @@ class ItemActions(QObject):
     def _settings(self):
         services = getattr(self.win, "services", None)
         return (services.settings.get() if services is not None else None) or {}
-
-    def _offer_add_audio(self, row, m):
-        """Kura-AB3 A2 (the lead's MUST: the book row's own door, whenever such cards exist and a line-up is ready):
-        Connect's `add_audio_offer` for the row's items, asked on a worker as ⋯ opens; *Add the narrator's voice…*
-        goes in before *Open its folder* when it answers while this menu is still open. -> True when it was asked."""
-        offer = self.add_audio_offer
-        self._audio_ask += 1
-        if offer is None or self.add_audio_book is None or self.add_audio_undo is None or not book_row(row):
-            return False                             # (a row of no book's part asks nothing: an open makes nothing)
-        ask, ids, lang, read = self._audio_ask, drag.ids_of(row), self.language, self._settings
-        self._audio_menu = (ask, m, getattr(m, "fills", None))
-        if self._audio_relay is None:
-            self._audio_relay = bridge.Relay(self)
-            self._audio_relay.said.connect(self._audio_found)
-        relay = self._audio_relay
-
-        def ask_connect():                           # a plain thread, the kept relay: nothing made, nothing deleted
-            try:
-                relay.call((ask, offer(lang, ids, read())))
-            except Exception:
-                relay.call((ask, None))              # (no entry this time; Connect's own log says why)
-        threading.Thread(target=ask_connect, name="add-audio-offer", daemon=True).start()
-        return True
-
-    def _audio_found(self, said):
-        """The offer's answer, on the window's thread: added only while the menu it was asked for is still open."""
-        ask, got = said
-        now, m, fill = getattr(self, "_audio_menu", (None, None, None))
-        if (got and got.get("epub") not in self._audio_running and ask == self._audio_ask == now and
-                self.last_menu is m and not sip.isdeleted(m) and m.isVisible() and getattr(m, "fills", None) == fill):
-            self.add_audio_entry(m, got)
-
-    def add_audio_entry(self, m, got):
-        """*Add the narrator's voice…* in `m`, before *Open its folder*: its tip names how many cards. -> the action."""
-        before = next((a for a in m.actions() if a.text() == strings.ITEM_MENU["folder"][0]), None)
-        words, tip = strings.ITEM_MENU["add-audio"]
-        act = drag.menu_action(m, words, lambda: self.add_audio(got))
-        act.setToolTip(tip.format(n=got["n"]))
-        if before is not None:
-            m.insertAction(before, act)
-        else:
-            m.addAction(act)
-        return act
-
-    def add_audio(self, got):
-        """The press: said at once in the bar, `add_audio_book` on a worker (Anki Miner cuts, the one writer fills),
-        then its toast with *Undo* (`needs.audio_added`)."""
-        from app.qt import needs as qneeds
-        lang, read, epub, title = self.language, self._settings, got["epub"], got["title"]
-        add, kick = self.add_audio_book, self.kick
-        if epub in self._audio_running:
-            return
-        self._audio_running.add(epub)
-        self.win.say(strings.NEEDS_AUDIO_RUNNING.format(title=title))
-
-        def run():
-            answer = add(lang, epub, read())
-            if (answer or {}).get("id") and kick is not None:
-                kick(read())                         # Anki's sync it owes, sent by Connect (r2 S3)
-            return answer
-
-        def done(answer):
-            self._audio_running.discard(epub)
-            ny = getattr(self.win, "needs_you", None)
-            if ny is not None:
-                ny.refresh()                         # the book's line went with the press (r2 N13)
-            qneeds.audio_added(self.win, answer, title, self.win.say, self.add_audio_undo, lang, read)
-
-        def failed(info):
-            self._audio_running.discard(epub)
-            ny = getattr(self.win, "needs_you", None)
-            if ny is not None:
-                ny.refresh()
-            self.win.say(strings.NEEDS_AUDIO_FAILED)          # (r3: never "nothing to add" after a failure)
-        bridge.run_in_worker(run, then=done, failed=failed)
 
     def _offer_skip(self, row, m):
         """Asked on the looks' worker (`offer_skip`); the submenu goes in before *Open its folder* when the answer comes

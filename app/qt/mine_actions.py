@@ -107,6 +107,19 @@ def _check_again(language, ids, settings):
     return queued
 
 
+def _top_up(language, ids, settings):
+    """(A worker.) TOP-UP: Connect's `actions.top_up` for the mined files `ids` (*Mine the new words*), then Connect
+    kicked when any was queued (a kick that fails leaves them queued: the next start mines them) -> the ids queued."""
+    from app.connect import actions, kick
+    queued = actions.top_up(language, ids)
+    if queued:
+        try:
+            kick.kick(settings() or {})
+        except Exception as e:
+            print(f"Connect wasn't kicked: {e}")
+    return queued
+
+
 class MineActions(QObject):
     """Made by the shell when it has a writer (as Finished's actions). The controller, the writer and the language are
     the window's as they are at each call (a language switch rebuilds `win.moves`: nothing here is rebuilt)."""
@@ -123,6 +136,7 @@ class MineActions(QObject):
         self.make_cards = _make_cards                # (tests replace it)
         self.stop_job = _stop                        # R47 (tests replace it)
         self.check_job = _check_again                # Michi-NT (tests replace it)
+        self.top_up_job = _top_up                    # TOP-UP (tests replace it)
         self._stops = {}                             # R47: file id -> its Stop's press key
         self._asked = {}                             # round 8 row 45: file id -> (its ask's number, its press's key)
         self._asks = itertools.count(1)
@@ -150,6 +164,7 @@ class MineActions(QObject):
         items = getattr(win, "items", None)
         if items is not None:                        # --- row 28 (Michi's row 24b ask): an episode's ⋯ offers *Mine now*
             items.episode_hooks.append(self.episode_entries)
+            items.row_hooks.append(self.row_entries)     # TOP-UP: a show's ⋯ offers *Mine the new words*
         win.bridge.settings_written.connect(self._settings_written)
         self.read_off()
 
@@ -425,15 +440,77 @@ class MineActions(QObject):
 
     # --- Kantan-B2 (a new tester, 2026-11-18: "is there a way to reset the episode to unmined?"; PROVISIONAL words)
     def mined_entries(self, row, ep):
-        """A mined episode's ⋯: *Mine again* (an ask, as *Mine now* is: the words whose cards you deleted come back,
-        the cards still in Anki stay — an asked job makes only what Anki doesn't hold, `library.made_words_for`) and
-        *Words it won't mine again…* (`unmined_words`, this episode's). -> [Entry]"""
+        """A mined episode's ⋯: *Mine the new words* (TOP-UP: `top_up`), *Mine again* (an ask, as *Mine now* is: the
+        words whose cards you deleted come back, the cards still in Anki stay — an asked job makes only what Anki
+        doesn't hold, `library.made_words_for`) and *Words it won't mine again…* (`unmined_words`, this episode's).
+        -> [Entry]"""
         tip = strings.MINE_AGAIN_TIP if not self.off else strings.ROWS_ACTION_OFF.format(tip=strings.MINE_AGAIN_TIP,
                                                                                           why=self.off)
-        return [item_menu.Entry("ep-mine-again", strings.MINE_AGAIN, tip, True,
+        return [item_menu.Entry("ep-top-up", strings.TOP_UP, self._off_tip(strings.TOP_UP_TIP), True,
+                                payload=lambda: self.top_up({ep.id: ep.label}), writes=True),
+                item_menu.Entry("ep-mine-again", strings.MINE_AGAIN, tip, True,
                                 payload=lambda: self.mine_again(row, ep), writes=True),
                 item_menu.Entry("ep-unmined-words", strings.UNMINED_ENTRY, strings.UNMINED_ENTRY_TIP, True,
                                 payload=lambda: self.unmined_words(ep))]
+
+    # --- TOP-UP (3.0.21, Sonic § 114 B; PROVISIONAL words): *Mine the new words* ------------------------------------ #
+    def _off_tip(self, tip):
+        return tip if not self.off else strings.ROWS_ACTION_OFF.format(tip=tip, why=self.off)
+
+    def row_entries(self, row):
+        """A show's ⋯ (`item_menu.ItemActions.row_hooks`): *Mine the new words* while any episode of it is mined and
+        not being mined — for every such episode at once. -> [Entry]"""
+        mined = [e for e in row.episodes if e.status is not None and e.status.kind in MINED and not e.mining]
+        if not mined:
+            return []
+        return [item_menu.Entry(item_menu.HOOKED + "top-up", strings.TOP_UP, self._off_tip(strings.TOP_UP_SHOW_TIP),
+                                True, payload=lambda: self.top_up({e.id: e.label for e in mined}), writes=True)]
+
+    def top_up(self, labels):
+        """*Mine the new words* on the mined files `labels` names ({id: label}): their pills turn now — painted before
+        the worker is handed it — until their status moves (`press_moved` -> `settle`), or `SETTLE_S` after it was
+        queued; the same words Connect tops up by itself (`connect.actions.top_up`: those no card holds and Connect
+        never made), first and past the cap. Nothing to card, or a worker that failed: their pills are their own again and the bar says why.
+        Connect off: nothing is asked and the bar says why. Pressed again while they turn: nothing."""
+        ids = list(labels or ())
+        if not ids:
+            return None
+        if self.off:
+            self.win.say(self.off)
+            return None
+        lang = getattr(self.win, "language", "")
+        presses = qpress.presses_of(self.win)
+        keys_of = {i: f"top-up:{lang}:{i}" for i in ids}
+        if all(presses.get(k).live() for k in keys_of.values()):
+            return None                              # pressed already: still turning
+        n = next(self._asks)
+        for i, key in keys_of.items():
+            qpress.begin(None, key, win=self.win, at=qpress.NOWHERE)     # (its pills are its mark: below)
+            self._asked[i] = (n, key)
+        for lst in self.lists:                       # its pills turn now, painted before the worker is handed it
+            lst.press_ids(ids)
+        get = self.win.services.settings.get
+
+        def done(queued):
+            if sip.isdeleted(self):
+                return
+            if not queued:
+                self.settle(ids, why=strings.TOP_UP_NOTHING)
+                self.win.say(strings.TOP_UP_NOTHING)
+                return
+            took = set(queued)
+            self.settle([i for i in ids if i not in took])
+            self.win.say(strings.TOP_UP_ASKED[len(queued) == 1].format(label=labels.get(queued[0], ""),
+                                                                       n=len(queued)))
+            self._told("saved", list(queued), n)     # the feed looked at now; the press ends with its status
+
+        def broke(info):
+            if sip.isdeleted(self):
+                return
+            why = strings.TOP_UP_FAILED.format(why=info[0] if info else "")
+            self.settle(ids, why=why)
+            self.win.say(why)
+        bridge.run_in_worker(self.top_up_job, lang, ids, get, then=done, failed=broke)
 
     def mine_again(self, row, ep):
         """*Mine again*: the episode asked for once more (`_ask`: one Ticket, its toast's Undo takes the ask back);

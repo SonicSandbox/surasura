@@ -828,3 +828,12 @@ def test_the_helper_exports_once_more_when_a_write_landed_while_it_ran(monkeypat
     LS._maintain_locked(str(tmp_path / "library.db"), "ja", str(tmp_path), str(tmp_path), False, False, False, True,
                         False, None)
     assert store.exports == exports
+
+
+@pytest.mark.parametrize("share, was, busy", [(0.70, False, True), (0.69, False, False), (0.60, True, True),
+                                              (0.55, True, True), (0.54, True, False), (None, True, True),
+                                              (None, False, False)])
+def test_the_busy_line_is_one_function_with_its_hysteresis(share, was, busy):
+    """AUDIO-FILL (A5): `busy_line` is the rule the window's watcher and Connect's Card sound both ask — busy at
+    `power.BUSY`, quiet again only under `power.QUIET`; no reading keeps the last answer."""
+    assert G.busy_line(share, was) is busy

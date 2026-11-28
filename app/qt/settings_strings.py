@@ -34,6 +34,17 @@ FIND_HATO = "Find hato…"
 FIND_HATO_TIP = "Already have hato? Pick its folder.\n• It opens once to connect."
 FIND_HATO_TITLE = "Where is hato?"
 FIND_HATO_BUSY = "Opening hato so it can connect…"
+# 鵜 Ukai's row (UKAI-S2, U9; PROVISIONAL): paired or not, *Forget Ukai* — shown only while `door.EXTENSION_ON`
+UKAI_PAIRED = "paired · {version}"
+UKAI_PAIRED_PLAIN = "paired"
+UKAI_NOT_PAIRED = "not paired"
+# … and what waits for Ukai to record (UKAI-S4: Connect's Netflix / Disney+ jobs, `connect.browser.waiting_lines`)
+UKAI_WAITS_ONE = "{words} · 1 line to record"
+UKAI_WAITS = "{words} · {n} lines to record"
+FORGET_UKAI = "Forget Ukai"
+FORGET_UKAI_TIP = "Ukai stops sending to Surasura at once\n• Pair it again from Ukai's menu"
+UKAI_FORGOTTEN = "Ukai is forgotten: pair it again from its menu"
+UKAI_FORGET_STUCK = "Ukai is forgotten until Surasura closes: its pairing file couldn't be removed ({why})"
 HATO_CONNECTED = "hato {version} is connected"
 HATO_CONNECTED_PLAIN = "hato is connected"
 HATO_NOT_CONNECTED = {                       # `tools_found.open_hato` / `hato_seen`'s why -> the bar's words
@@ -162,7 +173,7 @@ SECTION_WHY = {
     "backfill": "Adds to your Anki cards how each word is usually used (パターン), two more sentences from your own "
                 "content (例文), and the furigana and pitch a card is missing. Restore puts every card back",
 }
-ROW_TAGS = {"practice_ai": PRACTICE_NAME, "hato": "hato"}       # a row's tool, small beside its plain name
+ROW_TAGS = {"practice_ai": PRACTICE_NAME, "hato": "hato", "ai_audio": "Beta", "ukai": "鵜 Ukai"}   # a row's tool, small beside its name
 NEEDS_ANKI = "Needs Anki open and connected"
 NEEDS_MINER = "Needs Anki Miner (free)"
 CARDS_WHY = "Cards for episodes at the top of Current, made by themselves."   # (before Anki Miner's found)
@@ -177,6 +188,7 @@ GROUPS = {
     "loop": "Your daily loop", "from_library": "Cards from your library",
     "in_anki": "Cards already in Anki", "anki": "Anki", "names": "Names", "words_phrases": "Words and phrases",
     "houseki": "Houseki tools", "not_on_list": "Cards not on your list", "beta": "Beta",
+    "card_sound": "Card sound",
 }
 
 # --- the doors (a window, or an action, a row opens) ---------------------------------------------------------------- #
@@ -351,9 +363,12 @@ ROWS = {
                       "A card you delete in Anki is never made again by itself. These are its words: allow one again "
                       "and the next episode that has it makes its card", "deleted cards words mine again allow "
                       "never made again record reset"),
-    # Michi-T1 (Sonic 2026-11-17; PROVISIONAL: label and line for Sonic)
+    # Michi-T1 (Sonic 2026-11-17; PROVISIONAL: label and line for Sonic); its ? line says what it does and when
+    # (POLISH-321, 3.0.21; PROVISIONAL)
     "connect_spot_every_episode": ("Check every episode’s audio first",
-                                   "Slower: Surasura listens to each episode before its cards, not once a release",
+                                   "Before making an episode’s cards, Surasura checks that its audio matches its "
+                                   "subtitles, for every episode rather than once per release. It’s slower; turn it "
+                                   "on when a release mixes dubs or languages.",
                                    "Surasura listens to a few lines of one episode of each release while it mines, "
                                    "and holds the release if its audio doesn’t say its subtitles’ lines (a dub, "
                                    "another language). On: every episode is listened to before its cards are "
@@ -579,6 +594,10 @@ ROWS = {
     "hato": ("Subtitles for videos without them",
     "Finds subtitles for your shows, and sends new episodes to New arrivals",
              "Whether hato is installed", "hato install houseki suite subtitles"),
+    "ukai": ("Subtitles from your browser",                  # UKAI-S2 (U9; PROVISIONAL)
+             "Sends the Netflix and Disney+ subtitles you watch to your library",
+             "Whether Ukai, Surasura's browser extension, is paired: pair it from Ukai's menu",
+             "ukai browser extension netflix disney houseki suite subtitles pair forget"),
     "practice_ai": ("Practise with your AI",
                     "Your AI quizzes you. What it's told goes to that AI's company.",
                     "Copy the setup, paste it to your AI. Try a short story.",
@@ -675,10 +694,19 @@ ROWS = {
                           "Fewer: a quieter PC while cards are made. Automatic: from this PC, fewer on battery",
                           "How many clips Anki Miner cuts at the same time. Anki Miner's own setting stays as it is",
                           "clips cut parallel ffmpeg workers cpu fans laptop desktop load"),
-    # Iro-AA (PROVISIONAL words): the AI voice's beta
-    "ai_audio": ("AI audio for cards without audio", "A local AI voice reads sentences on cards without audio.",
-                 "Try the AI voice (beta) for cards without sentence audio",
-                 "ai audio voice tts beta irodori sentence"),
+    # Iro-AA, moved to *Card sound* by VOICE-SETUP (PROVISIONAL words): the AI voice, still a beta
+    "ai_audio": ("AI voice", "A voice made on this computer reads a card's sentence when no real sound is found for it. "
+                 "Nothing is sent anywhere.",
+                 "Use the AI voice (beta) for cards with no real sound",
+                 "ai audio voice tts beta irodori sentence card sound made ahead test pack"),
+    "card_sound_add": ("Add sound", "Cards with no sentence audio get the sound of their own line, from your episode or "
+                                    "its audiobook. Only empty fields are filled.",
+                       "Puts real sound on every card that can get it now; Undo takes it off again.",
+                       "add sound audio sentence audio clip episode audiobook cards missing silent fill"),
+    "card_sound_remove_ai": ("Remove all AI audio", "Takes the AI voice's clips off your cards. A copy of each is kept, "
+                                                    "so Undo puts them back.",
+                             "Removes the AI voice's sound from your cards; your own audio stays.",
+                             "remove ai audio voice tts clips delete undo sound"),
     "telemetry_enabled": ("Anonymous usage counts", "No words, files or content — ever",
                           "Send anonymous usage counts", "telemetry anonymous usage"),
     # a9.1: the one way to the logs (the bar's *Open the logs folder* went; Send report carries them), beside the
@@ -865,6 +893,26 @@ TIDY_PAST_BACK_TIP = "Already put back: a tidy goes back once."
 TIDY_PAST_GONE_TIP = "Its copy isn't on disk any more, so it can't go back."
 # REMAKE (3.0.19; PROVISIONAL words): *Make my new cards again…*'s press, its sheet and its answers
 REMAKE_NOW = "Make my new cards again…"
+# --- AUDIO-FILL (PROVISIONAL words): *Card sound*'s two presses
+SOUND_ADD = "Add sound"
+SOUND_COUNT = "{n:,} cards can get sound now"
+SOUND_COUNT_ONE = "1 card can get sound now"
+SOUND_COUNT_NONE = "Every card that can get sound has it"
+SOUND_COUNT_TIP = "Counted the last time Surasura looked at your cards"
+SOUND_REMOVE = "Remove all AI audio…"
+SOUND_REMOVE_NONE = "No card has AI audio"
+SOUND_REMOVE_ASK = "Remove the AI audio from {n:,} cards?"
+SOUND_REMOVE_ASK_ONE = "Remove the AI audio from 1 card?"
+SOUND_REMOVE_BODY = ("Only the AI voice's clips go; your own audio and real sound stay. A copy of each is kept: Undo "
+                     "puts them back.")
+SOUND_REMOVE_VOICE_ON = "The AI voice is still on, so cards due soon get it again. Switch it off above to keep them silent."
+SOUND_REMOVE_YES = "Remove"
+SOUND_REMOVE_YES_TIP = "Takes the AI clips off these cards now"
+SOUND_REMOVED = "The AI audio is off {n:,} cards"
+SOUND_REMOVED_ONE = "The AI audio is off 1 card"
+SOUND_CANT = "Not done: {why}"
+SOUND_BACK = "The AI audio is back on {n:,} cards"
+SOUND_BACK_KEPT = "The AI audio is back on {n:,} cards · {k:,} you changed since keep yours"
 REMAKE_ASK = "Delete {n} new cards and make them again?"
 REMAKE_ASK_ONE = "Delete 1 new card and make it again?"
 REMAKE_ASK_BEFORE = "Delete the {n} cards from before Surasura and make them again?"

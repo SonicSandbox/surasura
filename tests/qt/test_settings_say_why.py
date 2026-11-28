@@ -221,7 +221,8 @@ def test_the_rows_show_their_tag_and_their_what_you_get_line_behind_the_question
     page, store, shell = make(fakes, dict(ALL_ON, connect_enabled=False))
     for row_id, tag in S.ROW_TAGS.items():
         view = page.rows[row_id]
-        assert view.tag.text() == tag and view.tag.isVisibleTo(page), row_id
+        hidden = row_id == "ukai"           # (hidden while door.EXTENSION_ON is off: test_ukai_row shows its tag on)
+        assert view.tag.text() == tag and (hidden or view.tag.isVisibleTo(page)), row_id
         assert view.label.text() == S.ROWS[row_id][0]
     hato = page.rows["hato"]                                                     # Kantan-S2: what you get behind its ?
     assert not hato.help.isVisibleTo(page) and hato.mark.isVisibleTo(page) and hato.mark.toolTip() == S.ROWS["hato"][1]
@@ -258,3 +259,18 @@ def test_cards_made_for_you_says_what_you_get_behind_its_question_mark(qapp, fak
         assert view.mark.toolTip() == S.CARDS_WHY                               # sections' needs lines: S2 r1 #5)
         assert view.help.isVisibleTo(page) and view.help.text() == S.NEEDS_MINER
         assert page.live.parts["connect_needs_miner"]["door"].isVisibleTo(page)            # and its action
+
+
+def test_check_every_episodes_audio_says_what_it_does_and_when_to_use_it_behind_its_question_mark(qapp, fakes):  # noqa: F811
+    # (a tester on 3.0.20) the switch's ? said only "Slower: … not once a release", which no one could act on: the line
+    # behind the ? says what the switch does (the episode's audio checked against its subtitles before its cards) and
+    # when to turn it on (a release whose episodes mix dubs or languages) — the label stays, no line under it
+    page, store, shell = make(fakes, ALL_ON)
+    view = page.rows["connect_spot_every_episode"]
+    about = S.ROWS["connect_spot_every_episode"][1]
+    assert view.label.text() == "Check every episode’s audio first"
+    assert view.help.isHidden() and about and about in view.mark.toolTip()
+    low = about.lower()
+    assert "subtitles" in low and "before" in low and "cards" in low          # what it does
+    assert "dub" in low and "language" in low                                  # when to turn it on
+    assert "slower" in low                                                     # its cost, said once

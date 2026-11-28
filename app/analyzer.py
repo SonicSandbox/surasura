@@ -5,6 +5,14 @@ import sys
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Run as a script (`python app/analyzer.py`: the window's Generate from source, the benches), the run is the ONE
+# imported module's, as the frozen app's `analyzer` verb runs it. This file's body run as `__main__` was a second copy
+# beside `app.analyzer`, which names.py and the token store import: their JoinedWord was not its own, so a known
+# katakana name's pieces were never marked known (ENTRY-ONCE, 3.0.21). Before the body, so it never runs twice.
+if __name__ == "__main__":
+    from app import analyzer as _one
+    sys.exit(_one.main() or 0)
+
 import json
 import re
 import csv
@@ -231,7 +239,23 @@ ENSURE_AUDIO_EXAMPLE = False
 # 52: a verb's stem + つかれ in kana is 疲れる, never 突く's passive (_tsukare: 歩きつかれた is 歩き疲れる, 書きつかれた
 #     書き + 疲れる), and 棟 right after a kanji or a katakana word is a piece of it (_after_a_word: 研究棟's 棟 is とう,
 #     never the noun むね). SCHEMA_VERSION 32. 3.0.20.
-ENGINE_REVISION = 52
+# 53: kana つかれ with no stem before it is 疲れる where nothing before it can be what a つく verb takes (_tsukare's
+#     _alone: もうつかれた, つかれた！, お前はつかれた, おつかれ is お疲れ; 嘘つかれた, 不意をつかれた, 狐につかれた keep
+#     the tagger's). SCHEMA_VERSION 33.
+# 54: the songs a run leaves out are out of the token store's counts too (RARITY-SONGS; KO2-D3): each counted file's
+#     share kept beside the songs (Store.keep_song_counts, the store's `songs` table), so the Rarity readout, Automatic
+#     rarity and Generate's floor — the library's tokens, the rare compounds, the rows that can reach the cut-off, the
+#     shortlist's ranking — count what the list counts; the first pass without the store reads the songs blanked
+#     (`_sentences_of`). No tokenizing changed: SCHEMA_VERSION stays 33 (a store made before gets the table at its
+#     next open). 3.0.21.
+# 55: a use of a longer set phrase is a use of each shorter one inside it (phrases.PhraseSet._inside: 身に余る光栄 counts
+#     for 身に余る; MATCHER_VERSION 7), a word living only inside a phrase given once however many stand over it.
+# 56: a studied card written in kana alone is known as the word its own sentence shows it to be (KANA-KNOWN; the rule
+#     Junban and the ✓ chip read, anki_match.card_word_in_sentence): a かなう card in 兄にかないません knows 敵う, never
+#     the 適う its letters read alone — the sync keeps those cards' sentences beside KnownWord.json
+#     (token_index.KANA_SENTENCES_FILE; anki_sync READING_VERSION 3 reads the cards studied before once), and
+#     load_known_words reads them. No tokenizing changed: SCHEMA_VERSION stays 33. 3.0.22.
+ENGINE_REVISION = 56
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -1911,9 +1935,20 @@ def _kansai(words):
 # stem + 疲れる whole (歩き疲れる, 探し疲れる, as it reads them written in kanji), else the stem and 疲れる (書き + 疲れる) —
 # except where the stem + つく said aloud is a verb the tagger knows (とりつく, いきつく): the letters are that verb's
 # passive or honorific there too (執りつかれた is 取り憑かれた), and the tagger's reading stands. The stem is a verb's
-# 連用形 or a noun UniDic also reads as one (走り, 笑い). A line holding no つか passes in C. A change here changes cached
-# tokenization: SCHEMA_VERSION + ENGINE_REVISION. Decision: STEM-TSUKARE (the suite's decisions_ja_reported.py).
+# 連用形 or a noun UniDic also reads as one (走り, 笑い).
+# With no stem before it, the tagger reads kana つかれ as 突く + れる nearly every time (もうつかれた, つかれた！). 疲れる is
+# the one つかれる that stands alone — 'be tired' takes nothing — while every other one is a つく verb made passive,
+# honorific or potential, and keeps what that verb takes before it: what is poked or told (不意を, 嘘を, 嘘つかれた with
+# the を dropped), where (気が, 席に, 狐に), what one gets into (風呂に, 水風呂つかれます). So a kana つか + れる is 疲れる
+# where the word before it, once adverbs and an adjective's 連用形 are passed over (肩をちょいとつかれて is still を's),
+# can't be what a つく verb takes: nothing (the line's start), a mark, a conjunction, an interjection, a noun used as
+# an adverb (今日, 夜, 五時頃: UniDic's 副詞可能), a clause's ending (て, ので, と, し), an auxiliary's ending (た, だ,
+# ない, ようだ …: つかれたつかれた, 精神的に), the topic は / も, or a focus particle not right after a noun (ばかり
+# after 嘘 keeps it what was told); and お + つかれ is お疲れ. A case particle (を, に, が, で, の) or a noun before it
+# keeps the tagger's reading. A line holding no つか passes in C. A change here changes cached tokenization:
+# SCHEMA_VERSION + ENGINE_REVISION. Decisions: STEM-TSUKARE, BARE-TSUKARE (the suite's decisions_ja_reported.py).
 _TSUKA = "つか"
+_ALONE_AUX = frozenset(("た", "だ", "ず", "ない", "ます", "です", "ようだ", "そうだ", "みたいだ", "らしい", "たい"))
 
 
 def _verb_stem(word):
@@ -1928,34 +1963,90 @@ def _verb_stem(word):
                                     for x in names._listed_as(word.surface))
 
 
+def _alone(words, i):
+    """Can nothing before the つか at `i` be what a つく verb takes (§ above)? The word reached once adverbs and an
+    adjective's 連用形 are passed over decides: True, False, or "お" (お + つかれ is お疲れ)."""
+    j = i - 1
+    while j >= 0 and (words[j].feature.pos1 == "副詞"
+                      or (words[j].feature.pos1 == "形容詞" and (words[j].feature.cForm or "").startswith("連用形"))):
+        j -= 1
+    if j < 0:
+        return True
+    f = words[j].feature
+    pos1 = f.pos1
+    if pos1 == "補助記号":
+        return words[j].surface not in ("ッ", "っ")      # 取ッつかれた: a letter the tagger took for a mark
+    if pos1 == "接続詞" or pos1 == "感動詞":
+        return True
+    if pos1 == "名詞" or pos1 == "接尾辞":
+        return f.pos3 == "副詞可能"                     # 今日, 五時頃 — never 嘘, 水風呂, 二度
+    if pos1 == "接頭辞":
+        return "お" if j == i - 1 and f.lemma == "御" else False
+    if pos1 == "助動詞":
+        return f.lemma in _ALONE_AUX
+    if pos1 == "助詞":
+        if f.pos2 == "接続助詞" or f.pos2 == "終助詞":
+            return True
+        if f.pos2 == "係助詞":
+            return f.lemma == "は" or f.lemma == "も"
+        if f.pos2 == "副助詞":
+            return j == 0 or words[j - 1].feature.pos1 not in ("名詞", "代名詞")
+    return False
+
+
+def _tired(w, ending):
+    """The node for つか + `ending` read as 疲れる, in the ending's form, with the つか's spaces before it."""
+    f = ending.feature
+    return ReadNode(_TSUKA + ending.surface, f._replace(
+        pos1="動詞", pos2="一般", pos3="*", pos4="*", cType="下一段-ラ行", lForm="ツカレル", lemma="疲れる",
+        orth=_TSUKA + ending.surface, orthBase="疲れる", pron="ツカ" + (f.pron or ""), pronBase="ツカレル",
+        kana="ツカ" + (f.kana or ""), kanaBase="ツカレル", form="ツカ" + (f.form or ""), formBase="ツカレル"),
+        False, getattr(w, "white_space", ""))
+
+
 def _tsukare(words):
-    """join_affixes' 〜つかれた (§ above): `words` with each stem + つか + れる read as 疲れる — the same list when there is
-    none. Only the tokens written つか are looked at."""
+    """join_affixes' 〜つかれた (§ above): `words` with each kana つか + れる that says 疲れる read so — the same list
+    when there is none. Only the tokens written つか are looked at."""
     out, last, n = None, 0, len(words)
     for i in compress(range(n), map(_TSUKA.__eq__, map(_SURFACE, words))):
-        if not 0 < i < n - 1 or i - 1 < last:
+        if i >= n - 1 or i < last:
             continue
-        stem, w, ending = words[i - 1], words[i], words[i + 1]
+        w, ending = words[i], words[i + 1]
         if (w.feature.pos1 != "動詞" or ending.feature.lemma != "れる" or ending.feature.pos1 != "助動詞"
-                or getattr(w, "white_space", "") or getattr(ending, "white_space", "") or not _verb_stem(stem)):
+                or getattr(ending, "white_space", "")):
             continue
-        said = names._read_whole(names._hira(stem.feature.kana or "") + "つく")
-        if said is not None and said.pos1 == "動詞":
-            continue                    # とりつく, いきつく: the つく verb's passive is a reading too
-        f = ending.feature
-        tired = ReadNode(_TSUKA + ending.surface, f._replace(
-            pos1="動詞", pos2="一般", pos3="*", pos4="*", cType="下一段-ラ行", lForm="ツカレル", lemma="疲れる",
-            orth=_TSUKA + ending.surface, orthBase="疲れる", pron="ツカ" + (f.pron or ""), pronBase="ツカレル",
-            kana="ツカ" + (f.kana or ""), kanaBase="ツカレル", form="ツカ" + (f.form or ""), formBase="ツカレル"),
-            False, "")
-        whole = names._read_whole(stem.surface + "疲れる")
-        if out is None:
-            out = []
-        out.extend(words[last:i - 1])
-        if whole is not None and whole.pos1 == "動詞" and whole.lemma.endswith("疲れる"):
-            out.append(_joined([stem, tired], stem.surface + "疲れる", "動詞", (whole.lemma, whole.lForm)))
+        stem = words[i - 1] if i > last else None
+        if stem is not None and not getattr(w, "white_space", "") and _verb_stem(stem):
+            said = names._read_whole(names._hira(stem.feature.kana or "") + "つく")
+            if said is not None and said.pos1 == "動詞":
+                continue                # とりつく, いきつく: the つく verb's passive is a reading too
+            tired = _tired(w, ending)
+            whole = names._read_whole(stem.surface + "疲れる")
+            if out is None:
+                out = []
+            out.extend(words[last:i - 1])
+            if whole is not None and whole.pos1 == "動詞" and whole.lemma.endswith("疲れる"):
+                out.append(_joined([stem, tired], stem.surface + "疲れる", "動詞", (whole.lemma, whole.lForm)))
+            else:
+                out.extend((stem, tired))
+            last = i + 2
+            continue
+        alone = _alone(words, i)
+        if not alone:
+            continue
+        if alone == "お":
+            entry = affix_joins().get("お疲れ") if ending.surface == "れ" else None
+            if not entry or getattr(w, "white_space", ""):
+                continue                # おつかれ + another ending is no word; お and つかれ apart stay apart
+            if out is None:
+                out = []
+            out.extend(words[last:i - 1])
+            out.append(_joined([words[i - 1], _tired(w, ending)], "お疲れ", "名詞", tuple(entry)))
         else:
-            out.extend((stem, tired))
+            if out is None:
+                out = []
+            out.extend(words[last:i])
+            out.append(_tired(w, ending))
         last = i + 2
     if out is None:
         return words
@@ -3152,12 +3243,26 @@ def read_known_words(store, known_file, known_sig, tokenizer, keep=True, missed=
     `missed`: the `Store.known_suffix` a caller's own `get_cached_known` just missed with — the store isn't asked again,
     and the miss's every step takes that one key (STORE-KEY: each working-out reads settings.json and the name tables).
     `settings`: the run's one read, for the key's switches (ONE-READ); None reads them now."""
+    from app import token_index
+    language = "ja" if isinstance(tokenizer, JapaneseTokenizer) else "zh"
     suffix = missed
     if store and suffix is None:
         suffix = store.known_suffix(settings)
         cached = store.get_cached_known(known_sig, suffix)
         if cached is not None:
             print("Reused cached known-words normalization.")
+            try:            # the ignore set's IGNORED entries kept beside them: the file parsed for none (ONE-READ 4)
+                signature = token_index.known_signature(known_file)
+                ignored = store.cached_ignored(signature)
+                if ignored is not None:
+                    token_index.keep_ignored_entries(known_file, language, signature, entries=ignored)
+                elif keep:  # a store from before the row: the ignore set's own parse, now, kept once for the next hits
+                    token_index._ignored_file_entries(os.path.dirname(known_file), language)
+                    kept = token_index.kept_ignored_entries(known_file, language)
+                    if kept is not None and kept[0] == signature:
+                        store.set_cached_ignored(kept)
+            except Exception:
+                pass
             return cached
     # Changed (a sync added a word): each term read before is taken from the store's own (G8), the new ones read here.
     script = getattr(tokenizer, "script", "asis")
@@ -3174,7 +3279,8 @@ def read_known_words(store, known_file, known_sig, tokenizer, keep=True, missed=
             # The per-term cache written only when its terms changed: a move that adds no term (a card Connect
             # wrote) rewrote all ~10k terms' blob for nothing (SYQF-FIX); with the signature, in one commit.
             store.set_cached_known(known_sig, *known, suffix=suffix,
-                                   terms=terms if terms is not None and set(terms) != held else None, script=script)
+                                   terms=terms if terms is not None and set(terms) != held else None, script=script,
+                                   ignored=token_index.kept_ignored_entries(known_file, language))
         except Exception:
             pass
     return known
@@ -3228,7 +3334,7 @@ def file_sentences(store, tokenizer, file_path, language, words=None):
 # logic.count_song_lyrics is off (the default): their sentences keep their place in each file — the plan and the re-pick
 # number them — with no words, as a ♪～ line reads. Spoken files only (subtitles, transcripts), grouped by work
 # (`_series_name`); each file's lines are the token store's (`Store.file_lines`), else read here.
-_SPOKEN = ("subtitle", "youtube", "bilibili")
+_SPOKEN = ("subtitle", "youtube", "bilibili", "netflix", "disneyplus")     # (Netflix, Disney+: 鵜 Ukai's, #474)
 
 
 def songs_left_out(files):
@@ -3256,13 +3362,15 @@ def blank_songs(sentences, numbers):
     return sentences
 
 
-def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None):
+def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None, fingerprint=None):
     """{path: [sentence number, …] (sorted)} of every spoken file's song lines in a run's `found_files` ([(path, label,
     weight, source type)]), each work on its own (§ above) — as kept, so a kept work makes no set a file (G9). With
     the store, a work's answer is kept (`Store.keep_songs`) under a digest of its files' stamps and the rule's version,
     so a Generate after nothing changed in a work reads only its stamps; without the store, each file is read and
     tokenized here. `stats`, a dict, receives "read" (the works whose
-    lines were read) and "kept" (the works whose kept answer was used)."""
+    lines were read) and "kept" (the works whose kept answer was used). `fingerprint`, a list, receives one
+    fingerprint of the answer when every work's is under its digest (the same fingerprint, the same numbers in the
+    same files at the same stamps: what `Store.keep_song_counts` checks before it reads a song file), else None."""
     works = {}
     for file_path, _label, _weight, source_type in found_files:
         if source_type in _SPOKEN:
@@ -3270,6 +3378,7 @@ def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None
     kept, keep, built = {}, {}, None
     if store is not None and works:
         try:
+            from app import token_index as _token_index
             kept = store.songs_kept()
             built = store.get_meta("build_sig")   # a new tokenizer re-reads every file, its stamps unchanged
         except Exception:
@@ -3280,7 +3389,10 @@ def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None
         if store is not None:
             try:
                 stamps = store.file_stamps(paths)
-                digest = hashlib.sha1(json.dumps([song_lines.RULE, ENGINE_REVISION, built, sorted((p, stamps.get(p)) for p in paths)],
+                # what the answer depends on — the rule, the stored lines' form and tokenizer, each file's stamp —
+                # never ENGINE_REVISION: a bump for another rule finds no work's songs again (RARITY-SONGS 2)
+                digest = hashlib.sha1(json.dumps([song_lines.RULE, _token_index.SCHEMA_VERSION, built,
+                                                  sorted((p, stamps.get(p)) for p in paths)],
                                                  ensure_ascii=False).encode("utf-8")).hexdigest()
             except Exception:
                 digest = None
@@ -3312,6 +3424,10 @@ def song_sentences(found_files, data_dir, store, tokenizer, language, stats=None
             keep[work] = [digest, found]
     if stats is not None:
         stats.update(read=read, kept=used)
+    if fingerprint is not None:
+        fingerprint.append(hashlib.sha1(json.dumps(sorted((work, held[0]) for work, held in keep.items()),
+                                                   ensure_ascii=False).encode("utf-8")).hexdigest()
+                           if works and len(keep) == len(works) else None)
     if store is not None and keep != kept:
         try:
             store.keep_songs(keep)
@@ -3430,7 +3546,14 @@ def load_known_words(json_path, tokenizer, terms=None):
     
     # In the file's own encoding (path_utils.read_text): saved with a BOM (Notepad's "UTF-8 with
     # BOM") or as UTF-16, json.load refused it and Generate stopped. The tokenizer says the language.
-    data = json.loads(read_text(json_path, "ja" if isinstance(tokenizer, JapaneseTokenizer) else "zh"))
+    from app import anki_match, token_index
+    language = "ja" if isinstance(tokenizer, JapaneseTokenizer) else "zh"
+    signature = token_index.known_signature(json_path)
+    data = json.loads(read_text(json_path, language))
+    try:                        # the ignore set's IGNORED entries from this one parse (ONE-READ 3: it parsed it again)
+        token_index.keep_ignored_entries(json_path, language, signature, data)
+    except Exception:
+        pass
         
     all_tuples, all_lemmas = set(), set()
     met, before = {}, terms or {}
@@ -3444,6 +3567,13 @@ def load_known_words(json_path, tokenizer, terms=None):
     # field synced from Anki: もう遅い気がする) marks the set phrases in it known too, as it marks its words — found
     # by Generate's own finder (`PhraseSet.find`, its rules), never a second one. Off, nothing is added (the
     # known-words cache is keyed on the switch, the phrases and the finder: token_index).
+    # A studied card written in kana alone counts for the word its own sentence shows it to be (KANA-KNOWN, decision
+    # KANA-CARD-KNOWN): the one rule Junban's known test and the ✓ chip read (`anki_match.card_word_in_sentence`), over
+    # the sentences the known-words sync keeps beside this file (`token_index.kana_sentences`). Each sentence that
+    # places the term counts that word (its lemma and reading) and the term itself — never what its letters read
+    # alone (かなう alone is 適う; in 兄にかないません 敵う): homophones stay apart. A sentence that places none, or
+    # none at all, reads the term as itself, as before. Japanese only.
+    said_by = token_index.kana_sentences(json_path) if language == "ja" else {}
     phrase_set = None
     if isinstance(tokenizer, JapaneseTokenizer) and LOGIC.get("phrase_rows", True):
         try:
@@ -3471,51 +3601,66 @@ def load_known_words(json_path, tokenizer, terms=None):
                 term = _known_term(term)     # a gloss cut off; a sentence kept whole
             
             asked = term                    # (the term as the file gives it: the key, whatever it is read as)
+            said_as = unicodedata.normalize("NFKC", term).strip() if said_by and isinstance(term, str) else ""
+            said = said_by.get(said_as) if said_as else None
+            if said:                        # (its sentences decide it too: they key it, with the rule's version)
+                asked = "\x00".join((term, f"kana-card-{anki_match.KANA_CARD_RULE}") + said)
             held = (met.get(asked) or before.get(asked)) if asked else None
             if term and held is None:
                 # Normalize using the same tokenizer: what this term gives, apart (the cache's)
                 known_tuples, known_lemmas = held = set(), set()
-                try:
-                    # A known joined word marks its pieces known too, as it did before words kept their
-                    # affixes: 時間 is known only through the user's 時間帯 (Patterns_Quality_Spec §6.2a).
-                    pieces = [] if isinstance(tokenizer, JapaneseTokenizer) else None
-                    sentences = ()
-                    if pieces is None:
-                        tokens = tokenizer.tokenize(term)
-                    else:
-                        sentences = list(tokenizer.tokenize_sentences(term, pieces))
-                        tokens = [token for _, s_tokens in sentences for token in s_tokens]
-                    term = zh_script.convert(term, script)
+                placed = []
+                for sentence in said or ():
+                    try:                    # the card as the side file spells it (NFKC: as the sync read it)
+                        placed.append(anki_match.card_word_in_sentence(said_as, sentence, tokenizer.tokenize))
+                    except Exception:       # a sentence the tagger can't read places nothing; the others still do
+                        placed.append(None)
+                for token in placed:
+                    if token is not None:
+                        known_tuples.add((token[0], token[1]))
+                        known_lemmas.update((token[0], term))
+                if not placed or None in placed:   # a sentence that places none reads the term as itself
+                    try:
+                        # A known joined word marks its pieces known too, as it did before words kept their
+                        # affixes: 時間 is known only through the user's 時間帯 (Patterns_Quality_Spec §6.2a).
+                        pieces = [] if isinstance(tokenizer, JapaneseTokenizer) else None
+                        sentences = ()
+                        if pieces is None:
+                            tokens = tokenizer.tokenize(term)
+                        else:
+                            sentences = list(tokenizer.tokenize_sentences(term, pieces))
+                            tokens = [token for _, s_tokens in sentences for token in s_tokens]
+                        term = zh_script.convert(term, script)
 
-                    # 0. Trust the explicit dictForm as a lemma (catches cases where tokenizer normalizes "その" -> "其の")
-                    known_lemmas.add(term)
-
-                    # 1. Add individual tokens
-                    for lemma, reading, _, _ in tokens:
-                        known_tuples.add((lemma, reading))
-                        known_lemmas.add(lemma)
-                    for lemma, reading in pieces or ():
-                        known_tuples.add((lemma, reading))
-                        known_lemmas.add(lemma)
-
-                    # 2. Heuristic: If multiple tokens, add the combined form too.
-                    # This fixes issues like "まで" (which tokenizer might split as "Ma"+"De" in isolation, 
-                    # but find as "Made" particle in context).
-                    if len(tokens) > 1:
-                        full_reading = "".join([t[1] for t in tokens if t[1]]) # Concat readings
-                        known_tuples.add((term, full_reading))
+                        # 0. Trust the explicit dictForm as a lemma (catches cases where tokenizer normalizes "その" -> "其の")
                         known_lemmas.add(term)
-                        if phrase_set is not None and phrase_set.of_word("".join(t[0] for t in tokens)) is not None:
-                            known_lemmas.add("".join(t[0] for t in tokens))
-                    # 3. The set phrases in each of its sentences, as Generate finds them there (above).
-                    if phrase_set is not None:
-                        for s_text, s_tokens in sentences:
-                            for _, _, index in phrase_set.find(s_tokens, s_text):
-                                known_lemmas.add(phrase_set.entry(index).word)
 
-                except Exception:
-                    # Fallback if tokenization fails
-                    pass
+                        # 1. Add individual tokens
+                        for lemma, reading, _, _ in tokens:
+                            known_tuples.add((lemma, reading))
+                            known_lemmas.add(lemma)
+                        for lemma, reading in pieces or ():
+                            known_tuples.add((lemma, reading))
+                            known_lemmas.add(lemma)
+
+                        # 2. Heuristic: If multiple tokens, add the combined form too.
+                        # This fixes issues like "まで" (which tokenizer might split as "Ma"+"De" in isolation, 
+                        # but find as "Made" particle in context).
+                        if len(tokens) > 1:
+                            full_reading = "".join([t[1] for t in tokens if t[1]]) # Concat readings
+                            known_tuples.add((term, full_reading))
+                            known_lemmas.add(term)
+                            if phrase_set is not None and phrase_set.of_word("".join(t[0] for t in tokens)) is not None:
+                                known_lemmas.add("".join(t[0] for t in tokens))
+                        # 3. The set phrases in each of its sentences, as Generate finds them there (above).
+                        if phrase_set is not None:
+                            for s_text, s_tokens in sentences:
+                                for _, _, index in phrase_set.find(s_tokens, s_text):
+                                    known_lemmas.add(phrase_set.entry(index).word)
+
+                    except Exception:
+                        # Fallback if tokenization fails
+                        pass
                 
             if held is not None:
                 met[asked] = held
@@ -5288,7 +5433,12 @@ def prepare_library(language, data_dir=None, user_files_dir=None):
     data_dir = data_dir or get_data_path(language)
     user_files_dir = user_files_dir or get_user_files_path(language)
     try:
-        ls.maintain(language, data_dir, user_files_dir, export=False)
+        # No manifest at all (a fresh language, the folders are the library): built from the tiers' folders, as the
+        # window builds a fresh language (`chores._fresh`) — here also over the empty tables an earlier run's helper
+        # wrote and stopped at, a store that never read as ready and that nothing built afterwards (ONE-READ 5). A
+        # manifest there, even one that can't be read, still waits for its own build or the Content Manager.
+        fresh = not os.path.exists(ls.manifest_path(user_files_dir))
+        ls.maintain(language, data_dir, user_files_dir, from_folders=fresh, export=False)
         store = ls.open_store(language, data_dir, user_files_dir, role="analyzer")
         if store is None:
             mode, reason = ls.check_mode(language, data_dir)
@@ -5775,6 +5925,7 @@ def settings_signature(settings, language):
         "setup_seen",                   # the setup pages seen (the setup wizard, WZ-8): never a run
         "setup_passed",                 # the setup pages saved before setup finished (IK2-2): never a run
         "hints_seen",                   # W-1: the window's one-time hints shown, each per library: never a run
+        "card_sound_days",              # Card sound's due window (VOICE-SETUP): which cards get AI audio, no run
         "connect_backlog_cap",          # how many cards Connect keeps waiting (P2.4): never what a run counts
         "connect_prestudied_only",      # PRESTUDIED-MINE: which episodes Connect mines, never what a run counts
         "known_from_anki",              # P2.4: what it adds lands in KnownWord.json (known_sig), not as a key
@@ -6521,9 +6672,32 @@ def _holding_results(run):
     return wrapper
 
 
+def _one_library_handle(run):
+    """Run `run` inside one library-store span (`library_store.held(role="analyzer")`, ONE-READ 4): the run's opens on
+    its own thread — `prepare_library`, the indexer's lists, `record_analysed`, the "In Anki" fingerprint, the journey's
+    render — are one handle, closed when the run ends (each opened its own: ~15 ms an open). The store's helper
+    (`maintain`) and a thread the run starts (Connect's dates read ahead) keep their own. The names tables the run
+    pinned (ONE-READ 5) are let go at its end: a later reader in this process looks for newer ones after
+    `names.REFRESH`, as before."""
+    import functools
+
+    @functools.wraps(run)
+    def wrapper(*args, **kwargs):
+        try:
+            ls = _library_store()
+            if ls is None:
+                return run(*args, **kwargs)
+            with ls.held(role="analyzer"):
+                return run(*args, **kwargs)
+        finally:
+            names.let_go_library_tables()   # the run's names tables (ONE-READ 5): kept, looked for again as before
+    return wrapper
+
+
 @_reporting_progress
 @without_cycle_collection
 @_holding_results
+@_one_library_handle
 def main():
     """The analyzer's run. Returns its exit code: None (0) when it finished, 1 when the report couldn't be written
     (results/ is complete; the next Generate re-renders it), RESULTS_BUSY when another program held results/,
@@ -6846,26 +7020,38 @@ def main():
     if language == 'ja':
         # Without the store (locked, damaged) the run still reads with the tables the last index computed when the
         # store's file can be read, so its words are the ones the Rarity slider counted; else names split, as they
-        # do before a first index.
+        # do before a first index. Pinned for the run (ONE-READ 5): its one reconcile is done, so these are the tables
+        # its every word is read with — the 30 s re-look (`names.REFRESH`) opened the token store's file again in a
+        # long run (lib20k, at the ignore set's kana lines). Let go when the run ends (`_one_library_handle`).
         names.use_library_tables(_store.names_tables() if _store is not None
-                                 else _token_index.read_names_tables(language))
+                                 else _token_index.read_names_tables(language), pin=True)
 
     # A show's opening and ending songs out of the counts (§ Songs out of the counts): their sentences read as no words
     # (`_sentences_of`), in their place — a sentence's number is the plan's and the re-pick's. The set-aside files
     # (watched, Finished) are their works' episodes too, and the example sentences read them.
     _songs = {}
     if not LOGIC.get("count_song_lyrics", False):
-        _songs_t0, _songs_stats = time.perf_counter(), {}
+        _songs_t0, _songs_stats, _songs_key = time.perf_counter(), {}, []
         try:
             _songs = song_sentences(list(found_files) + [(a.path, None, None, a.source_type)
                                                          for a in aside_files(language, _library["schedule"])],
-                                    data_dir, _store, tokenizer, language, _songs_stats)
+                                    data_dir, _store, tokenizer, language, _songs_stats, _songs_key)
         except Exception as e:                    # never a Generate lost to it: the songs counted, as before
             print(f"Warning: the songs couldn't be found ({e}); this run counts them.")
         else:
+            # ...and out of the store's counts (the floor below, Automatic rarity, the Rarity readout): each counted
+            # file's share of them kept beside them (Store.keep_song_counts), read again only where its songs moved.
+            if _store is not None:
+                try:
+                    _store.keep_song_counts(_songs, settings=_settings, key=_songs_key[0] if _songs_key else None)
+                    _store.songs_out = True
+                except Exception as e:            # the store's counts hold the songs this run, as before
+                    print(f"Warning: the songs couldn't be taken out of the token store's counts ({e}).")
             print(f"Songs left out: {sum(map(len, _songs.values()))} sentences in {len(_songs)} files "
                   f"({_songs_stats.get('read', 0)} works read, {_songs_stats.get('kept', 0)} kept; "
                   f"{time.perf_counter() - _songs_t0:.2f} s)")
+    if _store is not None and not _store.songs_out:
+        _store.songs_out = False                  # the songs count (on, or not found): so do the store's counts
 
     # Known-words normalization tokenizes ~10k terms — expensive. Reuse the cached result when
     # KnownWord.json is unchanged; any edit / delete / newly-added file flips _known_sig (computed
@@ -7021,9 +7207,9 @@ def main():
         _counts, total_tokens, _bound_counts = Counter(), 0, Counter()
         tallies = [] if _phrase_set is not None else None
         for file_path, _label, _weight, _type in found_files:
-            # As the store counts them, songs too (§ Songs out of the counts: only the walk leaves them out), so the
-            # floor and the ranking are the same numbers with or without the store.
-            sentences = file_sentences(_store, tokenizer, file_path, language)
+            # As the store counts them — the songs left out, as the walk leaves them out (Store.keep_song_counts) — so
+            # the floor and the ranking are the same numbers with or without the store.
+            sentences = _sentences_of(file_path)
             if tallies is not None:
                 sentences, flat = list(sentences), []
                 tallies.append(_phrases.tally(sentences, _phrase_set, flat))
@@ -7236,7 +7422,7 @@ def main():
     if _whole is None:
         _whole = Counter()
         for file_path, _label, _weight, _type in found_files:
-            for _s_text, s_tokens in file_sentences(_store, tokenizer, file_path, language):     # as the store counts
+            for _s_text, s_tokens in _sentences_of(file_path):     # as the store counts: the songs left out
                 for lemma, reading, surface, _orth in s_tokens:
                     if has_target_language(lemma, language) or has_target_language(surface, language):
                         _whole[(lemma, reading)] += 1
@@ -7363,7 +7549,7 @@ def main():
         file_phrase_firsts = {}     # phrase index -> its first sentence here, likewise
         file_basename = os.path.basename(file_path)   # constant per file — hoisted out of the token loop
         # Modality inputs, also constant per file (see app/modality.py).
-        file_is_spoken = source_type in ("subtitle", "youtube", "bilibili")
+        file_is_spoken = source_type in _SPOKEN
         file_series = _series_name(file_path, data_dir)
         library_series.add(file_series)
         if file_is_spoken:
@@ -7435,9 +7621,11 @@ def main():
                     phrase, _waits, bound = _phrase_facts(index)
                     if bound:
                         if taken is None:
-                            taken = Counter()
+                            taken, given = Counter(), set()
                         for k in bound:
-                            taken[(s_tokens[start + k][0], s_tokens[start + k][1])] += 1
+                            if start + k not in given:      # once, however many phrases stand over it (an inner one)
+                                given.add(start + k)
+                                taken[(s_tokens[start + k][0], s_tokens[start + k][1])] += 1
                     orth, written = _phrases.spellings(s_tokens, start, end, phrase)
                     entry = phrase_stats.get(index)
                     if entry is None:
@@ -7898,10 +8086,8 @@ def main():
                 else:
                     found = _phrase_set.find(s_tokens, s_text) if _phrase_set is not None else ()
                 if found:
-                    taken = Counter()
-                    for start, _end, index in found:
-                        for k in _phrase_facts(index)[2]:
-                            taken[(s_tokens[start + k][0], s_tokens[start + k][1])] += 1
+                    taken = Counter((s_tokens[at][0], s_tokens[at][1]) for at in {
+                        start + k for start, _end, index in found for k in _phrase_facts(index)[2]})
                     if taken:
                         uses = Counter(key for key in unknown_keys if key in taken)
                         targets = targets - {key for key, n in uses.items() if n <= taken[key]}
@@ -8996,6 +9182,3 @@ def main():
         print("Use '--visualize' to run the interactive server.")
         print("Use '--static' to generate a standalone HTML file.")
     return 1 if _report_failed else None
-
-if __name__ == "__main__":
-    sys.exit(main() or 0)

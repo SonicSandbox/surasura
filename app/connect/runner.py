@@ -70,8 +70,8 @@ import threading
 import time
 from types import SimpleNamespace
 
-from app import youtube_hold
-from app.connect import fit_check, inbox, level, stopping
+from app import path_utils, youtube_hold
+from app.connect import browser, fit_check, inbox, level, stopping
 from app.connect.lineup import SPEECH_ASK, SPEECH_FAILED     # Stage B: the speech model's question
 from app.connect.ledger import (ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, OPEN, PREPARE_KINDS, SHOW, STOPPED_REASON,
                                 SWAP, Ledger)
@@ -160,34 +160,30 @@ BOOK_AUDIO_NEED = "book-audiobook"
 BOOK_AUDIO_ASK = ("Do you have 「{title}」's audiobook? Its cards can carry the narrator's voice: pick it, or mine the "
                   "book without audio.")
 BOOK_ASKED, BOOK_SAID = "book_audio_asked:", "book_audio_said:"
-# Kura-AB3 A2 (PROVISIONAL, spec `tracks/pipeline/work/AB3/add-audio-spec.md` L2): once a book first lines up with its
-# audiobook, the cards Connect made from it before — text-only — are offered the narrator's voice: ONE standing *Needs
-# you* line a book (on the audiobook's item, as AB-Q4's line), asked once (`ADD_AUDIO_ASKED<lang>:<book key>` -> {epub,
-# item, title}, kept whatever the answer). *Add the narrator's voice* = `actions.add_audio` (`add_audio.act`). Asked at
-# each paired book not asked yet, at `run`'s looks whatever the queue (`_add_audio_offers`, every OFFER_EVERY looks,
-# the lead's MUST, Mattias's books were all mined before — no part is picked again), and at a part's own line-up. Its
-# record keeps the book's Connect notes then (`notes`: made before it lined up, text-only) — the only ones offered. A press, from the line or the book row's ⋯,
-# keeps the notes it looked at (`ADD_AUDIO_SEEN<lang>:<book key>` -> [note ids]): the row offers only the others.
+# Kura-AB3 A2, cut down by AUDIO-FILL (3.0.21, Sonic § 106 decision 10; the lead's Q1): a book paired with its
+# audiobook after Connect made cards from it — text-only — needs its line-up before *Card sound* can give those cards
+# the narrator (`sound_source`'s AUDIOBOOK). ONE standing *Needs you* line a book (on the audiobook's item, as AB-Q4's
+# line), asked once (`ADD_AUDIO_ASKED<lang>:<book key>` -> {epub, item, title, notes, stage}) while it waits for its
+# line-up: its press (`actions.add_audio`) asks *Mine now* on its first part, whose job lines it up. Looked at for each
+# paired book at `run`'s looks whatever the queue (`_add_audio_offers`, every OFFER_EVERY looks: a book mined out has no
+# job) and at a part's own line-up. Once lined up, nothing is asked: the line goes, and Card sound's day memo is dropped
+# (`card_sound.forget`), so *Add sound*'s count holds the book's cards at the pass's end. The write is Card sound's.
 ADD_AUDIO_NEED = "book-add-audio"
 # AM-FIX 2 (the lead's ruling 2): a swap whose card only `render` can make, with an Anki Miner without it — ONE standing
 # *Needs you* line for the language (`swap.UPDATE_TO_SWAP` · *Update*, Connect's update offer), every such swap waiting
 # on it; fixed by itself at the next swap `render` answers (`Steps.swap_new_card`)
 SWAP_UPDATE_NEED = "swap-update"
-ADD_AUDIO_ASK = ("「{title}」 is lined up with its audiobook now — add the narrator's voice to the cards Connect made "
-                 "from it before, where they have none?")
 ADD_AUDIO_ASKED = "add_audio_asked:"
-ADD_AUDIO_SEEN = "add_audio_seen:"
-ADD_AUDIO_WAIT = ("「{title}」 has its audiobook now: the cards Connect made from it before can get the narrator's "
-                  "voice — line it up and add it?")
+ADD_AUDIO_WAIT = ("「{title}」 has its audiobook now. Line them up, so the cards Connect made from it before can get the "
+                  "narrator's voice?")                   # (AUDIO-FILL, PROVISIONAL words)
 ADD_AUDIO_WAITING, ADD_AUDIO_LINED, ADD_AUDIO_GONE = "waiting", "lined", "gone"   # the record's stage: offered
 # before its line-up / after / it can't be lined up any more (its line fixed)
 NO_AUDIOBOOK, DISMISSED = "none", "dismissed"     # *Mine without audio*; the card dismissed
-# Iro-AA (PROVISIONAL): *Make AI audio (beta)* — mined as *Mine without audio*, then each part's new cards queued for the
-# AI voice (`modules.irodori`, the beta: off by default, absent in a build without it) when the part fills
-# (`_queue_ai_audio`, the job marked `AI_JOB<id>` at its pick), their audio made once the run's jobs are through
-# (`_ai_audio`): only an empty SentenceAudio, through the shared writer, one Undo a part
-AI_AUDIO = "ai"
-AI_JOB = "ai_audio_job:"
+# AUDIO-FILL (3.0.21, Sonic § 106 decision 10): a part's new cards are noted for *Card sound* when it fills
+# (`card_sound.queue_new`), and once the run's jobs are through its automatic pass gives them their real sound — and,
+# while the AI voice is on and the PC quiet, the cards due in its window their AI clip (`_card_sound`). The book's
+# *Make AI audio* answer, Best's AI mark and the AI voice's own waiting list are gone: a book's cards are mined as the
+# sentence card (BOOK-CARD), and Card sound makes each one the learner's audio card again once it has sound.
 # Kura-AB3 (PROVISIONAL): an audiobook's own timed subtitle lines its book up when its last cue ends inside the audio's
 # length and this much (a subtitle of a longer cut is another recording's); its spot-check's answer of its own: *Trust
 # my subtitles' timing* on (never listened to)
@@ -215,7 +211,8 @@ WATCHED = "you've watched it: its new words go to the episodes ahead of you"
 NOT_PRESTUDIED = "Waiting until you pre-study it in the journey (Mine only episodes I’ve pre-studied is on)."
 # Kantan-MO (the mining model, F1): a level raise mines no episode again — a level job queued before the update and not
 # started yet is dropped (one under way finishes, by its own words)
-LEVEL_DROPPED = "a level raise mines no episode again: its new words join your study order"
+# TOP-UP (3.0.21): a raise's job from before 3.0.18 (source `level`), not started — the top-up's jobs replace it
+LEVEL_DROPPED = "a level job from before 3.0.18: Connect now tops up a mined episode's new words by itself"
 # The cap's window (Kantan-MO): a card's place in the study order — yours and a pinned show's first, a word off the
 # list after every word on it
 FRONT = -1
@@ -231,6 +228,19 @@ BOOKS_WAIT = "Waits for Anki Miner to read books: Surasura makes its cards by it
 # A4M1-3 (lean taken, PROVISIONAL): an audiobook's or a podcast's the same way, until Anki Miner mines audio (Z-16)
 AUDIO_WAIT = "Waits for Anki Miner to mine audio: Surasura makes its cards by itself once Anki Miner can."
 WAIT_REASONS = {"books": BOOKS_WAIT, "audio": AUDIO_WAIT}       # `library.waits_for`'s kinds -> the job's line
+# Netflix and Disney+ (鵜 Ukai SPEC §6 U-S4, by mattias in #474; `app/connect/browser.py`): their video is never fetched
+# (DRM: nothing tries). The job picks its words from the transcript's own cues, hands their lines to Ukai and waits
+# with this line until Ukai has recorded them in the browser (`_browser_clips`); each clip then goes to Anki Miner as a
+# video of its own. The lines it couldn't record are said once (BROWSER_LOST, the first and how many more: *Needs you*
+# keeps one entry an episode) and asked for again by a *Mine*.
+# (PROVISIONAL words.) Only while Ukai's half is on (`door.ukai_on`, via `online.is_online`).
+BROWSER_WAIT = browser.WAIT
+BROWSER_LINE = "browser-line"           # *Needs you*'s kind for a line Ukai couldn't record
+BROWSER_LOST = "{title}: the line at {at} (「{text}」) wasn't recorded by Ukai ({why}). Mine it to ask again."
+BROWSER_LOST_MORE = ("{title}: {count} lines weren't recorded by Ukai — the first at {at} (「{text}」, {why}). Mine it to "
+                     "ask again.")
+BROWSER_NONE = "None of its lines were recorded by Ukai: Mine it to ask again."
+BROWSER_NO_CUES = "Its transcript keeps no line times, so Ukai can't record its lines: send it again from Ukai."
 # Z-9: a book or a text Anki Miner couldn't open (`SOURCE_UNREADABLE`, with its reason) — *Needs you*, plain: nothing
 # here sends you to Anki Miner (alpha 4 M1); the job is tried again at Connect's next start
 BOOK_UNREADABLE = "{title}: Anki Miner couldn't read this book or text ({why})."
@@ -621,6 +631,7 @@ def _consume(steps, ledger, lang):
             with ledger.transaction():
                 ledger.reopen_skipped(lang, line, MINER_ABSENT)
         _books_aside(steps, ledger, lang, ledger.jobs(lang, states=OPEN))
+        _close_browser_folders(ledger)
     except Exception:
         log.exception("Connect couldn't read its inbox (%s); it looks again", lang)
         return True
@@ -871,8 +882,8 @@ def _language(steps, ledger, lang, prepared, parked, out):
             if _after_mining(steps, ledger, lang, out, on_battery=only_asked):
                 look = True     # the level look on the new run: the jobs it queued run in this run (no second prepare)
                 continue
-            if not only_asked and _ai_audio(steps, ledger, lang, parked, tried):
-                look = True     # Iro-AA: a part came in while the AI voice worked: it goes first, the voice after
+            if not only_asked and _card_sound(steps, ledger, lang, parked, tried):
+                look = True     # a part came in while Card sound worked: it goes first, the sound after
                 continue
             break
         failed = None
@@ -908,6 +919,8 @@ def _language(steps, ledger, lang, prepared, parked, out):
                 elif ended.get("state") in ("done", "undone"):  # Michi-RM2: the part went through: its records go
                     _forget_alone(ledger, lang, job["item_id"])     # (never skipped: reopened; nor dropped: unmined)
                 keep |= _add_audio_says(ledger, lang, job["item_id"])     # Kura-AB3 A2 r1 S6: the book's line stays
+                keep |= {n["say"] for n in ledger.needs(lang, listed=False)     # a line Ukai didn't record: stays
+                         if n["kind"] == BROWSER_LINE and n["item_id"] == job["item_id"]}   # till a *Mine*
                 _fixed(ledger, lang, item_id=job["item_id"], keep=keep)
                 _book_orphans(ledger, lang)    # Kura-AB2: a book's question no part waits on any more
         except Wait as w:
@@ -1157,6 +1170,39 @@ def _generate_first():
         return False
 
 
+_CPU_BUSY = [False]             # Connect's process: the busy line's last answer (its hysteresis across passes)
+
+
+def _cpu_busy(load=None, clock=None, sleep=None):
+    """AUDIO-FILL (A5, the lead 2026-11-26): the window scheduler's own rule for background work, for Connect's process,
+    which has no scheduler (`gentle.hold` answers only in the window's) — `gentle.busy_line`, the one function both ask:
+    every program's CPU share since this was made (waited out to `gentle.LOAD_WINDOW_S` when the pass's real sound took
+    less), busy at or over `power.BUSY`, quiet again only under `power.QUIET` (the last answer kept for the process,
+    `_CPU_BUSY`). -> `busy()`; a reading that fails keeps the last answer. Stand-ins (tests): `load` a
+    `power.CpuLoad`, `clock`, `sleep`."""
+    from app.connect import power
+    from app.services import gentle
+    load = load if load is not None else power.CpuLoad()
+    clock, sleep = clock or time.monotonic, sleep or time.sleep
+    began = clock()
+    try:
+        load.sample()
+    except Exception:
+        pass
+
+    def busy():
+        left = gentle.LOAD_WINDOW_S - (clock() - began)
+        if left > 0:
+            sleep(left)
+        try:
+            share = load.sample()
+        except Exception:
+            share = None
+        _CPU_BUSY[0] = gentle.busy_line(share, _CPU_BUSY[0])
+        return _CPU_BUSY[0]
+    return busy
+
+
 def _resume_of(job):
     if job["state"] in IN_FLIGHT:
         return job["state"]
@@ -1331,6 +1377,7 @@ def _job(steps, ledger, lang, job, store_now, line, out, only_marked=False):
                         _stop_here(steps, ledger, lang, job, step, record)
                         _mine(steps, ledger, lang, job, record=record)
                         _drop_online(steps, job)    # Michi-YT: its clips and pictures are made: the video goes now
+                        _drop_browser(steps, job)   # Netflix / Disney+: Ukai's clips too (`connect.browser`)
                         step = "filling"
                     break
                 except _Again:
@@ -1470,7 +1517,7 @@ def _line_up(steps, ledger, lang, job, book):
     (SPEECH_NEED: recorded once for the language, the book held by it). AB-Q4's plain line recorded once a book."""
     line_up = getattr(steps, "line_up", None)
     if line_up is None or not book or not book[1]:
-        return _best_ai_audio(steps, ledger, lang, job)
+        return None
     try:
         got = line_up(lang, job, book[1])
     except Wait as w:
@@ -1483,14 +1530,13 @@ def _line_up(steps, ledger, lang, job, book):
         raise
     if got and got.get("book_ask"):
         if job.get("source") == level.BEST:
-            return _best_ai_audio(steps, ledger, lang, job)    # never the book's question: one sentence borrowed
+            return None                 # never the book's question: one sentence borrowed (Card sound voices it)
         if _book_question(ledger, lang, got):
             raise Wait(got["book_ask"])
-        _mark_ai_audio(ledger, lang, job, got)
         return None
     _book_answered(ledger, lang, book[1])
     if not got:
-        return _best_ai_audio(steps, ledger, lang, job)
+        return None
     if got.get("ask"):
         if ledger.need(lang, SPEECH_NEED, got["ask"], standing=True):
             log.info("Connect: asks for Anki Miner's speech model (%s)", lang)
@@ -1499,61 +1545,23 @@ def _line_up(steps, ledger, lang, job, book):
         ledger.need(lang, PARTIAL_NEED, got["line"], item_id=got["item_id"], standing=True)
     if got.get("lineup") and got.get("item_id") is not None:
         _add_audio_offer(steps, ledger, lang, book[1], got["item_id"])
-    return got.get("lineup") or _best_ai_audio(steps, ledger, lang, job)
+    return got.get("lineup") or None
 
 
-def _mark_ai_audio(ledger, lang, job, got):
-    """Iro-AA: a part of a book answered *Make AI audio (beta)* — its job marked (`AI_JOB<id>`), so its new cards are
-    queued for the AI voice when it fills. Read first: an unmarked book writes nothing."""
-    key, epub = got.get("key"), got.get("epub")
-    keys = [k for k in dict.fromkeys((key, book_key(epub) if epub else None)) if k]
-    if not any(_meta(ledger, f"{BOOK_SAID}{lang}:{k}") == AI_AUDIO for k in keys):
-        return
-    _mark_ai_job(ledger, job)
+def _queue_sound(ledger, lang, ids):
+    """AUDIO-FILL: a part's new cards noted for Card sound's automatic pass (`card_sound.queue_new`; never raises)."""
+    from app.connect import card_sound
+    card_sound.queue_new(ledger, lang, ids)
 
 
-def _mark_ai_job(ledger, job):
-    mark = f"{AI_JOB}{int(job['id'])}"
-    if _meta(ledger, mark) is None:
-        with ledger.transaction():
-            ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (mark, "1"))
-
-
-def _best_ai_audio(steps, ledger, lang, job):
-    """Kantan-SD 2 (Sonic 2026-11-22): a Best job cut from a book's line with no audiobook lined up — the picker chose
-    it because the AI voice can make its audio (`sentences.heard`) — is mined without audio, its new cards marked for
-    the AI voice (`AI_JOB`, as *Make AI audio* marks a book's part), never asked the book's question. Any other job, or
-    the voice off since: nothing. -> None (mined as the book)."""
-    if job.get("source") == level.BEST:
-        from app.connect import sentences
-        if sentences.ai_voice(steps._settings(lang) if hasattr(steps, "_settings") else {}, lang):
-            _mark_ai_job(ledger, job)
-    return None
-
-
-def _queue_ai_audio(steps, ledger, lang, job, ids):
-    """Iro-AA: the marked part's new cards handed to the AI voice's waiting list (`steps.queue_ai_audio`), its mark
-    gone. A failure is logged: the cards stay as Anki Miner made them (without audio), never a reason to stop."""
-    mark = f"{AI_JOB}{int(job['id'])}"
-    if _meta(ledger, mark) is None:
-        return
-    queue = getattr(steps, "queue_ai_audio", None)
-    try:
-        if queue is not None:
-            queue(lang, ids, job)
-        with ledger.transaction():
-            ledger.conn.execute("DELETE FROM meta WHERE key = ?", (mark,))
-    except Exception:
-        log.warning("Connect couldn't queue job %s's cards for AI audio", job["id"], exc_info=True)
-
-
-def _ai_audio(steps, ledger, lang, parked, tried=()):
-    """Iro-AA: once the language's jobs are through this pass, the AI voice's waiting list made (`steps.ai_audio`). It
-    stops between two sentences — and the pass goes on — when a part comes in meanwhile (an open job: *Mine now*, a
-    placement read; AI audio never holds a part back), for Connect's stop or an update staged, on battery, and when
-    the session can't write now (you review, Anki closed, another profile: `_blocked`). -> True when it stopped for a
-    part (the loop looks again). Never raises."""
-    make = getattr(steps, "ai_audio", None)
+def _card_sound(steps, ledger, lang, parked, tried=()):
+    """AUDIO-FILL: once the language's jobs are through this pass, Card sound's automatic pass (`steps.card_sound`:
+    the new cards' real sound, the AI voice's window). It stops between two lines or two sentences — and the pass
+    goes on — when a part comes in meanwhile (an open job: *Mine now*, a placement read; sound never holds a part
+    back), for Connect's stop or an update staged, on battery, and when the session can't write now (you review, Anki
+    closed, another profile, a Generate first on a gentle PC: `_blocked`). -> True when it stopped for a part (the
+    loop looks again). Never raises."""
+    make = getattr(steps, "card_sound", None)
     if make is None or _stop(steps):
         return False
     came = []
@@ -1569,9 +1577,9 @@ def _ai_audio(steps, ledger, lang, parked, tried=()):
         return bool(_stop(steps) or getattr(steps, "on_battery", lambda: False)() or
                     _blocked(steps, lang, None) is not None)
     try:
-        make(lang, should_stop=should_stop)
+        make(lang, ledger, should_stop=should_stop)
     except Exception:
-        log.warning("Connect's AI audio stopped on an error (%s)", lang, exc_info=True)
+        log.warning("Connect's Card sound stopped on an error (%s)", lang, exc_info=True)
     return bool(came)
 
 
@@ -1629,15 +1637,16 @@ def _add_audio_gave_up(ledger, lang, key, rec):
 
 
 def _add_audio_offer(steps, ledger, lang, epub, item, lined=True):
-    """Kura-AB3 A2: the book `epub`'s cards Connect made before its line-up (the store's made words of its parts, kept
-    in its record at the first ask: `notes`) offered the narrator's voice once — ADD_AUDIO_NEED on the audiobook's
-    `item`, worded ADD_AUDIO_ASK once it is lined up, ADD_AUDIO_WAIT before (`lined` False: its record's stage
-    `waiting`, and the line says so again — counted again — when it lines up). A look that changes nothing reads the
-    ledger alone (S19). Never fails the mine."""
+    """Kura-AB3 A2 / AUDIO-FILL: the book `epub` with cards Connect made before its line-up (the store's made words of
+    its parts, kept in its record: `notes`). Not lined up yet (`lined` False): ADD_AUDIO_NEED on the audiobook's `item`,
+    worded ADD_AUDIO_WAIT, asked once (its record's stage `waiting`). Lined up (a part's job, or found by
+    `_add_audio_offers`): its open line fixed and Card sound's day memo dropped (`card_sound.forget`), so *Add sound*'s
+    count holds its cards — once a book (stage `lined`). A look that changes nothing reads the ledger alone (S19).
+    Never fails the mine."""
     made = getattr(steps, "made_before", None)
     try:
         got = made(lang, epub) if made is not None else None
-    except Exception as e:                      # the offer is a nicety: the mine goes on
+    except Exception as e:                      # the line is a nicety: the mine goes on
         log.info("Connect: couldn't count a book's earlier cards (%s): %s", lang, e)
         return
     if got is None:
@@ -1645,28 +1654,24 @@ def _add_audio_offer(steps, ledger, lang, epub, item, lined=True):
     title, notes, sha = got
     key = f"{ADD_AUDIO_ASKED}{lang}:{book_key(epub, sha)}"     # by its bytes: a moved book is asked once (r1 S1)
     rec = _json_or_none(_meta(ledger, key))
-    ask = bool(notes)
-    if lined and _earlier_due(rec):             # Kura-AB5 (#431): asked before an earlier copy's cards counted: once
-        early = getattr(steps, "earlier_before", None)      # more, for that copy's cards (never those mined since its
-        try:                                    # line-up: they carry the narrator)
-            more = set(early(lang, epub) if early is not None else ())
-        except Exception as e:
-            log.info("Connect: couldn't count a book's earlier copy's cards (%s): %s", lang, e)
-            return
-        frozen = {n for n in rec.get("notes") or () if isinstance(n, int)}
-        notes, ask = sorted(frozen | more), bool(more - frozen)
-    elif rec is not None and (rec.get("stage") != ADD_AUDIO_WAITING or not lined):
+    if rec is not None and (rec.get("stage") != ADD_AUDIO_WAITING or not lined) and not (lined and _earlier_due(rec)):
         return
-    # (a waiting record's list is the cards so far — each made as the book, text-only: r5 S3 — frozen once lined up:
-    # the cards made since carry the narrator)
-    say = (ADD_AUDIO_ASK if lined else ADD_AUDIO_WAIT).format(title=title)
+    if not lined and not notes:
+        return                                  # (no card yet: nothing waits for the narrator)
+    from app.connect import card_sound
     with ledger.transaction():
         ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, json.dumps(
             {"epub": os.path.abspath(epub), "item": item, "title": title, "notes": notes,
              "stage": ADD_AUDIO_LINED if lined else ADD_AUDIO_WAITING, "earlier": True},
             sort_keys=True, ensure_ascii=False)))
-        if ask and ledger.need(lang, ADD_AUDIO_NEED, say, item_id=item, standing=True):
-            log.info("Connect: offers the narrator's voice for a book's earlier cards (%s, item %s)", lang, item)
+        if lined:
+            ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND kind = ? AND item_id = ? AND "
+                                "fixed_at IS NULL", (_now(), lang, ADD_AUDIO_NEED, (rec or {}).get("item", item)))
+            card_sound.forget(ledger, lang)
+        elif ledger.need(lang, ADD_AUDIO_NEED, ADD_AUDIO_WAIT.format(title=title), item_id=item, standing=True):
+            log.info("Connect: asks for a book's line-up, for its earlier cards' sound (%s, item %s)", lang, item)
+    if lined:
+        log.info("Connect: a book lined up: Card sound counts its earlier cards again (%s, item %s)", lang, item)
 
 
 def _earlier_due(rec):
@@ -1848,6 +1853,7 @@ def _pick(steps, ledger, lang, job, record=True):
         picked["elsewhere"] = best                  # Kantan-SD: words whose card comes from a better sentence elsewhere
     if web is not None:
         picked["online"], picked["names"] = web["site"], web["names"]     # Michi-YT: its Source names the transcript
+        picked["url"] = web.get("url")      # (Netflix / Disney+: the page Ukai records it on)
     if book is not None:
         picked["reading"], picked["book"] = book    # the file Anki Miner reads; the EPUB its cards are placed in
         if lined:
@@ -2164,6 +2170,16 @@ def _drop_online(steps, job):
             log.exception("Connect couldn't remove job %s's downloaded video", job.get("id"))
 
 
+def _drop_browser(steps, job):
+    """Netflix / Disney+: Ukai's clips for the job gone once its cards are made — never a reason for it to fail."""
+    drop = getattr(steps, "drop_browser", None)
+    if drop is not None:
+        try:
+            drop(job)
+        except Exception:
+            log.exception("Connect couldn't remove job %s's recorded clips", job.get("id"))
+
+
 def _sweep_online(steps):
     sweep = getattr(steps, "sweep_online", None)
     if sweep is not None:
@@ -2466,6 +2482,9 @@ def _mine(steps, ledger, lang, job, record=True):
     (skipped, failed)."""
     jid = job["id"]
     picked = ledger.picked(jid) or {}
+    from app.connect import online
+    if picked.get("online") in online.BROWSER_SITES:
+        picked = _browser_clips(steps, ledger, lang, job, picked, record)    # waits until Ukai recorded them
     words = picked.get("words") or []
     by_key = {(w["word"], w["reading"]): w for w in words}
     ran = False                     # a batch ran in this call: the next one waits for an update staged meanwhile
@@ -2645,6 +2664,107 @@ def _alone(ledger, jid):
     return got if isinstance(got, dict) else None
 
 
+def _close_browser_folders(ledger):
+    """Netflix / Disney+: the folder of a job that left (dropped from the top lines, failed, skipped) closed, so Ukai
+    is never asked to record for it (`browser.close`) — kept while it holds clips a later job of its episode may take
+    over; a folder whose job the ledger doesn't know, or holding no clip, gone. (One listing; nothing when none.)"""
+    try:
+        for jid in browser.folders():
+            job = ledger.job_by_id(jid)
+            browser.close(jid, keep=None if job is not None and job.get("state") in OPEN else job is not None)
+    except Exception:
+        log.exception("Connect couldn't look at Ukai's folders")
+
+
+def _earlier_jobs(ledger, lang, job):
+    """The episode's earlier jobs no longer open, the newest first (a job dropped when you reordered the list, or one
+    that failed: its clips are taken over, `browser.take_over`) — never a newer job, nor one still waiting."""
+    conn = getattr(ledger, "conn", None)
+    if conn is None:
+        return []
+    marks = ", ".join("?" * len(OPEN))
+    return [r[0] for r in conn.execute(f"SELECT id FROM jobs WHERE language = ? AND item_id = ? AND id < ? AND state "
+                                       f"NOT IN ({marks}) ORDER BY id DESC", (lang, job["item_id"], job["id"], *OPEN))]
+
+
+def _browser_clips(steps, ledger, lang, job, picked, record=True):
+    """Netflix / Disney+ (contract v2, `connect.browser`; by mattias, #474): the job's lines handed to Ukai, then a wait
+    (BROWSER_WAIT, looked at again in 2 minutes; resumed at mining by a later run) until it says it is done ->
+    `picked` with `clips` {line n: {"video", "subtitle", "shift"}} and only the words whose line has a clip that holds
+    it (each naming its `clip`) — and the words cut from another episode's line (`from`, Kantan-SD 6), which go with
+    that episode as any job's.
+
+    A word is matched to its line by the line's place in the video (`browser.span`), never by its order: the `n` in
+    `lines.json` names that line's clip for the job's whole life. A line the words want that wasn't handed (a pick again
+    after the hand-off) is added with a new `n` and Ukai asked again. A line with no clip, or a clip that doesn't hold
+    its line (`browser.covers`), is said once in *Needs you* (BROWSER_LOST: which line, why; BROWSER_LOST_MORE: the
+    first of several) — its words stay unmade,
+    so a *Mine* asks for them again; never a clip with the line outside it. No word left: the job ends skipped
+    (BROWSER_NONE). Worked out again from the folder at every look while it is there; the folder gone (its cards
+    made): `picked` as it is. One look: the subtitle read once and its starts made once (`browser.index`); each word's
+    line and each clip's cues found by halving."""
+    jid = job["id"]
+    got = browser.state(jid)
+    if got is None and picked.get("clips") is not None:
+        return picked
+    cues = browser.read_srt(picked.get("video") or "")
+    at = browser.index(cues)
+    lines, index = browser.lines_for(picked.get("words") or [], cues, at[0])
+    if got is None:
+        name = (picked.get("names") or ["", ""])[1] or ""
+        site_id = path_utils.SITE_ID_RE.search(name)
+        browser.hand_off(jid, {"site": picked["online"], "url": picked.get("url"),
+                               "video_id": site_id.group(2) if site_id else ""},
+                         path_utils.SITE_ID_RE.sub("", name).strip(), lines)
+        log.info("Connect: job %s handed %d line(s) to Ukai", jid, len(lines))
+    numbered = browser.handed(jid)
+    new = [ln for ln in lines if browser.span(ln) not in numbered]
+    if new:
+        numbered.update(browser.add_lines(jid, new))
+        log.info("Connect: job %s asked Ukai for %d more line(s)", jid, len(new))
+    got = browser.state(jid)
+    if not isinstance(got, dict):
+        # an earlier job of the episode (dropped when the list was reordered, or failed) may hold some of its clips:
+        # taken over at every look while it waits, so only the lines nobody recorded wait for Ukai
+        taken = browser.take_over(jid, _earlier_jobs(ledger, lang, job))
+        if taken:
+            log.info("Connect: job %s took over %d clip(s) an earlier job of its episode recorded", jid, taken)
+        got = browser.state(jid)
+    if not isinstance(got, dict):
+        raise Wait(BROWSER_WAIT, resume="mining")
+    failed = {f.get("n"): f.get("why") for f in got.get("failed") or () if isinstance(f, dict)}
+    clips, of_line, lost = {}, {}, []
+    for line in lines:
+        n = numbered[browser.span(line)]
+        kept = browser.clip(jid, n)
+        why = failed.get(n) or "no clip arrived"
+        if kept is not None and not browser.covers(kept[1], line):
+            kept, why = None, "its clip doesn't hold the line"
+        if kept is None:
+            lost.append((line, why))
+            continue
+        video, times = kept
+        clips[str(n)] = {"video": video, "shift": float(times["start"]),
+                         "subtitle": browser.clip_subtitle(jid, n, cues, times["start"], times["end"], at=at)}
+        of_line[line["n"]] = n
+    if lost:                # one entry an episode in *Needs you* (`ledger.need`): the first line, and how many
+        (line, why), start = lost[0], int(lost[0][0]["start"])
+        said = dict(title=steps.title(lang, job) or "", at=f"{start // 60}:{start % 60:02d}", text=line["text"], why=why)
+        say = BROWSER_LOST_MORE.format(count=len(lost), **said) if len(lost) > 1 else BROWSER_LOST.format(**said)
+        ledger.need(lang, BROWSER_LINE, say, item_id=job["item_id"], job_id=jid)
+    words = [w if w.get("from") is not None else dict(w, clip=of_line[index[browser.line_key(w)]])
+             for w in picked.get("words") or ()
+             if w.get("from") is not None or index.get(browser.line_key(w)) in of_line]
+    picked = dict(picked, words=words, clips=clips)
+    if not words:
+        browser.drop(jid)
+        _record_made(steps, ledger, lang, job, record)
+        ledger.set_state(jid, "skipped", reason=BROWSER_NONE, picked=picked, skipped={"mining": BROWSER_NONE})
+        raise _Finished("skipped")
+    ledger.set_state(jid, "mining", picked=picked)
+    return picked
+
+
 def _mine_batch(steps, ledger, lang, job, picked, todo, attempt):
     """One batch -> `steps.mine`'s answer. Mattias #5: after Anki refused a batch of the job (`_alone`), each word goes
     in a call of its own (its own run, `<attempt>-<n>`), so the words Anki takes get their cards and only the ones it
@@ -2668,8 +2788,6 @@ def _mine_batch(steps, ledger, lang, job, picked, todo, attempt):
         done = steps.swap_new_card(lang, job, _part_read(steps, lang, job, picked), todo, attempt, ledger, row)             if row is not None else None
         if done is not None:
             return done                     # None: mined as any card (Anki takes it, or render didn't find the word)
-    if _meta(ledger, f"{AI_JOB}{int(job['id'])}") is not None:
-        picked = dict(picked, voiced=True)  # BOOK-CARD: the AI voice reads its cards after: the learner's card type
     if not _alone(ledger, job["id"]):
         return steps.mine(lang, job, _part_read(steps, lang, job, picked), todo, attempt)
     got, out, refused = {}, None, []
@@ -3040,7 +3158,7 @@ def _fill(steps, ledger, lang, job):
     if not ids:
         ledger.set_state(jid, "ordering")
         return
-    _queue_ai_audio(steps, ledger, lang, job, ids)     # Iro-AA: before Backfill, which fills other fields
+    _queue_sound(ledger, lang, ids)                   # AUDIO-FILL: Card sound's automatic pass looks at them
     if _circle_paused(steps, "junban"):     # Kantan-G: 順 paused — its cards made, Backfill and the re-order wait
         raise Wait(JUNBAN_PAUSED, look=False, resume="filling")
     wait = _blocked(steps, lang, "filling", asked=bool(job.get("asked_at")))
@@ -3552,6 +3670,15 @@ class Steps:
         kept = getattr(self, "_fetched", {}).get(str(job["id"]))
         if kept and all(_on_disk(p) for p in kept):
             return kept
+        if web.get("site") in online.BROWSER_SITES:     # never fetched (DRM): its words picked from its own cues
+            with _held():
+                with self._open(lang) as store:
+                    rel = str((store.item(job["item_id"]) or {}).get("rel_path") or "")
+            srt = browser.subtitle(job["id"], os.path.join(path_utils.get_data_path(lang), *rel.split("/"))) \
+                if rel else None
+            if srt is None:
+                raise Needs(online.KIND, BROWSER_NO_CUES, once=True)
+            return srt, srt                 # (the pick reads a file as its video: the subtitle stands in, never cut)
         if self._settings(lang).get("youtube_risk_acknowledged") is not True:
             raise Needs(online.KIND, online.NOT_TICKED, standing=True)
 
@@ -3644,6 +3771,10 @@ class Steps:
             if not anki_miner.listens_large(miner, lang, profile, held[3] if held else None):
                 return online.NOT_LARGE
         return source
+
+    def drop_browser(self, job):
+        """Netflix / Disney+: the job's folder of Ukai's clips gone (`browser.drop`)."""
+        browser.drop(job["id"])
 
     def drop_online(self, job):
         """Michi-YT: the job's downloaded video gone (`online.drop`), and forgotten."""
@@ -3773,32 +3904,26 @@ class Steps:
         from app.connect import power
         return power.on_battery()
 
-    def queue_ai_audio(self, lang, note_ids, job):
-        """Iro-AA: a book part's new cards on the AI voice's waiting list (`modules.irodori`; absent: nothing)."""
-        try:
-            from modules import irodori
-        except ImportError:
-            return 0
-        return irodori.queue_notes(lang, note_ids, source={"job": job.get("id"), "item": job.get("item_id")})
-
-    def ai_audio(self, lang, should_stop):
-        """Iro-AA: the AI voice's waiting list made — the beta on, the voice installed, the shared writer there; else it
-        waits (`irodori.run_queue`). settings.json read now, and again between two sentences: the beta switched off in
-        the window stops it (review r2 #4). The cards it wrote: the session's sync clock, as any new write (S3)."""
-        try:
-            from modules import irodori
-        except ImportError:
-            return None
+    def card_sound(self, lang, ledger, should_stop):
+        """AUDIO-FILL: Card sound's automatic pass (`card_sound.auto`) — settings.json read now, and the AI voice's
+        switch again between two sentences (switched off in the window, it stops). The AI voice starts only while
+        the PC is quiet (`_cpu_busy`: asked once, the window scheduler's own line). The cards it wrote: the session's sync
+        clock, as any new write (S3)."""
         from app import settings_manager
+        from app.connect import card_sound
 
         def fresh():
             try:
                 return settings_manager.load_settings(strict=True)
             except Exception:
                 return {}                       # unreadable now: read as off (nothing made)
-        got = irodori.run_queue(fresh(), lang, should_stop=lambda: bool(should_stop() or not irodori.enabled(fresh())))
-        if got.get("written"):              # each run's Undo is kept by the module (`irodori.last_run`)
-            log.info("Connect: AI sentence audio added to %d cards (%s)", got["written"], lang)
+        settings = fresh()
+        busy = _cpu_busy()
+        got = card_sound.auto(settings, lang, ledger, steps=self, should_stop=should_stop, ai_hold=busy,
+                              ai_stop=lambda: bool(should_stop() or not card_sound._voice_on(fresh(), lang)))
+        if got.get("id"):                   # the run's Undo is Card sound's (`card_sound.last_run`)
+            log.info("Connect: sound added to %d cards (%d by the AI voice) (%s)",
+                     got.get("real", 0) + got.get("swapped", 0) + got.get("ai", 0), got.get("ai", 0), lang)
             self.after_write(lang)
         return got
 
@@ -4083,9 +4208,9 @@ class Steps:
             item = store.item(job["item_id"]) or {}
             made = library.made_words_all(store)
         lemmas = file_words.get(os.path.basename(item.get("rel_path") or "")) or ()
-        if job.get("source") == level.BEST:
+        if job.get("source") in (level.BEST,) + level.TOP_UPS:
             # Kantan-SD: a Best job is placed by its own words, never by the other new words of the episode it borrows
-            # a sentence from (often one you've watched)
+            # a sentence from (often one you've watched); TOP-UP: a mined episode's top-up by the new words it names
             lemmas = {key[0] for key in job.get("words") or ()}
         best = min((place(lemma, None) for lemma in lemmas if lemma not in made), default=OFF_LIST)
         return None if best >= OFF_LIST else best
@@ -5040,13 +5165,6 @@ class Steps:
         return ((book or {}).get("title") or os.path.splitext(os.path.basename(epub))[0], sorted(notes),
                 (book or {}).get("sha256"))
 
-    def earlier_before(self, lang, epub):
-        """Kura-AB5 (#431): the notes Connect made from an earlier copy of the book, removed
-        (`add_audio.earlier_copies`) -> [ids] — the store read only."""
-        from app.connect import add_audio
-        with self._open(lang) as store:
-            return sorted(add_audio.made_notes(store, add_audio.earlier_copies(store, epub)))
-
     def lined_up(self, lang, epub):
         """*Add audio to these cards* (Kura-AB3): the book `epub`'s line-up as it stands, read only -> {"lineup" (its
         cues, as the pick hands them to the mine), "item_id" (the audiobook's), "title"}, or None (no audiobook paired,
@@ -5224,19 +5342,36 @@ class Steps:
         the book (`lineup.split`); outcomes in the words' order. A call that fails after another made cards returns
         those, the rest not attempted: the next batch sends only them (and meets the failure again, as itself)."""
         lined = picked.get("lineup") if picked.get("reading") else None
-        if not lined:
+        clips = picked.get("clips")
+        if not lined and not clips:
             return self._mine_spread(lang, job, picked, words, attempt)
-        from app.connect import lineup
-        groups, rest = lineup.split(words, lined)
-        runs = [dict(picked, video=audio, subtitle=srt, reading=None, offset=0.0, _words=ws)
-                for (audio, srt), ws in groups.items()]
+        if clips:
+            # Netflix / Disney+ (contract v2, by mattias in #474): each clip Ukai recorded is a video of its own — its
+            # words with their line's start in clip time, its own .srt; the cards' Source still names the transcript
+            # (`names`). A word cut from another episode's line (`from`) goes with that episode (`_mine_spread`)
+            groups, rest = {}, []
+            for w in words:
+                c = clips.get(str(w.get("clip")))
+                if c is None:
+                    rest.append(w)
+                    continue
+                groups.setdefault((c["video"], c["subtitle"]), []).append(
+                    dict(w, line_start=max(0.0, round(float(w["line_start"]) - c["shift"], 3))))
+                # (a clip may start up to `browser.COVER_SLACK` after its line: its .srt's cue is cut to start at 0
+                # too — never a negative start, which Anki Miner's run file refuses)
+        else:
+            from app.connect import lineup
+            groups, rest = lineup.split(words, lined)
+        runs = [dict(picked, video=video, subtitle=srt, reading=None, offset=0.0, _words=ws)
+                for (video, srt), ws in groups.items()]
         if rest:
-            runs.append(dict(picked, _words=rest))
+            runs.append(dict(picked, _words=rest, _spread=bool(clips)))
         got, out = {}, None
         for n, run in enumerate(runs):
             ws = run.pop("_words")
+            mine = self._mine_spread if run.pop("_spread", False) else self._mine_one
             try:
-                done = self._mine_one(lang, job, run, ws, attempt if n == 0 else f"{attempt}-{n}")
+                done = mine(lang, job, run, ws, attempt if n == 0 else f"{attempt}-{n}")
             except (Wait, Needs, Skip, Repick, stopping.Stopped):
                 if not got:
                     raise
@@ -5464,7 +5599,7 @@ class Steps:
                                          show=self.show(lang, job), reading=picked.get("reading"),
                                          from_audio=bool(picked.get("from_audio")), names=picked.get("names"),
                                          word_audio=runfile.word_audio_on(now, lang), workers=workers, more=more,
-                                         should_pause=self._reviewing, voiced=bool(picked.get("voiced")))
+                                         should_pause=self._reviewing)
         except anki_miner.AnkiMinerError as e:
             _drop_held(held)                    # any Anki Miner failure (a profile changed too): read again
             if e.kind == "profile-changed":

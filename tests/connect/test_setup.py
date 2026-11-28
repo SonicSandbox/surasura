@@ -578,12 +578,12 @@ def test_a_profile_another_program_chose_meanwhile_is_kept(monkeypatch, ready_37
     # Two writers of the record: a look that read it before a slow Anki Miner call writes back only what it decided
     anki = StandInAnki(monkeypatch, profile="日本語")
     setup.checks(_settings(ready_37), "ja")
-    real_version = anki_miner.version
+    real_check = anki_miner.check
 
-    def slow_version(path):
+    def slow_check(path, language, profile=None):  # (AM-START: `check`, the call every look still makes)
         setup.write_record(dict(setup.read_record(), anki_profile="中文学习"))      # `setup --use-anki-profile` elsewhere
-        return real_version(path)
-    monkeypatch.setattr(anki_miner, "version", slow_version)
+        return real_check(path, language, profile)
+    monkeypatch.setattr(anki_miner, "check", slow_check)
     anki.profile = "日本語"
     setup.checks(_settings(ready_37), "ja")
     assert setup.anki_profile() == "中文学习", "the other program's choice survives"

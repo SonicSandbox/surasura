@@ -501,7 +501,9 @@ def is_content_file(path):
 # Kinds the learner can act on differently: a subtitle line belongs to a video, a YouTube line to a
 # timestamped video, a bilibili.tv line to an episode page, an EPUB chapter to a book, everything
 # else is plain text. An audiobook's item (Hon, H-7) is "audio": it waits for Anki Miner, never in a report.
-SOURCE_TYPES = ("subtitle", "youtube", "bilibili", "epub", "text", "audio")
+SOURCE_TYPES = ("subtitle", "youtube", "bilibili", "netflix", "disneyplus", "epub", "text", "audio")
+# The online videos' types: a transcript whose video is a page in the browser, never a file here (▶ opens the page)
+ONLINE_TYPES = ("youtube", "bilibili", "netflix", "disneyplus")
 
 # The transcript downloader names its output "<Title> [<11-char video id>].txt", so the id ends the
 # stem — but Graduate/Demote append a `_<timestamp>` when resolving a name collision, sometimes more
@@ -516,6 +518,10 @@ _YOUTUBE_ID_RE = re.compile(r"\[([A-Za-z0-9_-]{11})\][\s_()\-.\d]*$")
 # bare digits, and a bare bracketed number is far too common to trust ("[20240101]", fansub CRCs),
 # hence the explicit prefix the downloader writes.
 _BILIBILI_ID_RE = re.compile(r"\[bilibili-(\d+)\][\s_()\-.\d]*$")
+
+# Netflix's and Disney+'s subtitles 鵜 Ukai sent (`modules/ukai/subtitles.py`, #474 by mattias) end "[netflix-<id>]" /
+# "[disneyplus-<id>]" the same way: the site's name first, never a bare id.
+SITE_ID_RE = re.compile(r"\[(netflix|disneyplus)-([A-Za-z0-9-]+)\][\s_()\-.\d]*$")
 
 # A producer that KNOWS what it made (Extract, for instance) drops this beside its output. Needed
 # because an EPUB chapter and an ordinary note are both plain .txt — nothing in the filename tells
@@ -579,6 +585,9 @@ def infer_source_type(path, declared=None, marker_type=None):
         stem = os.path.splitext(os.path.basename(name))[0]
         if _BILIBILI_ID_RE.search(stem):
             return "bilibili"
+        site = SITE_ID_RE.search(stem)
+        if site:
+            return site.group(1)
         if _YOUTUBE_ID_RE.search(stem):
             return "youtube"
     return "text"
@@ -853,6 +862,7 @@ PARTS = (
     ("install", "ankiconnect-install", "staging", MOVES, STAYS),   # 3.0.1: AnkiWeb's add-on, while it's checked
     ("install", "irodori-queue-*.json", "ai_audio_queue", MOVES, STAYS),     # Iro-AA: the book cards waiting for AI audio
     ("install", "irodori-runs-*.json", "ai_audio_runs", MOVES, STAYS),       # ... each run's Undo (with Connect's ledger)
+    ("install", "irodori-heard", "ai_audio_listen", STAYS, STAYS),   # Iro-P: one listen-back's clips for Anki Miner, removed after
     ("roaming", "settings.json", "settings", MOVES, STAYS),      # installed: here; portable: in the library folder
     ("roaming", "telemetry_id.json", "telemetry_id", STAYS, STAYS),     # P7: one install counts once
     ("roaming", "telemetry_url.json", "telemetry_url", STAYS, STAYS),   # stays with the id
@@ -868,7 +878,7 @@ PARTS = (
     ("roaming", "report_send.json", "report_send", MOVES, STAYS),    # the Discord name and sender code: as settings
     ("roaming", "youtube_rest_*.json", "youtube_rest", MOVES, STAYS),
     ("roaming", "youtube_hold.json*", "youtube_hold", STAYS, STAYS),    # Yt-B: YouTube's answer to this computer
-    ("roaming", "ukai_keystore.json*", "ukai_pairing", STAYS, STAYS),   # UKAI-S1: 鵜飼 Ukai's pairing (its token)
+    ("roaming", "ukai_keystore.json*", "ukai_pairing", STAYS, STAYS),   # UKAI-S1: 鵜 Ukai's pairing (its token)
     ("local", "library.json", "library_note", STAYS, STAYS),     # P8: the installer's and the start gate's notes
     ("local", "installs.json", "installs_note", STAYS, STAYS),
     ("local", "installs.lock", "installs_note", STAYS, STAYS),
@@ -879,6 +889,7 @@ PARTS = (
     ("local", UPDATE_DIRNAME, "update", STAYS, STAYS),
     ("local", "tools", "tools", STAYS, STAYS),
     ("local", "irodori", "ai_audio_runtime", STAYS, STAYS),      # Iro-AA: the AI voice's program and model, never state
+    ("local", "irodori-voices", "ai_voice_packs", STAYS, STAYS),  # Iro-P: the learner's own voice packs, every install's
     ("local", BACKUPS, "backups", STAYS, STAYS),
     ("local", "libraries", "libraries", STAYS, STAYS),           # every install's stores: only this one's move (below)
     ("index", "token_store_*", "token_store", MOVES, STAYS),

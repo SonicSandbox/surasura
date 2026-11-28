@@ -55,6 +55,7 @@ PLACED = {
     "setup_seen": "neither",                 # the setup pages seen (the setup wizard, WZ-8): never a run
     "hints_seen": "neither",                 # W-1: the one-time hints shown, each per library: never a run
     "setup_passed": "neither",               # the setup pages saved before setup finished (IK2-2): never a run
+    "card_sound_days": "neither",            # VOICE-SETUP: Card sound's due window (the AI voice's), never a run
     "connect_backlog_cap": "neither",        # P2.4: how many of Connect's cards wait in Anki, never a run
     "connect_prestudied_only": "neither",    # PRESTUDIED-MINE: which episodes Connect mines, never a run
     "known_from_anki": "neither",            # P2.4: its words reach KnownWord.json (known_sig), never as a key
@@ -112,6 +113,7 @@ PLACED = {
                                             # file (3.0 writes the plan always), which no output and no signature holds
     "junban_word_fields": "neither", "junban_write_freqsort": "neither", "junban_write_frequency": "neither",
     "enable_irodori": "neither", "irodori_voice": "neither",      # Iro-AA: the AI voice's beta writes Anki, no run
+    "irodori_card_voice": "neither", "irodori_default_voice": "neither",       # Iro-P: which voice reads a card's line
 }
 # Which optional module a setting belongs to: without the module (a checkout without modules/) it doesn't exist.
 OWNERS = (("junban_", "modules.junban"), ("enable_junban", "modules.junban"), ("koe_", "modules.koe"),

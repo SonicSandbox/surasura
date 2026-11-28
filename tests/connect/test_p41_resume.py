@@ -81,7 +81,7 @@ def test_the_constant_is_the_one_package_a_reads():
 
 
 @pytest.mark.parametrize("off", [AUTOMATION_OFF, CONNECT_OFF], ids=["automation", "connect_enabled"])
-def test_a_week_off_then_on_mines_nothing_of_the_week_and_the_next_raise_mines(off):
+def test_a_week_off_then_on_mines_nothing_of_the_week_and_the_next_raise_tops_up(off):
     line, below = _line()
     (a, fa), _b = line
     with c.store() as s:
@@ -103,8 +103,12 @@ def test_a_week_off_then_on_mines_nothing_of_the_week_and_the_next_raise_mines(o
         s.ask_mining([below[3]])
     assert _asked(below[3]) > watermark, "an ask made now is newer: Connect mines it"
     out = _check(AGAIN, "run-3", files)
-    # Kantan-MO (F1): the next raise counts its new word and mines no episode again
-    assert out["queued"] == [] and out["new"] == 1 and _level_jobs() == [], "the next raise: its new word only"
+    # TOP-UP (Sonic § 114): the next raise tops up the mined episode with its new word only — never the week's
+    assert out["queued"] == [a] and out["new"] == 1, "the next raise: its new word only"
+    assert _level_jobs() == [a]
+    with Ledger() as ledger:
+        (job,) = [ledger.job_by_id(j["id"]) for j in ledger.jobs("ja") if j["kind"] == LEVEL]
+    assert job["words"] == [("駐車場", "チュウシャジョウ")], "never 眼鏡 or 老婆 (the week's)"
 
 
 def test_on_to_on_and_off_to_off_and_on_to_off_do_nothing():

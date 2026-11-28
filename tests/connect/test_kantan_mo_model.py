@@ -12,7 +12,8 @@ Connect made cards for words off his list and 順 set 308 of them aside. The mod
    since Connect's first count (F22); *Cards for every new word*'s cards count too (F3).
 3. ***Words to make cards from* retired** → Level + *Cards for every new word* (More options): *Every new word* reads
    as the switch on, *Only i+1* as off (your list).
-4. **Raising the level never mines an episode again** (F1): its new words join the study order.
+4. **Raising the level never mines an episode again** (F1): its new words join the study order. *Since TOP-UP
+   (3.0.21, Sonic § 114): it tops up the episodes already mined with their new words only, under the cap's window.*
 
 What a wrong answer costs: a learner's 順 order or word choice silently reset by the update; the cap blocked for
 months by an old backlog, or never reached with the switch on (Anki cluttered); a show moved to the top of Current
@@ -119,17 +120,24 @@ def test_the_journey_opens_on_the_study_orders_list_and_a_change_re_renders_only
 
 
 # --- 4. raising the level never mines an episode again --------------------------------------------------------------- #
-def test_a_level_raise_queues_no_job_and_counts_its_new_words(tmp_path):
-    # why: F1 — a raise used to queue one Anki Miner job per already-mined episode (hundreds on a big library)
+def test_a_level_raise_tops_up_only_the_mined_episodes_and_counts_its_new_words():
+    # why: F1 — a raise used to queue one Anki Miner job per already-mined episode with no window (hundreds on a big
+    # library); 3.0.18 then mined none again, so a word met only in mined episodes was never carded. TOP-UP (Sonic
+    # § 114): the mined episodes get their new words only, under the cap's window (test_top_up.py holds the window)
     from app.connect import level
     from app.connect.ledger import Ledger
+    from tests.connect.test_level import _check, _level_jobs, _line, _mine
+    (a, fa), (b, fb), _d = _line()
+    _mine(a)
     before = {("冒険", "ボウケン"), ("散歩", "サンポ")}
     raised = before | {("眼鏡", "メガネ"), ("老婆", "ロウバ")}
-    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
-        assert level.check(None, "ja", before, "run-1", {}, ledger=ledger)["first"]
-        out = level.check(None, "ja", raised, "run-2", {"ep01.srt": ["眼鏡", "老婆"]}, ledger=ledger)
-        assert out["queued"] == [] and out["new"] == 2
-        assert not ledger.jobs("ja"), "no job: the new words join the study order"
+    files = {fa: ["眼鏡", "老婆", "散歩"], fb: ["眼鏡"]}
+    assert _check(before, "run-1", files)["first"]
+    out = _check(raised, "run-2", files)
+    assert out["queued"] == [a] and out["new"] == 2, "only the mined episode: b's first mining reads the list"
+    assert [(j["source"], j["words"]) for j in _level_jobs()] == [
+        (level.TOP_UP, sorted([("眼鏡", "メガネ"), ("老婆", "ロウバ")]))], "its new words only, never 散歩"
+    with Ledger() as ledger:
         assert ledger.resort_owed("ja"), "the deck is re-sorted for the list's new words"
 
 
